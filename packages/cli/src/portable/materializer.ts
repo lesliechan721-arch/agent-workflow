@@ -36,6 +36,7 @@ export interface PortableMaterializationProvenance {
   pluginId: string;
   scope: Scope;
   dependencyPluginIds: string[];
+  configDigest: string;
   digest: string;
   skills: Array<PortableSkillCandidate & { digest: string }>;
 }
@@ -52,9 +53,13 @@ export interface MaterializePortableSkillsOptions {
 export interface MaterializedPortableSkills {
   rootDir: string;
   pluginId: string;
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginVersion?: string;
   scope: Scope;
   candidates: PortableSkillCandidate[];
   dependencyPluginIds: string[];
+  configDigest: string;
   digest: string;
   provenancePath: string;
   cleanup(): Promise<void>;
@@ -225,6 +230,7 @@ async function materializePluginCandidates(options: {
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  recordConfigDigest: (pluginId: string, configDigest: string) => void;
 }): Promise<CandidateTree[]> {
   const distribution = options.plugin.manifest.distributions?.agentSkills;
   if (!distribution) return [];
@@ -246,6 +252,10 @@ async function materializePluginCandidates(options: {
   if (config.issues.length > 0) {
     throw new Error(`Portable materialization config is invalid: ${config.issues.map((issue) => issue.message).join('; ')}`);
   }
+  options.recordConfigDigest(
+    pluginId(options.plugin),
+    `sha256:${crypto.createHash('sha256').update(JSON.stringify(config.values)).digest('hex')}`,
+  );
   const staticRoot = distribution.skills
     ? path.join(options.plugin.rootDir, distribution.skills.replace(/^\.\//u, ''))
     : undefined;
@@ -359,7 +369,7 @@ export async function materializePortableSkillsFromCatalog(
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
       ...(options.providers ? { providers: options.providers } : {}),
-      consume: async ({ pluginId: resolvedPluginId, source }) => {
+      consume: async ({ pluginId: resolvedPluginId, source, plugin: requestedPlugin }) => {
         const plugins = await resolvePluginsFromCatalog(source.rootDir);
         for (const plugin of plugins) {
           plugin.sourceId = source.sourceId;
@@ -376,9 +386,13 @@ export async function materializePortableSkillsFromCatalog(
         });
         return {
           pluginId: materialized.pluginId,
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
+          pluginVersion: requestedPlugin.manifest.version,
           scope: materialized.scope,
           candidates: materialized.candidates,
           dependencyPluginIds: materialized.dependencyPluginIds,
+          configDigest: materialized.configDigest,
           digest: materialized.digest,
         };
       },
@@ -418,6 +432,7 @@ export async function materializePortableSkills(
   const env = options.env ?? process.env;
   try {
     const trees: CandidateTree[] = [];
+    const configDigests: Array<[string, string]> = [];
     for (const plugin of closure) {
       trees.push(...await materializePluginCandidates({
         plugin,
@@ -425,6 +440,7 @@ export async function materializePortableSkills(
         scope: options.scope,
         cwd: options.cwd,
         env,
+        recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),
       }));
     }
     const seenNames = new Set<string>();
@@ -449,6 +465,9 @@ export async function materializePortableSkills(
     const dependencyPluginIds = closure
       .filter((plugin) => plugin.manifest.name !== requested.manifest.name)
       .map(pluginId);
+    const configDigest = `sha256:${crypto.createHash('sha256')
+      .update(JSON.stringify(configDigests))
+      .digest('hex')}`;
     const digest = `sha256:${crypto.createHash('sha256')
       .update(JSON.stringify(candidates.map((candidate) => [candidate.name, candidate.filesDigest])))
       .digest('hex')}`;
@@ -458,6 +477,7 @@ export async function materializePortableSkills(
       pluginId: pluginId(requested),
       scope: options.scope,
       dependencyPluginIds,
+      configDigest,
       digest,
       skills: candidates.map((candidate) => ({ ...candidate, digest: candidate.filesDigest })),
     };
@@ -468,6 +488,7 @@ export async function materializePortableSkills(
       scope: options.scope,
       candidates,
       dependencyPluginIds,
+      configDigest,
       digest,
       provenancePath,
       cleanup: async () => {

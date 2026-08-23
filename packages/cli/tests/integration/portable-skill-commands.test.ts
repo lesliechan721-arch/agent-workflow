@@ -1,0 +1,362 @@
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import { describe, expect, it, vi } from 'vitest';
+
+import { runCli } from '../../src/index.js';
+import { createCatalogManifestV4, createCatalogManifestV4Entry } from '../../src/utils/catalog-manifest-v4.js';
+import {
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
+import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+
+async function configurePortableCatalog(): Promise<{
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  pluginRoot: string;
+}> {
+  const isolation = getCurrentSourceTestIsolation();
+  const sourceRoot = path.join(isolation.layout.fixtureCwd, 'portable-source');
+  await createCatalogSnapshotFixture(sourceRoot, 'portable', '0.1.0', 'portable\n', (manifest) => {
+    manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
+    manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
+  });
+  const pluginRoot = path.join(sourceRoot, 'plugins', 'portable');
+  for (const name of ['alpha', 'beta']) {
+    await fs.outputFile(
+      path.join(pluginRoot, 'agent-skills', 'skills', name, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${name} description\n---\nBody.\n`,
+    );
+  }
+  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV4({
+    catalogVersion: '1.0.0',
+    channel: 'latest',
+    compatibility: { aw: { minVersion: '0.1.0' } },
+    release: { state: 'development' },
+    entries: [await createCatalogManifestV4Entry(plugin, pluginRoot)],
+  }));
+  const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+  await replaceCatalogSourcesConfig({
+    config: {
+      schemaVersion: 1,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
+    },
+    expectedDigest: snapshot.digest,
+    env: isolation.env,
+  });
+  return { cwd: isolation.layout.fixtureCwd, env: isolation.env, pluginRoot };
+}
+
+async function installFakeSkills(env: NodeJS.ProcessEnv, root: string, options: {
+  before?: unknown;
+  after?: unknown;
+  addExit?: number;
+  version?: string;
+} = {}): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
+  const bin = path.join(root, 'fake-skills-bin');
+  const executable = path.join(bin, 'skills');
+  const log = path.join(root, 'skills-calls.jsonl');
+  const added = path.join(root, 'skills-added');
+  await fs.ensureDir(bin);
+  await fs.writeFile(executable, [
+    '#!/usr/bin/env node',
+    "const fs = require('node:fs');",
+    "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify({args: process.argv.slice(2), cwd: process.cwd()}) + '\\n');",
+    "if (process.argv[2] === '--version') { console.log(process.env.FAKE_SKILLS_VERSION); process.exit(0); }",
+    "if (process.argv[2] === 'add') { if (Number(process.env.FAKE_SKILLS_ADD_EXIT || '0')) process.exit(Number(process.env.FAKE_SKILLS_ADD_EXIT)); fs.writeFileSync(process.env.FAKE_SKILLS_ADDED, '1'); process.exit(0); }",
+    "if (process.argv[2] === 'list') { console.log(fs.existsSync(process.env.FAKE_SKILLS_ADDED) ? process.env.FAKE_SKILLS_AFTER : process.env.FAKE_SKILLS_BEFORE); process.exit(0); }",
+    'process.exit(2);',
+  ].join('\n'));
+  await fs.chmod(executable, 0o755);
+  return {
+    log,
+    env: {
+      ...env,
+      PATH: `${bin}${path.delimiter}${env.PATH ?? ''}`,
+      FAKE_SKILLS_LOG: log,
+      FAKE_SKILLS_ADDED: added,
+      FAKE_SKILLS_VERSION: options.version ?? '1.5.23',
+      FAKE_SKILLS_BEFORE: JSON.stringify(options.before ?? []),
+      FAKE_SKILLS_AFTER: JSON.stringify(options.after ?? [
+        { name: 'alpha', agents: ['Codex'], scope: 'project', path: '/agent/alpha' },
+        { name: 'beta', agents: ['Codex'], scope: 'project', path: '/agent/beta' },
+      ]),
+      FAKE_SKILLS_ADD_EXIT: String(options.addExit ?? 0),
+    },
+  };
+}
+
+describe('portable skill public commands', () => {
+  it('publishes help and requires the scope and output parameters', async () => {
+    const fixture = await configurePortableCatalog();
+    const helpIo = createCapturedCliIo();
+    expect(await runCli(['skill', 'install', '--help'], {
+      cwd: fixture.cwd, env: fixture.env, io: helpIo.io,
+    })).toBe(0);
+    expect(helpIo.readStdout()).toContain('Usage: aw skill install');
+    expect(helpIo.readStdout()).toContain('--scope <scope>');
+
+    const installIo = createCapturedCliIo();
+    expect(await runCli(['skill', 'install', 'portable'], {
+      cwd: fixture.cwd, env: fixture.env, io: installIo.io,
+    })).toBe(1);
+    expect(installIo.readStderr()).toContain("required option '-s, --scope <scope>' not specified");
+
+    const materializeIo = createCapturedCliIo();
+    expect(await runCli(['skill', 'materialize', 'portable', '--scope', 'project'], {
+      cwd: fixture.cwd, env: fixture.env, io: materializeIo.io,
+    })).toBe(1);
+    expect(materializeIo.readStderr()).toContain("required option '--out <dir>' not specified");
+  });
+
+  it('requires --yes with JSON and emits exactly one receipt without invoking skills', async () => {
+    const fixture = await configurePortableCatalog();
+    const io = createCapturedCliIo();
+    const exitCode = await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: io.io },
+    );
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(io.readStdout())).toMatchObject({
+      receiptSchemaVersion: 4,
+      command: 'skill:install',
+      failures: [{ code: 'confirmationRequired' }],
+    });
+  });
+
+  it('confirms an interactive Review once and re-confirms changed execution evidence', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd);
+    const io = createCapturedCliIo();
+    const confirm = vi.fn(async () => ({ action: 'select' as const, cancelled: false, value: true }));
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project'],
+      {
+        cwd: fixture.cwd,
+        env: fake.env,
+        io: io.io,
+        interactive: true,
+        prompt: { confirm },
+      },
+    )).toBe(0);
+    expect(confirm).toHaveBeenCalledTimes(1);
+
+    const stale = await installFakeSkills(fixture.env, path.join(fixture.cwd, 'stale'));
+    const staleIo = createCapturedCliIo();
+    const staleConfirm = vi.fn(async () => {
+      if (staleConfirm.mock.calls.length === 1) {
+        stale.env.FAKE_SKILLS_VERSION = '1.5.24';
+        return { action: 'select' as const, cancelled: false, value: true };
+      }
+      return { action: 'select' as const, cancelled: false, value: false };
+    });
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project'],
+      {
+        cwd: fixture.cwd,
+        env: stale.env,
+        io: staleIo.io,
+        interactive: true,
+        prompt: { confirm: staleConfirm },
+      },
+    )).toBe(1);
+    expect(staleConfirm).toHaveBeenCalledTimes(2);
+    expect(staleIo.readStderr()).toContain('reviewStale');
+    expect((await fs.readFile(stale.log, 'utf8'))).not.toContain('"add"');
+  });
+
+  it('installs all candidates by default, reports collisions, and verifies automatic mode', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd, {
+      before: [{ name: 'alpha', agents: ['Claude Code'], scope: 'project', path: '/old/alpha' }],
+    });
+    const io = createCapturedCliIo();
+    const exitCode = await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--yes', '--json'],
+      { cwd: fixture.cwd, env: fake.env, io: io.io },
+    );
+    expect(exitCode, io.readStderr()).toBe(0);
+    const receipt = JSON.parse(io.readStdout());
+    expect(receipt).toMatchObject({
+      receiptSchemaVersion: 4,
+      ok: true,
+      status: 'succeeded',
+      agentMode: 'automatic',
+      collisions: [{ name: 'alpha', agents: ['Claude Code'] }],
+    });
+    expect(io.readStdout()).not.toContain('/old/alpha');
+    expect(receipt.selectedSkills.map((entry: { name: string }) => entry.name)).toEqual(['alpha', 'beta']);
+    const calls = (await fs.readFile(fake.log, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.find((call) => call.args[0] === 'add').args.slice(0, 5)).toEqual([
+      'add', expect.any(String), '--skill', 'alpha', 'beta',
+    ]);
+    expect(calls.find((call) => call.args[0] === 'add').cwd).toBe(await fs.realpath(fixture.cwd));
+  });
+
+  it('whitelists public list evidence in human output and JSON receipts', async () => {
+    const fixture = await configurePortableCatalog();
+    const unsafeRecord = {
+      name: 'alpha',
+      agents: ['Codex'],
+      scope: 'project',
+      path: '/tmp/aw-portable-operation-secret/materialized/skills/alpha',
+      source: 'https://user:credential@example.invalid/private.git',
+      sourceUrl: 'https://token@example.invalid/private.git',
+      sourceType: 'git',
+      unknownField: 'unknown-sensitive-value',
+    };
+    const human = await installFakeSkills(fixture.env, path.join(fixture.cwd, 'whitelist-human'), {
+      before: [unsafeRecord],
+      after: [unsafeRecord],
+    });
+    const humanIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--skill', 'alpha', '--yes'],
+      { cwd: fixture.cwd, env: human.env, io: humanIo.io },
+    )).toBe(0);
+
+    const json = await installFakeSkills(fixture.env, path.join(fixture.cwd, 'whitelist-json'), {
+      before: [unsafeRecord],
+      after: [unsafeRecord],
+    });
+    const jsonIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--skill', 'alpha', '--yes', '--json'],
+      { cwd: fixture.cwd, env: json.env, io: jsonIo.io },
+    )).toBe(0);
+    expect(JSON.parse(jsonIo.readStdout())).toMatchObject({
+      collisions: [{ name: 'alpha', scope: 'project', agents: ['Codex'] }],
+      verification: { records: [{ name: 'alpha', scope: 'project', agents: ['Codex'] }] },
+    });
+    const output = `${humanIo.readStdout()}\n${humanIo.readStderr()}\n${jsonIo.readStdout()}\n${jsonIo.readStderr()}`;
+    for (const secret of [
+      'aw-portable-operation-secret',
+      'credential@example.invalid',
+      'token@example.invalid',
+      'unknown-sensitive-value',
+      'sourceUrl',
+      'sourceType',
+    ]) {
+      expect(output).not.toContain(secret);
+    }
+  });
+
+  it('reports add failure and verification partial without rollback', async () => {
+    const fixture = await configurePortableCatalog();
+    const failed = await installFakeSkills(fixture.env, fixture.cwd, { addExit: 7 });
+    const failedIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'user', '--skill', 'alpha', '--yes', '--json'],
+      { cwd: fixture.cwd, env: failed.env, io: failedIo.io },
+    )).toBe(1);
+    expect(JSON.parse(failedIo.readStdout())).toMatchObject({ status: 'failed' });
+
+    const partialRoot = path.join(fixture.cwd, 'partial');
+    await fs.ensureDir(partialRoot);
+    const partial = await installFakeSkills(fixture.env, partialRoot, { after: [] });
+    const partialIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--skill', 'alpha', '--yes', '--json'],
+      { cwd: fixture.cwd, env: partial.env, io: partialIo.io },
+    )).toBe(1);
+    expect(JSON.parse(partialIo.readStdout())).toMatchObject({
+      status: 'partial',
+      failures: [{ code: 'portableSkillsCliVerificationFailed' }],
+    });
+    expect((await fs.readFile(partial.log, 'utf8'))).not.toContain('remove');
+  });
+
+  it('materializes a filtered tree and safely replaces only matching marked output', async () => {
+    const fixture = await configurePortableCatalog();
+    const out = path.join(fixture.cwd, 'portable-output');
+    const firstIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', out, '--skill', 'alpha', '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
+    ), firstIo.readStdout()).toBe(0);
+    const receipt = JSON.parse(firstIo.readStdout());
+    expect(receipt.selectedSkills).toMatchObject([{ name: 'alpha', providerPluginId: 'local/portable' }]);
+    await expect(fs.pathExists(path.join(out, 'skills', 'alpha', 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(out, 'skills', 'beta'))).resolves.toBe(false);
+    expect(await fs.readJson(path.join(out, '.aw-materialization.json'))).toMatchObject({
+      schemaVersion: 1,
+      plugin: { id: 'local/portable', version: '1.0.0' },
+      scope: 'project',
+    });
+
+    const unknownIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'unknown-output'), '--skill', 'unknown', '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: unknownIo.io },
+    )).toBe(1);
+    expect(JSON.parse(unknownIo.readStdout())).toMatchObject({
+      errors: [{ code: 'portableNoSkillsSelected' }],
+    });
+
+    const secondIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', out, '--skill', 'beta', '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
+    )).toBe(0);
+    await expect(fs.pathExists(path.join(out, 'skills', 'alpha'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(out, 'skills', 'beta', 'SKILL.md'))).resolves.toBe(true);
+  });
+
+  it('rejects foreign, mismatched, and symlink output without changing the existing target', async () => {
+    const fixture = await configurePortableCatalog();
+    for (const [name, prepare] of [
+      ['foreign', async (target: string) => fs.outputFile(path.join(target, 'keep.txt'), 'keep')],
+      ['mismatch', async (target: string) => fs.outputJson(path.join(target, '.aw-materialization.json'), {
+        schemaVersion: 1, plugin: { id: 'other/plugin' }, scope: 'project',
+      })],
+      ['symlink', async (target: string) => {
+        const victim = path.join(fixture.cwd, 'victim');
+        await fs.ensureDir(victim);
+        await fs.symlink(victim, target);
+      }],
+    ] as const) {
+      const target = path.join(fixture.cwd, name);
+      await prepare(target);
+      const io = createCapturedCliIo();
+      expect(await runCli(
+        ['skill', 'materialize', 'portable', '--scope', 'project', '--out', target, '--json'],
+        { cwd: fixture.cwd, env: fixture.env, io: io.io },
+      )).toBe(1);
+      expect(JSON.parse(io.readStdout())).toMatchObject({
+        errors: [{ code: 'portableOutputConflict' }],
+      });
+    }
+    await expect(fs.readFile(path.join(fixture.cwd, 'foreign', 'keep.txt'), 'utf8')).resolves.toBe('keep');
+  });
+
+  it('preserves an old materialization when its source identity no longer matches', async () => {
+    const fixture = await configurePortableCatalog();
+    const target = path.join(fixture.cwd, 'identity-output');
+    const firstIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', target, '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
+    )).toBe(0);
+    const markerPath = path.join(target, '.aw-materialization.json');
+    const marker = await fs.readJson(markerPath);
+    marker.plugin.sourceIdentity = 'stale-source-identity';
+    await fs.writeJson(markerPath, marker, { spaces: 2 });
+    await fs.outputFile(path.join(target, 'old-sentinel.txt'), 'old-output\n');
+
+    const secondIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'local/portable', '--scope', 'project', '--out', target, '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
+    )).toBe(1);
+    expect(JSON.parse(secondIo.readStdout())).toMatchObject({
+      errors: [{ code: 'portableOutputConflict' }],
+    });
+    await expect(fs.readFile(path.join(target, 'old-sentinel.txt'), 'utf8')).resolves.toBe('old-output\n');
+    expect((await fs.readJson(markerPath)).plugin.sourceIdentity).toBe('stale-source-identity');
+  });
+});
