@@ -203,13 +203,14 @@ describe('public Eval execution contracts', () => {
     const capabilitiesRaw = JSON.stringify(capabilities)
     await writeFile(capabilitiesPath, capabilitiesRaw)
     const audit = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       producer: 'audit-agent-skill-evals',
       independentContext: true,
       auditId: 'audit-1',
       mode: 'preflight',
       targetSkillDigest: targetDigest,
       caseCorpusDigest: digest(caseRaw),
+      runBundleDigest: null,
       validity: 'pass',
       optimizationPolicy: 'balanced',
       cases: [{ caseId: 'case-1', releaseRelevant: true, admission: 'pass', oracleConfidence: 'high', findings: [] }],
@@ -507,13 +508,14 @@ describe('public Eval execution contracts', () => {
     const capabilitiesRaw = capabilitiesCommand.stdout
     await writeFile(capabilitiesPath, capabilitiesRaw)
     const audit = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       producer: 'audit-agent-skill-evals',
       independentContext: true,
       auditId: 'audit-1',
       mode: 'preflight',
       targetSkillDigest: targetDigest,
       caseCorpusDigest,
+      runBundleDigest: null,
       validity: 'pass',
       optimizationPolicy: 'balanced',
       cases: [{ caseId: 'case-1', releaseRelevant: true, admission: 'pass', oracleConfidence: 'high', findings: [] }],

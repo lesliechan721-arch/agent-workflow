@@ -7,7 +7,7 @@
   ],
   "compatibility": {
     "aw": {
-      "minVersion": "0.1.0"
+      "minVersion": "0.1.1"
     }
   },
   "skills": "./skills",
@@ -117,6 +117,11 @@
         "target": "assets/review-result-lite.schema.json"
       },
       {
+        "skill": "review-agent-skill",
+        "source": "./standards/review-dimensions.json",
+        "target": "assets/review-dimensions.json"
+      },
+      {
         "skill": "audit-agent-skill-evals",
         "source": "./schemas/eval-audit-result.schema.json",
         "target": "assets/eval-audit-result.schema.json"
@@ -130,6 +135,16 @@
         "skill": "audit-agent-skill-evals",
         "source": "./scripts/validate-eval-audit-result.mjs",
         "target": "scripts/validate-eval-audit-result.mjs"
+      },
+      {
+        "skill": "audit-agent-skill-evals",
+        "source": "./scripts/validate-eval-run-bundle.mjs",
+        "target": "scripts/validate-eval-run-bundle.mjs"
+      },
+      {
+        "skill": "audit-agent-skill-evals",
+        "source": "./schemas/eval-run-bundle.schema.json",
+        "target": "assets/eval-run-bundle.schema.json"
       }
     ]
   },

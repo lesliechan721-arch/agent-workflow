@@ -2,7 +2,7 @@
 name: review-agent-skill
 description: >-
   当用户明确要求只读审核一个已有 Agent Skill 包或其修订版时使用。评估该 Skill 的真实价值、触发、职责、最小控制、信息层级、资源和已有 Eval 证据；不修改目标，不评审完整插件或跨 Skill 工作流，不输出发布资格。
-compatibility: 机器包检查需要 Node.js 20+；依赖 agent-content-toolkit >= 0.1.0。
+compatibility: 机器包检查需要 Node.js 22+、提供 `aw skill validate` 的已安装 AW CLI；依赖 agent-content-toolkit >= 0.1.0。
 metadata:
   short-description: 轻量只读评审一个 Agent Skill 包
 ---
@@ -35,7 +35,7 @@ metadata:
 
    机器错误直接阻断，不复制成多重 gate。
 3. 检查没有该 Skill 时的具体失败、description 与 near-miss、一个 Skill 内部是否混入多个独立职责、强制规则是否最小充分、reference/script/asset 是否必要且可达，以及已有 Eval 是否能支持当前结论。
-4. `full` 时读取 `references/review-rubric.generated.md` 和 `references/composition-fitness.md`。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
+4. `full` 时读取 `references/review-rubric.generated.md`、`references/review-dimensions.generated.md`、`references/scoring-model.generated.md` 和 `references/composition-fitness.md`。先完成 finding 和 unknown，再按固定顺序填写全部 12 个维度。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
 5. 被审材料很多且能按 package、reference、scripts 或 Eval 独立划分时，可以使用独立上下文子代理分别审核；每个子代理只返回结论、证据位置和关键 unknown，最终 finding 由当前 Reviewer 判断。
 
 ## 可选 Eval 分支
@@ -51,13 +51,13 @@ metadata:
 - `minor`：有限范围的质量、维护或证据问题。
 - `advisory`：启发式、未来风险或需要实验验证的建议。
 
-Exact claim 不得强于证据。跨文件推演和未证实运行时假设最高为 minor/advisory/unknown。Owner 未证明是该 Skill 时，不建议修改其生产 `SKILL.md`。
+每条 finding 记录一个最强 `evidenceType`。critical/major 只能使用 `observed`、`normative` 或 `structural`，并记录 `affectedScenario`、正确 `owner` 和可复验的 `validation`。Exact claim 不得强于证据。跨文件推演和未证实运行时假设最高为 minor/advisory/unknown。Owner 未证明是该 Skill 时，不建议修改其生产 `SKILL.md`。
 
 ## 输出
 
-主报告只包含机器检查、`design`、`complexity`、2–4 句判断、所有 critical/major、最多 3 项高价值改进、会改变结论的 unknown，以及停止或重新打开条件。
+主报告按 `assets/human-report-template.md` 输出，只包含机器检查、`design`、`complexity`、2–4 句判断、所有 critical/major、最多 3 项高价值改进、会改变结论的 unknown，以及停止或重新打开条件。
 
-不要输出加权分数、完整维度表、release readiness、stage 列表或多重 gate 表。
+full 主报告还显示一行 `Score: <n>/100 · coverage: <n>% · confidence: <level>`；coverage 不完整时显示 `Score: not-assessed`。维度明细只保存在 JSON。quick/delta 不显示评分行。不要输出 quality band、release readiness、stage 列表或多重 gate 表。`evalEvidence` 只是评审摘要，不是发布证据。
 
 需要结构化结果时，填写 `assets/review-result-lite.template.json`，再运行：
 

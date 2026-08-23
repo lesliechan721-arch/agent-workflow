@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "target": {
     "name": "replace-me",
     "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -10,5 +10,6 @@
   "summary": "Replace with a concise evidence-based judgment.",
   "findings": [],
   "unknowns": [],
-  "evalEvidence": "none"
+  "evalEvidence": "none",
+  "dimensions": []
 }

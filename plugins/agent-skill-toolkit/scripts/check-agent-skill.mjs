@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 const IGNORED = new Set(['.git', 'node_modules', '.DS_Store']);
 const AUTHOR_ONLY = new Set(['evals', 'reports']);
@@ -13,6 +16,8 @@ const RESOURCE_PATTERN = /(?<![A-Za-z0-9._/\-])(?:\.\/)?(?:references|scripts|as
 const MARKDOWN_LINK_PATTERN = /!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|((?:\\.|[^\s)\n])+))/gu;
 const MARKDOWN_DEFINITION_PATTERN = /^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]+)>|(\S+))/gmu;
 const URI_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/u;
+const execFileAsync = promisify(execFile);
+const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 
 function usage() {
   return 'Usage: check-agent-skill.mjs <skill-root> [--root-kind source|materialized] [--profile name] [--output file] [--format json|text]';
@@ -27,11 +32,19 @@ function parseArgs(argv) {
   let format = 'json';
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === '--root-kind') rootKind = argv[++index];
-    else if (value === '--profile') profile = argv[++index];
-    else if (value === '--output') output = path.resolve(argv[++index] ?? '');
-    else if (value === '--format') format = argv[++index];
-    else if (value.startsWith('-')) throw new Error('Unknown option: ' + value);
+    if (value === '--root-kind') {
+      if (!argv[index + 1] || argv[index + 1].startsWith('-')) throw new Error('--root-kind requires a value.');
+      rootKind = argv[++index];
+    } else if (value === '--profile') {
+      if (!argv[index + 1] || argv[index + 1].startsWith('-')) throw new Error('--profile requires a value.');
+      profile = argv[++index];
+    } else if (value === '--output') {
+      if (!argv[index + 1] || argv[index + 1].startsWith('-')) throw new Error('--output requires a value.');
+      output = path.resolve(argv[++index]);
+    } else if (value === '--format') {
+      if (!argv[index + 1] || argv[index + 1].startsWith('-')) throw new Error('--format requires a value.');
+      format = argv[++index];
+    } else if (value.startsWith('-')) throw new Error('Unknown option: ' + value);
     else positional.push(value);
   }
   if (positional.length !== 1) throw new Error(usage());
@@ -43,26 +56,6 @@ function parseArgs(argv) {
 
 function posix(value) {
   return value.split(path.sep).join('/');
-}
-
-function parseFrontmatter(text) {
-  if (!text.startsWith('---\n')) return { valid: false, name: null, description: null, error: 'SKILL.md must start with YAML frontmatter.' };
-  const end = text.indexOf('\n---\n', 4);
-  if (end < 0) return { valid: false, name: null, description: null, error: 'SKILL.md frontmatter is not closed.' };
-  const raw = text.slice(4, end);
-  const scalar = (key) => raw.match(new RegExp(`^${key}:\\s*(.*)$`, 'mu'))?.[1]?.trim().replace(/^['"]|['"]$/gu, '') ?? null;
-  const block = (key) => {
-    const header = raw.match(new RegExp(`^${key}:\\s*[>|]-?\\s*$`, 'mu'));
-    if (!header) return scalar(key);
-    const tail = raw.slice(header.index + header[0].length).replace(/^\n/u, '');
-    const lines = [];
-    for (const line of tail.split('\n')) {
-      if (/^[A-Za-z0-9_-]+:\s*/u.test(line)) break;
-      lines.push(line.replace(/^\s{2}/u, ''));
-    }
-    return lines.join(' ').trim();
-  };
-  return { valid: true, name: scalar('name'), description: block('description'), error: null };
 }
 
 async function collectFiles(root) {
@@ -122,6 +115,20 @@ function cleanTarget(value) {
 function coreTargets(text) {
   return [...new Set([...text.matchAll(RESOURCE_PATTERN)].map((match) => cleanTarget(match[0])))]
     .filter((value) => value && !value.endsWith('/'));
+}
+
+function executableTargets(text) {
+  const values = [];
+  const pattern = /(?:^|[;&|`]\s*)[ \t]*(?:\$[ \t]+)?(?:node|bash|sh|pwsh|powershell|python|python3)\s+(?:--?[A-Za-z0-9-]+\s+)*(?:\.\/)?((?:scripts|references|assets|agents|evals|providers)\/[A-Za-z0-9._()\-/]+)/gmu;
+  for (const match of text.matchAll(pattern)) values.push(cleanTarget(match[1]));
+  return [...new Set(values)];
+}
+
+function codeOnlyTargets(text) {
+  const targets = [];
+  for (const match of text.matchAll(/```[^\n]*\n([\s\S]*?)```/gu)) targets.push(...coreTargets(match[1]));
+  for (const match of text.matchAll(/(?<!\\)`([^`\n]+)`/gu)) targets.push(...coreTargets(match[1]));
+  return [...new Set(targets)];
 }
 
 function markdownTargets(text) {
@@ -185,7 +192,8 @@ async function runtimeClosure(files, skillText, options = {}) {
       const resolved = resolveMarkdownTarget(origin, lexical);
       if (resolved) dependencies.push({ ...resolved, lexical });
     }
-    for (const target of coreTargets(text)) dependencies.push({ invalid: false, target, lexical: target });
+    for (const target of coreTargets(stripCode(text))) dependencies.push({ invalid: false, target, lexical: target });
+    for (const target of executableTargets(text)) dependencies.push({ invalid: false, target, lexical: target });
     const seen = new Set();
     for (const dependency of dependencies) {
       if (seen.has(dependency.target)) continue;
@@ -205,6 +213,17 @@ async function runtimeClosure(files, skillText, options = {}) {
         queue.push(target);
       }
     }
+    const hardTargets = new Set(dependencies.filter((entry) => !entry.invalid).map((entry) => entry.target));
+    for (const target of codeOnlyTargets(text)) {
+      if (!hardTargets.has(target) && !byPath.has(target)) {
+        warnings.push({
+          code: 'example-resource-reference',
+          origin,
+          path: target,
+          message: 'A code example mentions a missing local resource; examples are not runtime dependencies.',
+        });
+      }
+    }
   }
   for (const file of productionFiles(files)) {
     if (file.path === 'SKILL.md') continue;
@@ -213,6 +232,69 @@ async function runtimeClosure(files, skillText, options = {}) {
     }
   }
   return { errors, warnings };
+}
+
+async function localCliEntry() {
+  let current = scriptRoot;
+  for (let depth = 0; depth < 7; depth += 1) {
+    const candidate = path.join(current, 'packages', 'cli', 'dist', 'index.js');
+    if ((await stat(candidate).catch(() => null))?.isFile()) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function skillValidationProfile(options) {
+  if (options.profile === 'aw-source') {
+    return { frontmatterProfile: 'claude-2.1.88', codexMetadata: 'optional' };
+  }
+  if (options.profile?.startsWith('codex-')) {
+    return { frontmatterProfile: 'portable-agent-skills', codexMetadata: 'required' };
+  }
+  if (options.profile?.startsWith('claude-')) {
+    return { frontmatterProfile: 'claude-2.1.88', codexMetadata: 'ignore' };
+  }
+  return { frontmatterProfile: 'portable-agent-skills', codexMetadata: 'optional' };
+}
+
+async function runSkillValidator(root, options) {
+  const profile = skillValidationProfile(options);
+  const configured = process.env.AW_SKILL_VALIDATOR_BIN
+    ? path.resolve(process.env.AW_SKILL_VALIDATOR_BIN)
+    : await localCliEntry();
+  const command = configured ? process.execPath : 'aw';
+  const args = [
+    ...(configured ? [configured] : []),
+    'skill',
+    'validate',
+    root,
+    '--frontmatter-profile',
+    profile.frontmatterProfile,
+    '--codex-metadata',
+    profile.codexMetadata,
+    '--json',
+  ];
+  try {
+    const { stdout } = await execFileAsync(command, args, { encoding: 'utf8' });
+    return JSON.parse(stdout);
+  } catch (error) {
+    if (typeof error?.stdout === 'string' && error.stdout.trim()) {
+      return JSON.parse(error.stdout);
+    }
+    return {
+      schemaVersion: 1,
+      command: 'skill:validate',
+      ok: false,
+      warnings: [],
+      errors: [{
+        code: 'skill-validator-unavailable',
+        path: 'aw',
+        message: `Cannot run aw skill validate: ${error instanceof Error ? error.message : String(error)}`,
+      }],
+    };
+  }
 }
 
 function renderText(result) {
@@ -241,13 +323,23 @@ async function main() {
   const skillFile = byPath.get('SKILL.md');
   if (!skillFile) throw new Error('Missing SKILL.md: ' + options.root);
   const skillText = await readFile(skillFile.absolute, 'utf8');
-  const frontmatter = parseFrontmatter(skillText);
   const directoryName = path.basename(options.root);
-  if (!frontmatter.valid) errors.push({ code: 'invalid-frontmatter', message: frontmatter.error });
-  if (!frontmatter.name) errors.push({ code: 'missing-name', message: 'frontmatter.name is required.' });
-  else if (frontmatter.name !== directoryName) errors.push({ code: 'name-directory-mismatch', message: `frontmatter.name ${frontmatter.name} does not match ${directoryName}.` });
-  if (!frontmatter.description) errors.push({ code: 'missing-description', message: 'frontmatter.description is required.' });
-  const declaredTargets = await declaredRuntimeTargets(options.root, frontmatter.name ?? directoryName);
+  const skillValidation = await runSkillValidator(options.root, options);
+  if (skillValidation?.schemaVersion !== 1 || skillValidation?.command !== 'skill:validate') {
+    errors.push({ code: 'skill-validator-contract', message: 'aw skill validate returned an incompatible result.' });
+  } else {
+    errors.push(...skillValidation.errors.map((entry) => ({
+      code: entry.code,
+      path: entry.path,
+      message: entry.message,
+    })));
+    warnings.push(...skillValidation.warnings.map((entry) => ({
+      code: entry.code,
+      path: entry.path,
+      message: entry.message,
+    })));
+  }
+  const declaredTargets = await declaredRuntimeTargets(options.root, directoryName);
   const closure = await runtimeClosure(files, skillText, { rootKind: options.rootKind, declaredTargets });
   errors.push(...closure.errors);
   warnings.push(...closure.warnings);
@@ -255,7 +347,7 @@ async function main() {
     schemaVersion: 1,
     producer: 'check-agent-skill',
     target: {
-      name: frontmatter.name ?? directoryName,
+      name: directoryName,
       rootKind: options.rootKind,
       profile: options.profile,
       digest: await productionDigest(files),

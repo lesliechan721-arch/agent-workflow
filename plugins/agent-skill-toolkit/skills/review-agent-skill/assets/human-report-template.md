@@ -5,6 +5,7 @@
 - **机器检查：** pass | fail
 - **设计：** pass | needs-fixes | redesign | fail | not-assessed
 - **复杂度：** proportionate | over-specified | over-engineered | not-assessed
+- **评分（仅 full）：** `<n>/100 | not-assessed` · coverage: `<n>%` · confidence: high | medium | low | unknown
 
 **判断：**
 

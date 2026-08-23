@@ -7,7 +7,7 @@
     "agent-skill-toolkit"
   ],
   "compatibility": {
-    "aw": { "minVersion": "0.1.0" }
+    "aw": { "minVersion": "0.1.1" }
   },
   "skills": "./skills",
   "buildConfig": {
@@ -71,6 +71,54 @@
         }
       },
       {
+        "skill": "review-aw-plugin",
+        "target": "assets/review-dimensions.json",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "review-dimensions"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "scripts/validate-json-contract.mjs",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "validate-json-contract"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "scripts/validate-eval-audit-result.mjs",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "validate-eval-audit-result"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "scripts/validate-eval-run-bundle.mjs",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "validate-eval-run-bundle"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "assets/eval-audit-result.schema.json",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "eval-audit-result-schema"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "assets/eval-run-bundle.schema.json",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "eval-run-bundle-schema"
+        }
+      },
+      {
         "skill": "review-aw-workflow",
         "target": "scripts/discover-aw-workflow.mjs",
         "source": "./scripts/discover-aw-workflow.mjs"
@@ -93,7 +141,8 @@
         "./scripts/invocation-contract.test.mjs",
         "./scripts/reference-contract.test.mjs",
         "./scripts/authoring-context-contract.test.mjs",
-        "./scripts/lightweight-review-contract.test.mjs"
+        "./scripts/lightweight-review-contract.test.mjs",
+        "./scripts/release-eval-chain-contract.test.mjs"
       ]
     }
   },

@@ -2,7 +2,8 @@
 name: run-agent-skill-evals
 description: >-
   当任务需要验证或执行已经通过独立 Oracle preflight 的 Agent Skill Eval plan，或需要拦截未经审核的高成本 Eval 请求时使用。负责人工授权、Audit/digest 门禁、共享 CLI 编排和结果交接；不设计或审核 case，不解释失败归因，不修改 Skill，也不发布 Review。
-compatibility: 需要 Node.js 22+、agent-skill-toolkit >= 0.1.0、@lesliechan721/agent-skill-eval >= 0.1.0-beta.2，且 aw-skill-eval 位于 PATH。
+compatibility: 需要 Node.js 22+、agent-skill-toolkit >= 0.1.0、@lesliechan721/agent-skill-eval >= 0.1.1，且 aw-skill-eval 位于 PATH。
+user-invocable: true
 metadata:
   short-description: 审核门禁后执行 Skill Eval plan 并交接证据
 ---
@@ -26,7 +27,7 @@ metadata:
    - `aw-skill-eval schema print eval-execution-plan`
    - `aw-skill-eval schema print eval-audit-result`
    - `aw-skill-eval schema print eval-run-bundle`
-5. 要求 plan、audit 和 bundle 使用 schema v2。
+5. 要求 plan 和 bundle 使用 schema v2，audit 使用 schema v3。
 
 命令或合同不兼容时停止并报告，不降低 plan 要求。
 
@@ -36,6 +37,7 @@ metadata:
 
 - audit 文件和 plan 中的 audit digest 匹配；
 - audit 符合 canonical schema，`producer=audit-agent-skill-evals`、`mode=preflight`；
+- audit 的 `runBundleDigest=null`；
 - `validity=pass`、`blockedCases` 为空、所有计划 case admission 为 `pass`；
 - `aw-skill-eval digest skill <skill-dir>` 同时匹配 plan 和 audit 的 target Skill digest；
 - 当前 case corpus digest 同时匹配 plan 和 audit。

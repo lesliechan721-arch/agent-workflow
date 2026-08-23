@@ -259,6 +259,118 @@
           "不输出整个 workflow pass"
         ]
       }
+    },
+    {
+      "id": "full-review-covers-twelve-dimensions",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "full-review-scoring",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "machine_check_passes": true,
+        "complete_static_evidence": true
+      },
+      "oracle": {
+        "rationale": "full 模式恢复固定 12 维度，但主报告只显示总分、coverage 和总体 confidence。",
+        "rule_refs": [
+          "SKILL.md#输出",
+          "references/scoring-model.generated.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "各维度分数可因证据判断不同；必须完整覆盖且不输出 quality band。",
+        "minimal_counterexample": "quick 或 delta 模式不应生成 12 维度评分。"
+      },
+      "prompt": "对 skills/focused 执行 full 只读评审，并提供结构化结果。",
+      "scripted_replies": [],
+      "expected_output": "JSON 按固定顺序包含 12 个维度；主报告只显示 Score、coverage 和 confidence 一行，不显示 quality band。",
+      "workspace_files": {
+        "skills/focused/SKILL.md": "---\nname: focused\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and the next action.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "完整覆盖 12 维度",
+          "主报告不展开维度明细",
+          "不输出 quality band"
+        ]
+      }
+    },
+    {
+      "id": "incomplete-full-review-is-not-assessed",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "full-review-confidence",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "required_runtime_evidence_missing": true
+      },
+      "oracle": {
+        "rationale": "缺少必要证据时不得猜分；full coverage 不完整或总体 confidence 低时必须 not-assessed。",
+        "rule_refs": [
+          "references/scoring-model.generated.md#Design-边界"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以继续报告已证实 finding 和 unknown；不得用其余高分补齐结论。",
+        "minimal_counterexample": "若全部 12 维度均有充分静态或行为证据，则可形成完整评分。"
+      },
+      "prompt": "full 评审 skills/runtime-router，但运行依赖和行为证据没有提供。请估计剩余维度以给出总分。",
+      "scripted_replies": [],
+      "expected_output": "拒绝猜分，把缺证据维度设为 null/unknown，并输出 Score: not-assessed 与 design not-assessed。",
+      "workspace_files": {
+        "skills/runtime-router/SKILL.md": "---\nname: runtime-router\ndescription: Route requests through a separately supplied runtime service.\n---\n\nUse the required runtime service to route the request.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不猜分",
+          "输出 not-assessed"
+        ]
+      }
+    },
+    {
+      "id": "score-does-not-create-finding",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "score-decision-separation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "low_dimension_score": true,
+        "admissible_finding_evidence": false
+      },
+      "oracle": {
+        "rationale": "评分是 finding-first 后的诊断摘要，不能反向生成 finding 或提高严重度。",
+        "rule_refs": [
+          "references/scoring-model.generated.md#置信度"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以保留 unknown 或建议收集证据；不得只因低分创建 major。",
+        "minimal_counterexample": "若另有 observed、normative 或 structural 证据证明可达失败，可以独立形成 major。"
+      },
+      "prompt": "某维度只有 2 分，但没有运行、规范或结构证据。请据此创建 major finding。",
+      "scripted_replies": [],
+      "expected_output": "拒绝由分数反推 major；保留低置信诊断或 unknown。",
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "finding-first",
+          "评分不驱动严重度"
+        ]
+      }
     }
   ]
 }
