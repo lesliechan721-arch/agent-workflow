@@ -1,9 +1,7 @@
 import crypto from 'node:crypto';
 
 const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const CANDIDATE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
-const SOURCE_HEAD_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const CLI_TRAIN_PACKAGES = [
   '@lesliechan721/agent-skill-eval',
   '@lesliechan721/aw',
@@ -45,140 +43,9 @@ export function normalizeStableTargetVersion(value, fieldName = 'targetVersion')
   return value;
 }
 
-export function normalizeCandidateVersion(value, fieldName = 'candidateVersion') {
-  if (typeof value !== 'string' || !CANDIDATE_VERSION_PATTERN.test(value)) {
-    throw new Error(
-      `Invalid ${fieldName}: expected x.y.z or x.y.z-beta.N with a positive canonical N.`,
-    );
-  }
-  return value;
-}
-
-function parseCandidateVersion(value, fieldName = 'candidateVersion') {
-  const candidateVersion = normalizeCandidateVersion(value, fieldName);
-  const match = CANDIDATE_VERSION_PATTERN.exec(candidateVersion);
-  return {
-    candidateVersion,
-    targetVersion: `${match[1]}.${match[2]}.${match[3]}`,
-    betaNumber: match[4] ?? null,
-  };
-}
-
-function compareNumericIdentifiers(left, right) {
-  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
-  return compareCodeUnitStrings(left, right);
-}
-
 function compareCodeUnitStrings(left, right) {
   if (left === right) return 0;
   return left < right ? -1 : 1;
-}
-
-function compareCandidateVersions(left, right) {
-  const leftParsed = parseCandidateVersion(left);
-  const rightParsed = parseCandidateVersion(right);
-  const leftCore = leftParsed.targetVersion.split('.');
-  const rightCore = rightParsed.targetVersion.split('.');
-  for (let index = 0; index < leftCore.length; index += 1) {
-    const relation = compareNumericIdentifiers(leftCore[index], rightCore[index]);
-    if (relation !== 0) return relation;
-  }
-  if (leftParsed.betaNumber === rightParsed.betaNumber) return 0;
-  if (leftParsed.betaNumber === null) return 1;
-  if (rightParsed.betaNumber === null) return -1;
-  return compareNumericIdentifiers(leftParsed.betaNumber, rightParsed.betaNumber);
-}
-
-export function normalizePublishedHistory(value) {
-  if (!Array.isArray(value)) {
-    throw new Error('Invalid publishedHistory: expected an array.');
-  }
-  const byVersion = new Map();
-  value.forEach((rawEntry, index) => {
-    const fieldName = `publishedHistory[${index}]`;
-    const entry = assertObject(rawEntry, fieldName);
-    assertAllowedKeys(entry, fieldName, ['candidateVersion', 'contentDigest']);
-    const candidateVersion = normalizeCandidateVersion(
-      entry.candidateVersion,
-      `${fieldName}.candidateVersion`,
-    );
-    const contentDigest = entry.contentDigest === null
-      ? null
-      : normalizeDigest(entry.contentDigest, `${fieldName}.contentDigest`);
-    const existing = byVersion.get(candidateVersion);
-    if (existing !== undefined && existing !== contentDigest) {
-      throw new Error(
-        `Invalid publishedHistory: conflicting content digests for ${candidateVersion}.`,
-      );
-    }
-    byVersion.set(candidateVersion, contentDigest);
-  });
-  return [...byVersion.entries()]
-    .map(([candidateVersion, contentDigest]) => ({ candidateVersion, contentDigest }))
-    .sort((left, right) => compareCandidateVersions(
-      left.candidateVersion,
-      right.candidateVersion,
-    ));
-}
-
-function candidateResult(status, reason, targetVersion, candidateVersion = null) {
-  return { status, reason, targetVersion, candidateVersion };
-}
-
-export function resolveReleaseCandidate({
-  intent,
-  targetVersion: rawTargetVersion,
-  contentDigest: rawContentDigest,
-  publishedHistory,
-}) {
-  if (intent !== 'beta' && intent !== 'stable') {
-    throw new Error('Invalid intent: expected "beta" or "stable".');
-  }
-  const targetVersion = normalizeStableTargetVersion(rawTargetVersion);
-  const contentDigest = normalizeDigest(rawContentDigest, 'contentDigest');
-  const targetHistory = normalizePublishedHistory(publishedHistory)
-    .map((entry) => ({ ...entry, ...parseCandidateVersion(entry.candidateVersion) }))
-    .filter((entry) => entry.targetVersion === targetVersion);
-  const stable = targetHistory.find((entry) => entry.betaNumber === null);
-  if (stable) {
-    return stable.contentDigest === contentDigest
-      ? candidateResult('skip', 'stable-already-published', targetVersion, targetVersion)
-      : candidateResult('deferred', 'target-bump-required', targetVersion);
-  }
-
-  const betas = targetHistory.filter((entry) => entry.betaNumber !== null);
-  const latestBeta = betas.at(-1);
-  if (intent === 'beta') {
-    if (!latestBeta) {
-      return candidateResult('publish', 'first-beta', targetVersion, `${targetVersion}-beta.1`);
-    }
-    if (latestBeta.contentDigest === contentDigest) {
-      return candidateResult(
-        'skip',
-        'beta-already-published',
-        targetVersion,
-        latestBeta.candidateVersion,
-      );
-    }
-    return candidateResult(
-      'publish',
-      latestBeta.contentDigest === null ? 'beta-digest-unknown' : 'beta-content-changed',
-      targetVersion,
-      `${targetVersion}-beta.${BigInt(latestBeta.betaNumber) + 1n}`,
-    );
-  }
-
-  if (!latestBeta) {
-    return candidateResult('publish', 'no-beta-train', targetVersion, targetVersion);
-  }
-  if (latestBeta.contentDigest === contentDigest) {
-    return candidateResult('publish', 'beta-promoted', targetVersion, targetVersion);
-  }
-  return candidateResult(
-    'deferred',
-    'beta-required',
-    targetVersion,
-  );
 }
 
 function canonicalJsonValue(value, fieldName, seen) {
@@ -251,45 +118,6 @@ export function calculateCliTrainContentDigest(rawPackages) {
     throw new Error(`Invalid CLI train packages: expected ${CLI_TRAIN_PACKAGES.join(' and ')}.`);
   }
   return calculateCanonicalDigest({ schemaVersion: 1, packages });
-}
-
-export function normalizeReleaseMetadata(rawMetadata) {
-  const metadata = assertObject(rawMetadata, 'release metadata');
-  assertAllowedKeys(metadata, 'release metadata', [
-    'schemaVersion',
-    'targetVersion',
-    'candidateVersion',
-    'planId',
-    'sourceHead',
-    'packageContentDigest',
-    'trainContentDigest',
-  ]);
-  if (metadata.schemaVersion !== 1) {
-    throw new Error('Invalid release metadata.schemaVersion: expected 1.');
-  }
-  const targetVersion = normalizeStableTargetVersion(metadata.targetVersion);
-  const candidate = parseCandidateVersion(metadata.candidateVersion);
-  if (candidate.targetVersion !== targetVersion) {
-    throw new Error('Invalid release metadata.candidateVersion: target core does not match targetVersion.');
-  }
-  if (typeof metadata.sourceHead !== 'string' || !SOURCE_HEAD_PATTERN.test(metadata.sourceHead)) {
-    throw new Error('Invalid release metadata.sourceHead: expected a lowercase Git object ID.');
-  }
-  return {
-    schemaVersion: 1,
-    targetVersion,
-    candidateVersion: candidate.candidateVersion,
-    planId: normalizeDigest(metadata.planId, 'release metadata.planId'),
-    sourceHead: metadata.sourceHead,
-    packageContentDigest: normalizeDigest(
-      metadata.packageContentDigest,
-      'release metadata.packageContentDigest',
-    ),
-    trainContentDigest: normalizeDigest(
-      metadata.trainContentDigest,
-      'release metadata.trainContentDigest',
-    ),
-  };
 }
 
 export function calculateCatalogContentDigest(rawCatalog) {

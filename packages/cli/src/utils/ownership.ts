@@ -784,14 +784,6 @@ export async function cleanupOwnedComponents(options: {
       pushUnique(result.residual, label);
     }
   }
-  if (result.failures.length > 0) {
-    result.residual = [];
-    for (const component of options.components) {
-      if (probes.get(component) !== 'absent') pushUnique(result.residual, componentLabel(component));
-    }
-    return result;
-  }
-
   for (const component of options.components) {
     if (probes.get(component) !== 'present') continue;
     const label = componentLabel(component);
@@ -838,4 +830,100 @@ export async function cleanupOwnedComponents(options: {
     }
   }
   return result;
+}
+
+export async function cleanupCorruptExclusivePluginDirectory(options: {
+  directory: string;
+  allowedRoot: string;
+  sourceId: string;
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  rename?: (source: string, destination: string) => Promise<void>;
+  remove?: (target: string) => Promise<void>;
+}): Promise<CleanupResult | null> {
+  const markerPath = path.join(options.directory, SKILL_OWNER_MARKER);
+  let raw: Record<string, unknown> | null = null;
+  try {
+    const [directoryStats, markerStats] = await Promise.all([
+      nodeFs.lstat(options.directory),
+      nodeFs.lstat(markerPath),
+    ]);
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()
+      || !markerStats.isFile() || markerStats.isSymbolicLink()) return null;
+    await assertNoSymlinkInPath(options.allowedRoot, markerPath);
+    raw = await fs.readJson(markerPath) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!raw
+    || raw.schemaVersion !== 2
+    || raw.owner !== 'agent-workflows'
+    || raw.sourceId !== options.sourceId
+    || raw.plugin !== options.pluginName
+    || raw.pluginId !== `${options.sourceId}/${options.pluginName}`
+    || raw.platform !== options.platform
+    || raw.scope !== options.scope) return null;
+  assertSafeOwnershipSegment(path.basename(options.directory), 'Exclusive plugin directory');
+  const quarantinePath = path.join(
+    path.resolve(options.allowedRoot),
+    `.agent-workflows-quarantine-${process.pid}-${crypto.randomUUID()}`,
+  );
+  assertPathBoundary(options.allowedRoot, quarantinePath);
+  try {
+    await (options.rename ?? nodeFs.rename)(options.directory, quarantinePath);
+  } catch (error) {
+    const [canonicalExists, quarantineExists] = await Promise.all([
+      fs.pathExists(options.directory),
+      fs.pathExists(quarantinePath),
+    ]);
+    if (!canonicalExists && !quarantineExists) {
+      return {
+        removed: [options.directory], absent: [], residual: [], quarantined: [], failures: [],
+      };
+    }
+    return {
+      removed: [], absent: [],
+      residual: [quarantineExists ? quarantinePath : options.directory],
+      quarantined: quarantineExists ? [quarantinePath] : [],
+      failures: [{
+        label: options.directory,
+        phase: 'mutation',
+        message: errorMessage(error),
+        ...(quarantineExists ? { quarantinePath } : {}),
+      }],
+    };
+  }
+  try {
+    await (options.remove ?? fs.remove)(quarantinePath);
+  } catch (error) {
+    if (!await fs.pathExists(quarantinePath)) {
+      return {
+        removed: [options.directory], absent: [], residual: [], quarantined: [], failures: [],
+      };
+    }
+    return {
+      removed: [], absent: [], residual: [quarantinePath], quarantined: [quarantinePath],
+      failures: [{
+        label: options.directory,
+        phase: 'remove',
+        message: errorMessage(error),
+        quarantinePath,
+      }],
+    };
+  }
+  if (await fs.pathExists(quarantinePath)) {
+    return {
+      removed: [], absent: [], residual: [quarantinePath], quarantined: [quarantinePath],
+      failures: [{
+        label: options.directory,
+        phase: 'verify',
+        message: 'Exclusive plugin quarantine remained after removal.',
+        quarantinePath,
+      }],
+    };
+  }
+  return {
+    removed: [options.directory], absent: [], residual: [], quarantined: [], failures: [],
+  };
 }

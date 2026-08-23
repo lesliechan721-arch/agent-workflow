@@ -158,18 +158,11 @@ function dependencyPlan(): DependencyOperationPlan {
       { from: 'official/agent-lab', to: 'official/skill-toolkit' },
       { from: 'official/skill-toolkit', to: 'official/content-toolkit' },
     ],
-    sources: [{ sourceId: 'official', sourceIdentity: 'identity:official', resolvedCommit: 'abc123', manifestDigest: 'sha256:manifest', snapshotDigest: 'sha256:snapshot' }],
-    nodes: [
-      { pluginId: 'official/agent-lab', pluginName: 'agent-lab', pluginVersion: '0.4.2', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:root', contentDigest: 'sha256:root-content' },
-      { pluginId: 'official/skill-toolkit', pluginName: 'skill-toolkit', pluginVersion: '0.3.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:skill', contentDigest: 'sha256:skill-content' },
-      { pluginId: 'official/content-toolkit', pluginName: 'content-toolkit', pluginVersion: '0.2.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:content', contentDigest: 'sha256:content-content' },
-    ],
     targets: [
       { pluginId: 'official/content-toolkit', pluginName: 'content-toolkit', platform: 'codex', requestedScope: 'project', resolvedScope: 'user', relation: 'dependency', requiredBy: ['official/skill-toolkit'], state: 'present', action: 'keep', order: 1 },
       { pluginId: 'official/skill-toolkit', pluginName: 'skill-toolkit', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'dependency', requiredBy: ['official/agent-lab'], state: 'absent', action: 'install', order: 2 },
       { pluginId: 'official/agent-lab', pluginName: 'agent-lab', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'requested', requiredBy: [], state: 'absent', action: 'install', order: 3 },
     ],
-    planDigest: 'sha256:dependency-plan',
   };
 }
 
@@ -395,6 +388,14 @@ describe('ConsoleAppV4', () => {
       await nextTurn(2);
       expect(reached).toContain(screen);
       expect(detailInstance.lastFrame()).not.toContain('private legacy location');
+      if (category === 'sourceMissing') {
+        expect(detailInstance.lastFrame()).toContain(
+          'aw cleanup archive/missing --platform codex --scope',
+        );
+        expect(detailInstance.lastFrame()).toMatch(/│ user\s+│/u);
+        expect(detailInstance.lastFrame()).toContain('--force');
+        expect(detailInstance.lastFrame()).not.toContain('没有安全的自动清理');
+      }
       expect((detailInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
       detailInstance.unmount();
       value.back();
@@ -2061,19 +2062,20 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toMatch(/user:secret|token=private|#fragment/u);
   });
 
-  it('fails closed on an incomplete removal inventory and reaches S17 with safe aggregates', async () => {
+  it('opens removal Review without consulting an incomplete reference inventory', async () => {
+    const inspectSourceRemoval = vi.fn().mockResolvedValue({
+      blocked: true,
+      inventoryComplete: false,
+      dependencies: [{
+        category: 'installation',
+        pluginId: 'team-tools/review-gate',
+        sourceId: 'team-tools',
+        platform: 'codex',
+        scope: 'project',
+      }],
+    });
     const value = controller({
-      inspectSourceRemoval: vi.fn().mockResolvedValue({
-        blocked: true,
-        inventoryComplete: false,
-        dependencies: [{
-          category: 'installation',
-          pluginId: 'team-tools/review-gate',
-          sourceId: 'team-tools',
-          platform: 'codex',
-          scope: 'project',
-        }],
-      }),
+      inspectSourceRemoval,
     });
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const screens = new Set<ConsoleV4ScreenId>();
@@ -2081,13 +2083,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
     await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn(3);
-    expect(screens).toContain('S17');
-    expect(instance.lastFrame()).toContain('引用清单不完整');
-    expect(instance.lastFrame()).toContain('安装位置      未知');
-    await input(instance, '\r');
-    expect(instance.lastFrame()).toContain('installation · team-tools/review-gate · Codex · 当前项目');
-    expect(instance.lastFrame()).not.toContain('/Users/');
-    expect(value.snapshot.activeReview).toBeUndefined();
+    expect(screens).toContain('S18');
+    expect(value.snapshot.activeReview?.sourceAction).toBe('remove');
+    expect(inspectSourceRemoval).not.toHaveBeenCalled();
   });
 
   it('reaches edit, primary, and safe removal Review pages through mounted keyboard actions', async () => {
@@ -2481,20 +2479,45 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
   });
 
-  it('blocks dependency removal with consumer viewing only and has no dangerous bypass', async () => {
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })) });
+  it('selects force cleanup, reviews its risk and equivalent command, and executes force intent', async () => {
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded',
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })),
+      executeIntent,
+    });
     await value.load();
-    value.push({ name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked' });
+    value.push({
+      name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked',
+      platform: 'codex', scope: 'user',
+    });
     const screens = new Set<ConsoleV4ScreenId>();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
     expect(screens).toContain('D12');
     expect(instance.lastFrame()).toContain('Agent Lab');
-    expect(instance.lastFrame()).not.toContain('仍然移除');
-    await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked' });
+    expect(instance.lastFrame()).toContain('强制清理');
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(instance.lastFrame()).toContain('强制清理插件');
+    expect(instance.lastFrame()).toContain('跳过依赖保护');
+    expect(instance.lastFrame()).toContain('依赖者会变为不完整');
+    expect(value.snapshot.activeReview?.equivalentCommand).toBe(
+      'aw cleanup official/skill-toolkit --platform codex --scope user --force',
+    );
+    expect(instance.lastFrame()).toContain('等价命令：aw cleanup official/skill-toolkit');
+    expect(instance.lastFrame()).toContain('--force');
+
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/skill-toolkit',
+      platform: 'codex', scope: 'user', force: true,
+    }), expect.anything());
   });
 
   it('renders dependency target incompatibility as D16 and only offers compatible tools', async () => {

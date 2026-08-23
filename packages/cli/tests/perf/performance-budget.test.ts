@@ -251,7 +251,7 @@ describe('multi-source performance budgets', () => {
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('keeps a qualified selector on a warm strict Git cache within budget', async () => {
+  it('keeps a qualified selector on a warm current Git snapshot within budget', async () => {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(fanoutEnv);
     const durations = await sample(async () => {
       const selected = await withResolvedCatalogPlugin({
@@ -264,7 +264,7 @@ describe('multi-source performance budgets', () => {
       });
       expect(selected).toEqual({ pluginId: 'git-a/demo', resolutionSource: 'cache' });
     });
-    const summary = createPerfSummary('git-source-selector-strict-cache-warm', durations, BUDGET_MS);
+    const summary = createPerfSummary('git-source-current-snapshot-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });

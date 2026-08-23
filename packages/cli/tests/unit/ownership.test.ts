@@ -566,7 +566,7 @@ describe('ownership inspection and cleanup', () => {
     await expect(fs.readFile(result.quarantined[0]!, 'utf8')).resolves.toBe('foreign quarantine\n');
   });
 
-  it('reports probe errors and performs no mutation when any initial probe fails', async () => {
+  it('leaves an unreadable path residual while removing independently verified ownership', async () => {
     const root = await makeTempRoot();
     const allowedRoot = path.join(root, 'rules');
     const ownedPath = path.join(allowedRoot, 'aw-owned.rules');
@@ -596,11 +596,11 @@ describe('ownership inspection and cleanup', () => {
       errors: [{ label: 'unreadable shared config', message: 'probe failed' }],
     });
     await expect(cleanupOwnedComponents({ components: [owned, unreadable] })).resolves.toMatchObject({
-      removed: [],
-      residual: [ownedPath, 'unreadable shared config'],
+      removed: [ownedPath],
+      residual: ['unreadable shared config'],
       failures: [{ label: 'unreadable shared config', phase: 'probe' }],
     });
-    await expect(fs.pathExists(ownedPath)).resolves.toBe(true);
+    await expect(fs.pathExists(ownedPath)).resolves.toBe(false);
   });
 
   it('returns remove and post-probe failures without losing earlier progress', async () => {

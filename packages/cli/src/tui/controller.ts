@@ -57,6 +57,7 @@ export type OperationIntent =
       pluginId: string;
       platform: PlatformName | 'both';
       scope: Scope;
+      force?: boolean;
       originIssue?: IssueOrigin;
     }
   | {
@@ -149,6 +150,7 @@ export interface OperationReviewModel {
   };
   changes: OperationReviewChange[];
   technicalDetails?: string[];
+  equivalentCommand?: string;
   primaryLabel: string;
   destructive?: boolean;
 }
@@ -377,6 +379,14 @@ function operationLabels(intent: OperationIntent): {
         destructive: intent.action !== 'reinstall',
       };
     }
+    if (intent.action === 'cleanup' && intent.force === true) {
+      return {
+        title: '强制清理插件',
+        description: '跳过依赖保护并清理可证明属于 AW 的现场内容。依赖者会变为不完整。配置保持不变。',
+        primaryLabel: '确认强制清理',
+        destructive: true,
+      };
+    }
     const labels: Record<PluginWriteOperation, [string, string, boolean]> = {
       install: ['添加插件', '添加所选平台和使用位置。', false],
       upgrade: ['升级插件', '使用当前来源内容重建所选安装。', false],
@@ -405,8 +415,8 @@ function operationLabels(intent: OperationIntent): {
   }
   if (intent.kind === 'sourceMutation') {
     const labels = {
-      add: ['添加来源', '验证来源后保存到来源列表。', '验证并添加', false],
-      update: ['修改来源', '验证修改后保存到来源列表。', '验证并保存', false],
+      add: ['添加来源', '先保存来源配置，再尽力刷新来源。刷新失败时配置仍保留。', '保存并刷新', false],
+      update: ['修改来源', '先保存来源配置，再尽力刷新来源。刷新失败时配置仍保留。', '保存并刷新', false],
       setPrimary: ['设为主来源', '只改变默认 marketplace，不迁移安装。', '设为主来源', false],
       remove: ['移除来源', '移除来源配置；不会删除其它来源。', '移除来源', true],
     } as const;
@@ -450,8 +460,7 @@ function reviewChanges(
           group: relation === 'requested' ? 'requested' : 'dependencies',
           pluginId: target.pluginId,
           relation,
-          title: plan.nodes.find((node) => node.pluginId === target.pluginId)?.pluginName
-            ?? pluginNameFromId(target.pluginId),
+          title: pluginNameFromId(target.pluginId),
           description: `${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.resolvedScope === 'user' ? '所有项目' : '当前项目'}${target.action === 'keep' ? ' · 已可用' : ''}`,
         };
       });
@@ -482,6 +491,13 @@ function reviewChanges(
         title: dependency.displayName,
         description: '依赖保持安装。',
       })));
+    }
+    if (intent.action === 'cleanup' && intent.force === true) {
+      changes.push({
+        kind: 'warning',
+        title: '跳过依赖保护',
+        description: '依赖此插件的插件会变为不完整，需重新安装后恢复。',
+      });
     }
     if (intent.originIssue) {
       changes.push(
@@ -565,7 +581,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     if (evidence.source.contentDigest) details.push(`Content digest：${evidence.source.contentDigest}`);
   }
   if (evidence.targetFingerprint) details.push(`目标状态：${evidence.targetFingerprint}`);
-  if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.planDigest}`);
+  if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${evidence.config.storeDigest}`);
   if (evidence.sourceWrite) {
     details.push(`候选配置：${evidence.sourceWrite.candidateDigest}`);
@@ -1144,6 +1160,7 @@ export class TuiController {
       this.#assertIssueOrigin(intent);
       if (intent.kind === 'pluginWrite'
         && (intent.action === 'uninstall' || intent.action === 'cleanup')
+        && intent.force !== true
         && (intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform])
           .some((platform) => this.getBlockingDependents(intent.pluginId, platform, intent.scope).length > 0)) {
         throw new TuiOperationBlockedError(
@@ -1225,6 +1242,9 @@ export class TuiController {
         'pluginId' in intent ? this.getPluginDependencyOverview(intent.pluginId) : undefined,
       ),
       technicalDetails: technicalDetails(evidence),
+      ...(intent.kind === 'pluginWrite' && intent.action === 'cleanup' && intent.force === true
+        ? { equivalentCommand: `aw cleanup ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope} --force` }
+        : {}),
       primaryLabel: intent.kind === 'pluginWrite' && evidence.dependencyPlan
         ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
         : labels.primaryLabel,
@@ -1429,7 +1449,7 @@ export class TuiController {
       const summary: OperationResultSummary = {
         ...baseSummary,
         elapsedMs: Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs),
-        messages: this.#progress.messages.slice(-8),
+        messages: [...this.#progress.messages, ...(baseSummary.messages ?? [])].slice(-8),
       };
       this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
       if (summary.code === 'operationFailed') {
@@ -1691,6 +1711,12 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  const sourceWarnings = intent.kind === 'sourceMutation'
+    && typeof execution === 'object' && execution !== null
+    && Array.isArray((execution as { errors?: unknown }).errors)
+    ? (execution as { errors: Array<{ message?: unknown }> }).errors.flatMap((error) =>
+        typeof error?.message === 'string' ? [`警告：${error.message}`] : [])
+    : [];
   const executionPlan = typeof execution === 'object' && execution !== null
     && typeof (execution as { dependencyPlan?: unknown }).dependencyPlan === 'object'
     ? (execution as { dependencyPlan: DependencyOperationPlan }).dependencyPlan
@@ -1753,5 +1779,6 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
       action: intent.action,
     } : {}),
     ...(inferredTargets.length > 0 ? { targets: inferredTargets } : {}),
+    ...(sourceWarnings.length > 0 ? { messages: sourceWarnings } : {}),
   };
 }

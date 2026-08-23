@@ -15,6 +15,7 @@ import {
 } from '../utils/catalog-public-error.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import {
+  canonicalMarketplaceRegistrationNames,
   inventoryCatalogSourceReferences,
   inventoryLegacyOwnerReferences,
   type CatalogSourceInventoryError,
@@ -43,10 +44,6 @@ import {
   resolveCanonicalRepoProjectKey,
 } from '../utils/state-paths.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
-import {
-  InstallationContractError,
-  readInstallationContract,
-} from '../utils/installation-contract-store.js';
 
 export interface StatusV4CatalogSource {
   id: string;
@@ -455,9 +452,35 @@ export async function statusCommandV4(options: {
                 }
               }
               const states: StatusPluginCapability['states'] = {};
-              const marketplaceName = item.resolution!.sourceId === resolution.primarySourceId
+              const defaultMarketplaceName = item.resolution!.sourceId === resolution.primarySourceId
                 ? 'aw'
                 : `aw-${item.resolution!.sourceId}`;
+              const marketplaceNameFor = (
+                pluginName: string,
+                platform: PlatformName,
+                scope: Scope,
+              ): string => {
+                const liveName = ownerInventory.references.find((reference) =>
+                  (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+                  && reference.sourceId === item.resolution!.sourceId
+                  && reference.sourceIdentity === item.resolution!.sourceIdentity
+                  && reference.pluginName === pluginName
+                  && reference.platform === platform
+                  && reference.scope === scope
+                  && (scope === 'user' || reference.projectKey === currentProjectKey)
+                  && reference.marketplaceName)?.marketplaceName;
+                if (liveName) return liveName;
+                const registeredNames = canonicalMarketplaceRegistrationNames(
+                  ownerInventory.references,
+                  item.resolution!.sourceId,
+                );
+                if (registeredNames.length > 1) {
+                  throw new Error(
+                    'marketplaceIdentityUnavailable: Multiple canonical native marketplace registrations match the source.',
+                  );
+                }
+                return registeredNames[0] ?? defaultMarketplaceName;
+              };
               const marketplaceRoot = path.join(resolveAwHome(env), 'marketplaces', item.resolution!.sourceId);
               for (const platform of ['codex', 'claude'] as const) {
                 states[platform] = {};
@@ -487,6 +510,7 @@ export async function statusCommandV4(options: {
                     continue;
                   }
                   try {
+                    const marketplaceName = marketplaceNameFor(entry.name, platform, scope);
                     const inspected = await inspectRebuildTarget({
                       sourceId: item.resolution!.sourceId,
                       sourceIdentity: item.resolution!.sourceIdentity,
@@ -515,182 +539,99 @@ export async function statusCommandV4(options: {
                     });
                     const dependencyErrors: Array<{ code: string; message: string }> = [];
                     const directDependencies = plugin.manifest.dependencies ?? [];
-                    const exactContractReference = ownerInventory.references.some((reference) =>
-                      reference.kind === 'installationContract'
-                      && reference.sourceId === item.resolution!.sourceId
-                      && reference.pluginName === entry.name
-                      && reference.platform === platform
-                      && reference.scope === scope
-                      && (scope === 'user' || reference.projectKey === currentProjectKey));
-                    const exactContractError = ownerInventory.errors.some((error) =>
-                      error.kind === 'installationContractValidation'
-                      && !error.relevance.global
-                      && error.relevance.sourceId === item.resolution!.sourceId
-                      && error.relevance.pluginName === entry.name
-                      && error.relevance.platform === platform
-                      && error.relevance.scope === scope
-                      && (scope === 'user'
-                        || error.relevance.projectLocationKey === currentProjectLocationKey));
-                    if ((directDependencies.length > 0 || exactContractReference || exactContractError)
+                    if (directDependencies.length > 0
                       && (liveState === 'present' || liveState === 'partial')) {
-                      try {
-                        const contract = await readInstallationContract({
+                      for (const dependencyName of directDependencies) {
+                        const dependencyId = formatPluginId({
                           sourceId: item.resolution!.sourceId,
-                          sourceIdentity: item.resolution!.sourceIdentity,
-                          pluginName: entry.name,
-                          platform,
-                          scope,
-                          cwd: options.cwd,
-                          env,
+                          pluginName: dependencyName,
                         });
-                        if (!contract) {
+                        if (!item.resolution!.manifest.entries.some((candidate) =>
+                          candidate.name === dependencyName)) {
                           dependencyErrors.push({
-                            code: 'dependencyContractMissing',
-                            message: `dependencyContractMissing: ${plugin.pluginId} has no installation contract for this live target.`,
+                            code: 'dependencyMissing',
+                            message: `dependencyMissing: ${dependencyId} is not available in the current source snapshot.`,
                           });
-                        } else {
-                          const currentEntry = item.resolution!.manifest.entries.find((candidate) =>
-                            candidate.name === entry.name)!;
-                          if (contract.metadata.sourceIdentity !== item.resolution!.sourceIdentity) {
-                            dependencyErrors.push({
-                              code: 'sourceChanged',
-                              message: `sourceChanged: ${plugin.pluginId} installation contract has a different source identity.`,
-                            });
-                          } else if (contract.metadata.contentDigest !== currentEntry.contentDigest) {
-                            dependencyErrors.push({
-                              code: 'dependencyContractInvalid',
-                              message: `dependencyContractInvalid: ${plugin.pluginId} installation contract does not match the current plugin content.`,
-                            });
-                          } else {
-                            const recordedIds = contract.metadata.dependencies.map((dependency) =>
-                              dependency.pluginId).sort();
-                            const expectedIds = directDependencies.map((dependencyName) => formatPluginId({
-                              sourceId: item.resolution!.sourceId,
-                              pluginName: dependencyName,
-                            })).sort();
-                            if (recordedIds.join('\0') !== expectedIds.join('\0')) {
-                              dependencyErrors.push({
-                                code: 'dependencyContractInvalid',
-                                message: `dependencyContractInvalid: ${plugin.pluginId} dependency edges do not match its installed content.`,
-                              });
-                            }
-                            for (const dependency of contract.metadata.dependencies) {
-                              if (dependency.sourceId !== item.resolution!.sourceId
-                                || dependency.sourceIdentity !== item.resolution!.sourceIdentity) {
-                                dependencyErrors.push({
-                                  code: 'dependencyIdentityMismatch',
-                                  message: `dependencyIdentityMismatch: ${plugin.pluginId} has dependency evidence for a different source identity.`,
-                                });
-                                continue;
-                              }
-                              if (dependency.platform !== platform) {
-                                dependencyErrors.push({
-                                  code: 'dependencyPlacementMismatch',
-                                  message: `dependencyPlacementMismatch: ${plugin.pluginId} has dependency evidence for a different platform.`,
-                                });
-                                continue;
-                              }
-                              const dependencyName = parsePluginId(dependency.pluginId).pluginName;
-                              const dependencyEntry = item.resolution!.manifest.entries.find((candidate) =>
-                                candidate.name === dependencyName);
-                              if (!dependencyEntry) {
-                                dependencyErrors.push({
-                                  code: 'dependencyMissing',
-                                  message: `dependencyMissing: ${dependency.pluginId} is not available in the current source snapshot.`,
-                                });
-                                continue;
-                              }
-                              const pluginCacheKey = [
-                                item.resolution!.sourceIdentity,
-                                dependency.pluginId,
-                              ].join('\0');
-                              let dependencyPluginPromise = dependencyPluginCache.get(pluginCacheKey);
-                              if (!dependencyPluginPromise) {
-                                dependencyPluginPromise = readPluginManifest(
-                                  path.join(item.resolution!.rootDir, 'plugins', dependencyName),
-                                  { mode: 'bundle' },
-                                ).then((dependencyPlugin) => {
-                                  dependencyPlugin.sourceId = item.resolution!.sourceId;
-                                  dependencyPlugin.sourceIdentity = item.resolution!.sourceIdentity;
-                                  dependencyPlugin.pluginId = dependency.pluginId;
-                                  return dependencyPlugin;
-                                });
-                                dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
-                              }
-                              const inspectionCacheKey = [
-                                item.resolution!.sourceIdentity,
-                                dependency.pluginId,
-                                dependency.platform,
-                                dependency.scope,
-                                dependency.projectKey ?? '',
-                              ].join('\0');
-                              let dependencyInspection = dependencyInspectionCache.get(inspectionCacheKey);
-                              if (!dependencyInspection) {
-                                dependencyInspection = dependencyPluginPromise.then(async (dependencyPlugin) => {
-                                  dependencyInspectionHookForTests?.();
-                                  const dependencyInspected = await inspectRebuildTarget({
-                                    sourceId: item.resolution!.sourceId,
-                                    sourceIdentity: item.resolution!.sourceIdentity,
-                                    pluginId: dependency.pluginId,
-                                    marketplaceName,
-                                    marketplaceRoot,
-                                    plugin: dependencyPlugin,
-                                    platform: dependency.platform,
-                                    scope: dependency.scope,
-                                    cwd: dependency.projectKey ?? options.cwd,
-                                    catalog: { rootDir: item.resolution!.rootDir, source: 'local' },
-                                    context: {
-                                      env,
-                                      nativeCliRunner: getDefaultNativeCliRunner(),
-                                      reporter: createNoopReporter(),
-                                      debugLogger: createNoopDebugLogger(),
-                                    },
-                                  });
-                                  return projectedLiveState({
-                                    inspection: dependencyInspected.inspection,
-                                    required: dependencyInspected.target.desiredOwnedComponents
-                                      ?? dependencyInspected.target.ownedComponents,
-                                    optional: dependencyInspected.target.optionalOwnedComponents ?? [],
-                                  });
-                                });
-                                dependencyInspectionCache.set(inspectionCacheKey, dependencyInspection);
-                              }
-                              const dependencyState = await dependencyInspection;
-                              if (dependencyState === 'absent') {
-                                dependencyErrors.push({
-                                  code: 'dependencyContractInvalid',
-                                  message: `dependencyContractInvalid: ${dependency.pluginId} is absent at its recorded placement.`,
-                                });
-                              } else if (dependencyState !== 'present') {
-                                dependencyErrors.push({
-                                  code: 'dependencyNotReady',
-                                  message: `dependencyNotReady: ${dependency.pluginId} is not ready at its recorded target.`,
-                                });
-                              }
-                            }
-                          }
+                          continue;
                         }
-                      } catch (error) {
-                        const changedContract = ownerInventory.references.some((reference) =>
-                          reference.kind === 'installationContract'
-                          && reference.sourceId === item.resolution!.sourceId
-                          && reference.pluginName === entry.name
-                          && reference.platform === platform
-                          && reference.scope === scope
-                          && (scope === 'user' || reference.projectKey === currentProjectKey)
-                          && reference.sourceIdentity !== item.resolution!.sourceIdentity);
-                        dependencyErrors.push({
-                          code: changedContract
-                            ? 'sourceChanged'
-                            : error instanceof InstallationContractError
-                            ? 'dependencyContractInvalid'
-                            : 'dependencyNotReady',
-                          message: changedContract
-                            ? `sourceChanged: ${plugin.pluginId} installation contract has a different source identity.`
-                            : error instanceof InstallationContractError
-                            ? `dependencyContractInvalid: ${plugin.pluginId} installation contract is invalid.`
-                            : `dependencyNotReady: ${plugin.pluginId} dependency state could not be inspected.`,
-                        });
+                        const pluginCacheKey = [item.resolution!.sourceIdentity, dependencyId].join('\0');
+                        let dependencyPluginPromise = dependencyPluginCache.get(pluginCacheKey);
+                        if (!dependencyPluginPromise) {
+                          dependencyPluginPromise = readPluginManifest(
+                            path.join(item.resolution!.rootDir, 'plugins', dependencyName),
+                            { mode: 'bundle' },
+                          ).then((dependencyPlugin) => {
+                            dependencyPlugin.sourceId = item.resolution!.sourceId;
+                            dependencyPlugin.sourceIdentity = item.resolution!.sourceIdentity;
+                            dependencyPlugin.pluginId = dependencyId;
+                            return dependencyPlugin;
+                          });
+                          dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
+                        }
+                        const placements: Scope[] = scope === 'project' ? ['project', 'user'] : ['user'];
+                        let dependencyState: StatusV4Target['state'] = 'absent';
+                        for (const dependencyScope of placements) {
+                          const inspectionCacheKey = [
+                            item.resolution!.sourceIdentity,
+                            dependencyId,
+                            platform,
+                            dependencyScope,
+                            dependencyScope === 'project' ? currentProjectKey : '',
+                          ].join('\0');
+                          let dependencyInspection = dependencyInspectionCache.get(inspectionCacheKey);
+                          if (!dependencyInspection) {
+                            dependencyInspection = dependencyPluginPromise.then(async (dependencyPlugin) => {
+                              dependencyInspectionHookForTests?.();
+                              const dependencyMarketplaceName = marketplaceNameFor(
+                                dependencyName,
+                                platform,
+                                dependencyScope,
+                              );
+                              const dependencyInspected = await inspectRebuildTarget({
+                                sourceId: item.resolution!.sourceId,
+                                sourceIdentity: item.resolution!.sourceIdentity,
+                                pluginId: dependencyId,
+                                marketplaceName: dependencyMarketplaceName,
+                                marketplaceRoot,
+                                plugin: dependencyPlugin,
+                                platform,
+                                scope: dependencyScope,
+                                cwd: options.cwd,
+                                catalog: { rootDir: item.resolution!.rootDir, source: 'local' },
+                                context: {
+                                  env,
+                                  nativeCliRunner: getDefaultNativeCliRunner(),
+                                  reporter: createNoopReporter(),
+                                  debugLogger: createNoopDebugLogger(),
+                                },
+                              });
+                              return projectedLiveState({
+                                inspection: dependencyInspected.inspection,
+                                required: dependencyInspected.target.desiredOwnedComponents
+                                  ?? dependencyInspected.target.ownedComponents,
+                                optional: dependencyInspected.target.optionalOwnedComponents ?? [],
+                              });
+                            });
+                            dependencyInspectionCache.set(inspectionCacheKey, dependencyInspection);
+                          }
+                          const candidateState = await dependencyInspection;
+                          if (candidateState === 'present') {
+                            dependencyState = 'present';
+                            break;
+                          }
+                          if (candidateState !== 'absent') dependencyState = candidateState;
+                        }
+                        if (dependencyState === 'absent') {
+                          dependencyErrors.push({
+                            code: 'dependencyMissing',
+                            message: `dependencyMissing: ${dependencyId} is absent from its required live placement.`,
+                          });
+                        } else if (dependencyState !== 'present') {
+                          dependencyErrors.push({
+                            code: 'dependencyNotReady',
+                            message: `dependencyNotReady: ${dependencyId} is not ready at its required live placement.`,
+                          });
+                        }
                       }
                     }
                     states[platform]![scope] = {

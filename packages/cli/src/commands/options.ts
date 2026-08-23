@@ -44,10 +44,12 @@ export type UninstallCommandOptions = CommandOptions;
 
 export type RawCleanupCommandOptions = RawCommandOptions & {
   json?: boolean;
+  force?: boolean;
 };
 
 export interface CleanupCommandOptions extends CommandOptions {
   json?: boolean;
+  force: boolean;
 }
 
 export type RawReinstallCommandOptions = RawCommandOptions & {
@@ -246,6 +248,7 @@ export function normalizeCleanupCommandOptions(
       ...defaults,
     }),
     json: raw.json === true,
+    force: raw.force === true,
   } satisfies CleanupCommandOptions;
 
   return normalized;

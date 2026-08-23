@@ -23,7 +23,6 @@ import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   readCatalogSourcesConfigSnapshot,
 } from '../utils/catalog-sources.js';
-import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import {
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
@@ -55,6 +54,7 @@ import {
   buildConfigGroups,
   buildConfigPage,
   projectPlatformPlacement,
+  type DependencyPlacementReferenceViewModel,
   type PlatformPlacementSummary,
   type PluginDependencyOverviewViewModel,
 } from './model.js';
@@ -62,8 +62,6 @@ import { projectCatalogSourceLocation } from '../utils/catalog-source-presentati
 import { targetCanBeUninstalled } from '../utils/target-eligibility.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
-import { inventoryInstallationContracts } from '../utils/installation-contract-store.js';
-import { resolveCanonicalRepoProjectKey } from '../utils/state-paths.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 
 export interface TuiControllerRuntimeTestHooks {
@@ -126,16 +124,15 @@ function throwIfWriteReviewStale(result: {
   targetResults: Array<{ errorCode?: string }>;
 }): void {
   const stale = result.targetResults.find((target) =>
-    target.errorCode === 'operationReviewStale' || target.errorCode === 'dependencyPlanStale');
+    target.errorCode === 'operationReviewStale');
   if (stale) {
     throw operationReviewStale('确认后实际写入计划发生变化。');
   }
 }
 
 const SOURCE_PROGRESS_PHASES: Record<CatalogSourceMutationProgress['stage'], string> = {
-  validatingCandidate: '验证候选来源',
+  refreshingCatalog: '刷新 Catalog 缓存',
   catalogReady: 'Catalog 已读取，索引已刷新',
-  scanningReferences: '扫描现有引用和约束',
   savingConfig: '保存来源配置',
 };
 
@@ -180,7 +177,6 @@ function assertIntentIsLegal(
 async function assertTypedIssueOrigin(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
   targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
-  context: CliExecutionContext,
 ): Promise<void> {
   if (!intent.originIssue) return;
   const stale = (message: string): never => {
@@ -242,25 +238,6 @@ async function assertTypedIssueOrigin(
   const consumerError = consumer?.errors.some((error) =>
     error.code === origin.category && error.message.includes(origin.dependencyPluginId!));
   if (!consumer || !consumerError) stale('原 consumer 依赖问题已消失或变化。');
-  const currentProjectKey = await resolveCanonicalRepoProjectKey(context.cwd);
-  const inventory = await inventoryInstallationContracts({ env: context.env });
-  if (inventory.errors.length > 0) stale('依赖安装记录当前不能完整验证。');
-  const contract = inventory.contracts.find((candidate) =>
-    candidate.metadata.pluginId === origin.consumerPluginId
-    && candidate.metadata.sourceIdentity === origin.consumerSourceIdentity
-    && candidate.metadata.platform === origin.consumerPlatform
-    && candidate.metadata.scope === origin.consumerScope
-    && (origin.consumerScope === 'user' || candidate.metadata.projectKey === currentProjectKey));
-  const dependency = contract?.metadata.dependencies.find((candidate) =>
-    candidate.pluginId === origin.dependencyPluginId
-    && candidate.platform === origin.dependencyPlatform
-    && candidate.scope === origin.dependencyScope
-    && (candidate.scope === 'user'
-      ? origin.dependencyProject === null
-      : candidate.projectKey === currentProjectKey
-        ? origin.dependencyProject === 'current'
-        : origin.dependencyProject === 'other'));
-  if (!dependency) stale('依赖安装目标映射已变化。');
 }
 
 interface DependencyCatalogNode {
@@ -275,9 +252,7 @@ async function loadDependencyOverviews(options: {
   status: Awaited<ReturnType<typeof statusCommandV4>>;
   signal: AbortSignal;
 }): Promise<PluginDependencyOverviewViewModel[]> {
-  const currentProjectKey = await resolveCanonicalRepoProjectKey(options.context.cwd);
-  const [graph, inventory] = await Promise.all([
-    withResolvedMultiSourceCatalog({
+  const graph = await withResolvedMultiSourceCatalog({
       cliVersion: options.cliVersion,
       freshnessPolicy: 'cacheFirst',
       env: options.context.env,
@@ -298,46 +273,52 @@ async function loadDependencyOverviews(options: {
           ? [{ sourceId: item.sourceId, code: 'dependencyGraphInvalid' }]
           : []),
       }),
-    }),
-    inventoryInstallationContracts({ env: options.context.env }),
-  ]);
+    });
   const nodes = new Map(graph.nodes.map((node) => [node.pluginId, node]));
   const displayName = (pluginId: string): string => nodes.get(pluginId)?.displayName
     ?? parsePluginId(pluginId).pluginName;
-  const contractsByPlugin = new Map<string, typeof inventory.contracts>();
-  const reverse = new Map<string, Array<{
-    consumer: { pluginId: string; platform: PlatformName; scope: 'user' | 'project'; project: 'current' | 'other' | null };
-    dependency: { pluginId: string; platform: PlatformName; scope: 'user' | 'project'; project: 'current' | 'other' | null };
-  }>>();
-  const projectDescriptor = (scope: 'user' | 'project', projectKey: string | null): 'current' | 'other' | null =>
-    scope === 'user' ? null : projectKey === currentProjectKey ? 'current' : 'other';
-  for (const contract of inventory.contracts) {
-    contractsByPlugin.set(contract.metadata.pluginId, [
-      ...(contractsByPlugin.get(contract.metadata.pluginId) ?? []),
-      contract,
-    ]);
-    for (const dependency of contract.metadata.dependencies) {
-      const references = reverse.get(dependency.pluginId) ?? [];
-      references.push({
-        consumer: {
-          pluginId: contract.metadata.pluginId,
-          platform: contract.metadata.platform,
-          scope: contract.metadata.scope,
-          project: projectDescriptor(contract.metadata.scope, contract.metadata.projectKey),
-        },
-        dependency: {
-          pluginId: dependency.pluginId,
-          platform: dependency.platform,
-          scope: dependency.scope,
-          project: projectDescriptor(dependency.scope, dependency.projectKey),
-        },
-      });
-      reverse.set(dependency.pluginId, references);
+  const reverse = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    for (const dependency of node.dependencies) {
+      reverse.set(dependency, [...(reverse.get(dependency) ?? []), node.pluginId]);
     }
   }
   const targetsByPlugin = new Map<string, typeof options.status.payload.targets>();
   for (const target of options.status.payload.targets) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
+  }
+  const placementReferences = new Map<string, DependencyPlacementReferenceViewModel[]>();
+  for (const consumer of options.status.payload.targets.filter((target) => target.state !== 'absent')) {
+    const consumerNode = nodes.get(consumer.pluginId);
+    if (!consumerNode) continue;
+    for (const dependencyPluginId of consumerNode.dependencies) {
+      const dependencyTargets = (targetsByPlugin.get(dependencyPluginId) ?? [])
+        .filter((target) => target.platform === consumer.platform);
+      const projectTarget = dependencyTargets.find((target) => target.scope === 'project');
+      const userTarget = dependencyTargets.find((target) => target.scope === 'user');
+      const dependencyScope = consumer.scope === 'user'
+        ? 'user'
+        : userTarget && (!projectTarget
+          || (userTarget.state !== 'absent' && projectTarget.state === 'absent'))
+          ? 'user'
+          : 'project';
+      const reference: DependencyPlacementReferenceViewModel = {
+        consumer: {
+          pluginId: consumer.pluginId,
+          platform: consumer.platform,
+          scope: consumer.scope,
+          project: consumer.scope === 'project' ? 'current' : null,
+        },
+        dependency: {
+          pluginId: dependencyPluginId,
+          platform: consumer.platform,
+          scope: dependencyScope,
+          project: dependencyScope === 'project' ? 'current' : null,
+        },
+      };
+      const key = `${consumer.pluginId}\0${dependencyPluginId}`;
+      placementReferences.set(key, [...(placementReferences.get(key) ?? []), reference]);
+    }
   }
   const placementsFor = (pluginId: string): PlatformPlacementSummary[] => {
     const targets = targetsByPlugin.get(pluginId) ?? [];
@@ -347,18 +328,7 @@ async function loadDependencyOverviews(options: {
         return selected.length > 0 ? [projectPlatformPlacement(platform, selected)] : [];
       });
     }
-    const contracts = contractsByPlugin.get(pluginId) ?? [];
-    return (['codex', 'claude'] as const).flatMap((platform): PlatformPlacementSummary[] => {
-      const selected = contracts.filter((contract) => contract.metadata.platform === platform);
-      if (selected.length === 0) return [];
-      const scopes = [...new Set(selected.map((contract) => contract.metadata.scope))];
-      return scopes.length === 1
-        ? [{ platform, state: 'installed' as const, scope: scopes[0]!, health: 'error' as const }]
-        : [{ platform, state: 'scopeConflict' as const, placements: scopes.map((scope) => ({
-            scope,
-            health: 'error' as const,
-          })) }];
-    });
+    return [];
   };
   const aggregateFor = (pluginId: string, placements: PlatformPlacementSummary[]) => {
     const sourceId = parsePluginId(pluginId).sourceId;
@@ -373,7 +343,6 @@ async function loadDependencyOverviews(options: {
   };
   const allPluginIds = new Set([
     ...nodes.keys(),
-    ...contractsByPlugin.keys(),
     ...reverse.keys(),
     ...targetsByPlugin.keys(),
   ]);
@@ -418,11 +387,10 @@ async function loadDependencyOverviews(options: {
         })),
         placements,
         aggregateStatus: aggregateFor(dependency.pluginId, placements),
-        placementReferences: reverse.get(dependency.pluginId) ?? [],
+        placementReferences: placementReferences.get(`${pluginId}\0${dependency.pluginId}`) ?? [],
       };
     });
-    const dependentReferences = reverse.get(pluginId) ?? [];
-    const dependentIds = [...new Set(dependentReferences.map((reference) => reference.consumer.pluginId))].sort();
+    const dependentIds = [...new Set(reverse.get(pluginId) ?? [])].sort();
     const dependents = dependentIds.map((dependentId) => {
       const placements = placementsFor(dependentId);
       return {
@@ -433,8 +401,7 @@ async function loadDependencyOverviews(options: {
         requiredBy: [],
         placements,
         aggregateStatus: aggregateFor(dependentId, placements),
-        placementReferences: dependentReferences.filter((reference) =>
-          reference.consumer.pluginId === dependentId),
+        placementReferences: placementReferences.get(`${dependentId}\0${pluginId}`) ?? [],
       };
     });
     const targetBlockers = (targetsByPlugin.get(pluginId) ?? []).flatMap((target) =>
@@ -457,11 +424,6 @@ async function loadDependencyOverviews(options: {
         explanation: '依赖关系形成环。',
       }] : []),
       ...targetBlockers,
-      ...inventory.errors.map(() => ({
-        code: 'dependencyContractInvalid',
-        title: '依赖安装记录无效',
-        explanation: '部分反向依赖记录不能安全读取。',
-      })),
     ];
     const directCount = dependencyItems.filter((item) => item.relation === 'direct').length;
     const readyCount = dependencyItems.filter((item) => item.aggregateStatus === 'ready').length;
@@ -598,7 +560,7 @@ export function createTuiControllerDependencies(
     });
     signal?.throwIfAborted();
     if (intent.kind === 'pluginWrite') {
-      await assertTypedIssueOrigin(intent, status.payload.targets, context);
+      await assertTypedIssueOrigin(intent, status.payload.targets);
     }
     const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
     let dependencyPlan: DependencyOperationPlan | undefined;
@@ -633,27 +595,7 @@ export function createTuiControllerDependencies(
         );
       }
     }
-    const selected = dependencyPlan
-      ? (() => {
-          const node = dependencyPlan.nodes.find((candidate) => candidate.pluginId === intent.pluginId)!;
-          const source = dependencyPlan.sources.find((candidate) => candidate.sourceId === node.sourceId)!;
-          return {
-            pluginName: node.pluginName,
-            source: {
-              sourceId: source.sourceId,
-              sourceIdentity: source.sourceIdentity,
-              ...(status.payload.catalog.sources.find((candidate) => candidate.id === source.sourceId)?.requestedRef
-                ? { requestedRef: status.payload.catalog.sources.find((candidate) =>
-                    candidate.id === source.sourceId)!.requestedRef }
-                : {}),
-              resolvedCommit: source.resolvedCommit,
-              manifestDigest: source.manifestDigest,
-              snapshotDigest: source.snapshotDigest,
-              contentDigest: node.contentDigest,
-            },
-          };
-        })()
-      : await withResolvedCatalogPlugin({
+    const selected = await withResolvedCatalogPlugin({
           selector: intent.pluginId,
           cliVersion: packageInfo.version,
           freshnessPolicy,
@@ -706,75 +648,16 @@ export function createTuiControllerDependencies(
 
   const dependencies: TuiControllerDependencies = {
     loadStatus,
-    async inspectSourceRemoval(sourceId, signal) {
+    async inspectSourceRemoval(_sourceId, signal) {
       signal.throwIfAborted();
-      const inventory = await inventoryCatalogSourceReferences({
-        cwd: context.cwd,
-        env: context.env,
-        includeHistoricalProjects: true,
-      });
-      signal.throwIfAborted();
-      const references = inventory.references.filter((reference) =>
-        reference.sourceId === undefined || reference.sourceId === sourceId);
-      const dependencies = new Map<string, {
-        category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
-        pluginId?: string;
-        sourceId?: string;
-        platform?: PlatformName;
-        scope?: 'user' | 'project';
-      }>();
-      for (const reference of references) {
-        const kind = reference.kind.toLocaleLowerCase('en');
-        const category: 'installation' | 'config' | 'lifecycle' | 'marketplace' = kind.includes('config')
-          ? 'config'
-          : kind.includes('lifecycle')
-            ? 'lifecycle'
-            : kind.includes('marketplace')
-              ? 'marketplace'
-              : 'installation';
-        const stableSourceId = reference.sourceId;
-        const pluginId = reference.pluginName && stableSourceId
-          ? `${stableSourceId}/${reference.pluginName}`
-          : undefined;
-        const dependency: {
-          category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
-          pluginId?: string;
-          sourceId?: string;
-          platform?: PlatformName;
-          scope?: 'user' | 'project';
-        } = {
-          category,
-          ...(pluginId ? { pluginId } : {}),
-          ...(stableSourceId ? { sourceId: stableSourceId } : {}),
-          ...(reference.platform === 'codex' || reference.platform === 'claude'
-            ? { platform: reference.platform } : {}),
-          ...(reference.scope === 'user' || reference.scope === 'project'
-            ? { scope: reference.scope } : {}),
-        };
-        const key = [
-          category,
-          pluginId ?? '',
-          stableSourceId ?? '',
-          dependency.platform ?? '',
-          dependency.scope ?? '',
-          category === 'marketplace' ? reference.marketplaceName ?? '' : '',
-        ].join('\0');
-        dependencies.set(key, dependency);
-      }
-      const projected = [...dependencies.entries()]
-        .sort(([left], [right]) => left.localeCompare(right, 'en'))
-        .map(([, dependency]) => dependency);
-      const complete = inventory.errors.length === 0;
-      const count = (category: typeof projected[number]['category']): number | undefined =>
-        complete ? projected.filter((reference) => reference.category === category).length : undefined;
       return {
-        blocked: !complete || references.length > 0,
-        inventoryComplete: complete,
-        installationCount: count('installation'),
-        configCount: count('config'),
-        lifecycleCount: count('lifecycle'),
-        marketplaceCount: count('marketplace'),
-        dependencies: projected,
+        blocked: false,
+        inventoryComplete: true,
+        installationCount: 0,
+        configCount: 0,
+        lifecycleCount: 0,
+        marketplaceCount: 0,
+        dependencies: [],
       };
     },
     async validateIntent(intent, signal) {
@@ -823,7 +706,7 @@ export function createTuiControllerDependencies(
         cliVersion: packageInfo.version,
       });
       signal.throwIfAborted();
-      await assertTypedIssueOrigin(intent, status.payload.targets, context);
+      await assertTypedIssueOrigin(intent, status.payload.targets);
       assertIntentIsLegal(intent, status.payload.targets);
     },
     async checkSource(sourceId, signal) {
@@ -986,7 +869,12 @@ export function createTuiControllerDependencies(
             throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
           }
           if (intent.kind === 'pluginWrite') {
-            const options = { cwd: context.cwd, platform: intent.platform, scope: intent.scope };
+            const options = {
+              cwd: context.cwd,
+              platform: intent.platform,
+              scope: intent.scope,
+              ...(intent.action === 'cleanup' ? { force: intent.force === true } : {}),
+            };
             const command = {
               install: installWriteCommand,
               upgrade: upgradeWriteCommand,
@@ -998,22 +886,11 @@ export function createTuiControllerDependencies(
             if (!expectedEvidence.source || !currentSource) {
               throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
             }
-            const currentDependencyPlan = currentEvidence.dependencyPlan;
             const result = await command([intent.pluginId], options, {
               ...context,
               awHomeMutationToken,
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
               reviewPreflight: (actual) => assertSourceEvidenceMatches(currentSource, actual),
-              ...(currentDependencyPlan ? {
-                dependencyPlanReviewPreflight: (actual: DependencyOperationPlan) => {
-                  if (actual.planDigest !== currentDependencyPlan.planDigest) {
-                    throw new TuiOperationBlockedError(
-                      'operationReviewStale',
-                      'dependencyPlanStale: 确认后依赖安装计划发生变化。',
-                    );
-                  }
-                },
-              } : {}),
             });
             throwIfWriteReviewStale(result);
             return result;

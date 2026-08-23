@@ -16,6 +16,7 @@ import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
+import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -205,7 +206,7 @@ describe('TUI v4 real catalog source boundary', () => {
       operationKind: 'sourceMutation',
       sourceAction: 'add',
     });
-    expect(instance.lastFrame()).toContain('验证并添加');
+    expect(instance.lastFrame()).toContain('保存并刷新');
     expect(JSON.stringify(controller.snapshot)).not.toContain(secondRoot);
     await confirmReview(instance, controller);
     expect(screens, JSON.stringify(controller.snapshot)).toContain('S12');
@@ -217,7 +218,7 @@ describe('TUI v4 real catalog source boundary', () => {
     await waitFor(() => controller.snapshot.activeReview?.sourceAction === 'update', 'update Review', () => controller.snapshot);
     await nextTurn(2);
     expect(screens).toContain('S15');
-    expect(instance.lastFrame()).toContain('验证并保存');
+    expect(instance.lastFrame()).toContain('保存并刷新');
     await confirmReview(instance, controller);
 
     await input(instance, '\r', '\u001B[B', '\r', '\u001B[B', '\u001B[B', '\r');
@@ -246,6 +247,61 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.listSources().map((source) => source.id)).toEqual(['local']);
     expect(controller.snapshot.sourceHealth.map((health) => health.sourceId)).toEqual(['local']);
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    controller.dispose();
+  });
+
+  it('removes a source through the real TUI despite live references and inventory errors', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, firstRoot, secondRoot } = await configuredController();
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [
+          { id: 'local', type: 'path', primary: true, path: firstRoot },
+          { id: 'team', type: 'path', primary: false, path: secondRoot },
+        ],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await fs.outputJson(path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'two', 'config.json'), {
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'3'.repeat(64)}`,
+      pluginName: 'two',
+      values: {},
+    });
+    await fs.outputFile(
+      path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json'),
+      '{ invalid json\n',
+    );
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      includeHistoricalProjects: true,
+    });
+    expect(inventory.references).toContainEqual(expect.objectContaining({
+      kind: 'namespacedConfig', sourceId: 'team', pluginName: 'two',
+    }));
+    expect(inventory.errors.length).toBeGreaterThan(0);
+
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4
+      controller={controller}
+      size={{ columns: 60, rows: 18 }}
+      onScreenChange={(screen) => screens.add(screen)}
+    />);
+    await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await waitFor(() => controller.snapshot.activeReview?.sourceAction === 'remove', 'remove Review', () => controller.snapshot);
+    await nextTurn(2);
+    expect(screens).toContain('S18');
+    expect(controller.snapshot.router.current.route.name).not.toBe('sourceRemoveBlocked');
+    await confirmReview(instance, controller);
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources.map((source) => source.id))
+      .toEqual(['local']);
     controller.dispose();
   });
 
@@ -278,20 +334,18 @@ describe('TUI v4 real catalog source boundary', () => {
     ): Promise<void> => {
       const execution = controller.executeOperation(reviewToken);
       const expectedStages = [
-        'validatingCandidate',
-        'catalogReady',
-        'scanningReferences',
         'savingConfig',
+        'refreshingCatalog',
+        'catalogReady',
       ] as const;
       for (const stage of expectedStages) {
         const key = `${action}:${stage}`;
         await waitFor(() => pending?.key === key, key, () => ({ pending: pending?.key, snapshot: controller.snapshot }));
         expect(controller.snapshot.router.current.route.name).toBe('progress');
         expect(instance.lastFrame()).toContain({
-          validatingCandidate: '验证候选来源',
-          catalogReady: 'Catalog 已读取，索引已刷新',
-          scanningReferences: '扫描现有引用和约束',
           savingConfig: '保存来源配置',
+          refreshingCatalog: '刷新 Catalog 缓存',
+          catalogReady: 'Catalog 已读取，索引已刷新',
         }[stage]);
         pending!.release();
       }
@@ -320,7 +374,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
-  it('uses the real path validator and returns from S13 directly to the owned location editor', async () => {
+  it('shows a committed source with a refresh warning as success on S12', async () => {
     const { controller } = await configuredController();
     const isolation = getCurrentSourceTestIsolation();
     const invalidRoot = path.join(isolation.layout.fixtureCwd, 'not-a-catalog');
@@ -338,19 +392,16 @@ describe('TUI v4 real catalog source boundary', () => {
     await waitFor(() => controller.snapshot.activeReview !== undefined, 'invalid source Review');
     await confirmReview(instance, controller);
 
-    expect(screens).toContain('S13');
+    expect(screens).toContain('S12');
     expect(controller.snapshot.result).toMatchObject({
-      state: 'blocked',
+      state: 'succeeded',
       operationKind: 'sourceMutation',
       sourceAction: 'add',
+      summary: { messages: expect.arrayContaining([expect.stringContaining('警告：')]) },
     });
     expect(JSON.stringify(controller.snapshot)).not.toContain(invalidRoot);
-    await input(instance, '\r');
-    expect(controller.snapshot.router.current.route).toMatchObject({
-      name: 'sourceAdd',
-      step: 'location',
-    });
-    expect(instance.lastFrame()).toContain('not-a-catalog');
+    expect(instance.lastFrame()).toContain('来源配置写入已完成');
+    expect(instance.lastFrame()).toContain('警告：');
     controller.dispose();
   });
 

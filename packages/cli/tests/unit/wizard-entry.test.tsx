@@ -41,7 +41,7 @@ describe('write command runtime entry', () => {
     ['upgrade', ['demo', '--platform', 'codex']],
     ['reinstall', ['demo', '--platform', 'codex']],
     ['uninstall', ['demo', '--platform', 'codex']],
-    ['cleanup', ['demo', '--platform', 'codex', '--scope', 'user']],
+    ['cleanup', ['demo', '--platform', 'codex', '--scope', 'user', '--force']],
   ] as const)('routes complete %s arguments without mounting a wizard', async (command, args) => {
     const captured = createCapturedCliIo();
     const launch = vi.fn();
@@ -73,6 +73,9 @@ describe('write command runtime entry', () => {
     });
     expect(launch).not.toHaveBeenCalled();
     expect(helper).toHaveBeenCalledOnce();
+    if (command === 'cleanup') {
+      expect(helper.mock.calls[0]?.[1]).toMatchObject({ force: true });
+    }
   });
 
   it('prints usage for a parameter-missing non-TTY write', async () => {

@@ -35,7 +35,6 @@ import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readPluginManifest } from './manifest.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import type { PlatformName, Scope } from '../types.js';
-import { inventoryInstallationContracts } from './installation-contract-store.js';
 
 export type CatalogSourceReferenceKind =
   | 'legacyOwner'
@@ -45,9 +44,7 @@ export type CatalogSourceReferenceKind =
   | 'legacyLifecycle'
   | 'namespacedLifecycle'
   | 'legacyMarketplace'
-  | 'namespacedMarketplace'
-  | 'installationContract'
-  | 'namespacedDependency';
+  | 'namespacedMarketplace';
 
 export interface CatalogSourceReference {
   kind: CatalogSourceReferenceKind;
@@ -59,12 +56,19 @@ export interface CatalogSourceReference {
   platform?: string;
   scope?: string;
   projectKey?: string | null;
-  dependencyPluginId?: string;
-  dependencySourceId?: string;
-  dependencySourceIdentity?: string;
-  dependencyPlatform?: PlatformName;
-  dependencyScope?: Scope;
-  dependencyProjectKey?: string | null;
+}
+
+export function canonicalMarketplaceRegistrationNames(
+  references: readonly CatalogSourceReference[],
+  sourceId: string,
+): string[] {
+  return [...new Set(references.flatMap((reference) =>
+    reference.kind === 'namespacedMarketplace'
+    && reference.sourceId === sourceId
+    && reference.pluginName === undefined
+    && reference.marketplaceName
+      ? [reference.marketplaceName]
+      : []))];
 }
 
 interface NativeMarketplaceConsumer {
@@ -239,23 +243,6 @@ function inventoryErrorRelevance(
   for (const root of new Set([awHome, canonicalAwHome])) {
     const marketplace = pathSegmentsWithin(path.join(root, 'marketplaces'), location);
     if (marketplace?.[0]) return { global: false, sourceId: marketplace[0] };
-    const contract = pathSegmentsWithin(path.join(root, 'installation-contracts'), location);
-    if (contract !== null) {
-      const platform = contract[1] === 'codex' || contract[1] === 'claude'
-        ? contract[1]
-        : undefined;
-      const scope = contract[2] === 'user' || contract[2] === 'project'
-        ? contract[2]
-        : undefined;
-      return {
-        global: false,
-        ...(contract[0] ? { sourceId: contract[0] } : {}),
-        ...(contract[4] ? { pluginName: contract[4] } : {}),
-        ...(platform ? { platform } : {}),
-        ...(scope ? { scope } : {}),
-        ...(scope === 'project' && contract[3] ? { projectLocationKey: contract[3] } : {}),
-      };
-    }
   }
   for (const [root, scope] of [
     [path.join(awHome, 'plugin-config'), 'user'],
@@ -1170,6 +1157,30 @@ function marketplaceNamesRegisteredAtRoot(
       : []);
 }
 
+function sourceIdFromCanonicalMarketplacePath(
+  candidate: string,
+  marketplacesRoot: string,
+): string | null {
+  if (!path.isAbsolute(candidate)) return null;
+  const resolved = path.resolve(candidate);
+  const root = path.resolve(marketplacesRoot);
+  if (path.dirname(resolved) !== root) return null;
+  const sourceId = path.basename(resolved);
+  return sourceId !== '' && sourceId !== '.' && sourceId !== '..' ? sourceId : null;
+}
+
+function registeredMarketplaceRoots(
+  value: unknown,
+  marketplacesRoot: string,
+): Array<{ marketplaceName: string; sourceId: string }> {
+  if (!isRecord(value)) return [];
+  return Object.entries(value).flatMap(([marketplaceName, declaration]) =>
+    collectMarketplaceDeclarationPaths(declaration).flatMap((candidate) => {
+      const sourceId = sourceIdFromCanonicalMarketplacePath(candidate, marketplacesRoot);
+      return sourceId ? [{ marketplaceName, sourceId }] : [];
+    }));
+}
+
 export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -1179,47 +1190,6 @@ export async function inventoryCatalogSourceReferences(options: {
   const awHome = resolveAwHome(env);
   const references: CatalogSourceReference[] = [];
   const errors: CatalogSourceInventoryError[] = [];
-  const contractInventory = await inventoryInstallationContracts({ env });
-  for (const error of contractInventory.errors) {
-    errors.push(inventoryError(
-      new Error(error.message),
-      error.path,
-      'installationContractValidation',
-      env,
-      options.cwd,
-    ));
-  }
-  for (const contract of contractInventory.contracts) {
-    const metadata = contract.metadata;
-    references.push({
-      kind: 'installationContract',
-      location: contract.activeRoot,
-      sourceId: metadata.sourceId,
-      sourceIdentity: metadata.sourceIdentity,
-      pluginName: metadata.pluginName,
-      platform: metadata.platform,
-      scope: metadata.scope,
-      projectKey: metadata.projectKey,
-    });
-    for (const dependency of metadata.dependencies) {
-      references.push({
-        kind: 'namespacedDependency',
-        location: contract.activeRoot,
-        sourceId: metadata.sourceId,
-        sourceIdentity: metadata.sourceIdentity,
-        pluginName: metadata.pluginName,
-        platform: metadata.platform,
-        scope: metadata.scope,
-        projectKey: metadata.projectKey,
-        dependencyPluginId: dependency.pluginId,
-        dependencySourceId: dependency.sourceId,
-        dependencySourceIdentity: dependency.sourceIdentity,
-        dependencyPlatform: dependency.platform,
-        dependencyScope: dependency.scope,
-        dependencyProjectKey: dependency.projectKey,
-      });
-    }
-  }
   const legacyConfig = await inventoryLegacyConfigReferences(options);
   references.push(...legacyConfig.references);
   errors.push(...legacyConfig.errors);
@@ -1476,6 +1446,40 @@ export async function inventoryCatalogSourceReferences(options: {
   const marketplaceEntries = await inventoryCanonicalDirectoryEntries({
     errors, location: marketplacesRoot, kind: 'marketplaceDirectoryRead', env, cwd: options.cwd,
   });
+  for (const pluginId of Object.keys(codexConfig?.snapshot.plugins ?? {})) {
+    const separator = pluginId.lastIndexOf('@');
+    if (separator <= 0 || separator === pluginId.length - 1) continue;
+    references.push({
+      kind: 'namespacedMarketplace',
+      location: codexConfigPath,
+      pluginName: pluginId.slice(0, separator),
+      marketplaceName: pluginId.slice(separator + 1),
+      platform: 'codex',
+      scope: 'user',
+    });
+  }
+  for (const [location, registrations] of [
+    [codexConfigPath, Object.entries(codexConfig?.snapshot.marketplaces ?? {}).flatMap(([marketplaceName, marketplace]) => {
+      const sourceId = marketplace.sourceType === 'local' && !marketplace.sourcePointsToManifest
+        && marketplace.source
+        ? sourceIdFromCanonicalMarketplacePath(marketplace.source, marketplacesRoot)
+        : null;
+      return sourceId ? [{ marketplaceName, sourceId }] : [];
+    })],
+    [userClaudeSettingsPath, registeredMarketplaceRoots(userClaudeSettings?.extraKnownMarketplaces, marketplacesRoot)],
+    [projectClaudeSettingsPath, registeredMarketplaceRoots(projectClaudeSettings?.extraKnownMarketplaces, marketplacesRoot)],
+    [claudeKnownPath, [
+      ...registeredMarketplaceRoots(claudeKnown, marketplacesRoot),
+      ...registeredMarketplaceRoots(claudeKnown?.marketplaces, marketplacesRoot),
+    ]],
+  ] as const) {
+    for (const registration of registrations) references.push({
+      kind: 'namespacedMarketplace',
+      location,
+      sourceId: registration.sourceId,
+      marketplaceName: registration.marketplaceName,
+    });
+  }
   for (const sourceEntry of marketplaceEntries) {
     const marketplaceRoot = path.join(marketplacesRoot, sourceEntry.name);
     const configPath = path.join(marketplaceRoot, 'config.json');
@@ -1643,12 +1647,6 @@ export async function inventoryCatalogSourceReferences(options: {
     reference.scope ?? '',
     reference.marketplaceName ?? '',
     reference.projectKey ?? '',
-    reference.dependencyPluginId ?? '',
-    reference.dependencySourceId ?? '',
-    reference.dependencySourceIdentity ?? '',
-    reference.dependencyPlatform ?? '',
-    reference.dependencyScope ?? '',
-    reference.dependencyProjectKey ?? '',
   ].join('\0'), reference])).values()];
   unique.sort((left, right) => left.location.localeCompare(right.location));
   return { inventorySchemaVersion: 1, references: unique, errors };

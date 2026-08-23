@@ -76,7 +76,7 @@ describe('public AW_HOME mutation command lock', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       runtime: {
-        afterValidation: async () => {
+        beforeRefresh: async () => {
           sourceEntered.resolve();
           await releaseSource.promise;
         },
@@ -106,24 +106,17 @@ describe('public AW_HOME mutation command lock', () => {
 
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
     const { isolation } = await configureCatalog();
-    const previewEntered = deferred();
-
     const result = await withAwHomeMutationLock({
       env: isolation.env,
-      action: async () => {
-        const preview = installWriteCommand(['team/demo'], {
+      action: () => installWriteCommand(['team/demo'], {
           cwd: isolation.layout.fixtureCwd,
           platform: 'codex',
           scope: 'project',
         }, {
           env: isolation.env,
           previewDependencyPlanOnly: true,
-          dependencyPlanReviewPreflight: async () => { previewEntered.resolve(); },
           nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
-        });
-        await previewEntered.promise;
-        return preview;
-      },
+        }),
     });
 
     expect(result).toMatchObject({ overallState: 'succeeded' });
@@ -142,7 +135,7 @@ describe('public AW_HOME mutation command lock', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       runtime: {
-        afterValidation: async () => {
+        beforeRefresh: async () => {
           sourceEntered.resolve();
           await releaseSource.promise;
         },
@@ -193,7 +186,7 @@ describe('public AW_HOME mutation command lock', () => {
     ))).resolves.toMatchObject({ sourceIdentity: newIdentity, values: { mode: 'fast' } });
   });
 
-  it('fails a source identity update closed when config already references the source', async () => {
+  it('commits a source identity update without migrating an existing config store', async () => {
     const { isolation, candidateRoot } = await configureCatalog();
     const oldIdentity = (await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity;
     await writePluginConfigStore({
@@ -212,8 +205,8 @@ describe('public AW_HOME mutation command lock', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-    expect((await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity).toBe(oldIdentity);
+    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+    expect((await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity).not.toBe(oldIdentity);
     await expect(fs.readJson(path.join(
       isolation.env.AW_HOME!,
       'plugin-config',

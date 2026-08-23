@@ -373,7 +373,7 @@ describe('phase 3B namespaced runtime stores', () => {
       }),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const configured = await replaceCatalogSourcesConfig({
+    await replaceCatalogSourcesConfig({
       config: {
         schemaVersion: 1,
         sources: [
@@ -405,16 +405,7 @@ describe('phase 3B namespaced runtime stores', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 1,
-        sources: [{ id: 'primary', type: 'path', primary: true, path: primaryRoot }],
-      },
-      expectedDigest: configured.digest,
-      env: isolation.env,
-    });
+    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
     const skillsRoot = path.join(
       isolation.env.AW_HOME!,
       'marketplaces',
@@ -537,7 +528,7 @@ describe('phase 3B namespaced runtime stores', () => {
       rebuildResults: [expect.objectContaining({
         error: expect.objectContaining({
           phase: 'preflight',
-          message: expect.stringContaining('sourceMissing'),
+          message: expect.stringContaining('catalogSourceUnavailable'),
         }),
       })],
     });
@@ -565,7 +556,7 @@ describe('phase 3B namespaced runtime stores', () => {
       rebuildResults: [expect.objectContaining({
         error: expect.objectContaining({
           phase: 'preflight',
-          message: expect.stringContaining('sourceMissing'),
+          message: expect.stringContaining('catalogSourceUnavailable'),
         }),
       })],
     });
@@ -583,10 +574,13 @@ describe('phase 3B namespaced runtime stores', () => {
         stderr: '',
       }),
     })).resolves.toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'sourceMissing' })],
+      overallState: 'succeeded',
+      rebuildResults: [expect.objectContaining({
+        removed: expect.arrayContaining([expect.any(String)]),
+        status: 'succeeded',
+      })],
     });
-    expect(await fs.pathExists(skillRoot)).toBe(true);
+    expect(await fs.pathExists(skillRoot)).toBe(false);
 
     const resetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
@@ -606,7 +600,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }))).toBe(true);
   });
 
-  it('keeps a lost-source native consumer unchanged during cleanup', async () => {
+  it('cleans a lost-source native consumer from live inventory', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
     await Promise.all([
@@ -676,12 +670,12 @@ describe('phase 3B namespaced runtime stores', () => {
       },
     });
     expect(result).toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'sourceMissing' })],
+      overallState: 'succeeded',
+      targetResults: [expect.objectContaining({ state: 'completed' })],
     });
-    expect(calls).toEqual([]);
-    await expect(fs.pathExists(cacheRoot)).resolves.toBe(true);
-    await expect(fs.pathExists(installedRoot)).resolves.toBe(true);
+    expect(calls).toContain('codex plugin remove demo@aw');
+    await expect(fs.pathExists(cacheRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(installedRoot)).resolves.toBe(false);
   });
 
   it('keeps an existing marketplace root when its strict identity is missing', async () => {
@@ -862,10 +856,10 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
     })).resolves.toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'sourceMissing' })],
+      overallState: 'succeeded',
+      targetResults: [expect.objectContaining({ state: 'completed' })],
     });
-    expect(await fs.pathExists(skillRoot)).toBe(true);
+    expect(await fs.pathExists(skillRoot)).toBe(false);
     const resetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd,
@@ -1874,9 +1868,9 @@ describe('phase 3B namespaced runtime stores', () => {
 
       resumeInstall.resolve();
       await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(mutation).rejects.toMatchObject({ code: 'catalogSourceInUse' });
+      await expect(mutation).resolves.toMatchObject({ ok: true, changed: true, references: [] });
       expect(mutationCompleted).toBe(true);
-      expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(configured.digest);
+      expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(configured.digest);
       const inventory = await inventoryCatalogSourceReferences({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
@@ -2001,10 +1995,6 @@ describe('phase 3B namespaced runtime stores', () => {
       sourceId: 'team', sourceIdentity, pluginName: 'demo', platform: 'codex', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-
     await expect(cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -2030,9 +2020,6 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(cleanup).toMatchObject({ overallState: 'failed' });
     expect(await fs.pathExists(target.activeRoot)).toBe(true);
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
   });
 
   it('does not consume a lost-source snapshot after its last live owner disappears', async () => {
@@ -2116,7 +2103,7 @@ describe('phase 3B namespaced runtime stores', () => {
       expect(result).toMatchObject({
         overallState: 'failed',
         rebuildResults: [expect.objectContaining({
-          error: expect.objectContaining({ message: expect.stringContaining('sourceMissing') }),
+          error: expect.objectContaining({ message: expect.stringContaining('catalogSourceUnavailable') }),
         })],
       });
       expect(await fs.pathExists(active.activeRoot)).toBe(true);

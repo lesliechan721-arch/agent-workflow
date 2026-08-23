@@ -461,8 +461,6 @@ export function resolveConsoleV4ScreenId(
       dependencyMissing: 'D14',
       dependencyNotReady: 'D15',
       dependencyTargetUnsupported: 'D16',
-      dependencyContractMissing: 'D17',
-      dependencyContractInvalid: 'D17',
       dependencyStillRequired: 'D12',
       dependencyGraphInvalid: 'D17',
       legacyState: 'I09',
@@ -1197,6 +1195,19 @@ export function ConsoleAppV4(props: {
       description = '仍有插件依赖它。请先处理依赖者，再重新尝试。';
       actions = [
         ...relationActions.slice(dependencyCount),
+        ...(route.platform && route.scope ? [{
+          label: '强制清理…',
+          description: '依赖者会变为不完整；下一页仍需明确确认',
+          status: 'error' as const,
+          run: () => beginReview({
+            kind: 'pluginWrite',
+            action: 'cleanup',
+            pluginId: plugin.pluginId,
+            platform: route.platform!,
+            scope: route.scope!,
+            force: true,
+          }),
+        }] : []),
         { label: '查看完整依赖关系', run: () => {
           props.controller.replace({ name: 'pluginDependencies', pluginId: plugin.pluginId });
           setFocus(0);
@@ -1595,12 +1606,7 @@ export function ConsoleAppV4(props: {
       { label: '重新检查来源', description: '读取远端并更新缓存', run: () => props.controller.refreshSource(route.sourceId) },
       { label: '编辑来源…', description: 'ID 与类型创建后不可修改', run: () => go({ name: 'sourceEdit', sourceId: route.sourceId }) },
       { label: '设为主来源…', description: '只改变默认 marketplace', disabled: detail?.primary ? '当前已经是主来源' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'setPrimary', sourceId: route.sourceId, changes: [{ title: '主来源', before: snapshot.viewModel?.sourceTabs.find((source) => source.primary)?.id, after: route.sourceId }] }) },
-      { label: '移除来源…', description: '保存前扫描全部引用', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: async () => {
-        const summary = await props.controller.inspectSourceRemoval(route.sourceId);
-        setSourceReferenceSummary(summary);
-        if (summary.blocked) go({ name: 'sourceRemoveBlocked', sourceId: route.sourceId });
-        else await beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] });
-      } },
+      { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
       { label: '技术详情', description: '只读身份与解析证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
     ];
     content = <Box flexDirection="column"><Bordered title="当前状态"><Text color={state === 'unavailable' ? tuiTheme.statusColors.error : state === 'cache' || state === 'degraded' ? tuiTheme.statusColors.warning : tuiTheme.statusColors.success}>{state === 'checking' ? '● 正在检查' : state === 'unavailable' ? '× 无法读取' : state === 'cache' || state === 'degraded' ? '◐ 使用缓存' : '✓ 可用'}</Text></Bordered><Bordered title="来源配置"><Text>位置          {detail?.locationSummary ?? '不可用'}</Text><Text>版本选择      {detail?.type === 'path' ? '本地目录' : detail?.refPolicy === 'explicit' ? '固定 Git 引用' : '跟随 AW 版本通道'}</Text>{detail?.explicitRef ? <Text>引用          {detail.explicitRef}</Text> : null}<Text>插件          {detail?.pluginCount ?? 0} 个</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
@@ -1763,13 +1769,15 @@ export function ConsoleAppV4(props: {
         { label: '查看依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: issuePlugin.pluginId }) },
       ];
       content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× {issue.dependencyPluginId ? `${props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId} 不支持所选工具` : '工具不兼容'}</Text><Text color={tuiTheme.colors.muted}>可用工具仍保持可选，不兼容工具不会进入确认页。</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
-    } else if (issue.category === 'dependencyContractMissing' || issue.category === 'dependencyContractInvalid'
-      || issue.category === 'dependencyGraphInvalid') {
+    } else if (issue.category === 'dependencyGraphInvalid') {
       title = `暂时无法添加 ${issuePlugin?.displayName ?? issue.pluginId ?? '插件'}`;
       description = '来源中的依赖关系无效或安装记录不能安全验证。没有修改任何安装。';
       content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× {issue.rootCode ?? issue.category}</Text><Text color={tuiTheme.colors.muted}>{issue.explanation}</Text></Bordered><ActionRows actions={actions} focus={focus} />{showTechnical ? <Bordered title="技术详情">{issue.technicalDetails.map((detail, index) => <Text key={`${detail.code}:${index}`} color={tuiTheme.colors.muted}>{detail.code} · {detail.message}</Text>)}</Bordered> : <Text color={tuiTheme.colors.muted}>d 查看安全错误代码</Text>}</Box>;
     } else {
-      content = <Box flexDirection="column"><Bordered title="影响范围">{issue.impact.map((line) => <Text key={line}>{line}</Text>)}{issue.category === 'sourceMissing' ? <Text color={tuiTheme.statusColors.warning}>当前只能重新添加同 identity 的来源后再管理遗留安装；没有安全的自动清理。</Text> : null}{issue.category === 'sourceIdentityChanged' ? <Text color={tuiTheme.statusColors.warning}>请确认来源变更，或恢复原 identity；当前不自动迁移或清理。</Text> : null}{issue.placements ? <Text>位置：{issue.placements.map(scopeLabel).join('、')}</Text> : null}{issue.requiredFields ? <Text>字段：{issue.requiredFields.map((field) => field.title).join('、')}</Text> : null}</Bordered><ActionRows actions={actions} focus={focus} offset={policy.mode === 'compact' ? scrollOffset : undefined} limit={policy.mode === 'compact' ? 4 : 7} />{manualMigration ? <Bordered title="手动处理说明"><Text>1. 不自动迁移旧版状态。</Text><Text>2. 运行 aw status --json，记录公开错误 code。</Text><Text>3. 备份相关 AW 配置。</Text><Text>4. 按技术详情使用受支持命令或人工处理。</Text><Text>5. 再次运行状态检查。</Text></Bordered> : showTechnical ? <Bordered title="技术详情">{issue.technicalDetails.map((detail, index) => <Text key={`${detail.code}:${index}`} color={tuiTheme.colors.muted}>{detail.code} · {detail.message}</Text>)}</Bordered> : <Text color={tuiTheme.colors.muted}>d 或“技术详情”查看安全错误代码</Text>}</Box>;
+      const sourceMissingCleanup = issue.category === 'sourceMissing' && issue.pluginId && issue.platform && issue.scope
+        ? `aw cleanup ${issue.pluginId} --platform ${issue.platform} --scope ${issue.scope}`
+        : undefined;
+      content = <Box flexDirection="column"><Bordered title="影响范围">{issue.impact.map((line) => <Text key={line}>{line}</Text>)}{sourceMissingCleanup ? <><Text color={tuiTheme.statusColors.warning}>可清理可信的 AW 现场：</Text><Text>{sourceMissingCleanup}</Text><Text color={tuiTheme.statusColors.warning}>如需跳过 dependent 保护，在命令末尾添加 --force。</Text></> : null}{issue.category === 'sourceIdentityChanged' ? <Text color={tuiTheme.statusColors.warning}>请确认来源变更，或恢复原 identity；当前不自动迁移或清理。</Text> : null}{issue.placements ? <Text>位置：{issue.placements.map(scopeLabel).join('、')}</Text> : null}{issue.requiredFields ? <Text>字段：{issue.requiredFields.map((field) => field.title).join('、')}</Text> : null}</Bordered><ActionRows actions={actions} focus={focus} offset={policy.mode === 'compact' ? scrollOffset : undefined} limit={policy.mode === 'compact' ? 4 : 7} />{manualMigration ? <Bordered title="手动处理说明"><Text>1. 不自动迁移旧版状态。</Text><Text>2. 运行 aw status --json，记录公开错误 code。</Text><Text>3. 备份相关 AW 配置。</Text><Text>4. 按技术详情使用受支持命令或人工处理。</Text><Text>5. 再次运行状态检查。</Text></Bordered> : showTechnical ? <Bordered title="技术详情">{issue.technicalDetails.map((detail, index) => <Text key={`${detail.code}:${index}`} color={tuiTheme.colors.muted}>{detail.code} · {detail.message}</Text>)}</Bordered> : <Text color={tuiTheme.colors.muted}>d 或“技术详情”查看安全错误代码</Text>}</Box>;
     }
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
@@ -1807,7 +1815,7 @@ export function ConsoleAppV4(props: {
       dependencies: '必需依赖',
       preserved: '保持不变',
     } as const;
-    content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text>{groupedChanges ? (Object.keys(groupTitle) as Array<keyof typeof groupTitle>).map((group) => {
+    content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text>{review.equivalentCommand ? <><Text>{review.description}</Text><Text color={tuiTheme.colors.muted}>等价命令：{review.equivalentCommand}</Text></> : null}{groupedChanges ? (Object.keys(groupTitle) as Array<keyof typeof groupTitle>).map((group) => {
       const indexes = review.changes.map((change, index) => (change.group ?? 'requested') === group ? index : -1)
         .filter((index) => index >= 0);
       const rows = reviewRows(indexes);
@@ -1819,8 +1827,8 @@ export function ConsoleAppV4(props: {
     const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation';
     const issueOperation = snapshot.activeReview?.originIssue;
     breadcrumb = issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
-    title = issueOperation ? '正在处理问题' : sourceOperation ? '正在验证并保存来源' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
-    description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。' : sourceOperation ? '只有验证来源和引用清单通过后才会修改来源列表。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
+    title = issueOperation ? '正在处理问题' : sourceOperation ? '正在保存并刷新来源' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
+    description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。' : sourceOperation ? '先原子保存来源配置，再尽力刷新。刷新失败时配置仍保留并显示警告。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
     help = 'd 技术进度 · Ctrl-C 完成后退出';
     const progress = snapshot.progress;
     const elapsedSeconds = Math.max(0, Math.floor(((progress.elapsedMs
@@ -1838,7 +1846,7 @@ export function ConsoleAppV4(props: {
     };
     content = <Box flexDirection="column">
       <Text color={tuiTheme.statusColors.success}>✓ {sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : dependencyProgress ? '检查依赖关系' : '检查兼容性'}</Text>
-      <Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (sourceOperation ? '验证并保存来源' : configOperation ? '保存设置层并重新应用' : dependencyProgress ? '添加必需依赖' : '连接到所选工具')}</Text>
+      <Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (sourceOperation ? '保存来源配置并刷新' : configOperation ? '保存设置层并重新应用' : dependencyProgress ? '添加必需依赖' : '连接到所选工具')}</Text>
       <Text color={tuiTheme.colors.muted}>○ {dependencyProgress ? '验证完整结果' : '验证结果'}</Text>
       <Text color={tuiTheme.colors.muted}>已用时：{elapsedSeconds}s</Text>
       {progress.current ? <Text color={tuiTheme.colors.muted}>当前：{progress.current.target}</Text> : null}
@@ -1865,6 +1873,8 @@ export function ConsoleAppV4(props: {
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
     const sourceOperation = operationKind === 'sourceMutation';
+    const sourceRefreshWarning = sourceOperation && 'summary' in result
+      && result.summary.messages?.some((message) => message.startsWith('警告：'));
     const issueOperation = result.originIssue;
     const completedTitle = {
       install: '✓ 插件添加完成',
@@ -1878,7 +1888,7 @@ export function ConsoleAppV4(props: {
       : issueOperation
       ? blocked || partial ? '× 问题仍未解决' : '✓ 问题已处理'
       : sourceOperation
-      ? blocked ? '× 来源验证失败' : '✓ 来源操作完成'
+      ? blocked ? '× 来源操作未完成' : sourceRefreshWarning ? '! 来源配置已保存，但刷新失败' : '✓ 来源操作完成'
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
@@ -1895,7 +1905,13 @@ export function ConsoleAppV4(props: {
             : '操作被安全阻止。可返回问题详情后重试。'
         : '状态已重新加载；原问题已确认消失。'
       : sourceOperation
-      ? blocked ? '来源列表没有被修改。草稿已保留，可返回修改。' : '来源命令已完成。'
+      ? blocked
+        ? result.writeMayHaveCompleted
+          ? '来源配置可能已保存。请重新检查来源列表；刷新失败不会撤销配置。'
+          : '来源操作未执行。草稿已保留，可返回修改。'
+        : sourceRefreshWarning
+          ? '来源配置已保留。请根据警告修复来源后重试刷新。'
+          : '来源配置已保存，刷新已完成。'
       : blocked ? result.message
         : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const completedResult = result.state === 'succeeded' || result.state === 'partial'

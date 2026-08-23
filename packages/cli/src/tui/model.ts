@@ -193,8 +193,6 @@ export type UserIssueCategory =
   | 'dependencyMissing'
   | 'dependencyNotReady'
   | 'dependencyTargetUnsupported'
-  | 'dependencyContractMissing'
-  | 'dependencyContractInvalid'
   | 'dependencyStillRequired'
   | 'dependencyGraphInvalid'
   | 'legacyState'
@@ -239,8 +237,6 @@ export type TargetIssueRootCode =
   | 'dependencyMissing'
   | 'dependencyNotReady'
   | 'dependencyTargetUnsupported'
-  | 'dependencyContractMissing'
-  | 'dependencyContractInvalid'
   | 'dependencyStillRequired'
   | 'dependencyGraphInvalid'
   | 'targetDiagnostic';
@@ -392,8 +388,6 @@ function targetIssues(payload: StatusV4Payload): UserIssueViewModel[] {
       'dependencyMissing',
       'dependencyNotReady',
       'dependencyTargetUnsupported',
-      'dependencyContractMissing',
-      'dependencyContractInvalid',
       'dependencyStillRequired',
       'dependencyGraphInvalid',
     ] as const;
@@ -494,8 +488,6 @@ function targetIssues(payload: StatusV4Payload): UserIssueViewModel[] {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
-          dependencyContractMissing: '缺少依赖安装记录',
-          dependencyContractInvalid: '依赖安装记录无效',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
         }[root.category as Exclude<UserIssueCategory, 'incompleteInstallation' | 'sourceDegraded' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '插件包不可用' : '检查失败'}`,

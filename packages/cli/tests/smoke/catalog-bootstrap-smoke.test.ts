@@ -22,26 +22,21 @@ const execFileAsync = promisify(execFile);
 let temporaryRoot: string | null = null;
 
 interface BootstrapSmokeResult {
-  beta: { commit: string; idempotent: boolean };
-  retry: { commit: string; idempotent: boolean };
-  latest: { commit: string; idempotent: boolean };
-  retryAfterLatest: { commit: string; idempotent: boolean };
+  beta: { commit: string };
+  latest: { commit: string };
 }
 
 function isBootstrapEntry(value: unknown): value is BootstrapSmokeResult['beta'] {
   return typeof value === 'object'
     && value !== null
-    && typeof (value as Record<string, unknown>).commit === 'string'
-    && typeof (value as Record<string, unknown>).idempotent === 'boolean';
+    && typeof (value as Record<string, unknown>).commit === 'string';
 }
 
 function isBootstrapSmokeResult(value: unknown): value is BootstrapSmokeResult {
   if (typeof value !== 'object' || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return isBootstrapEntry(candidate.beta)
-    && isBootstrapEntry(candidate.retry)
-    && isBootstrapEntry(candidate.latest)
-    && isBootstrapEntry(candidate.retryAfterLatest);
+    && isBootstrapEntry(candidate.latest);
 }
 
 function ownedChild(parent: string | SmokeParentBinding, basename: string): SmokeOwnedPath {
@@ -100,7 +95,7 @@ it('creates a missing snapshot parent before binding an owned bootstrap token', 
   await expect(fs.pathExists(stageTempRoot)).resolves.toBe(false);
 });
 
-it('bootstraps both orphan channels, confirms idempotency, and fetches each through the Git provider', async () => {
+it('publishes both first orphan channels and fetches each through the Git provider', async () => {
   temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-bootstrap-smoke-'));
   const remoteUrl = path.join(temporaryRoot, 'catalog.git');
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -110,7 +105,7 @@ it('bootstraps both orphan channels, confirms idempotency, and fetches each thro
     path.join(root, '.release', 'build-snapshots'),
   );
   const snapshotParentRoot = snapshotParentBinding.canonicalPath;
-  const snapshotTokens = Array.from({ length: 4 }, () => crypto.randomUUID());
+  const snapshotTokens = Array.from({ length: 2 }, () => crypto.randomUUID());
   const stageRoot = path.join(
     temporaryRoot,
     '.release',
@@ -126,7 +121,7 @@ it('bootstraps both orphan channels, confirms idempotency, and fetches each thro
     stageRoot,
     snapshotTokens,
   });
-  const { beta, retry, latest, retryAfterLatest } = await runSmokeNodeJson({
+  const { beta, latest } = await runSmokeNodeJson({
     scriptPath: path.join(root, 'packages', 'cli', 'tests', 'support', 'catalog-smoke-child.mjs'),
     args: [configPath],
     cwd: root,
@@ -139,8 +134,6 @@ it('bootstraps both orphan channels, confirms idempotency, and fetches each thro
       ownedChild(os.tmpdir(), path.basename(temporaryRoot)),
     ],
   }, isBootstrapSmokeResult);
-  expect(retry).toMatchObject({ idempotent: true, commit: beta.commit });
-  expect(retryAfterLatest).toMatchObject({ idempotent: true, commit: beta.commit });
   for (const token of snapshotTokens) {
     await expect(fs.pathExists(path.join(
       snapshotParentRoot,

@@ -312,7 +312,19 @@ describe('TUI v4 router and ViewModel', () => {
     await expect(controller.buildOperationReview({
       kind: 'pluginWrite', action: 'uninstall', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
     })).rejects.toMatchObject({ code: 'dependencyStillRequired' });
-    expect(captureEvidence).toHaveBeenCalledTimes(1);
+    await expect(controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+      force: true,
+    })).resolves.toMatchObject({
+      pluginAction: 'cleanup',
+      title: '强制清理插件',
+      description: expect.stringContaining('依赖者会变为不完整'),
+      equivalentCommand: 'aw cleanup official/toolkit --platform codex --scope user --force',
+      changes: expect.arrayContaining([
+        expect.objectContaining({ kind: 'warning', title: '跳过依赖保护' }),
+      ]),
+    });
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
   });
 
   it('does not block dependency removal for an explicitly absent consumer target', async () => {
@@ -1150,16 +1162,10 @@ describe('TUI v4 Review safety', () => {
       requestedPluginIds: ['official/root'],
       resolvedPluginIds: ['official/toolkit', 'official/root'],
       dependencyEdges: [{ from: 'official/root', to: 'official/toolkit' }],
-      sources: [],
-      nodes: [
-        { pluginId: 'official/root', pluginName: 'root', pluginVersion: '1.0.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:root-manifest', contentDigest: 'sha256:root-content' },
-        { pluginId: 'official/toolkit', pluginName: 'toolkit', pluginVersion: '1.0.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:toolkit-manifest', contentDigest: 'sha256:toolkit-content' },
-      ],
       targets: [
         { pluginId: 'official/toolkit', pluginName: 'toolkit', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/root'], state: 'present' as const, action: 'keep' as const, order: 0 },
         { pluginId: 'official/root', pluginName: 'root', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'absent' as const, action: 'install' as const, order: 1 },
       ],
-      planDigest: 'sha256:plan',
     };
     const evidence = { ...baseEvidence, dependencyPlan };
     const controller = new TuiController(dependencies({
