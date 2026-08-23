@@ -33,8 +33,10 @@ import {
 } from './process-lock.js';
 import {
   canonicalizePathThroughExistingAncestor,
+  createProjectLocationKey,
   getClaudeHome,
   getCodexHome,
+  resolveCanonicalRepoProjectKey,
   resolveAwHome,
   resolveAwHomeCanonical,
   resolveRepoRoot,
@@ -271,23 +273,7 @@ function assertPluginName(pluginName: string): void {
 }
 
 export function createLifecycleProjectLocationKey(projectKey: string): string {
-  const readable = path.basename(projectKey)
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32);
-  const digest = crypto.createHash('sha256').update(projectKey).digest('hex').slice(0, 24);
-  return `project-${readable || 'root'}-${digest}`;
-}
-
-async function resolveCanonicalProjectRoot(cwd: string): Promise<string> {
-  const repoRoot = await resolveRepoRoot(cwd);
-  try {
-    return await fs.realpath(repoRoot);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
-    return path.resolve(repoRoot);
-  }
+  return createProjectLocationKey(projectKey);
 }
 
 function assertWritableStorePath(targetPath: string): string {
@@ -322,7 +308,7 @@ export async function resolveLifecycleActiveTarget(options: {
   const rawProjectRoot = scope === 'project'
     ? path.resolve(await resolveRepoRoot(options.cwd))
     : null;
-  const projectKey = rawProjectRoot ? await resolveCanonicalProjectRoot(options.cwd) : null;
+  const projectKey = rawProjectRoot ? await resolveCanonicalRepoProjectKey(options.cwd) : null;
   const rawPlatformHome = path.resolve(platform === 'codex' ? getCodexHome(env) : getClaudeHome(env));
   const platformHome = await canonicalizePathThroughExistingAncestor(rawPlatformHome);
   const locationKey = projectKey ? createLifecycleProjectLocationKey(projectKey) : 'user';

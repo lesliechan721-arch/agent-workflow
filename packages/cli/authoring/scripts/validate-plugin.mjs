@@ -17,7 +17,8 @@ const CLI_PACKAGE_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 3;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 4;
+const PLUGIN_DEPENDENCIES_AW_MIN_VERSION = '0.1.0';
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -538,13 +539,11 @@ function validateManifestLightweight(manifest) {
   if (Object.prototype.hasOwnProperty.call(input, 'commands')) {
     error('top-level "commands" has been removed; use "slashCommands" instead');
   }
-  if (Object.prototype.hasOwnProperty.call(input, 'dependencies')) {
-    error('top-level "dependencies" is unsupported');
-  }
   validateAllowedKeys(input, 'plugin manifest', [
     'name',
     'version',
     'description',
+    'dependencies',
     'compatibility',
     'skills',
     'slashCommands',
@@ -558,6 +557,40 @@ function validateManifestLightweight(manifest) {
     'config',
     'artifacts',
   ]);
+
+  if (manifest.dependencies !== undefined) {
+    if (!Array.isArray(manifest.dependencies)) {
+      error('dependencies must be an array');
+    } else if (manifest.dependencies.length > 64) {
+      error('dependencies must contain at most 64 direct plugin dependencies');
+    } else {
+      const seen = new Set();
+      for (const [index, dependency] of manifest.dependencies.entries()) {
+        if (typeof dependency !== 'string' || !PLUGIN_NAME_PATTERN.test(dependency)) {
+          error(`dependencies[${index}] must be an ASCII lowercase hyphen-case plugin name`);
+          continue;
+        }
+        if (dependency === manifest.name) {
+          error(`plugin "${manifest.name}" cannot depend on itself`);
+        }
+        if (seen.has(dependency)) {
+          error(`dependencies contains duplicate plugin "${dependency}"`);
+        }
+        seen.add(dependency);
+      }
+    }
+  }
+
+  if (Array.isArray(manifest.dependencies) && manifest.dependencies.length > 0) {
+    const minVersion = manifest.compatibility?.aw?.minVersion;
+    if (
+      typeof minVersion !== 'string'
+      || !STRICT_SEMVER_PATTERN.test(minVersion)
+      || compareStrictSemVer(minVersion, PLUGIN_DEPENDENCIES_AW_MIN_VERSION) < 0
+    ) {
+      error(`dependencies requires AW ${PLUGIN_DEPENDENCIES_AW_MIN_VERSION} or newer`);
+    }
+  }
 
   for (const field of ['name', 'version', 'description', 'marketplace']) {
     if (!manifest[field]) {

@@ -35,6 +35,7 @@ import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readPluginManifest } from './manifest.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import type { PlatformName, Scope } from '../types.js';
+import { inventoryInstallationContracts } from './installation-contract-store.js';
 
 export type CatalogSourceReferenceKind =
   | 'legacyOwner'
@@ -44,7 +45,9 @@ export type CatalogSourceReferenceKind =
   | 'legacyLifecycle'
   | 'namespacedLifecycle'
   | 'legacyMarketplace'
-  | 'namespacedMarketplace';
+  | 'namespacedMarketplace'
+  | 'installationContract'
+  | 'namespacedDependency';
 
 export interface CatalogSourceReference {
   kind: CatalogSourceReferenceKind;
@@ -55,12 +58,20 @@ export interface CatalogSourceReference {
   marketplaceName?: string;
   platform?: string;
   scope?: string;
+  projectKey?: string | null;
+  dependencyPluginId?: string;
+  dependencySourceId?: string;
+  dependencySourceIdentity?: string;
+  dependencyPlatform?: PlatformName;
+  dependencyScope?: Scope;
+  dependencyProjectKey?: string | null;
 }
 
 interface NativeMarketplaceConsumer {
   pluginName: string;
   platform: 'codex' | 'claude';
   scope: 'user' | 'project';
+  projectKey?: string | null;
 }
 
 function pluginNameFromMarketplaceId(pluginId: string, marketplaceName: string): string | null {
@@ -137,12 +148,16 @@ function claudeConsumersFromInstalled(
       }
       if (itemMarketplace !== marketplaceName) continue;
       const scope = item.scope === 'project' || item.scope === 'local' ? 'project' : 'user';
-      if (!includeHistoricalProjects && scope === 'project'
-        && path.normalize(typeof item.projectPath === 'string' ? item.projectPath : '') !== currentProject) continue;
+      const projectKey = scope === 'project'
+        ? typeof item.projectPath === 'string' && path.isAbsolute(item.projectPath)
+          ? canonicalizePathThroughExistingAncestorSync(item.projectPath)
+          : null
+        : undefined;
+      if (!includeHistoricalProjects && scope === 'project' && projectKey !== currentProject) continue;
       const pluginName = typeof item.name === 'string'
         ? item.name
         : pluginNameFromMarketplaceId(key, marketplaceName) ?? key;
-      output.push({ pluginName, platform: 'claude', scope });
+      output.push({ pluginName, platform: 'claude', scope, ...(scope === 'project' ? { projectKey } : {}) });
     }
   }
   return output;
@@ -167,6 +182,7 @@ export interface CatalogSourceInventoryError {
         pluginName?: string;
         platform?: PlatformName;
         scope?: Scope;
+        projectLocationKey?: string;
       };
 }
 
@@ -223,6 +239,23 @@ function inventoryErrorRelevance(
   for (const root of new Set([awHome, canonicalAwHome])) {
     const marketplace = pathSegmentsWithin(path.join(root, 'marketplaces'), location);
     if (marketplace?.[0]) return { global: false, sourceId: marketplace[0] };
+    const contract = pathSegmentsWithin(path.join(root, 'installation-contracts'), location);
+    if (contract !== null) {
+      const platform = contract[1] === 'codex' || contract[1] === 'claude'
+        ? contract[1]
+        : undefined;
+      const scope = contract[2] === 'user' || contract[2] === 'project'
+        ? contract[2]
+        : undefined;
+      return {
+        global: false,
+        ...(contract[0] ? { sourceId: contract[0] } : {}),
+        ...(contract[4] ? { pluginName: contract[4] } : {}),
+        ...(platform ? { platform } : {}),
+        ...(scope ? { scope } : {}),
+        ...(scope === 'project' && contract[3] ? { projectLocationKey: contract[3] } : {}),
+      };
+    }
   }
   for (const [root, scope] of [
     [path.join(awHome, 'plugin-config'), 'user'],
@@ -1146,6 +1179,47 @@ export async function inventoryCatalogSourceReferences(options: {
   const awHome = resolveAwHome(env);
   const references: CatalogSourceReference[] = [];
   const errors: CatalogSourceInventoryError[] = [];
+  const contractInventory = await inventoryInstallationContracts({ env });
+  for (const error of contractInventory.errors) {
+    errors.push(inventoryError(
+      new Error(error.message),
+      error.path,
+      'installationContractValidation',
+      env,
+      options.cwd,
+    ));
+  }
+  for (const contract of contractInventory.contracts) {
+    const metadata = contract.metadata;
+    references.push({
+      kind: 'installationContract',
+      location: contract.activeRoot,
+      sourceId: metadata.sourceId,
+      sourceIdentity: metadata.sourceIdentity,
+      pluginName: metadata.pluginName,
+      platform: metadata.platform,
+      scope: metadata.scope,
+      projectKey: metadata.projectKey,
+    });
+    for (const dependency of metadata.dependencies) {
+      references.push({
+        kind: 'namespacedDependency',
+        location: contract.activeRoot,
+        sourceId: metadata.sourceId,
+        sourceIdentity: metadata.sourceIdentity,
+        pluginName: metadata.pluginName,
+        platform: metadata.platform,
+        scope: metadata.scope,
+        projectKey: metadata.projectKey,
+        dependencyPluginId: dependency.pluginId,
+        dependencySourceId: dependency.sourceId,
+        dependencySourceIdentity: dependency.sourceIdentity,
+        dependencyPlatform: dependency.platform,
+        dependencyScope: dependency.scope,
+        dependencyProjectKey: dependency.projectKey,
+      });
+    }
+  }
   const legacyConfig = await inventoryLegacyConfigReferences(options);
   references.push(...legacyConfig.references);
   errors.push(...legacyConfig.errors);
@@ -1353,6 +1427,7 @@ export async function inventoryCatalogSourceReferences(options: {
           pluginName: snapshot.metadata.pluginName,
           platform: snapshot.metadata.platform,
           scope: snapshot.metadata.scope,
+          projectKey: snapshot.metadata.projectKey,
         });
       }
     }
@@ -1553,6 +1628,11 @@ export async function inventoryCatalogSourceReferences(options: {
       });
     }
   }
+  for (const reference of references) {
+    if (reference.scope === 'project' && reference.projectKey === undefined) {
+      reference.projectKey = canonicalProjectRoot;
+    }
+  }
   const unique = [...new Map(references.map((reference) => [[
     reference.kind,
     reference.location,
@@ -1562,6 +1642,13 @@ export async function inventoryCatalogSourceReferences(options: {
     reference.platform ?? '',
     reference.scope ?? '',
     reference.marketplaceName ?? '',
+    reference.projectKey ?? '',
+    reference.dependencyPluginId ?? '',
+    reference.dependencySourceId ?? '',
+    reference.dependencySourceIdentity ?? '',
+    reference.dependencyPlatform ?? '',
+    reference.dependencyScope ?? '',
+    reference.dependencyProjectKey ?? '',
   ].join('\0'), reference])).values()];
   unique.sort((left, right) => left.location.localeCompare(right.location));
   return { inventorySchemaVersion: 1, references: unique, errors };

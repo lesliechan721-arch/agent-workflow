@@ -266,4 +266,62 @@ describe('stage-catalog script', () => {
     })).rejects.toThrow('explicit catalogRelease identity');
     await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
   });
+
+  it('rejects a staged source graph with a missing required plugin', async () => {
+    const root = await createFixtureRoot('aw-stage-catalog-dependencies-');
+    const snapshotRoot = path.join(root, 'catalog');
+    await createCatalogSnapshotFixture(snapshotRoot, 'parent', '0.1.0', 'parent\n', (manifest) => {
+      manifest.dependencies = ['missing'];
+    });
+
+    await expect(pluginStaging.stageCatalogArtifacts({
+      repoRoot: root,
+      outputRoot: snapshotRoot,
+    })).rejects.toThrow('requires missing plugin "missing" from the same source');
+  });
+
+  it('raises the catalog floor to AW 0.1.0 for a dependency source graph', async () => {
+    const root = await createFixtureRoot('aw-stage-catalog-dependency-floor-');
+    const snapshotRoot = path.join(root, 'catalog');
+    await Promise.all([
+      fs.outputJson(path.join(snapshotRoot, '.agents', 'plugins', 'marketplace.json'), {}),
+      fs.outputJson(path.join(snapshotRoot, '.claude-plugin', 'marketplace.json'), {}),
+    ]);
+    const marketplace = {
+      category: 'workflow',
+      strict: true,
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+    };
+    for (const manifest of [
+      {
+        name: 'parent',
+        version: '1.0.0',
+        description: 'parent',
+        compatibility: { aw: { minVersion: '0.1.0' } },
+        dependencies: ['shared'],
+        marketplace,
+      },
+      {
+        name: 'shared',
+        version: '1.0.0',
+        description: 'shared',
+        compatibility: { aw: { minVersion: '0.0.0' } },
+        marketplace,
+      },
+    ]) {
+      const pluginRoot = path.join(snapshotRoot, 'plugins', manifest.name);
+      await Promise.all([
+        fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest),
+        fs.outputFile(path.join(pluginRoot, 'README.md'), `${manifest.name}\n`),
+      ]);
+    }
+
+    const staged = await pluginStaging.stageCatalogArtifacts({
+      repoRoot: root,
+      outputRoot: snapshotRoot,
+      catalogVersion: '1.0.0',
+    });
+
+    expect(staged.manifest.compatibility.aw.minVersion).toBe('0.1.0');
+  });
 });

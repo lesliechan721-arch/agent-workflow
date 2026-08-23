@@ -132,6 +132,7 @@ describe('upgrade --all live discovery', () => {
       runtime: {
       env: isolation.env,
       catalogResolution: await emptyCatalog(isolation.layout.rootDir),
+      bypassDependencyPlan: true,
       nativeCliRunner: discoveryRunner(calls),
       },
     });
@@ -197,6 +198,7 @@ describe('upgrade --all live discovery', () => {
       runtime: {
       env: isolation.env,
       catalogResolution: await emptyCatalog(isolation.layout.rootDir),
+      bypassDependencyPlan: true,
       nativeCliRunner: discoveryRunner(calls),
       },
     });

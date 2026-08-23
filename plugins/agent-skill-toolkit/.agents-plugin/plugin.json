@@ -2,9 +2,12 @@
   "name": "agent-skill-toolkit",
   "version": "0.1.0",
   "description": "使用共享证据和组合标准编写 Agent Skill，以轻量路径评审 Skill 及其端到端组合，并设计或审核 Skill Eval。",
+  "dependencies": [
+    "agent-content-toolkit"
+  ],
   "compatibility": {
     "aw": {
-      "minVersion": "0.0.0"
+      "minVersion": "0.1.0"
     }
   },
   "skills": "./skills",

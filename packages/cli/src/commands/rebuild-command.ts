@@ -1,4 +1,5 @@
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import type {
   CatalogSourceResolution,
@@ -34,8 +35,10 @@ import {
 import {
   createRebuildIntegration,
   discoverRebuildTargetNames,
+  type PreparedRebuildTarget,
   type RebuildExecutionContext,
 } from './rebuild-integration.js';
+import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import {
   formatPluginId,
   parsePluginId,
@@ -51,30 +54,53 @@ import {
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 import {
   acquireLifecycleOperationLock,
-  readLifecycleActiveSnapshot,
-  removeLifecycleActiveSnapshot,
 } from '../utils/lifecycle-active-store.js';
+import { comparePlatformScopeTarget } from '../utils/target-order.js';
+import { inspectOwnedComponents } from '../utils/ownership.js';
+import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { validateCatalogSnapshot } from '../utils/catalog-snapshot.js';
 import {
-  withActiveMarketplaceLifecycleLease,
-  withActiveMarketplaceRuntimeLease,
-} from '../utils/active-marketplace-runtime-lock.js';
-import { cleanupOrphanNamespacedMarketplaceRoot } from '../utils/orphan-marketplace-cleanup.js';
-import { canonicalPlatformScopeTargets } from '../utils/target-order.js';
+  discardInstallationContract,
+  inventoryInstallationContracts,
+  promoteInstallationContract,
+  readInstallationContract,
+  removeInstallationContract,
+  resolveInstallationContractTarget,
+  stageInstallationContract,
+  type InstallationDependencyPlacement,
+  type ReadInstallationContract,
+} from '../utils/installation-contract-store.js';
+import {
+  createDependencyOperationPlan,
+  stableDependencyPlanJson,
+  type DependencyOperationPlan,
+} from './dependency-operation-plan.js';
 
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
+  awHomeMutationToken?: AwHomeMutationToken;
   catalogResolution?: CatalogResolution;
-  namespacedTarget?: {
+  namespacedSource?: {
     sourceId: string;
     sourceIdentity: string;
-    pluginId: string;
     marketplaceName: string;
     marketplaceRoot: string;
   };
-  lostSourceRecovery?: boolean;
   expectedCatalogConfigDigest?: string;
   reviewPreflight?: (evidence: RebuildReviewPreflightEvidence) => Promise<void> | void;
-  resolvedReviewEvidence?: Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>;
+  resolvedReviewEvidenceByPlugin?: Record<
+    string,
+    Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>
+  >;
   operationLeaseHeld?: boolean;
+  installationContractHandledExternally?: boolean;
+  bypassDependencyPlan?: boolean;
+  dependencyReviewPreflightHandled?: boolean;
+  afterDependencyOperationLocksAcquire?: () => Promise<void>;
+  dependencyPlanReviewPreflight?: (plan: DependencyOperationPlan) => Promise<void> | void;
+  previewDependencyPlanOnly?: boolean;
+  targetBuiltHookHandled?: boolean;
+  preparedTarget?: PreparedRebuildTarget;
+  preparedTargetError?: unknown;
 };
 
 export interface RebuildReviewPreflightEvidence {
@@ -105,6 +131,7 @@ export interface RebuildCommandResult {
     platform: PlatformName;
     scope: Scope;
   }>;
+  dependencyPlan?: DependencyOperationPlan;
 }
 
 export interface RebuildCommandTestHooks {
@@ -114,9 +141,6 @@ export interface RebuildCommandTestHooks {
   }) => Promise<void>;
   afterTargetBuilt?: (options: {
     command: RebuildCommand;
-    identity: RebuildTargetIdentity;
-  }) => Promise<void>;
-  afterOrphanCleanupValidated?: (options: {
     identity: RebuildTargetIdentity;
   }) => Promise<void>;
 }
@@ -320,7 +344,7 @@ async function runSingleSourceRebuildCommand(options: {
   runtime?: RebuildCommandRuntime;
   all?: boolean;
 }): Promise<RebuildCommandResult> {
-  const runtime: RebuildExecutionContext = {
+  const runtime: RebuildExecutionContext = options.runtime?.preparedTarget?.context ?? {
     env: options.runtime?.env ?? process.env,
     nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
     reporter: options.runtime?.reporter ?? createNoopReporter(),
@@ -333,19 +357,16 @@ async function runSingleSourceRebuildCommand(options: {
   const selected = selectedPlatforms(options.commandOptions.platform);
   const catalog = options.runtime?.catalogResolution;
   if (!catalog) throw new Error('Internal error: a resolved catalog source is required.');
-  const catalogPlugins = await resolvePluginsFromCatalog(catalog.rootDir, undefined).catch((error) => {
-    if (options.runtime?.lostSourceRecovery) return [];
-    throw error;
-  });
-  if (options.runtime?.namespacedTarget) {
+  const catalogPlugins = await resolvePluginsFromCatalog(catalog.rootDir, undefined);
+  if (options.runtime?.namespacedSource) {
     for (const plugin of catalogPlugins) {
-      plugin.sourceId = options.runtime.namespacedTarget.sourceId;
-      plugin.sourceIdentity = options.runtime.namespacedTarget.sourceIdentity;
+      plugin.sourceId = options.runtime.namespacedSource.sourceId;
+      plugin.sourceIdentity = options.runtime.namespacedSource.sourceIdentity;
       plugin.pluginId = formatPluginId({
-        sourceId: options.runtime.namespacedTarget.sourceId,
+        sourceId: options.runtime.namespacedSource.sourceId,
         pluginName: plugin.manifest.name,
       });
-      plugin.marketplaceName = options.runtime.namespacedTarget.marketplaceName;
+      plugin.marketplaceName = options.runtime.namespacedSource.marketplaceName;
     }
   }
   const catalogByName = new Map(catalogPlugins.map((plugin) => [plugin.manifest.name, plugin]));
@@ -382,10 +403,15 @@ async function runSingleSourceRebuildCommand(options: {
     env,
     runtime,
   });
-  const integration = createRebuildIntegration({
-    context: runtime,
-    scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
-  });
+  const integration = options.runtime?.preparedTarget
+    ? {
+        driver: options.runtime.preparedTarget.driver,
+        buildTarget: async () => options.runtime!.preparedTarget!.target,
+      }
+    : createRebuildIntegration({
+        context: runtime,
+        scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
+      });
   const activeStore = createRebuildActiveStore({
     env,
     loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
@@ -397,7 +423,13 @@ async function runSingleSourceRebuildCommand(options: {
     for (const pluginName of requestedByPlatform.get(platform) ?? []) {
       const currentPlugin = catalogByName.get(pluginName);
       const identity: RebuildTargetIdentity = {
-        ...(options.runtime?.namespacedTarget ?? {}),
+        ...(options.runtime?.namespacedSource ?? {}),
+        ...(options.runtime?.namespacedSource ? {
+          pluginId: formatPluginId({
+            sourceId: options.runtime.namespacedSource.sourceId,
+            pluginName,
+          }),
+        } : currentPlugin?.pluginId ? { pluginId: currentPlugin.pluginId } : {}),
         pluginName,
         pluginVersion: currentPlugin?.manifest.version ?? '0.0.0',
         platform,
@@ -492,48 +524,66 @@ async function runSingleSourceRebuildCommand(options: {
       }
       let result: RebuildResult;
       try {
-        if (options.runtime?.lostSourceRecovery && options.command === 'uninstall') {
-          const snapshot = await readLifecycleActiveSnapshot({
-            sourceId: options.runtime.namespacedTarget!.sourceId,
-            sourceIdentity: options.runtime.namespacedTarget!.sourceIdentity,
-            pluginName,
-            platform,
-            scope: options.commandOptions.scope,
-            cwd: options.commandOptions.cwd,
-            env,
-            loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-          });
-          if (!snapshot) {
-            result = failedResult(
-              options.command,
-              identity,
-              'sourceMissing: Active lifecycle snapshot is required for lost-source uninstall. Run cleanup to remove live outputs without lifecycle.',
-              'active.read',
-            );
-            throw Object.assign(new Error('lost-source-active-read-result'), { result });
-          }
-        }
+        if (options.runtime?.preparedTargetError) throw options.runtime.preparedTargetError;
         const target = await integration.buildTarget({
-          ...(options.runtime?.namespacedTarget ?? {}),
+          ...(options.runtime?.namespacedSource ?? {}),
+          ...(options.runtime?.namespacedSource ? {
+            pluginId: formatPluginId({
+              sourceId: options.runtime.namespacedSource.sourceId,
+              pluginName,
+            }),
+          } : plugin.pluginId ? { pluginId: plugin.pluginId } : {}),
           plugin,
           platform,
           scope: options.commandOptions.scope,
           cwd: options.commandOptions.cwd,
           command: options.command,
           catalog,
-          includeHistoricalLifecycleArtifacts: !options.runtime?.lostSourceRecovery
-            || options.command === 'uninstall',
+          includeHistoricalLifecycleArtifacts: true,
         });
         targets.push(target);
-        await rebuildCommandTestHooks?.afterTargetBuilt?.({
-          command: options.command,
-          identity,
-        });
-        await options.runtime?.reviewPreflight?.({
-          command: options.command,
-          identity,
-          ...options.runtime.resolvedReviewEvidence,
-        });
+        if (!options.runtime?.targetBuiltHookHandled) {
+          await rebuildCommandTestHooks?.afterTargetBuilt?.({
+            command: options.command,
+            identity,
+          });
+        }
+        if (!options.runtime?.dependencyReviewPreflightHandled) {
+          await options.runtime?.reviewPreflight?.({
+            command: options.command,
+            identity,
+            ...options.runtime.resolvedReviewEvidenceByPlugin?.[pluginName],
+          });
+        }
+        if (options.runtime?.namespacedSource
+          && !options.runtime.installationContractHandledExternally
+          && (options.command === 'cleanup' || options.command === 'uninstall')) {
+          const removalTarget = await resolveInstallationContractTarget({
+            sourceId: options.runtime.namespacedSource.sourceId,
+            sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
+            pluginName,
+            platform,
+            scope: options.commandOptions.scope,
+            cwd: options.commandOptions.cwd,
+            env,
+          });
+          const inventory = await inventoryCatalogSourceReferences({
+            cwd: options.commandOptions.cwd,
+            env,
+            includeHistoricalProjects: true,
+          });
+          assertCatalogSourceInventoryComplete(inventory);
+          if (inventory.references.some((reference) =>
+            reference.kind === 'namespacedDependency'
+            && reference.dependencyPluginId === identity.pluginId
+            && reference.dependencySourceIdentity === identity.sourceIdentity
+            && reference.dependencyPlatform === platform
+            && reference.dependencyScope === options.commandOptions.scope
+            && (options.commandOptions.scope === 'user'
+              || reference.dependencyProjectKey === removalTarget.projectKey))) {
+            throw new Error(`dependencyStillRequired: ${identity.pluginId} has a live or unreadable consumer.`);
+          }
+        }
         const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
         result = await executeRebuildOperation({
           command: options.command,
@@ -542,12 +592,71 @@ async function runSingleSourceRebuildCommand(options: {
           activeStore: operationHeldStore,
           onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
         });
+        if (
+          result.status === 'succeeded'
+          && options.runtime?.namespacedSource
+          && !options.runtime.installationContractHandledExternally
+          && options.command !== 'cleanup'
+          && options.command !== 'uninstall'
+        ) {
+          const evidence = options.runtime.resolvedReviewEvidenceByPlugin?.[pluginName];
+          if (evidence?.contentDigest) {
+            const staged = await stageInstallationContract({
+              sourceId: options.runtime.namespacedSource.sourceId,
+              sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
+              pluginName,
+              pluginVersion: plugin.manifest.version,
+              contentDigest: evidence.contentDigest,
+              platform,
+              scope: options.commandOptions.scope,
+              cwd: options.commandOptions.cwd,
+              env,
+            });
+            try {
+              await promoteInstallationContract(staged);
+            } catch (error) {
+              await discardInstallationContract(staged).catch(() => undefined);
+              throw new Error(
+                `dependencyContractInvalid: ${error instanceof Error ? error.message : String(error)}`,
+                { cause: error },
+              );
+            }
+          }
+        }
+        if (
+          result.status === 'succeeded'
+          && options.runtime?.namespacedSource
+          && !options.runtime.installationContractHandledExternally
+          && (options.command === 'cleanup' || options.command === 'uninstall')
+        ) {
+          const contract = await readInstallationContract({
+            sourceId: options.runtime.namespacedSource.sourceId,
+            sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
+            pluginName,
+            platform,
+            scope: options.commandOptions.scope,
+            cwd: options.commandOptions.cwd,
+            env,
+          });
+          if (contract) {
+            await removeInstallationContract({
+              sourceId: options.runtime.namespacedSource.sourceId,
+              sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
+              pluginName,
+              platform,
+              scope: options.commandOptions.scope,
+              cwd: contract.metadata.projectKey ?? options.commandOptions.cwd,
+              env,
+              expectedMetadataIntegrityDigest: contract.metadata.metadataIntegrityDigest,
+            });
+          }
+        }
       } catch (error) {
         result = (error as { result?: RebuildResult }).result ?? failedResult(
             options.command,
             identity,
-            `${options.runtime?.lostSourceRecovery && options.command === 'uninstall' ? 'sourceMissing: ' : ''}${error instanceof Error ? error.message : String(error)}`,
-            options.runtime?.lostSourceRecovery && options.command === 'uninstall' ? 'active.read' : 'preflight',
+            error instanceof Error ? error.message : String(error),
+            'preflight',
           );
       }
       result.actions.unshift({ name: 'operation.lock', status: 'succeeded' });
@@ -642,6 +751,9 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
     nativePlugins,
     repoManagedArtifacts: [],
     receiptTargets: results.flatMap((result) => result.receiptTargets),
+    ...(results.find((result) => result.dependencyPlan)?.dependencyPlan
+      ? { dependencyPlan: results.find((result) => result.dependencyPlan)!.dependencyPlan }
+      : {}),
   };
 }
 
@@ -703,219 +815,6 @@ function projectLegacyTargets(
   })).values()];
 }
 
-async function cleanupOrphanLifecycleOnly(options: {
-  selector: ReturnType<typeof parsePluginId>;
-  commandOptions: CommandOptions;
-  env: NodeJS.ProcessEnv;
-}): Promise<RebuildCommandResult | null> {
-  if (!options.selector.sourceId) return null;
-  const inventory = await inventoryCatalogSourceReferences({
-    cwd: options.commandOptions.cwd,
-    env: options.env,
-  });
-  assertCatalogSourceInventoryComplete(inventory);
-  const platforms = new Set(selectedPlatforms(options.commandOptions.platform));
-  const exact = (reference: (typeof inventory.references)[number]): boolean =>
-    reference.sourceId === options.selector.sourceId
-    && reference.pluginName === options.selector.pluginName
-    && reference.scope === options.commandOptions.scope
-    && !!reference.platform
-    && platforms.has(reference.platform as PlatformName);
-  const lifecycle = inventory.references.filter((reference) =>
-    reference.kind === 'namespacedLifecycle' && exact(reference));
-  if (lifecycle.length === 0) return null;
-  const live = inventory.references.filter((reference) =>
-    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
-    && exact(reference));
-  if (live.length > 0) return null;
-  const identities = new Set(lifecycle.map((reference) => reference.sourceIdentity).filter(Boolean));
-  if (identities.size !== 1 || lifecycle.some((reference) => !reference.sourceIdentity)) {
-    throw new Error(
-      `sourceChanged: ${options.selector.sourceId}/${options.selector.pluginName} lifecycle state has conflicting source identities.`,
-    );
-  }
-  const sourceIdentity = [...identities][0]!;
-  const operationLocks: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
-  try {
-    const lockTargets = canonicalPlatformScopeTargets(
-      selectedPlatforms(options.commandOptions.platform).map((platform) => ({
-        platform,
-        scope: options.commandOptions.scope,
-      })),
-    );
-    for (const { platform } of lockTargets) {
-      const identity: RebuildTargetIdentity = {
-        sourceId: options.selector.sourceId,
-        sourceIdentity,
-        pluginId: formatPluginId({
-          sourceId: options.selector.sourceId,
-          pluginName: options.selector.pluginName,
-        }),
-        pluginName: options.selector.pluginName,
-        pluginVersion: '0.0.0',
-        platform,
-        scope: options.commandOptions.scope,
-        cwd: options.commandOptions.cwd,
-      };
-      await rebuildCommandTestHooks?.beforeOperationLockAcquire?.({ command: 'cleanup', identity });
-      operationLocks.push(await acquireLifecycleOperationLock({
-        sourceId: options.selector.sourceId,
-        sourceIdentity,
-        pluginName: options.selector.pluginName,
-        platform,
-        scope: options.commandOptions.scope,
-        cwd: options.commandOptions.cwd,
-        env: options.env,
-      }));
-    }
-    const lockedInventory = await inventoryCatalogSourceReferences({
-      cwd: options.commandOptions.cwd,
-      env: options.env,
-    });
-    assertCatalogSourceInventoryComplete(lockedInventory);
-    const lockedLifecycle = lockedInventory.references.filter((reference) =>
-      reference.kind === 'namespacedLifecycle' && exact(reference));
-    const lockedLive = lockedInventory.references.filter((reference) =>
-      (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
-      && exact(reference));
-    if (lockedLive.length > 0) {
-      throw new Error(
-        `liveOwnershipRequired: ${options.selector.sourceId}/${options.selector.pluginName} became live before orphan cleanup acquired its operation lock.`,
-      );
-    }
-    if (lockedLifecycle.length !== lifecycle.length
-      || lockedLifecycle.some((reference) => reference.sourceIdentity !== sourceIdentity)) {
-      throw new Error(
-        `stateInventoryFailed: ${options.selector.sourceId}/${options.selector.pluginName} lifecycle state changed before cleanup.`,
-      );
-    }
-    const results: RebuildResult[] = [];
-    const validated: Array<{
-      reference: (typeof lockedLifecycle)[number];
-      platform: PlatformName;
-      snapshot: NonNullable<Awaited<ReturnType<typeof readLifecycleActiveSnapshot>>>;
-    }> = [];
-    for (const reference of lockedLifecycle) {
-      const platform = reference.platform as PlatformName;
-      const snapshot = await readLifecycleActiveSnapshot({
-        sourceId: options.selector.sourceId,
-        sourceIdentity,
-        pluginName: options.selector.pluginName,
-        platform,
-        scope: options.commandOptions.scope,
-        cwd: options.commandOptions.cwd,
-        env: options.env,
-        loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-      });
-      if (!snapshot) {
-        throw new Error(`stateInventoryFailed: lifecycle state disappeared before cleanup at ${reference.location}.`);
-      }
-      const recordedPaths = new Set(snapshot.metadata.artifacts.flatMap((artifact) => [
-        artifact.path,
-        ...(artifact.paths ?? []),
-      ]));
-      for (const artifactPath of recordedPaths) {
-        let exists = true;
-        try {
-          await fs.lstat(artifactPath);
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code === 'ENOENT' || code === 'ENOTDIR') exists = false;
-          else throw error;
-        }
-        if (exists) {
-          throw new Error(
-            `liveOwnershipRequired: ${options.selector.sourceId}/${options.selector.pluginName} lifecycle records a live ${platform} component without valid schema 2 ownership.`,
-          );
-        }
-      }
-      validated.push({ reference, platform, snapshot });
-    }
-    for (const { platform, snapshot } of validated) {
-      await rebuildCommandTestHooks?.afterOrphanCleanupValidated?.({
-        identity: {
-          sourceId: options.selector.sourceId,
-          sourceIdentity,
-          pluginId: formatPluginId({
-            sourceId: options.selector.sourceId,
-            pluginName: options.selector.pluginName,
-          }),
-          pluginName: options.selector.pluginName,
-          pluginVersion: snapshot.metadata.pluginVersion,
-          platform,
-          scope: options.commandOptions.scope,
-          cwd: options.commandOptions.cwd,
-        },
-      });
-    }
-    for (const { reference, platform, snapshot } of validated) {
-      await removeLifecycleActiveSnapshot({
-        sourceId: options.selector.sourceId,
-        sourceIdentity,
-        pluginName: options.selector.pluginName,
-        platform,
-        scope: options.commandOptions.scope,
-        cwd: options.commandOptions.cwd,
-        env: options.env,
-        expectedMetadataIntegrityDigest: snapshot.metadata.metadataIntegrityDigest,
-      });
-      results.push({
-        status: 'succeeded',
-        command: 'cleanup',
-        target: {
-          sourceId: options.selector.sourceId,
-          sourceIdentity,
-          pluginId: formatPluginId({
-            sourceId: options.selector.sourceId,
-            pluginName: options.selector.pluginName,
-          }),
-          pluginName: options.selector.pluginName,
-          pluginVersion: snapshot.metadata.pluginVersion,
-          platform,
-          scope: options.commandOptions.scope,
-          cwd: options.commandOptions.cwd,
-        },
-        actions: [{ name: 'active.remove', status: 'succeeded' }],
-        cleanupAttempted: true,
-        removed: [reference.location],
-        absent: [],
-        residual: [],
-        quarantined: [],
-        failures: [],
-      });
-    }
-    await withActiveMarketplaceLifecycleLease(options.env, () =>
-      withActiveMarketplaceRuntimeLease(options.env, () =>
-        cleanupOrphanNamespacedMarketplaceRoot({
-          sourceId: options.selector.sourceId!,
-          sourceIdentity,
-          cwd: options.commandOptions.cwd,
-          env: options.env,
-        })));
-    return leaseSafeRebuildResult({
-      platforms: [...new Set(results.map((result) => result.target.platform))],
-      plugins: [options.selector.pluginName],
-      warnings: [],
-      rebuildResults: results,
-      targetResults: results.map(toTargetResult),
-      overallState: 'succeeded',
-      nativePlugins: {},
-      repoManagedArtifacts: [],
-      receiptTargets: results.map((result) => ({
-        pluginName: result.target.pluginName,
-        pluginId: result.target.pluginId,
-        sourceId: result.target.sourceId,
-        platform: result.target.platform,
-        scope: result.target.scope,
-      })),
-    });
-  } finally {
-    for (const lock of operationLocks.reverse()) {
-      await releaseRebuildOperationLease(lock);
-    }
-  }
-}
-
 export async function runRebuildCommand(options: {
   command: RebuildCommand;
   pluginNames: string[];
@@ -923,7 +822,7 @@ export async function runRebuildCommand(options: {
   runtime?: RebuildCommandRuntime;
   all?: boolean;
 }): Promise<RebuildCommandResult> {
-  if (options.runtime?.catalogResolution) {
+  if (options.runtime?.catalogResolution && options.runtime.bypassDependencyPlan) {
     return runSingleSourceRebuildCommand(options);
   }
   const runtimeEnv = options.runtime?.env ?? process.env;
@@ -1003,14 +902,6 @@ export async function runRebuildCommand(options: {
     requestedPluginNames = [...identities.keys()];
   }
   const selectors = requestedPluginNames.map(parsePluginId);
-  if (options.command === 'cleanup' && !options.all && selectors.length === 1 && selectors[0]!.sourceId) {
-    const orphanCleanup = await cleanupOrphanLifecycleOnly({
-      selector: selectors[0]!,
-      commandOptions: options.commandOptions,
-      env: runtimeEnv,
-    });
-    if (orphanCleanup) return orphanCleanup;
-  }
   const sourceIds = planPluginSelectorSourceIds(selectors);
   if (options.all && selectors.length === 0) {
     if (legacyLiveTargets.length > 0) {
@@ -1061,8 +952,41 @@ export async function runRebuildCommand(options: {
         }
         return matches[0]!;
       });
+      const dependencyEnabled = options.command === 'install'
+        || options.command === 'upgrade'
+        || options.command === 'reinstall';
+      const selectedIds = new Set(selected.map((entry) => entry.pluginId));
+      const resolveClosureEntries = (
+        rootsBySource: typeof selected,
+      ): typeof available => catalog.sources.flatMap((item) => {
+        const source = item.resolution!;
+        const roots = rootsBySource
+          .filter((entry) => entry.source.sourceId === source.sourceId)
+          .map((entry) => entry.plugin.manifest.name);
+        if (roots.length === 0) return [];
+        const sourcePlugins = available
+          .filter((entry) => entry.source.sourceId === source.sourceId)
+          .map((entry) => entry.plugin);
+        const closure = resolvePluginMetaDependencyClosure(sourcePlugins, roots);
+        return closure.map((plugin) => available.find((entry) =>
+          entry.source.sourceId === source.sourceId
+          && entry.plugin.manifest.name === plugin.manifest.name)!);
+      });
+      const closureEntriesByPlatform = new Map<PlatformName, typeof available>();
+      if (dependencyEnabled) {
+        for (const platform of selectedPlatforms(options.commandOptions.platform)) {
+          const platformRoots = options.commandOptions.platform === 'both'
+            ? selected.filter((entry) => supportsPlatform(entry.plugin.manifest, platform))
+            : selected;
+          closureEntriesByPlatform.set(platform, resolveClosureEntries(platformRoots));
+        }
+      }
+      const closureEntries = dependencyEnabled
+        ? [...new Map([...closureEntriesByPlatform.values()].flat().map((entry) =>
+            [entry.pluginId, entry] as const)).values()]
+        : selected;
       const rawExecutionSelections = options.all
-        ? liveTargets.map((target) => {
+        ? liveTargets.flatMap((target) => {
             const entry = selected.find((candidate) => candidate.pluginId === target.pluginId)!;
             if (entry.source.sourceIdentity !== target.sourceIdentity) {
               throw namespacedPreflightError(
@@ -1071,16 +995,28 @@ export async function runRebuildCommand(options: {
                 legacyLiveTargets,
               );
             }
-            return { entry, platform: target.platform };
+            const sourcePlugins = available
+              .filter((candidate) => candidate.source.sourceId === entry.source.sourceId)
+              .map((candidate) => candidate.plugin);
+            return resolvePluginMetaDependencyClosure(
+              sourcePlugins,
+              [entry.plugin.manifest.name],
+            ).map((plugin) => ({
+              entry: available.find((candidate) =>
+                candidate.source.sourceId === entry.source.sourceId
+                && candidate.plugin.manifest.name === plugin.manifest.name)!,
+              platform: target.platform,
+            }));
           })
-        : selected.flatMap((entry) => selectedPlatforms(options.commandOptions.platform).flatMap((platform) =>
-            options.command !== 'cleanup'
-            && options.command !== 'uninstall'
-            && options.commandOptions.platform === 'both'
-            && !supportsPlatform(entry.plugin.manifest, platform)
-              ? []
-              : [{ entry, platform }]));
-      const executionSelections = [...new Map(rawExecutionSelections.map((selection) => [[
+        : selectedPlatforms(options.commandOptions.platform).flatMap((platform) =>
+            (dependencyEnabled ? closureEntriesByPlatform.get(platform) ?? [] : closureEntries)
+              .flatMap((entry) => options.command !== 'cleanup'
+                && options.command !== 'uninstall'
+                && options.commandOptions.platform === 'both'
+                && !supportsPlatform(entry.plugin.manifest, platform)
+                ? []
+                : [{ entry, platform }]));
+      let executionSelections = [...new Map(rawExecutionSelections.map((selection) => [[
         selection.entry.pluginId,
         selection.entry.source.sourceIdentity,
         selection.platform,
@@ -1113,7 +1049,7 @@ export async function runRebuildCommand(options: {
           blockingLegacyTargets,
         );
       }
-      for (const entry of selected) {
+      for (const entry of closureEntries) {
         const changed = stateInventory.references.find((reference) =>
           reference.sourceId === entry.source.sourceId
           && reference.sourceIdentity
@@ -1127,35 +1063,17 @@ export async function runRebuildCommand(options: {
           );
         }
       }
-      if (options.command !== 'cleanup' && options.command !== 'uninstall') {
-        for (const entry of selected) {
-          if (!entry.plugin.manifest.config?.schema) continue;
-          const effective = await resolveEffectivePluginConfig({
-            sourceId: entry.source.sourceId,
-            sourceIdentity: entry.source.sourceIdentity,
-            pluginName: entry.plugin.manifest.name,
-            manifest: entry.plugin.manifest,
-            cwd: options.commandOptions.cwd,
-            env: runtimeEnv,
-          });
-          if (effective.issues.length > 0) {
-            throw namespacedPreflightError(
-              `invalidConfig: ${entry.pluginId} has invalid required config: ${effective.issues.map((issue) => issue.key).join(', ')}.`,
-              options.all
-                ? preflightTargets
-                : preflightTargets.filter((target) => target.pluginId === entry.pluginId),
-            );
-          }
-        }
-      }
-      const collisionSelections = [];
+      const executionContext: RebuildExecutionContext = {
+        env: runtimeEnv,
+        nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+        reporter: options.runtime?.reporter ?? createNoopReporter(),
+        debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
+        runtimeLeaseHeld: options.runtime?.runtimeLeaseHeld,
+        lifecycleLeaseHeld: options.runtime?.lifecycleLeaseHeld,
+        expectedCatalogConfigDigest: catalog.configDigest,
+      };
       const inspection = createRebuildIntegration({
-        context: {
-          env: runtimeEnv,
-          nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
-          reporter: options.runtime?.reporter ?? createNoopReporter(),
-          debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
-        },
+        context: executionContext,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
       });
       await assertAgentVersions({
@@ -1170,92 +1088,839 @@ export async function runRebuildCommand(options: {
           debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
         },
       });
-      if (options.command !== 'cleanup' && options.command !== 'uninstall') {
-        for (const { entry, platform } of executionSelections) {
-          const marketplaceName = entry.source.sourceId === catalog.primarySourceId
-            ? 'aw'
-            : `aw-${entry.source.sourceId}`;
-          const marketplaceRoot = path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId);
-          entry.plugin.marketplaceName = marketplaceName;
-          if (supportsPlatform(entry.plugin.manifest, platform)) {
-            const target = await inspection.buildTarget({
+      const neutralConfigDigest = `sha256:${crypto.createHash('sha256')
+        .update(stableDependencyPlanJson({ operation: 'remove' })).digest('hex')}`;
+      const createPlan = async (): Promise<DependencyOperationPlan> => {
+        const inventory = await inventoryCatalogSourceReferences({
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+        });
+        assertCatalogSourceInventoryComplete(inventory);
+        const targets = [];
+        for (const [order, { entry, platform }] of executionSelections.entries()) {
+          const relation = selectedIds.has(entry.pluginId) ? 'requested' as const : 'dependency' as const;
+          let resolvedScope = options.commandOptions.scope;
+          const inspectScope = async (scope: Scope) => {
+            const marketplaceName = entry.source.sourceId === catalog.primarySourceId
+              ? 'aw'
+              : `aw-${entry.source.sourceId}`;
+            entry.plugin.marketplaceName = marketplaceName;
+            const desired = await inspection.buildTarget({
               sourceId: entry.source.sourceId,
               sourceIdentity: entry.source.sourceIdentity,
               pluginId: entry.pluginId,
               marketplaceName,
-              marketplaceRoot,
+              marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId),
               plugin: entry.plugin,
               platform,
-              scope: options.commandOptions.scope,
+              scope,
               cwd: options.commandOptions.cwd,
               command: options.command,
               catalog: toCatalogResolution(entry.source),
               includeHistoricalLifecycleArtifacts: false,
               readOnlyInspectionPlan: true,
             });
-            collisionSelections.push({
-              pluginId: entry.pluginId,
-              targetKey: `${platform}/${options.commandOptions.scope}/${path.resolve(options.commandOptions.cwd)}`,
-              artifactKeys: (target.desiredOwnedComponents ?? target.ownedComponents)
-                .filter((component) => !(
-                  component.kind === 'shared-config'
-                  && component.identity.artifactKey.startsWith('marketplace-')
-                ))
-                .map((component) => {
-                  if ('path' in component) return path.resolve(component.path);
-                  if (component.kind === 'native-plugin') return `native:${component.pluginId}`;
-                  return `shared:${component.label}`;
-                }),
+            return inspectOwnedComponents({
+              components: desired.ownedComponents,
+              nativeProbe: inspection.driver.probeNative,
+              verifyHealth: true,
             });
+          };
+          const [requestedInspection, otherInspection] = await Promise.all([
+            inspectScope(resolvedScope),
+            inspectScope(resolvedScope === 'user' ? 'project' : 'user'),
+          ]);
+          let state: 'absent' | 'present' | 'partial' | 'error' = requestedInspection.state;
+          let action: 'install' | 'upgrade' | 'reinstall' | 'keep' | 'block' = relation === 'requested'
+            ? options.command as 'install' | 'upgrade' | 'reinstall'
+            : state === 'absent' ? 'install' : 'upgrade';
+          let errorCode: string | undefined;
+          const hasForeignCollision = [...requestedInspection.components, ...otherInspection.components]
+            .some((component) => component.diagnostic?.includes('foreign collision'));
+          if (dependencyEnabled && hasForeignCollision) {
+            action = 'block';
+            errorCode = 'artifactCollision';
+          } else if (dependencyEnabled && relation === 'requested'
+            && (requestedInspection.state === 'error'
+              || (requestedInspection.state === 'partial' && options.command !== 'reinstall'))) {
+            action = 'block';
+            errorCode = 'dependencyNotReady';
+          }
+          if (!hasForeignCollision && relation === 'dependency'
+            && requestedInspection.state === 'present'
+            && otherInspection.state === 'present') {
+            action = 'block';
+            state = 'partial';
+            errorCode = 'dependencyScopeConflict';
+          } else if (!hasForeignCollision && relation === 'dependency'
+            && options.commandOptions.scope === 'project'
+            && otherInspection.state === 'present') {
+            resolvedScope = 'user';
+            state = 'present';
+          } else if (!hasForeignCollision && relation === 'dependency'
+            && options.commandOptions.scope === 'project'
+            && (otherInspection.state === 'partial' || otherInspection.state === 'error')) {
+            resolvedScope = 'user';
+            state = otherInspection.state;
+            action = 'block';
+            errorCode = 'dependencyNotReady';
+          } else if (!hasForeignCollision && relation === 'dependency'
+            && options.commandOptions.scope === 'user'
+            && otherInspection.state !== 'absent') {
+            action = 'block';
+            errorCode = 'dependencyScopeTooNarrow';
+          }
+          const resolvedInspection = resolvedScope === options.commandOptions.scope
+            ? requestedInspection
+            : otherInspection;
+          if (!hasForeignCollision && relation === 'dependency'
+            && (resolvedInspection.state === 'partial' || resolvedInspection.state === 'error')) {
+            action = 'block';
+            state = resolvedInspection.state;
+            errorCode ??= 'dependencyNotReady';
+          }
+          if (!hasForeignCollision && relation === 'dependency'
+            && platform === 'codex'
+            && resolvedScope === 'project'
+            && (entry.plugin.manifest.apps || !hasCodexProjectManagedArtifacts(entry.plugin))) {
+            action = 'block';
+            errorCode = 'dependencyTargetUnsupported';
+          }
+          try {
+            const contract = await readInstallationContract({
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              pluginName: entry.plugin.manifest.name,
+              platform,
+              scope: resolvedScope,
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+            });
+            if (relation === 'dependency' && state === 'present' && action !== 'block') {
+              if (!contract) {
+                action = 'block';
+                errorCode = 'dependencyContractMissing';
+              } else {
+                const contentDigest = entry.source.manifest.entries.find((candidate) =>
+                  candidate.name === entry.plugin.manifest.name)!.contentDigest;
+                action = contract.metadata.contentDigest === contentDigest ? 'keep' : 'upgrade';
+              }
+            }
+          } catch {
+            if (dependencyEnabled) {
+              action = 'block';
+              errorCode = 'dependencyContractInvalid';
+            }
+          }
+          let configDigest = options.command === 'cleanup' || options.command === 'uninstall'
+            ? neutralConfigDigest
+            : undefined;
+          if (entry.plugin.manifest.config?.schema
+            && (action === 'install' || action === 'upgrade' || action === 'reinstall')) {
+            const effective = await resolveEffectivePluginConfig({
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              pluginName: entry.plugin.manifest.name,
+              manifest: entry.plugin.manifest,
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+            });
+            if (effective.issues.length > 0) {
+              action = 'block';
+              errorCode = 'invalidConfig';
+            }
+            configDigest = `sha256:${crypto.createHash('sha256')
+              .update(stableDependencyPlanJson({
+                values: effective.values,
+                sources: effective.sources,
+                issues: effective.issues,
+                ignoredUnknownKeys: effective.ignoredUnknownKeys,
+                stores: {
+                  user: { exists: effective.stores.user.exists, values: effective.stores.user.values },
+                  project: { exists: effective.stores.project.exists, values: effective.stores.project.values },
+                  projectLocal: {
+                    exists: effective.stores.projectLocal.exists,
+                    values: effective.stores.projectLocal.values,
+                  },
+                },
+              })).digest('hex')}`;
+          }
+          targets.push({
+            pluginId: entry.pluginId,
+            pluginName: entry.plugin.manifest.name,
+            platform,
+            requestedScope: options.commandOptions.scope,
+            resolvedScope,
+            relation,
+            requiredBy: executionSelections.filter((candidate) =>
+              candidate.platform === platform
+              && candidate.entry.source.sourceId === entry.source.sourceId
+              && candidate.entry.plugin.manifest.dependencies?.includes(entry.plugin.manifest.name))
+              .map((candidate) => candidate.entry.pluginId).sort(),
+            state,
+            action,
+            order,
+            ...(errorCode ? { errorCode } : {}),
+            ...(configDigest ? { configDigest } : {}),
+          });
+        }
+        return createDependencyOperationPlan({
+          requestedPluginIds: selected.map((entry) => entry.pluginId),
+          resolvedPluginIds: closureEntries.map((entry) => entry.pluginId),
+          dependencyEdges: closureEntries.flatMap((entry) =>
+            (entry.plugin.manifest.dependencies ?? []).map((dependency) => ({
+              from: entry.pluginId,
+              to: formatPluginId({ sourceId: entry.source.sourceId, pluginName: dependency }),
+            }))),
+          sources: catalog.sources.map((item) => ({
+            sourceId: item.resolution!.sourceId,
+            sourceIdentity: item.resolution!.sourceIdentity,
+            resolvedCommit: item.resolution!.resolvedCommit,
+            manifestDigest: item.resolution!.manifestDigest,
+            snapshotDigest: item.resolution!.snapshotDigest,
+          })),
+          nodes: closureEntries.map((entry) => {
+            const manifestEntry = entry.source.manifest.entries.find((candidate) =>
+              candidate.name === entry.plugin.manifest.name)!;
+            return {
+              pluginId: entry.pluginId,
+              pluginName: entry.plugin.manifest.name,
+              pluginVersion: entry.plugin.manifest.version,
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              manifestDigest: manifestEntry.manifestDigest,
+              contentDigest: manifestEntry.contentDigest,
+            };
+          }),
+          targets,
+        });
+      };
+      if (options.runtime?.previewDependencyPlanOnly) {
+        const initialPlan = await createPlan();
+        await options.runtime?.dependencyPlanReviewPreflight?.(initialPlan);
+        const preview = mergeRebuildCommandResults([]);
+        preview.dependencyPlan = initialPlan;
+        return preview;
+      }
+      const operationLocks: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
+      try {
+        const lockTargets = executionSelections.flatMap(({ entry, platform }) =>
+          (['project', 'user'] as const).map((scope) => ({
+            pluginId: entry.pluginId,
+            platform,
+            scope,
+          })));
+        for (const target of [...lockTargets].sort((left, right) =>
+          comparePlatformScopeTarget(left, right)
+          || left.pluginId.localeCompare(right.pluginId, 'en'))) {
+          const entry = closureEntries.find((candidate) => candidate.pluginId === target.pluginId)!;
+          await rebuildCommandTestHooks?.beforeOperationLockAcquire?.({
+            command: options.command,
+            identity: {
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              pluginId: entry.pluginId,
+              pluginName: entry.plugin.manifest.name,
+              pluginVersion: entry.plugin.manifest.version,
+              platform: target.platform,
+              scope: target.scope,
+              cwd: options.commandOptions.cwd,
+            },
+          });
+          operationLocks.push(await acquireLifecycleOperationLock({
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            pluginName: entry.plugin.manifest.name,
+            platform: target.platform,
+            scope: target.scope,
+            cwd: options.commandOptions.cwd,
+            env: runtimeEnv,
+          }));
+        }
+        await options.runtime?.afterDependencyOperationLocksAcquire?.();
+        for (const { entry, platform } of executionSelections.filter((selection) =>
+          selectedIds.has(selection.entry.pluginId))) {
+          await options.runtime?.reviewPreflight?.({
+            command: options.command,
+            identity: {
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              pluginId: entry.pluginId,
+              pluginName: entry.plugin.manifest.name,
+              pluginVersion: entry.plugin.manifest.version,
+              platform,
+              scope: options.commandOptions.scope,
+              cwd: options.commandOptions.cwd,
+            },
+            configDigest: catalog.configDigest,
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            resolvedCommit: entry.source.resolvedCommit,
+            manifestDigest: entry.source.manifestDigest,
+            snapshotDigest: entry.source.snapshotDigest,
+            contentDigest: entry.source.manifest.entries.find((candidate) =>
+              candidate.name === entry.plugin.manifest.name)?.contentDigest,
+          });
+        }
+        for (const source of [...new Map(executionSelections.map(({ entry }) =>
+          [entry.source.sourceId, entry.source] as const)).values()]) {
+          const current = await validateCatalogSnapshot(source.rootDir);
+          if (current.manifestDigest !== source.manifestDigest
+            || current.snapshotDigest !== source.snapshotDigest) {
+            throw namespacedPreflightError(
+              'dependencyPlanStale: catalog source changed after operation locks were acquired.',
+              preflightTargets,
+            );
           }
         }
-        const collisions = preflightDesiredArtifactCollisions(collisionSelections);
-        if (collisions.length > 0) {
+        const lockedPlan = await createPlan();
+        await options.runtime?.dependencyPlanReviewPreflight?.(lockedPlan);
+        const blockers = lockedPlan.targets.filter((target) => target.action === 'block');
+        if (blockers.length > 0) {
+          const firstCode = blockers[0]!.errorCode ?? 'dependencyNotReady';
           throw namespacedPreflightError(
-            `artifactCollision: ${collisions.map((collision) =>
-              `${collision.targetKey}:${collision.artifactKey} (${collision.pluginIds.join(', ')})`).join('; ')}`,
+            `${firstCode}: dependency preflight blocked ${blockers.map((target) =>
+              `${target.pluginId}:${target.platform}/${target.resolvedScope}`).join(', ')}.`,
             preflightTargets,
           );
         }
-      }
+        const preparedTargets = new Map<string, PreparedRebuildTarget>();
+        const preparedTargetErrors = new Map<string, unknown>();
+        const lockedCollisionSelections = [];
+        for (const { entry, platform } of executionSelections) {
+          const planned = lockedPlan.targets.find((candidate) =>
+            candidate.pluginId === entry.pluginId && candidate.platform === platform)!;
+          if (planned.action !== 'install'
+            && planned.action !== 'upgrade'
+            && planned.action !== 'reinstall') continue;
+          const marketplaceName = entry.source.sourceId === catalog.primarySourceId
+            ? 'aw'
+            : `aw-${entry.source.sourceId}`;
+          try {
+            const target = await inspection.buildTarget({
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              pluginId: entry.pluginId,
+              marketplaceName,
+              marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId),
+              plugin: entry.plugin,
+              platform,
+              scope: planned.resolvedScope,
+              cwd: options.commandOptions.cwd,
+              command: planned.relation === 'dependency' ? planned.action : options.command,
+              catalog: toCatalogResolution(entry.source),
+              includeHistoricalLifecycleArtifacts: true,
+            });
+            preparedTargets.set(`${entry.pluginId}\0${platform}`, {
+              target,
+              driver: inspection.driver,
+              context: executionContext,
+            });
+            if (selectedIds.has(entry.pluginId)) {
+              await rebuildCommandTestHooks?.afterTargetBuilt?.({
+                command: options.command,
+                identity: target.identity,
+              });
+            }
+            lockedCollisionSelections.push({
+              pluginId: entry.pluginId,
+              targetKey: `${platform}/${target.identity.scope}`,
+              artifactKeys: (target.desiredOwnedComponents ?? target.ownedComponents)
+                .filter((component) => !(component.kind === 'shared-config'
+                  && component.identity.artifactKey.startsWith('marketplace-')))
+                .map((component) => 'path' in component
+                  ? path.resolve(component.path)
+                  : component.kind === 'native-plugin'
+                    ? `native:${component.pluginId}`
+                    : `shared:${component.label}`),
+            });
+          } catch (error) {
+            preparedTargetErrors.set(`${entry.pluginId}\0${platform}`, error);
+          }
+        }
+        const lockedCollisions = preflightDesiredArtifactCollisions(lockedCollisionSelections);
+        if (lockedCollisions.length > 0) {
+          throw namespacedPreflightError(
+            `artifactCollision: ${lockedCollisions.map((collision) =>
+              `${collision.targetKey} (${collision.pluginIds.join(', ')})`).join('; ')}`,
+            preflightTargets,
+          );
+        }
+        const removalContractsByTarget = new Map<string, ReadInstallationContract>();
+        const removalRequiredConsumers = new Map<string, Set<string>>();
+        if (options.command === 'cleanup' || options.command === 'uninstall') {
+          const removalStateInventory = await inventoryCatalogSourceReferences({
+            cwd: options.commandOptions.cwd,
+            env: runtimeEnv,
+            includeHistoricalProjects: true,
+          });
+          assertCatalogSourceInventoryComplete(removalStateInventory);
+          const contractInventory = await inventoryInstallationContracts({ env: runtimeEnv });
+          if (contractInventory.errors.length > 0) {
+            throw namespacedPreflightError(
+              'stateInventoryFailed: installation contract inventory is incomplete.',
+              preflightTargets,
+            );
+          }
+          const targetKey = (value: {
+            pluginId: string;
+            sourceIdentity: string;
+            platform: PlatformName;
+            scope: Scope;
+            projectKey: string | null;
+          }) => [
+            value.pluginId,
+            value.sourceIdentity,
+            value.platform,
+            value.scope,
+            value.projectKey ?? '',
+          ].join('\0');
+          const plannedTargets = new Map<string, {
+            selection: (typeof executionSelections)[number];
+            contractTarget: Awaited<ReturnType<typeof resolveInstallationContractTarget>>;
+          }>();
+          for (const selection of executionSelections) {
+            const planned = lockedPlan.targets.find((target) =>
+              target.pluginId === selection.entry.pluginId && target.platform === selection.platform)!;
+            const contractTarget = await resolveInstallationContractTarget({
+              sourceId: selection.entry.source.sourceId,
+              sourceIdentity: selection.entry.source.sourceIdentity,
+              pluginName: selection.entry.plugin.manifest.name,
+              platform: selection.platform,
+              scope: planned.resolvedScope,
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+            });
+            plannedTargets.set(targetKey({
+              pluginId: selection.entry.pluginId,
+              sourceIdentity: selection.entry.source.sourceIdentity,
+              platform: selection.platform,
+              scope: planned.resolvedScope,
+              projectKey: contractTarget.projectKey,
+            }), { selection, contractTarget });
+          }
+          const removalEdges = new Map<string, Set<string>>();
+          const inspectConsumer = async (options_: {
+            entry: (typeof available)[number];
+            platform: PlatformName;
+            scope: Scope;
+            cwd: string;
+          }): Promise<'absent' | 'live'> => {
+            const marketplaceName = options_.entry.source.sourceId === catalog.primarySourceId
+              ? 'aw'
+              : `aw-${options_.entry.source.sourceId}`;
+            options_.entry.plugin.marketplaceName = marketplaceName;
+            const consumerTarget = await inspection.buildTarget({
+              sourceId: options_.entry.source.sourceId,
+              sourceIdentity: options_.entry.source.sourceIdentity,
+              pluginId: options_.entry.pluginId,
+              marketplaceName,
+              marketplaceRoot: path.join(
+                resolveAwHome(runtimeEnv),
+                'marketplaces',
+                options_.entry.source.sourceId,
+              ),
+              plugin: options_.entry.plugin,
+              platform: options_.platform,
+              scope: options_.scope,
+              cwd: options_.cwd,
+              command: 'cleanup',
+              catalog: toCatalogResolution(options_.entry.source),
+              includeHistoricalLifecycleArtifacts: false,
+              readOnlyInspectionPlan: true,
+            });
+            const consumerInspection = await inspectOwnedComponents({
+              components: consumerTarget.ownedComponents,
+              nativeProbe: inspection.driver.probeNative,
+              verifyHealth: true,
+            });
+            return consumerInspection.state === 'absent' ? 'absent' : 'live';
+          };
+          for (const contract of contractInventory.contracts) {
+            const consumerKey = targetKey({
+              pluginId: contract.metadata.pluginId,
+              sourceIdentity: contract.metadata.sourceIdentity,
+              platform: contract.metadata.platform,
+              scope: contract.metadata.scope,
+              projectKey: contract.metadata.projectKey,
+            });
+            if (plannedTargets.has(consumerKey)) {
+              removalContractsByTarget.set(consumerKey, contract);
+            }
+            for (const dependency of contract.metadata.dependencies) {
+              const dependencyKey = targetKey({
+                pluginId: dependency.pluginId,
+                sourceIdentity: dependency.sourceIdentity,
+                platform: dependency.platform,
+                scope: dependency.scope,
+                projectKey: dependency.projectKey,
+              });
+              if (!plannedTargets.has(dependencyKey)) continue;
+              if (plannedTargets.has(consumerKey)) {
+                const outgoing = removalEdges.get(consumerKey) ?? new Set<string>();
+                outgoing.add(dependencyKey);
+                removalEdges.set(consumerKey, outgoing);
+                const dependencySelection = plannedTargets.get(dependencyKey)!.selection;
+                const consumerSelection = plannedTargets.get(consumerKey)!.selection;
+                const dependencyExecutionKey = `${dependencySelection.entry.pluginId}\0${dependencySelection.platform}`;
+                const required = removalRequiredConsumers.get(dependencyExecutionKey) ?? new Set<string>();
+                required.add(`${consumerSelection.entry.pluginId}\0${consumerSelection.platform}`);
+                removalRequiredConsumers.set(dependencyExecutionKey, required);
+                continue;
+              }
+              const consumerEntry = available.find((candidate) =>
+                candidate.pluginId === contract.metadata.pluginId
+                && candidate.source.sourceIdentity === contract.metadata.sourceIdentity);
+              if (!consumerEntry) {
+                throw namespacedPreflightError(
+                  `dependencyStillRequired: cannot inspect consumer ${contract.metadata.pluginId}.`,
+                  preflightTargets,
+                );
+              }
+              try {
+                if (await inspectConsumer({
+                  entry: consumerEntry,
+                  platform: contract.metadata.platform,
+                  scope: contract.metadata.scope,
+                  cwd: contract.metadata.projectKey ?? options.commandOptions.cwd,
+                }) !== 'absent') {
+                  throw new Error('consumer is present, partial, or unreadable');
+                }
+              } catch {
+                throw namespacedPreflightError(
+                  `dependencyStillRequired: ${dependency.pluginId} is required by ${contract.metadata.pluginId}.`,
+                  preflightTargets,
+                );
+              }
+            }
+          }
+          const currentConsumerCandidates = [...new Map(removalStateInventory.references.flatMap((reference) => {
+            if ((reference.kind !== 'namespacedOwner' && reference.kind !== 'namespacedMarketplace')
+              || !reference.sourceId
+              || !reference.sourceIdentity
+              || !reference.pluginName
+              || (reference.platform !== 'codex' && reference.platform !== 'claude')
+              || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
+            const entry = available.find((candidate) =>
+              candidate.source.sourceId === reference.sourceId
+              && candidate.source.sourceIdentity === reference.sourceIdentity
+              && candidate.plugin.manifest.name === reference.pluginName);
+            if (!entry) return [];
+            if (reference.scope === 'project' && !reference.projectKey) {
+              throw namespacedPreflightError(
+                `dependencyStillRequired: cannot inspect project consumer ${entry.pluginId} without its project identity.`,
+                preflightTargets,
+              );
+            }
+            const key = [
+              entry.pluginId,
+              reference.platform,
+              reference.scope,
+              reference.projectKey ?? '',
+            ].join('\0');
+            return [[key, {
+              entry,
+              platform: reference.platform,
+              scope: reference.scope,
+              projectKey: reference.projectKey ?? null,
+            }] as const];
+          })).values()];
+          for (const [dependencyKey, dependencyTarget] of plannedTargets) {
+            const dependencyPluginName = dependencyTarget.selection.entry.plugin.manifest.name;
+            for (const consumer of currentConsumerCandidates) {
+              if (consumer.entry.source.sourceId
+                  !== dependencyTarget.selection.entry.source.sourceId
+                || !consumer.entry.plugin.manifest.dependencies?.includes(dependencyPluginName)
+                || consumer.platform !== dependencyTarget.selection.platform
+                || (consumer.scope === 'user'
+                  && dependencyTarget.contractTarget.scope !== 'user')) continue;
+              const consumerContractTarget = await resolveInstallationContractTarget({
+                sourceId: consumer.entry.source.sourceId,
+                sourceIdentity: consumer.entry.source.sourceIdentity,
+                pluginName: consumer.entry.plugin.manifest.name,
+                platform: consumer.platform,
+                scope: consumer.scope,
+                cwd: consumer.projectKey ?? options.commandOptions.cwd,
+                env: runtimeEnv,
+              });
+              const consumerKey = targetKey({
+                pluginId: consumer.entry.pluginId,
+                sourceIdentity: consumer.entry.source.sourceIdentity,
+                platform: consumer.platform,
+                scope: consumer.scope,
+                projectKey: consumerContractTarget.projectKey,
+              });
+              const hasValidContract = contractInventory.contracts.some((contract) =>
+                targetKey({
+                  pluginId: contract.metadata.pluginId,
+                  sourceIdentity: contract.metadata.sourceIdentity,
+                  platform: contract.metadata.platform,
+                  scope: contract.metadata.scope,
+                  projectKey: contract.metadata.projectKey,
+                }) === consumerKey
+                && contract.metadata.contentDigest === consumer.entry.source.manifest.entries.find((entry) =>
+                  entry.name === consumer.entry.plugin.manifest.name)?.contentDigest);
+              if (hasValidContract) continue;
+              if (plannedTargets.has(consumerKey)) {
+                const outgoing = removalEdges.get(consumerKey) ?? new Set<string>();
+                outgoing.add(dependencyKey);
+                removalEdges.set(consumerKey, outgoing);
+                const dependencyExecutionKey = `${dependencyTarget.selection.entry.pluginId}\0${consumer.platform}`;
+                const required = removalRequiredConsumers.get(dependencyExecutionKey) ?? new Set<string>();
+                required.add(`${consumer.entry.pluginId}\0${consumer.platform}`);
+                removalRequiredConsumers.set(dependencyExecutionKey, required);
+                continue;
+              }
+              try {
+                if (await inspectConsumer({
+                  entry: consumer.entry,
+                  platform: consumer.platform,
+                  scope: consumer.scope,
+                  cwd: consumer.projectKey ?? options.commandOptions.cwd,
+                }) !== 'absent') {
+                  throw new Error('consumer is present, partial, or unreadable');
+                }
+              } catch {
+                throw namespacedPreflightError(
+                  `dependencyStillRequired: ${dependencyTarget.selection.entry.pluginId} is required by ${consumer.entry.pluginId}.`,
+                  preflightTargets,
+                );
+              }
+            }
+          }
+          const orderedKeys: string[] = [];
+          const remaining = new Set(plannedTargets.keys());
+          while (remaining.size > 0) {
+            const ready = [...remaining].filter((candidate) =>
+              ![...remaining].some((other) => removalEdges.get(other)?.has(candidate)))
+              .sort();
+            if (ready.length === 0) {
+              throw namespacedPreflightError(
+                'dependencyContractInvalid: installation contract removal graph contains a cycle.',
+                preflightTargets,
+              );
+            }
+            for (const key of ready) {
+              orderedKeys.push(key);
+              remaining.delete(key);
+            }
+          }
+          executionSelections = orderedKeys.map((key) => plannedTargets.get(key)!.selection);
+        }
       const results: RebuildCommandResult[] = [];
+      const dependencyStates = new Map<string, 'completed' | 'kept' | 'failed' | 'skipped'>();
       for (const { entry, platform } of executionSelections) {
-        const marketplaceName = entry.source.sourceId === catalog.primarySourceId
-          ? 'aw'
-          : `aw-${entry.source.sourceId}`;
-        const namespacedTarget = {
+        const planned = lockedPlan.targets.find((target) =>
+          target.pluginId === entry.pluginId && target.platform === platform)!;
+        const directDependencyIds = (entry.plugin.manifest.dependencies ?? []).map((pluginName) =>
+          formatPluginId({ sourceId: entry.source.sourceId, pluginName }));
+        const failedDependency = directDependencyIds.find((pluginId) => {
+          const state = dependencyStates.get(`${pluginId}\0${platform}`);
+          return state === 'failed' || state === 'skipped';
+        });
+        const failedConsumer = [...(removalRequiredConsumers.get(`${entry.pluginId}\0${platform}`) ?? [])]
+          .find((consumerKey) => {
+            const state = dependencyStates.get(consumerKey);
+            return state === 'failed' || state === 'skipped';
+          });
+        const identity: RebuildTargetIdentity = {
           sourceId: entry.source.sourceId,
           sourceIdentity: entry.source.sourceIdentity,
           pluginId: entry.pluginId,
+          pluginName: entry.plugin.manifest.name,
+          pluginVersion: entry.plugin.manifest.version,
+          platform,
+          scope: planned.resolvedScope,
+          cwd: options.commandOptions.cwd,
+        };
+        if (failedDependency || failedConsumer || planned.action === 'block') {
+          const code = failedConsumer
+            ? 'dependencyStillRequired'
+            : failedDependency ? 'dependencyInstallFailed' : planned.errorCode ?? 'dependencyNotReady';
+          const message = `${code}: ${failedConsumer
+            ? `${entry.pluginId} retained because consumer ${failedConsumer.split('\0', 1)[0]} was not removed.`
+            : failedDependency
+            ? `${entry.pluginId} requires failed dependency ${failedDependency}.`
+            : `${entry.pluginId} dependency preflight is blocked.`}`;
+          const result = failedResult(options.command, identity, message);
+          results.push({
+            platforms: [platform], plugins: [], warnings: [], rebuildResults: [result],
+            targetResults: [{
+              target: identity,
+              action: failedDependency || failedConsumer ? 'skipped' : planned.action,
+              state: 'failed',
+              errorCode: code,
+              message,
+            }],
+            overallState: 'failed', nativePlugins: {}, repoManagedArtifacts: [],
+            receiptTargets: [{
+              pluginName: identity.pluginName, pluginId: identity.pluginId,
+              sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
+            }],
+          });
+          dependencyStates.set(`${entry.pluginId}\0${platform}`,
+            failedDependency || failedConsumer ? 'skipped' : 'failed');
+          continue;
+        }
+        if (planned.action === 'keep') {
+          const result: RebuildResult = {
+            status: 'succeeded', command: options.command, target: identity, actions: [],
+            cleanupAttempted: false, removed: [], absent: [], residual: [], quarantined: [], failures: [],
+          };
+          results.push({
+            platforms: [platform], plugins: [identity.pluginName], warnings: [], rebuildResults: [result],
+            targetResults: [{ target: identity, action: 'keep', state: 'completed' }],
+            overallState: 'succeeded', nativePlugins: {}, repoManagedArtifacts: [],
+            receiptTargets: [{
+              pluginName: identity.pluginName, pluginId: identity.pluginId,
+              sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
+            }],
+          });
+          dependencyStates.set(`${entry.pluginId}\0${platform}`, 'kept');
+          continue;
+        }
+        const marketplaceName = entry.source.sourceId === catalog.primarySourceId
+          ? 'aw'
+          : `aw-${entry.source.sourceId}`;
+        const namespacedSource = {
+          sourceId: entry.source.sourceId,
+          sourceIdentity: entry.source.sourceIdentity,
           marketplaceName,
           marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId),
         };
         entry.plugin.marketplaceName = marketplaceName;
-        results.push(await runSingleSourceRebuildCommand({
+        let executionResult = await runSingleSourceRebuildCommand({
           ...options,
+          command: planned.relation === 'dependency'
+            ? planned.action as 'install' | 'upgrade' | 'reinstall'
+            : options.command,
           pluginNames: [entry.plugin.manifest.name],
           all: false,
-          commandOptions: { ...options.commandOptions, platform },
+          commandOptions: { ...options.commandOptions, platform, scope: planned.resolvedScope },
           runtime: {
             ...options.runtime,
             env: runtimeEnv,
             catalogResolution: toCatalogResolution(entry.source),
-            namespacedTarget,
+            namespacedSource,
+            operationLeaseHeld: true,
+            installationContractHandledExternally: true,
+            dependencyReviewPreflightHandled: true,
+            targetBuiltHookHandled: true,
+            preparedTarget: preparedTargets.get(`${entry.pluginId}\0${platform}`),
+            preparedTargetError: preparedTargetErrors.get(`${entry.pluginId}\0${platform}`),
             expectedCatalogConfigDigest: catalog.configDigest,
-            resolvedReviewEvidence: {
-              configDigest: catalog.configDigest,
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              resolvedCommit: entry.source.resolvedCommit,
-              manifestDigest: entry.source.manifestDigest,
-              snapshotDigest: entry.source.snapshotDigest,
-              contentDigest: entry.source.manifest.entries.find((candidate) =>
-                candidate.name === entry.plugin.manifest.name)?.contentDigest,
+            resolvedReviewEvidenceByPlugin: {
+              [entry.plugin.manifest.name]: {
+                configDigest: catalog.configDigest,
+                sourceId: entry.source.sourceId,
+                sourceIdentity: entry.source.sourceIdentity,
+                resolvedCommit: entry.source.resolvedCommit,
+                manifestDigest: entry.source.manifestDigest,
+                snapshotDigest: entry.source.snapshotDigest,
+                contentDigest: entry.source.manifest.entries.find((candidate) =>
+                  candidate.name === entry.plugin.manifest.name)?.contentDigest,
+              },
             },
           },
-        }));
+        });
+        if (executionResult.overallState === 'succeeded') {
+          const contractTarget = await resolveInstallationContractTarget({
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            pluginName: entry.plugin.manifest.name,
+            platform,
+            scope: planned.resolvedScope,
+            cwd: options.commandOptions.cwd,
+            env: runtimeEnv,
+          });
+          const dependencies: InstallationDependencyPlacement[] = options.command === 'cleanup'
+            || options.command === 'uninstall' ? [] : directDependencyIds.map((pluginId) => {
+            const dependencyTarget = lockedPlan.targets.find((target) =>
+              target.pluginId === pluginId && target.platform === platform)!;
+            return {
+              pluginId,
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              platform,
+              scope: dependencyTarget.resolvedScope,
+              projectKey: dependencyTarget.resolvedScope === 'project'
+                ? contractTarget.projectKey
+                : null,
+            };
+          });
+          if (options.command === 'cleanup' || options.command === 'uninstall') {
+            const ownContract = [...removalContractsByTarget.values()].find((contract) =>
+              contract.metadata.pluginId === entry.pluginId
+              && contract.metadata.sourceIdentity === entry.source.sourceIdentity
+              && contract.metadata.platform === platform
+              && contract.metadata.scope === planned.resolvedScope
+              && (planned.resolvedScope === 'user'
+                || contract.metadata.projectKey === contractTarget.projectKey));
+            if (ownContract) {
+              try {
+                await removeInstallationContract({
+                  sourceId: entry.source.sourceId,
+                  sourceIdentity: entry.source.sourceIdentity,
+                  pluginName: entry.plugin.manifest.name,
+                  platform,
+                  scope: planned.resolvedScope,
+                  cwd: ownContract.metadata.projectKey ?? options.commandOptions.cwd,
+                  env: runtimeEnv,
+                  expectedMetadataIntegrityDigest: ownContract.metadata.metadataIntegrityDigest,
+                });
+              } catch (error) {
+                const message = `dependencyContractInvalid: ${error instanceof Error ? error.message : String(error)}`;
+                const failed = failedResult(options.command, identity, message, 'postcheck.inspect');
+                executionResult = {
+                  ...executionResult,
+                  rebuildResults: [failed],
+                  targetResults: [{ target: identity, action: planned.action, state: 'failed',
+                    errorCode: 'dependencyContractInvalid', message }],
+                  overallState: 'failed',
+                };
+              }
+            }
+          } else {
+            let staged;
+            try {
+              staged = await stageInstallationContract({
+                sourceId: entry.source.sourceId,
+                sourceIdentity: entry.source.sourceIdentity,
+                pluginName: entry.plugin.manifest.name,
+                pluginVersion: entry.plugin.manifest.version,
+                contentDigest: entry.source.manifest.entries.find((candidate) =>
+                  candidate.name === entry.plugin.manifest.name)!.contentDigest,
+                platform,
+                scope: planned.resolvedScope,
+                cwd: options.commandOptions.cwd,
+                dependencies,
+                env: runtimeEnv,
+              });
+              await promoteInstallationContract(staged);
+            } catch (error) {
+              if (staged) await discardInstallationContract(staged).catch(() => undefined);
+              const message = `dependencyContractInvalid: ${error instanceof Error ? error.message : String(error)}`;
+              const failed = failedResult(options.command, identity, message, 'postcheck.inspect');
+              executionResult = {
+                ...executionResult,
+                rebuildResults: [failed],
+                targetResults: [{ target: identity, action: planned.action, state: 'failed',
+                  errorCode: 'dependencyContractInvalid', message }],
+                overallState: 'failed',
+              };
+            }
+          }
+        }
+        results.push(executionResult);
+        dependencyStates.set(`${entry.pluginId}\0${platform}`,
+          executionResult.overallState === 'succeeded' ? 'completed' : 'failed');
       }
-      return leaseSafeRebuildResult(mergeRebuildCommandResults(results));
+      const merged = mergeRebuildCommandResults(results);
+      merged.dependencyPlan = lockedPlan;
+      return leaseSafeRebuildResult(merged);
+      } finally {
+        for (const lock of operationLocks.reverse()) await releaseRebuildOperationLease(lock);
+      }
     },
     });
   } catch (error) {
@@ -1272,57 +1937,10 @@ export async function runRebuildCommand(options: {
     }
     if (options.command !== 'cleanup' && options.command !== 'uninstall') throw error;
     const message = error instanceof Error ? error.message : String(error);
-    if (!(
-      (message.includes('Catalog source') && message.includes('does not exist'))
-      || message.startsWith('Cannot resolve required catalog sources:')
-      || message.includes('does not exist in the required catalog source set')
-    )) throw error;
-    if (selectors.length !== 1 || !selectors[0]!.sourceId) throw error;
-    const selector = selectors[0]!;
-    const sourceId = selector.sourceId!;
-    const inventory = await inventoryCatalogSourceReferences({
-      cwd: options.commandOptions.cwd,
-      env: runtimeEnv,
-    });
-    assertCatalogSourceInventoryComplete(inventory);
-    const requestedPlatforms = new Set(selectedPlatforms(options.commandOptions.platform));
-    const liveEvidence = inventory.references.filter((reference) =>
-      (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
-      && reference.sourceId === sourceId
-      && reference.pluginName === selector.pluginName
-      && reference.sourceIdentity
-      && reference.scope === options.commandOptions.scope
-      && reference.platform
-      && requestedPlatforms.has(reference.platform as PlatformName));
-    if (liveEvidence.length === 0) throw error;
-    const identities = new Set(liveEvidence.map((reference) => reference.sourceIdentity!));
-    if (identities.size !== 1) {
-      throw new Error(`sourceChanged: ${sourceId}/${selector.pluginName} live state has conflicting source identities.`);
+    if ((message.includes('Catalog source') && message.includes('does not exist'))
+      || message.includes('does not exist in the required catalog source set')) {
+      throw namespacedPreflightError(`sourceMissing: ${message}`, liveTargets, legacyLiveTargets);
     }
-    const nativeEvidence = liveEvidence.filter((reference) => reference.kind === 'namespacedMarketplace');
-    const marketplaceNames = new Set(nativeEvidence.map((reference) => reference.marketplaceName).filter(Boolean));
-    if (marketplaceNames.size > 1 || nativeEvidence.some((reference) => !reference.marketplaceName)) {
-      throw new Error(`sourceMissing: ${sourceId}/${selector.pluginName} native marketplace evidence is invalid.`);
-    }
-    const sourceIdentity = [...identities][0]!;
-    const marketplaceName = [...marketplaceNames][0] ?? `aw-${sourceId}`;
-    const pluginId = formatPluginId({ sourceId, pluginName: selector.pluginName });
-    return runSingleSourceRebuildCommand({
-      ...options,
-      pluginNames: [selector.pluginName],
-      runtime: {
-        ...options.runtime,
-        env: runtimeEnv,
-        catalogResolution: { rootDir: resolveAwHome(runtimeEnv), source: 'local' },
-        lostSourceRecovery: true,
-        namespacedTarget: {
-          sourceId,
-          sourceIdentity,
-          pluginId,
-          marketplaceName,
-          marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', sourceId),
-        },
-      },
-    });
+    throw error;
   }
 }

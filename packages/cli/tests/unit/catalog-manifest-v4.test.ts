@@ -137,6 +137,7 @@ describe('catalog manifest schema 4', () => {
       name: 'demo',
       version: '1.2.0',
       description: 'demo plugin',
+      dependencies: ['shared-runtime'],
       compatibility: { aw: { minVersion: '0.0.0' } },
       marketplace: {
         category: 'workflow',
@@ -156,6 +157,7 @@ describe('catalog manifest schema 4', () => {
     expect(entry.contentDigest).toBe(await calculateCatalogEntryContentDigest(pluginRoot));
     expect(entry.artifactDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(entry.manifestDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(entry).not.toHaveProperty('dependencies');
   });
 
   it('binds artifact and content digests to the canonical Git executable mode', async () => {
