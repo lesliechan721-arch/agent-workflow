@@ -7,6 +7,7 @@ import type { CommandExecutionContext } from '../commands/runtime.js';
 import type {
   GeneratedArtifact,
   PlatformName,
+  DistributionName,
   PluginLifecycleEvent,
   PluginLifecycleRuntimeOs,
   PluginLifecycleScriptEntry,
@@ -389,11 +390,15 @@ export function buildPluginScriptSpawnEnv(options: {
   tempDir: string;
   plugin: { name: string; version: string };
   event: string;
-  platform: PlatformName;
+  platform?: PlatformName;
+  distribution?: DistributionName;
   scope: Scope;
   bundleRoot: string;
   runtimeOs?: PluginLifecycleRuntimeOs;
 }): NodeJS.ProcessEnv {
+  if ((options.platform === undefined) === (options.distribution === undefined)) {
+    throw new Error('Plugin script spawn requires exactly one platform or distribution surface.');
+  }
   const input = options.commandEnv;
   const runtime = options.runtimeOs ?? runtimeOs();
   const output: NodeJS.ProcessEnv = {
@@ -406,9 +411,10 @@ export function buildPluginScriptSpawnEnv(options: {
     AW_PLUGIN_NAME: options.plugin.name,
     AW_PLUGIN_VERSION: options.plugin.version,
     AW_PLUGIN_EVENT: options.event,
-    AW_PLUGIN_PLATFORM: options.platform,
     AW_PLUGIN_SCOPE: options.scope,
   };
+  if (options.platform) output.AW_PLUGIN_PLATFORM = options.platform;
+  if (options.distribution) output.AW_PLUGIN_DISTRIBUTION = options.distribution;
 
   if (runtime === 'win32') {
     output.USERPROFILE = path.join(options.tempDir, 'home');

@@ -151,6 +151,76 @@ describe('buildConfig validation', () => {
     });
   });
 
+  it('keeps native runtime file defaults and accepts explicit portable distribution projection', () => {
+    const native = validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      buildConfig: {
+        skillRuntimeFiles: [{
+          skill: 'native-skill',
+          target: 'references/native.txt',
+          source: './native.txt',
+        }],
+      },
+    });
+    expect(native.buildConfig?.skillRuntimeFiles?.[0]?.distributions).toBeUndefined();
+
+    const portable = validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      buildConfig: {
+        skillRuntimeFiles: [{
+          skill: 'portable-skill',
+          target: 'references/portable.txt',
+          distributions: ['agent-skills'],
+          source: './portable.txt',
+        }],
+      },
+    });
+    expect(portable.buildConfig?.skillRuntimeFiles?.[0]).toMatchObject({
+      distributions: ['agent-skills'],
+    });
+  });
+
+  it('requires an agent-skills distribution declaration for portable dynamic targets', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      artifacts: {
+        targets: [{
+          id: 'portable',
+          distribution: 'agent-skills',
+          target: 'agent-skills.skill',
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'portable',
+        }],
+      },
+    })).toThrow('require distributions.agentSkills');
+  });
+
+  it('rejects empty extensions as a portable-only plugin and accepts a real native capability', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      extensions: {},
+      distributions: { agentSkills: { skills: './portable-skills' } },
+    })).toThrow('portable-only plugins');
+
+    expect(validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+    }).distributions?.agentSkills?.skills).toBe('./portable-skills');
+  });
+
+  it('rejects unsafe portable distribution paths', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: '../portable-skills' } },
+    })).toThrow('must start with "./"');
+  });
+
   it('accepts only an explicit deterministic build cache declaration with a Node build', () => {
     const manifest = validatePluginManifest('/tmp/plugin', {
       ...baseManifest,

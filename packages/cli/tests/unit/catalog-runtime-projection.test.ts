@@ -20,6 +20,8 @@ async function createPlugin(options: {
   products?: string[];
   buildConfig?: Record<string, unknown>;
   scripts?: Record<string, unknown>;
+  distributions?: Record<string, unknown>;
+  artifacts?: Record<string, unknown>;
   files?: Record<string, string>;
 }): Promise<PluginMeta> {
   const pluginRoot = path.join(options.root, options.name);
@@ -41,6 +43,8 @@ async function createPlugin(options: {
     },
     ...(options.buildConfig ? { buildConfig: options.buildConfig } : {}),
     ...(options.scripts ? { scripts: options.scripts } : {}),
+    ...(options.distributions ? { distributions: options.distributions } : {}),
+    ...(options.artifacts ? { artifacts: options.artifacts } : {}),
   }, { spaces: 2 });
   await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: demo\n---\n');
   await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'agents', 'openai.yaml'), 'interface:\n  display_name: Demo\n');
@@ -56,6 +60,66 @@ afterEach(async () => {
 });
 
 describe('catalog runtime projection', () => {
+  it('copies portable runtime projections and artifact imports into the consumer bundle', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-runtime-projection-'));
+    tempRoots.push(root);
+    const provider = await createPlugin({
+      root,
+      name: 'portable-provider',
+      buildConfig: { runtimeExports: [{ name: 'registry', source: './registry.json' }] },
+      files: { 'registry.json': '{"portable":true}\n' },
+    });
+    const consumer = await createPlugin({
+      root,
+      name: 'portable-consumer',
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      artifacts: {
+        targets: [{
+          id: 'dynamic-portable',
+          distribution: 'agent-skills',
+          target: 'agent-skills.skill',
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'dynamic-portable',
+          runtimeImports: [{ name: 'registry', plugin: 'portable-provider', export: 'registry' }],
+        }],
+      },
+      buildConfig: {
+        skillRuntimeFiles: [{
+          skill: 'demo',
+          target: 'references/registry.json',
+          distributions: ['agent-skills'],
+          import: { plugin: 'portable-provider', export: 'registry' },
+        }],
+      },
+      files: {
+        'portable-skills/demo/SKILL.md': '---\nname: demo\ndescription: portable demo\n---\n',
+      },
+    });
+    const outputRoot = path.join(root, 'portable-bundle');
+    const result = await bundleLocalPlugin(consumer, outputRoot, {
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    });
+
+    await expect(fs.readFile(
+      path.join(outputRoot, 'agent-skills', 'skills', 'demo', 'references', 'registry.json'),
+      'utf8',
+    )).resolves.toBe('{"portable":true}\n');
+    expect(result.runtimeProjection.skillRuntimeFiles).toMatchObject([{
+      distribution: 'agent-skills',
+      provider: 'portable-provider',
+    }]);
+    const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
+    const resolvedImport = bundleManifest.artifacts.targets[0].runtimeImports[0].resolved;
+    expect(resolvedImport).toMatchObject({
+      providerPluginId: 'portable-provider',
+      source: './registry.json',
+    });
+    await expect(fs.readFile(path.join(outputRoot, resolvedImport.path), 'utf8'))
+      .resolves.toBe('{"portable":true}\n');
+  });
+
   it('binds an explicit CLI virtual root to build provenance and projected bytes', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-virtual-projection-'));
     tempRoots.push(root);

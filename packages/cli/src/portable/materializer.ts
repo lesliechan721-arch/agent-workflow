@@ -1,0 +1,481 @@
+import crypto from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import YAML from 'yaml';
+
+import type {
+  CatalogFreshnessPolicy,
+  ArtifactRuntimeImportDefinition,
+  PluginMeta,
+  PortablePluginRelation,
+  PortableSkillCandidate,
+  Scope,
+} from '../types.js';
+import type {
+  CatalogSourceProviderSet,
+} from '../utils/multi-source-catalog.js';
+import { validateArtifactPlan } from '../utils/artifact-plan.js';
+import { runArtifactRenderer, resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
+import { calculateFileDigest } from '../utils/bundle-integrity.js';
+import {
+  validatePortableSkillDirectory,
+  type DynamicSkillTree,
+} from '../utils/dynamic-skill-tree.js';
+import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { resolvePluginsFromCatalog } from '../utils/manifest.js';
+import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
+import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import { collectSensitivePluginConfigValues } from '../utils/plugin-scripts.js';
+import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
+import { isSkillAuthorOnlyPath } from '../utils/skill-authoring.js';
+
+export interface PortableMaterializationProvenance {
+  schemaVersion: 1;
+  pluginId: string;
+  scope: Scope;
+  dependencyPluginIds: string[];
+  digest: string;
+  skills: Array<PortableSkillCandidate & { digest: string }>;
+}
+
+export interface MaterializePortableSkillsOptions {
+  plugins: readonly PluginMeta[];
+  pluginId: string;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  outputRoot?: string;
+}
+
+export interface MaterializedPortableSkills {
+  rootDir: string;
+  pluginId: string;
+  scope: Scope;
+  candidates: PortableSkillCandidate[];
+  dependencyPluginIds: string[];
+  digest: string;
+  provenancePath: string;
+  cleanup(): Promise<void>;
+}
+
+export interface MaterializePortableSkillsFromCatalogOptions {
+  selector: string;
+  scope: Scope;
+  cwd: string;
+  cliVersion: string;
+  freshnessPolicy?: CatalogFreshnessPolicy;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  configSnapshot?: CatalogSourcesConfigSnapshot;
+  providers?: CatalogSourceProviderSet;
+}
+
+interface CandidateTree {
+  plugin: PluginMeta;
+  relation: PortablePluginRelation;
+  dynamic: boolean;
+  tree: DynamicSkillTree;
+}
+
+function pluginId(plugin: PluginMeta): string {
+  return plugin.pluginId ?? (plugin.sourceId
+    ? `${plugin.sourceId}/${plugin.manifest.name}`
+    : plugin.manifest.name);
+}
+
+function resolveRequestedPlugin(plugins: readonly PluginMeta[], requestedId: string): PluginMeta {
+  const matches = plugins.filter((plugin) =>
+    pluginId(plugin) === requestedId || plugin.manifest.name === requestedId);
+  if (matches.length !== 1) {
+    throw new Error(matches.length === 0
+      ? `Unknown portable plugin "${requestedId}".`
+      : `Ambiguous portable plugin "${requestedId}".`);
+  }
+  return matches[0]!;
+}
+
+function assertSameSource(root: PluginMeta, closure: readonly PluginMeta[]): void {
+  for (const plugin of closure) {
+    if (
+      (root.sourceId !== undefined && plugin.sourceId !== root.sourceId)
+      || (root.sourceIdentity !== undefined && plugin.sourceIdentity !== root.sourceIdentity)
+    ) {
+      throw new Error('Portable dependency closure must resolve from one Catalog source.');
+    }
+  }
+}
+
+function relationFor(root: PluginMeta, plugin: PluginMeta): PortablePluginRelation {
+  if (plugin.manifest.name === root.manifest.name) return 'requested';
+  if ((root.manifest.dependencies ?? []).includes(plugin.manifest.name)) return 'direct';
+  return 'transitive';
+}
+
+function stableDigest(entries: readonly [string, Buffer][]): string {
+  const hash = crypto.createHash('sha256');
+  for (const [relativePath, content] of entries) {
+    hash.update(relativePath, 'utf8');
+    hash.update('\0');
+    hash.update(content);
+    hash.update('\0');
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function treeDigest(tree: DynamicSkillTree): string {
+  return stableDigest(Object.entries(tree.files).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function skillDescription(tree: DynamicSkillTree): string {
+  const content = tree.files['SKILL.md']?.toString('utf8') ?? '';
+  const end = content.indexOf('\n---\n', 4);
+  const frontmatter = end >= 0 ? YAML.parse(content.slice(4, end)) as Record<string, unknown> : {};
+  return typeof frontmatter.description === 'string' ? frontmatter.description : '';
+}
+
+async function copyTreeFiles(files: Record<string, Buffer>, targetRoot: string): Promise<void> {
+  for (const [relativePath, content] of Object.entries(files)) {
+    const targetPath = path.join(targetRoot, ...relativePath.split('/'));
+    await fs.ensureDir(path.dirname(targetPath));
+    await fs.writeFile(targetPath, content);
+  }
+}
+
+async function overlayDirectory(
+  sourceRoot: string,
+  files: Record<string, Buffer>,
+): Promise<void> {
+  const visit = async (current: string, parent = ''): Promise<void> => {
+    const stats = await fs.lstat(current).catch(() => undefined);
+    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(`Portable Skill source must be a regular directory: ${sourceRoot}.`);
+    }
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const relativePath = parent ? `${parent}/${entry.name}` : entry.name;
+      if (isSkillAuthorOnlyPath(relativePath)) continue;
+      const absolutePath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Portable Skill source contains a symbolic link: ${relativePath}.`);
+      }
+      if (entry.isDirectory()) {
+        await visit(absolutePath, relativePath);
+      } else if (entry.isFile()) {
+        files[relativePath] = await fs.readFile(absolutePath);
+      } else {
+        throw new Error(`Portable Skill source contains a non-regular file: ${relativePath}.`);
+      }
+    }
+  };
+  await visit(sourceRoot);
+}
+
+function assertNoSensitiveValues(
+  candidate: CandidateTree,
+  sensitiveValues: readonly string[],
+): void {
+  for (const [relativePath, content] of Object.entries(candidate.tree.files)) {
+    const text = content.toString('utf8');
+    if (/\{\{[^{}]+\}\}/u.test(text)) {
+      throw new Error(`Portable Skill "${candidate.tree.skillKey}" contains an unresolved template in "${relativePath}".`);
+    }
+    const leaked = sensitiveValues.find((value) => value.length > 0 && text.includes(value));
+    if (leaked) {
+      throw new Error(`Portable Skill "${candidate.tree.skillKey}" exposes sensitive config in "${relativePath}".`);
+    }
+  }
+}
+
+async function assertRuntimeImports(plugin: PluginMeta): Promise<void> {
+  const imports = (plugin.manifest.artifacts?.targets ?? [])
+    .filter((target) => target.distribution === 'agent-skills')
+    .flatMap((target) => target.runtimeImports ?? []);
+  for (const runtimeImport of imports) {
+    await assertRuntimeImport(plugin, runtimeImport);
+  }
+}
+
+async function assertRuntimeImport(
+  plugin: PluginMeta,
+  runtimeImport: ArtifactRuntimeImportDefinition,
+): Promise<void> {
+  if (!runtimeImport.resolved) {
+    throw new Error(`Artifact runtime import "${runtimeImport.name}" is not resolved in the consumer bundle.`);
+  }
+  const root = await fs.realpath(plugin.rootDir);
+  const importPath = path.join(root, runtimeImport.resolved.path.replace(/^\.\//u, ''));
+  const stats = await fs.lstat(importPath).catch(() => undefined);
+  if (!stats?.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Artifact runtime import "${runtimeImport.name}" is missing from the consumer bundle.`);
+  }
+  const realImport = await fs.realpath(importPath);
+  const relative = path.relative(root, realImport);
+  if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Artifact runtime import "${runtimeImport.name}" escapes the consumer bundle.`);
+  }
+  if (await calculateFileDigest(realImport) !== runtimeImport.resolved.digest) {
+    throw new Error(`Artifact runtime import "${runtimeImport.name}" has an invalid digest.`);
+  }
+}
+
+async function materializePluginCandidates(options: {
+  plugin: PluginMeta;
+  relation: PortablePluginRelation;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<CandidateTree[]> {
+  const distribution = options.plugin.manifest.distributions?.agentSkills;
+  if (!distribution) return [];
+  const dynamicTargets = (options.plugin.manifest.artifacts?.targets ?? [])
+    .filter((target) =>
+      target.distribution === 'agent-skills'
+      && target.scopes.includes(options.scope));
+  const dynamicKeys = new Set(dynamicTargets.map((target) => target.skillKey!));
+  const output: CandidateTree[] = [];
+  const config = await resolveArtifactRenderConfig({
+    sourceId: options.plugin.sourceId,
+    sourceIdentity: options.plugin.sourceIdentity,
+    pluginName: options.plugin.manifest.name,
+    manifest: options.plugin.manifest,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
+  });
+  if (config.issues.length > 0) {
+    throw new Error(`Portable materialization config is invalid: ${config.issues.map((issue) => issue.message).join('; ')}`);
+  }
+  const staticRoot = distribution.skills
+    ? path.join(options.plugin.rootDir, distribution.skills.replace(/^\.\//u, ''))
+    : undefined;
+
+  if (staticRoot) {
+    const entries = await fs.readdir(staticRoot, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Portable Skills root contains a symbolic link: ${entry.name}.`);
+      }
+      if (!entry.isDirectory() || dynamicKeys.has(entry.name)) continue;
+      output.push({
+        plugin: options.plugin,
+        relation: options.relation,
+        dynamic: false,
+        tree: await validatePortableSkillDirectory(path.join(staticRoot, entry.name)),
+      });
+    }
+  }
+
+  if (dynamicTargets.length === 0) {
+    const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, config.values);
+    for (const candidate of output) assertNoSensitiveValues(candidate, sensitiveValues);
+    return output;
+  }
+  await assertRuntimeImports(options.plugin);
+  const rendered = await runArtifactRenderer({
+    event: 'materialize',
+    plugin: options.plugin,
+    platform: 'agent-skills',
+    scope: options.scope,
+    cwd: options.cwd,
+    commandEnv: options.env,
+  });
+  const plan = validateArtifactPlan({
+    pluginName: options.plugin.manifest.name,
+    manifest: options.plugin.manifest,
+    plan: rendered.plan,
+    platform: 'agent-skills',
+    scope: options.scope,
+    renderConfig: config,
+    rendererDigest: rendered.target.rendererDigest,
+    manifestDigest: rendered.target.manifestDigest,
+  });
+  const sourcesById = new Map(rendered.context.artifactSources.map((source) => [source.id, source]));
+  const portableRuntimeProjectionPath = path.join(
+    options.plugin.rootDir,
+    '.agents-plugin',
+    'portable-runtime-files.json',
+  );
+  const portableRuntimeProjections = await fs.readJson(portableRuntimeProjectionPath)
+    .catch(() => []) as Array<{ skill: string; target: string; path: string; digest: string }>;
+  for (const artifact of plan.artifacts) {
+    if (artifact.target !== 'agent-skills.skill' || artifact.state === 'disabled') continue;
+    const files: Record<string, Buffer> = {};
+    for (const sourceDir of sourcesById.get(artifact.id)?.sourceDirs ?? []) {
+      await overlayDirectory(sourceDir, files);
+    }
+    for (const projection of portableRuntimeProjections.filter((entry) =>
+      entry.skill === artifact.skillKey)) {
+      const expectedPath = `./agent-skills/skills/${artifact.skillKey}/${projection.target}`;
+      if (
+        projection.path !== expectedPath
+        || projection.target.includes('\\')
+        || path.posix.normalize(projection.target) !== projection.target
+        || !/^(?:references|assets|scripts)\/.+/u.test(projection.target)
+      ) {
+        throw new Error(`Portable runtime projection "${artifact.skillKey}/${projection.target}" has an invalid bundle path.`);
+      }
+      const projectionPath = path.join(options.plugin.rootDir, projection.path.replace(/^\.\//u, ''));
+      if (await calculateFileDigest(projectionPath) !== projection.digest) {
+        throw new Error(`Portable runtime projection "${artifact.skillKey}/${projection.target}" has an invalid digest.`);
+      }
+      files[projection.target] = await fs.readFile(projectionPath);
+    }
+    for (const [relativePath, content] of Object.entries(artifact.content?.files ?? {})) {
+      files[relativePath] = Buffer.from(content, 'utf8');
+    }
+    const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-tree-'));
+    try {
+      const skillRoot = path.join(stagingRoot, artifact.skillKey);
+      await copyTreeFiles(files, skillRoot);
+      output.push({
+        plugin: options.plugin,
+        relation: options.relation,
+        dynamic: true,
+        tree: await validatePortableSkillDirectory(skillRoot),
+      });
+    } finally {
+      await fs.remove(stagingRoot);
+    }
+  }
+  const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, config.values);
+  for (const candidate of output) {
+    assertNoSensitiveValues(candidate, sensitiveValues);
+  }
+  return output;
+}
+
+export async function materializePortableSkillsFromCatalog(
+  options: MaterializePortableSkillsFromCatalogOptions,
+): Promise<MaterializedPortableSkills> {
+  const operationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-operation-'));
+  const outputRoot = path.join(operationRoot, 'materialized');
+  try {
+    const metadata = await withResolvedCatalogPlugin({
+      selector: options.selector,
+      cliVersion: options.cliVersion,
+      freshnessPolicy: options.freshnessPolicy ?? 'cacheFirst',
+      ...(options.env ? { env: options.env } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
+      ...(options.providers ? { providers: options.providers } : {}),
+      consume: async ({ pluginId: resolvedPluginId, source }) => {
+        const plugins = await resolvePluginsFromCatalog(source.rootDir);
+        for (const plugin of plugins) {
+          plugin.sourceId = source.sourceId;
+          plugin.sourceIdentity = source.sourceIdentity;
+          plugin.pluginId = `${source.sourceId}/${plugin.manifest.name}`;
+        }
+        const materialized = await materializePortableSkills({
+          plugins,
+          pluginId: resolvedPluginId,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env,
+          outputRoot,
+        });
+        return {
+          pluginId: materialized.pluginId,
+          scope: materialized.scope,
+          candidates: materialized.candidates,
+          dependencyPluginIds: materialized.dependencyPluginIds,
+          digest: materialized.digest,
+        };
+      },
+    });
+    return {
+      ...metadata,
+      rootDir: outputRoot,
+      provenancePath: path.join(outputRoot, '.aw-materialization.json'),
+      cleanup: async () => fs.remove(operationRoot),
+    };
+  } catch (error) {
+    await fs.remove(operationRoot);
+    throw error;
+  }
+}
+
+export async function materializePortableSkills(
+  options: MaterializePortableSkillsOptions,
+): Promise<MaterializedPortableSkills> {
+  const requested = resolveRequestedPlugin(options.plugins, options.pluginId);
+  if (!requested.manifest.distributions?.agentSkills) {
+    throw new Error(`Plugin "${pluginId(requested)}" does not declare distributions.agentSkills.`);
+  }
+  const closure = resolvePluginMetaDependencyClosure(options.plugins, [requested.manifest.name]);
+  assertSameSource(requested, closure);
+  const createdRoot = options.outputRoot === undefined;
+  const rootDir = options.outputRoot
+    ? path.resolve(options.outputRoot)
+    : await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-materialize-'));
+  if (options.outputRoot) {
+    if (await fs.pathExists(rootDir)) {
+      throw new Error(`Portable output root already exists: ${rootDir}.`);
+    }
+    await fs.ensureDir(rootDir);
+  }
+  const skillsRoot = path.join(rootDir, 'skills');
+  const env = options.env ?? process.env;
+  try {
+    const trees: CandidateTree[] = [];
+    for (const plugin of closure) {
+      trees.push(...await materializePluginCandidates({
+        plugin,
+        relation: relationFor(requested, plugin),
+        scope: options.scope,
+        cwd: options.cwd,
+        env,
+      }));
+    }
+    const seenNames = new Set<string>();
+    for (const candidate of trees) {
+      if (seenNames.has(candidate.tree.skillKey)) {
+        throw new Error(`Portable Skill name collision: "${candidate.tree.skillKey}".`);
+      }
+      seenNames.add(candidate.tree.skillKey);
+      await copyTreeFiles(candidate.tree.files, path.join(skillsRoot, candidate.tree.skillKey));
+      await validateRuntimeSkillClosure(path.join(skillsRoot, candidate.tree.skillKey));
+    }
+    const candidates = trees.map((candidate): PortableSkillCandidate => ({
+      name: candidate.tree.skillKey,
+      description: skillDescription(candidate.tree),
+      providerPluginId: pluginId(candidate.plugin),
+      providerDisplayName: candidate.plugin.manifest.interface?.displayName
+        ?? candidate.plugin.manifest.name,
+      relation: candidate.relation,
+      dynamic: candidate.dynamic,
+      filesDigest: treeDigest(candidate.tree),
+    })).sort((left, right) => left.name.localeCompare(right.name));
+    const dependencyPluginIds = closure
+      .filter((plugin) => plugin.manifest.name !== requested.manifest.name)
+      .map(pluginId);
+    const digest = `sha256:${crypto.createHash('sha256')
+      .update(JSON.stringify(candidates.map((candidate) => [candidate.name, candidate.filesDigest])))
+      .digest('hex')}`;
+    const provenancePath = path.join(rootDir, '.aw-materialization.json');
+    const provenance: PortableMaterializationProvenance = {
+      schemaVersion: 1,
+      pluginId: pluginId(requested),
+      scope: options.scope,
+      dependencyPluginIds,
+      digest,
+      skills: candidates.map((candidate) => ({ ...candidate, digest: candidate.filesDigest })),
+    };
+    await fs.writeJson(provenancePath, provenance, { spaces: 2 });
+    return {
+      rootDir,
+      pluginId: pluginId(requested),
+      scope: options.scope,
+      candidates,
+      dependencyPluginIds,
+      digest,
+      provenancePath,
+      cleanup: async () => {
+        if (createdRoot) await fs.remove(rootDir);
+      },
+    };
+  } catch (error) {
+    await fs.remove(rootDir);
+    throw error;
+  }
+}

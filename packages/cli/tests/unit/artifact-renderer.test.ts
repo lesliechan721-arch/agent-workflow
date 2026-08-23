@@ -320,7 +320,7 @@ describe('artifact renderer runtime', () => {
       scope: 'user',
       cwd,
       commandEnv: env,
-    })).rejects.toThrow('only supports install, upgrade, and refresh events');
+    })).rejects.toThrow('only supports install, upgrade, refresh, and materialize events');
   });
 
   it('fails when stdout is not JSON and redacts sensitive diagnostics', async () => {

@@ -11,6 +11,7 @@ import type { InstalledScopeRecord, PluginManifestSource, PluginMeta } from '../
 import {
   buildLifecycleScriptInvocation,
   buildLifecycleSpawnEnv,
+  buildPluginScriptSpawnEnv,
   garbageCollectLifecycleConfigSnapshots,
   persistLifecycleConfigSnapshot,
   prepareLifecycleConfigSnapshot,
@@ -138,6 +139,25 @@ async function createLifecycleConfigSnapshotForTest(options: {
 }
 
 describe('plugin lifecycle scripts', () => {
+  it('uses distinct platform and distribution environment variables', async () => {
+    const root = await makeTempRoot('aw-plugin-surface-env-');
+    const common = {
+      commandEnv: { AW_HOME: path.join(root, 'home'), PATH: '' },
+      contextPath: path.join(root, 'context.json'),
+      tempDir: root,
+      plugin: { name: 'demo', version: '0.1.0' },
+      event: 'materialize',
+      scope: 'user' as const,
+      bundleRoot: root,
+    };
+    const native = buildPluginScriptSpawnEnv({ ...common, platform: 'codex' });
+    expect(native).toMatchObject({ AW_PLUGIN_PLATFORM: 'codex' });
+    expect(native.AW_PLUGIN_DISTRIBUTION).toBeUndefined();
+    const portable = buildPluginScriptSpawnEnv({ ...common, distribution: 'agent-skills' });
+    expect(portable).toMatchObject({ AW_PLUGIN_DISTRIBUTION: 'agent-skills' });
+    expect(portable.AW_PLUGIN_PLATFORM).toBeUndefined();
+  });
+
   it('writes AW_PLUGIN_CONTEXT as 0600 best effort and cleans it up', async () => {
     const root = await makeTempRoot('aw-plugin-scripts-');
     const awHome = path.join(root, 'aw-home');

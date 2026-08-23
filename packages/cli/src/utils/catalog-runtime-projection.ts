@@ -23,7 +23,7 @@ const FORBIDDEN_EXPORT_ROOTS = new Set([
   'tmp',
 ]);
 
-export type CatalogRuntimeImportPurpose = 'build' | 'skill-runtime-file';
+export type CatalogRuntimeImportPurpose = 'build' | 'skill-runtime-file' | 'artifact-runtime';
 
 export interface CanonicalRuntimeSourceIdentity {
   rootPath: string;

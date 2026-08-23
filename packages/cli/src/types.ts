@@ -1,4 +1,8 @@
 export type PlatformName = 'codex' | 'claude';
+export type DistributionName = 'agent-skills';
+export type ArtifactSurface =
+  | { kind: 'platform'; name: PlatformName }
+  | { kind: 'distribution'; name: DistributionName };
 export type SupportedPlatformSet = ReadonlySet<PlatformName>;
 export type PlatformSelection = PlatformName | 'both';
 export type Scope = 'project' | 'user';
@@ -276,6 +280,7 @@ export interface BuildConfigSkillRuntimeFile {
   skill: string;
   target: string;
   platforms?: PlatformName[];
+  distributions?: DistributionName[];
   source?: string;
   import?: BuildConfigImportReference;
 }
@@ -498,13 +503,15 @@ export type ArtifactTarget =
   | 'codex.developerInstructionsBlock'
   | 'codex.agentRole'
   | 'codex.skill'
-  | 'claude.skill';
+  | 'claude.skill'
+  | 'agent-skills.skill';
 export type DynamicArtifactKind = 'instruction' | 'codexRole' | 'skill';
 export type ManagedArtifactId = string;
 
 export interface PluginArtifactTargetDefinition {
   id: ManagedArtifactId;
-  platform: PlatformName;
+  platform?: PlatformName;
+  distribution?: DistributionName;
   scopes: Scope[];
   target: ArtifactTarget;
   kind?: DynamicArtifactKind;
@@ -515,6 +522,18 @@ export interface PluginArtifactTargetDefinition {
   roleKey?: string;
   skillKey?: string;
   sourceDirs?: string[];
+  runtimeImports?: ArtifactRuntimeImportDefinition[];
+}
+
+export interface ArtifactRuntimeImportDefinition extends BuildConfigImportReference {
+  name: string;
+  resolved?: {
+    path: string;
+    digest: string;
+    providerPluginId: PluginId;
+    providerVersion: PluginVersion;
+    source: string;
+  };
 }
 
 export interface PluginArtifactsConfig {
@@ -530,7 +549,8 @@ export type ArtifactPlan = ArtifactPlanBase;
 
 export interface ArtifactPlanArtifactBase {
   id: ManagedArtifactId;
-  platform: PlatformName;
+  platform?: PlatformName;
+  distribution?: DistributionName;
   target: ArtifactTarget;
   kind: DynamicArtifactKind;
   state: ArtifactState;
@@ -580,11 +600,30 @@ export interface ClaudeSkillArtifact extends ArtifactPlanArtifactBase {
   };
 }
 
+export interface AgentSkillsSkillArtifact extends ArtifactPlanArtifactBase {
+  distribution: 'agent-skills';
+  target: 'agent-skills.skill';
+  kind: 'skill';
+  skillKey: string;
+  content?: {
+    files?: Record<string, string>;
+  };
+}
+
 export type ArtifactPlanArtifact =
   | DeveloperInstructionsBlockArtifact
   | CodexAgentRoleArtifact
   | CodexSkillArtifact
-  | ClaudeSkillArtifact;
+  | ClaudeSkillArtifact
+  | AgentSkillsSkillArtifact;
+
+export interface PluginAgentSkillsDistribution {
+  skills?: string;
+}
+
+export interface PluginDistributionsConfig {
+  agentSkills?: PluginAgentSkillsDistribution;
+}
 
 export interface PluginCompatibility {
   aw: {
@@ -602,6 +641,7 @@ export interface PluginManifestSource {
   slashCommands?: string;
   mcpServers?: string;
   apps?: string;
+  distributions?: PluginDistributionsConfig;
   marketplace: PluginMarketplaceMeta;
   interface?: PluginInterfaceMeta;
   extensions?: PluginExtensions;
@@ -619,6 +659,18 @@ export interface PluginMeta {
   rootDir: string;
   manifestPath: string;
   manifest: PluginManifestSource;
+}
+
+export type PortablePluginRelation = 'requested' | 'direct' | 'transitive';
+
+export interface PortableSkillCandidate {
+  name: string;
+  description: string;
+  providerPluginId: PluginId;
+  providerDisplayName: string;
+  relation: PortablePluginRelation;
+  dynamic: boolean;
+  filesDigest: string;
 }
 
 export interface MarketplaceManifestEntry {

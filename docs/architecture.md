@@ -57,6 +57,14 @@ Git Catalog source
 - Catalog 发布时会生成 snapshot 及其必要的 Catalog 内容。`plugin-release-ledger.json` 是 Catalog 产物合同的一部分；插件作者合同由[插件维护指南](plugin-maintenance.md)定义。
 - `<AW_HOME>/catalog-sources.json` 缺失时读取内置 `official` source；第一次来源修改才物化该文件。稳定版 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。
 
+### Portable Agent Skills Distribution
+
+`agent-skills` 是独立 distribution，不是 `PlatformName`，也不改变 marketplace product eligibility。插件通过 `distributions.agentSkills` 显式声明该能力；原生 `skills` 不自动成为 portable source，V1 也不支持 portable-only plugin。
+
+Catalog build 把 portable static Skill、明确选择 `distributions: ["agent-skills"]` 的 `skillRuntimeFiles`，以及 dynamic artifact 的 `runtimeImports` 复制到 consumer bundle。runtime import 带 bundle-local path、digest 和 provider provenance；materialize 运行时不读取其它插件 bundle，也不导入其它 renderer 的输出。
+
+Portable materializer 使用调用方提供的同 source Catalog plugin set，解析依赖优先的完整 closure，读取现有 scope config，并合并 static 与 `agent-skills.skill` dynamic candidates。合并顺序是 `sourceDirs → distribution skillRuntimeFiles → renderer content.files`。任何无效 Skill、名字冲突、未解析模板或 sensitive config 明文都阻止整次输出。物化只使用操作级临时目录，并写 schema 1 `.aw-materialization.json`；它不创建 installed state、持久 current cache、Agent registry 或新锁。
+
 ## Catalog Sources and Cache
 
 每个 source 在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 有独立身份、当前快照和最近一次可用快照。resolver 先使用有效的 `current`，需要时可回退同一 source 的 `last-good`。cache 只是可删除的性能和离线状态；它不决定安装、配置或删除权限。

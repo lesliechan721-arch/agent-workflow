@@ -44,6 +44,7 @@ import type {
 import { readJsonFile } from './json.js';
 import { parsePermissionCommand } from '../generators/permissions.js';
 import { applyFileRules } from './file-rules.js';
+import { validatePortableSkillDirectoriesRoot } from './dynamic-skill-tree.js';
 import {
   assertHookMatcherAllowed,
   assertNativeHookEvent,
@@ -613,6 +614,7 @@ export function assertManifestPlatformSupport(
   }
 
   manifest.artifacts?.targets?.forEach((target, index) => {
+    if (!target.platform) return;
     assertPlatformFieldSupported({
       pluginName,
       manifest,
@@ -977,7 +979,7 @@ function normalizeSkillRuntimeFiles(
   return value.map((entry, index) => {
     const entryField = `${fieldName}[${index}]`;
     const input = assertObject(entry, entryField);
-    assertAllowedKeys(input, entryField, ['skill', 'target', 'platforms', 'source', 'import']);
+    assertAllowedKeys(input, entryField, ['skill', 'target', 'platforms', 'distributions', 'source', 'import']);
     const skill = ensurePluginName(input.skill, `${entryField}.skill`);
     const target = normalizeSkillRuntimeTarget(input.target, `${entryField}.target`);
     const collisionKey = `${skill}/${target}`;
@@ -1003,10 +1005,24 @@ function normalizeSkillRuntimeFiles(
         throw new Error(`Invalid ${entryField}.platforms: duplicate platform.`);
       }
     }
+    let distributions: Array<'agent-skills'> | undefined;
+    if (input.distributions !== undefined) {
+      const values = ensureStringArray(input.distributions, `${entryField}.distributions`);
+      distributions = values.map((distribution, distributionIndex) => {
+        if (distribution !== 'agent-skills') {
+          throw new Error(`Invalid ${entryField}.distributions[${distributionIndex}]: expected agent-skills.`);
+        }
+        return distribution;
+      });
+      if (new Set(distributions).size !== distributions.length) {
+        throw new Error(`Invalid ${entryField}.distributions: duplicate distribution.`);
+      }
+    }
     return {
       skill,
       target,
       ...(platforms ? { platforms } : {}),
+      ...(distributions ? { distributions } : {}),
       ...(hasSource
         ? { source: normalizeCanonicalPluginFilePath(pluginRoot, input.source, `${entryField}.source`) }
         : { import: normalizeImportReference(input.import, `${entryField}.import`) }),
@@ -1883,6 +1899,7 @@ const ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.agentRole',
   'codex.skill',
   'claude.skill',
+  'agent-skills.skill',
 ]);
 
 const ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
@@ -1897,7 +1914,48 @@ const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, DynamicArtifactKind> = {
   'codex.agentRole': 'codexRole',
   'codex.skill': 'skill',
   'claude.skill': 'skill',
+  'agent-skills.skill': 'skill',
 };
+
+function normalizeArtifactRuntimeImports(
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginArtifactTargetDefinition['runtimeImports']> | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an array.`);
+  }
+  const names = new Set<string>();
+  return value.map((entry, index) => {
+    const entryField = `${fieldName}[${index}]`;
+    const input = assertObject(entry, entryField);
+    assertAllowedKeys(input, entryField, ['name', 'plugin', 'export', 'resolved']);
+    const name = ensurePluginName(input.name, `${entryField}.name`);
+    if (names.has(name)) {
+      throw new Error(`Invalid ${fieldName}: duplicate import name "${name}".`);
+    }
+    names.add(name);
+    let resolved: NonNullable<PluginArtifactTargetDefinition['runtimeImports']>[number]['resolved'];
+    if (input.resolved !== undefined) {
+      const resolvedInput = assertObject(input.resolved, `${entryField}.resolved`);
+      assertAllowedKeys(resolvedInput, `${entryField}.resolved`, [
+        'path', 'digest', 'providerPluginId', 'providerVersion', 'source',
+      ]);
+      resolved = {
+        path: normalizePluginRelativePath('', ensureString(resolvedInput.path, `${entryField}.resolved.path`), `${entryField}.resolved.path`),
+        digest: ensureDigestString(resolvedInput.digest, `${entryField}.resolved.digest`),
+        providerPluginId: ensureString(resolvedInput.providerPluginId, `${entryField}.resolved.providerPluginId`),
+        providerVersion: assertStrictSemVer(resolvedInput.providerVersion, `${entryField}.resolved.providerVersion`),
+        source: ensureString(resolvedInput.source, `${entryField}.resolved.source`),
+      };
+    }
+    return {
+      name,
+      ...normalizeImportReference({ plugin: input.plugin, export: input.export }, entryField),
+      ...(resolved ? { resolved } : {}),
+    };
+  });
+}
 
 function normalizePlatformName(value: unknown, fieldName: string): PlatformName {
   const platform = ensureString(value, fieldName);
@@ -2032,18 +2090,36 @@ function normalizeArtifactTargetEntry(
     'roleKey',
     'skillKey',
     'sourceDirs',
+    'distribution',
+    'runtimeImports',
   ]);
 
   const id = ensureString(input.id, `${fieldName}.id`);
   validateArtifactId(id, `${fieldName}.id`);
 
-  const platform = normalizePlatformName(input.platform, `${fieldName}.platform`);
   const target = normalizeArtifactTarget(input.target, `${fieldName}.target`);
-  const expectedPlatform: PlatformName = target === 'claude.skill' ? 'claude' : 'codex';
-  if (platform !== expectedPlatform) {
-    throw new Error(
-      `Invalid ${fieldName}.platform: target "${target}" is only supported on "${expectedPlatform}".`,
-    );
+  const portable = target === 'agent-skills.skill';
+  const platform = portable ? undefined : normalizePlatformName(input.platform, `${fieldName}.platform`);
+  const distribution = portable
+    ? ensureString(input.distribution, `${fieldName}.distribution`)
+    : undefined;
+  if (portable) {
+    if (distribution !== 'agent-skills') {
+      throw new Error(`Invalid ${fieldName}.distribution: expected "agent-skills".`);
+    }
+    if (input.platform !== undefined) {
+      throw new Error(`Invalid ${fieldName}.platform: distribution targets do not support platform.`);
+    }
+  } else {
+    const expectedPlatform: PlatformName = target === 'claude.skill' ? 'claude' : 'codex';
+    if (platform !== expectedPlatform) {
+      throw new Error(
+        `Invalid ${fieldName}.platform: target "${target}" is only supported on "${expectedPlatform}".`,
+      );
+    }
+    if (input.distribution !== undefined) {
+      throw new Error(`Invalid ${fieldName}.distribution: platform targets do not support distribution.`);
+    }
   }
 
   const expectedKind = ARTIFACT_KIND_BY_TARGET[target];
@@ -2083,7 +2159,7 @@ function normalizeArtifactTargetEntry(
     throw new Error(`Invalid ${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets.`);
   }
 
-  if (target === 'codex.skill' || target === 'claude.skill') {
+  if (target === 'codex.skill' || target === 'claude.skill' || target === 'agent-skills.skill') {
     if (!skillKey) {
       throw new Error(`Invalid ${fieldName}.skillKey: ${target} targets must declare a static skillKey.`);
     }
@@ -2093,13 +2169,13 @@ function normalizeArtifactTargetEntry(
   }
 
   const sourceDirs = normalizePathArray(pluginRoot, input.sourceDirs, `${fieldName}.sourceDirs`);
-  if (sourceDirs && target !== 'codex.skill' && target !== 'claude.skill') {
+  if (sourceDirs && target !== 'codex.skill' && target !== 'claude.skill' && target !== 'agent-skills.skill') {
     throw new Error(`Invalid ${fieldName}.sourceDirs: sourceDirs are only supported for skill targets.`);
   }
   if (sourceDirs && new Set(sourceDirs).size !== sourceDirs.length) {
     throw new Error(`Invalid ${fieldName}.sourceDirs: duplicate source directory.`);
   }
-  if (sourceDirs && skillKey) {
+  if (sourceDirs && skillKey && !portable) {
     const canonicalRoot = `skills/${skillKey}`;
     const invalidSource = sourceDirs.find((sourceDir) => {
       const normalized = stripDotSlash(sourceDir);
@@ -2123,15 +2199,19 @@ function normalizeArtifactTargetEntry(
       );
     }
   }
-  if (platform === 'claude' && input.requiresCodexProjectConfig !== undefined) {
+  if ((platform === 'claude' || portable) && input.requiresCodexProjectConfig !== undefined) {
     throw new Error(
       `Invalid ${fieldName}.requiresCodexProjectConfig: Claude targets do not support requiresCodexProjectConfig.`,
     );
+  }
+  if (!portable && input.runtimeImports !== undefined) {
+    throw new Error(`Invalid ${fieldName}.runtimeImports: runtimeImports are only supported for agent-skills.skill targets.`);
   }
 
   return {
     id,
     platform,
+    distribution: distribution as 'agent-skills' | undefined,
     scopes: normalizeScopeArray(input.scopes, `${fieldName}.scopes`),
     target,
     kind,
@@ -2145,6 +2225,7 @@ function normalizeArtifactTargetEntry(
     roleKey,
     skillKey,
     sourceDirs,
+    runtimeImports: normalizeArtifactRuntimeImports(input.runtimeImports, `${fieldName}.runtimeImports`),
   };
 }
 
@@ -2179,9 +2260,9 @@ function normalizeArtifacts(
             throw new Error(`Invalid ${fieldName}.targets[${index}]: duplicate artifact id + target "${key}".`);
           }
           seen.add(key);
-          if ((target.target === 'codex.skill' || target.target === 'claude.skill') && target.skillKey) {
+          if ((target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill') && target.skillKey) {
             for (const scope of target.scopes) {
-              const ownerKey = `${target.platform}:${scope}:${target.skillKey}`;
+              const ownerKey = `${target.platform ?? target.distribution}:${scope}:${target.skillKey}`;
               if (seenSkillOwners.has(ownerKey)) {
                 throw new Error(
                   `Invalid ${fieldName}.targets[${index}]: duplicate dynamic skill owner "${ownerKey}".`,
@@ -2588,6 +2669,22 @@ export interface ValidatePluginManifestOptions {
   defaultMinVersion?: string;
 }
 
+function hasNativePluginCapability(manifest: PluginManifestSource): boolean {
+  return Boolean(
+    manifest.skills
+    || manifest.slashCommands
+    || manifest.mcpServers
+    || manifest.apps
+    || (manifest.extensions?.instructions?.length ?? 0) > 0
+    || (manifest.extensions?.permissions?.length ?? 0) > 0
+    || (manifest.extensions?.hooks?.length ?? 0) > 0
+    || (manifest.extensions?.nativeHooks?.claude?.length ?? 0) > 0
+    || (manifest.extensions?.nativeHooks?.codex?.length ?? 0) > 0
+    || (manifest.extensions?.agents?.length ?? 0) > 0
+    || (manifest.artifacts?.targets ?? []).some((target) => target.platform !== undefined)
+  );
+}
+
 export function validatePluginManifest(
   pluginRoot: string,
   rawManifest: unknown,
@@ -2609,6 +2706,7 @@ export function validatePluginManifest(
     'slashCommands',
     'mcpServers',
     'apps',
+    'distributions',
     'marketplace',
     'interface',
     'extensions',
@@ -2695,6 +2793,28 @@ export function validatePluginManifest(
     );
   }
 
+  if (input.distributions !== undefined) {
+    const distributions = assertObject(input.distributions, 'distributions');
+    assertAllowedKeys(distributions, 'distributions', ['agentSkills']);
+    if (distributions.agentSkills !== undefined) {
+      const agentSkills = assertObject(distributions.agentSkills, 'distributions.agentSkills');
+      assertAllowedKeys(agentSkills, 'distributions.agentSkills', ['skills']);
+      manifest.distributions = {
+        agentSkills: {
+          skills: agentSkills.skills === undefined
+            ? undefined
+            : normalizePluginRelativePath(
+                pluginRoot,
+                ensureString(agentSkills.skills, 'distributions.agentSkills.skills'),
+                'distributions.agentSkills.skills',
+              ),
+        },
+      };
+    } else {
+      manifest.distributions = {};
+    }
+  }
+
   if (input.interface !== undefined) {
     manifest.interface = normalizePluginInterface(input.interface, 'interface');
   }
@@ -2721,6 +2841,16 @@ export function validatePluginManifest(
 
   if (input.artifacts !== undefined) {
     manifest.artifacts = normalizeArtifacts(pluginRoot, input.artifacts, 'artifacts', manifest.config);
+  }
+
+  if (
+    (manifest.artifacts?.targets ?? []).some((target) => target.distribution === 'agent-skills')
+    && !manifest.distributions?.agentSkills
+  ) {
+    throw new Error('Invalid artifacts.targets: agent-skills targets require distributions.agentSkills declaration.');
+  }
+  if (manifest.distributions?.agentSkills && !hasNativePluginCapability(manifest)) {
+    throw new Error('Invalid plugin manifest: portable-only plugins are not supported in V1.');
   }
 
   assertManifestPlatformSupport(manifest.name, manifest);
@@ -2798,6 +2928,17 @@ async function validateDeclaredAssetPathsExist(
     }),
   );
 
+  const portableSkills = manifest.distributions?.agentSkills?.skills;
+  if (portableSkills) {
+    const absolutePath = path.join(pluginRoot, stripDotSlash(portableSkills));
+    const stats = await fs.lstat(absolutePath).catch(() => undefined);
+    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(
+        `Invalid plugin manifest: distributions.agentSkills.skills points to "${portableSkills}" but it is not a regular directory.`,
+      );
+    }
+  }
+
   await Promise.all(
     (manifest.artifacts?.targets ?? []).flatMap((target, targetIndex) =>
       (target.sourceDirs ?? []).map(async (sourceDir, sourceIndex) => {
@@ -2833,14 +2974,30 @@ async function validateSourceSkillInventory(
     .filter((skillKey): skillKey is string => Boolean(skillKey))
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
+  const portableSkillsRoot = manifest.distributions?.agentSkills?.skills
+    ? path.join(pluginRoot, stripDotSlash(manifest.distributions.agentSkills.skills))
+    : null;
+  const portableSkillEntries = portableSkillsRoot
+    ? await fs.readdir(portableSkillsRoot, { withFileTypes: true }).catch(() => [])
+    : [];
+  const portableSkillNameSet = new Set(
+    portableSkillEntries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+  );
 
   for (const [index, entry] of (manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    if (!manifest.skills || !staticSkillNameSet.has(entry.skill)) {
+    const nativeSelected = entry.platforms !== undefined || entry.distributions === undefined;
+    const portableSelected = entry.distributions?.includes('agent-skills') ?? false;
+    if (nativeSelected && (!manifest.skills || !staticSkillNameSet.has(entry.skill))) {
       throw new Error(
         `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
       );
     }
-    if (dynamicSkillNameSet.has(entry.skill)) {
+    if (portableSelected && !portableSkillNameSet.has(entry.skill)) {
+      throw new Error(
+        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared portable Skill key.`,
+      );
+    }
+    if (nativeSelected && dynamicSkillNameSet.has(entry.skill)) {
       throw new Error(
         `Invalid buildConfig.skillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
       );
@@ -2923,12 +3080,22 @@ export async function validateSourcePluginManifest(
       'Invalid plugin manifest.version: expected a stable SemVer without prerelease or build metadata.',
     );
   }
+  if ((manifest.artifacts?.targets ?? []).some((target) =>
+    target.runtimeImports?.some((runtimeImport) => runtimeImport.resolved !== undefined))) {
+    throw new Error('Invalid plugin manifest: artifact runtime import resolved metadata is build-owned.');
+  }
   await validateDeclaredNativeAssets(pluginRoot, manifest);
   await validateDeclaredAssetPathsExist(pluginRoot, manifest);
   await Promise.all([
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
     validateSourceSkillInventory(pluginRoot, manifest),
+    ...(manifest.distributions?.agentSkills?.skills
+      ? [validatePortableSkillDirectoriesRoot(path.join(
+          pluginRoot,
+          stripDotSlash(manifest.distributions.agentSkills.skills),
+        ))]
+      : []),
     ...(manifest.buildConfig?.runtimeExports ?? []).map((entry) =>
       resolveRuntimeExportSource({
         plugin: {

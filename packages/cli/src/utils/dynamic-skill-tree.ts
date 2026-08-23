@@ -115,6 +115,79 @@ export function validateClaudeSkillFrontmatter(
   }
 }
 
+export function validatePortableSkillFrontmatter(
+  rawContent: string,
+  expectedSkillName?: string,
+): void {
+  const normalized = rawContent.replace(/\r\n/g, '\n');
+  if (!normalized.startsWith('---\n')) {
+    throw new Error('SKILL.md 缺少 YAML frontmatter。');
+  }
+  const closingIndex = normalized.indexOf('\n---\n', 4);
+  const closingAtEof = closingIndex === -1 && normalized.endsWith('\n---');
+  if (closingIndex === -1 && !closingAtEof) {
+    throw new Error('SKILL.md frontmatter 缺少结束分隔符。');
+  }
+  const yamlEndIndex = closingAtEof ? normalized.length - '\n---'.length : closingIndex;
+  let frontmatter: unknown;
+  try {
+    frontmatter = YAML.parse(normalized.slice(4, yamlEndIndex));
+  } catch (error) {
+    throw new Error(`SKILL.md frontmatter YAML 解析失败：${normalizeYamlError(error)}`);
+  }
+  if (!isRecord(frontmatter)) {
+    throw new Error('SKILL.md frontmatter 根节点必须是 object。');
+  }
+  const diagnostics = validateSkillFrontmatterCapabilities(frontmatter, 'portable-agent-skills');
+  if (diagnostics.length > 0) {
+    throw new Error(
+      `SKILL.md frontmatter 不符合 portable-agent-skills profile：${diagnostics
+        .map((entry) => `[${entry.code}] ${entry.message}`)
+        .join('; ')}`,
+    );
+  }
+  if (expectedSkillName !== undefined && frontmatter.name !== expectedSkillName) {
+    throw new Error(
+      `SKILL.md frontmatter 的 name 必须与 Skill 目录一致：期望 ${JSON.stringify(expectedSkillName)}。`,
+    );
+  }
+}
+
+export async function validatePortableSkillDirectory(rootDir: string): Promise<DynamicSkillTree> {
+  const rootStats = await fs.lstat(rootDir).catch(() => null);
+  if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+    throw new Error(`Skill 根路径必须是真实目录：${rootDir}`);
+  }
+  const tree = {
+    skillKey: path.basename(rootDir),
+    files: await collectDirectoryFiles(rootDir, 'reject'),
+  };
+  assertNoFileDirectoryConflicts(tree.files);
+  const skillFile = tree.files[SKILL_FILE_PATH];
+  if (!skillFile || skillFile.toString('utf8').trim() === '') {
+    throw new Error(`agent-skills.skill "${tree.skillKey}" 缺少 SKILL.md 内容。`);
+  }
+  validatePortableSkillFrontmatter(skillFile.toString('utf8'), tree.skillKey);
+  return tree;
+}
+
+export async function validatePortableSkillDirectoriesRoot(rootDir: string): Promise<DynamicSkillTree[]> {
+  const rootStats = await fs.lstat(rootDir).catch(() => null);
+  if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+    throw new Error(`Skills 根路径必须是真实目录：${rootDir}`);
+  }
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  const trees: DynamicSkillTree[] = [];
+  for (const entry of entries.sort((left, right) => compareSkillPaths(left.name, right.name))) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Skills 根目录不支持符号链接：${entry.name}`);
+    }
+    if (!entry.isDirectory()) continue;
+    trees.push(await validatePortableSkillDirectory(path.join(rootDir, entry.name)));
+  }
+  return trees;
+}
+
 function assertNoFileDirectoryConflicts(files: Record<string, Buffer>): void {
   const paths = sortedSkillFileEntries(files).map(([relativePath]) => relativePath);
   for (const [index, relativePath] of paths.entries()) {
