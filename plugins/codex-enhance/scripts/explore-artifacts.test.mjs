@@ -21,18 +21,12 @@ const stagedSubagentArtifactSourcePath = fileURLToPath(
     import.meta.url,
   ),
 );
-const stagedClarifierArtifactSourcePath = fileURLToPath(
-  new URL('../.agents-plugin/artifact-sources/codex/codex-clarifier-skill/0/', import.meta.url),
-);
 const artifactSourcePath = existsSync(stagedArtifactSourcePath)
   ? stagedArtifactSourcePath
   : fileURLToPath(new URL('../skills/codex-explore/', import.meta.url));
 const subagentArtifactSourcePath = existsSync(stagedSubagentArtifactSourcePath)
   ? stagedSubagentArtifactSourcePath
   : fileURLToPath(new URL('../skills/codex-subagent-guide/', import.meta.url));
-const clarifierArtifactSourcePath = existsSync(stagedClarifierArtifactSourcePath)
-  ? stagedClarifierArtifactSourcePath
-  : fileURLToPath(new URL('../skills/codex-clarifier/', import.meta.url));
 
 const expectedRoles = [
   {
@@ -85,11 +79,6 @@ function createContext(overrides = {}) {
       version: '0.2.0',
     },
     artifactSources: [
-      {
-        id: 'codex-clarifier-skill',
-        target: 'codex.skill',
-        sourceDirs: [clarifierArtifactSourcePath],
-      },
       {
         id: 'codex-explore-skill',
         target: 'codex.skill',
@@ -176,7 +165,7 @@ async function testRenderedArtifactsAndSkillContract() {
   const skill = findArtifact(plan, 'codex-explore-skill');
 
   assert.equal(plan.version, 2);
-  assert.equal(plan.artifacts.length, 11);
+  assert.equal(plan.artifacts.length, 10);
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.state, 'present');
