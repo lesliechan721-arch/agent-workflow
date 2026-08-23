@@ -12,7 +12,6 @@ import {
 } from '../../../../scripts/build/build-cache.mjs';
 import {
   publishStagedCatalog,
-  readCatalogPublicationHistory,
 } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
 import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
@@ -134,18 +133,10 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       contentDigest: entry.contentDigest,
     })),
   });
-  const history = await readCatalogPublicationHistory({
-    mode: 'latest',
-    catalogVersion: '91.0.0',
-    remoteUrl,
-    catalogModules,
-    env: publisherEnv,
-  });
   const staged = await stageCatalogRelease(
     ['--catalog-version', '91.0.0'],
     {
       internalOutputRoot: outputRoot,
-      previousReleaseLedger: history.mergedLedger,
       snapshot,
       catalogModules,
       catalogRelease: {
@@ -158,7 +149,13 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
     },
   );
   await snapshot.cleanup();
-  const published = await publishStagedCatalog(history, staged.outputRoot, {
+  const published = await publishStagedCatalog({
+    mode: 'latest',
+    catalogVersion: '91.0.0',
+    stagedRoot: staged.outputRoot,
+  }, {
+    remoteUrl,
+    catalogModules,
     env: publisherEnv,
   });
 

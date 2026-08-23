@@ -164,6 +164,7 @@ async function readCliPackage(repoRoot, relativePath, expectedName) {
   return {
     packagePath,
     manifest,
+    name: expectedName,
     version,
     mode: (await fs.stat(packagePath)).mode & 0o777,
   };
@@ -224,6 +225,16 @@ export async function updateReleaseTargets(argv, options = {}) {
       'packages/agent-skill-eval/package.json before release:target can update it.',
     );
   }
+  if (
+    requested.cli
+    && cliPackages[0].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
+      !== `workspace:${current.cli}`
+  ) {
+    throw new Error(
+      `packages/cli/package.json must exactly depend on ` +
+      `@lesliechan721/agent-skill-eval@workspace:${current.cli}.`,
+    );
+  }
   const next = {
     ...current,
     cli: requested.cli ? bumpStableVersion(current.cli, requested.cli) : current.cli,
@@ -251,12 +262,33 @@ export async function updateReleaseTargets(argv, options = {}) {
   }
   if (requested.cli) {
     for (const entry of cliPackages) {
+      const manifest = entry.name === '@lesliechan721/aw'
+        ? {
+            ...entry.manifest,
+            version: next.cli,
+            dependencies: {
+              ...entry.manifest.dependencies,
+              '@lesliechan721/agent-skill-eval': `workspace:${next.cli}`,
+            },
+          }
+        : { ...entry.manifest, version: next.cli };
       changes.push({
         path: entry.packagePath,
-        contents: `${JSON.stringify({ ...entry.manifest, version: next.cli }, null, 2)}\n`,
+        contents: `${JSON.stringify(manifest, null, 2)}\n`,
         mode: entry.mode,
       });
     }
+    const lockPath = await assertRegularPathChain(repoRoot, 'pnpm-lock.yaml');
+    const lockContents = await fs.readFile(lockPath, 'utf8');
+    const currentSpecifier = `specifier: workspace:${current.cli}`;
+    if (lockContents.split(currentSpecifier).length !== 2) {
+      throw new Error(`pnpm-lock.yaml must contain one exact ${currentSpecifier} entry.`);
+    }
+    changes.push({
+      path: lockPath,
+      contents: lockContents.replace(currentSpecifier, `specifier: workspace:${next.cli}`),
+      mode: (await fs.stat(lockPath)).mode & 0o777,
+    });
   }
   changes.push(...pluginChanges);
   await (options.writeAtomically ?? writeAtomically)(changes, options.fileSystem);

@@ -20,6 +20,7 @@
     "test:smoke:pack:cli": "pnpm --filter @lesliechan721/aw test:smoke:pack:cli",
     "test:smoke:stage:catalog": "pnpm --filter @lesliechan721/aw test:smoke:stage:catalog",
     "test:smoke:publish:catalog": "pnpm --filter @lesliechan721/aw test:smoke:publish:catalog",
+    "test:smoke:publish:release": "pnpm --filter @lesliechan721/aw test:smoke:publish:release",
     "test:smoke:bootstrap:catalog": "pnpm --filter @lesliechan721/aw test:smoke:bootstrap:catalog",
     "test:smoke:fetch": "pnpm --filter @lesliechan721/aw test:smoke:fetch",
     "plugin:test": "pnpm --filter @lesliechan721/aw plugin:test --",
@@ -39,8 +40,7 @@
     "release:status": "node scripts/release/release-status.mjs",
     "release:target": "node scripts/release/release-target.mjs",
     "release:prepare": "node scripts/release/release-prepare.mjs",
-    "release:publish": "node scripts/release/publish-plan.mjs",
-    "release:recover": "node scripts/release/release-recover.mjs",
+    "release:publish": "node scripts/release/release-publish.mjs",
     "release:pack:cli": "node scripts/release/pack-cli.mjs",
     "release:install:local": "node scripts/release/install-local-tarball.mjs",
     "release:local": "pnpm run release:verify:cli && pnpm run release:install:local"

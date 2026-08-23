@@ -73,7 +73,7 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
   }
   const { catalogVersion } = parseArgs(argv);
   if (!options.catalogRelease) {
-    throw new Error('Catalog release staging requires an explicit catalogRelease identity from a release plan.');
+    throw new Error('Catalog release staging requires an explicit prepared release identity.');
   }
   const publicationRepoRoot = resolvePublicationRepoRoot(options);
   const initialBoundary = await ensureCatalogStagePublicationBoundary(

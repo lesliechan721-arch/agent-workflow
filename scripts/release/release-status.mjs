@@ -1,56 +1,42 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { observeRelease } from './release-observe.mjs';
-import { calculateReleaseStatus } from './release-state.mjs';
+import { repoRoot as defaultRepoRoot } from './common.mjs';
+import { resolvePreparedCandidates } from './prepared-release.mjs';
+import { readVersionTargets } from './release-target.mjs';
 
 export function parseStatusArgs(argv) {
   const args = [...argv];
   while (args[0] === '--') args.shift();
-  let json = false;
-  for (const token of args) {
-    if (token === '--json' && !json) json = true;
-    else throw new Error(`Unknown release status argument ${JSON.stringify(token)}.`);
+  if (args.length > 1 || (args.length === 1 && args[0] !== '--json')) {
+    throw new Error('Usage: pnpm release:status [-- --json]');
   }
-  return { json };
+  return { json: args[0] === '--json' };
 }
 
 export async function releaseStatus(argv = process.argv.slice(2), options = {}) {
   const { json } = parseStatusArgs(argv);
-  const observed = await (options.observe ?? observeRelease)(options);
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const targets = await (options.readTargets ?? readVersionTargets)(repoRoot);
+  const [beta, stable] = await Promise.all([
+    (options.resolveCandidates ?? resolvePreparedCandidates)('beta', targets, options),
+    (options.resolveCandidates ?? resolvePreparedCandidates)('stable', targets, options),
+  ]);
   const result = {
     schemaVersion: 1,
-    targets: observed.targets,
+    targets,
     channels: {
-      beta: calculateReleaseStatus({ channel: 'beta', ...observed }),
-      stable: calculateReleaseStatus({ channel: 'stable', ...observed }),
+      beta: { candidates: beta, axes: { cli: beta.cli !== null, catalog: beta.catalog !== null } },
+      stable: { candidates: stable, axes: { cli: stable.cli !== null, catalog: stable.catalog !== null } },
     },
   };
   if (options.writeOutput !== false) {
     if (json) process.stdout.write(`${JSON.stringify(result)}\n`);
-    else {
-      const lines = ['Release status'];
-      for (const channel of ['beta', 'stable']) {
-        const status = result.channels[channel];
-        lines.push(
-          `${channel}: CLI target ${status.cli.targetVersion}, latest ${status.cli.latestStable ?? '-'}, ` +
-          `beta ${status.cli.latestBeta ?? '-'}, next ${status.cli.candidateVersion ?? '-'}, ` +
-          `content ${status.cli.trainContentDigest}, status ${status.cli.action}; ` +
-          `Catalog target ${status.catalog.targetVersion}, latest ${status.catalog.latestStable ?? '-'}, ` +
-          `beta ${status.catalog.latestBeta ?? '-'}, ` +
-          `next ${status.catalog.candidateVersion ?? '-'}, content ${status.catalog.contentDigest}, ` +
-          `status ${status.catalog.action}`,
-        );
-        for (const plugin of status.plugins) {
-          lines.push(
-            `  ${plugin.name}: target ${plugin.targetVersion}, latest ${plugin.latestStable ?? '-'}, ` +
-            `beta ${plugin.latestBeta ?? '-'}, next ${plugin.candidateVersion ?? '-'}, ` +
-            `content ${plugin.contentDigest}, status ${plugin.action}`,
-          );
-        }
-      }
-      process.stdout.write(`${lines.join('\n')}\n`);
-    }
+    else process.stdout.write([
+      'Release status',
+      `beta: CLI ${beta.cli ?? 'disabled'}; Catalog ${beta.catalog ?? 'disabled'}`,
+      `stable: CLI ${stable.cli ?? 'disabled'}; Catalog ${stable.catalog ?? 'disabled'}`,
+    ].join('\n') + '\n');
   }
   return result;
 }

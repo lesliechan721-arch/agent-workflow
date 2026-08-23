@@ -29,6 +29,7 @@
     "test:smoke:pack:cli": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
     "test:smoke:stage:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-stage-smoke.test.ts",
     "test:smoke:publish:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-publish-smoke.test.ts",
+    "test:smoke:publish:release": "vitest run --config vitest.smoke.config.ts tests/smoke/release-publish-entry-smoke.test.ts",
     "test:smoke:bootstrap:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-bootstrap-smoke.test.ts",
     "test:smoke:fetch": "pnpm run test:smoke:publish:catalog",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
@@ -40,7 +41,7 @@
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
-    "@lesliechan721/agent-skill-eval": "workspace:*",
+    "@lesliechan721/agent-skill-eval": "workspace:0.1.0",
     "commander": "^14.0.1",
     "fs-extra": "^11.3.0",
     "ink": "^7.1.1",

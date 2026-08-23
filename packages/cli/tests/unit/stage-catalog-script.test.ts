@@ -253,7 +253,7 @@ describe('stage-catalog script', () => {
       .resolves.toMatchObject({ catalogVersion: '9.0.0', channel: 'latest' });
   });
 
-  it('rejects release staging without an explicit plan identity before writing output', async () => {
+  it('rejects release staging without an explicit prepared identity before writing output', async () => {
     const root = await createFixtureRoot('aw-stage-catalog-identity-');
     const snapshot = createSnapshot(root);
     const outputRoot = createInternalOutputRoot(root);
@@ -263,7 +263,7 @@ describe('stage-catalog script', () => {
       snapshot,
       internalOutputRoot: outputRoot,
       catalogModules: { pluginStaging, catalogSnapshot },
-    })).rejects.toThrow('explicit catalogRelease identity');
+    })).rejects.toThrow('explicit prepared release identity');
     await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
   });
 
