@@ -30,7 +30,7 @@ async function createPlugin(options: {
     name: options.name,
     version: '0.1.0',
     description: options.name,
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    compatibility: { aw: { minVersion: options.distributions ? '0.1.0' : '0.0.0' } },
     skills: './skills',
     marketplace: {
       category: 'workflow',

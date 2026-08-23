@@ -10,6 +10,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
+import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 
 const execFileAsync = promisify(execFile);
 const sharedTempBase = os.tmpdir();
@@ -238,6 +239,121 @@ describe('pack smoke', () => {
     });
     expect(validation.stderr).toBe('');
 
+    const portablePluginRoot = path.join(authorRepo, 'plugins', 'validate-fixture');
+    const portableManifestPath = path.join(portablePluginRoot, '.agents-plugin', 'plugin.json');
+    const portableManifest = await fs.readJson(portableManifestPath);
+    portableManifest.compatibility.aw.minVersion = '0.1.0';
+    portableManifest.extensions = {
+      instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
+    };
+    portableManifest.distributions = { agentSkills: { skills: './portable-skills' } };
+    await fs.writeJson(portableManifestPath, portableManifest, { spaces: 2 });
+    await fs.outputFile(
+      path.join(portablePluginRoot, 'portable-skills', 'packed-portable', 'SKILL.md'),
+      '---\nname: packed-portable\ndescription: Packed portable validator fixture.\n---\n\n# Packed portable\n',
+    );
+    await fs.outputFile(
+      path.join(portablePluginRoot, 'portable-skills', 'packed-portable', 'README.md'),
+      '# Packed portable fixture\n',
+    );
+    const portableValidation = await execFileAsync(awBin, [
+      'plugin',
+      'validate',
+      portablePluginRoot,
+      '--json',
+    ], { cwd: authorRepo, env: process.env });
+    expect(JSON.parse(portableValidation.stdout)).toMatchObject({ ok: true });
+
+    const portableCatalog = path.join(tempRoot, 'portable-path-catalog');
+    await Promise.all([
+      fs.outputFile(
+        path.join(portableCatalog, 'plugins', 'portable-pack', 'agent-skills', 'skills', 'packed-portable', 'SKILL.md'),
+        '---\nname: packed-portable\ndescription: Installed tarball command fixture.\n---\n\n# Packed portable\n',
+      ),
+      fs.outputFile(
+        path.join(portableCatalog, 'plugins', 'portable-pack', 'agent-skills', 'skills', 'packed-portable', 'README.md'),
+        '# Installed tarball command fixture\n',
+      ),
+    ]);
+    await createCatalogSnapshotFixture(
+      portableCatalog,
+      'portable-pack',
+      '0.1.0',
+      '# Portable pack plugin\n',
+      (manifest) => {
+        manifest.extensions = {
+          instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
+        };
+        manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
+      },
+    );
+    const portableCwd = path.join(tempRoot, 'portable-project');
+    const portableHome = path.join(tempRoot, 'portable-aw-home');
+    const fakeBin = path.join(tempRoot, 'fake-skills-bin');
+    const fakeLog = path.join(tempRoot, 'fake-skills-log.jsonl');
+    const fakeState = path.join(tempRoot, 'fake-skills-added');
+    const materializedOut = path.join(tempRoot, 'materialized-portable');
+    await Promise.all([
+      fs.ensureDir(portableCwd),
+      fs.ensureDir(fakeBin),
+      fs.outputJson(path.join(portableHome, 'catalog-sources.json'), {
+        schemaVersion: 1,
+        sources: [{ id: 'local', type: 'path', primary: true, path: portableCatalog }],
+      }),
+    ]);
+    const fakeSkills = path.join(fakeBin, process.platform === 'win32' ? 'skills.cmd' : 'skills');
+    if (process.platform === 'win32') {
+      await fs.writeFile(fakeSkills, '@node "%~dp0\\skills.cjs" %*\r\n', 'utf8');
+    }
+    const fakeSkillsScript = process.platform === 'win32'
+      ? path.join(fakeBin, 'skills.cjs')
+      : fakeSkills;
+    await fs.writeFile(fakeSkillsScript, [
+      ...(process.platform === 'win32' ? [] : ['#!/usr/bin/env node']),
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify(args) + '\\n');",
+      "if (args[0] === '--version') { console.log('1.5.23'); process.exit(0); }",
+      "if (args[0] === 'add') { fs.writeFileSync(process.env.FAKE_SKILLS_STATE, 'added'); process.exit(0); }",
+      "if (args[0] === 'list') { console.log(fs.existsSync(process.env.FAKE_SKILLS_STATE) ? JSON.stringify([{name:'packed-portable',agents:['Codex'],scope:'project',path:'/fake/packed-portable'}]) : '[]'); process.exit(0); }",
+      'process.exit(2);',
+    ].join('\n'), 'utf8');
+    if (process.platform !== 'win32') await fs.chmod(fakeSkills, 0o755);
+    const portableEnv = {
+      ...process.env,
+      AW_HOME: portableHome,
+      AW_CODEX_HOME: path.join(tempRoot, 'portable-codex-home'),
+      AW_CLAUDE_HOME: path.join(tempRoot, 'portable-claude-home'),
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
+      FAKE_SKILLS_LOG: fakeLog,
+      FAKE_SKILLS_STATE: fakeState,
+    };
+    await execFileAsync(awBin, [
+      'skill', 'materialize', 'local/portable-pack',
+      '--scope', 'project', '--out', materializedOut,
+    ], { cwd: portableCwd, env: portableEnv });
+    await expect(fs.readJson(path.join(materializedOut, '.aw-materialization.json')))
+      .resolves.toMatchObject({
+        schemaVersion: 1,
+        plugin: { id: 'local/portable-pack', version: '1.0.0' },
+        scope: 'project',
+      });
+
+    const installed = await execFileAsync(awBin, [
+      'skill', 'install', 'local/portable-pack', '--scope', 'project', '--yes', '--json',
+    ], { cwd: portableCwd, env: portableEnv, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(installed.stdout)).toMatchObject({
+      ok: true,
+      status: 'succeeded',
+      selectedSkills: [{ name: 'packed-portable', providerPluginId: 'local/portable-pack' }],
+    });
+    const fakeCalls = (await fs.readFile(fakeLog, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(fakeCalls).toContainEqual(['--version']);
+    expect(fakeCalls).toContainEqual(['list', '--json']);
+    expect(fakeCalls).toContainEqual(expect.arrayContaining([
+      'add', '--skill', 'packed-portable', '--yes',
+    ]));
+
     await execFileAsync(awBin, [
       'plugin',
       'init',
@@ -308,6 +424,13 @@ describe('pack smoke', () => {
       'authoring',
       'scripts',
       'validate-plugin.mjs',
+    ))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      unpackedPackageRoot,
+      'dist',
+      'src',
+      'portable',
+      'materializer.js',
     ))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(
       unpackedPackageRoot,

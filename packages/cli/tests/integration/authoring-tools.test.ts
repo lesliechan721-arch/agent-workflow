@@ -4103,6 +4103,152 @@ describe('authoring tools', () => {
     });
   });
 
+  it('aw plugin validate accepts mixed portable static and dynamic synthetic authoring contracts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-authoring-'));
+    tempDirs.push(tempRoot);
+    const { pluginDir } = await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'portable-authoring',
+      createBaseManifest('portable-authoring', {
+        compatibility: { aw: { minVersion: '0.1.0' } },
+        extensions: {
+          instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
+        },
+        distributions: { agentSkills: { skills: './portable-skills' } },
+        buildConfig: {
+          skillRuntimeFiles: [
+            {
+              skill: 'portable-static',
+              target: 'references/runtime.txt',
+              distributions: ['agent-skills'],
+              source: './runtime.txt',
+            },
+            {
+              skill: 'portable-dynamic',
+              target: 'references/dynamic.txt',
+              distributions: ['agent-skills'],
+              source: './dynamic-runtime.txt',
+            },
+          ],
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        config: {
+          schema: { variant: { type: 'string', default: 'standard' } },
+        },
+        artifacts: {
+          targets: [{
+            id: 'portable-dynamic',
+            distribution: 'agent-skills',
+            scopes: ['user', 'project'],
+            target: 'agent-skills.skill',
+            states: ['present', 'disabled'],
+            refreshKeys: ['variant'],
+            skillKey: 'portable-dynamic',
+            sourceDirs: ['./portable-source'],
+            runtimeImports: [{ name: 'registry', plugin: 'portable-provider', export: 'registry' }],
+          }],
+        },
+      }),
+      {
+        'runtime.txt': 'portable runtime projection\n',
+        'dynamic-runtime.txt': 'dynamic runtime projection\n',
+        'portable-skills/portable-static/SKILL.md': '---\nname: portable-static\ndescription: Static portable Skill.\n---\n\n# Static\n',
+        'portable-skills/portable-static/README.md': '# Static portable Skill\n',
+        'portable-skills/portable-dynamic/SKILL.md': '---\nname: portable-dynamic\ndescription: Dynamic owner placeholder.\n---\n',
+        'portable-skills/portable-dynamic/README.md': '# Dynamic owner placeholder\n',
+        'portable-source/SKILL.md': '---\nname: portable-dynamic\ndescription: Dynamic portable Skill.\n---\n\n# Dynamic\n',
+        'portable-source/README.md': '# Dynamic portable Skill\n',
+        'scripts/render.mjs': [
+          'const fs = await import("node:fs");',
+          'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          'if (context.surface.kind !== "distribution" || context.surface.name !== "agent-skills") process.exit(2);',
+          'if (context.platform !== undefined || context.distribution !== "agent-skills") process.exit(3);',
+          'if (process.env.AW_PLUGIN_PLATFORM !== undefined || process.env.AW_PLUGIN_DISTRIBUTION !== "agent-skills") process.exit(4);',
+          'if (context.runtimeImports[0]?.artifactId !== "portable-dynamic") process.exit(5);',
+          'if (!fs.statSync(context.runtimeImports[0].path).isFile()) process.exit(6);',
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '  id: "portable-dynamic", distribution: "agent-skills", target: "agent-skills.skill", kind: "skill",',
+          '  state: "present", refreshKeys: ["variant"], skillKey: "portable-dynamic",',
+          '  content: { files: { "references/rendered.txt": "rendered\\n" } }',
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+
+    const result = await runValidatePlugin(pluginDir, ['--json']).catch((failure: unknown) => {
+      const output = failure as { stdout?: string; stderr?: string };
+      throw new Error(`${output.stdout ?? ''}${output.stderr ?? ''}`);
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
+
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    await fs.writeFile(path.join(pluginDir, 'dynamic-runtime.txt'), '{{unresolvedRuntime}}\n', 'utf8');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('final file tree contains an unresolved template'),
+    });
+    await fs.writeFile(path.join(pluginDir, 'dynamic-runtime.txt'), 'dynamic runtime projection\n', 'utf8');
+
+    const importCollisionManifest = structuredClone(manifest);
+    importCollisionManifest.buildConfig.skillRuntimeFiles[0] = {
+      skill: 'portable-static',
+      target: 'references/runtime.txt',
+      distributions: ['agent-skills'],
+      import: { plugin: 'portable-provider', export: 'registry' },
+    };
+    await fs.writeFile(
+      path.join(pluginDir, 'portable-skills', 'portable-static', 'references'),
+      'file blocks imported child\n',
+      'utf8',
+    );
+    await fs.writeJson(manifestPath, importCollisionManifest, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('final file tree path "references" conflicts with "references/runtime.txt"'),
+    });
+    await fs.remove(path.join(pluginDir, 'portable-skills', 'portable-static', 'references'));
+
+    const withoutDistribution = structuredClone(manifest);
+    delete withoutDistribution.distributions;
+    await fs.writeJson(manifestPath, withoutDistribution, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('agent-skills targets require distributions.agentSkills'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      extensions: {},
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('portable-only plugins are not supported'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      buildConfig: {
+        skillRuntimeFiles: [{
+          ...manifest.buildConfig.skillRuntimeFiles[0],
+          distributions: ['native'],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('expected agent-skills'),
+    });
+
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.writeFile(
+      path.join(pluginDir, 'portable-skills', 'portable-static', 'SKILL.md'),
+      '---\nname: wrong-name\ndescription: Invalid portable Skill.\n---\n',
+      'utf8',
+    );
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('name 必须与 Skill 目录一致'),
+    });
+  });
+
   it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifact-env-'));
     tempDirs.push(tempRoot);
@@ -6134,6 +6280,68 @@ describe('authoring tools', () => {
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
       stdout: expect.stringContaining('dependencies requires AW 0.1.0 or newer'),
+    });
+  });
+
+  it('fails closed for Portable manifests when only a stale v4 runtime validator is available', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-v4-'));
+    tempDirs.push(tempRoot);
+    const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
+    await fs.ensureDir(path.join(tempRoot, 'packages', 'cli'));
+    await Promise.all([
+      fs.copy(
+        path.join(repoRoot(), 'packages', 'cli', 'authoring', 'scripts'),
+        path.join(authoringRoot, 'scripts'),
+      ),
+      fs.symlink(
+        path.join(repoRoot(), 'packages', 'cli', 'node_modules'),
+        path.join(tempRoot, 'packages', 'cli', 'node_modules'),
+        'dir',
+      ),
+      fs.outputFile(
+        path.join(tempRoot, 'packages', 'cli', 'dist', 'src', 'utils', 'manifest.js'),
+        [
+          'exports.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 4;',
+          'exports.validateSourcePluginManifest = async () => { throw new Error("stale v4 validator was trusted"); };',
+        ].join('\n'),
+      ),
+    ]);
+    const pluginDir = path.join(tempRoot, 'plugins', 'stale-portable');
+    await Promise.all([
+      fs.outputJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+        ...createBaseManifest('stale-portable'),
+        compatibility: { aw: { minVersion: '0.1.0' } },
+        extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+        distributions: { agentSkills: { skills: './portable-skills' } },
+      }),
+      fs.outputFile(path.join(pluginDir, 'README.md'), '# Stale portable\n'),
+      fs.outputFile(
+        path.join(pluginDir, 'portable-skills', 'portable', 'SKILL.md'),
+        '---\nname: portable\ndescription: Stale runtime fixture.\n---\n',
+      ),
+      fs.outputFile(path.join(pluginDir, 'portable-skills', 'portable', 'README.md'), '# Portable\n'),
+    ]);
+
+    const validator = path.join(authoringRoot, 'scripts', 'validate-plugin.mjs');
+    await expect(execFileAsync('node', [validator, pluginDir], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('requires manifest contract v5'),
+    });
+
+    const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
+    await Promise.all([
+      fs.outputJson(path.join(legacyDir, '.agents-plugin', 'plugin.json'), createBaseManifest('legacy-native')),
+      fs.outputFile(path.join(legacyDir, 'README.md'), '# Legacy native\n'),
+    ]);
+    await expect(execFileAsync('node', [validator, legacyDir], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
   });
 

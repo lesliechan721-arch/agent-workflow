@@ -7,6 +7,7 @@ describe('buildConfig validation', () => {
     name: 'demo',
     version: '0.1.0',
     description: 'demo',
+    compatibility: { aw: { minVersion: '0.1.0' } },
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -211,6 +212,15 @@ describe('buildConfig validation', () => {
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       distributions: { agentSkills: { skills: './portable-skills' } },
     }).distributions?.agentSkills?.skills).toBe('./portable-skills');
+  });
+
+  it('requires the public portable distribution AW compatibility floor', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      compatibility: { aw: { minVersion: '0.0.0' } },
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+    })).toThrow('distributions.agentSkills requires AW 0.1.0 or newer');
   });
 
   it('rejects unsafe portable distribution paths', () => {

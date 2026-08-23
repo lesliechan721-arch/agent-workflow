@@ -332,6 +332,11 @@ async function materializePluginCandidates(options: {
       files[projection.target] = await fs.readFile(projectionPath);
     }
     for (const [relativePath, content] of Object.entries(artifact.content?.files ?? {})) {
+      if (isSkillAuthorOnlyPath(relativePath)) {
+        throw new Error(
+          `Portable dynamic Skill "${artifact.skillKey}" renderer returned author-only path "${relativePath}".`,
+        );
+      }
       files[relativePath] = Buffer.from(content, 'utf8');
     }
     const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-tree-'));

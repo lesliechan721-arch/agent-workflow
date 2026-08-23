@@ -30,6 +30,7 @@ function baseManifest(name: string): PluginManifestSource {
     name,
     version: '0.1.0',
     description: `${name} fixture`,
+    compatibility: { aw: { minVersion: '0.1.0' } },
     marketplace: {
       category: 'test',
       strict: true,
@@ -209,6 +210,21 @@ describe('portable materializer', () => {
       .toBe('overlay');
     expect(await fs.pathExists(path.join(materialized.rootDir, 'skills', 'disabled'))).toBe(false);
     await materialized.cleanup();
+
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'scripts', 'render.mjs'),
+      `console.log(JSON.stringify({version:2,artifacts:[
+        {id:'enabled',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'present',skillKey:'owned',refreshKeys:[],content:{files:{'evals/private.md':'author-only'}}},
+        {id:'disabled',distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'disabled',skillKey:'disabled',refreshKeys:[]}
+      ]}))`,
+    );
+    await expect(materializePortableSkills({
+      plugins: [plugin],
+      pluginId: plugin.pluginId!,
+      scope: 'project',
+      cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home-author-only') },
+    })).rejects.toThrow('renderer returned author-only path "evals/private.md"');
   });
 
   it('rejects name collisions, sensitive config leaks, and invalid portable SKILL.md', async () => {
