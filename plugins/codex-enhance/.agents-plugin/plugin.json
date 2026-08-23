@@ -1,7 +1,7 @@
 {
   "name": "codex-enhance",
   "version": "0.1.0",
-  "description": "通过实施前关键歧义澄清、只读证据探索和通用子代理编排增强 Codex harness。",
+  "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
   "compatibility": {
     "aw": {
       "minVersion": "0.1.0"
@@ -13,8 +13,6 @@
       "codex",
       "subagent",
       "explorer",
-      "clarification",
-      "requirements",
       "research",
       "reasoning",
       "wait"
@@ -30,7 +28,7 @@
   },
   "interface": {
     "displayName": "Codex Enhance",
-    "shortDescription": "Codex 实施澄清、只读探索与通用子代理编排增强",
+    "shortDescription": "Codex 只读探索与通用子代理编排增强",
     "capabilities": [
       "Skills",
       "Instructions",
@@ -55,8 +53,6 @@
     },
     "tests": {
       "node": [
-        "./scripts/clarifier-artifacts.test.mjs",
-        "./scripts/clarifier-evals.test.mjs",
         "./scripts/explore-artifacts.test.mjs",
         "./scripts/subagent-artifacts.test.mjs",
         "./scripts/trigger-evals.test.mjs",
@@ -277,24 +273,6 @@
         "skillKey": "codex-explore",
         "sourceDirs": [
           "./skills/codex-explore"
-        ]
-      },
-      {
-        "id": "codex-clarifier-skill",
-        "platform": "codex",
-        "scopes": [
-          "user",
-          "project"
-        ],
-        "target": "codex.skill",
-        "projectManagedKind": "skill",
-        "states": [
-          "present"
-        ],
-        "refreshKeys": [],
-        "skillKey": "codex-clarifier",
-        "sourceDirs": [
-          "./skills/codex-clarifier"
         ]
       },
       {

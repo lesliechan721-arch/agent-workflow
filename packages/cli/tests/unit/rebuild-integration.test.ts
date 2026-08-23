@@ -3787,16 +3787,8 @@ describe('rebuild adapter integration', () => {
     const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
     await expect(fs.pathExists(path.join(skillsRoot, 'codex-subagent-guide', 'SKILL.md')))
       .resolves.toBe(true);
-    await expect(fs.pathExists(path.join(skillsRoot, 'codex-clarifier', 'SKILL.md')))
-      .resolves.toBe(true);
-    await expect(readSkillOwnerMarker({
-      skillRoot: path.join(skillsRoot, 'codex-clarifier'),
-      allowedRoot: skillsRoot,
-    })).resolves.toMatchObject({
-      schemaVersion: 2,
-      sourceId: 'official',
-      plugin: 'codex-enhance',
-    });
+    await expect(fs.pathExists(path.join(skillsRoot, 'codex-clarifier')))
+      .resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillsRoot, 'requirements-clarifier')))
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillsRoot, 'decision-grill', 'SKILL.md')))
