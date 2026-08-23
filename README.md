@@ -227,32 +227,42 @@ pnpm release:install:local
 pnpm release:install:local -- <cli.tgz> <eval.tgz>
 ```
 
-`pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。Catalog 最低 CLI 版本取插件声明与 schema 4 Git 分发 floor 的最大值。发布 plan 内部 staging 会生成带 release ledger 的完整 Catalog 交接目录；维护者不直接提供版本来运行 staging。
+`pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
 
-正常维护只使用四个 release 命令。先检查插件和 release 状态。需要新稳定目标时，按轴使用 `major`、`minor` 或 `patch`：
+正常维护只使用 `status`、`target`、`prepare`、`publish`。先检查状态，再选择要 bump 的轴：
 
 ```bash
-aw plugin status --all --base HEAD
 pnpm release:status
+
+# 提升 CLI target
+pnpm release:target -- --cli patch
+
+# 提升 Catalog target；有插件版本变更时同时指定 --plugin
+pnpm release:target -- --catalog patch --plugin <plugin-name>=patch
+
+# 提升多个 target；--plugin 可按需重复
 pnpm release:target -- --cli patch --catalog patch --plugin <plugin-name>=patch
-git add release/version-targets.json packages/cli/package.json packages/agent-skill-eval/package.json <selected-source-paths>
+```
+
+`release:target` 的参数只表示要提升哪些 target，不保证本次会发布哪些轴。实际 CLI、Catalog 轴由 `release:status` 和 `release:prepare` 的输出决定。bump 只能是 `major`、`minor` 或 `patch`。命令会更新对应 source 文件：CLI target 更新时还会同步两个 public package version 和 `pnpm-lock.yaml`。提交本次有意的 source 改动后，再 prepare 和 publish：
+
+```bash
+git add \
+  release/version-targets.json \
+  packages/cli/package.json \
+  packages/agent-skill-eval/package.json \
+  pnpm-lock.yaml \
+  plugins/git/.agents-plugin/plugin.json \
+  README.md
 git commit -m "chore(release): set release targets"
 pnpm release:prepare -- beta
 # 或：pnpm release:prepare -- stable
-git add release/current-plan.json <plan-path>
-git commit -m "chore(release): prepare immutable plan"
 pnpm release:publish
 ```
 
-第一个提交保存 `release:target` 产生的 target 文件、CLI bump 时同步产生的两个 public package version mirror，以及本次选择的 Plugin manifest 源码变更。然后才能运行 `release:prepare`。`<plan-path>` 使用 prepare 输出的 plan 文件路径。第二个提交必须只包含 immutable plan 和 current pointer。两次提交不能合并。`release:publish` 不接受版本参数，只消费已提交 plan；publisher 不回写源码 package version。
+示例中的 `plugins/git/.agents-plugin/plugin.json` 和 `README.md` 只是本次选择的 source 路径；只暂存实际有意的插件与 source 改动。`release:prepare` 必须在干净、已提交的 source HEAD 上运行，并在 gitignored 的 `.release/prepared/` 创建本地 artifact 和 descriptor。它是可删除的弱状态，不需要也不得提交。`release:publish` 不接受参数，只验证该 prepared state，并按 `Eval → CLI → Catalog` 的顺序发布已启用的轴。
 
-只有历史 tag-first 事务已发布两个兼容 CLI 包，但 channel 尚未推进时，才运行显式恢复：
-
-```bash
-pnpm release:recover -- catalog <x.y.z[-beta.N]>
-```
-
-恢复命令只接受 canonical Catalog 版本。它从版本推断 beta/latest，要求 exact immutable tag、pending guard 和两个包一致的已发布 dist-tag。它不 stage 新内容，也不创建发布身份。所有 Git catalog 写入口在远端 ref 写入前拒绝 dirty worktree；release clean/live gate 拒绝 registered source/build input 和 `scripts/release/**` 上的 `assume-unchanged`、`skip-worktree`，并和 snapshot 复制前门禁一起拒绝这些 input path chain 中的符号链接。Git publisher 使用固定 SHA-1 object format、私有 `core.symlinks=true` 配置、独立 channel、immutable annotated tag、publication lock 和 tag-first pending guard。不支持 atomic push 时不降级。
+远端发布失败或结果不确定后，不要重试同一版本。提升相关 target，重新提交 source 改动，再运行 prepare 和 publish。`attempted.json` 是本地安全门禁，不要手动删除；工具会在 target digest 改变后处理它。不需要额外的恢复命令或提交生成状态。
 
 新 CLI 只读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；stable 使用 `refs/heads/catalog/latest`，prerelease 使用 `refs/heads/catalog/beta`。旧 npm catalog packages 在 cutover 后冻结，不删除或 unpublish，也不再更新。
 

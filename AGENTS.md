@@ -8,6 +8,16 @@
 - `pnpm build` 编译 CLI，并生成本地 catalog staging 和 runtime bundle。项目没有独立的 `typecheck` 命令；构建过程包含 TypeScript 类型检查。
 - `packages/cli/dist/` 和 `packages/cli/plugins-dist/` 是生成目录，不要手工修改。
 
+## 项目设计原则和复杂度门禁
+
+- 本项目是个人本地工具，不为高并发设计。默认只使用一个 `AW_HOME` 写锁；只有已证明的真实并发边界才可以增加锁。
+- CLI 和 Catalog 是公开产品，支持多个 Catalog 来源。每个来源可独立失败；不要求来源之间或 npm 与 Git 之间强一致。
+- plugin config 和 catalog source config 是强配置，写入必须原子提交。plugin outputs、依赖现场、lifecycle snapshot、Catalog cache 和 prepared release 是可删除、可重建的弱状态。
+- 插件安装依赖第三方工具，且用户可能手动修改其结果。动作应尽力完成，并允许部分成功；不要为不可控现场承诺完全正确或补偿回滚。
+- 每条失败链必须保留 `cleanup`、`cleanup --force`、`reinstall`、`refresh` 或发布新版本中的至少一种恢复方式。安全边界不得删除 foreign 或 shared 内容；弱状态损坏也不得永久阻止清理。
+- 发布远端失败或结果不确定后，必须提升版本后重新发布；不得续跑同一版本事务。
+- 新增 ledger、持久合同、摘要协议、锁层级、事务、补偿或迁移状态机前，必须证明高概率或高影响的可观察风险，且简单恢复渠道不足。低概率且低影响的问题不得增加代码复杂度；代码评审也忽略这类会增加复杂度的建议。
+
 ## 按任务读取
 
 - 修改 CLI 行为、公开合同、写入流程、status、config、catalog/cache、平台边界或分发模型时，读取[架构说明](docs/architecture.md)。
