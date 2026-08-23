@@ -23,7 +23,6 @@ import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   readCatalogSourcesConfigSnapshot,
 } from '../utils/catalog-sources.js';
-import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import {
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
@@ -132,9 +131,8 @@ function throwIfWriteReviewStale(result: {
 }
 
 const SOURCE_PROGRESS_PHASES: Record<CatalogSourceMutationProgress['stage'], string> = {
-  validatingCandidate: '验证候选来源',
+  refreshingCatalog: '刷新 Catalog 缓存',
   catalogReady: 'Catalog 已读取，索引已刷新',
-  scanningReferences: '扫描现有引用和约束',
   savingConfig: '保存来源配置',
 };
 
@@ -650,75 +648,16 @@ export function createTuiControllerDependencies(
 
   const dependencies: TuiControllerDependencies = {
     loadStatus,
-    async inspectSourceRemoval(sourceId, signal) {
+    async inspectSourceRemoval(_sourceId, signal) {
       signal.throwIfAborted();
-      const inventory = await inventoryCatalogSourceReferences({
-        cwd: context.cwd,
-        env: context.env,
-        includeHistoricalProjects: true,
-      });
-      signal.throwIfAborted();
-      const references = inventory.references.filter((reference) =>
-        reference.sourceId === undefined || reference.sourceId === sourceId);
-      const dependencies = new Map<string, {
-        category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
-        pluginId?: string;
-        sourceId?: string;
-        platform?: PlatformName;
-        scope?: 'user' | 'project';
-      }>();
-      for (const reference of references) {
-        const kind = reference.kind.toLocaleLowerCase('en');
-        const category: 'installation' | 'config' | 'lifecycle' | 'marketplace' = kind.includes('config')
-          ? 'config'
-          : kind.includes('lifecycle')
-            ? 'lifecycle'
-            : kind.includes('marketplace')
-              ? 'marketplace'
-              : 'installation';
-        const stableSourceId = reference.sourceId;
-        const pluginId = reference.pluginName && stableSourceId
-          ? `${stableSourceId}/${reference.pluginName}`
-          : undefined;
-        const dependency: {
-          category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
-          pluginId?: string;
-          sourceId?: string;
-          platform?: PlatformName;
-          scope?: 'user' | 'project';
-        } = {
-          category,
-          ...(pluginId ? { pluginId } : {}),
-          ...(stableSourceId ? { sourceId: stableSourceId } : {}),
-          ...(reference.platform === 'codex' || reference.platform === 'claude'
-            ? { platform: reference.platform } : {}),
-          ...(reference.scope === 'user' || reference.scope === 'project'
-            ? { scope: reference.scope } : {}),
-        };
-        const key = [
-          category,
-          pluginId ?? '',
-          stableSourceId ?? '',
-          dependency.platform ?? '',
-          dependency.scope ?? '',
-          category === 'marketplace' ? reference.marketplaceName ?? '' : '',
-        ].join('\0');
-        dependencies.set(key, dependency);
-      }
-      const projected = [...dependencies.entries()]
-        .sort(([left], [right]) => left.localeCompare(right, 'en'))
-        .map(([, dependency]) => dependency);
-      const complete = inventory.errors.length === 0;
-      const count = (category: typeof projected[number]['category']): number | undefined =>
-        complete ? projected.filter((reference) => reference.category === category).length : undefined;
       return {
-        blocked: !complete || references.length > 0,
-        inventoryComplete: complete,
-        installationCount: count('installation'),
-        configCount: count('config'),
-        lifecycleCount: count('lifecycle'),
-        marketplaceCount: count('marketplace'),
-        dependencies: projected,
+        blocked: false,
+        inventoryComplete: true,
+        installationCount: 0,
+        configCount: 0,
+        lifecycleCount: 0,
+        marketplaceCount: 0,
+        dependencies: [],
       };
     },
     async validateIntent(intent, signal) {

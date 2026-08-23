@@ -373,7 +373,7 @@ describe('phase 3B namespaced runtime stores', () => {
       }),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const configured = await replaceCatalogSourcesConfig({
+    await replaceCatalogSourcesConfig({
       config: {
         schemaVersion: 1,
         sources: [
@@ -405,16 +405,7 @@ describe('phase 3B namespaced runtime stores', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 1,
-        sources: [{ id: 'primary', type: 'path', primary: true, path: primaryRoot }],
-      },
-      expectedDigest: configured.digest,
-      env: isolation.env,
-    });
+    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
     const skillsRoot = path.join(
       isolation.env.AW_HOME!,
       'marketplaces',
@@ -1877,9 +1868,9 @@ describe('phase 3B namespaced runtime stores', () => {
 
       resumeInstall.resolve();
       await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(mutation).rejects.toMatchObject({ code: 'catalogSourceInUse' });
+      await expect(mutation).resolves.toMatchObject({ ok: true, changed: true, references: [] });
       expect(mutationCompleted).toBe(true);
-      expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(configured.digest);
+      expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(configured.digest);
       const inventory = await inventoryCatalogSourceReferences({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
@@ -2004,10 +1995,6 @@ describe('phase 3B namespaced runtime stores', () => {
       sourceId: 'team', sourceIdentity, pluginName: 'demo', platform: 'codex', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-
     await expect(cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -2033,9 +2020,6 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(cleanup).toMatchObject({ overallState: 'failed' });
     expect(await fs.pathExists(target.activeRoot)).toBe(true);
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
   });
 
   it('does not consume a lost-source snapshot after its last live owner disappears', async () => {

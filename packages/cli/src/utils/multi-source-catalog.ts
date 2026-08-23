@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,14 +18,12 @@ import {
   readCatalogSourcesConfigSnapshot,
   type CatalogSourcesConfigSnapshot,
 } from './catalog-sources.js';
-import { catalogSourceCacheInternal } from './catalog-source-cache.js';
 import { catalogGitProviderInternal } from './git-catalog-provider.js';
 import { ensurePluginName, readPluginManifest } from './manifest.js';
 import { catalogPathProviderInternal } from './path-catalog-provider.js';
 import { sanitizeCatalogSourceError } from './catalog-public-error.js';
 import { canonicalizePathThroughExistingAncestor } from './state-paths.js';
-
-const { withCatalogSourceCacheLease } = catalogSourceCacheInternal;
+import { validateCatalogSnapshot } from './catalog-snapshot.js';
 
 export interface ParsedPluginId {
   sourceId?: CatalogSourceId;
@@ -243,6 +242,48 @@ async function catalogResolutionProtectedPaths(
   return output;
 }
 
+async function materializeCallbackGeneration(
+  resolution: MultiSourceCatalogResolution,
+  signal?: AbortSignal,
+): Promise<{ resolution: MultiSourceCatalogResolution; generationRoot: string }> {
+  const generationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-generation-'));
+  try {
+    const sources: MultiSourceResolutionItem[] = [];
+    for (const item of resolution.sources) {
+      throwIfAborted(signal);
+      if (!item.resolution) {
+        sources.push(item);
+        continue;
+      }
+      const rootDir = path.join(generationRoot, item.sourceId);
+      await fs.copy(item.resolution.rootDir, rootDir, {
+        dereference: false,
+        preserveTimestamps: true,
+      });
+      const validation = await validateCatalogSnapshot(rootDir);
+      if (
+        validation.manifestDigest !== item.resolution.manifestDigest
+        || validation.snapshotDigest !== item.resolution.snapshotDigest
+      ) {
+        throw new Error(`Catalog source "${item.sourceId}" changed before callback materialization.`);
+      }
+      sources.push({
+        sourceId: item.sourceId,
+        resolution: {
+          ...item.resolution,
+          rootDir,
+          manifest: validation.manifest,
+        },
+      });
+    }
+    throwIfAborted(signal);
+    return { resolution: { ...resolution, sources }, generationRoot };
+  } catch (error) {
+    await fs.remove(generationRoot).catch(() => undefined);
+    throw error;
+  }
+}
+
 export function parsePluginId(value: string): ParsedPluginId {
   if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
     throw new Error('Invalid plugin selector: expected a non-empty canonical plugin ID.');
@@ -344,7 +385,7 @@ async function resolveOneSource(options: {
   }
 }
 
-async function resolveMultiSourceCatalogWithLease(
+async function resolveMultiSourceCatalog(
   options: ResolveMultiSourceCatalogOptions,
 ): Promise<MultiSourceCatalogResolution> {
   throwIfAborted(options.signal);
@@ -396,24 +437,19 @@ async function resolveMultiSourceCatalogWithLease(
 export async function withResolvedMultiSourceCatalog<T>(
   options: WithResolvedMultiSourceCatalogOptions<T>,
 ): Promise<LeaseSafeResult<T>> {
-  const env = options.env ?? process.env;
-  return withCatalogSourceCacheLease({
-    env,
-    signal: options.signal,
-    action: async () => {
-      const resolution = await resolveMultiSourceCatalogWithLease(options);
-      const protectedPaths = await catalogResolutionProtectedPaths(resolution);
-      throwIfAborted(options.signal);
-      const result = await options.consume(resolution);
-      throwIfAborted(options.signal);
-      const projected = await projectLeaseSafeResult(
-        result,
-        protectedPaths,
-      ) as LeaseSafeResult<T>;
-      throwIfAborted(options.signal);
-      return projected;
-    },
-  });
+  const resolved = await resolveMultiSourceCatalog(options);
+  const generation = await materializeCallbackGeneration(resolved, options.signal);
+  try {
+    const protectedPaths = await catalogResolutionProtectedPaths(generation.resolution);
+    throwIfAborted(options.signal);
+    const result = await options.consume(generation.resolution);
+    throwIfAborted(options.signal);
+    const projected = await projectLeaseSafeResult(result, protectedPaths) as LeaseSafeResult<T>;
+    throwIfAborted(options.signal);
+    return projected;
+  } finally {
+    await fs.remove(generation.generationRoot).catch(() => undefined);
+  }
 }
 
 function throwSourceErrors(resolution: MultiSourceCatalogResolution): void {
@@ -439,59 +475,52 @@ export async function withResolvedCatalogPlugin<T>(
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.providers ? { providers: options.providers } : {}),
   };
-  const env = options.env ?? process.env;
-  return withCatalogSourceCacheLease({
-    env,
-    signal: options.signal,
-    action: async () => {
-      const catalog = await resolveMultiSourceCatalogWithLease({
-        ...resolutionOptions,
-        ...(sourceIds ? { sourceIds } : {}),
-      });
-      throwSourceErrors(catalog);
-      const matches = catalog.sources.flatMap((item) => {
-        const source = item.resolution!;
-        return source.manifest.entries.some((entry) => entry.name === selector.pluginName)
-          ? [source]
-          : [];
-      });
-      if (matches.length === 0) {
-        throw new Error(`Plugin "${options.selector}" does not exist in the required catalog source set.`);
-      }
-      if (matches.length > 1) {
-        throw new Error(
-          `Plugin "${selector.pluginName}" is ambiguous across sources: ${matches.map((match) => match.sourceId).join(', ')}.`,
-        );
-      }
-      const source = matches[0]!;
-      const plugin = await readPluginManifest(
-        path.join(source.rootDir, 'plugins', selector.pluginName),
-        { mode: 'bundle' },
-      );
-      plugin.sourceId = source.sourceId;
-      plugin.sourceIdentity = source.sourceIdentity;
-      plugin.pluginId = formatPluginId({ sourceId: source.sourceId, pluginName: selector.pluginName });
-      plugin.marketplaceName = source.sourceId === catalog.primarySourceId
-        ? 'aw'
-        : `aw-${source.sourceId}`;
-      const resolvedPlugin = {
-        pluginId: plugin.pluginId,
-        source,
-        plugin,
-      };
-      const protectedPaths = [
-        ...await catalogResolutionProtectedPaths(catalog),
-        ...await createProtectedCatalogDirectory(plugin.rootDir),
-        ...await createProtectedCatalogDirectory(path.dirname(plugin.manifestPath)),
-      ];
-      throwIfAborted(options.signal);
-      const result = await options.consume(resolvedPlugin);
-      throwIfAborted(options.signal);
-      const projected = await projectLeaseSafeResult(result, protectedPaths) as LeaseSafeResult<T>;
-      throwIfAborted(options.signal);
-      return projected;
-    },
+  const resolvedCatalog = await resolveMultiSourceCatalog({
+    ...resolutionOptions,
+    ...(sourceIds ? { sourceIds } : {}),
   });
+  throwSourceErrors(resolvedCatalog);
+  const generation = await materializeCallbackGeneration(resolvedCatalog, options.signal);
+  try {
+    const catalog = generation.resolution;
+    const matches = catalog.sources.flatMap((item) => {
+      const source = item.resolution!;
+      return source.manifest.entries.some((entry) => entry.name === selector.pluginName)
+        ? [source]
+        : [];
+    });
+    if (matches.length === 0) {
+      throw new Error(`Plugin "${options.selector}" does not exist in the required catalog source set.`);
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `Plugin "${selector.pluginName}" is ambiguous across sources: ${matches.map((match) => match.sourceId).join(', ')}.`,
+      );
+    }
+    const source = matches[0]!;
+    const plugin = await readPluginManifest(
+      path.join(source.rootDir, 'plugins', selector.pluginName),
+      { mode: 'bundle' },
+    );
+    plugin.sourceId = source.sourceId;
+    plugin.sourceIdentity = source.sourceIdentity;
+    plugin.pluginId = formatPluginId({ sourceId: source.sourceId, pluginName: selector.pluginName });
+    plugin.marketplaceName = source.sourceId === catalog.primarySourceId ? 'aw' : `aw-${source.sourceId}`;
+    const resolvedPlugin = { pluginId: plugin.pluginId, source, plugin };
+    const protectedPaths = [
+      ...await catalogResolutionProtectedPaths(catalog),
+      ...await createProtectedCatalogDirectory(plugin.rootDir),
+      ...await createProtectedCatalogDirectory(path.dirname(plugin.manifestPath)),
+    ];
+    throwIfAborted(options.signal);
+    const result = await options.consume(resolvedPlugin);
+    throwIfAborted(options.signal);
+    const projected = await projectLeaseSafeResult(result, protectedPaths) as LeaseSafeResult<T>;
+    throwIfAborted(options.signal);
+    return projected;
+  } finally {
+    await fs.remove(generation.generationRoot).catch(() => undefined);
+  }
 }
 
 export function preflightDesiredArtifactCollisions(

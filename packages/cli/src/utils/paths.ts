@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,10 +12,8 @@ import type { PlatformName, Scope } from '../types.js';
 import { validateBundleLayout } from './bundle-layout.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import {
-  canonicalizePathThroughExistingAncestorSync,
   getClaudeHome,
   getCodexHome,
-  resolveAwHome,
   resolveRepoRootSync,
 } from './state-paths.js';
 export {
@@ -46,17 +43,6 @@ function assertWritableHomePathForTests(
   recommendedFix: string,
 ): string {
   return assertTestWritablePath(targetPath, source, recommendedFix);
-}
-
-function assertWritableCatalogCachePathForTests(
-  targetPath: string,
-  source: string,
-): string {
-  return assertTestWritablePath(
-    targetPath,
-    source,
-    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 current catalog cache 根。',
-  );
 }
 
 function assertWritableTempPathForTests(
@@ -122,69 +108,6 @@ export function setEmbeddedPluginsRootOverrideForTests(rootDir: string | null): 
 
 export function getEmbeddedPluginsRootOverrideForTests(): string | null {
   return embeddedPluginsRootOverride;
-}
-
-export function resolveCurrentCatalogCacheRoot(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return assertWritableCatalogCachePathForTests(
-    path.join(resolveAwHome(env), 'catalog-cache'),
-    'current catalog cache root',
-  );
-}
-
-export function resolveCurrentCatalogCacheEntriesDir(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return assertWritableCatalogCachePathForTests(
-    path.join(resolveCurrentCatalogCacheRoot(env), 'entries'),
-    'current catalog cache entries',
-  );
-}
-
-export function resolveCurrentCatalogCacheEntryDir(
-  cacheKey: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return assertWritableCatalogCachePathForTests(
-    path.join(resolveCurrentCatalogCacheEntriesDir(env), cacheKey),
-    'current catalog cache entry',
-  );
-}
-
-export function resolveCurrentCatalogCacheSelectorsDir(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return assertWritableCatalogCachePathForTests(
-    path.join(resolveCurrentCatalogCacheRoot(env), 'selectors'),
-    'current catalog cache selectors',
-  );
-}
-
-export function resolveCurrentCatalogCacheSelectorIndexPath(
-  selectorHash: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return assertWritableCatalogCachePathForTests(
-    path.join(resolveCurrentCatalogCacheSelectorsDir(env), `${selectorHash}.json`),
-    'current catalog cache selector index',
-  );
-}
-
-export function resolveCurrentCatalogCacheStagingDir(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const awHome = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
-  const identity = crypto.createHash('sha256').update(awHome).digest('hex').slice(0, 16);
-  return assertTestWritablePath(
-    path.join(
-      path.dirname(awHome),
-      '.aw-local-marketplace-staging',
-      `catalog-cache-${identity}`,
-    ),
-    'current catalog cache staging',
-    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或登记 AW_HOME 同盘 sibling staging 根。',
-  );
 }
 
 export function resolveCliTempRoot(

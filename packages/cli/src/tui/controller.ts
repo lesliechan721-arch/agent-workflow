@@ -1449,7 +1449,7 @@ export class TuiController {
       const summary: OperationResultSummary = {
         ...baseSummary,
         elapsedMs: Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs),
-        messages: this.#progress.messages.slice(-8),
+        messages: [...this.#progress.messages, ...(baseSummary.messages ?? [])].slice(-8),
       };
       this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
       if (summary.code === 'operationFailed') {
@@ -1711,6 +1711,12 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  const sourceWarnings = intent.kind === 'sourceMutation'
+    && typeof execution === 'object' && execution !== null
+    && Array.isArray((execution as { errors?: unknown }).errors)
+    ? (execution as { errors: Array<{ message?: unknown }> }).errors.flatMap((error) =>
+        typeof error?.message === 'string' ? [`警告：${error.message}`] : [])
+    : [];
   const executionPlan = typeof execution === 'object' && execution !== null
     && typeof (execution as { dependencyPlan?: unknown }).dependencyPlan === 'object'
     ? (execution as { dependencyPlan: DependencyOperationPlan }).dependencyPlan
@@ -1773,5 +1779,6 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
       action: intent.action,
     } : {}),
     ...(inferredTargets.length > 0 ? { targets: inferredTargets } : {}),
+    ...(sourceWarnings.length > 0 ? { messages: sourceWarnings } : {}),
   };
 }

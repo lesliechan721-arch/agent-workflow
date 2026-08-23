@@ -36,7 +36,6 @@ import {
   setConfigFileLockBeforeReleaseHookForTests,
 } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { catalogSourceCacheInternal } from '../../src/utils/catalog-source-cache.js';
 
 const tempDirs: string[] = [];
 
@@ -58,7 +57,6 @@ async function createTwoSourceConfig(pathSourceRoot: string): Promise<CatalogSou
 afterEach(async () => {
   setAtomicConfigBeforeRenameHookForTests(undefined);
   setConfigFileLockBeforeReleaseHookForTests(undefined);
-  catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
@@ -282,23 +280,6 @@ describe('catalog sources config v1', () => {
     await expect(fs.pathExists(resolveConfigFileLockPath(
       resolveCatalogSourcesConfigPath(isolation.env),
     ))).resolves.toBe(false);
-  });
-
-  it('keeps an atomically committed source config receipt successful after root release failure', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const next = setPrimaryCatalogSource(initial.config, 'official');
-    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async () => {
-      throw Object.assign(new Error('persistent catalog root release failure'), { code: 'EPERM' });
-    });
-    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
-
-    await expect(replaceCatalogSourcesConfig({
-      config: next,
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    })).resolves.toMatchObject({ config: next, materialized: true });
-    await expect(fs.readJson(resolveCatalogSourcesConfigPath(isolation.env))).resolves.toEqual(next);
   });
 
   it.each([1, 2])(

@@ -76,7 +76,7 @@ describe('public AW_HOME mutation command lock', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       runtime: {
-        afterValidation: async () => {
+        beforeRefresh: async () => {
           sourceEntered.resolve();
           await releaseSource.promise;
         },
@@ -135,7 +135,7 @@ describe('public AW_HOME mutation command lock', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       runtime: {
-        afterValidation: async () => {
+        beforeRefresh: async () => {
           sourceEntered.resolve();
           await releaseSource.promise;
         },
@@ -186,7 +186,7 @@ describe('public AW_HOME mutation command lock', () => {
     ))).resolves.toMatchObject({ sourceIdentity: newIdentity, values: { mode: 'fast' } });
   });
 
-  it('fails a source identity update closed when config already references the source', async () => {
+  it('commits a source identity update without migrating an existing config store', async () => {
     const { isolation, candidateRoot } = await configureCatalog();
     const oldIdentity = (await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity;
     await writePluginConfigStore({
@@ -205,8 +205,8 @@ describe('public AW_HOME mutation command lock', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-    expect((await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity).toBe(oldIdentity);
+    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+    expect((await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity).not.toBe(oldIdentity);
     await expect(fs.readJson(path.join(
       isolation.env.AW_HOME!,
       'plugin-config',

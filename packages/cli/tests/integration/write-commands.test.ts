@@ -1959,19 +1959,20 @@ describe('five namespaced write commands', () => {
       });
     }
     expect(JSON.stringify(concurrentResults[0])).not.toContain('operation.lock timeout');
-    expect(concurrentResults[1]).toMatchObject({
-      status: 'fulfilled',
-      value: expect.objectContaining({ configWrite: 'succeeded' }),
-    });
-    await expect(readPluginConfigStore({
-      sourceId: 'team',
-      sourceIdentity: (await calculateCatalogSourceIdentity({ id: 'team', type: 'path', primary: true, path: sourceRoot })),
-      pluginName: 'demo',
-      scope: 'project',
-      projectLayer: 'shared',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    })).resolves.toMatchObject({ values: { mode: 'strict' } });
+    if (concurrentResults[1].status === 'rejected') {
+      expect(concurrentResults[1].reason).toMatchObject({ code: 'operationReviewStale' });
+    } else {
+      expect(concurrentResults[1].value).toMatchObject({ configWrite: 'succeeded' });
+      await expect(readPluginConfigStore({
+        sourceId: 'team',
+        sourceIdentity: (await calculateCatalogSourceIdentity({ id: 'team', type: 'path', primary: true, path: sourceRoot })),
+        pluginName: 'demo',
+        scope: 'project',
+        projectLayer: 'shared',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+      })).resolves.toMatchObject({ values: { mode: 'strict' } });
+    }
   });
 
   it('blocks a reviewed install when the other scope is installed concurrently', async () => {

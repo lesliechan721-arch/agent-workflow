@@ -2054,19 +2054,20 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toMatch(/user:secret|token=private|#fragment/u);
   });
 
-  it('fails closed on an incomplete removal inventory and reaches S17 with safe aggregates', async () => {
+  it('opens removal Review without consulting an incomplete reference inventory', async () => {
+    const inspectSourceRemoval = vi.fn().mockResolvedValue({
+      blocked: true,
+      inventoryComplete: false,
+      dependencies: [{
+        category: 'installation',
+        pluginId: 'team-tools/review-gate',
+        sourceId: 'team-tools',
+        platform: 'codex',
+        scope: 'project',
+      }],
+    });
     const value = controller({
-      inspectSourceRemoval: vi.fn().mockResolvedValue({
-        blocked: true,
-        inventoryComplete: false,
-        dependencies: [{
-          category: 'installation',
-          pluginId: 'team-tools/review-gate',
-          sourceId: 'team-tools',
-          platform: 'codex',
-          scope: 'project',
-        }],
-      }),
+      inspectSourceRemoval,
     });
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const screens = new Set<ConsoleV4ScreenId>();
@@ -2074,13 +2075,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
     await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn(3);
-    expect(screens).toContain('S17');
-    expect(instance.lastFrame()).toContain('引用清单不完整');
-    expect(instance.lastFrame()).toContain('安装位置      未知');
-    await input(instance, '\r');
-    expect(instance.lastFrame()).toContain('installation · team-tools/review-gate · Codex · 当前项目');
-    expect(instance.lastFrame()).not.toContain('/Users/');
-    expect(value.snapshot.activeReview).toBeUndefined();
+    expect(screens).toContain('S18');
+    expect(value.snapshot.activeReview?.sourceAction).toBe('remove');
+    expect(inspectSourceRemoval).not.toHaveBeenCalled();
   });
 
   it('reaches edit, primary, and safe removal Review pages through mounted keyboard actions', async () => {

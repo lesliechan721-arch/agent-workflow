@@ -3,6 +3,8 @@ import type {
 } from '../types.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { catalogSourceErrorCode } from '../utils/catalog-public-error.js';
+import { cleanupLegacyCatalogSourceCache } from '../utils/catalog-source-cache.js';
+import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { withResolvedMultiSourceCatalog } from '../utils/multi-source-catalog.js';
 
 export interface InitCatalogSourceResult {
@@ -31,9 +33,30 @@ interface InitCommandV4Options {
   force?: boolean;
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
+  runtime?: {
+    cleanupLegacyCache?: typeof cleanupLegacyCatalogSourceCache;
+  };
 }
 
 export async function initCommand(
+  options: InitCommandV4Options,
+): Promise<InitCommandResult> {
+  const env = options.env ?? process.env;
+  if (options.force) {
+    return withAwHomeMutationLock({
+      env,
+      action: async () => {
+        const cleanupWarnings = await (options.runtime?.cleanupLegacyCache
+          ?? cleanupLegacyCatalogSourceCache)(env);
+        const result = await resolveInitCatalog({ ...options, env });
+        return { ...result, warnings: [...cleanupWarnings, ...result.warnings] };
+      },
+    });
+  }
+  return resolveInitCatalog({ ...options, env });
+}
+
+async function resolveInitCatalog(
   options: InitCommandV4Options,
 ): Promise<InitCommandResult> {
   const env = options.env ?? process.env;

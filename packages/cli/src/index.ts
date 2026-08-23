@@ -1197,6 +1197,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Catalog source ${id} added.`);
+        for (const diagnostic of receipt.errors) writeLine(io.stderr, `Warning: ${diagnostic.message}`);
       } catch (error) {
         await writeCatalogSourceFailure(
           'catalog:source:add',
@@ -1263,6 +1264,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Catalog source ${id} updated.`);
+        for (const diagnostic of receipt.errors) writeLine(io.stderr, `Warning: ${diagnostic.message}`);
       } catch (error) {
         await writeCatalogSourceFailure(
           'catalog:source:update',

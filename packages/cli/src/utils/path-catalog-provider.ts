@@ -18,52 +18,23 @@ import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 
 const {
   ensureCatalogSourceCacheLocation,
-  observeAndReserveCatalogSourceObservation,
   publishCatalogSourceCacheEntry,
   resolveCatalogSourceCacheLocation,
-  withCatalogSourceCacheLease,
 } = catalogSourceCacheInternal;
-
-export interface CatalogPathProviderTestHooks {
-  beforeObservationLock?: (observation: {
-    sourceId: string;
-  }) => Promise<void>;
-  afterStableObservationBeforeReservation?: (observation: {
-    sourceId: string;
-    snapshotDigest: string;
-  }) => Promise<void>;
-  afterObservation?: (observation: {
-    sourceId: string;
-    snapshotDigest: string;
-    observationOrder: number;
-  }) => Promise<void>;
-}
-
-let catalogPathProviderTestHooks: CatalogPathProviderTestHooks | undefined;
-
-export function setCatalogPathProviderTestHooksForTests(
-  hooks: CatalogPathProviderTestHooks | undefined,
-): void {
-  catalogPathProviderTestHooks = hooks;
-}
 
 async function resolvePathCatalogSource(
   source: PathCatalogSource,
   options: CatalogProviderRuntimeOptions,
 ): Promise<CatalogSourceResolution> {
-  return withCatalogSourceCacheLease({
-    env: options.env,
-    signal: options.signal,
-    action: () => resolvePathCatalogSourceWithLease(source, options),
-  });
+  return resolvePathCatalogSourceDirect(source, options);
 }
 
-/** @internal Provider bridge for the lease-scoped multi-source resolver and provider tests. */
+/** @internal Provider bridge for the multi-source resolver. */
 export const catalogPathProviderInternal = {
   resolve: resolvePathCatalogSource,
 };
 
-async function resolvePathCatalogSourceWithLease(
+async function resolvePathCatalogSourceDirect(
   source: PathCatalogSource,
   options: CatalogProviderRuntimeOptions,
 ): Promise<CatalogSourceResolution> {
@@ -75,54 +46,33 @@ async function resolvePathCatalogSourceWithLease(
   const stagingRoot = path.join(location.rootDir, `.path-${crypto.randomUUID()}.tmp`);
   let published = false;
   try {
-    await catalogPathProviderTestHooks?.beforeObservationLock?.({ sourceId: source.id });
-    const observed = await observeAndReserveCatalogSourceObservation({
-      location,
-      signal: options.signal,
-      observe: async () => {
-        const initial = await validateCatalogSnapshot(await fs.realpath(source.path));
-        const sourceRoot = initial.rootDir;
-        await fs.copy(sourceRoot, stagingRoot, { dereference: false, preserveTimestamps: true });
-        const copied = await validateCatalogSnapshot(stagingRoot);
-        const current = await validateCatalogSnapshot(sourceRoot);
-        if (
-          initial.manifestDigest !== copied.manifestDigest
-          || initial.snapshotDigest !== copied.snapshotDigest
-          || current.manifestDigest !== copied.manifestDigest
-          || current.snapshotDigest !== copied.snapshotDigest
-        ) {
-          throw new Error(`Catalog path source "${source.id}" changed during snapshot copy.`);
-        }
-        if (compareStrictSemVer(options.cliVersion, copied.manifest.compatibility.aw.minVersion) < 0) {
-          throw new CatalogProviderCompatibilityError({
-            sourceId: source.id,
-            minAwVersion: copied.manifest.compatibility.aw.minVersion,
-            selection: 'explicit',
-          });
-        }
-        await catalogPathProviderTestHooks?.afterStableObservationBeforeReservation?.({
-          sourceId: source.id,
-          snapshotDigest: copied.snapshotDigest,
-        });
-        return copied;
-      },
-    });
-    const copied = observed.observation;
-    const observationOrder = observed.observationOrder;
-    await catalogPathProviderTestHooks?.afterObservation?.({
-      sourceId: source.id,
-      snapshotDigest: copied.snapshotDigest,
-      observationOrder,
-    });
+    const initial = await validateCatalogSnapshot(await fs.realpath(source.path));
+    const sourceRoot = initial.rootDir;
+    await fs.copy(sourceRoot, stagingRoot, { dereference: false, preserveTimestamps: true });
+    const copied = await validateCatalogSnapshot(stagingRoot);
+    const current = await validateCatalogSnapshot(sourceRoot);
+    if (
+      initial.manifestDigest !== copied.manifestDigest
+      || initial.snapshotDigest !== copied.snapshotDigest
+      || current.manifestDigest !== copied.manifestDigest
+      || current.snapshotDigest !== copied.snapshotDigest
+    ) throw new Error(`Catalog path source "${source.id}" changed during snapshot copy.`);
+    if (compareStrictSemVer(options.cliVersion, copied.manifest.compatibility.aw.minVersion) < 0) {
+      throw new CatalogProviderCompatibilityError({
+        sourceId: source.id,
+        minAwVersion: copied.manifest.compatibility.aw.minVersion,
+        selection: 'explicit',
+      });
+    }
     const entry = await publishCatalogSourceCacheEntry({
       location,
       sourceId: source.id,
       sourceIdentity,
       requestedRef: 'path',
+      cliVersion: options.cliVersion,
       resolvedCommit: `path:${copied.snapshotDigest}`,
       snapshotRoot: stagingRoot,
       validation: copied,
-      observationOrder,
       signal: options.signal,
     });
     published = true;

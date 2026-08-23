@@ -43,6 +43,28 @@ async function configureTwoPaths(validRoot: string, invalidRoot: string): Promis
 }
 
 describe('multi-source read commands', () => {
+  it('keeps init --force usable when old cache cleanup reports a failure', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('force-cleanup-warning');
+    await createCatalogSnapshotFixture(root);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    await expect(initCommand({
+      force: true,
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: { cleanupLegacyCache: async () => ['旧 Catalog cache 布局清理失败：selectors'] },
+    })).resolves.toMatchObject({
+      ok: true,
+      warnings: ['旧 Catalog cache 布局清理失败：selectors'],
+      sources: [expect.objectContaining({ id: 'local', ok: true })],
+    });
+  });
+
   it('keeps a successful init cache when another source fails', async () => {
     const good = fixturePath('good');
     const bad = fixturePath('bad');
