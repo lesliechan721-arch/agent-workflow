@@ -1195,6 +1195,19 @@ export function ConsoleAppV4(props: {
       description = '仍有插件依赖它。请先处理依赖者，再重新尝试。';
       actions = [
         ...relationActions.slice(dependencyCount),
+        ...(route.platform && route.scope ? [{
+          label: '强制清理…',
+          description: '依赖者会变为不完整；下一页仍需明确确认',
+          status: 'error' as const,
+          run: () => beginReview({
+            kind: 'pluginWrite',
+            action: 'cleanup',
+            pluginId: plugin.pluginId,
+            platform: route.platform!,
+            scope: route.scope!,
+            force: true,
+          }),
+        }] : []),
         { label: '查看完整依赖关系', run: () => {
           props.controller.replace({ name: 'pluginDependencies', pluginId: plugin.pluginId });
           setFocus(0);
@@ -1804,7 +1817,7 @@ export function ConsoleAppV4(props: {
       dependencies: '必需依赖',
       preserved: '保持不变',
     } as const;
-    content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text>{groupedChanges ? (Object.keys(groupTitle) as Array<keyof typeof groupTitle>).map((group) => {
+    content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text>{review.equivalentCommand ? <><Text>{review.description}</Text><Text color={tuiTheme.colors.muted}>等价命令：{review.equivalentCommand}</Text></> : null}{groupedChanges ? (Object.keys(groupTitle) as Array<keyof typeof groupTitle>).map((group) => {
       const indexes = review.changes.map((change, index) => (change.group ?? 'requested') === group ? index : -1)
         .filter((index) => index >= 0);
       const rows = reviewRows(indexes);

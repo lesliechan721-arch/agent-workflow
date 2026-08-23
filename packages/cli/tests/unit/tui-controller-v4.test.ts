@@ -312,7 +312,19 @@ describe('TUI v4 router and ViewModel', () => {
     await expect(controller.buildOperationReview({
       kind: 'pluginWrite', action: 'uninstall', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
     })).rejects.toMatchObject({ code: 'dependencyStillRequired' });
-    expect(captureEvidence).toHaveBeenCalledTimes(1);
+    await expect(controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+      force: true,
+    })).resolves.toMatchObject({
+      pluginAction: 'cleanup',
+      title: '强制清理插件',
+      description: expect.stringContaining('依赖者会变为不完整'),
+      equivalentCommand: 'aw cleanup official/toolkit --platform codex --scope user --force',
+      changes: expect.arrayContaining([
+        expect.objectContaining({ kind: 'warning', title: '跳过依赖保护' }),
+      ]),
+    });
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
   });
 
   it('does not block dependency removal for an explicitly absent consumer target', async () => {

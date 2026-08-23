@@ -537,7 +537,7 @@ describe('phase 3B namespaced runtime stores', () => {
       rebuildResults: [expect.objectContaining({
         error: expect.objectContaining({
           phase: 'preflight',
-          message: expect.stringContaining('sourceMissing'),
+          message: expect.stringContaining('catalogSourceUnavailable'),
         }),
       })],
     });
@@ -565,7 +565,7 @@ describe('phase 3B namespaced runtime stores', () => {
       rebuildResults: [expect.objectContaining({
         error: expect.objectContaining({
           phase: 'preflight',
-          message: expect.stringContaining('sourceMissing'),
+          message: expect.stringContaining('catalogSourceUnavailable'),
         }),
       })],
     });
@@ -583,10 +583,13 @@ describe('phase 3B namespaced runtime stores', () => {
         stderr: '',
       }),
     })).resolves.toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'sourceMissing' })],
+      overallState: 'succeeded',
+      rebuildResults: [expect.objectContaining({
+        removed: expect.arrayContaining([expect.any(String)]),
+        status: 'succeeded',
+      })],
     });
-    expect(await fs.pathExists(skillRoot)).toBe(true);
+    expect(await fs.pathExists(skillRoot)).toBe(false);
 
     const resetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
@@ -606,7 +609,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }))).toBe(true);
   });
 
-  it('keeps a lost-source native consumer unchanged during cleanup', async () => {
+  it('cleans a lost-source native consumer from live inventory', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
     await Promise.all([
@@ -676,12 +679,12 @@ describe('phase 3B namespaced runtime stores', () => {
       },
     });
     expect(result).toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'sourceMissing' })],
+      overallState: 'succeeded',
+      targetResults: [expect.objectContaining({ state: 'completed' })],
     });
-    expect(calls).toEqual([]);
-    await expect(fs.pathExists(cacheRoot)).resolves.toBe(true);
-    await expect(fs.pathExists(installedRoot)).resolves.toBe(true);
+    expect(calls).toContain('codex plugin remove demo@aw');
+    await expect(fs.pathExists(cacheRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(installedRoot)).resolves.toBe(false);
   });
 
   it('keeps an existing marketplace root when its strict identity is missing', async () => {
@@ -862,10 +865,10 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
     })).resolves.toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'sourceMissing' })],
+      overallState: 'succeeded',
+      targetResults: [expect.objectContaining({ state: 'completed' })],
     });
-    expect(await fs.pathExists(skillRoot)).toBe(true);
+    expect(await fs.pathExists(skillRoot)).toBe(false);
     const resetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd,
@@ -2116,7 +2119,7 @@ describe('phase 3B namespaced runtime stores', () => {
       expect(result).toMatchObject({
         overallState: 'failed',
         rebuildResults: [expect.objectContaining({
-          error: expect.objectContaining({ message: expect.stringContaining('sourceMissing') }),
+          error: expect.objectContaining({ message: expect.stringContaining('catalogSourceUnavailable') }),
         })],
       });
       expect(await fs.pathExists(active.activeRoot)).toBe(true);

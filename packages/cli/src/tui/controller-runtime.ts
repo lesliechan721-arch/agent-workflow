@@ -930,7 +930,12 @@ export function createTuiControllerDependencies(
             throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
           }
           if (intent.kind === 'pluginWrite') {
-            const options = { cwd: context.cwd, platform: intent.platform, scope: intent.scope };
+            const options = {
+              cwd: context.cwd,
+              platform: intent.platform,
+              scope: intent.scope,
+              ...(intent.action === 'cleanup' ? { force: intent.force === true } : {}),
+            };
             const command = {
               install: installWriteCommand,
               upgrade: upgradeWriteCommand,

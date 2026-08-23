@@ -2474,20 +2474,45 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
   });
 
-  it('blocks dependency removal with consumer viewing only and has no dangerous bypass', async () => {
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })) });
+  it('selects force cleanup, reviews its risk and equivalent command, and executes force intent', async () => {
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded',
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })),
+      executeIntent,
+    });
     await value.load();
-    value.push({ name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked' });
+    value.push({
+      name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked',
+      platform: 'codex', scope: 'user',
+    });
     const screens = new Set<ConsoleV4ScreenId>();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
     expect(screens).toContain('D12');
     expect(instance.lastFrame()).toContain('Agent Lab');
-    expect(instance.lastFrame()).not.toContain('仍然移除');
-    await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked' });
+    expect(instance.lastFrame()).toContain('强制清理');
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(instance.lastFrame()).toContain('强制清理插件');
+    expect(instance.lastFrame()).toContain('跳过依赖保护');
+    expect(instance.lastFrame()).toContain('依赖者会变为不完整');
+    expect(value.snapshot.activeReview?.equivalentCommand).toBe(
+      'aw cleanup official/skill-toolkit --platform codex --scope user --force',
+    );
+    expect(instance.lastFrame()).toContain('等价命令：aw cleanup official/skill-toolkit');
+    expect(instance.lastFrame()).toContain('--force');
+
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/skill-toolkit',
+      platform: 'codex', scope: 'user', force: true,
+    }), expect.anything());
   });
 
   it('renders dependency target incompatibility as D16 and only offers compatible tools', async () => {

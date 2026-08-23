@@ -607,6 +607,7 @@ interface RawWriteWizardOptions extends RawDiagnosticsOptions {
   platform?: string;
   scriptTimeout?: string;
   json?: boolean;
+  force?: boolean;
 }
 
 async function executeWriteCommand(
@@ -1451,6 +1452,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('-j, --json', 'print cleanup result as JSON', false)
+    .option('--force', 'remove exclusively owned plugin output without dependency protection', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
@@ -1460,6 +1462,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope?: string;
         platform?: string;
         json?: boolean;
+        force?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('cleanup', rawOptions);

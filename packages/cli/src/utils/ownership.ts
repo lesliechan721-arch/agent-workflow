@@ -784,14 +784,6 @@ export async function cleanupOwnedComponents(options: {
       pushUnique(result.residual, label);
     }
   }
-  if (result.failures.length > 0) {
-    result.residual = [];
-    for (const component of options.components) {
-      if (probes.get(component) !== 'absent') pushUnique(result.residual, componentLabel(component));
-    }
-    return result;
-  }
-
   for (const component of options.components) {
     if (probes.get(component) !== 'present') continue;
     const label = componentLabel(component);
@@ -838,4 +830,53 @@ export async function cleanupOwnedComponents(options: {
     }
   }
   return result;
+}
+
+export async function cleanupCorruptExclusivePluginDirectory(options: {
+  directory: string;
+  allowedRoot: string;
+  sourceId: string;
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+}): Promise<CleanupResult | null> {
+  const markerPath = path.join(options.directory, SKILL_OWNER_MARKER);
+  await assertNoSymlinkInPath(options.allowedRoot, markerPath);
+  const raw = await fs.readJson(markerPath).catch((error: unknown) => {
+    if (isMissing(error)) return null;
+    throw error;
+  }) as Record<string, unknown> | null;
+  if (!raw
+    || raw.schemaVersion !== 2
+    || raw.owner !== 'agent-workflows'
+    || raw.sourceId !== options.sourceId
+    || raw.plugin !== options.pluginName
+    || raw.pluginId !== `${options.sourceId}/${options.pluginName}`
+    || raw.platform !== options.platform
+    || raw.scope !== options.scope) return null;
+  assertSafeOwnershipSegment(path.basename(options.directory), 'Exclusive plugin directory');
+  const stats = await fs.lstat(options.directory);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) return null;
+  const quarantinePath = path.join(
+    path.resolve(options.allowedRoot),
+    `.agent-workflows-quarantine-${process.pid}-${crypto.randomUUID()}`,
+  );
+  assertPathBoundary(options.allowedRoot, quarantinePath);
+  await nodeFs.rename(options.directory, quarantinePath);
+  try {
+    await fs.remove(quarantinePath);
+  } catch (error) {
+    return {
+      removed: [], absent: [], residual: [options.directory], quarantined: [quarantinePath],
+      failures: [{
+        label: options.directory,
+        phase: 'remove',
+        message: errorMessage(error),
+        quarantinePath,
+      }],
+    };
+  }
+  return {
+    removed: [options.directory], absent: [], residual: [], quarantined: [], failures: [],
+  };
 }

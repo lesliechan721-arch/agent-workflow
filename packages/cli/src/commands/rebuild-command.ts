@@ -51,13 +51,22 @@ import {
   inventoryCatalogSourceReferences,
 } from '../utils/catalog-source-references.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
-import { inspectOwnedComponents } from '../utils/ownership.js';
-import { resolveCanonicalRepoProjectKey } from '../utils/state-paths.js';
+import {
+  cleanupCorruptExclusivePluginDirectory,
+  inspectOwnedComponents,
+} from '../utils/ownership.js';
+import {
+  getClaudeHome,
+  getCodexHome,
+  resolveCanonicalRepoProjectKey,
+  resolveRepoRootSync,
+} from '../utils/state-paths.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import {
   createDependencyOperationPlan,
   type DependencyOperationPlan,
 } from './dependency-operation-plan.js';
+import type { CleanupCommandOptions } from './options.js';
 
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   awHomeMutationToken?: AwHomeMutationToken;
@@ -81,6 +90,7 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   targetBuiltHookHandled?: boolean;
   preparedTarget?: PreparedRebuildTarget;
   preparedTargetError?: unknown;
+  removeObsoleteInstallationContracts?: (directory: string) => Promise<void>;
 };
 
 export interface RebuildReviewPreflightEvidence {
@@ -707,6 +717,240 @@ function projectLegacyTargets(
   })).values()];
 }
 
+type LiveCleanupTarget = {
+  pluginId: string;
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  platform: PlatformName;
+  scope: Scope;
+  marketplaceName?: string;
+};
+
+function exclusiveSkillRoot(options: {
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): string {
+  if (options.scope === 'user') {
+    return path.join(
+      options.platform === 'codex' ? getCodexHome(options.env) : getClaudeHome(options.env),
+      'skills',
+    );
+  }
+  const repoRoot = resolveRepoRootSync(options.cwd);
+  return path.join(repoRoot, options.platform === 'codex' ? '.agents' : '.claude', 'skills');
+}
+
+function resolveLiveCleanupTargets(options: {
+  selectors: string[];
+  platforms: PlatformName[];
+  scope: Scope;
+  references: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>['references'];
+}): { selectors: string[]; targets: LiveCleanupTarget[] } {
+  const visible = options.references.filter((reference) =>
+    (reference.kind === 'namespacedOwner'
+      || reference.kind === 'namespacedMarketplace'
+      || reference.kind === 'namespacedLifecycle')
+    && reference.sourceId
+    && reference.sourceIdentity
+    && reference.pluginName
+    && reference.platform
+    && options.platforms.includes(reference.platform as PlatformName)
+    && reference.scope === options.scope);
+  const targets: LiveCleanupTarget[] = [];
+  const selectors = options.selectors.map((value) => {
+    const parsed = parsePluginId(value);
+    const matchesByTarget = new Map<string, LiveCleanupTarget>();
+    for (const reference of visible.filter((entry) =>
+      entry.pluginName === parsed.pluginName
+      && (parsed.sourceId === undefined || entry.sourceId === parsed.sourceId))) {
+        const target: LiveCleanupTarget = {
+          pluginId: formatPluginId({ sourceId: reference.sourceId!, pluginName: reference.pluginName! }),
+          pluginName: reference.pluginName!,
+          sourceId: reference.sourceId!,
+          sourceIdentity: reference.sourceIdentity!,
+          platform: reference.platform as PlatformName,
+          scope: reference.scope as Scope,
+          ...(reference.marketplaceName ? { marketplaceName: reference.marketplaceName } : {}),
+        };
+        const key = [target.pluginId, target.sourceIdentity, target.platform, target.scope].join('\0');
+        const previous = matchesByTarget.get(key);
+        matchesByTarget.set(key, previous?.marketplaceName ? previous : target);
+    }
+    const matches = [...matchesByTarget.values()];
+    const identities = [...new Set(matches.map((target) => target.pluginId))];
+    if (parsed.sourceId === undefined && identities.length > 1) {
+      throw new Error(
+        `pluginSelectorAmbiguous: Plugin "${parsed.pluginName}" has multiple live matches: ${identities.sort().join(', ')}.`,
+      );
+    }
+    targets.push(...matches);
+    return identities.length === 1 ? identities[0]! : value;
+  });
+  return {
+    selectors,
+    targets: [...new Map(targets.map((target) => [[
+      target.pluginId, target.sourceIdentity, target.platform, target.scope,
+    ].join('\0'), target] as const)).values()],
+  };
+}
+
+async function discoverDamagedExclusiveCleanupTargets(options: {
+  selector: string;
+  platforms: PlatformName[];
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<LiveCleanupTarget[]> {
+  const parsed = parsePluginId(options.selector);
+  if (!parsed.sourceId) return [];
+  const targets: LiveCleanupTarget[] = [];
+  for (const platform of options.platforms) {
+    const root = exclusiveSkillRoot({
+      platform,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env,
+    });
+    const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const markerPath = path.join(root, entry.name, '.agent-workflows-owner.json');
+      const raw = await fs.readJson(markerPath).catch(() => null) as Record<string, unknown> | null;
+      if (!raw
+        || raw.schemaVersion !== 2
+        || raw.owner !== 'agent-workflows'
+        || raw.sourceId !== parsed.sourceId
+        || raw.plugin !== parsed.pluginName
+        || raw.pluginId !== options.selector
+        || raw.platform !== platform
+        || raw.scope !== options.scope) continue;
+      targets.push({
+        pluginId: options.selector,
+        pluginName: parsed.pluginName,
+        sourceId: parsed.sourceId,
+        sourceIdentity: typeof raw.sourceIdentity === 'string'
+          && /^sha256:[0-9a-f]{64}$/u.test(raw.sourceIdentity)
+          ? raw.sourceIdentity
+          : `sha256:${'0'.repeat(64)}`,
+        platform,
+        scope: raw.scope as Scope,
+      });
+    }
+  }
+  return [...new Map(targets.map((target) => [[target.platform, target.scope].join('\0'), target] as const)).values()];
+}
+
+async function cleanupOfflineOwnedComponents(options: {
+  targets: LiveCleanupTarget[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  force: boolean;
+  removeObsoleteInstallationContracts?: (directory: string) => Promise<void>;
+  nativeCliRunner?: NativeCliRunner;
+}): Promise<RebuildCommandResult> {
+  const results: RebuildResult[] = [];
+  const warnings: string[] = [];
+  const context: RebuildExecutionContext = {
+    env: options.env,
+    nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+    reporter: createNoopReporter(),
+    debugLogger: createNoopDebugLogger(),
+  };
+  const integration = createRebuildIntegration({ context });
+  const activeStore = createRebuildActiveStore({
+    env: options.env,
+    loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
+    isLifecycleLeaseHeld: () => context.lifecycleLeaseHeld === true,
+  });
+  for (const target of options.targets) {
+    if (options.force) {
+      const root = exclusiveSkillRoot({
+        platform: target.platform,
+        scope: target.scope,
+        cwd: options.cwd,
+        env: options.env,
+      });
+      const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const directory = path.join(root, entry.name);
+        const recovered = await cleanupCorruptExclusivePluginDirectory({
+          directory,
+          allowedRoot: root,
+          sourceId: target.sourceId,
+          pluginName: target.pluginName,
+          platform: target.platform,
+          scope: target.scope,
+        }).catch(() => null);
+        if (recovered?.failures.length) {
+          warnings.push(`exclusiveRecoveryFailed: ${recovered.failures[0]!.message}`);
+        }
+      }
+    }
+    const plugin = createSyntheticPlugin(target.pluginName, options.env);
+    plugin.sourceId = target.sourceId;
+    plugin.sourceIdentity = target.sourceIdentity;
+    plugin.pluginId = target.pluginId;
+    const desired = await integration.buildTarget({
+      sourceId: target.sourceId,
+      sourceIdentity: target.sourceIdentity,
+      pluginId: target.pluginId,
+      marketplaceName: target.marketplaceName ?? `aw-${target.sourceId}`,
+      marketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces', target.sourceId),
+      plugin,
+      platform: target.platform,
+      scope: target.scope,
+      cwd: options.cwd,
+      command: 'cleanup',
+      catalog: {
+        rootDir: resolveAwHome(options.env),
+        source: 'local',
+        catalogVersion: '0.0.0',
+        channel: 'beta',
+        minAwVersion: '0.0.0',
+      },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    const operationLock = await activeStore.acquireOperation!(desired.identity);
+    try {
+      const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
+      results.push(await executeRebuildOperation({
+        command: 'cleanup',
+        target: desired,
+        driver: integration.driver,
+        activeStore: operationHeldStore,
+      }));
+    } finally {
+      await releaseRebuildOperationLease(operationLock);
+    }
+  }
+  const obsoleteContracts = path.join(resolveAwHome(options.env), 'installation-contracts');
+  try {
+    await (options.removeObsoleteInstallationContracts ?? fs.remove)(obsoleteContracts);
+  } catch (error) {
+    warnings.push(`obsoleteContractsCleanupFailed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return leaseSafeRebuildResult({
+    platforms: [...new Set(results.map((result) => result.target.platform))],
+    plugins: results.filter((result) => result.status === 'succeeded').map((result) => result.target.pluginName),
+    warnings,
+    rebuildResults: results,
+    targetResults: results.map(toTargetResult),
+    overallState: results.every((result) => result.status === 'succeeded') ? 'succeeded' : 'failed',
+    nativePlugins: {}, repoManagedArtifacts: [],
+    receiptTargets: results.map((result) => ({
+      pluginName: result.target.pluginName,
+      pluginId: result.target.pluginId,
+      sourceId: result.target.sourceId,
+      platform: result.target.platform,
+      scope: result.target.scope,
+    })),
+  });
+}
+
 export async function runRebuildCommand(options: {
   command: RebuildCommand;
   pluginNames: string[];
@@ -719,6 +963,11 @@ export async function runRebuildCommand(options: {
   }
   const runtimeEnv = options.runtime?.env ?? process.env;
   let requestedPluginNames = options.pluginNames;
+  const cleanupForce = options.command === 'cleanup'
+    && (options.commandOptions as CleanupCommandOptions).force === true;
+  let cleanupInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
+  let cleanupLiveTargets: LiveCleanupTarget[] = [];
+  let cleanupHasDamagedExclusiveTarget = false;
   let liveTargets: Array<{
     pluginId: string;
     pluginName: string;
@@ -732,6 +981,41 @@ export async function runRebuildCommand(options: {
     platform: PlatformName;
     scope: Scope;
   }> = [];
+  if (options.command === 'cleanup' && !options.all) {
+    cleanupInventory = await inventoryCatalogSourceReferences({
+      cwd: options.commandOptions.cwd,
+      env: runtimeEnv,
+    });
+    const live = resolveLiveCleanupTargets({
+      selectors: requestedPluginNames,
+      platforms: selectedPlatforms(options.commandOptions.platform),
+      scope: options.commandOptions.scope,
+      references: cleanupInventory.references,
+    });
+    requestedPluginNames = live.selectors;
+    cleanupLiveTargets = live.targets;
+    if (cleanupForce && cleanupLiveTargets.length === 0 && requestedPluginNames.length === 1) {
+      cleanupLiveTargets = await discoverDamagedExclusiveCleanupTargets({
+        selector: requestedPluginNames[0]!,
+        platforms: selectedPlatforms(options.commandOptions.platform),
+        scope: options.commandOptions.scope,
+        cwd: options.commandOptions.cwd,
+        env: runtimeEnv,
+      });
+      cleanupHasDamagedExclusiveTarget = cleanupLiveTargets.length > 0;
+    }
+    liveTargets = cleanupLiveTargets;
+  }
+  if (cleanupHasDamagedExclusiveTarget) {
+    return cleanupOfflineOwnedComponents({
+      targets: cleanupLiveTargets,
+      cwd: options.commandOptions.cwd,
+      env: runtimeEnv,
+      force: true,
+      removeObsoleteInstallationContracts: options.runtime?.removeObsoleteInstallationContracts,
+      nativeCliRunner: options.runtime?.nativeCliRunner,
+    });
+  }
   if (options.all) {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: options.commandOptions.cwd,
@@ -807,9 +1091,9 @@ export async function runRebuildCommand(options: {
     return mergeRebuildCommandResults([]);
   }
   try {
-    return await withResolvedMultiSourceCatalog({
+    const resolvedResult = await withResolvedMultiSourceCatalog({
     cliVersion: resolveRuntimeCliVersion(),
-    freshnessPolicy: 'requireRemote',
+    freshnessPolicy: options.command === 'cleanup' ? 'cacheFirst' : 'requireRemote',
     ...(sourceIds ? { sourceIds } : {}),
     env: runtimeEnv,
     consume: async (catalog) => {
@@ -927,7 +1211,7 @@ export async function runRebuildCommand(options: {
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
       });
-      assertCatalogSourceInventoryComplete(stateInventory);
+      if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(stateInventory);
       const legacy = selectedLegacyLiveReferences(
         stateInventory.references,
         new Set(executionSelections.map((selection) => selection.platform)),
@@ -1240,13 +1524,13 @@ export async function runRebuildCommand(options: {
           );
         }
         const removalRequiredConsumers = new Map<string, Set<string>>();
-        if (options.command === 'cleanup' || options.command === 'uninstall') {
+        if ((options.command === 'cleanup' && !cleanupForce) || options.command === 'uninstall') {
           const removalStateInventory = await inventoryCatalogSourceReferences({
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,
             includeHistoricalProjects: true,
           });
-          assertCatalogSourceInventoryComplete(removalStateInventory);
+          if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(removalStateInventory);
           const inspectConsumer = async (options_: {
             entry: (typeof available)[number];
             platform: PlatformName;
@@ -1508,6 +1792,18 @@ export async function runRebuildCommand(options: {
       return leaseSafeRebuildResult(merged);
     },
     });
+    if (cleanupForce) {
+      try {
+        await (options.runtime?.removeObsoleteInstallationContracts ?? fs.remove)(
+          path.join(resolveAwHome(runtimeEnv), 'installation-contracts'),
+        );
+      } catch (error) {
+        resolvedResult.warnings.push(
+          `obsoleteContractsCleanupFailed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    return resolvedResult;
   } catch (error) {
     if (options.all && (liveTargets.length > 0 || legacyLiveTargets.length > 0)) {
       const projected = error as {
@@ -1522,9 +1818,36 @@ export async function runRebuildCommand(options: {
     }
     if (options.command !== 'cleanup' && options.command !== 'uninstall') throw error;
     const message = error instanceof Error ? error.message : String(error);
+    const catalogUnavailable = message.startsWith('Cannot resolve required catalog sources:')
+      || message.includes('does not exist in the required catalog source set')
+      || (message.includes('Catalog source') && message.includes('does not exist'));
+    if (options.command === 'cleanup'
+      && catalogUnavailable
+      && cleanupInventory
+      && cleanupLiveTargets.length > 0) {
+      return cleanupOfflineOwnedComponents({
+        targets: cleanupLiveTargets,
+        cwd: options.commandOptions.cwd,
+        env: runtimeEnv,
+        force: cleanupForce,
+        removeObsoleteInstallationContracts: options.runtime?.removeObsoleteInstallationContracts,
+        nativeCliRunner: options.runtime?.nativeCliRunner,
+      });
+    }
+    if (options.command === 'uninstall' && catalogUnavailable) {
+      throw namespacedPreflightError(
+        `catalogSourceUnavailable: ${message} Restore the source to run lifecycle uninstall, or use cleanup; use cleanup --force only for exclusively owned damaged output.`,
+        liveTargets,
+        legacyLiveTargets,
+      );
+    }
     if ((message.includes('Catalog source') && message.includes('does not exist'))
       || message.includes('does not exist in the required catalog source set')) {
-      throw namespacedPreflightError(`sourceMissing: ${message}`, liveTargets, legacyLiveTargets);
+      throw namespacedPreflightError(
+        `sourceMissing: ${message} Run cleanup for owner recovery, or cleanup --force for an exclusively owned damaged target.`,
+        liveTargets,
+        legacyLiveTargets,
+      );
     }
     throw error;
   }
