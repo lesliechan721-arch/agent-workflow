@@ -40,11 +40,14 @@ fork、响应式等待和条件清理策略。
 aw config list codex-enhance -s user
 aw config set codex-enhance standardModel gpt-5.6-terra -s user
 aw config set codex-enhance standardReasoningEffort high -s user
-aw config set codex-enhance minimumInitialWaitMinutes 15 -s user
+aw config set codex-enhance exploreMinimumInitialWaitMinutes 15 -s user
+aw config set codex-enhance subagentMinimumInitialWaitMinutes 15 -s user
 ```
 
-每个探索深度和通用任务类型都可以独立配置模型与推理强度。`minimumInitialWaitMinutes`
-是没有更具体规则时使用的首次响应式等待窗口下限。
+配置界面按 `codex-explore` 和 `codex-subagent-guide`
+分组。每个探索深度和通用任务类型都可以独立配置模型与推理强度。两个技能也分别使用自己的首次响应式等待窗口下限。
+
+旧的 `minimumInitialWaitMinutes` 不再生效。升级后，按需分别设置上面的两个等待窗口配置。
 
 ## 典型用法
 

@@ -4,7 +4,7 @@
   "description": "通过实施前关键歧义澄清、只读证据探索和通用子代理编排增强 Codex harness。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.0.0"
+      "minVersion": "0.1.0"
     }
   },
   "marketplace": {
@@ -207,14 +207,54 @@
         "default": "xhigh",
         "description": "高难任务 agent type 使用的 model_reasoning_effort。"
       },
-      "minimumInitialWaitMinutes": {
+      "exploreMinimumInitialWaitMinutes": {
         "type": "number",
-        "title": "首次响应式等待窗口（分钟）",
+        "title": "探索首次响应式等待窗口（分钟）",
         "default": 10,
         "min": 1,
         "max": 60,
-        "description": "探索和子代理编排技能在没有更具体规则时使用的最小首次响应式等待窗口。"
+        "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。"
+      },
+      "subagentMinimumInitialWaitMinutes": {
+        "type": "number",
+        "title": "子代理首次响应式等待窗口（分钟）",
+        "default": 10,
+        "min": 1,
+        "max": 60,
+        "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。"
       }
+    },
+    "presentation": {
+      "groups": [
+        {
+          "id": "codex-explore",
+          "title": "codex-explore",
+          "fields": [
+            "quickModel",
+            "quickReasoningEffort",
+            "standardModel",
+            "standardReasoningEffort",
+            "deepModel",
+            "deepReasoningEffort",
+            "exploreMinimumInitialWaitMinutes"
+          ]
+        },
+        {
+          "id": "codex-subagent-guide",
+          "title": "codex-subagent-guide",
+          "fields": [
+            "simpleTaskModel",
+            "simpleTaskReasoningEffort",
+            "generalTaskModel",
+            "generalTaskReasoningEffort",
+            "complexTaskModel",
+            "complexTaskReasoningEffort",
+            "advancedTaskModel",
+            "advancedTaskReasoningEffort",
+            "subagentMinimumInitialWaitMinutes"
+          ]
+        }
+      ]
     }
   },
   "artifacts": {
@@ -232,7 +272,7 @@
           "present"
         ],
         "refreshKeys": [
-          "minimumInitialWaitMinutes"
+          "exploreMinimumInitialWaitMinutes"
         ],
         "skillKey": "codex-explore",
         "sourceDirs": [
@@ -343,7 +383,7 @@
           "present"
         ],
         "refreshKeys": [
-          "minimumInitialWaitMinutes"
+          "subagentMinimumInitialWaitMinutes"
         ],
         "skillKey": "codex-subagent-guide",
         "sourceDirs": [

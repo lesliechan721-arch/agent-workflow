@@ -72,7 +72,7 @@ const exploreConfigKeys = [
   'standardReasoningEffort',
   'deepModel',
   'deepReasoningEffort',
-  'minimumInitialWaitMinutes',
+  'exploreMinimumInitialWaitMinutes',
 ];
 
 function createContext(overrides = {}) {
@@ -105,7 +105,7 @@ function createContext(overrides = {}) {
       mode: 'artifact-render',
       targetScope: 'user',
       values: {
-        minimumInitialWaitMinutes: 12,
+        exploreMinimumInitialWaitMinutes: 12,
       },
     },
     ...overrides,
@@ -181,7 +181,7 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.state, 'present');
   assert.equal(skill.skillKey, 'codex-explore');
-  assert.deepEqual(skill.refreshKeys, ['minimumInitialWaitMinutes']);
+  assert.deepEqual(skill.refreshKeys, ['exploreMinimumInitialWaitMinutes']);
 
   for (const role of expectedRoles) {
     assertRoleArtifact(plan, role);
@@ -233,7 +233,7 @@ async function testConfigSourcesAndManifestDefaults() {
       config: undefined,
       renderConfig: {
         values: {
-          minimumInitialWaitMinutes: 20,
+          exploreMinimumInitialWaitMinutes: 20,
           standardModel: 'configured-standard',
           standardReasoningEffort: 'max',
         },
@@ -286,7 +286,35 @@ async function testStaticManifestContract() {
       'ultra',
     ]);
   }
-  assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
+  assert.equal(manifest.config.schema.exploreMinimumInitialWaitMinutes.default, 10);
+  assert.equal(manifest.config.schema.subagentMinimumInitialWaitMinutes.default, 10);
+  assert.equal(Object.hasOwn(manifest.config.schema, 'minimumInitialWaitMinutes'), false);
+  assert.deepEqual(
+    manifest.config.presentation.groups.map((group) => ({
+      id: group.id,
+      fields: group.fields,
+    })),
+    [
+      {
+        id: 'codex-explore',
+        fields: exploreConfigKeys,
+      },
+      {
+        id: 'codex-subagent-guide',
+        fields: [
+          'simpleTaskModel',
+          'simpleTaskReasoningEffort',
+          'generalTaskModel',
+          'generalTaskReasoningEffort',
+          'complexTaskModel',
+          'complexTaskReasoningEffort',
+          'advancedTaskModel',
+          'advancedTaskReasoningEffort',
+          'subagentMinimumInitialWaitMinutes',
+        ],
+      },
+    ],
+  );
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
 
@@ -303,7 +331,7 @@ async function testStaticManifestContract() {
       {
         id: 'codex-explore-skill',
         target: 'codex.skill',
-        refreshKeys: ['minimumInitialWaitMinutes'],
+        refreshKeys: ['exploreMinimumInitialWaitMinutes'],
         key: 'codex-explore',
       },
       ...expectedRoles.map((role) => ({

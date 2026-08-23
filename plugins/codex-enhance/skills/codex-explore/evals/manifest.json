@@ -40,7 +40,7 @@
             "standardReasoningEffort": "xhigh",
             "deepModel": "eval-deep-model",
             "deepReasoningEffort": "max",
-            "minimumInitialWaitMinutes": 2
+            "exploreMinimumInitialWaitMinutes": 2
           }
         }
       ],
@@ -54,7 +54,7 @@
         {
           "name": "codex-enhance",
           "config": {
-            "minimumInitialWaitMinutes": 1
+            "exploreMinimumInitialWaitMinutes": 1
           }
         }
       ],
@@ -74,7 +74,7 @@
             "standardReasoningEffort": "xhigh",
             "deepModel": "eval-deep-model",
             "deepReasoningEffort": "max",
-            "minimumInitialWaitMinutes": 2
+            "exploreMinimumInitialWaitMinutes": 2
           }
         }
       ],
