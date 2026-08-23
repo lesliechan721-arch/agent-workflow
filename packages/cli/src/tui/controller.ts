@@ -415,8 +415,8 @@ function operationLabels(intent: OperationIntent): {
   }
   if (intent.kind === 'sourceMutation') {
     const labels = {
-      add: ['添加来源', '验证来源后保存到来源列表。', '验证并添加', false],
-      update: ['修改来源', '验证修改后保存到来源列表。', '验证并保存', false],
+      add: ['添加来源', '先保存来源配置，再尽力刷新来源。刷新失败时配置仍保留。', '保存并刷新', false],
+      update: ['修改来源', '先保存来源配置，再尽力刷新来源。刷新失败时配置仍保留。', '保存并刷新', false],
       setPrimary: ['设为主来源', '只改变默认 marketplace，不迁移安装。', '设为主来源', false],
       remove: ['移除来源', '移除来源配置；不会删除其它来源。', '移除来源', true],
     } as const;

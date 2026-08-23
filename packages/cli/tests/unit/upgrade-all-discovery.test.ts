@@ -43,7 +43,7 @@ function discoveryRunner(calls: string[]): NativeCliRunner {
 }
 
 describe('upgrade --all live discovery', () => {
-  it('does not delete any Codex residue when cleanup inventory has invalid JSON', async () => {
+  it('keeps unconfirmed Codex residue without blocking cleanup --all when inventory has invalid JSON', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
     await Promise.all([
@@ -72,7 +72,7 @@ describe('upgrade --all live discovery', () => {
     await fs.outputFile(manifestPath, '{');
     const calls: string[] = [];
 
-    await expect(runRebuildCommand({
+    const result = await runRebuildCommand({
       command: 'cleanup',
       pluginNames: [],
       commandOptions: {
@@ -89,8 +89,10 @@ describe('upgrade --all live discovery', () => {
           return { exitCode: 0, stdout: '', stderr: '' };
         },
       },
-    })).rejects.toThrow();
+    });
 
+    expect(result.overallState).toBe('succeeded');
+    expect(result.receiptTargets).toEqual([]);
     expect(calls).toEqual([]);
     await expect(fs.readFile(manifestPath, 'utf8')).resolves.toBe('{');
   });

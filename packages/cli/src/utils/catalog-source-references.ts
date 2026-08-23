@@ -58,6 +58,19 @@ export interface CatalogSourceReference {
   projectKey?: string | null;
 }
 
+export function canonicalMarketplaceRegistrationNames(
+  references: readonly CatalogSourceReference[],
+  sourceId: string,
+): string[] {
+  return [...new Set(references.flatMap((reference) =>
+    reference.kind === 'namespacedMarketplace'
+    && reference.sourceId === sourceId
+    && reference.pluginName === undefined
+    && reference.marketplaceName
+      ? [reference.marketplaceName]
+      : []))];
+}
+
 interface NativeMarketplaceConsumer {
   pluginName: string;
   platform: 'codex' | 'claude';
@@ -1144,6 +1157,30 @@ function marketplaceNamesRegisteredAtRoot(
       : []);
 }
 
+function sourceIdFromCanonicalMarketplacePath(
+  candidate: string,
+  marketplacesRoot: string,
+): string | null {
+  if (!path.isAbsolute(candidate)) return null;
+  const resolved = path.resolve(candidate);
+  const root = path.resolve(marketplacesRoot);
+  if (path.dirname(resolved) !== root) return null;
+  const sourceId = path.basename(resolved);
+  return sourceId !== '' && sourceId !== '.' && sourceId !== '..' ? sourceId : null;
+}
+
+function registeredMarketplaceRoots(
+  value: unknown,
+  marketplacesRoot: string,
+): Array<{ marketplaceName: string; sourceId: string }> {
+  if (!isRecord(value)) return [];
+  return Object.entries(value).flatMap(([marketplaceName, declaration]) =>
+    collectMarketplaceDeclarationPaths(declaration).flatMap((candidate) => {
+      const sourceId = sourceIdFromCanonicalMarketplacePath(candidate, marketplacesRoot);
+      return sourceId ? [{ marketplaceName, sourceId }] : [];
+    }));
+}
+
 export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -1409,6 +1446,40 @@ export async function inventoryCatalogSourceReferences(options: {
   const marketplaceEntries = await inventoryCanonicalDirectoryEntries({
     errors, location: marketplacesRoot, kind: 'marketplaceDirectoryRead', env, cwd: options.cwd,
   });
+  for (const pluginId of Object.keys(codexConfig?.snapshot.plugins ?? {})) {
+    const separator = pluginId.lastIndexOf('@');
+    if (separator <= 0 || separator === pluginId.length - 1) continue;
+    references.push({
+      kind: 'namespacedMarketplace',
+      location: codexConfigPath,
+      pluginName: pluginId.slice(0, separator),
+      marketplaceName: pluginId.slice(separator + 1),
+      platform: 'codex',
+      scope: 'user',
+    });
+  }
+  for (const [location, registrations] of [
+    [codexConfigPath, Object.entries(codexConfig?.snapshot.marketplaces ?? {}).flatMap(([marketplaceName, marketplace]) => {
+      const sourceId = marketplace.sourceType === 'local' && !marketplace.sourcePointsToManifest
+        && marketplace.source
+        ? sourceIdFromCanonicalMarketplacePath(marketplace.source, marketplacesRoot)
+        : null;
+      return sourceId ? [{ marketplaceName, sourceId }] : [];
+    })],
+    [userClaudeSettingsPath, registeredMarketplaceRoots(userClaudeSettings?.extraKnownMarketplaces, marketplacesRoot)],
+    [projectClaudeSettingsPath, registeredMarketplaceRoots(projectClaudeSettings?.extraKnownMarketplaces, marketplacesRoot)],
+    [claudeKnownPath, [
+      ...registeredMarketplaceRoots(claudeKnown, marketplacesRoot),
+      ...registeredMarketplaceRoots(claudeKnown?.marketplaces, marketplacesRoot),
+    ]],
+  ] as const) {
+    for (const registration of registrations) references.push({
+      kind: 'namespacedMarketplace',
+      location,
+      sourceId: registration.sourceId,
+      marketplaceName: registration.marketplaceName,
+    });
+  }
   for (const sourceEntry of marketplaceEntries) {
     const marketplaceRoot = path.join(marketplacesRoot, sourceEntry.name);
     const configPath = path.join(marketplaceRoot, 'config.json');

@@ -15,6 +15,7 @@ import {
 } from '../utils/catalog-public-error.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import {
+  canonicalMarketplaceRegistrationNames,
   inventoryCatalogSourceReferences,
   inventoryLegacyOwnerReferences,
   type CatalogSourceInventoryError,
@@ -451,9 +452,35 @@ export async function statusCommandV4(options: {
                 }
               }
               const states: StatusPluginCapability['states'] = {};
-              const marketplaceName = item.resolution!.sourceId === resolution.primarySourceId
+              const defaultMarketplaceName = item.resolution!.sourceId === resolution.primarySourceId
                 ? 'aw'
                 : `aw-${item.resolution!.sourceId}`;
+              const marketplaceNameFor = (
+                pluginName: string,
+                platform: PlatformName,
+                scope: Scope,
+              ): string => {
+                const liveName = ownerInventory.references.find((reference) =>
+                  (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+                  && reference.sourceId === item.resolution!.sourceId
+                  && reference.sourceIdentity === item.resolution!.sourceIdentity
+                  && reference.pluginName === pluginName
+                  && reference.platform === platform
+                  && reference.scope === scope
+                  && (scope === 'user' || reference.projectKey === currentProjectKey)
+                  && reference.marketplaceName)?.marketplaceName;
+                if (liveName) return liveName;
+                const registeredNames = canonicalMarketplaceRegistrationNames(
+                  ownerInventory.references,
+                  item.resolution!.sourceId,
+                );
+                if (registeredNames.length > 1) {
+                  throw new Error(
+                    'marketplaceIdentityUnavailable: Multiple canonical native marketplace registrations match the source.',
+                  );
+                }
+                return registeredNames[0] ?? defaultMarketplaceName;
+              };
               const marketplaceRoot = path.join(resolveAwHome(env), 'marketplaces', item.resolution!.sourceId);
               for (const platform of ['codex', 'claude'] as const) {
                 states[platform] = {};
@@ -483,6 +510,7 @@ export async function statusCommandV4(options: {
                     continue;
                   }
                   try {
+                    const marketplaceName = marketplaceNameFor(entry.name, platform, scope);
                     const inspected = await inspectRebuildTarget({
                       sourceId: item.resolution!.sourceId,
                       sourceIdentity: item.resolution!.sourceIdentity,
@@ -554,11 +582,16 @@ export async function statusCommandV4(options: {
                           if (!dependencyInspection) {
                             dependencyInspection = dependencyPluginPromise.then(async (dependencyPlugin) => {
                               dependencyInspectionHookForTests?.();
+                              const dependencyMarketplaceName = marketplaceNameFor(
+                                dependencyName,
+                                platform,
+                                dependencyScope,
+                              );
                               const dependencyInspected = await inspectRebuildTarget({
                                 sourceId: item.resolution!.sourceId,
                                 sourceIdentity: item.resolution!.sourceIdentity,
                                 pluginId: dependencyId,
-                                marketplaceName,
+                                marketplaceName: dependencyMarketplaceName,
                                 marketplaceRoot,
                                 plugin: dependencyPlugin,
                                 platform,

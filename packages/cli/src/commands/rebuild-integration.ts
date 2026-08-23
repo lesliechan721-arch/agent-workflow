@@ -2990,9 +2990,36 @@ async function mirrorCatalog(
     await fs.copy(catalog.rootDir, rootDir, { overwrite: true });
     return { rootDir, commit: async () => undefined, rollback: async () => undefined };
   }
+  const awHome = path.resolve(resolveAwHome(env));
+  const awHomeStats = await fs.lstat(awHome).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!awHomeStats?.isDirectory() || awHomeStats.isSymbolicLink()) {
+    throw new Error(`marketplaceRootInvalid: AW_HOME must be a regular directory: ${awHome}`);
+  }
+  const canonicalAwHome = await fs.realpath(awHome);
+  const expectedParent = path.join(canonicalAwHome, 'marketplaces');
   const destination = target.marketplaceRoot;
   const parent = path.dirname(destination);
-  await fs.ensureDir(parent);
+  if (path.resolve(parent) !== path.join(awHome, 'marketplaces')) {
+    throw new Error(`marketplaceRootInvalid: marketplace parent is not under canonical AW_HOME: ${parent}`);
+  }
+  let parentStats = await fs.lstat(parent).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!parentStats) {
+    await fs.mkdir(parent);
+    parentStats = await fs.lstat(parent);
+  }
+  if (!parentStats.isDirectory() || parentStats.isSymbolicLink()) {
+    throw new Error(`marketplaceRootInvalid: marketplace parent must be a regular directory: ${parent}`);
+  }
+  const canonicalParent = await fs.realpath(parent);
+  if (canonicalParent !== expectedParent) {
+    throw new Error(`marketplaceRootInvalid: marketplace parent is outside canonical AW_HOME: ${parent}`);
+  }
   const staging = await fs.mkdtemp(path.join(parent, `.${target.sourceId}-staging-`));
   try {
     for (const entry of ['.agents', '.claude-plugin', 'plugins']) {

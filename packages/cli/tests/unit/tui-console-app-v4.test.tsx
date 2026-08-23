@@ -388,6 +388,14 @@ describe('ConsoleAppV4', () => {
       await nextTurn(2);
       expect(reached).toContain(screen);
       expect(detailInstance.lastFrame()).not.toContain('private legacy location');
+      if (category === 'sourceMissing') {
+        expect(detailInstance.lastFrame()).toContain(
+          'aw cleanup archive/missing --platform codex --scope',
+        );
+        expect(detailInstance.lastFrame()).toMatch(/│ user\s+│/u);
+        expect(detailInstance.lastFrame()).toContain('--force');
+        expect(detailInstance.lastFrame()).not.toContain('没有安全的自动清理');
+      }
       expect((detailInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
       detailInstance.unmount();
       value.back();

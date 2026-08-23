@@ -206,7 +206,7 @@ describe('TUI v4 real catalog source boundary', () => {
       operationKind: 'sourceMutation',
       sourceAction: 'add',
     });
-    expect(instance.lastFrame()).toContain('验证并添加');
+    expect(instance.lastFrame()).toContain('保存并刷新');
     expect(JSON.stringify(controller.snapshot)).not.toContain(secondRoot);
     await confirmReview(instance, controller);
     expect(screens, JSON.stringify(controller.snapshot)).toContain('S12');
@@ -218,7 +218,7 @@ describe('TUI v4 real catalog source boundary', () => {
     await waitFor(() => controller.snapshot.activeReview?.sourceAction === 'update', 'update Review', () => controller.snapshot);
     await nextTurn(2);
     expect(screens).toContain('S15');
-    expect(instance.lastFrame()).toContain('验证并保存');
+    expect(instance.lastFrame()).toContain('保存并刷新');
     await confirmReview(instance, controller);
 
     await input(instance, '\r', '\u001B[B', '\r', '\u001B[B', '\u001B[B', '\r');

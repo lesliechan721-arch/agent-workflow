@@ -13,6 +13,7 @@ import {
 } from '../../../../scripts/release/prepared-release.mjs';
 import { captureCommand } from '../../../../scripts/release/common.mjs';
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
+import { releaseStatus } from '../../../../scripts/release/release-status.mjs';
 import { updateReleaseTargets } from '../../../../scripts/release/release-target.mjs';
 
 const roots: string[] = [];
@@ -183,12 +184,124 @@ describe('local prepared release', () => {
       readCatalogVersions: async () => [],
       readCatalogChannelState: async () => null,
     })).rejects.toThrow('must be higher');
+  });
+
+  it('selects a higher stable train after an older partial publication split the npm channel tags', async () => {
+    const nextTargets = { ...targets, cli: '1.2.1' };
+    await expect(resolvePreparedCandidates('stable', nextTargets, {
+      readPackageVersions: async (name: string) => name.endsWith('/aw')
+        ? ['1.1.9']
+        : ['1.1.9', '1.2.0'],
+      readPackageChannelVersion: async (name: string) => name.endsWith('/aw') ? '1.1.9' : '1.2.0',
+      readCatalogVersions: async () => ['2.3.0'],
+      readCatalogChannelState: async () => ({ version: '2.3.0' }),
+    })).resolves.toEqual({ cli: '1.2.1', catalog: null });
+  });
+
+  it('selects a beta on a higher base after an older partial beta split the npm channel tags', async () => {
+    const nextTargets = { ...targets, cli: '1.3.0' };
+    await expect(resolvePreparedCandidates('beta', nextTargets, {
+      readPackageVersions: async (name: string) => name.endsWith('/aw')
+        ? ['1.2.0-beta.1']
+        : ['1.2.0-beta.1', '1.2.0-beta.2'],
+      readPackageChannelVersion: async (name: string) => name.endsWith('/aw')
+        ? '1.2.0-beta.1'
+        : '1.2.0-beta.2',
+      readCatalogVersions: async () => ['2.3.0'],
+      readCatalogChannelState: async () => null,
+    })).resolves.toEqual({ cli: '1.3.0-beta.1', catalog: null });
+  });
+
+  it('rejects an unbumped stable target that only one npm package published', async () => {
+    await expect(resolvePreparedCandidates('stable', targets, {
+      readPackageVersions: async (name: string) => name.endsWith('/aw') ? [] : ['1.2.0'],
+      readPackageChannelVersion: async (name: string) => name.endsWith('/aw') ? '1.1.9' : '1.2.0',
+      readCatalogVersions: async () => ['2.3.0'],
+      readCatalogChannelState: async () => ({ version: '2.3.0' }),
+    })).rejects.toThrow('CLI train 1.2.0 is only partially published');
+  });
+
+  it('rejects an unbumped beta base with a candidate published by only one npm package', async () => {
+    await expect(resolvePreparedCandidates('beta', targets, {
+      readPackageVersions: async (name: string) => name.endsWith('/aw')
+        ? ['1.2.0-beta.1']
+        : ['1.2.0-beta.1', '1.2.0-beta.2'],
+      readPackageChannelVersion: async (name: string) => name.endsWith('/aw')
+        ? '1.2.0-beta.1'
+        : '1.2.0-beta.2',
+      readCatalogVersions: async () => ['2.3.0'],
+      readCatalogChannelState: async () => null,
+    })).rejects.toThrow('CLI train beta history is partial');
+  });
+
+  it('requires a new train to be higher than both channel tags and published package versions', async () => {
+    const nextTargets = { ...targets, cli: '1.2.1' };
+    await expect(resolvePreparedCandidates('stable', nextTargets, {
+      readPackageVersions: async (name: string) => name.endsWith('/aw')
+        ? ['1.1.9', '1.2.2']
+        : ['1.2.0'],
+      readPackageChannelVersion: async (name: string) => name.endsWith('/aw') ? '1.1.9' : '1.2.0',
+      readCatalogVersions: async () => ['2.3.0'],
+      readCatalogChannelState: async () => ({ version: '2.3.0' }),
+    })).rejects.toThrow('must be higher than published version 1.2.2');
+  });
+
+  it('selects a CLI-only beta after the Catalog axis closes', async () => {
+    await expect(resolvePreparedCandidates('beta', targets, {
+      readPackageVersions: async () => ['1.2.0-beta.1'],
+      readPackageChannelVersion: async () => '1.2.0-beta.1',
+      readCatalogVersions: async () => ['2.3.0', '2.3.0-beta.1'],
+      readCatalogChannelState: async () => ({ version: '2.3.0-beta.1' }),
+    })).resolves.toEqual({ cli: '1.2.0-beta.2', catalog: null });
+  });
+
+  it('selects a Catalog-only beta after the CLI axis closes', async () => {
     await expect(resolvePreparedCandidates('beta', targets, {
       readPackageVersions: async () => ['1.2.0'],
-      readPackageChannelVersion: async () => '1.1.0-beta.1',
+      readPackageChannelVersion: async (name: string) => name.endsWith('/aw')
+        ? '1.2.0-beta.2'
+        : '1.2.0-beta.1',
+      readCatalogVersions: async () => ['2.3.0-beta.1'],
+      readCatalogChannelState: async () => ({ version: '2.3.0-beta.1' }),
+    })).resolves.toEqual({ cli: null, catalog: '2.3.0-beta.2' });
+  });
+
+  it('returns a beta no-op after both axes close', async () => {
+    await expect(resolvePreparedCandidates('beta', targets, {
+      readPackageVersions: async () => ['1.2.0'],
+      readPackageChannelVersion: async () => null,
+      readCatalogVersions: async () => ['2.3.0'],
+      readCatalogChannelState: async () => null,
+    })).resolves.toEqual({ cli: null, catalog: null });
+  });
+
+  it('reports closed beta axes as disabled in release status', async () => {
+    const status = await releaseStatus(['--json'], {
+      writeOutput: false,
+      readTargets: async () => targets,
+      readPackageVersions: async () => ['1.2.0'],
+      readPackageChannelVersion: async (_name: string, channel: string) => channel === 'stable'
+        ? '1.2.0'
+        : null,
+      readCatalogVersions: async () => ['2.3.0'],
+      readCatalogChannelState: async (channel: string) => channel === 'latest'
+        ? { version: '2.3.0' }
+        : null,
+    });
+
+    expect(status.channels.beta).toEqual({
+      candidates: { cli: null, catalog: null },
+      axes: { cli: false, catalog: false },
+    });
+  });
+
+  it('rejects a partially published stable CLI train before selecting beta', async () => {
+    await expect(resolvePreparedCandidates('beta', targets, {
+      readPackageVersions: async (name: string) => name.endsWith('/aw') ? ['1.2.0'] : [],
+      readPackageChannelVersion: async () => null,
       readCatalogVersions: async () => [],
       readCatalogChannelState: async () => null,
-    })).rejects.toThrow('stable target 1.2.0 is already published');
+    })).rejects.toThrow('CLI train stable target 1.2.0 is only partially published');
   });
 
   it('writes an overwriteable ignored descriptor and stages both tarballs from one snapshot', async () => {
@@ -289,6 +402,8 @@ describe('local prepared release', () => {
     })).rejects.toThrow('Do not retry this version; bump both npm package versions');
     expect(publishCatalog).not.toHaveBeenCalled();
     expect(events).toEqual(failure === 'eval' ? ['eval'] : ['eval', 'cli']);
+    expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
+      .toMatchObject({ candidates: { cli: '1.2.0' } });
   });
 
   it('consumes a candidate before the first write and refuses a same-version retry', async () => {
@@ -297,6 +412,96 @@ describe('local prepared release', () => {
     await expect(publishPreparedRelease({ ...publishOptions(fixture), runCommand })).rejects.toThrow('Do not retry');
     await expect(publishPreparedRelease({ ...publishOptions(fixture), runCommand })).rejects.toThrow('already attempted');
     expect(runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['CLI', { cli: '1.2.0', catalog: '2.3.1' }],
+    ['Catalog', { cli: '1.2.1', catalog: '2.3.0' }],
+  ] as const)('rejects a new descriptor that reuses the attempted %s candidate', async (_axis, candidates) => {
+    const fixture = await publicationFixture({ cli: true, catalog: true });
+    await fs.writeFile(path.join(fixture.root, 'attempted.json'), JSON.stringify({
+      schemaVersion: 1,
+      targetsDigest: 'sha256:old-targets',
+      candidates: { cli: '1.2.0', catalog: '2.3.0' },
+    }));
+    fixture.descriptor.candidates = candidates;
+    fixture.descriptor.npm!.version = candidates.cli;
+    fixture.descriptor.catalog!.version = candidates.catalog;
+    const runCommand = vi.fn();
+
+    await expect(publishPreparedRelease({
+      ...publishOptions(fixture),
+      resolveCandidates: async () => candidates,
+      runCommand,
+    })).rejects.toThrow('already attempted');
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('replaces the attempted marker after every participating candidate changes', async () => {
+    const fixture = await publicationFixture({ cli: true, catalog: true });
+    const nextTargets = { ...targets, cli: '1.2.1', catalog: '2.3.1' };
+    const candidates = { cli: '1.2.1', catalog: '2.3.1' };
+    await fs.writeFile(path.join(fixture.root, 'attempted.json'), JSON.stringify({
+      schemaVersion: 1,
+      targetsDigest: calculateCanonicalDigest(targets),
+      candidates: { cli: '1.2.0', catalog: '2.3.0' },
+    }));
+    fixture.descriptor.source.targetsDigest = calculateCanonicalDigest(nextTargets);
+    fixture.descriptor.candidates = candidates;
+    fixture.descriptor.npm!.version = candidates.cli;
+    fixture.descriptor.catalog!.version = candidates.catalog;
+    const events: string[] = [];
+
+    await publishPreparedRelease({
+      ...publishOptions(fixture),
+      readTargets: async () => nextTargets,
+      assertPackageVersions: async () => ({ targetVersion: nextTargets.cli }),
+      resolveCandidates: async () => candidates,
+      runCommand: async () => { events.push('cli'); },
+      publishCatalog: async () => { events.push('catalog'); },
+    });
+
+    expect(events).toEqual(['cli', 'cli', 'catalog']);
+    expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
+      .toMatchObject({ candidates });
+  });
+
+  it('allows the unattempted Catalog candidate after an Eval failure and only a CLI bump', async () => {
+    const failed = await publicationFixture({ cli: true, catalog: true });
+    await expect(publishPreparedRelease({
+      ...publishOptions(failed),
+      runCommand: async () => { throw new Error('uncertain'); },
+      publishCatalog: vi.fn(),
+    })).rejects.toThrow('Do not retry');
+
+    const nextTargets = { ...targets, cli: '1.2.1' };
+    failed.descriptor.source.targetsDigest = calculateCanonicalDigest(nextTargets);
+    failed.descriptor.candidates.cli = '1.2.1';
+    failed.descriptor.npm!.version = '1.2.1';
+    const events: string[] = [];
+    await publishPreparedRelease({
+      ...publishOptions(failed),
+      readTargets: async () => nextTargets,
+      assertPackageVersions: async () => ({ targetVersion: nextTargets.cli }),
+      runCommand: async () => { events.push('cli'); },
+      publishCatalog: async () => { events.push('catalog'); },
+    });
+
+    expect(events).toEqual(['cli', 'cli', 'catalog']);
+    expect(JSON.parse(await fs.readFile(path.join(failed.root, 'attempted.json'), 'utf8')))
+      .toMatchObject({ candidates: { cli: '1.2.1', catalog: '2.3.0' } });
+  });
+
+  it('records both axes when CLI succeeds and Catalog publication is uncertain', async () => {
+    const fixture = await publicationFixture({ cli: true, catalog: true });
+    await expect(publishPreparedRelease({
+      ...publishOptions(fixture),
+      runCommand: async () => undefined,
+      publishCatalog: async () => { throw new Error('uncertain'); },
+    })).rejects.toThrow('uncertain');
+
+    expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
+      .toMatchObject({ candidates: { cli: '1.2.0', catalog: '2.3.0' } });
   });
 
   it('rejects HEAD, build, artifact, and registry candidate drift before remote writes', async () => {
@@ -351,5 +556,21 @@ describe('local prepared release', () => {
       readPublishedCliVersion: async () => '1.2.0-beta.1',
       publishCatalog: vi.fn(),
     })).rejects.toThrow('wrong stable/beta type');
+  });
+
+  it('rejects a Catalog-only release when the selected npm channel tags are split', async () => {
+    const fixture = await publicationFixture({ cli: false, catalog: true });
+    const publishCatalog = vi.fn();
+    await expect(publishPreparedRelease({
+      ...publishOptions(fixture),
+      readPublishedCliVersion: undefined,
+      registryUrl: 'https://registry.example.invalid',
+      captureCommand: async (_command: string, args: string[]) => ({
+        stdout: JSON.stringify(args[1].startsWith('@lesliechan721/aw@') ? '1.1.9' : '1.2.0'),
+        stderr: '',
+      }),
+      publishCatalog,
+    })).rejects.toThrow('requires matching published latest versions');
+    expect(publishCatalog).not.toHaveBeenCalled();
   });
 });

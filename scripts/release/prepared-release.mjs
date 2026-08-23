@@ -61,37 +61,53 @@ async function readAttempt(options = {}) {
   }
 }
 
+function attemptedCandidates(candidates) {
+  return Object.fromEntries(['cli', 'catalog'].flatMap((axis) =>
+    typeof candidates?.[axis] === 'string' && candidates[axis] !== ''
+      ? [[axis, candidates[axis]]]
+      : []));
+}
+
 function sameCandidates(left, right) {
   return left?.cli === right?.cli && left?.catalog === right?.catalog;
+}
+
+function reusesAttemptedCandidate(attempt, candidates) {
+  const previous = attemptedCandidates(attempt?.candidates);
+  const next = attemptedCandidates(candidates);
+  return ['cli', 'catalog'].some((axis) => previous[axis] !== undefined && previous[axis] === next[axis]);
 }
 
 async function assertCandidateNotAttempted(targetsDigest, candidates, options = {}) {
   const attempt = await readAttempt(options);
   if (!attempt) return;
-  if (attempt.targetsDigest === targetsDigest && sameCandidates(attempt.candidates, candidates)) {
+  if (reusesAttemptedCandidate(attempt, candidates)) {
     throw new Error('This release candidate was already attempted. Bump the involved target, then prepare again.');
   }
-  if (attempt.targetsDigest !== targetsDigest) await fs.rm(attemptedPath(options), { force: true });
 }
 
-async function consumePreparedCandidate(descriptor, options = {}) {
+async function consumePreparedCandidate(descriptor, axis, options = {}) {
+  const attempt = await readAttempt(options);
   const marker = {
     schemaVersion: 1,
     targetsDigest: descriptor.source.targetsDigest,
-    candidates: descriptor.candidates,
+    candidates: {
+      ...attemptedCandidates(attempt?.candidates),
+      [axis]: descriptor.candidates[axis],
+    },
     descriptorDigest: calculateCanonicalDigest(descriptor),
   };
-  await fs.mkdir(path.dirname(attemptedPath(options)), { recursive: true });
+  const destination = attemptedPath(options);
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  const temporary = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
-    await fs.writeFile(attemptedPath(options), `${JSON.stringify(marker, null, 2)}\n`, {
+    await fs.writeFile(temporary, `${JSON.stringify(marker, null, 2)}\n`, {
       flag: 'wx',
       mode: 0o600,
     });
-  } catch (error) {
-    if (error?.code === 'EEXIST') {
-      throw new Error('This release candidate was already attempted. Bump the involved target, then prepare again.');
-    }
-    throw error;
+    await fs.rename(temporary, destination);
+  } finally {
+    await fs.rm(temporary, { force: true });
   }
 }
 
@@ -141,26 +157,31 @@ async function readPackageChannelVersion(packageName, channel, options = {}) {
   }
 }
 
-function nextCandidate(targetVersion, channel, versionSets, currentVersion, label) {
+function assertCandidateAbovePublished(candidate, versionSets, currentVersions, label) {
+  const published = [...versionSets.flat(), ...currentVersions.filter(Boolean)];
+  const blocking = published.find((version) => compareReleaseSemVer(candidate, version) <= 0);
+  if (blocking) {
+    throw new Error(`${label} candidate ${candidate} must be higher than published version ${blocking}; bump the target.`);
+  }
+}
+
+function nextCandidate(targetVersion, channel, versionSets, currentVersions, label) {
   if (channel === 'stable') {
     const present = versionSets.map((versions) => versions.includes(targetVersion));
     if (present.some(Boolean) && !present.every(Boolean)) {
       throw new Error(`${label} ${targetVersion} is only partially published; bump the version before preparing again.`);
     }
     if (present.every(Boolean)) {
-      if (currentVersion !== targetVersion) {
-        throw new Error(`${label} target ${targetVersion} is already published but is not the current channel; bump the target.`);
-      }
       return null;
     }
-    if (currentVersion && compareReleaseSemVer(targetVersion, currentVersion) <= 0) {
-      throw new Error(`${label} candidate ${targetVersion} must be higher than current channel ${currentVersion}; bump the target.`);
-    }
+    assertCandidateAbovePublished(targetVersion, versionSets, currentVersions, label);
     return targetVersion;
   }
-  if (versionSets.some((versions) => versions.includes(targetVersion))) {
-    throw new Error(`${label} stable target ${targetVersion} is already published; bump the target before beta prepare.`);
+  const stablePresent = versionSets.map((versions) => versions.includes(targetVersion));
+  if (stablePresent.some(Boolean) && !stablePresent.every(Boolean)) {
+    throw new Error(`${label} stable target ${targetVersion} is only partially published; bump the target before beta prepare.`);
   }
+  if (stablePresent.every(Boolean)) return null;
   const pattern = new RegExp(`^${targetVersion.replaceAll('.', '\\.')}\-beta\\.([1-9]\\d*)$`, 'u');
   const normalized = versionSets.map((versions) => versions
     .map((version) => pattern.exec(version))
@@ -175,9 +196,7 @@ function nextCandidate(targetVersion, channel, versionSets, currentVersion, labe
   }
   const highest = normalized.flat().reduce((value, entry) => entry > value ? entry : value, 0n);
   const candidate = `${targetVersion}-beta.${highest + 1n}`;
-  if (currentVersion && compareReleaseSemVer(candidate, currentVersion) <= 0) {
-    throw new Error(`${label} candidate ${candidate} must be higher than current channel ${currentVersion}; bump the target.`);
-  }
+  assertCandidateAbovePublished(candidate, versionSets, currentVersions, label);
   return candidate;
 }
 
@@ -193,12 +212,14 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
     readChannelVersion(CLI_PACKAGES[1], channel, options),
     (options.readCatalogChannelState ?? readCatalogChannelState)(mode, options),
   ]);
-  if (evalCurrent !== cliCurrent) {
-    throw new Error(`Published ${mode} versions for both npm packages must match before release.`);
-  }
+  const cli = nextCandidate(
+    targets.cli, channel, [evalVersions, cliVersions], [evalCurrent, cliCurrent], 'CLI train',
+  );
   return {
-    cli: nextCandidate(targets.cli, channel, [evalVersions, cliVersions], evalCurrent, 'CLI train'),
-    catalog: nextCandidate(targets.catalog, channel, [catalogVersions], catalogState?.version ?? null, 'Catalog'),
+    cli,
+    catalog: nextCandidate(
+      targets.catalog, channel, [catalogVersions], [catalogState?.version ?? null], 'Catalog',
+    ),
   };
 }
 
@@ -590,10 +611,6 @@ export async function publishPreparedRelease(options = {}) {
     descriptor.candidates,
     options,
   );
-  if (descriptor.axes.cli || descriptor.axes.catalog) {
-    await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, options);
-  }
-
   const publicationOptions = {
     ...options,
     beforeRemoteWrite: async (target) => {
@@ -604,12 +621,14 @@ export async function publishPreparedRelease(options = {}) {
 
   if (descriptor.axes.cli) {
     const [evalArtifact, cliArtifact] = descriptor.npm.packages;
+    await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, 'cli', options);
     await publishNpm(CLI_PACKAGES[0], resolvePreparedPath(root, evalArtifact.path),
       descriptor.candidates.cli, descriptor.channel, publicationOptions);
     await publishNpm(CLI_PACKAGES[1], resolvePreparedPath(root, cliArtifact.path),
       descriptor.candidates.cli, descriptor.channel, publicationOptions);
   }
   if (descriptor.axes.catalog) {
+    await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, 'catalog', options);
     await (options.publishCatalog ?? publishStagedCatalog)({
       mode: descriptor.channel === 'stable' ? 'latest' : 'beta',
       catalogVersion: descriptor.candidates.catalog,
