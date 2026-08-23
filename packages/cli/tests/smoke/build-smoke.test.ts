@@ -313,7 +313,6 @@ describe('build smoke', () => {
       }
     }
     for (const [pluginName, artifactId] of [
-      ['codex-enhance', 'codex-clarifier-skill'],
       ['codex-enhance', 'codex-explore-skill'],
       ['codex-enhance', 'codex-subagent-guide-skill'],
     ]) {

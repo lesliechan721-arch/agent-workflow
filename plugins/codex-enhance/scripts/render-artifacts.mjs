@@ -5,8 +5,6 @@ import { fileURLToPath } from 'node:url';
 
 const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
 const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
-const CODEX_CLARIFIER_SKILL_ID = 'codex-clarifier-skill';
-const CODEX_CLARIFIER_SKILL_KEY = 'codex-clarifier';
 const CODEX_SUBAGENT_GUIDE_SKILL_ID = 'codex-subagent-guide-skill';
 const CODEX_SUBAGENT_GUIDE_SKILL_KEY = 'codex-subagent-guide';
 const EXPLORE_SKILL_REFRESH_KEYS = ['exploreMinimumInitialWaitMinutes'];
@@ -300,8 +298,7 @@ export async function renderArtifactPlan(context) {
 
   const defaults = await readManifestDefaults();
   const config = resolveConfigValues(context, defaults);
-  const [clarifierSkillTemplate, exploreSkillTemplate, subagentSkillTemplate] = await Promise.all([
-    readSkillTemplate(context, CODEX_CLARIFIER_SKILL_ID, CODEX_CLARIFIER_SKILL_KEY),
+  const [exploreSkillTemplate, subagentSkillTemplate] = await Promise.all([
     readSkillTemplate(context, CODEX_EXPLORE_SKILL_ID, CODEX_EXPLORE_SKILL_KEY),
     readSkillTemplate(context, CODEX_SUBAGENT_GUIDE_SKILL_ID, CODEX_SUBAGENT_GUIDE_SKILL_KEY),
   ]);
@@ -311,20 +308,6 @@ export async function renderArtifactPlan(context) {
   return {
     version: 2,
     artifacts: [
-      {
-        id: CODEX_CLARIFIER_SKILL_ID,
-        kind: 'skill',
-        platform: 'codex',
-        target: 'codex.skill',
-        state: 'present',
-        skillKey: CODEX_CLARIFIER_SKILL_KEY,
-        refreshKeys: [],
-        content: {
-          files: {
-            'SKILL.md': clarifierSkillTemplate,
-          },
-        },
-      },
       {
         id: CODEX_EXPLORE_SKILL_ID,
         kind: 'skill',

@@ -842,7 +842,6 @@ describe('plugin eval runner', () => {
     registerCurrentTestWritableStateRoot(outputRoot);
     const targets = [
       ['ask-me', 'decision-grill'],
-      ['codex-enhance', 'codex-clarifier'],
       ['codex-enhance', 'codex-explore'],
       ['codex-enhance', 'codex-subagent-guide'],
       ['git', 'git-commit'],
@@ -997,9 +996,9 @@ describe('plugin eval runner', () => {
     let stderr = '';
 
     const exitCode = await runPluginEvals([
-      'codex-enhance',
+      'ask-me',
       '--skill',
-      'codex-clarifier',
+      'decision-grill',
       '--no-inherit-codex-config',
       '--suite',
       'behavior',
@@ -1099,18 +1098,18 @@ describe('plugin eval runner', () => {
         '[plugins."do-not-copy@local"]',
         'enabled = true',
       ].join('\n'), 'utf8');
-      const codexBin = await writeProviderCheckingFakeCodex(root, 'codex-clarifier');
+      const codexBin = await writeProviderCheckingFakeCodex(root, 'codex-explore');
       let stdout = '';
       let stderr = '';
 
       const exitCode = await runPluginEvals([
         'codex-enhance',
         '--skill',
-        'codex-clarifier',
+        'codex-explore',
         '--suite',
         'trigger',
         '--case',
-        'p06_explicit_check',
+        'cross_module_fact',
         '--runs',
         '1',
         '--codex-bin',

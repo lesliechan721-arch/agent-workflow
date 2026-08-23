@@ -1,6 +1,0 @@
-interface:
-  display_name: "Codex Clarifier"
-  short_description: "实现具体结果前，先查清事实并问清会影响结果或造成返工的关键歧义"
-  default_prompt: "使用 $codex-clarifier 检查当前需求中哪些歧义值得在动手前确认；先查事实，只问可能影响成品或造成明显返工的问题。"
-policy:
-  allow_implicit_invocation: true
