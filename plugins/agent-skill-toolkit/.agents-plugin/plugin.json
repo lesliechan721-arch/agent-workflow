@@ -7,7 +7,7 @@
   ],
   "compatibility": {
     "aw": {
-      "minVersion": "0.1.1"
+      "minVersion": "0.1.0"
     }
   },
   "skills": "./skills",

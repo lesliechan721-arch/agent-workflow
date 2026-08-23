@@ -2,7 +2,7 @@
 name: run-agent-skill-evals
 description: >-
   当任务需要验证或执行已经通过独立 Oracle preflight 的 Agent Skill Eval plan，或需要拦截未经审核的高成本 Eval 请求时使用。负责人工授权、Audit/digest 门禁、共享 CLI 编排和结果交接；不设计或审核 case，不解释失败归因，不修改 Skill，也不发布 Review。
-compatibility: 需要 Node.js 22+、agent-skill-toolkit >= 0.1.0、@lesliechan721/agent-skill-eval >= 0.1.1，且 aw-skill-eval 位于 PATH。
+compatibility: 需要 Node.js 22+、agent-skill-toolkit >= 0.1.0、@lesliechan721/agent-skill-eval >= 0.1.0，且 aw-skill-eval 位于 PATH。
 user-invocable: true
 metadata:
   short-description: 审核门禁后执行 Skill Eval plan 并交接证据
