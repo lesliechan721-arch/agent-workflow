@@ -18,7 +18,7 @@
         "project-timeout"
       ],
       "preconditions": {
-        "runtime_profile": "V2，minimumInitialWaitMinutes=1",
+        "runtime_profile": "V2，subagentMinimumInitialWaitMinutes=1",
         "child_task": "simple 子代理必须运行只读 helper；helper 等待 75 秒后读取 src/simple.ts",
         "timeout_coverage": "helper 时长超过 60 秒首次等待窗口，必须观察 timeout 后再次等待"
       },

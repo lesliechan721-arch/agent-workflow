@@ -9,7 +9,8 @@ const CODEX_CLARIFIER_SKILL_ID = 'codex-clarifier-skill';
 const CODEX_CLARIFIER_SKILL_KEY = 'codex-clarifier';
 const CODEX_SUBAGENT_GUIDE_SKILL_ID = 'codex-subagent-guide-skill';
 const CODEX_SUBAGENT_GUIDE_SKILL_KEY = 'codex-subagent-guide';
-const SKILL_REFRESH_KEYS = ['minimumInitialWaitMinutes'];
+const EXPLORE_SKILL_REFRESH_KEYS = ['exploreMinimumInitialWaitMinutes'];
+const SUBAGENT_SKILL_REFRESH_KEYS = ['subagentMinimumInitialWaitMinutes'];
 const CODEX_EXPLORE_ROLES = [
   {
     id: 'codex-explore-quick-role',
@@ -118,7 +119,10 @@ async function readManifestDefaults() {
   const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
 
   return {
-    minimumInitialWaitMinutes: schema.minimumInitialWaitMinutes?.default ?? 10,
+    exploreMinimumInitialWaitMinutes:
+      schema.exploreMinimumInitialWaitMinutes?.default ?? 10,
+    subagentMinimumInitialWaitMinutes:
+      schema.subagentMinimumInitialWaitMinutes?.default ?? 10,
     roles: Object.fromEntries(
       CONFIGURED_ROLES.map((role) => [
         role.key,
@@ -151,9 +155,13 @@ function resolveConfigValues(context, defaults) {
   const values = candidates.find(isRecord) ?? {};
 
   return {
-    minimumInitialWaitMinutes: resolvePositiveNumber(
-      values.minimumInitialWaitMinutes,
-      defaults.minimumInitialWaitMinutes,
+    exploreMinimumInitialWaitMinutes: resolvePositiveNumber(
+      values.exploreMinimumInitialWaitMinutes,
+      defaults.exploreMinimumInitialWaitMinutes,
+    ),
+    subagentMinimumInitialWaitMinutes: resolvePositiveNumber(
+      values.subagentMinimumInitialWaitMinutes,
+      defaults.subagentMinimumInitialWaitMinutes,
     ),
     roles: Object.fromEntries(
       CONFIGURED_ROLES.map((role) => {
@@ -324,7 +332,7 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_EXPLORE_SKILL_KEY,
-        refreshKeys: SKILL_REFRESH_KEYS,
+        refreshKeys: EXPLORE_SKILL_REFRESH_KEYS,
         content: {
           files: {
             'SKILL.md': renderTemplate(exploreSkillTemplate, {
@@ -332,8 +340,10 @@ export async function renderArtifactPlan(context) {
               standardRoleKey: CODEX_EXPLORE_ROLES[1].key,
               deepRoleKey: CODEX_EXPLORE_ROLES[2].key,
               customRoleKey: CODEX_EXPLORE_ROLES[3].key,
-              minimumInitialWaitMinutes: config.minimumInitialWaitMinutes,
-              minimumInitialWaitTimeoutMs: minutesToMilliseconds(config.minimumInitialWaitMinutes),
+              minimumInitialWaitMinutes: config.exploreMinimumInitialWaitMinutes,
+              minimumInitialWaitTimeoutMs: minutesToMilliseconds(
+                config.exploreMinimumInitialWaitMinutes,
+              ),
             }),
           },
         },
@@ -348,13 +358,15 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_SUBAGENT_GUIDE_SKILL_KEY,
-        refreshKeys: SKILL_REFRESH_KEYS,
+        refreshKeys: SUBAGENT_SKILL_REFRESH_KEYS,
         content: {
           files: {
             'SKILL.md': renderTemplate(subagentSkillTemplate, {
               spawnParameterGuidance: renderSpawnParameterGuidance(),
-              minimumInitialWaitMinutes: config.minimumInitialWaitMinutes,
-              minimumInitialWaitTimeoutMs: minutesToMilliseconds(config.minimumInitialWaitMinutes),
+              minimumInitialWaitMinutes: config.subagentMinimumInitialWaitMinutes,
+              minimumInitialWaitTimeoutMs: minutesToMilliseconds(
+                config.subagentMinimumInitialWaitMinutes,
+              ),
             }),
           },
         },

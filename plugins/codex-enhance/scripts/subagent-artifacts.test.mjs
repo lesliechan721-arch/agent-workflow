@@ -105,7 +105,7 @@ function artifactsFrom(plan) {
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.skillKey, 'codex-subagent-guide');
-  assert.deepEqual(skill.refreshKeys, ['minimumInitialWaitMinutes']);
+  assert.deepEqual(skill.refreshKeys, ['subagentMinimumInitialWaitMinutes']);
   assert.equal(skill.state, 'present');
   assert.equal('skillFile' in skill.content, false);
   assert.equal('openaiYaml' in skill.content, false);
@@ -183,11 +183,21 @@ test('renders four task roles with required metadata and safety invariants', asy
 });
 
 test('renders a configured minimum initial wait window', async () => {
-  const { skill } = artifactsFrom(
-    await renderArtifactPlan(createContext({ minimumInitialWaitMinutes: 15 })),
+  const plan = await renderArtifactPlan(
+    createContext({
+      exploreMinimumInitialWaitMinutes: 2,
+      subagentMinimumInitialWaitMinutes: 15,
+    }),
   );
+  const { skill } = artifactsFrom(plan);
+  const exploreSkill = plan.artifacts.find(
+    (artifact) => artifact.id === 'codex-explore-skill',
+  );
+  assert.ok(exploreSkill, 'missing explore skill artifact');
 
   assert.match(skill.content.skillFile, /至少 `15` 分钟的响应式窗口（`timeout_ms=900000`）/);
+  assert.match(exploreSkill.content.files['SKILL.md'], /至少 `2` 分钟的单次窗口/);
+  assert.match(exploreSkill.content.files['SKILL.md'], /即 `timeout_ms=120000`/);
 });
 
 test('renders a configured role without changing the others', async () => {
