@@ -23,8 +23,8 @@
       "oracle": {
         "rationale": "局部措辞修复不需要持久化可从目标树重算的完整设计状态。",
         "rule_refs": [
-          "SKILL.md#1-选择最小作者记录",
-          "SKILL.md#2-按风险执行组合适配审计"
+          "SKILL.md#作者路径",
+          "SKILL.md#验证与交付"
         ],
         "confidence": "high",
         "allowed_variance": "可以采用不同的简洁记录格式；不得创建 SkillDesignBrief、完整 Composition handoff 或无关 Eval。",
@@ -44,6 +44,12 @@
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
           "skills/summarize/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/summarize/SKILL.md",
+            "exists": true
+          }
         ],
         "checks": [
           "只修正目标错别字，没有改变 frontmatter、调用意图或其它资源",
@@ -71,17 +77,17 @@
       "oracle": {
         "rationale": "职责、调用和权限边界变化会影响组合与 Oracle，必须留下不可由最终文本完整恢复的设计决策。",
         "rule_refs": [
-          "SKILL.md#1-选择最小作者记录",
-          "SKILL.md#2-按风险执行组合适配审计",
-          "SKILL.md#5-Eval-策略"
+          "SKILL.md#作者路径",
+          "SKILL.md#Reference-路由",
+          "SKILL.md#验证与交付"
         ],
         "confidence": "high",
-        "allowed_variance": "具体正文和 case 可以不同；必须使用完整 SkillDesignBrief、组合审计和独立 Oracle preflight。",
+        "allowed_variance": "具体正文和 case 可以不同；必须使用完整 SkillDesignBrief 和组合审计，并明确 Audit status: not assessed。",
         "minimal_counterexample": "若只修正现有正文且不改变 description、权限、职责、脚本或 Eval，则应使用轻量 delta。"
       },
       "prompt": "重构 skills/deploy：从“直接部署并回滚”的混合能力改成只生成部署计划的只读 Skill，更新 description 和权限边界，并新增必要的 behavior Eval。将设计 handoff 写入 artifacts/design。",
       "scripted_replies": [],
-      "expected_output": "建立并校验完整 SkillDesignBrief，执行 composition audit，修改 Skill 和必要 Eval，并把 Oracle preflight 交给独立上下文。",
+      "expected_output": "建立并校验完整 SkillDesignBrief，执行 composition audit，修改 Skill 和必要 Eval，并明确 Audit status: not assessed。",
       "workspace_files": {
         "skills/deploy/SKILL.md": "---\nname: deploy\ndescription: Deploy and roll back the application.\n---\n\nDeploy the application and roll it back when checks fail.\n",
         "skills/deploy/agents/openai.yaml": "interface:\n  display_name: Deploy\npolicy:\n  allow_implicit_invocation: true\n"
@@ -105,7 +111,7 @@
         "checks": [
           "SkillDesignBrief 记录旧能力缺口、只读目标、scope、权限、调用意图和 Eval strategy",
           "在写正文前完成 composition audit，并明确部署执行已移出当前 Skill owner",
-          "新增 behavior Eval 只覆盖真实变化，并由独立 fresh context 做 Oracle preflight",
+          "新增 behavior Eval 只覆盖真实变化，并明确 Audit status: not assessed；不自动启动 Oracle preflight",
           "不为自己的修改输出独立 Review 或 release verdict"
         ]
       },

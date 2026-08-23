@@ -8,17 +8,15 @@ const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const pluginContext = process.env.AW_PLUGIN_CONTEXT
   ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
   : null;
-const runtimeRoot = pluginContext?.platform
-  ? path.join(pluginRoot, pluginContext.platform)
-  : pluginRoot;
+const runtimeRoot = pluginContext?.platform ? path.join(pluginRoot, pluginContext.platform) : pluginRoot;
 
-for (const skillName of ['author-aw-plugin', 'review-aw-plugin']) {
+for (const skillName of ['author-aw-plugin', 'review-aw-plugin', 'review-aw-workflow']) {
   test(`${skillName} supports automatic and explicit invocation after installation`, async () => {
+    // Static contract exception: installed platform metadata must preserve the declared invocation policy; behavior test is not suitable because the public contract is the final platform metadata itself.
     const [skill, metadata] = await Promise.all([
       readFile(path.join(runtimeRoot, 'skills', skillName, 'SKILL.md'), 'utf8'),
       readFile(path.join(runtimeRoot, 'skills', skillName, 'agents', 'openai.yaml'), 'utf8'),
     ]);
-
     assert.match(skill, /^user-invocable:\s*true\s*$/mu);
     assert.doesNotMatch(skill, /^disable-model-invocation:\s*true\s*$/mu);
     assert.match(metadata, /^\s*allow_implicit_invocation:\s*true\s*$/mu);

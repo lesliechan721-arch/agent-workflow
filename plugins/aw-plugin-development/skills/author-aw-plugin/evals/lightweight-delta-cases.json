@@ -35,8 +35,11 @@
       "expected_output": "只修改目标 SKILL.md，使用 author-agent-skill 的轻量 change 路径，运行适用的 AW 验证；不生成 AWAuthoringContext、components JSON 或 SkillDesignBrief。",
       "sandbox": "workspace-write",
       "workspace_files": {
-        "plugins/notes/.agents-plugin/plugin.json": "{\"name\":\"notes\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"marketplace\":{\"policy\":{\"products\":[\"CODEX\",\"CLAUDE\"]}}}\n",
+        "plugins/notes/.agents-plugin/plugin.json": "{\"name\":\"notes\",\"version\":\"0.1.0\",\"description\":\"Summarize supplied notes.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.1.0\"}},\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}}}\n",
+        "plugins/notes/README.md": "# Notes\n\nSummarize one supplied note.\n",
+        "plugins/notes/skills/summarize/README.md": "# Summarize\n\nSummarize one supplied note.\n",
         "plugins/notes/skills/summarize/SKILL.md": "---\nname: summarize\ndescription: Summarize one supplied note.\n---\n\nReturn a concise 摘腰.\n",
+        "plugins/notes/skills/summarize/agents/openai.yaml": "interface:\n  display_name: Summarize\n  short_description: Summarize one supplied note into a concise and accurate result\n  default_prompt: Use $summarize to summarize the supplied note.\npolicy:\n  allow_implicit_invocation: true\n",
         "AGENTS.md": "# Workspace rules\nOnly change plugins/notes/skills/summarize/SKILL.md. Use the installed aw CLI for validation.\n"
       },
       "review": {
@@ -47,6 +50,12 @@
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
           "plugins/notes/skills/summarize/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "plugins/notes/skills/summarize/SKILL.md",
+            "exists": true
+          }
         ],
         "checks": [
           "只修正目标正文，没有改变 frontmatter、manifest、README、Eval 或其它资源",

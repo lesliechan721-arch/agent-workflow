@@ -4,7 +4,7 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "必须发现所有 leaf Skill 都局部有效、但插件 common path 仍重复状态或承担发布专用成本的组合缺陷。"
+    "rationale": "必须发现单个插件内部 leaf Skill 均局部有效但插件组合仍重复状态或承担发布专用成本的问题。"
   },
   "evals": [
     {
@@ -17,27 +17,29 @@
       "preconditions": {
         "multiple_skills_are_machine_valid": true,
         "leaf_reviews_can_pass": true,
-        "common_path_duplicates_recomputable_state": true,
-        "ordinary_review_runs_release_only_validation": true
+        "common_path_duplicates_recomputable_state": true
       },
       "oracle": {
-        "rationale": "局部 Skill 质量不能抵消插件级重复 handoff、身份双写和普通路径的 release-only 成本。",
+        "rationale": "局部 Skill 质量不能抵消单插件内部重复 handoff 与普通路径的 release-only 成本。",
         "rule_refs": [
-          "SKILL.md#普通-Review"
+          "references/plugin-composition-review.md"
         ],
         "confidence": "high",
-        "allowed_variance": "finding 文字可不同；必须先做 target_level=plugin 的 common-path Review，并给出更短且同样安全的替代架构。",
-        "minimal_counterexample": "若插件只有一个 Skill 且没有跨 Skill handoff 或 release-only common-path cost，可不判定为 over-engineered。"
+        "allowed_variance": "必须由 review-aw-plugin 自己完成插件 composition，leaf review 只用于定位。",
+        "minimal_counterexample": "单一 Skill 且无跨 Skill handoff 的插件可不判 over-engineered。"
       },
-      "prompt": "完整只读评审 plugins/review-chain。两个 Skill 单独都能通过机器检查，但请同时判断整个插件的 common path 是否是最小架构。不要修改文件，也不要声明发布资格。",
+      "prompt": "完整只读评审 plugins/review-chain。两个 Skill 单独有效，请判断这个插件内部 common path 是否最小。",
       "scripted_replies": [],
-      "expected_output": "先运行一次插件级 review-agent-skill，识别重复的 plugin/profile/digest/stage handoff 和普通 Review 中的 release validator，给出 redesign / over-engineered 及 machine-check → plugin review → optional release check 的最小替代；leaf Review 只用于定位。",
+      "expected_output": "识别重复 plugin/profile/digest/stage handoff；由 review-aw-plugin 给插件级 redesign，不调用 review-agent-skill 的 plugin target level。",
       "workspace_files": {
-        "plugins/review-chain/.agents-plugin/plugin.json": "{\"name\":\"review-chain\",\"version\":\"0.1.0\",\"skills\":\"./skills\"}\n",
-        "plugins/review-chain/skills/inspect/SKILL.md": "---\nname: inspect\ndescription: Inspect one plugin before quality review.\n---\n\nInspect every Skill, then persist assets/review-context.json with plugin, profile, digest, stage and ready fields for the next Skill.\n",
-        "plugins/review-chain/skills/inspect/assets/review-context.json": "{\"plugin\":\"\",\"profile\":\"\",\"digest\":\"\",\"stage\":\"inspection\",\"ready\":false}\n",
-        "plugins/review-chain/skills/review/SKILL.md": "---\nname: review\ndescription: Review an inspected plugin.\n---\n\nRead the prior context, recompute plugin, profile and digest, persist assets/review-summary.json with the same fields and a review stage, then run the release validator before returning ordinary quality findings.\n",
-        "plugins/review-chain/skills/review/assets/review-summary.json": "{\"plugin\":\"\",\"profile\":\"\",\"digest\":\"\",\"stage\":\"review\",\"ready\":false}\n"
+        "plugins/review-chain/.agents-plugin/plugin.json": "{\"name\":\"review-chain\",\"version\":\"0.1.0\",\"description\":\"Inspect and review one plugin.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.1.0\"}},\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}}}\n",
+        "plugins/review-chain/README.md": "# Review Chain\n\nInspect and review one plugin.\n",
+        "plugins/review-chain/skills/inspect/README.md": "# Inspect\n\nInspect one plugin.\n",
+        "plugins/review-chain/skills/inspect/SKILL.md": "---\nname: inspect\ndescription: Inspect one plugin.\n---\n\nPersist plugin, profile, digest and ready for the next Skill.\n",
+        "plugins/review-chain/skills/inspect/agents/openai.yaml": "interface:\n  display_name: Inspect\n  short_description: Inspect one plugin and return its bounded machine facts safely\n  default_prompt: Use $inspect to inspect one plugin.\npolicy:\n  allow_implicit_invocation: true\n",
+        "plugins/review-chain/skills/review/README.md": "# Review\n\nReview one inspected plugin.\n",
+        "plugins/review-chain/skills/review/SKILL.md": "---\nname: review\ndescription: Review one inspected plugin.\n---\n\nRecompute and persist the same fields, then run release validation.\n",
+        "plugins/review-chain/skills/review/agents/openai.yaml": "interface:\n  display_name: Review\n  short_description: Review one inspected plugin and report bounded quality findings\n  default_prompt: Use $review to review one inspected plugin.\npolicy:\n  allow_implicit_invocation: true\n"
       },
       "review": {
         "platforms": [
@@ -46,11 +48,9 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "discover 结果提供 targetLevel=plugin 的 pluginReview，并绑定两个 Skill target",
-          "在逐 Skill 结论之前完成一次插件 common-path 和 minimum-architecture challenge",
-          "明确指出重复持久化的 plugin/profile/digest/stage/ready 可由机器便宜重算",
-          "明确指出 release validator 不应处于普通质量 Review common path",
-          "给出同样安全的最小替代架构，且不创建 AWReviewTargetPlan、ReviewInputBundle 或 release readiness"
+          "插件 common path 由 review-aw-plugin 自己评审",
+          "leaf review 只用于定位",
+          "不使用 target_level=plugin 调用 review-agent-skill"
         ]
       }
     }

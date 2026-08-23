@@ -1,7 +1,7 @@
 {
   "name": "agent-skill-toolkit",
   "version": "0.1.0",
-  "description": "使用共享证据和组合标准编写 Agent Skill，以轻量路径评审 Skill 及其端到端组合，并设计或审核 Skill Eval。",
+  "description": "使用共享标准创建或评审单个 Agent Skill，设计或审核 Skill Eval，并评审有界的跨 Skill 工作流。",
   "dependencies": [
     "agent-content-toolkit"
   ],
@@ -98,18 +98,8 @@
       },
       {
         "skill": "author-agent-skill",
-        "source": "./schemas/eval-audit-result.schema.json",
-        "target": "assets/eval-audit-result.schema.json"
-      },
-      {
-        "skill": "author-agent-skill",
         "source": "./scripts/validate-json-contract.mjs",
         "target": "scripts/validate-json-contract.mjs"
-      },
-      {
-        "skill": "author-agent-skill",
-        "source": "./scripts/validate-eval-audit-result.mjs",
-        "target": "scripts/validate-eval-audit-result.mjs"
       },
       {
         "skill": "review-agent-skill",
@@ -155,7 +145,8 @@
       "node": [
         "./scripts/contract.test.mjs",
         "./scripts/lightweight-review-contract.test.mjs",
-        "./scripts/system-review-contract.test.mjs"
+        "./scripts/reference-routing-contract.test.mjs",
+        "./scripts/workflow-review-contract.test.mjs"
       ]
     }
   },

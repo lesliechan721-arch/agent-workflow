@@ -1,0 +1,125 @@
+{
+  "skill_name": "review-aw-workflow",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "必须发现跨插件依赖、重复 owner 和 leaf 修复外溢，同时拒绝无边界全仓结论。"
+  },
+  "evals": [
+    {
+      "id": "cross-plugin-eval-gate-propagation",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "cross-plugin-owner",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "plugins": 3,
+        "duplicated_gate": true
+      },
+      "oracle": {
+        "rationale": "Eval gate 同时存在于 author、designer、reviewer 和 runner 时，根因属于 workflow owner 分配。",
+        "rule_refs": [
+          "references/aw-workflow-review.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "必须把语义 owner 归 Auditor、机器 owner 归 Runner，而不是给每个 leaf 加规则。",
+        "minimal_counterexample": "若重复门禁只存在于一个插件内部且不影响跨插件 handoff，则应由单插件 Reviewer 处理。"
+      },
+      "prompt": "审核 plugins/eval-designer、plugins/eval-auditor 和 plugins/eval-runner 联合完成的 Eval 流程。用户结果：从 Eval 设计到已审核执行计划；入口：eval-designer；参与插件：三个给定插件；代表路径：design → audit → run；外部依赖：兼容 Eval runner；明确排除：真实模型执行和报告发布；用户决策：重复门禁应由哪个 owner 删除。重点看 Audit 门禁是否重复。",
+      "scripted_replies": [],
+      "expected_output": "scope admitted；识别跨插件 gate 传播，给正确 owner 和最小路径。",
+      "workspace_files": {
+        "plugins/eval-designer/.agents-plugin/plugin.json": "{\"name\":\"eval-designer\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"runtimeExports\":[{\"name\":\"eval-plan\",\"source\":\"./plan.json\"}]}}\n",
+        "plugins/eval-designer/skills/design/SKILL.md": "---\nname: design\ndescription: Design Eval assets.\n---\n\nDesign cases and mark audit not assessed.\n",
+        "plugins/eval-auditor/.agents-plugin/plugin.json": "{\"name\":\"eval-auditor\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-designer\",\"export\":\"eval-plan\",\"env\":\"PLAN\"}],\"runtimeExports\":[{\"name\":\"audit-result\",\"source\":\"./audit.json\"}]}}\n",
+        "plugins/eval-auditor/skills/audit/SKILL.md": "---\nname: audit\ndescription: Audit Eval assets.\n---\n\nOwn semantic preflight.\n",
+        "plugins/eval-runner/.agents-plugin/plugin.json": "{\"name\":\"eval-runner\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-auditor\",\"export\":\"audit-result\",\"env\":\"AUDIT\"}]}}\n",
+        "plugins/eval-runner/skills/run/SKILL.md": "---\nname: run\ndescription: Run admitted Eval assets.\n---\n\nOwn the machine execution gate.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "跨插件 owner",
+          "Leaf Fix Admission"
+        ]
+      }
+    },
+    {
+      "id": "dependency-cycle-is-machine-fact",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "aw-inventory",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "dependency_cycle": true
+      },
+      "oracle": {
+        "rationale": "依赖环由 inventory 脚本证明，架构影响由 Reviewer 判断。",
+        "rule_refs": [
+          "SKILL.md#工作流"
+        ],
+        "confidence": "high",
+        "allowed_variance": "不得让脚本自动输出 redesign。"
+      },
+      "prompt": "审核 plugins/cycle-a 和 plugins/cycle-b 联合完成的交接工作流。用户结果：从 cycle-a 生成结果并由 cycle-b 消费；入口：cycle-a；参与插件：两个给定插件；代表路径：cycle-a → cycle-b；外部依赖：AW buildImport；明确排除：真实模型执行和插件修改；用户决策：是否必须先删除依赖环。两个插件互相 buildImport。",
+      "scripted_replies": [],
+      "expected_output": "报告 cycle 机器事实，再评估对用户路径的影响。",
+      "workspace_files": {
+        "plugins/cycle-a/.agents-plugin/plugin.json": "{\"name\":\"cycle-a\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"cycle-b\",\"export\":\"b-export\",\"env\":\"B\"}],\"runtimeExports\":[{\"name\":\"a-export\",\"source\":\"./a.json\"}]}}\n",
+        "plugins/cycle-a/skills/a/SKILL.md": "---\nname: cycle-a-skill\ndescription: Produce the cycle A result.\n---\n\nProduce A.\n",
+        "plugins/cycle-b/.agents-plugin/plugin.json": "{\"name\":\"cycle-b\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"cycle-a\",\"export\":\"a-export\",\"env\":\"A\"}],\"runtimeExports\":[{\"name\":\"b-export\",\"source\":\"./b.json\"}]}}\n",
+        "plugins/cycle-b/skills/b/SKILL.md": "---\nname: cycle-b-skill\ndescription: Consume the cycle A result.\n---\n\nConsume A and produce B.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "区分机器事实与语义判断"
+        ]
+      }
+    },
+    {
+      "id": "whole-repository-requires-partition",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "scope-admission",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "entry_missing": true
+      },
+      "oracle": {
+        "rationale": "多个插件目录不等于一个有界用户工作流。",
+        "rule_refs": [
+          "SKILL.md#Scope-Admission"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以提出 workflow 分区；不得给全仓 pass。",
+        "minimal_counterexample": "若用户给出一个跨插件用户结果、入口、组件、代表路径和排除项，则可准入该 AW workflow。"
+      },
+      "prompt": "评审仓库中的所有 AW 插件并给一个统一通过结论。",
+      "scripted_replies": [],
+      "expected_output": "scope rejected/partial，先拆 workflow。",
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不输出全仓 pass"
+        ]
+      }
+    }
+  ]
+}

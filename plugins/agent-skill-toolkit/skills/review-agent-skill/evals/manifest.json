@@ -33,6 +33,7 @@
         "review-agent-content",
         "author-agent-skill",
         "review-agent-skill",
+        "review-agent-workflow",
         "design-agent-skill-evals",
         "audit-agent-skill-evals",
         "run-agent-skill-evals"
@@ -59,6 +60,7 @@
       "skills": [
         "review-agent-content",
         "review-agent-skill",
+        "review-agent-workflow",
         "audit-agent-skill-evals"
       ],
       "cases": "./behavior-cases.json",

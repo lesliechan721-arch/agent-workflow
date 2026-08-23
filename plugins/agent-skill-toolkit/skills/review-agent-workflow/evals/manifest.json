@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 2,
+  "plugin": "agent-skill-toolkit",
+  "skill": "review-agent-workflow",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "plugins": [
+        {
+          "name": "agent-content-toolkit",
+          "config": {}
+        },
+        {
+          "name": "agent-skill-toolkit",
+          "config": {}
+        },
+        {
+          "name": "agent-skill-eval-runner",
+          "config": {}
+        }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skills": [
+        "review-agent-content",
+        "review-agent-skill",
+        "review-agent-workflow",
+        "audit-agent-skill-evals"
+      ],
+      "cases": "./trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 3,
+      "releaseSplits": [
+        "validation"
+      ],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skills": [
+        "review-agent-content",
+        "review-agent-skill",
+        "review-agent-workflow"
+      ],
+      "cases": "./behavior-cases.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    }
+  ]
+}
