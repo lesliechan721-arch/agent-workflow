@@ -1547,27 +1547,12 @@ export function ConsoleAppV4(props: {
         setConfigLoadKey((value) => value + 1);
         props.controller.replace({ name: 'configFields', pluginId: plugin.pluginId, layer: route.layer ?? { scope: 'user', projectLayer: 'shared' } });
       } },
-      ...(route.layer && configResetAvailability?.exists && configResetAvailability.sourceIdentityPresent
-        ? [{
-            label: '重置此设置层…',
-            description: '删除本层已存值；当前不重新应用插件内容',
-            status: 'error' as const,
-            run: () => beginReview({
-              kind: 'configReset',
-              pluginId: plugin.pluginId,
-              scope: route.layer!.scope,
-              projectLayer: route.layer!.projectLayer,
-              offline: true,
-              sourceIdentity: configResetAvailability.sourceIdentity,
-            }),
-          }]
-        : []),
       ...(configResetAvailability?.sourceIdentityPresent
         ? [{ label: '技术详情', description: '查看可信身份和设置层摘要', run: () => setShowTechnical((value) => !value) }]
         : []),
       { label: '返回', run: back },
     ];
-    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× Manifest 或来源不可用</Text><Text color={tuiTheme.colors.muted}>已保存的设置不会丢失。{configResetAvailability?.sourceIdentityPresent ? '已验证本设置层身份，可以安全重置。' : '无法证明设置身份，因此重置已禁用。'}</Text></Bordered>{showTechnical && configResetAvailability?.sourceIdentityPresent ? <Bordered title="技术详情"><Text>来源身份：{configResetAvailability.sourceIdentity}</Text><Text>设置摘要：{configResetAvailability.storeDigest}</Text></Bordered> : null}<ActionRows actions={actions} focus={focus} /></Box>;
+    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× Manifest 或来源不可用</Text><Text color={tuiTheme.colors.muted}>已保存的设置保持不变。恢复来源后才能编辑或重置。</Text></Bordered>{showTechnical && configResetAvailability?.sourceIdentityPresent ? <Bordered title="技术详情"><Text>来源身份：{configResetAvailability.sourceIdentity}</Text><Text>设置摘要：{configResetAvailability.storeDigest}</Text></Bordered> : null}<ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'sourceList') {
     breadcrumb = '插件来源';
     title = '插件来源';
@@ -1879,9 +1864,6 @@ export function ConsoleAppV4(props: {
     const operationKind = 'operationKind' in result ? result.operationKind : undefined;
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
-    const offlineConfigReset = (result.state === 'succeeded' || result.state === 'partial')
-      && configOperation === 'configReset'
-      && result.summary.applySkippedReason === 'currentCatalogUnavailable';
     const sourceOperation = operationKind === 'sourceMutation';
     const issueOperation = result.originIssue;
     const completedTitle = {
@@ -1900,7 +1882,6 @@ export function ConsoleAppV4(props: {
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
-        : offlineConfigReset ? '✓ 设置层已重置'
         : partial ? '! 设置已保存，但部分应用失败' : '✓ 设置已保存并应用'
       : partial ? '! 插件操作只完成了一部分' : blocked ? '× 插件操作未完成' : completedTitle;
     description = blocked && result.writeMayHaveCompleted
@@ -1916,8 +1897,7 @@ export function ConsoleAppV4(props: {
       : sourceOperation
       ? blocked ? '来源列表没有被修改。草稿已保留，可返回修改。' : '来源命令已完成。'
       : blocked ? result.message
-        : offlineConfigReset ? result.summary.message
-          : configOperation ? '设置层已经更新。' : '状态已刷新。';
+        : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const completedResult = result.state === 'succeeded' || result.state === 'partial'
       ? result
       : undefined;
@@ -2002,7 +1982,7 @@ export function ConsoleAppV4(props: {
         ? props.controller.getPluginOverview(target.pluginId)?.displayName
           ?? target.pluginId.split('/').at(-1)!
         : `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
-    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>{result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · {result.code}</Text> : sourceOperation ? <Text color={tuiTheme.statusColors.success}>来源配置写入已完成。</Text> : offlineConfigReset ? <Text color={tuiTheme.statusColors.success}>{result.summary.message}</Text> : completedResult && (completedResult.summary.targets?.length ?? 0) > 0 ? <>{dependencyTargets ? <Text color={partial ? tuiTheme.statusColors.warning : tuiTheme.statusColors.success}>{partial ? '依赖安装没有全部完成' : '操作已完成'}</Text> : null}{completedResult.summary.targets!.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <Box key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{resultTargetName(target)}{relation ? <Text color={tuiTheme.colors.muted}> · {relation}</Text> : null}</Text><Text color={statusColor(state.status)}>{state.label}</Text></Box>; })}{partial && completedResult.summary.targets!.some((target) => target.state === 'skipped') ? <Text color={tuiTheme.colors.muted}>未执行的目标没有写入；已完成或已保留的目标保持可用。</Text> : null}</> : completedResult ? <Text color={tuiTheme.statusColors.success}>{completedResult.summary.message}</Text> : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}{completedResult?.summary.elapsedMs !== undefined ? <Text color={tuiTheme.colors.muted}>已用时：{Math.floor(completedResult.summary.elapsedMs / 1_000)}s</Text> : null}{visibleMessages.map((message, index) => <Text key={`${index}:${message}`} color={tuiTheme.colors.muted}>{message}</Text>)}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>{result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · {result.code}</Text> : sourceOperation ? <Text color={tuiTheme.statusColors.success}>来源配置写入已完成。</Text> : completedResult && (completedResult.summary.targets?.length ?? 0) > 0 ? <>{dependencyTargets ? <Text color={partial ? tuiTheme.statusColors.warning : tuiTheme.statusColors.success}>{partial ? '依赖安装没有全部完成' : '操作已完成'}</Text> : null}{completedResult.summary.targets!.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <Box key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{resultTargetName(target)}{relation ? <Text color={tuiTheme.colors.muted}> · {relation}</Text> : null}</Text><Text color={statusColor(state.status)}>{state.label}</Text></Box>; })}{partial && completedResult.summary.targets!.some((target) => target.state === 'skipped') ? <Text color={tuiTheme.colors.muted}>未执行的目标没有写入；已完成或已保留的目标保持可用。</Text> : null}</> : completedResult ? <Text color={tuiTheme.statusColors.success}>{completedResult.summary.message}</Text> : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}{completedResult?.summary.elapsedMs !== undefined ? <Text color={tuiTheme.colors.muted}>已用时：{Math.floor(completedResult.summary.elapsedMs / 1_000)}s</Text> : null}{visibleMessages.map((message, index) => <Text key={`${index}:${message}`} color={tuiTheme.colors.muted}>{message}</Text>)}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'pluginAbout' && plugin) {
     breadcrumb = `${plugin.displayName} / 关于`;
     title = plugin.displayName;

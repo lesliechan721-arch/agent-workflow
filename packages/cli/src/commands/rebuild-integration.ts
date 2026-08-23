@@ -154,6 +154,12 @@ export interface RebuildIntegration {
   }): Promise<DesiredTarget>;
 }
 
+export interface PreparedRebuildTarget {
+  target: DesiredTarget;
+  driver: RebuildTargetDriver;
+  context: RebuildExecutionContext;
+}
+
 export interface RebuildExecutionContext {
   env: NodeJS.ProcessEnv;
   nativeCliRunner: NativeCliRunner;

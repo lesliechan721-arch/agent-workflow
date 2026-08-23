@@ -155,7 +155,7 @@ normalize target
 
 `install`、`upgrade` 和 `reinstall` 在首写前按 source 对请求根取联合依赖闭包。operation plan 绑定 roots、edges、source/catalog evidence、每个节点的 manifest/content digest、requested/resolved scope、live state、action、effective config digest 和依赖优先顺序，并用 canonical stable JSON 计算 `planDigest`。plan 是执行前证据，不是另一份安装状态。
 
-写入口按稳定顺序获取完整闭包中每个 plugin/platform 的 project 和 user operation lock，而不只锁定最终 resolved scope。获取全部 lock 后，它重新校验 source manifest/snapshot，再重读 live ownership、installation contract 和 config，重算 locked plan。locked `planDigest` 与初始 digest 不同则返回 `dependencyPlanStale`，不执行任何写入。依赖成功 postcheck 后才 promotion installation contract；合同记录直接依赖的实际 placement。有效、当前 source identity 且 content digest 相同的共享依赖使用 `keep`，不重写合同。
+写入口按稳定顺序获取完整闭包中每个 plugin/platform 的 project 和 user operation lock，而不只锁定最终 resolved scope。获取全部 lock 后，它重新校验 source manifest/snapshot，并从当前 live ownership、installation contract 和 config 生成一次权威 plan。TUI review 可把只读 preview digest 与该锁内 plan 比较；CLI 不建立第二个事务协调层。依赖成功 postcheck 后才 promotion installation contract；合同记录直接依赖的实际 placement。有效、当前 source identity 且 content digest 相同的共享依赖使用 `keep`，不重写合同。
 
 ### Installation contract store
 
@@ -165,6 +165,7 @@ normalize target
 - install/upgrade/reinstall 用合同判断已安装 dependency 是否可以 `keep`；缺失或无效合同阻止把该 dependency 当作可重用 target。
 - uninstall/cleanup 在删除前完成 contract inventory 与 live consumer 检查。任何仍 live、partial、unreadable 或无法安全定位的 consumer 都返回 `dependencyStillRequired`；合同不能单独证明 consumer 已删除。
 - 同一操作同时删除 consumer 和 dependency 时，先删除 consumer，再删除 dependency。反向 removal graph 无法验证或出现环时 fail closed。
+- project consumer 的 historical live reference 必须携带 canonical project key，并在其真实项目目录检查。缺少 key 时 fail closed，不能用当前命令目录替代。明确 `absent` 的 stale consumer contract 不阻止删除。
 
 receipt v4 只有在本次命令产生 dependency operation plan 时才可选地附带 `dependencyPlanSchemaVersion`、requested/resolved plugin IDs 和 dependency edges。它不公开 plan digest、source evidence、node digest、config digest 或 lock state。与计划 target 对应的 receipt target 可选地附带 `relation`、`requiredBy` 和 `dependencyState`；既有 `status: succeeded|failed` 保持兼容。
 
@@ -175,6 +176,8 @@ receipt v4 只有在本次命令产生 dependency operation plan 时才可选地
 - `reinstall`：清理 AW-owned 组件，再按 current catalog 完整重建。
 - `uninstall`：删除 AW-owned 组件，并在可用时使用 lifecycle active snapshot 运行 uninstall lifecycle。
 - `cleanup`：只删除能证明属于 AW 的现场组件，不运行 uninstall lifecycle。
+
+`cleanup` 和 `uninstall` 要求当前 source 和 plugin bundle 可解析。来源缺失或不可用时只返回 `sourceMissing` 或 `catalogSourceUnavailable` 诊断，不删除 output、lifecycle 或 installation contract。用户可恢复来源后重试，或人工清理并重新安装。
 
 所有写命令都保留 AW config。只有 `aw config reset` 删除 config store。
 
@@ -233,6 +236,8 @@ status 是只读操作。它不运行 lifecycle 或 renderer，不刷新 marketp
 
 status 只把 contract 当作 dependency health evidence：它核对 consumer source identity/content digest、直接 dependency edge 和记录 placement，并对该 placement 做 live inspection。contract inventory 不产生 status target，也不会替代 owner/platform inspection。
 
+contract health 必须精确匹配 source、plugin、platform、scope 和 canonical project key。其它项目的 contract 或损坏记录不影响当前项目 target。当前 manifest 删除最后一条 dependency edge 时，已有 contract 仍会触发 content/edge drift 检查。
+
 有直接依赖的 live `present` 或 `partial` consumer 都检查 dependency contract。dependency error 会把 `present` consumer 降为 `partial`，并追加到既有 `partial` consumer 的 errors；它们都计入 `dependency.issueCount`。contract 不会把 `absent` target 变成 `present`，也不会单独改变不存在的 live component 状态。公开 status v4 只输出 target 的 `dependency.directCount` 和 `dependency.issueCount`；完整依赖、反向引用、placement 与 TUI issue mapping 都是控制台内部投影。
 
 ## Config
@@ -242,11 +247,12 @@ status 只把 contract 当作 dependency health evidence：它核对 consumer so
 - `aw config list/get --json` 输出 `configSchemaVersion: 4`，并为已解析 target 输出 `pluginName`、`pluginId`、`sourceId` 和 `sourceIdentity`。
 - `aw config set/unset/reset --json` 输出 `receiptSchemaVersion: 4`。namespaced store 绑定 `sourceId` 和 `sourceIdentity`；read 入口遇到旧裸名 store 返回 `legacyStateUnsupported`。
 - 平台 shared config 中可分离的 AW owner 使用可逆 schema 2 token，保留 `sourceId`、`sourceIdentity` 和 qualified `pluginId`。不可分离的同一 native key 在任何写入前返回 `artifactCollision`。
-- config 写入只对当前可定位 target 运行完整 reinstall。
+- config 写入先原子提交单个 store，再对每个当前可定位 target 各运行一次正常的、dependency-aware reinstall。reinstall 使用 namespaced plugin ID 和同一 `AW_HOME` mutation token，不绕过 dependency plan；receipt 保留依赖失败、根目标 skipped/failed 和已完成 target。
+- store 提交后不执行 config 或 runtime 补偿回滚。runtime 失败时新 config 保持有效，`configWrite` 仍为 `succeeded`，`overallState` 和 `targetResults` 报告应用结果；用户通过 status 和 reinstall 恢复 partial target。store 提交前的异常仍不产生 config 写入。
 - `uninstall`、`cleanup` 和 `reinstall` 不删除 config。
 - `config reset` 是删除 config store 的唯一入口。
-- `config reset` 在 config lock 内拒绝目录、符号链接和身份不匹配的 store；多 store reset 在任何删除前验证全部目标，并通过原子文件删除提交 receipt。
-- TUI 离线 reset 在写后以 namespaced store 的可信缺失确认成功，不依赖来源或 manifest 的健康状态；状态或 store 复读失败时只报告写入可能已完成。
+- config set、unset、reset 和 runtime replay 都在最外层 `AW_HOME` mutation lock 内执行，并保留 config transaction/file lock。嵌套 reinstall 复用同一个 mutation token。
+- `config reset` 要求当前来源、插件和 config schema 可解析，并在 config lock 内拒绝目录、符号链接和身份不匹配的 store。来源或 schema 不可用时返回 `sourceMissing` 或 `configSchemaUnavailable`，且 config store 保持不变。
 - config value 和 source identity 读取检查从可信的 canonical `AW_HOME` 或 repository root 到最终 `config.json` 的完整 path chain，拒绝 `.agent-workflows`、store root 及其后代的符号链接，并要求最终节点是 regular file。namespaced source/plugin namespace 和 legacy plugin namespace 遇到普通文件、符号链接或其它非目录节点时，inventory 返回 `invalidPluginConfigStore` typed error；合法空目录和缺少 `config.json` 的 plugin 目录仍被忽略。inventory 不能跟随链接读取 store 外内容。
 - sensitive config value 不进入 receipt、stderr 或 debug log。
 
@@ -313,10 +319,10 @@ cache publication 必须满足：
 - `rebuild:action` 只服务 human、TUI、verbose 和 debug 诊断，不进入 v4 JSON receipt。普通 human reporter 忽略 event；verbose 写 stderr；`--json` stdout 仍只包含一个对象。
 - `tui/controller.ts`、`tui/model.ts` 和 `tui/router.ts` 是单列 TUI 的内部控制层。裸 `aw` 默认入口挂载 `ConsoleAppV4`，从 status v4、plugin summary、source config 和 config read 投影页面模型；canonical `pluginId`、`sourceId`、`issueId` 和 `operationId` 是路由身份。旧三焦点 Dashboard 不再是生产入口。
 - 新 Controller 首屏使用 `cacheFirst`，随后只对 Git source 运行可取消的 `forceRemote` 后台检查。成功检查发布 strict cache 后重新读取 status 投影；失败时只把已有缓存标为 degraded，无缓存标为 unavailable。首页分别显示使用缓存和不可用的来源数量，不能把缓存来源计入不可用。generation token 防止旧检查覆盖较新结果。
-- 交互写操作先建立短期内存 Review ticket。Review 证据绑定 catalog config/composite digest、选中来源 identity 与 snapshot/content digest、目标状态 fingerprint，以及适用的配置层和 store digest。执行前重新读取并比较证据；变化时不调用写入口，而是返回同 intent 的新 Review。跨进程锁顺序固定为 catalog cache root/runtime catalog lease → config transaction（适用时）→ canonical target operation locks → store/command；持有 target lock 后不得首次获取 catalog cache root。插件写入在真实 target operation lock 内复核完整证据；config 写入按稳定顺序持有全部适用 target operation lock，并在 config transaction 和 store file lock 内、首次 store 或 target 写入前复核完整证据。stale 操作不写入。Controller 只保存安全结果摘要和固定 typed 错误，不保存底层 receipt、私有路径或有效配置值。
+- 交互写操作先建立短期内存 Review ticket。Review 证据绑定 catalog config/composite digest、选中来源 identity 与 snapshot/content digest、目标状态 fingerprint，以及适用的配置层和 store digest。执行入口先取得 `AW_HOME` mutation lock，再读取并比较一次完整证据；变化时返回 `operationReviewStale` 且不写入。source、plugin 和 config 写入口复用同一个 mutation token；config 继续使用自己的 transaction/file lock。Controller 只保存安全结果摘要和固定 typed 错误，不保存底层 receipt、私有路径或有效配置值。
 - TUI preset 只接受非敏感、非路径字段；validator 在 manifest 边界拒绝 sensitive、file 和 directory preset。进度和结果只保留最近 8 条安全消息、elapsed 和结构化目标摘要；无 target 的 source/config 成功结果仍显示固定 human receipt。
 - 问题页从 status target error code、source health 和内部 plugin config preflight 投影结构化类别。问题写操作在 plugin write intent 上绑定 typed issue origin，仍经过同一 Review、evidence、operation lock 和写命令；完成后取消旧检查，并以新 generation 统一重载状态。公开 status v4 JSON 不包含这些 TUI 内部字段。
-- manifest 或来源不可用时，TUI 只在所选 namespaced config store 存在、store source identity 与当前来源配置 identity 一致时允许重置该层。Review 和执行绑定安全 identity、catalog config digest 与 store digest；锁内证据变化时零写。该降级路径只删除本层已存值，不读取或展示 value/path，不重新应用插件内容，并保留其他设置层。
+- manifest 或来源不可用时，TUI 设置页只显示安全诊断、重新检查来源、技术详情和返回操作，不提供保存或重置写动作。已存 config store 保持不变；来源恢复后才能编辑或重置。
 - typed issue origin 同时绑定类别、canonical plugin/source、platform、scope 和所选动作。建立 Review、执行前验证和锁内证据都必须保持该映射；伪造或已变化的问题不得写入。问题写入只有在新 generation 中确认原 typed issue key 消失后才成功。执行入口开始后，除 typed `operationReviewStale` 的零写重审外，异常、恢复失败、全目标失败 receipt 或写后重载失败都保守标记“写入可能已完成”；Controller 先取消旧检查并尝试在新 generation 重载状态，不切换为启动失败页。
 - `sourceMissing` 只允许预填原 source ID 后重新添加同 identity 来源；来源类型和位置仍由用户选择。`sourceChanged` 只提供变更检查和恢复原 identity 的人工路径。两者都不从问题页调用低层 cleanup，也不提供自动 identity 迁移。
 - TUI 内部 config preflight 保留 `missing-required`、`invalid-config`、字段和安全来源层；单插件设置读取失败投影为不含值、路径或原始错误的 typed diagnostic。来源级不可用或降级与同 source 的 target `catalogSourceUnavailable` 合并为一个根问题，只聚合安全的受影响 target 数量。

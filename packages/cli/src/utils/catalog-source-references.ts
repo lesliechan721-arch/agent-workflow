@@ -71,6 +71,7 @@ interface NativeMarketplaceConsumer {
   pluginName: string;
   platform: 'codex' | 'claude';
   scope: 'user' | 'project';
+  projectKey?: string | null;
 }
 
 function pluginNameFromMarketplaceId(pluginId: string, marketplaceName: string): string | null {
@@ -147,12 +148,16 @@ function claudeConsumersFromInstalled(
       }
       if (itemMarketplace !== marketplaceName) continue;
       const scope = item.scope === 'project' || item.scope === 'local' ? 'project' : 'user';
-      if (!includeHistoricalProjects && scope === 'project'
-        && path.normalize(typeof item.projectPath === 'string' ? item.projectPath : '') !== currentProject) continue;
+      const projectKey = scope === 'project'
+        ? typeof item.projectPath === 'string' && path.isAbsolute(item.projectPath)
+          ? canonicalizePathThroughExistingAncestorSync(item.projectPath)
+          : null
+        : undefined;
+      if (!includeHistoricalProjects && scope === 'project' && projectKey !== currentProject) continue;
       const pluginName = typeof item.name === 'string'
         ? item.name
         : pluginNameFromMarketplaceId(key, marketplaceName) ?? key;
-      output.push({ pluginName, platform: 'claude', scope });
+      output.push({ pluginName, platform: 'claude', scope, ...(scope === 'project' ? { projectKey } : {}) });
     }
   }
   return output;
@@ -177,6 +182,7 @@ export interface CatalogSourceInventoryError {
         pluginName?: string;
         platform?: PlatformName;
         scope?: Scope;
+        projectLocationKey?: string;
       };
 }
 
@@ -247,6 +253,7 @@ function inventoryErrorRelevance(
         ...(contract[4] ? { pluginName: contract[4] } : {}),
         ...(platform ? { platform } : {}),
         ...(scope ? { scope } : {}),
+        ...(scope === 'project' && contract[3] ? { projectLocationKey: contract[3] } : {}),
       };
     }
   }
@@ -1420,6 +1427,7 @@ export async function inventoryCatalogSourceReferences(options: {
           pluginName: snapshot.metadata.pluginName,
           platform: snapshot.metadata.platform,
           scope: snapshot.metadata.scope,
+          projectKey: snapshot.metadata.projectKey,
         });
       }
     }
@@ -1618,6 +1626,11 @@ export async function inventoryCatalogSourceReferences(options: {
         marketplaceName,
         ...consumer,
       });
+    }
+  }
+  for (const reference of references) {
+    if (reference.scope === 'project' && reference.projectKey === undefined) {
+      reference.projectKey = canonicalProjectRoot;
     }
   }
   const unique = [...new Map(references.map((reference) => [[

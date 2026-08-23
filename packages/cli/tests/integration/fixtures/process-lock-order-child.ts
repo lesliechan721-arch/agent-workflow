@@ -11,7 +11,6 @@ import {
   setTuiControllerRuntimeTestHooksForTests,
 } from '../../../src/tui/controller-runtime.js';
 import { catalogSourceCacheInternal } from '../../../src/utils/catalog-source-cache.js';
-import { setPluginConfigWriteTestHooksForTests } from '../../../src/utils/plugin-config-write.js';
 import { registerCurrentTestWritableStateRoot } from '../../setup/test-isolation.js';
 
 const role = process.env.AW_LOCK_ORDER_ROLE;
@@ -113,7 +112,6 @@ describe.skipIf(role !== 'plugin' && role !== 'config')('production lock-order c
       const action = actions[index]!;
       catalogSourceCacheInternal.setAfterRootLeaseAcquireHookForTests(undefined);
       setTuiControllerRuntimeTestHooksForTests(undefined);
-      setPluginConfigWriteTestHooksForTests(undefined);
       const intent = role === 'plugin'
         ? {
             kind: 'pluginWrite' as const,
@@ -152,24 +150,12 @@ describe.skipIf(role !== 'plugin' && role !== 'config')('production lock-order c
         }
         await waitForSignal(`${role}-${round}-cache-release`);
       });
-      if (role === 'plugin') {
-        setTuiControllerRuntimeTestHooksForTests({
-          afterPluginOperationLocksAcquire: async () => {
-            await signal(`plugin-${round}-target`);
-            await waitForSignal(`plugin-${round}-target-release`);
-          },
-        });
-      } else {
-        let stoppedAtTarget = false;
-        setPluginConfigWriteTestHooksForTests({
-          beforeOperationLockAcquire: async () => {
-            if (stoppedAtTarget) return;
-            stoppedAtTarget = true;
-            await signal(`config-${round}-target`);
-            await waitForSignal(`config-${round}-target-release`);
-          },
-        });
-      }
+      setTuiControllerRuntimeTestHooksForTests({
+        afterMutationEvidenceCapture: async () => {
+          await signal(`${role}-${round}-target`);
+          await waitForSignal(`${role}-${round}-target-release`);
+        },
+      });
 
       await signal(`${role}-${round}-prepared`);
       await waitForSignal(`${role}-${round}-start`);
@@ -177,7 +163,6 @@ describe.skipIf(role !== 'plugin' && role !== 'config')('production lock-order c
       const result = await dependencies.executeIntent(intent, evidence);
       catalogSourceCacheInternal.setAfterRootLeaseAcquireHookForTests(undefined);
       setTuiControllerRuntimeTestHooksForTests(undefined);
-      setPluginConfigWriteTestHooksForTests(undefined);
       if (role === 'plugin') {
         expect(result).toMatchObject({ overallState: 'succeeded' });
       } else {

@@ -36,7 +36,12 @@ import { createNoopDebugLogger } from '../output/debug-log.js';
 import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import type { OwnedComponent, OwnershipInspection } from '../utils/ownership.js';
-import { getClaudeHome, getCodexHome } from '../utils/state-paths.js';
+import {
+  createProjectLocationKey,
+  getClaudeHome,
+  getCodexHome,
+  resolveCanonicalRepoProjectKey,
+} from '../utils/state-paths.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 import {
   InstallationContractError,
@@ -177,9 +182,12 @@ function inventoryErrorMatchesSelection(options: {
   scopeExplicit: boolean;
   platforms: PlatformName[];
   scopes: Scope[];
+  currentProjectLocationKey: string;
 }): boolean {
   const relevance = options.error.relevance;
   if (relevance.global) return true;
+  if (relevance.projectLocationKey
+    && relevance.projectLocationKey !== options.currentProjectLocationKey) return false;
   if (options.platformExplicit && relevance.platform
     && !options.platforms.includes(relevance.platform)) return false;
   if (options.scopeExplicit && relevance.scope
@@ -292,6 +300,8 @@ export async function statusCommandV4(options: {
     'packages/cli/package.json version',
   );
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  const currentProjectKey = await resolveCanonicalRepoProjectKey(options.cwd);
+  const currentProjectLocationKey = createProjectLocationKey(currentProjectKey);
   const inventoryErrors: StatusInventoryError[] = [];
   const ownerInventory = await inventoryCatalogSourceReferences({ cwd: options.cwd, env }).catch(async (error) => {
     inventoryErrors.push(projectStateInventoryError(error, env, options.cwd));
@@ -334,7 +344,8 @@ export async function statusCommandV4(options: {
         && reference.sourceId === parsed.sourceId
         && reference.pluginName === parsed.pluginName
         && platforms.includes(reference.platform as PlatformName)
-        && scopes.includes(reference.scope as Scope));
+        && scopes.includes(reference.scope as Scope)
+        && (reference.scope !== 'project' || reference.projectKey === currentProjectKey));
       if (hasLiveReference) {
         liveOnlySelectors.push({ raw: selector, parsed });
       } else if (!inventoryErrors.some((error) => inventoryErrorMatchesSelection({
@@ -344,6 +355,7 @@ export async function statusCommandV4(options: {
         scopeExplicit: options.scope !== undefined,
         platforms,
         scopes,
+        currentProjectLocationKey,
       }))) {
         selectorErrors.push({
           code: 'pluginNotFound',
@@ -361,6 +373,7 @@ export async function statusCommandV4(options: {
     scopeExplicit: options.scope !== undefined,
     platforms,
     scopes,
+    currentProjectLocationKey,
   }));
   const plannedSourceIds = requested.length === 0
     ? undefined
@@ -459,6 +472,7 @@ export async function statusCommandV4(options: {
                     && reference.pluginName === entry.name
                     && reference.platform === platform
                     && reference.scope === scope
+                    && (scope === 'user' || reference.projectKey === currentProjectKey)
                     && reference.sourceIdentity
                     && reference.sourceIdentity !== item.resolution!.sourceIdentity);
                   if (changedOwner) {
@@ -501,7 +515,23 @@ export async function statusCommandV4(options: {
                     });
                     const dependencyErrors: Array<{ code: string; message: string }> = [];
                     const directDependencies = plugin.manifest.dependencies ?? [];
-                    if (directDependencies.length > 0
+                    const exactContractReference = ownerInventory.references.some((reference) =>
+                      reference.kind === 'installationContract'
+                      && reference.sourceId === item.resolution!.sourceId
+                      && reference.pluginName === entry.name
+                      && reference.platform === platform
+                      && reference.scope === scope
+                      && (scope === 'user' || reference.projectKey === currentProjectKey));
+                    const exactContractError = ownerInventory.errors.some((error) =>
+                      error.kind === 'installationContractValidation'
+                      && !error.relevance.global
+                      && error.relevance.sourceId === item.resolution!.sourceId
+                      && error.relevance.pluginName === entry.name
+                      && error.relevance.platform === platform
+                      && error.relevance.scope === scope
+                      && (scope === 'user'
+                        || error.relevance.projectLocationKey === currentProjectLocationKey));
+                    if ((directDependencies.length > 0 || exactContractReference || exactContractError)
                       && (liveState === 'present' || liveState === 'partial')) {
                       try {
                         const contract = await readInstallationContract({
@@ -521,11 +551,15 @@ export async function statusCommandV4(options: {
                         } else {
                           const currentEntry = item.resolution!.manifest.entries.find((candidate) =>
                             candidate.name === entry.name)!;
-                          if (contract.metadata.sourceIdentity !== item.resolution!.sourceIdentity
-                            || contract.metadata.contentDigest !== currentEntry.contentDigest) {
+                          if (contract.metadata.sourceIdentity !== item.resolution!.sourceIdentity) {
                             dependencyErrors.push({
                               code: 'sourceChanged',
-                              message: `sourceChanged: ${plugin.pluginId} installation contract does not match the current source snapshot.`,
+                              message: `sourceChanged: ${plugin.pluginId} installation contract has a different source identity.`,
+                            });
+                          } else if (contract.metadata.contentDigest !== currentEntry.contentDigest) {
+                            dependencyErrors.push({
+                              code: 'dependencyContractInvalid',
+                              message: `dependencyContractInvalid: ${plugin.pluginId} installation contract does not match the current plugin content.`,
                             });
                           } else {
                             const recordedIds = contract.metadata.dependencies.map((dependency) =>
@@ -624,8 +658,8 @@ export async function statusCommandV4(options: {
                               const dependencyState = await dependencyInspection;
                               if (dependencyState === 'absent') {
                                 dependencyErrors.push({
-                                  code: 'dependencyMissing',
-                                  message: `dependencyMissing: ${dependency.pluginId} is absent at its recorded target.`,
+                                  code: 'dependencyContractInvalid',
+                                  message: `dependencyContractInvalid: ${dependency.pluginId} is absent at its recorded placement.`,
                                 });
                               } else if (dependencyState !== 'present') {
                                 dependencyErrors.push({
@@ -643,6 +677,7 @@ export async function statusCommandV4(options: {
                           && reference.pluginName === entry.name
                           && reference.platform === platform
                           && reference.scope === scope
+                          && (scope === 'user' || reference.projectKey === currentProjectKey)
                           && reference.sourceIdentity !== item.resolution!.sourceIdentity);
                         dependencyErrors.push({
                           code: changedContract
@@ -782,6 +817,7 @@ export async function statusCommandV4(options: {
             scopeExplicit: options.scope !== undefined,
             platforms,
             scopes,
+            currentProjectLocationKey,
           }));
         if (!selectorHasInventoryError) {
           selectorErrors.push({
@@ -831,7 +867,7 @@ export async function statusCommandV4(options: {
             code: 'targetInspectionFailed',
             message: `No live inspection result exists for ${entry.source.id}/${entry.name}.`,
           }],
-          ...(entry.dependencies.length > 0 ? {
+          ...(entry.dependencies.length > 0 || dependencyIssueCount > 0 ? {
             dependency: {
               directCount: entry.dependencies.length,
               issueCount: dependencyIssueCount,
@@ -844,7 +880,8 @@ export async function statusCommandV4(options: {
         && reference.sourceId === entry.source.id
         && reference.pluginName === entry.name
         && reference.platform === platform
-        && reference.scope === scope);
+        && reference.scope === scope
+        && (scope === 'user' || reference.projectKey === currentProjectKey));
       if (unsupportedLiveReference) {
         const sourceChanged = Boolean(
           unsupportedLiveReference.sourceIdentity
@@ -872,12 +909,19 @@ export async function statusCommandV4(options: {
       }];
     })));
   const referenceSelectors = [...plannedSelectors, ...liveOnlySelectors];
-  const referenceSelected = (reference: { sourceId?: string; pluginName?: string; platform?: string; scope?: string }): boolean => (
+  const referenceSelected = (reference: {
+    sourceId?: string;
+    pluginName?: string;
+    platform?: string;
+    scope?: string;
+    projectKey?: string | null;
+  }): boolean => (
     reference.pluginName !== undefined
     && reference.platform !== undefined
     && reference.scope !== undefined
     && platforms.includes(reference.platform as PlatformName)
     && scopes.includes(reference.scope as Scope)
+    && (reference.scope !== 'project' || reference.projectKey === currentProjectKey)
     && (requested.length === 0 || referenceSelectors.some((selector) =>
       selector.parsed.pluginName === reference.pluginName
       && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === reference.sourceId)))

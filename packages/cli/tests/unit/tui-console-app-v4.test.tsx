@@ -1699,7 +1699,7 @@ describe('ConsoleAppV4', () => {
     expect((effectiveInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
-  it('offers C17 reset only for a verified stored layer and keeps its details private', async () => {
+  it('keeps C17 read-only for a verified stored layer and keeps its details private', async () => {
     const sourceIdentity = `sha256:${'a'.repeat(64)}`;
     const storeDigest = `sha256:${'b'.repeat(64)}`;
     const value = controller({
@@ -1723,7 +1723,7 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-    expect(instance.lastFrame()).toContain('重置此设置层');
+    expect(instance.lastFrame()).not.toContain('重置此设置层');
     expect(instance.lastFrame()).toContain('查看可信身份和设置层摘要');
     expect(instance.lastFrame()).not.toContain(sourceIdentity);
     expect(instance.lastFrame()).not.toContain(storeDigest);
@@ -1733,116 +1733,6 @@ describe('ConsoleAppV4', () => {
     expect(technicalFrame).toContain(sourceIdentity);
     expect(technicalFrame).toContain('设置摘要：sha256:');
     expect(technicalFrame.match(/b/gu)?.length).toBeGreaterThanOrEqual(64);
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-    expect(instance.lastFrame()).not.toContain(sourceIdentity);
-    expect(instance.lastFrame()).toContain('当前不重新应用插件内容');
-    expect(instance.lastFrame()).toContain('当前项目和本机设置层保持不变');
-    await input(instance, 'd');
-    expect((instance.lastFrame() ?? '').replace(/[\s│]/gu, '')).toContain(sourceIdentity);
-    await input(instance, 'b');
-    expect(instance.lastFrame()).toContain('暂时无法编辑设置');
-    expect(instance.lastFrame()).not.toContain(sourceIdentity);
-  });
-
-  it('executes C17 offline reset through Review and shows the C14 deferred-apply result', async () => {
-    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
-    const storeDigest = `sha256:${'b'.repeat(64)}`;
-    const initial = loadResult();
-    initial.payload.catalog.sources = initial.payload.catalog.sources.map((entry) => ({
-      ...entry, type: 'path' as const, freshness: 'path' as const, requestedRef: 'path',
-    }));
-    const afterReset = structuredClone(initial);
-    afterReset.payload.catalog.sources = afterReset.payload.catalog.sources.map((entry) =>
-      entry.id === 'team-tools'
-        ? { ...entry, error: 'catalogSourceUnavailable', errorCode: 'catalogSourceUnavailable' }
-        : entry);
-    afterReset.pluginSummaries = afterReset.pluginSummaries.filter((entry) =>
-      entry.pluginId !== 'team-tools/review-gate');
-    const loadStatus = vi.fn()
-      .mockResolvedValueOnce(initial)
-      .mockResolvedValueOnce(afterReset);
-    const value = controller({
-      loadStatus,
-      getConfigResetAvailability: vi.fn()
-        .mockResolvedValueOnce({
-          exists: true, sourceIdentityPresent: true, sourceIdentity, storeDigest,
-        })
-        .mockResolvedValueOnce({ exists: false, sourceIdentityPresent: false }),
-      captureEvidence: vi.fn().mockResolvedValue({
-        ...evidence,
-        source: { sourceId: 'team-tools', sourceIdentity },
-        config: { scope: 'user', projectLayer: 'shared', storeDigest },
-      }),
-      executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
-        applySkippedReason: 'currentCatalogUnavailable',
-      }),
-    });
-    value.push({
-      name: 'configUnavailable', pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
-    });
-    const screens = new Set<ConsoleV4ScreenId>();
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
-      onScreenChange={(screen) => screens.add(screen)} />);
-    await nextTurn(5);
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-    expect(instance.lastFrame()).toContain('当前不重新应用插件内容');
-    await confirmReview(instance, value);
-    await nextTurn(5);
-
-    expect(screens).toContain('C14');
-    expect(instance.lastFrame()).toContain('设置层已重置');
-    expect(instance.lastFrame()).toContain('插件内容尚未重新应用');
-    expect(instance.lastFrame()).not.toContain('设置已保存并应用');
-  });
-
-  it('shows an unconfirmed C17 reset as C15 and returns to the unavailable settings page', async () => {
-    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
-    const storeDigest = `sha256:${'b'.repeat(64)}`;
-    const initial = loadResult();
-    initial.payload.catalog.sources = initial.payload.catalog.sources.map((entry) => ({
-      ...entry, type: 'path' as const, freshness: 'path' as const, requestedRef: 'path',
-    }));
-    const value = controller({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce(initial)
-        .mockRejectedValueOnce(new Error('/private/post-write reload failed')),
-      getConfigResetAvailability: vi.fn().mockResolvedValue({
-        exists: true, sourceIdentityPresent: true, sourceIdentity, storeDigest,
-      }),
-      captureEvidence: vi.fn().mockResolvedValue({
-        ...evidence,
-        source: { sourceId: 'team-tools', sourceIdentity },
-        config: { scope: 'user', projectLayer: 'shared', storeDigest },
-      }),
-      executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', applySkippedReason: 'currentCatalogUnavailable', targetResults: [],
-      }),
-    });
-    value.push({
-      name: 'configUnavailable', pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
-    });
-    const screens = new Set<ConsoleV4ScreenId>();
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
-      onScreenChange={(screen) => screens.add(screen)} />);
-    await nextTurn(5);
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-    await confirmReview(instance, value);
-    await nextTurn(5);
-
-    expect(screens, JSON.stringify(value.snapshot)).toContain('C15');
-    expect(instance.lastFrame()).toContain('写入可能已完成');
-    expect(instance.lastFrame()).toContain('当前无法确认');
-    expect(instance.lastFrame()).not.toContain('没有写入');
-    expect(instance.lastFrame()).not.toContain('/private');
-    await input(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'configUnavailable' });
-    expect(instance.lastFrame()).toContain('暂时无法编辑设置');
   });
 
   it('does not let an aborted config layer response overwrite the newer layer page', async () => {
@@ -1973,12 +1863,12 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview).toBeUndefined();
   });
 
-  it('keeps the owner draft after a safe rollback and never renders a saved result', async () => {
+  it('shows a committed config write with one failed target as partial', async () => {
     const screens = new Set<ConsoleV4ScreenId>();
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'rolledBack',
+        configWrite: 'succeeded',
         overallState: 'failed',
         targetResults: [
           { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
@@ -2001,12 +1891,12 @@ describe('ConsoleAppV4', () => {
     await confirmReview(instance, value);
     await nextTurn(4);
 
-    expect(value.snapshot.result).toMatchObject({ state: 'blocked', code: 'configWriteRolledBack' });
-    expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(instance.lastFrame()).toContain('DRAFT-KEEP');
-    expect(instance.lastFrame()).toContain('1 项未保存');
-    expect(screens).not.toContain('C14');
-    expect(screens).not.toContain('C15');
+    expect(value.snapshot.result).toMatchObject({ state: 'partial' });
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(instance.lastFrame()).toContain('设置已保存，但部分应用失败');
+    expect(instance.lastFrame()).toContain('已完成');
+    expect(instance.lastFrame()).toContain('失败');
+    expect(screens).toContain('C15');
   });
 
   it('keeps every compact Review change and confirmation in one bounded focus viewport', async () => {

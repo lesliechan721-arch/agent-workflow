@@ -80,8 +80,6 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       projectLayer: ProjectConfigStoreLayer;
-      offline?: true;
-      sourceIdentity?: string;
     }
   | {
       kind: 'sourceMutation';
@@ -203,7 +201,6 @@ export interface OperationResultSummary {
   message: string;
   pluginId?: string;
   action?: PluginWriteOperation;
-  applySkippedReason?: 'currentCatalogUnavailable';
   elapsedMs?: number;
   messages?: string[];
   targets?: Array<{
@@ -401,9 +398,7 @@ function operationLabels(intent: OperationIntent): {
   if (intent.kind === 'configReset') {
     return {
       title: '重置插件设置',
-      description: intent.offline
-        ? '删除所选设置层的已存值；当前不重新应用插件内容。'
-        : '删除所选设置层的值，恢复继承。',
+      description: '删除所选设置层的值，恢复继承。',
       primaryLabel: '重置设置',
       destructive: true,
     };
@@ -500,11 +495,7 @@ function reviewChanges(
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
       : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
-    return intent.offline ? [
-      { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '当前无法取得可信 manifest。' },
-      { kind: 'warning', title: '当前不重新应用插件内容', description: '来源恢复后可重新检查插件。' },
-      { kind: 'keep', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
-    ] : [
+    return [
       { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' },
       { kind: 'change', title: '重新计算有效设置' },
       { kind: 'change', title: '重新应用当前可见安装位置' },
@@ -1046,7 +1037,12 @@ export class TuiController {
         reference.dependency.pluginId === pluginId
         && reference.dependency.platform === platform
         && reference.dependency.scope === scope
-        && (scope === 'user' || reference.dependency.project === 'current'));
+        && (scope === 'user' || reference.dependency.project === 'current')
+        && (reference.consumer.project === 'other'
+          || this.#status?.payload.targets.find((target) =>
+            target.pluginId === reference.consumer.pluginId
+            && target.platform === reference.consumer.platform
+            && target.scope === reference.consumer.scope)?.state !== 'absent'));
       return references.length > 0 ? [{ ...dependent, placementReferences: references }] : [];
     }));
   }
@@ -1405,42 +1401,6 @@ export class TuiController {
           writeMayHaveCompleted: true,
         });
       }
-      if (ticket.intent.kind === 'configReset' && ticket.intent.offline) {
-        let availability: ConfigResetAvailability;
-        try {
-          availability = await this.getConfigResetAvailability(
-            ticket.intent.pluginId,
-            { scope: ticket.intent.scope, projectLayer: ticket.intent.projectLayer },
-          );
-          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-        } catch (error) {
-          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-          await this.#logErrorSafe(error, 'tuiStateReloadFailed', {
-            privateConfigOperation: true,
-          });
-          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-          return this.#setBlocked(operationId, 'tuiStateReloadFailed', {
-            intent: ticket.intent,
-            navigation: 'result',
-            returnRoute: ticket.returnRoute,
-            writeMayHaveCompleted: true,
-          });
-        }
-        if (availability.exists) {
-          const expectedIdentity = ticket.evidence.source?.sourceIdentity;
-          const identityChanged = availability.sourceIdentity !== undefined
-            && expectedIdentity !== undefined
-            && availability.sourceIdentity !== expectedIdentity;
-          return this.#setBlocked(operationId, identityChanged
-            ? 'operationReviewStale'
-            : 'configResetStillPresent', {
-            intent: ticket.intent,
-            navigation: 'result',
-            returnRoute: ticket.returnRoute,
-            writeMayHaveCompleted: true,
-          });
-        }
-      }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
       if (originIssue && !dependencyFailure
         && this.#viewModel?.issues.some((issue) => userIssueKey(issue) === originIssue.issueKey)) {
@@ -1456,20 +1416,6 @@ export class TuiController {
         const configWrite = typeof execution === 'object' && execution !== null
           ? (execution as { configWrite?: unknown }).configWrite
           : undefined;
-        if (configWrite === 'rolledBack') {
-          return this.#setBlocked(operationId, 'configWriteRolledBack', {
-            intent: ticket.intent,
-            navigation: 'back',
-          });
-        }
-        if (configWrite === 'rollbackFailed') {
-          return this.#setBlocked(operationId, 'configWriteRollbackFailed', {
-            intent: ticket.intent,
-            navigation: 'result',
-            returnRoute: ticket.returnRoute,
-            writeMayHaveCompleted: true,
-          });
-        }
         if (configWrite !== 'succeeded') {
           return this.#setBlocked(operationId, 'configWriteUnconfirmed', {
             intent: ticket.intent,
@@ -1642,11 +1588,7 @@ export class TuiController {
   ): OperationExecuteResult {
     const message = options?.writeMayHaveCompleted
       ? '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。'
-      : code === 'configWriteRolledBack'
-      ? '设置未保存。原设置已安全恢复，请检查草稿后重试。'
-      : code === 'configWriteRollbackFailed'
-        ? '设置未确认保存，且恢复未完整完成。请停止修改并检查问题。'
-        : code === 'configResetStillPresent'
+      : code === 'configResetStillPresent'
           ? '重置执行后设置层仍然存在。请重新检查设置问题。'
         : code === 'issueStillPresent'
           ? '写入已完成，但重新检查后原问题仍然存在。'
@@ -1799,24 +1741,17 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     && (execution as { overallState?: unknown }).overallState === 'failed';
   const failed = overallFailed || (inferredTargets.length > 0
     && inferredTargets.every((target) => target.state === 'failed' || target.state === 'skipped'));
-  const applySkippedReason = typeof execution === 'object' && execution !== null
-    && (execution as { applySkippedReason?: unknown }).applySkippedReason === 'currentCatalogUnavailable'
-    ? 'currentCatalogUnavailable' as const
-    : undefined;
   return {
     code: failed && !partial ? 'operationFailed' : partial ? 'operationPartial' : 'operationSucceeded',
     message: failed && !partial
       ? '操作结果无法确认。'
       : partial
       ? '操作只完成了一部分。'
-      : intent.kind === 'configReset' && intent.offline
-        ? '设置层已重置，插件内容尚未重新应用。'
-        : '操作已完成。',
+      : '操作已完成。',
     ...(intent.kind === 'pluginWrite' ? {
       pluginId: intent.pluginId,
       action: intent.action,
     } : {}),
-    ...(applySkippedReason ? { applySkippedReason } : {}),
     ...(inferredTargets.length > 0 ? { targets: inferredTargets } : {}),
   };
 }

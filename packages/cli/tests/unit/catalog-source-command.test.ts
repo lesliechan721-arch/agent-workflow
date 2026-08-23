@@ -19,6 +19,7 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import {
   createSharedOwnerToken,
   OWNED_TEXT_HEADER_PREFIX,
@@ -568,21 +569,26 @@ describe('catalog source command v4', () => {
     const second = fixturePath('second');
     await Promise.all([createCatalogSnapshotFixture(first), createCatalogSnapshotFixture(second)]);
 
-    await expect(addCatalogSourceCommand({
-      source: { id: 'first', type: 'path', primary: false, path: first },
-      cliVersion: '1.0.0',
-      cwd: isolation.layout.fixtureCwd,
+    await expect(withAwHomeMutationLock({
       env: isolation.env,
-      runtime: {
-        afterValidation: async () => {
-          await addCatalogSourceCommand({
-            source: { id: 'second', type: 'path', primary: false, path: second },
-            cliVersion: '1.0.0',
-            cwd: isolation.layout.fixtureCwd,
-            env: isolation.env,
-          });
+      action: (awHomeMutationToken) => addCatalogSourceCommand({
+        source: { id: 'first', type: 'path', primary: false, path: first },
+        cliVersion: '1.0.0',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        runtime: {
+          awHomeMutationToken,
+          afterValidation: async () => {
+            await addCatalogSourceCommand({
+              source: { id: 'second', type: 'path', primary: false, path: second },
+              cliVersion: '1.0.0',
+              cwd: isolation.layout.fixtureCwd,
+              env: isolation.env,
+              runtime: { awHomeMutationToken },
+            });
+          },
         },
-      },
+      }),
     })).rejects.toThrow('changed after it was read');
 
     expect((await listCatalogSources({ env: isolation.env })).sources.map((source) => source.id))

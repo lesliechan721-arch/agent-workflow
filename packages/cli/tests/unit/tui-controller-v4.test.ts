@@ -281,7 +281,10 @@ describe('TUI v4 router and ViewModel', () => {
     const controller = new TuiController(dependencies({
       captureEvidence,
       loadStatus: vi.fn().mockResolvedValue({
-        payload: status(),
+        payload: status({ targets: [
+          target({ pluginName: 'root', scope: 'project', state: 'partial' }),
+          target({ pluginName: 'toolkit', scope: 'user', state: 'present' }),
+        ] }),
         pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
         dependencyOverviews: [overview, {
           pluginId: 'official/toolkit',
@@ -310,6 +313,37 @@ describe('TUI v4 router and ViewModel', () => {
       kind: 'pluginWrite', action: 'uninstall', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
     })).rejects.toMatchObject({ code: 'dependencyStillRequired' });
     expect(captureEvidence).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not block dependency removal for an explicitly absent consumer target', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ targets: [
+          target({ pluginName: 'root', scope: 'project', state: 'absent' }),
+          target({ pluginName: 'toolkit', scope: 'user', state: 'present' }),
+        ] }),
+        pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
+        dependencyOverviews: [{
+          pluginId: 'official/toolkit',
+          summary: { directCount: 0, transitiveCount: 0, totalCount: 0, readyCount: 0, missingCount: 0, issueCount: 0 },
+          dependencies: [],
+          dependents: [{
+            pluginId: 'official/root', displayName: 'Root', relation: 'dependent' as const,
+            depth: 1, requiredBy: [], placements: [], aggregateStatus: 'notInstalled' as const,
+            placementReferences: [{
+              consumer: { pluginId: 'official/root', platform: 'codex' as const, scope: 'project' as const, project: 'current' as const },
+              dependency: { pluginId: 'official/toolkit', platform: 'codex' as const, scope: 'user' as const, project: null },
+            }],
+          }],
+          blockers: [],
+        }],
+      }),
+    }));
+    await controller.load();
+
+    await expect(controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'uninstall', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+    })).resolves.toMatchObject({ operationKind: 'pluginWrite', pluginAction: 'uninstall' });
   });
 
   it('keeps same-name plugins separate and sorts the tie by source identity', () => {
@@ -1665,10 +1699,10 @@ describe('TUI v4 Review safety', () => {
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
-  it('does not report a rolled-back config write as partial or succeeded', async () => {
+  it('reports a committed config write with one failed target as partial', async () => {
     const controller = new TuiController(dependencies({
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'rolledBack',
+        configWrite: 'succeeded',
         overallState: 'failed',
         targetResults: [
           { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
@@ -1692,15 +1726,21 @@ describe('TUI v4 Review safety', () => {
     const result = await controller.executeOperation(review.reviewToken);
 
     expect(result).toMatchObject({
-      state: 'blocked',
-      code: 'configWriteRolledBack',
-      message: '设置未保存。原设置已安全恢复，请检查草稿后重试。',
+      state: 'partial',
+      summary: {
+        code: 'operationPartial',
+        message: '操作只完成了一部分。',
+        targets: [
+          expect.objectContaining({ platform: 'codex', state: 'completed' }),
+          expect.objectContaining({ platform: 'claude', state: 'failed' }),
+        ],
+      },
     });
-    expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFields' });
+    expect(controller.snapshot.router.current.route).toMatchObject({ name: 'result' });
     expect(controller.snapshot.activeReview).toBeUndefined();
   });
 
-  it('reports an offline reset as unconfirmed when the post-write status reload fails', async () => {
+  it('reports a reset as unconfirmed when the post-write status reload fails', async () => {
     const initial = {
       payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -1711,7 +1751,7 @@ describe('TUI v4 Review safety', () => {
     const controller = new TuiController(dependencies({
       loadStatus,
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', applySkippedReason: 'currentCatalogUnavailable', targetResults: [],
+        configWrite: 'succeeded', targetResults: [],
       }),
     }));
     await controller.load();
@@ -1720,7 +1760,7 @@ describe('TUI v4 Review safety', () => {
       layer: { scope: 'user', projectLayer: 'shared' },
     });
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', offline: true,
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
     });
 
     expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
@@ -1733,7 +1773,7 @@ describe('TUI v4 Review safety', () => {
     expect(JSON.stringify(controller.snapshot)).not.toContain('/private/reload');
   });
 
-  it('confirms offline reset from the deleted store when the manifest bundle stays unavailable', async () => {
+  it('accepts a reset receipt when the refreshed plugin bundle is unavailable', async () => {
     const initial = {
       payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -1750,24 +1790,18 @@ describe('TUI v4 Review safety', () => {
         .mockResolvedValueOnce(initial)
         .mockResolvedValueOnce(unavailable),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', applySkippedReason: 'currentCatalogUnavailable', targetResults: [],
-      }),
-      getConfigResetAvailability: vi.fn().mockResolvedValue({
-        exists: false, sourceIdentityPresent: false,
+        configWrite: 'succeeded', targetResults: [],
       }),
     }));
     await controller.load();
     controller.push({ name: 'configUnavailable', pluginId: 'official/demo' });
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', offline: true,
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
     });
 
     expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
       state: 'succeeded', operationKind: 'configReset',
-      summary: {
-        applySkippedReason: 'currentCatalogUnavailable',
-        message: '设置层已重置，插件内容尚未重新应用。',
-      },
+      summary: { message: '操作已完成。' },
     });
     controller.leaveResult();
     expect(controller.snapshot.router.current.route).toEqual({
@@ -1822,7 +1856,7 @@ describe('TUI v4 Review safety', () => {
     await controller.load();
     controller.push({ name: 'configUnavailable', pluginId: 'official/demo' });
     const staleReview = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', offline: true,
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
     });
 
     await expect(controller.executeOperation(staleReview.reviewToken)).resolves.toMatchObject({ state: 'stale' });
@@ -1845,7 +1879,7 @@ describe('TUI v4 Review safety', () => {
     expect(blocked.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
   });
 
-  it('confirms offline reset from the deleted store when the source recovers during execution', async () => {
+  it('confirms reset when the source remains ready after execution', async () => {
     const readyStatus = {
       payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -1853,15 +1887,12 @@ describe('TUI v4 Review safety', () => {
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue(readyStatus),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', applySkippedReason: 'currentCatalogUnavailable', targetResults: [],
-      }),
-      getConfigResetAvailability: vi.fn().mockResolvedValue({
-        exists: false, sourceIdentityPresent: false,
+        configWrite: 'succeeded', targetResults: [],
       }),
     }));
     await controller.load();
     const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', offline: true,
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
     });
 
     expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
@@ -1869,100 +1900,7 @@ describe('TUI v4 Review safety', () => {
     });
   });
 
-  it('blocks offline reset success when the trusted store is still present', async () => {
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn().mockResolvedValue({
-        payload: status({ sources: [source('official', { freshness: 'cache' })] }),
-        pluginSummaries: summaries(['official', 'demo']),
-      }),
-      executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', applySkippedReason: 'currentCatalogUnavailable', targetResults: [],
-      }),
-      getConfigResetAvailability: vi.fn().mockResolvedValue({
-        exists: true, sourceIdentityPresent: true,
-        sourceIdentity: 'identity:official', storeDigest: 'sha256:still-present',
-      }),
-    }));
-    await controller.load();
-    const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', offline: true,
-    });
-
-    expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
-      state: 'blocked', code: 'configResetStillPresent', operationKind: 'configReset',
-      writeMayHaveCompleted: true,
-    });
-  });
-
-  it('reports an offline reset as unconfirmed when trusted store verification rejects', async () => {
-    const controller = new TuiController(dependencies({
-      executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', applySkippedReason: 'currentCatalogUnavailable', targetResults: [],
-      }),
-      getConfigResetAvailability: vi.fn().mockRejectedValue(new Error('/private/store read failed')),
-    }));
-    await controller.load();
-    const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', offline: true,
-    });
-
-    expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
-      state: 'blocked', code: 'tuiStateReloadFailed', operationKind: 'configReset',
-      writeMayHaveCompleted: true,
-    });
-    expect(JSON.stringify(controller.snapshot)).not.toContain('/private');
-  });
-
-  it('treats a changed remaining config store identity as stale', async () => {
-    const controller = new TuiController(dependencies({
-      executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', applySkippedReason: 'currentCatalogUnavailable', targetResults: [],
-      }),
-      getConfigResetAvailability: vi.fn().mockResolvedValue({
-        exists: true, sourceIdentityPresent: false, sourceIdentity: 'identity:replacement',
-      }),
-    }));
-    await controller.load();
-    const review = await controller.buildOperationReview({
-      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared', offline: true,
-    });
-
-    expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
-      state: 'blocked', code: 'operationReviewStale', operationKind: 'configReset',
-      writeMayHaveCompleted: true,
-    });
-  });
-
-  it('projects rollback failure as a fixed high-risk result without claiming a save', async () => {
-    const controller = new TuiController(dependencies({
-      executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'rollbackFailed',
-        overallState: 'failed',
-        targetResults: [],
-        warnings: ['/Users/private/config.json token-private'],
-      }),
-    }));
-    const review = await controller.buildOperationReview({
-      kind: 'configReset',
-      pluginId: 'official/demo',
-      scope: 'user',
-      projectLayer: 'shared',
-    });
-
-    const result = await controller.executeOperation(review.reviewToken);
-
-    expect(result).toMatchObject({
-      state: 'blocked',
-      code: 'configWriteRollbackFailed',
-      writeMayHaveCompleted: true,
-      message: '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。',
-      operationKind: 'configReset',
-    });
-    expect(JSON.stringify(controller.snapshot)).not.toContain('/Users/private');
-    expect(JSON.stringify(controller.snapshot)).not.toContain('token-private');
-  });
-
-  it('reloads status and reports uncertainty when config restoration throws', async () => {
+  it('reloads status and reports uncertainty when config runtime apply throws', async () => {
     const loadStatus = vi.fn().mockResolvedValue({
       payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -1970,7 +1908,7 @@ describe('TUI v4 Review safety', () => {
     const controller = new TuiController(dependencies({
       loadStatus,
       executeIntent: vi.fn().mockRejectedValue(
-        new Error('rollbackFailed: config store restore failed: /Users/private/config.json'),
+        new Error('runtimeApplyFailed: runtime apply failed: /Users/private/config.json'),
       ),
     }));
     await controller.load();
@@ -1985,7 +1923,7 @@ describe('TUI v4 Review safety', () => {
     const result = await controller.executeOperation(review.reviewToken);
 
     expect(result).toMatchObject({
-      state: 'blocked', code: 'rollbackFailed', operationKind: 'configSave',
+      state: 'blocked', code: 'runtimeApplyFailed', operationKind: 'configSave',
       writeMayHaveCompleted: true,
     });
     expect(loadStatus).toHaveBeenCalledTimes(2);

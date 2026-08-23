@@ -24,6 +24,10 @@ import {
   type CatalogSourceReference,
   type CatalogSourceInventoryError,
 } from '../utils/catalog-source-references.js';
+import {
+  withAwHomeMutationLock,
+  type AwHomeMutationToken,
+} from '../utils/aw-home-mutation-lock.js';
 import { withResolvedMultiSourceCatalog } from '../utils/multi-source-catalog.js';
 
 export interface CatalogSourceEvidence {
@@ -60,6 +64,7 @@ export type CatalogSourceCommandRuntime = {
   inventoryReferences?: typeof inventoryCatalogSourceReferences;
   afterValidation?: () => Promise<void> | void;
   onProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
+  awHomeMutationToken?: AwHomeMutationToken;
 };
 
 export type CatalogSourceMutationProgressStage =
@@ -102,6 +107,25 @@ async function reportMutationProgress(
   } catch {
     // Progress observers must not change the source transaction result.
   }
+}
+
+async function withCatalogSourceMutationLock<T>(options: {
+  env?: NodeJS.ProcessEnv;
+  runtime?: CatalogSourceCommandRuntime;
+  action: (locked: {
+    env: NodeJS.ProcessEnv;
+    runtime: CatalogSourceCommandRuntime;
+  }) => Promise<T>;
+}): Promise<T> {
+  const env = options.env ?? process.env;
+  return withAwHomeMutationLock({
+    env,
+    token: options.runtime?.awHomeMutationToken,
+    action: (awHomeMutationToken) => options.action({
+      env,
+      runtime: { ...options.runtime, awHomeMutationToken },
+    }),
+  });
 }
 
 function stableIdentity(value: unknown): string {
@@ -344,36 +368,41 @@ export async function addCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
-  const env = options.env ?? process.env;
-  const snapshot = await readCatalogSourcesConfigSnapshot(env);
-  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
-    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
-  }
-  const candidate = await addCatalogSource(snapshot.config, options.source, options.cwd);
-  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
-    return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
-  }
-  await reportMutationProgress(options.runtime, { action: 'add', stage: 'validatingCandidate' });
-  const evidence = await validateCandidate({
-    config: candidate,
-    sourceId: options.source.id,
-    cliVersion: options.cliVersion,
-    env,
-  });
-  await reportMutationProgress(options.runtime, { action: 'add', stage: 'catalogReady' });
-  await options.runtime?.afterValidation?.();
-  return commitCandidate({
-    command: 'catalog:source:add',
-    sourceId: options.source.id,
-    candidate,
-    expectedDigest: snapshot.digest,
-    evidence,
-    referencePreflight: true,
-    allSourceReferences: options.source.primary,
-    ...(options.source.primary ? {} : { matchingSourceIdentity: evidence.sourceIdentity }),
-    cwd: options.cwd,
-    env,
+  return withCatalogSourceMutationLock({
+    env: options.env,
     runtime: options.runtime,
+    action: async ({ env, runtime }) => {
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+        throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+      }
+      const candidate = await addCatalogSource(snapshot.config, options.source, options.cwd);
+      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+        return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
+      }
+      await reportMutationProgress(runtime, { action: 'add', stage: 'validatingCandidate' });
+      const evidence = await validateCandidate({
+        config: candidate,
+        sourceId: options.source.id,
+        cliVersion: options.cliVersion,
+        env,
+      });
+      await reportMutationProgress(runtime, { action: 'add', stage: 'catalogReady' });
+      await runtime.afterValidation?.();
+      return commitCandidate({
+        command: 'catalog:source:add',
+        sourceId: options.source.id,
+        candidate,
+        expectedDigest: snapshot.digest,
+        evidence,
+        referencePreflight: true,
+        allSourceReferences: options.source.primary,
+        ...(options.source.primary ? {} : { matchingSourceIdentity: evidence.sourceIdentity }),
+        cwd: options.cwd,
+        env,
+        runtime,
+      });
+    },
   });
 }
 
@@ -386,36 +415,41 @@ export async function updateCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
-  const env = options.env ?? process.env;
-  const snapshot = await readCatalogSourcesConfigSnapshot(env);
-  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
-    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
-  }
-  const before = snapshot.config.sources.find((source) => source.id === options.sourceId);
-  const candidate = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
-  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
-    return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
-  }
-  const after = candidate.sources.find((source) => source.id === options.sourceId)!;
-  await reportMutationProgress(options.runtime, { action: 'update', stage: 'validatingCandidate' });
-  const evidence = await validateCandidate({
-    config: candidate,
-    sourceId: options.sourceId,
-    cliVersion: options.cliVersion,
-    env,
-  });
-  await reportMutationProgress(options.runtime, { action: 'update', stage: 'catalogReady' });
-  await options.runtime?.afterValidation?.();
-  return commitCandidate({
-    command: 'catalog:source:update',
-    sourceId: options.sourceId,
-    candidate,
-    expectedDigest: snapshot.digest,
-    evidence,
-    referencePreflight: before ? await identityChanged(before, after) : false,
-    cwd: options.cwd,
-    env,
+  return withCatalogSourceMutationLock({
+    env: options.env,
     runtime: options.runtime,
+    action: async ({ env, runtime }) => {
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+        throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+      }
+      const before = snapshot.config.sources.find((source) => source.id === options.sourceId);
+      const candidate = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+        return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
+      }
+      const after = candidate.sources.find((source) => source.id === options.sourceId)!;
+      await reportMutationProgress(runtime, { action: 'update', stage: 'validatingCandidate' });
+      const evidence = await validateCandidate({
+        config: candidate,
+        sourceId: options.sourceId,
+        cliVersion: options.cliVersion,
+        env,
+      });
+      await reportMutationProgress(runtime, { action: 'update', stage: 'catalogReady' });
+      await runtime.afterValidation?.();
+      return commitCandidate({
+        command: 'catalog:source:update',
+        sourceId: options.sourceId,
+        candidate,
+        expectedDigest: snapshot.digest,
+        evidence,
+        referencePreflight: before ? await identityChanged(before, after) : false,
+        cwd: options.cwd,
+        env,
+        runtime,
+      });
+    },
   });
 }
 
@@ -426,24 +460,29 @@ export async function setPrimaryCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
-  const env = options.env ?? process.env;
-  const snapshot = await readCatalogSourcesConfigSnapshot(env);
-  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
-    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
-  }
-  const candidate = setPrimaryCatalogSource(snapshot.config, options.sourceId);
-  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
-    return unchangedReceipt({ command: 'catalog:source:set-primary', sourceId: options.sourceId, snapshot });
-  }
-  return commitCandidate({
-    command: 'catalog:source:set-primary',
-    sourceId: options.sourceId,
-    candidate,
-    expectedDigest: snapshot.digest,
-    referencePreflight: true,
-    cwd: options.cwd,
-    env,
+  return withCatalogSourceMutationLock({
+    env: options.env,
     runtime: options.runtime,
+    action: async ({ env, runtime }) => {
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+        throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+      }
+      const candidate = setPrimaryCatalogSource(snapshot.config, options.sourceId);
+      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+        return unchangedReceipt({ command: 'catalog:source:set-primary', sourceId: options.sourceId, snapshot });
+      }
+      return commitCandidate({
+        command: 'catalog:source:set-primary',
+        sourceId: options.sourceId,
+        candidate,
+        expectedDigest: snapshot.digest,
+        referencePreflight: true,
+        cwd: options.cwd,
+        env,
+        runtime,
+      });
+    },
   });
 }
 
@@ -454,24 +493,29 @@ export async function removeCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
-  const env = options.env ?? process.env;
-  const snapshot = await readCatalogSourcesConfigSnapshot(env);
-  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
-    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
-  }
-  const candidate = removeCatalogSource(snapshot.config, options.sourceId);
-  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
-    return unchangedReceipt({ command: 'catalog:source:remove', sourceId: options.sourceId, snapshot });
-  }
-  return commitCandidate({
-    command: 'catalog:source:remove',
-    sourceId: options.sourceId,
-    candidate,
-    expectedDigest: snapshot.digest,
-    referencePreflight: true,
-    cwd: options.cwd,
-    env,
+  return withCatalogSourceMutationLock({
+    env: options.env,
     runtime: options.runtime,
+    action: async ({ env, runtime }) => {
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+        throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+      }
+      const candidate = removeCatalogSource(snapshot.config, options.sourceId);
+      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+        return unchangedReceipt({ command: 'catalog:source:remove', sourceId: options.sourceId, snapshot });
+      }
+      return commitCandidate({
+        command: 'catalog:source:remove',
+        sourceId: options.sourceId,
+        candidate,
+        expectedDigest: snapshot.digest,
+        referencePreflight: true,
+        cwd: options.cwd,
+        env,
+        runtime,
+      });
+    },
   });
 }
 
