@@ -68,9 +68,6 @@ function rebuildErrorCode(message: string): string {
     'dependencyScopeConflict',
     'dependencyTargetUnsupported',
     'dependencyInstallFailed',
-    'dependencyPlanStale',
-    'dependencyContractMissing',
-    'dependencyContractInvalid',
     'dependencyStillRequired',
   ]) {
     if (message.includes(code)) return code;

@@ -461,8 +461,6 @@ export function resolveConsoleV4ScreenId(
       dependencyMissing: 'D14',
       dependencyNotReady: 'D15',
       dependencyTargetUnsupported: 'D16',
-      dependencyContractMissing: 'D17',
-      dependencyContractInvalid: 'D17',
       dependencyStillRequired: 'D12',
       dependencyGraphInvalid: 'D17',
       legacyState: 'I09',
@@ -1763,8 +1761,7 @@ export function ConsoleAppV4(props: {
         { label: '查看依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: issuePlugin.pluginId }) },
       ];
       content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× {issue.dependencyPluginId ? `${props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId} 不支持所选工具` : '工具不兼容'}</Text><Text color={tuiTheme.colors.muted}>可用工具仍保持可选，不兼容工具不会进入确认页。</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
-    } else if (issue.category === 'dependencyContractMissing' || issue.category === 'dependencyContractInvalid'
-      || issue.category === 'dependencyGraphInvalid') {
+    } else if (issue.category === 'dependencyGraphInvalid') {
       title = `暂时无法添加 ${issuePlugin?.displayName ?? issue.pluginId ?? '插件'}`;
       description = '来源中的依赖关系无效或安装记录不能安全验证。没有修改任何安装。';
       content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× {issue.rootCode ?? issue.category}</Text><Text color={tuiTheme.colors.muted}>{issue.explanation}</Text></Bordered><ActionRows actions={actions} focus={focus} />{showTechnical ? <Bordered title="技术详情">{issue.technicalDetails.map((detail, index) => <Text key={`${detail.code}:${index}`} color={tuiTheme.colors.muted}>{detail.code} · {detail.message}</Text>)}</Bordered> : <Text color={tuiTheme.colors.muted}>d 查看安全错误代码</Text>}</Box>;

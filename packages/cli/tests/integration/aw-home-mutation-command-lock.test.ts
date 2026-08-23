@@ -106,24 +106,17 @@ describe('public AW_HOME mutation command lock', () => {
 
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
     const { isolation } = await configureCatalog();
-    const previewEntered = deferred();
-
     const result = await withAwHomeMutationLock({
       env: isolation.env,
-      action: async () => {
-        const preview = installWriteCommand(['team/demo'], {
+      action: () => installWriteCommand(['team/demo'], {
           cwd: isolation.layout.fixtureCwd,
           platform: 'codex',
           scope: 'project',
         }, {
           env: isolation.env,
           previewDependencyPlanOnly: true,
-          dependencyPlanReviewPreflight: async () => { previewEntered.resolve(); },
           nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
-        });
-        await previewEntered.promise;
-        return preview;
-      },
+        }),
     });
 
     expect(result).toMatchObject({ overallState: 'succeeded' });

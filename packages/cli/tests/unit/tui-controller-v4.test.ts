@@ -1150,16 +1150,10 @@ describe('TUI v4 Review safety', () => {
       requestedPluginIds: ['official/root'],
       resolvedPluginIds: ['official/toolkit', 'official/root'],
       dependencyEdges: [{ from: 'official/root', to: 'official/toolkit' }],
-      sources: [],
-      nodes: [
-        { pluginId: 'official/root', pluginName: 'root', pluginVersion: '1.0.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:root-manifest', contentDigest: 'sha256:root-content' },
-        { pluginId: 'official/toolkit', pluginName: 'toolkit', pluginVersion: '1.0.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:toolkit-manifest', contentDigest: 'sha256:toolkit-content' },
-      ],
       targets: [
         { pluginId: 'official/toolkit', pluginName: 'toolkit', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/root'], state: 'present' as const, action: 'keep' as const, order: 0 },
         { pluginId: 'official/root', pluginName: 'root', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'absent' as const, action: 'install' as const, order: 1 },
       ],
-      planDigest: 'sha256:plan',
     };
     const evidence = { ...baseEvidence, dependencyPlan };
     const controller = new TuiController(dependencies({

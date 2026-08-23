@@ -67,15 +67,6 @@ describe('command receipt v4', () => {
       requestedPluginIds: ['team/root'],
       resolvedPluginIds: ['team/leaf', 'team/root'],
       dependencyEdges: [{ from: 'team/root', to: 'team/leaf' }],
-      sources: [{
-        sourceId: 'team', sourceIdentity: `sha256:${'1'.repeat(64)}`, resolvedCommit: 'abc',
-        manifestDigest: `sha256:${'2'.repeat(64)}`, snapshotDigest: `sha256:${'3'.repeat(64)}`,
-      }],
-      nodes: ['leaf', 'root'].map((pluginName) => ({
-        pluginId: `team/${pluginName}`, pluginName, pluginVersion: '1.0.0', sourceId: 'team',
-        sourceIdentity: `sha256:${'1'.repeat(64)}`, manifestDigest: `sha256:${'4'.repeat(64)}`,
-        contentDigest: `sha256:${'5'.repeat(64)}`,
-      })),
       targets: [{
         pluginId: 'team/leaf', pluginName: 'leaf', platform: 'codex', requestedScope: 'project',
         resolvedScope: 'user', relation: 'dependency', requiredBy: ['team/root'], state: 'present',

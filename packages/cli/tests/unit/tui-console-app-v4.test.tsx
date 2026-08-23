@@ -158,18 +158,11 @@ function dependencyPlan(): DependencyOperationPlan {
       { from: 'official/agent-lab', to: 'official/skill-toolkit' },
       { from: 'official/skill-toolkit', to: 'official/content-toolkit' },
     ],
-    sources: [{ sourceId: 'official', sourceIdentity: 'identity:official', resolvedCommit: 'abc123', manifestDigest: 'sha256:manifest', snapshotDigest: 'sha256:snapshot' }],
-    nodes: [
-      { pluginId: 'official/agent-lab', pluginName: 'agent-lab', pluginVersion: '0.4.2', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:root', contentDigest: 'sha256:root-content' },
-      { pluginId: 'official/skill-toolkit', pluginName: 'skill-toolkit', pluginVersion: '0.3.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:skill', contentDigest: 'sha256:skill-content' },
-      { pluginId: 'official/content-toolkit', pluginName: 'content-toolkit', pluginVersion: '0.2.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:content', contentDigest: 'sha256:content-content' },
-    ],
     targets: [
       { pluginId: 'official/content-toolkit', pluginName: 'content-toolkit', platform: 'codex', requestedScope: 'project', resolvedScope: 'user', relation: 'dependency', requiredBy: ['official/skill-toolkit'], state: 'present', action: 'keep', order: 1 },
       { pluginId: 'official/skill-toolkit', pluginName: 'skill-toolkit', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'dependency', requiredBy: ['official/agent-lab'], state: 'absent', action: 'install', order: 2 },
       { pluginId: 'official/agent-lab', pluginName: 'agent-lab', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'requested', requiredBy: [], state: 'absent', action: 'install', order: 3 },
     ],
-    planDigest: 'sha256:dependency-plan',
   };
 }
 

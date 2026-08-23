@@ -1,5 +1,4 @@
 import path from 'node:path';
-import crypto from 'node:crypto';
 
 import type {
   CatalogSourceResolution,
@@ -52,27 +51,11 @@ import {
   inventoryCatalogSourceReferences,
 } from '../utils/catalog-source-references.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
-import {
-  acquireLifecycleOperationLock,
-} from '../utils/lifecycle-active-store.js';
-import { comparePlatformScopeTarget } from '../utils/target-order.js';
 import { inspectOwnedComponents } from '../utils/ownership.js';
+import { resolveCanonicalRepoProjectKey } from '../utils/state-paths.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
-import { validateCatalogSnapshot } from '../utils/catalog-snapshot.js';
-import {
-  discardInstallationContract,
-  inventoryInstallationContracts,
-  promoteInstallationContract,
-  readInstallationContract,
-  removeInstallationContract,
-  resolveInstallationContractTarget,
-  stageInstallationContract,
-  type InstallationDependencyPlacement,
-  type ReadInstallationContract,
-} from '../utils/installation-contract-store.js';
 import {
   createDependencyOperationPlan,
-  stableDependencyPlanJson,
   type DependencyOperationPlan,
 } from './dependency-operation-plan.js';
 
@@ -92,11 +75,8 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>
   >;
   operationLeaseHeld?: boolean;
-  installationContractHandledExternally?: boolean;
   bypassDependencyPlan?: boolean;
   dependencyReviewPreflightHandled?: boolean;
-  afterDependencyOperationLocksAcquire?: () => Promise<void>;
-  dependencyPlanReviewPreflight?: (plan: DependencyOperationPlan) => Promise<void> | void;
   previewDependencyPlanOnly?: boolean;
   targetBuiltHookHandled?: boolean;
   preparedTarget?: PreparedRebuildTarget;
@@ -555,35 +535,6 @@ async function runSingleSourceRebuildCommand(options: {
             ...options.runtime.resolvedReviewEvidenceByPlugin?.[pluginName],
           });
         }
-        if (options.runtime?.namespacedSource
-          && !options.runtime.installationContractHandledExternally
-          && (options.command === 'cleanup' || options.command === 'uninstall')) {
-          const removalTarget = await resolveInstallationContractTarget({
-            sourceId: options.runtime.namespacedSource.sourceId,
-            sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
-            pluginName,
-            platform,
-            scope: options.commandOptions.scope,
-            cwd: options.commandOptions.cwd,
-            env,
-          });
-          const inventory = await inventoryCatalogSourceReferences({
-            cwd: options.commandOptions.cwd,
-            env,
-            includeHistoricalProjects: true,
-          });
-          assertCatalogSourceInventoryComplete(inventory);
-          if (inventory.references.some((reference) =>
-            reference.kind === 'namespacedDependency'
-            && reference.dependencyPluginId === identity.pluginId
-            && reference.dependencySourceIdentity === identity.sourceIdentity
-            && reference.dependencyPlatform === platform
-            && reference.dependencyScope === options.commandOptions.scope
-            && (options.commandOptions.scope === 'user'
-              || reference.dependencyProjectKey === removalTarget.projectKey))) {
-            throw new Error(`dependencyStillRequired: ${identity.pluginId} has a live or unreadable consumer.`);
-          }
-        }
         const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
         result = await executeRebuildOperation({
           command: options.command,
@@ -592,65 +543,6 @@ async function runSingleSourceRebuildCommand(options: {
           activeStore: operationHeldStore,
           onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
         });
-        if (
-          result.status === 'succeeded'
-          && options.runtime?.namespacedSource
-          && !options.runtime.installationContractHandledExternally
-          && options.command !== 'cleanup'
-          && options.command !== 'uninstall'
-        ) {
-          const evidence = options.runtime.resolvedReviewEvidenceByPlugin?.[pluginName];
-          if (evidence?.contentDigest) {
-            const staged = await stageInstallationContract({
-              sourceId: options.runtime.namespacedSource.sourceId,
-              sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
-              pluginName,
-              pluginVersion: plugin.manifest.version,
-              contentDigest: evidence.contentDigest,
-              platform,
-              scope: options.commandOptions.scope,
-              cwd: options.commandOptions.cwd,
-              env,
-            });
-            try {
-              await promoteInstallationContract(staged);
-            } catch (error) {
-              await discardInstallationContract(staged).catch(() => undefined);
-              throw new Error(
-                `dependencyContractInvalid: ${error instanceof Error ? error.message : String(error)}`,
-                { cause: error },
-              );
-            }
-          }
-        }
-        if (
-          result.status === 'succeeded'
-          && options.runtime?.namespacedSource
-          && !options.runtime.installationContractHandledExternally
-          && (options.command === 'cleanup' || options.command === 'uninstall')
-        ) {
-          const contract = await readInstallationContract({
-            sourceId: options.runtime.namespacedSource.sourceId,
-            sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
-            pluginName,
-            platform,
-            scope: options.commandOptions.scope,
-            cwd: options.commandOptions.cwd,
-            env,
-          });
-          if (contract) {
-            await removeInstallationContract({
-              sourceId: options.runtime.namespacedSource.sourceId,
-              sourceIdentity: options.runtime.namespacedSource.sourceIdentity,
-              pluginName,
-              platform,
-              scope: options.commandOptions.scope,
-              cwd: contract.metadata.projectKey ?? options.commandOptions.cwd,
-              env,
-              expectedMetadataIntegrityDigest: contract.metadata.metadataIntegrityDigest,
-            });
-          }
-        }
       } catch (error) {
         result = (error as { result?: RebuildResult }).result ?? failedResult(
             options.command,
@@ -1088,8 +980,6 @@ export async function runRebuildCommand(options: {
           debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
         },
       });
-      const neutralConfigDigest = `sha256:${crypto.createHash('sha256')
-        .update(stableDependencyPlanJson({ operation: 'remove' })).digest('hex')}`;
       const createPlan = async (): Promise<DependencyOperationPlan> => {
         const inventory = await inventoryCatalogSourceReferences({
           cwd: options.commandOptions.cwd,
@@ -1120,11 +1010,30 @@ export async function runRebuildCommand(options: {
               includeHistoricalLifecycleArtifacts: false,
               readOnlyInspectionPlan: true,
             });
-            return inspectOwnedComponents({
+            const result = await inspectOwnedComponents({
               components: desired.ownedComponents,
               nativeProbe: inspection.driver.probeNative,
               verifyHealth: true,
             });
+            if (result.state === 'error'
+              || result.components.some((component) => component.state === 'error')) return result;
+            const required = new Set(desired.desiredOwnedComponents ?? desired.ownedComponents);
+            const optional = new Set(desired.optionalOwnedComponents ?? []);
+            const presentRequired = [...required].every((component) => result.components.some((entry) =>
+              entry.component === component && entry.state === 'present'));
+            const hasUnexpectedPresent = result.components.some((entry) =>
+              entry.state === 'present' && !required.has(entry.component) && !optional.has(entry.component));
+            const hasPartial = result.components.some((entry) => entry.state === 'partial');
+            const hasAnyPresent = result.components.some((entry) => entry.state === 'present');
+            const state: 'absent' | 'present' | 'partial' = !hasAnyPresent
+              && result.components.every((entry) => entry.state === 'absent')
+              ? 'absent'
+              : hasPartial || hasUnexpectedPresent || !presentRequired
+              ? 'partial'
+              : required.size > 0
+                ? 'present'
+                : hasAnyPresent ? 'present' : 'absent';
+            return { ...result, state };
           };
           const [requestedInspection, otherInspection] = await Promise.all([
             inspectScope(resolvedScope),
@@ -1133,7 +1042,7 @@ export async function runRebuildCommand(options: {
           let state: 'absent' | 'present' | 'partial' | 'error' = requestedInspection.state;
           let action: 'install' | 'upgrade' | 'reinstall' | 'keep' | 'block' = relation === 'requested'
             ? options.command as 'install' | 'upgrade' | 'reinstall'
-            : state === 'absent' ? 'install' : 'upgrade';
+            : options.command === 'reinstall' ? 'reinstall' : 'upgrade';
           let errorCode: string | undefined;
           const hasForeignCollision = [...requestedInspection.components, ...otherInspection.components]
             .some((component) => component.diagnostic?.includes('foreign collision'));
@@ -1162,8 +1071,10 @@ export async function runRebuildCommand(options: {
             && (otherInspection.state === 'partial' || otherInspection.state === 'error')) {
             resolvedScope = 'user';
             state = otherInspection.state;
-            action = 'block';
-            errorCode = 'dependencyNotReady';
+            if (otherInspection.state === 'error') {
+              action = 'block';
+              errorCode = 'dependencyNotReady';
+            }
           } else if (!hasForeignCollision && relation === 'dependency'
             && options.commandOptions.scope === 'user'
             && otherInspection.state !== 'absent') {
@@ -1173,8 +1084,13 @@ export async function runRebuildCommand(options: {
           const resolvedInspection = resolvedScope === options.commandOptions.scope
             ? requestedInspection
             : otherInspection;
+          state = resolvedInspection.state;
+          if (!hasForeignCollision && !errorCode
+            && relation === 'dependency' && options.command === 'install') {
+            action = state === 'present' ? 'keep' : state === 'partial' ? 'reinstall' : 'install';
+          }
           if (!hasForeignCollision && relation === 'dependency'
-            && (resolvedInspection.state === 'partial' || resolvedInspection.state === 'error')) {
+            && resolvedInspection.state === 'error') {
             action = 'block';
             state = resolvedInspection.state;
             errorCode ??= 'dependencyNotReady';
@@ -1186,35 +1102,6 @@ export async function runRebuildCommand(options: {
             action = 'block';
             errorCode = 'dependencyTargetUnsupported';
           }
-          try {
-            const contract = await readInstallationContract({
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              pluginName: entry.plugin.manifest.name,
-              platform,
-              scope: resolvedScope,
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-            });
-            if (relation === 'dependency' && state === 'present' && action !== 'block') {
-              if (!contract) {
-                action = 'block';
-                errorCode = 'dependencyContractMissing';
-              } else {
-                const contentDigest = entry.source.manifest.entries.find((candidate) =>
-                  candidate.name === entry.plugin.manifest.name)!.contentDigest;
-                action = contract.metadata.contentDigest === contentDigest ? 'keep' : 'upgrade';
-              }
-            }
-          } catch {
-            if (dependencyEnabled) {
-              action = 'block';
-              errorCode = 'dependencyContractInvalid';
-            }
-          }
-          let configDigest = options.command === 'cleanup' || options.command === 'uninstall'
-            ? neutralConfigDigest
-            : undefined;
           if (entry.plugin.manifest.config?.schema
             && (action === 'install' || action === 'upgrade' || action === 'reinstall')) {
             const effective = await resolveEffectivePluginConfig({
@@ -1229,21 +1116,6 @@ export async function runRebuildCommand(options: {
               action = 'block';
               errorCode = 'invalidConfig';
             }
-            configDigest = `sha256:${crypto.createHash('sha256')
-              .update(stableDependencyPlanJson({
-                values: effective.values,
-                sources: effective.sources,
-                issues: effective.issues,
-                ignoredUnknownKeys: effective.ignoredUnknownKeys,
-                stores: {
-                  user: { exists: effective.stores.user.exists, values: effective.stores.user.values },
-                  project: { exists: effective.stores.project.exists, values: effective.stores.project.values },
-                  projectLocal: {
-                    exists: effective.stores.projectLocal.exists,
-                    values: effective.stores.projectLocal.values,
-                  },
-                },
-              })).digest('hex')}`;
           }
           targets.push({
             pluginId: entry.pluginId,
@@ -1261,7 +1133,6 @@ export async function runRebuildCommand(options: {
             action,
             order,
             ...(errorCode ? { errorCode } : {}),
-            ...(configDigest ? { configDigest } : {}),
           });
         }
         return createDependencyOperationPlan({
@@ -1272,73 +1143,16 @@ export async function runRebuildCommand(options: {
               from: entry.pluginId,
               to: formatPluginId({ sourceId: entry.source.sourceId, pluginName: dependency }),
             }))),
-          sources: catalog.sources.map((item) => ({
-            sourceId: item.resolution!.sourceId,
-            sourceIdentity: item.resolution!.sourceIdentity,
-            resolvedCommit: item.resolution!.resolvedCommit,
-            manifestDigest: item.resolution!.manifestDigest,
-            snapshotDigest: item.resolution!.snapshotDigest,
-          })),
-          nodes: closureEntries.map((entry) => {
-            const manifestEntry = entry.source.manifest.entries.find((candidate) =>
-              candidate.name === entry.plugin.manifest.name)!;
-            return {
-              pluginId: entry.pluginId,
-              pluginName: entry.plugin.manifest.name,
-              pluginVersion: entry.plugin.manifest.version,
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              manifestDigest: manifestEntry.manifestDigest,
-              contentDigest: manifestEntry.contentDigest,
-            };
-          }),
           targets,
         });
       };
       if (options.runtime?.previewDependencyPlanOnly) {
         const initialPlan = await createPlan();
-        await options.runtime?.dependencyPlanReviewPreflight?.(initialPlan);
         const preview = mergeRebuildCommandResults([]);
         preview.dependencyPlan = initialPlan;
         return preview;
       }
-      const operationLocks: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
-      try {
-        const lockTargets = executionSelections.flatMap(({ entry, platform }) =>
-          (['project', 'user'] as const).map((scope) => ({
-            pluginId: entry.pluginId,
-            platform,
-            scope,
-          })));
-        for (const target of [...lockTargets].sort((left, right) =>
-          comparePlatformScopeTarget(left, right)
-          || left.pluginId.localeCompare(right.pluginId, 'en'))) {
-          const entry = closureEntries.find((candidate) => candidate.pluginId === target.pluginId)!;
-          await rebuildCommandTestHooks?.beforeOperationLockAcquire?.({
-            command: options.command,
-            identity: {
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              pluginId: entry.pluginId,
-              pluginName: entry.plugin.manifest.name,
-              pluginVersion: entry.plugin.manifest.version,
-              platform: target.platform,
-              scope: target.scope,
-              cwd: options.commandOptions.cwd,
-            },
-          });
-          operationLocks.push(await acquireLifecycleOperationLock({
-            sourceId: entry.source.sourceId,
-            sourceIdentity: entry.source.sourceIdentity,
-            pluginName: entry.plugin.manifest.name,
-            platform: target.platform,
-            scope: target.scope,
-            cwd: options.commandOptions.cwd,
-            env: runtimeEnv,
-          }));
-        }
-        await options.runtime?.afterDependencyOperationLocksAcquire?.();
-        for (const { entry, platform } of executionSelections.filter((selection) =>
+      for (const { entry, platform } of executionSelections.filter((selection) =>
           selectedIds.has(selection.entry.pluginId))) {
           await options.runtime?.reviewPreflight?.({
             command: options.command,
@@ -1361,29 +1175,8 @@ export async function runRebuildCommand(options: {
             contentDigest: entry.source.manifest.entries.find((candidate) =>
               candidate.name === entry.plugin.manifest.name)?.contentDigest,
           });
-        }
-        for (const source of [...new Map(executionSelections.map(({ entry }) =>
-          [entry.source.sourceId, entry.source] as const)).values()]) {
-          const current = await validateCatalogSnapshot(source.rootDir);
-          if (current.manifestDigest !== source.manifestDigest
-            || current.snapshotDigest !== source.snapshotDigest) {
-            throw namespacedPreflightError(
-              'dependencyPlanStale: catalog source changed after operation locks were acquired.',
-              preflightTargets,
-            );
-          }
-        }
+      }
         const lockedPlan = await createPlan();
-        await options.runtime?.dependencyPlanReviewPreflight?.(lockedPlan);
-        const blockers = lockedPlan.targets.filter((target) => target.action === 'block');
-        if (blockers.length > 0) {
-          const firstCode = blockers[0]!.errorCode ?? 'dependencyNotReady';
-          throw namespacedPreflightError(
-            `${firstCode}: dependency preflight blocked ${blockers.map((target) =>
-              `${target.pluginId}:${target.platform}/${target.resolvedScope}`).join(', ')}.`,
-            preflightTargets,
-          );
-        }
         const preparedTargets = new Map<string, PreparedRebuildTarget>();
         const preparedTargetErrors = new Map<string, unknown>();
         const lockedCollisionSelections = [];
@@ -1446,7 +1239,6 @@ export async function runRebuildCommand(options: {
             preflightTargets,
           );
         }
-        const removalContractsByTarget = new Map<string, ReadInstallationContract>();
         const removalRequiredConsumers = new Map<string, Set<string>>();
         if (options.command === 'cleanup' || options.command === 'uninstall') {
           const removalStateInventory = await inventoryCatalogSourceReferences({
@@ -1455,51 +1247,6 @@ export async function runRebuildCommand(options: {
             includeHistoricalProjects: true,
           });
           assertCatalogSourceInventoryComplete(removalStateInventory);
-          const contractInventory = await inventoryInstallationContracts({ env: runtimeEnv });
-          if (contractInventory.errors.length > 0) {
-            throw namespacedPreflightError(
-              'stateInventoryFailed: installation contract inventory is incomplete.',
-              preflightTargets,
-            );
-          }
-          const targetKey = (value: {
-            pluginId: string;
-            sourceIdentity: string;
-            platform: PlatformName;
-            scope: Scope;
-            projectKey: string | null;
-          }) => [
-            value.pluginId,
-            value.sourceIdentity,
-            value.platform,
-            value.scope,
-            value.projectKey ?? '',
-          ].join('\0');
-          const plannedTargets = new Map<string, {
-            selection: (typeof executionSelections)[number];
-            contractTarget: Awaited<ReturnType<typeof resolveInstallationContractTarget>>;
-          }>();
-          for (const selection of executionSelections) {
-            const planned = lockedPlan.targets.find((target) =>
-              target.pluginId === selection.entry.pluginId && target.platform === selection.platform)!;
-            const contractTarget = await resolveInstallationContractTarget({
-              sourceId: selection.entry.source.sourceId,
-              sourceIdentity: selection.entry.source.sourceIdentity,
-              pluginName: selection.entry.plugin.manifest.name,
-              platform: selection.platform,
-              scope: planned.resolvedScope,
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-            });
-            plannedTargets.set(targetKey({
-              pluginId: selection.entry.pluginId,
-              sourceIdentity: selection.entry.source.sourceIdentity,
-              platform: selection.platform,
-              scope: planned.resolvedScope,
-              projectKey: contractTarget.projectKey,
-            }), { selection, contractTarget });
-          }
-          const removalEdges = new Map<string, Set<string>>();
           const inspectConsumer = async (options_: {
             entry: (typeof available)[number];
             platform: PlatformName;
@@ -1536,64 +1283,6 @@ export async function runRebuildCommand(options: {
             });
             return consumerInspection.state === 'absent' ? 'absent' : 'live';
           };
-          for (const contract of contractInventory.contracts) {
-            const consumerKey = targetKey({
-              pluginId: contract.metadata.pluginId,
-              sourceIdentity: contract.metadata.sourceIdentity,
-              platform: contract.metadata.platform,
-              scope: contract.metadata.scope,
-              projectKey: contract.metadata.projectKey,
-            });
-            if (plannedTargets.has(consumerKey)) {
-              removalContractsByTarget.set(consumerKey, contract);
-            }
-            for (const dependency of contract.metadata.dependencies) {
-              const dependencyKey = targetKey({
-                pluginId: dependency.pluginId,
-                sourceIdentity: dependency.sourceIdentity,
-                platform: dependency.platform,
-                scope: dependency.scope,
-                projectKey: dependency.projectKey,
-              });
-              if (!plannedTargets.has(dependencyKey)) continue;
-              if (plannedTargets.has(consumerKey)) {
-                const outgoing = removalEdges.get(consumerKey) ?? new Set<string>();
-                outgoing.add(dependencyKey);
-                removalEdges.set(consumerKey, outgoing);
-                const dependencySelection = plannedTargets.get(dependencyKey)!.selection;
-                const consumerSelection = plannedTargets.get(consumerKey)!.selection;
-                const dependencyExecutionKey = `${dependencySelection.entry.pluginId}\0${dependencySelection.platform}`;
-                const required = removalRequiredConsumers.get(dependencyExecutionKey) ?? new Set<string>();
-                required.add(`${consumerSelection.entry.pluginId}\0${consumerSelection.platform}`);
-                removalRequiredConsumers.set(dependencyExecutionKey, required);
-                continue;
-              }
-              const consumerEntry = available.find((candidate) =>
-                candidate.pluginId === contract.metadata.pluginId
-                && candidate.source.sourceIdentity === contract.metadata.sourceIdentity);
-              if (!consumerEntry) {
-                throw namespacedPreflightError(
-                  `dependencyStillRequired: cannot inspect consumer ${contract.metadata.pluginId}.`,
-                  preflightTargets,
-                );
-              }
-              try {
-                if (await inspectConsumer({
-                  entry: consumerEntry,
-                  platform: contract.metadata.platform,
-                  scope: contract.metadata.scope,
-                  cwd: contract.metadata.projectKey ?? options.commandOptions.cwd,
-                }) !== 'absent') {
-                  throw new Error('consumer is present, partial, or unreadable');
-                }
-              } catch {
-                throw namespacedPreflightError(
-                  `dependencyStillRequired: ${dependency.pluginId} is required by ${contract.metadata.pluginId}.`,
-                  preflightTargets,
-                );
-              }
-            }
-          }
           const currentConsumerCandidates = [...new Map(removalStateInventory.references.flatMap((reference) => {
             if ((reference.kind !== 'namespacedOwner' && reference.kind !== 'namespacedMarketplace')
               || !reference.sourceId
@@ -1625,47 +1314,29 @@ export async function runRebuildCommand(options: {
               projectKey: reference.projectKey ?? null,
             }] as const];
           })).values()];
-          for (const [dependencyKey, dependencyTarget] of plannedTargets) {
-            const dependencyPluginName = dependencyTarget.selection.entry.plugin.manifest.name;
+          const currentProjectKey = await resolveCanonicalRepoProjectKey(options.commandOptions.cwd);
+          for (const dependencyTarget of executionSelections) {
+            const dependencyPluginName = dependencyTarget.entry.plugin.manifest.name;
             for (const consumer of currentConsumerCandidates) {
               if (consumer.entry.source.sourceId
-                  !== dependencyTarget.selection.entry.source.sourceId
+                  !== dependencyTarget.entry.source.sourceId
                 || !consumer.entry.plugin.manifest.dependencies?.includes(dependencyPluginName)
-                || consumer.platform !== dependencyTarget.selection.platform
+                || consumer.platform !== dependencyTarget.platform
                 || (consumer.scope === 'user'
-                  && dependencyTarget.contractTarget.scope !== 'user')) continue;
-              const consumerContractTarget = await resolveInstallationContractTarget({
-                sourceId: consumer.entry.source.sourceId,
-                sourceIdentity: consumer.entry.source.sourceIdentity,
-                pluginName: consumer.entry.plugin.manifest.name,
-                platform: consumer.platform,
-                scope: consumer.scope,
-                cwd: consumer.projectKey ?? options.commandOptions.cwd,
-                env: runtimeEnv,
-              });
-              const consumerKey = targetKey({
-                pluginId: consumer.entry.pluginId,
-                sourceIdentity: consumer.entry.source.sourceIdentity,
-                platform: consumer.platform,
-                scope: consumer.scope,
-                projectKey: consumerContractTarget.projectKey,
-              });
-              const hasValidContract = contractInventory.contracts.some((contract) =>
-                targetKey({
-                  pluginId: contract.metadata.pluginId,
-                  sourceIdentity: contract.metadata.sourceIdentity,
-                  platform: contract.metadata.platform,
-                  scope: contract.metadata.scope,
-                  projectKey: contract.metadata.projectKey,
-                }) === consumerKey
-                && contract.metadata.contentDigest === consumer.entry.source.manifest.entries.find((entry) =>
-                  entry.name === consumer.entry.plugin.manifest.name)?.contentDigest);
-              if (hasValidContract) continue;
-              if (plannedTargets.has(consumerKey)) {
-                const outgoing = removalEdges.get(consumerKey) ?? new Set<string>();
-                outgoing.add(dependencyKey);
-                removalEdges.set(consumerKey, outgoing);
-                const dependencyExecutionKey = `${dependencyTarget.selection.entry.pluginId}\0${consumer.platform}`;
+                  && options.commandOptions.scope !== 'user')
+                || (options.commandOptions.scope === 'project'
+                  && consumer.scope === 'project'
+                  && consumer.projectKey !== currentProjectKey)) continue;
+              const plannedConsumer = executionSelections.find((selection) =>
+                selection.entry.pluginId === consumer.entry.pluginId
+                && selection.platform === consumer.platform
+                && lockedPlan.targets.some((target) =>
+                  target.pluginId === selection.entry.pluginId
+                  && target.platform === selection.platform
+                  && target.resolvedScope === consumer.scope
+                  && (consumer.scope === 'user' || consumer.projectKey === currentProjectKey)));
+              if (plannedConsumer) {
+                const dependencyExecutionKey = `${dependencyTarget.entry.pluginId}\0${consumer.platform}`;
                 const required = removalRequiredConsumers.get(dependencyExecutionKey) ?? new Set<string>();
                 required.add(`${consumer.entry.pluginId}\0${consumer.platform}`);
                 removalRequiredConsumers.set(dependencyExecutionKey, required);
@@ -1682,30 +1353,32 @@ export async function runRebuildCommand(options: {
                 }
               } catch {
                 throw namespacedPreflightError(
-                  `dependencyStillRequired: ${dependencyTarget.selection.entry.pluginId} is required by ${consumer.entry.pluginId}.`,
+                  `dependencyStillRequired: ${dependencyTarget.entry.pluginId} is required by ${consumer.entry.pluginId}.`,
                   preflightTargets,
                 );
               }
             }
           }
-          const orderedKeys: string[] = [];
-          const remaining = new Set(plannedTargets.keys());
+          const orderedSelections: typeof executionSelections = [];
+          const remaining = new Set(executionSelections);
           while (remaining.size > 0) {
-            const ready = [...remaining].filter((candidate) =>
-              ![...remaining].some((other) => removalEdges.get(other)?.has(candidate)))
-              .sort();
+            const ready = [...remaining].filter((candidate) => ![...remaining].some((consumer) =>
+              consumer.platform === candidate.platform
+              && consumer.entry.source.sourceId === candidate.entry.source.sourceId
+              && consumer.entry.plugin.manifest.dependencies?.includes(candidate.entry.plugin.manifest.name)))
+              .sort((left, right) => left.entry.pluginId.localeCompare(right.entry.pluginId, 'en'));
             if (ready.length === 0) {
               throw namespacedPreflightError(
-                'dependencyContractInvalid: installation contract removal graph contains a cycle.',
+                'dependencyGraphInvalid: removal graph contains a cycle.',
                 preflightTargets,
               );
             }
-            for (const key of ready) {
-              orderedKeys.push(key);
-              remaining.delete(key);
+            for (const selection of ready) {
+              orderedSelections.push(selection);
+              remaining.delete(selection);
             }
           }
-          executionSelections = orderedKeys.map((key) => plannedTargets.get(key)!.selection);
+          executionSelections = orderedSelections;
         }
       const results: RebuildCommandResult[] = [];
       const dependencyStates = new Map<string, 'completed' | 'kept' | 'failed' | 'skipped'>();
@@ -1741,7 +1414,11 @@ export async function runRebuildCommand(options: {
             ? `${entry.pluginId} retained because consumer ${failedConsumer.split('\0', 1)[0]} was not removed.`
             : failedDependency
             ? `${entry.pluginId} requires failed dependency ${failedDependency}.`
-            : `${entry.pluginId} dependency preflight is blocked.`}`;
+            : code === 'artifactCollision'
+              ? `${entry.pluginId} has foreign-owned output. Remove or relocate it, then run cleanup and reinstall.`
+              : code === 'dependencyNotReady'
+                ? `${entry.pluginId} live state is unreadable. Run cleanup, then reinstall.`
+                : `${entry.pluginId} dependency preflight is blocked.`}`;
           const result = failedResult(options.command, identity, message);
           results.push({
             platforms: [platform], plugins: [], warnings: [], rebuildResults: [result],
@@ -1789,7 +1466,7 @@ export async function runRebuildCommand(options: {
           marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId),
         };
         entry.plugin.marketplaceName = marketplaceName;
-        let executionResult = await runSingleSourceRebuildCommand({
+        const executionResult = await runSingleSourceRebuildCommand({
           ...options,
           command: planned.relation === 'dependency'
             ? planned.action as 'install' | 'upgrade' | 'reinstall'
@@ -1803,7 +1480,6 @@ export async function runRebuildCommand(options: {
             catalogResolution: toCatalogResolution(entry.source),
             namespacedSource,
             operationLeaseHeld: true,
-            installationContractHandledExternally: true,
             dependencyReviewPreflightHandled: true,
             targetBuiltHookHandled: true,
             preparedTarget: preparedTargets.get(`${entry.pluginId}\0${platform}`),
@@ -1823,94 +1499,6 @@ export async function runRebuildCommand(options: {
             },
           },
         });
-        if (executionResult.overallState === 'succeeded') {
-          const contractTarget = await resolveInstallationContractTarget({
-            sourceId: entry.source.sourceId,
-            sourceIdentity: entry.source.sourceIdentity,
-            pluginName: entry.plugin.manifest.name,
-            platform,
-            scope: planned.resolvedScope,
-            cwd: options.commandOptions.cwd,
-            env: runtimeEnv,
-          });
-          const dependencies: InstallationDependencyPlacement[] = options.command === 'cleanup'
-            || options.command === 'uninstall' ? [] : directDependencyIds.map((pluginId) => {
-            const dependencyTarget = lockedPlan.targets.find((target) =>
-              target.pluginId === pluginId && target.platform === platform)!;
-            return {
-              pluginId,
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              platform,
-              scope: dependencyTarget.resolvedScope,
-              projectKey: dependencyTarget.resolvedScope === 'project'
-                ? contractTarget.projectKey
-                : null,
-            };
-          });
-          if (options.command === 'cleanup' || options.command === 'uninstall') {
-            const ownContract = [...removalContractsByTarget.values()].find((contract) =>
-              contract.metadata.pluginId === entry.pluginId
-              && contract.metadata.sourceIdentity === entry.source.sourceIdentity
-              && contract.metadata.platform === platform
-              && contract.metadata.scope === planned.resolvedScope
-              && (planned.resolvedScope === 'user'
-                || contract.metadata.projectKey === contractTarget.projectKey));
-            if (ownContract) {
-              try {
-                await removeInstallationContract({
-                  sourceId: entry.source.sourceId,
-                  sourceIdentity: entry.source.sourceIdentity,
-                  pluginName: entry.plugin.manifest.name,
-                  platform,
-                  scope: planned.resolvedScope,
-                  cwd: ownContract.metadata.projectKey ?? options.commandOptions.cwd,
-                  env: runtimeEnv,
-                  expectedMetadataIntegrityDigest: ownContract.metadata.metadataIntegrityDigest,
-                });
-              } catch (error) {
-                const message = `dependencyContractInvalid: ${error instanceof Error ? error.message : String(error)}`;
-                const failed = failedResult(options.command, identity, message, 'postcheck.inspect');
-                executionResult = {
-                  ...executionResult,
-                  rebuildResults: [failed],
-                  targetResults: [{ target: identity, action: planned.action, state: 'failed',
-                    errorCode: 'dependencyContractInvalid', message }],
-                  overallState: 'failed',
-                };
-              }
-            }
-          } else {
-            let staged;
-            try {
-              staged = await stageInstallationContract({
-                sourceId: entry.source.sourceId,
-                sourceIdentity: entry.source.sourceIdentity,
-                pluginName: entry.plugin.manifest.name,
-                pluginVersion: entry.plugin.manifest.version,
-                contentDigest: entry.source.manifest.entries.find((candidate) =>
-                  candidate.name === entry.plugin.manifest.name)!.contentDigest,
-                platform,
-                scope: planned.resolvedScope,
-                cwd: options.commandOptions.cwd,
-                dependencies,
-                env: runtimeEnv,
-              });
-              await promoteInstallationContract(staged);
-            } catch (error) {
-              if (staged) await discardInstallationContract(staged).catch(() => undefined);
-              const message = `dependencyContractInvalid: ${error instanceof Error ? error.message : String(error)}`;
-              const failed = failedResult(options.command, identity, message, 'postcheck.inspect');
-              executionResult = {
-                ...executionResult,
-                rebuildResults: [failed],
-                targetResults: [{ target: identity, action: planned.action, state: 'failed',
-                  errorCode: 'dependencyContractInvalid', message }],
-                overallState: 'failed',
-              };
-            }
-          }
-        }
         results.push(executionResult);
         dependencyStates.set(`${entry.pluginId}\0${platform}`,
           executionResult.overallState === 'succeeded' ? 'completed' : 'failed');
@@ -1918,9 +1506,6 @@ export async function runRebuildCommand(options: {
       const merged = mergeRebuildCommandResults(results);
       merged.dependencyPlan = lockedPlan;
       return leaseSafeRebuildResult(merged);
-      } finally {
-        for (const lock of operationLocks.reverse()) await releaseRebuildOperationLease(lock);
-      }
     },
     });
   } catch (error) {

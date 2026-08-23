@@ -450,8 +450,7 @@ function reviewChanges(
           group: relation === 'requested' ? 'requested' : 'dependencies',
           pluginId: target.pluginId,
           relation,
-          title: plan.nodes.find((node) => node.pluginId === target.pluginId)?.pluginName
-            ?? pluginNameFromId(target.pluginId),
+          title: pluginNameFromId(target.pluginId),
           description: `${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.resolvedScope === 'user' ? '所有项目' : '当前项目'}${target.action === 'keep' ? ' · 已可用' : ''}`,
         };
       });
@@ -565,7 +564,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     if (evidence.source.contentDigest) details.push(`Content digest：${evidence.source.contentDigest}`);
   }
   if (evidence.targetFingerprint) details.push(`目标状态：${evidence.targetFingerprint}`);
-  if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.planDigest}`);
+  if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${evidence.config.storeDigest}`);
   if (evidence.sourceWrite) {
     details.push(`候选配置：${evidence.sourceWrite.candidateDigest}`);
