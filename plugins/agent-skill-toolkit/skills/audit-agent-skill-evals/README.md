@@ -1,13 +1,12 @@
-# Audit Agent Skill Evals
+# audit-agent-skill-evals
 
-只读审核 Skill Eval 的 Oracle、用例质量和运行后失败归因。
+只读审核 Agent Skill Eval 的有效性和运行结果，不创建 case、不运行 Eval，也不修改生产 Skill。
 
 ## 适合使用
 
-- 真实模型运行前，检查 case 是否有效、可判定且没有把实现细节当结果。
-- 运行后区分 Skill 缺陷、环境问题、runner 问题、grader 问题和正常方差。
-- 判断某次失败是否足以驱动 Skill 修改。
+- `preflight`：在运行前判断 suite、case 和 Oracle 是否能有效评价当前 Skill，并给出准入状态和被阻断的 case。
+- `result-triage`：在运行后归因失败与方差，并判断证据是否足以支持修改 Eval、收集更多数据或提出候选 Skill 修复。
 
-该 Skill 不修改 Skill 或 Eval。需要修复用例时使用 `design-agent-skill-evals`，需要修改 Skill 时使用 `author-agent-skill`。
+## 边界
 
-主要指令见 [`SKILL.md`](SKILL.md)。
+参与 case 或 Oracle 设计的上下文不能给同一 suite 输出 `validity=pass`。Audit 只提供审核结论；兼容 runner 才能执行 Eval，生产 Skill 的修改需要单独的作者任务。

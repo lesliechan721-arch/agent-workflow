@@ -1,17 +1,25 @@
 ---
 name: review-aw-plugin
 description: >-
-  当用户要只读审核一个 AW 插件源码、materialized Skill 或发布准备状态时使用。负责 AW manifest/profile 的确定性检查、插件级 common path 评审、按 digest 去重的 Skill 评审和显式发布检查；不修改插件源码或发布报告。
+  当用户要只读审核一个 AW 插件源码、其内部组件或 materialized Skill 时使用。负责单个插件的 manifest、组件组合、共享脚本、build/materialization、profile 差异和按 digest 去重的 leaf Skill Review；不修改插件，不评审跨多个插件的完整工作流，不输出发布资格。
 compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit >= 0.1.0 和 agent-skill-toolkit >= 0.1.0。
+user-invocable: true
 metadata:
-  short-description: 轻量只读评审 AW 插件及其端到端组合
+  short-description: 只读评审一个 AW 插件及其 materialized profiles
 ---
 
 # Review AW Plugin
 
+只评审一个 `.agents-plugin/plugin.json` 所定义的插件。
+
+## 依赖
+
+- `review-agent-skill`：按唯一 production digest 评审插件内 leaf Skill。
+- `review-agent-content`：按需评审大型或多分支 Agent-facing 内容。
+
 ## 普通 Review
 
-1. 定位 `.agents-plugin/plugin.json` 和实际 Skill 根，运行 `aw plugin validate <plugin-root>`。
+1. 定位插件根和实际 Skill 根，运行 `aw plugin validate <plugin-root>`。
 2. 发现 source 和调用方提供的 materialized targets：
 
    ```bash
@@ -21,30 +29,19 @@ metadata:
      --format json
    ```
 
-   build-free 插件检查 source 和 final；声明 `scripts.node.build` 的插件至少需要一个真实 final。命令对 target 运行 `check-agent-skill` 并按 production digest 分组。
-3. 先使用 `review-agent-skill` 按 `target_level=plugin` 评审完整 common path。只有需要定位具体 Skill、source/final 内容不同、用户要求逐 Skill 结论或显式发布绑定时，才按唯一 digest 做 leaf Review。
-4. 大型 reference 按需使用 `review-agent-content`。需要新增昂贵 Eval 证据时，沿用 `review-agent-skill` 的审核门禁；适合隔离注意力时使用独立上下文子代理。
-5. 输出 AW 机器错误、插件级设计与复杂度、必要 leaf findings、真实 source/final 差异、最多 3 个高价值改进和关键 unknown。
+3. 读取 `references/plugin-composition-review.md`，评审 manifest/source truth、组件职责、共享脚本、build/materialization、profile 差异和插件依赖。插件 common path 由本 Skill 判断，不把插件包装成 `review-agent-skill` 的 target level。
+4. 只有需要具体定位、source/final 内容不同或用户要求逐 Skill 结论时，才按 `uniqueReviews[]` 使用 `review-agent-skill`；相同 digest 最多评审一次。
+5. 大型 reference 可按需使用 `review-agent-content`。
+6. 输出 AW 机器错误、插件级 design/complexity、必要 leaf findings、真实 source/final 差异、最多 3 个高价值改进和关键 unknown。
 
-普通 Review 不声明 release readiness。
+没有 materialized final 时，只评价当前可见 source 和插件组合质量；不声明 release readiness。跨多个插件共同完成一个用户结果时，不给完整结论。
 
 ## 发布检查
 
-用户明确要求检查发布准备状态时，准备目标 profile 的 materialized Skill，并运行：
-
-```bash
-node scripts/check-aw-plugin-release.mjs <plugin-root> \
-  --review <review-result-lite.json> \
-  --final <profile=materialized-root> \
-  [--review <another-review.json>] \
-  [--final <another-profile=materialized-root>] \
-  --format json
-```
-
-检查器实时计算 profile coverage、machine check、digest 去重和 Review 绑定，直接输出 `ready` 与 reasons。
+用户明确要求发布准备状态时，才运行现有确定性 release checker。发布机器事实不进入普通 Review common path。
 
 ## 边界
 
 - 不修改 Skill、Eval case、README、manifest 或 materialized final。
 - 不生成 `AWReviewTargetPlan`、`ReviewInputBundle` 或 `AWReviewSummary`。
-- 不扩展旧 bundle/summary/target-plan 兼容合同。
+- 不评审跨多个 AW 插件的完整用户工作流。

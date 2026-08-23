@@ -4,7 +4,7 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "既要发现真实缺陷，也要避免通过重型填表和推演 finding 把 Skill 推向过度设计。"
+    "rationale": "必须发现单 Skill 的真实问题，同时拒绝跨组件无限范围和基于推演的重型修复。"
   },
   "evals": [
     {
@@ -18,17 +18,17 @@
         "missing_runtime_resource": true
       },
       "oracle": {
-        "rationale": "确定性缺失资源直接阻断质量结论，不需要模型复制成 stage、machineEvidenceId 或多个 gate。",
+        "rationale": "确定性缺失资源直接阻断单 Skill 结论。",
         "rule_refs": [
-          "SKILL.md#执行"
+          "SKILL.md#评审流程"
         ],
         "confidence": "high",
-        "allowed_variance": "报告格式可不同；verdict 必须 blocked 并定位缺失文件。",
-        "minimal_counterexample": "补齐资源且 Inspector 无 error 后，不应继续阻断。"
+        "allowed_variance": "报告格式可不同；必须定位缺失文件并阻断。",
+        "minimal_counterexample": "若脚本文件存在且机器检查通过，则不能仅凭脚本引用阻断结论。"
       },
-      "prompt": "只读评审 skills/broken。运行机器检查并给出简洁结论；不要修改文件。",
+      "prompt": "只读评审 skills/broken。运行机器检查，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "定位 scripts/missing.mjs，verdict=blocked，不生成 bundle、stage、gate 或加权分数。",
+      "expected_output": "定位 scripts/missing.mjs，给出 fail/blocked，不生成多重 gate。",
       "workspace_files": {
         "skills/broken/SKILL.md": "---\nname: broken\ndescription: Run a local helper.\n---\n\nRun `node scripts/missing.mjs`.\n"
       },
@@ -39,9 +39,8 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "运行 Inspector 并使用 missing-runtime-resource",
-          "verdict 为 blocked",
-          "不生成 ReviewInputBundle、providedStages、generic gates 或 weighted score"
+          "使用 machine error",
+          "不把机器错误复制成状态机"
         ]
       }
     },
@@ -57,19 +56,19 @@
         "runtime_failure": false
       },
       "oracle": {
-        "rationale": "官方 guidance 或 reviewer inference 在没有可达失败证据时不能单独形成 major/blocker。",
+        "rationale": "没有可达失败证据时，guidance 或 inference 不能单独形成 major。",
         "rule_refs": [
-          "SKILL.md#执行"
+          "SKILL.md#Finding-纪律"
         ],
         "confidence": "high",
-        "allowed_variance": "可给 minor、advisory 或 unknown；不得要求立即修改生产 Skill。"
+        "allowed_variance": "可给 minor/advisory/unknown；不得要求立即改生产 Skill。",
+        "minimal_counterexample": "若已有运行证据证明长文导致关键步骤不可达，则可升级为阻断性 finding。"
       },
-      "prompt": "quick 评审 skills/sample。参考材料建议长文拆分，但没有运行 trace 或真实失败。",
+      "prompt": "quick 评审 skills/sample。参考材料建议长文拆分，但没有运行失败。",
       "scripted_replies": [],
-      "expected_output": "把拆分保留为建议或待验证项，不形成 major/blocker。",
+      "expected_output": "把拆分保留为建议或待验证项。",
       "workspace_files": {
-        "skills/sample/SKILL.md": "---\nname: sample\ndescription: Summarize one incident.\n---\n\nRead the incident and return cause, impact and next action.\n",
-        "docs/guidance.md": "Prefer progressive disclosure for large supporting material.\n"
+        "skills/sample/SKILL.md": "---\nname: sample\ndescription: Summarize one incident.\n---\n\nRead the incident and return cause, impact and next action.\n"
       },
       "review": {
         "platforms": [
@@ -78,36 +77,33 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "不把 guidance/inference 表述成直接结构缺陷",
-          "不输出 major/blocker",
-          "说明需要什么实际证据才升级"
+          "不输出 major/critical"
         ]
       }
     },
     {
-      "id": "composition-detects-locally-correct-overload",
+      "id": "single-skill-composition-overload",
       "eval_type": "behavior",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "composition-overload",
+      "scenario_family": "single-skill-composition",
       "unit_under_test": "full-skill",
       "preconditions": {
         "independent_responsibilities": 4
       },
       "oracle": {
-        "rationale": "局部步骤正确不能抵消一个 Skill 同时拥有多个独立 owner、权限和证据生命周期。",
+        "rationale": "一个 Skill 内部混合多个独立意图仍属于单 Skill Composition。",
         "rule_refs": [
-          "SKILL.md#执行",
           "references/composition-fitness.md"
         ],
         "confidence": "high",
-        "allowed_variance": "可判 redesign 或 needs-fixes；必须给最小职责拆分。"
+        "allowed_variance": "可判 needs-fixes 或 redesign；必须给最小拆分。"
       },
-      "prompt": "full 只读评审 skills/release-desk，重点判断整体职责是否合理。",
+      "prompt": "full 只读评审 skills/release-desk，判断它是否承担太多独立职责。",
       "scripted_replies": [],
-      "expected_output": "识别 support、pricing、security 和 deployment 的独立责任，给 redesign 或明确拆分。",
+      "expected_output": "识别支持、定价、安全、部署的独立职责并建议拆分。",
       "workspace_files": {
-        "skills/release-desk/SKILL.md": "---\nname: release-desk\ndescription: Handle a release request end to end.\n---\n\nClassify customer support tickets. Approve pricing exceptions. Accept security risk. Execute production deployment. Each area has different owners and credentials.\n"
+        "skills/release-desk/SKILL.md": "---\nname: release-desk\ndescription: Handle a release request end to end.\n---\n\nClassify support tickets. Approve pricing exceptions. Accept security risk. Execute production deployment.\n"
       },
       "review": {
         "platforms": [
@@ -116,9 +112,7 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "不因各段局部正确就判 proportionate",
-          "指出独立意图、权限和 owner",
-          "给出薄 router 与 specialist 的最小拆分"
+          "只评价这个 Skill 内部 composition"
         ]
       }
     },
@@ -134,18 +128,19 @@
         "control_disproportionate": true
       },
       "oracle": {
-        "rationale": "完整步骤不等于最小有效控制；没有失败依据的临时文件、状态和固定轮次应删除。",
+        "rationale": "完整步骤不等于最小有效控制。",
         "rule_refs": [
-          "SKILL.md#执行"
+          "SKILL.md#评审流程"
         ],
         "confidence": "high",
-        "allowed_variance": "verdict 可为 needs-fixes；complexity 必须 over-specified。"
+        "allowed_variance": "complexity 必须 over-specified。",
+        "minimal_counterexample": "若每个状态、轮次和临时文件都对应独立可观察风险，则完整步骤可以是 proportionate。"
       },
       "prompt": "full 只读评审 skills/status-writer。步骤很完整，请判断是否足以通过。",
       "scripted_replies": [],
-      "expected_output": "complexity=over-specified，建议删除多余状态、轮次和临时文件。",
+      "expected_output": "建议删除多余状态、轮次和临时文件。",
       "workspace_files": {
-        "skills/status-writer/SKILL.md": "---\nname: status-writer\ndescription: Write a short status update.\n---\n\nCreate scratch-a.md, then scratch-b.md. Output pending/reading/copying/checking for every line. Always run exactly three rounds. Rename scratch-b.md to final.md.\n"
+        "skills/status-writer/SKILL.md": "---\nname: status-writer\ndescription: Write a short status update.\n---\n\nCreate two scratch files. Emit four states for every line. Always run exactly three rounds.\n"
       },
       "review": {
         "platforms": [
@@ -154,9 +149,7 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "明确 over-specified",
-          "不因步骤齐全而 pass",
-          "优先给删除性修改"
+          "明确 over-specified"
         ]
       }
     },
@@ -172,20 +165,20 @@
         "responsibilities": 1
       },
       "oracle": {
-        "rationale": "大型单一用途查表资料可以保持一个 reference；大小只触发审计。",
+        "rationale": "大型单一用途资料可保留；大小只触发审计。",
         "rule_refs": [
-          "SKILL.md#执行"
+          "SKILL.md#评审流程"
         ],
         "confidence": "high",
-        "allowed_variance": "可以建议索引；不得只因大小给 major 或 redesign。",
-        "minimal_counterexample": "同样大小但包含多个角色、权限和互斥流程时可判 overload。"
+        "allowed_variance": "可以建议索引；不得只因大小给 major。",
+        "minimal_counterexample": "若大型 reference 混入多个独立职责并导致错误路由，则可按可达失败报告缺陷。"
       },
-      "prompt": "只读评审 skills/code-lookup，重点判断大型 reference。",
+      "prompt": "只读评审 skills/code-lookup，重点判断大型查表 reference。",
       "scripted_replies": [],
-      "expected_output": "根据单一查表用途判 proportionate，不按字节数判缺陷。",
+      "expected_output": "根据单一用途判 proportionate。",
       "workspace_files": {
-        "skills/code-lookup/SKILL.md": "---\nname: code-lookup\ndescription: Look up a supplied service code.\n---\n\nOnly after a code is supplied, read references/codes.md and return its name and meaning.\n",
-        "skills/code-lookup/references/codes.md": "# Codes\n\n| Code | Meaning |\n|---|---|\n| A01 | Accepted |\n| A02 | Pending |\n| A03 | Held |\n| A04 | Closed |\n"
+        "skills/code-lookup/SKILL.md": "---\nname: code-lookup\ndescription: Look up a supplied service code.\n---\n\nRead references/codes.md after a code is supplied.\n",
+        "skills/code-lookup/references/codes.md": "# Codes\n\n| Code | Meaning |\n|---|---|\n| A01 | Accepted |\n"
       },
       "review": {
         "platforms": [
@@ -194,38 +187,68 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "把大小与责任数分开",
-          "不输出 major/blocker",
-          "若建议索引，将其作为 minor/advisory"
+          "不按字节数判缺陷"
         ]
       }
     },
     {
-      "id": "eval-oracle-problem-is-not-skill-defect",
+      "id": "optional-eval-branch-requires-static-gap",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "eval-execution-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "static_evidence_sufficient": true
+      },
+      "oracle": {
+        "rationale": "静态证据足够时不应为了完整流程启动 Audit 或昂贵 Eval。",
+        "rule_refs": [
+          "SKILL.md#可选-Eval-分支"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可报告既有证据缺口，但不得启动运行分支。",
+        "minimal_counterexample": "若静态材料不能区分两个候选结论且运行结果会改变 verdict，则可准入 Eval 分支。"
+      },
+      "prompt": "评审这个 Skill 的 scope 是否过宽；现有文件已经直接证明它包含两个独立职责。",
+      "scripted_replies": [],
+      "expected_output": "基于静态材料给结论，不启动 Eval Audit 或 runner。",
+      "workspace_files": {
+        "skills/mixed/SKILL.md": "---\nname: mixed\ndescription: Create and independently approve deployments.\n---\n\nCreate deployments and issue the independent approval verdict.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不启动 Eval 分支"
+        ]
+      }
+    },
+    {
+      "id": "cross-workflow-request-is-out-of-scope",
       "eval_type": "behavior",
       "case_role": "regression",
       "provenance": "derived",
-      "scenario_family": "eval-owner-boundary",
+      "scenario_family": "scope-boundary",
       "unit_under_test": "full-skill",
       "preconditions": {
-        "oracle_ambiguous": true,
-        "observed_skill_failure": false
+        "multiple_skills": true
       },
       "oracle": {
-        "rationale": "Eval Oracle 问题应先进入独立 audit，不能直接驱动生产 Skill 修改。",
+        "rationale": "跨多个 Skill 的完整工作流不属于单 Skill Reviewer。",
         "rule_refs": [
-          "SKILL.md#执行"
+          "SKILL.md description"
         ],
         "confidence": "high",
-        "allowed_variance": "可把结论标为 unknown；不得给生产 Skill major finding。"
+        "allowed_variance": "可以做 leaf facts；不得声称完成整个 workflow Review。",
+        "minimal_counterexample": "若请求只收窄到其中一个 Skill package，则单 Skill Reviewer 应给完整 leaf 结论。"
       },
-      "prompt": "full 只读评审 skills/search。一个 Eval 标签有争议，但没有生产失败 trace。",
+      "prompt": "审核 author-agent-skill、audit-agent-skill-evals 和 runner 联合完成的整个 Eval 流程。",
       "scripted_replies": [],
-      "expected_output": "建议先审核 Eval；当前生产 Skill 不因争议标签得到 major finding。",
-      "workspace_files": {
-        "skills/search/SKILL.md": "---\nname: search\ndescription: Search a large unknown corpus for cited facts.\n---\n\nSearch, cite sources and report uncertainty.\n",
-        "skills/search/evals/cases.json": "[{\"query\":\"Review a large repository\",\"should_load\":false}]\n"
-      },
+      "expected_output": "拒绝给完整工作流结论，并路由到有界 workflow Reviewer。",
       "review": {
         "platforms": [
           "codex"
@@ -233,213 +256,7 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "区分 Eval owner 与生产 Skill owner",
-          "不要求立即改 SKILL.md",
-          "建议独立 Oracle audit"
-        ]
-      }
-    },
-    {
-      "id": "system-locally-correct-globally-overengineered",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "system-composition",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "component_skills": 4,
-        "persistent_handoffs": 6,
-        "validators": 5
-      },
-      "oracle": {
-        "rationale": "每个叶子组件都可局部成立，但完整 common path 重复持久化 target、digest、gate 与 readiness；系统级评审必须优先于逐组件高分。",
-        "rule_refs": [
-          "SKILL.md#执行顺序",
-          "references/composition-fitness.md#End-to-End-Minimum-Architecture-Challenge"
-        ],
-        "confidence": "high",
-        "allowed_variance": "具体删减边界可不同；必须判 over-engineered/redesign，并给同样安全的更短架构。",
-        "minimal_counterexample": "机器检查、简洁模型评审和可选 release check 三段且状态单一归属时应判 proportionate。"
-      },
-      "prompt": "full 只读评审 system/reviewer-stack。不要分别给四个 Skill 打分；先判断完整用户路径是否合理。",
-      "scripted_replies": [],
-      "expected_output": "评审层级=system；列出现有 common path；complexity=over-engineered、design=redesign；建议 machine check + model review + optional release check。",
-      "workspace_files": {
-        "system/reviewer-stack/README.md": "Common path: inspect -> inspection.json -> stage.json -> bundle.json -> review.json -> target-plan.json -> summary.json -> publish. Target name, digest and readiness are repeated in each artifact.\n",
-        "system/reviewer-stack/skills/check/SKILL.md": "---\nname: check\ndescription: Check a Skill package.\n---\n\nRun deterministic package checks.\n",
-        "system/reviewer-stack/skills/review/SKILL.md": "---\nname: review\ndescription: Review Skill quality.\n---\n\nReview design quality.\n",
-        "system/reviewer-stack/skills/eval/SKILL.md": "---\nname: eval\ndescription: Run Skill evals.\n---\n\nRun admitted evals.\n",
-        "system/reviewer-stack/skills/publish/SKILL.md": "---\nname: publish\ndescription: Publish a review result.\n---\n\nPublish validated reports.\n",
-        "system/reviewer-stack/contracts/handoffs.md": "Six JSON handoffs repeat target, digest, status and readiness. Five validators only check that the repeated fields agree.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "显式提升到 system 层级",
-          "先比较端到端 common path 与最小候选",
-          "不因叶子 Skill 局部 coherent 而 pass",
-          "redesign 不要求伪造 major/critical"
-        ]
-      }
-    },
-    {
-      "id": "quick-path-must-not-pay-release-contracts",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "representative-synthetic",
-      "scenario_family": "common-path-cost",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "quick_review": true,
-        "release_only_artifacts": 4
-      },
-      "oracle": {
-        "rationale": "普通 quick review 不应生成 profile plan、release summary、stage ledger 和 publication receipt。",
-        "rule_refs": [
-          "references/composition-fitness.md#Common-path-cost"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可建议独立 release checker；必须指出 common path 成本错位。"
-      },
-      "prompt": "quick 评审 system/quick-review，重点看常用路径是否为发布边界支付了额外成本。",
-      "scripted_replies": [],
-      "expected_output": "识别 quick path 的 release-only 成本，建议从质量评审移除这些合同；复杂度至少 over-specified。",
-      "workspace_files": {
-        "system/quick-review/README.md": "Every quick review must create review-input.json, stage-ledger.json, profile-plan.json and release-summary.json before a reviewer can answer.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "列出 quick common path",
-          "区分质量评审与发布验证",
-          "优先删除 release-only handoff"
-        ]
-      }
-    },
-    {
-      "id": "recomputable-state-is-not-a-handoff",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "recomputability",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "manifest_derives_profiles": true,
-        "persisted_target_plan": true
-      },
-      "oracle": {
-        "rationale": "manifest 可便宜推导 profile universe 时，target plan 是可删除缓存，不应成为模型 handoff。",
-        "rule_refs": [
-          "references/composition-fitness.md#Recomputability"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可保留昂贵 EvalRunBundle；必须建议实时重算 profile coverage。"
-      },
-      "prompt": "full 评审 system/profile-review。manifest 已能推导全部 profile，但流程仍保存并再次验证 target-plan.json。",
-      "scripted_replies": [],
-      "expected_output": "把 target plan 判为可重算状态，建议由 release checker 实时计算，不持久化到模型 workflow。",
-      "workspace_files": {
-        "system/profile-review/plugin.json": "{\"products\":[\"codex\",\"claude\"]}\n",
-        "system/profile-review/target-plan.json": "{\"expectedProfiles\":[\"codex\",\"claude\"]}\n",
-        "system/profile-review/README.md": "The plan is generated from plugin.json and then a second validator checks it against plugin.json.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "识别可重算事实",
-          "区分昂贵证据与便宜缓存",
-          "给 delete/recompute 方案"
-        ]
-      }
-    },
-    {
-      "id": "semantic-fields-do-not-become-proof",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "semantic-schema-fit",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "required_semantic_fields": 4,
-        "external_fact_binding": false
-      },
-      "oracle": {
-        "rationale": "schema 只能证明 premise、counterevidence 和 confidence 被填写，不能证明其语义充分。",
-        "rule_refs": [
-          "references/composition-fitness.md#Semantic-schema-fit"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以保留薄结构化 finding；必须把不可验证推理移回人读报告或 reviewer guidance。"
-      },
-      "prompt": "full 评审 system/semantic-schema，判断严格 JSON 是否真的提高了结论可靠性。",
-      "scripted_replies": [],
-      "expected_output": "指出 non-empty semantic fields 不等于真实证据，建议缩到 verdict/findings/unknowns，并让机器合同只验证外部事实。",
-      "workspace_files": {
-        "system/semantic-schema/review.schema.json": "{\"required\":[\"premises\",\"reachability\",\"counterevidence\",\"confidence\"]}\n",
-        "system/semantic-schema/validator.md": "Validator checks only that every field is non-empty.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "区分结构一致与语义真实性",
-          "不因 schema 严格就高估可靠性",
-          "给薄合同替代"
-        ]
-      }
-    },
-    {
-      "id": "strictness-at-machine-boundary-is-proportionate",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "representative-synthetic",
-      "scenario_family": "strict-but-proportionate",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "machine_checks": true,
-        "model_contract_light": true
-      },
-      "oracle": {
-        "rationale": "确定性路径、profile 与 digest 检查放在 CLI，模型只输出简洁质量 finding，是严格性放对层级。",
-        "rule_refs": [
-          "SKILL.md#执行顺序",
-          "references/composition-fitness.md#State-ownership"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以有 minor 建议；不得仅因 CLI 严格而判 over-engineered。",
-        "minimal_counterexample": "同一机器状态在多个模型 handoff 中重复时标签翻转。"
-      },
-      "prompt": "full 评审 system/lean-review。不要因为有严格 CLI 检查就自动判复杂。",
-      "scripted_replies": [],
-      "expected_output": "评审层级=system；complexity=proportionate；肯定机器 check + 轻量 model review + optional release check 的分层。",
-      "workspace_files": {
-        "system/lean-review/README.md": "The CLI checks package closure and profiles. The model reviewer returns a short verdict, findings and unknowns. Release checks run only on explicit release requests.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "把严格机器事实与模型语义分层",
-          "不机械惩罚 deterministic checks",
-          "明确唯一 state owner"
+          "不输出整个 workflow pass"
         ]
       }
     }

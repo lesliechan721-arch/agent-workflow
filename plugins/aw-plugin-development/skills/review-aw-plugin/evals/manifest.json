@@ -37,11 +37,13 @@
         "review-agent-content",
         "author-agent-skill",
         "review-agent-skill",
+        "review-agent-workflow",
         "design-agent-skill-evals",
         "audit-agent-skill-evals",
         "run-agent-skill-evals",
         "author-aw-plugin",
-        "review-aw-plugin"
+        "review-aw-plugin",
+        "review-aw-workflow"
       ],
       "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,
@@ -63,15 +65,11 @@
       "id": "behavior",
       "kind": "conversation",
       "skills": [
-        "write-agent-content",
         "review-agent-content",
-        "author-agent-skill",
         "review-agent-skill",
-        "design-agent-skill-evals",
-        "audit-agent-skill-evals",
-        "run-agent-skill-evals",
-        "author-aw-plugin",
-        "review-aw-plugin"
+        "review-agent-workflow",
+        "review-aw-plugin",
+        "review-aw-workflow"
       ],
       "cases": "./behavior-cases.json",
       "isolation": "strict",
@@ -87,15 +85,9 @@
       "id": "composition",
       "kind": "conversation",
       "skills": [
-        "write-agent-content",
-        "review-agent-content",
-        "author-agent-skill",
         "review-agent-skill",
-        "design-agent-skill-evals",
-        "audit-agent-skill-evals",
-        "run-agent-skill-evals",
-        "author-aw-plugin",
-        "review-aw-plugin"
+        "review-aw-plugin",
+        "review-aw-workflow"
       ],
       "cases": "./composition-cases.json",
       "isolation": "strict",

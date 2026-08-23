@@ -1,15 +1,15 @@
-# Author Agent Skill
+# author-agent-skill
 
-设计、创建或修改一个可复用 Agent Skill，并准备可验证的触发和行为边界。
+创建或变更一个通用 Agent Skill package，并完成修改范围内的确定性验证。
 
 ## 适合使用
 
-- 已有真实任务和 without-skill 缺口，需要把经验提炼成 Skill。
-- 需要调整 Skill 职责、description、渐进式披露或 bundled script。
-- 需要为 Skill 准备评测入口。
+- 新建或重写 `SKILL.md`，调整 description、invocation 或职责边界。
+- 维护直接 references、scripts、assets、平台元数据或作者期 Eval 资产。
+- 对少量已知文件做有界变更，并验证受影响的结构、引用和脚本接口。
 
-## 工作原则
+维护由 `.agents-plugin/plugin.json` 标识的 AW 插件根时，无论目录布局如何，都使用 `author-aw-plugin` 处理 manifest、构建和插件级合同；它会按需组合本 Skill 修改插件内的 Skill。
 
-Skill 应是一个连贯能力单元，只保留模型容易缺失的内容。确定性、重复且容易写错的操作优先交给脚本。已有 Skill 的低风险局部修改使用轻量 delta 记录；只有新建、重写、职责/调用边界变化或跨上下文交接才物化完整 `SkillDesignBrief`。独立评审使用 `review-agent-skill`。
+## 工作方式与边界
 
-主要指令见 [`SKILL.md`](SKILL.md)。
+本 Skill 会写入用户允许的 Skill package，并运行修改范围内的确定性自检。它不自动启动独立 Review、Eval Audit 或模型 Eval，也不作发布裁决；这些能力只在用户或上层工作流明确请求时单独组合。

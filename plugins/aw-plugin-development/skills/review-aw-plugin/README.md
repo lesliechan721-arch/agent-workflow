@@ -1,15 +1,13 @@
-# Review AW Plugin
+# review-aw-plugin
 
-只读评价 AW 插件及其 source/materialized Skill 的设计质量、端到端组合和真实内容差异。
+只读评审一个 AW plugin、其内部组件和 source/materialized profile 差异。
 
-默认路径：
+## 结果
 
-1. `aw plugin validate` 与 `check-agent-skill` 提供确定性事实；
-2. build-free source 和已提供 final 按 production digest 去重；声明 build 的插件必须提供 materialized final；
-3. 先对完整插件运行一次 `review-agent-skill(target_level=plugin)`，审计 common path、持久合同和最小架构；
-4. 仅在定位 finding、区分不同 digest、逐 Skill 请求或发布绑定需要时，按唯一 digest 运行 leaf Review；
-5. 输出简洁的人类报告。
+评审会报告 manifest 机器错误、插件组合的设计与复杂度、真实 source/materialized 差异、必要的 leaf Skill findings、高价值改进和关键 unknown。相同 production digest 的 leaf Skill 最多评审一次。
 
-普通 Review 不维护 stage、profile coverage row 或 release readiness。只有用户明确请求发布检查时，才运行 `check-aw-plugin-release.mjs` 实时重算支持 profile、final 完整性和接受的 leaf `ReviewResultLite`。
+没有 materialized final 时，只评价当前可见 source 和插件组合质量；不声明发布资格，也不推断不可见产物。跨多个插件共同完成的用户工作流使用 `review-aw-workflow`。
 
-该 Skill 不修改插件。repo-local 或 portable Agent Skill 直接使用 `review-agent-skill`。
+## 边界
+
+本 Skill 不修改 Skill、Eval、README、manifest 或 materialized final。只有用户明确要求发布准备状态时，才单独运行已有的确定性发布检查。

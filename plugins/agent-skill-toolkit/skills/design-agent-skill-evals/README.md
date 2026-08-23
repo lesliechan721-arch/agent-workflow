@@ -1,17 +1,11 @@
-# Design Agent Skill Evals
+# design-agent-skill-evals
 
-为 Agent Skill 设计或修改可执行的触发、行为和组合评测。
+创建或修改 Agent Skill Eval case/suite，覆盖 trigger、routing、behavior、outcome 或 cost 场景。
 
-## 适合使用
+## 结果
 
-- 需要证明 Skill 相比 without-skill baseline 有增益。
-- 需要增加 should-trigger、near-miss、行为或回归用例。
-- Skill 修改后，需要建立 minimal pair 和相反标签检查。
+交付物包含与测试目标对应的 case 或 suite、Oracle rationale、可观察 assertion、允许方差和必要的运行策略。结果会明确标记 `Audit status: not assessed`。
 
-## 工作原则
+## 边界
 
-先定义可观察 Oracle、允许方差和失败归因条件，再写 case。评测不应只验证固定措辞或模型内部步骤。
-
-独立审核 Oracle 和失败归因使用 `audit-agent-skill-evals`。
-
-主要指令见 [`SKILL.md`](SKILL.md)。
+本 Skill 只写 Eval 资产，不修改生产 Skill，不审核自己的 Oracle，也不运行 Eval。独立 Audit 或实际运行只在用户请求或上层工作流明确组合时进行。

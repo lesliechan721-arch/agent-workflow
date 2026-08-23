@@ -1,7 +1,7 @@
 ---
 name: audit-agent-skill-evals
 description: >-
-  当用户要只读审核 Agent Skill Eval case/suite 的 Oracle、现实性、错误代价、统计结果或修改安全时使用。支持运行前 preflight 和运行后 result-triage；不创建 case、不运行高成本 Eval、不直接修改生产 Skill。
+  当用户要只读审核 Agent Skill Eval case/suite 的 Oracle、现实性、错误代价、统计结果或修改安全时使用。支持运行前 preflight 和运行后 result-triage；不创建 case、不运行 Eval、不直接修改生产 Skill。
 compatibility: 仅在运行 bundled 结构 validator 时需要 Node.js 20+。
 metadata:
   short-description: 只读审核 Skill Eval Oracle、现实性、结果归因与修改安全
@@ -16,9 +16,7 @@ metadata:
 - `preflight`：运行前审核 suite、case 和 Oracle。
 - `result-triage`：运行后解释失败、方差、baseline 和修改安全。
 
-## 独立性
-
-如果当前上下文参与了 case 或 Oracle 设计，`preflight` 必须改由独立上下文子代理执行。未参与设计的独立 Reviewer 可以在当前评审上下文中完成审核。
+如果当前上下文参与了 case 或 Oracle 设计，不能在同一上下文输出 `validity=pass`；应由独立上下文完成 preflight。
 
 ## Preflight
 
@@ -28,7 +26,7 @@ metadata:
 4. 检查 challenge/diagnostic 是否错误进入发布指标。
 5. 运行 `node scripts/validate-eval-cases.mjs <cases.json> --format json`。
 6. 计算 `caseCorpusDigest`：`node scripts/validate-eval-audit-result.mjs --digest-only --case <cases.json>`。
-7. 输出 schema v2 `EvalAuditResult`。只有无 blocked case、所有待运行 case admission 通过，且 Skill/corpus digest 均匹配时，才能使用 `validity=pass`。
+7. 输出 schema v2 `EvalAuditResult`。只有无 blocked case、待运行 case admission 通过，且 Skill/corpus digest 均匹配时，才能使用 `validity=pass`。
 
 ## Result triage
 
@@ -42,6 +40,6 @@ metadata:
 
 ## 输出
 
-- `preflight` 不运行高成本 Eval。
+- `preflight` 不运行 Eval。
 - `result-triage` 不直接修改 Skill，只输出 `fix-eval-first | collect-more-data | candidate-skill-fix | accepted-risk | runtime-issue`。
 - 有指定输出路径时写入 schema-conformant JSON；否则在回复中返回。

@@ -1,31 +1,13 @@
-# Author AW Plugin
+# author-aw-plugin
 
-在任意兼容工作区中创建或维护 AW 插件，并保持 manifest、源码、README、构建、materialization、开发状态和验证结果一致。
+创建或维护一个 AW plugin，包括 manifest、Skill、extension、MCP/App、slash command、dynamic artifact、版本和构建配置。
 
-## 适合使用
+## 使用前提
 
-- 创建新的 AW 插件根及 `.agents-plugin/plugin.json`。
-- 为现有插件增加或修改 Skill、Extension、Slash Command、MCP/App、配置或动态产物。
-- 修复构建、bundle、README 或作者门禁问题。
+需要 Node.js 22+、已安装且提供所需作者命令的公开 `aw` CLI、目标工作区依赖，以及 `agent-content-toolkit` 和 `agent-skill-toolkit`。
 
-## 工作方式
+## 工作方式与结果
 
-目标插件根由用户或工作区显式提供，可以位于 `plugins/`、`packages/`、`tools/` 等任意目录。插件与 Skill README 按本 Skill 自带的 `references/aw-readme-authoring.md` 维护，不依赖宿主仓库文档。
+本 Skill 会写入目标插件的 source truth，并按修改面运行外部 build、validation 和 tests。交付结果包含源码变化、确定性验证、已有的 materialized artifacts 和未完成项。
 
-已有插件的单组件低风险修改走轻量 delta：只记录意图、允许路径、成功标准和验证，不生成 `AWAuthoringContext`。新插件、多组件请求、组件增删、profile/invocation/权限/build/materialization/lifecycle 变化或跨上下文交接才准备 v3 结构化上下文：
-
-```bash
-node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
-  --repo-root <workspace-root> \
-  --components <json-file>
-```
-
-数组中每项声明 `id`、`type`、`operation`、`paths` 和 `profiles`。Skill 项还声明 `skillInvocation`。完整字段和组合规则见 `references/aw-authoring-profile.md`。
-
-创建插件骨架、增加 Skill 骨架、验证和开发状态分别使用已安装的 `aw plugin init`、`add-skill`、`validate` 和 `status`。每次先检查 `aw --version` 与对应 `--help`。日常开发不直接提高插件版本；release target 由目标 workspace 的 release workflow 设置。该 Skill 不包含这些确定性工具的副本，也不通过 `npx` 或猜测仓库路径回退。
-
-## 边界
-
-该 Skill 拥有生产源码写入和确定性验证，但不为自己的修改生成独立评审结论。通用 Agent Skill 编写规则由 `agent-skill-toolkit` 提供；独立评审使用 `review-aw-plugin`。
-
-主要指令见 [`SKILL.md`](SKILL.md)。
+它不手改 generated runtime、catalog 或 cache。独立 Review、Eval Audit、模型 Eval 和发布裁决不属于默认作者完成条件，必须由用户或上层工作流单独请求。
