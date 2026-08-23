@@ -19,5 +19,8 @@ describe('write command options', () => {
       expect(() => normalize({})).toThrow(/platform/u);
     }
     expect(() => normalizeCleanupCommandOptions({ platform: 'codex' })).toThrow(/scope/u);
+    expect(normalizeCleanupCommandOptions({
+      cwd: '/workspace', platform: 'codex', scope: 'project', force: true,
+    })).toMatchObject({ force: true, platform: 'codex', scope: 'project' });
   });
 });

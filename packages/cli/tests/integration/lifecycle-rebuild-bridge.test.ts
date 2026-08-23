@@ -176,10 +176,10 @@ describe('rebuild lifecycle bridge', () => {
       env: isolation.env,
       nativeCliRunner: runner,
       catalogResolution: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-      namespacedTarget: {
+      bypassDependencyPlan: true,
+      namespacedSource: {
         sourceId: 'official',
         sourceIdentity: `sha256:${'1'.repeat(64)}`,
-        pluginId: 'official/lifecycle-bridge',
         marketplaceName: 'aw',
         marketplaceRoot: path.join(isolation.env.AW_HOME!, 'marketplaces', 'official'),
       },
@@ -249,8 +249,8 @@ describe('rebuild lifecycle bridge', () => {
       { ...options, scriptTimeoutMs: 1_000 },
       {
         ...runtime,
-        namespacedTarget: {
-          ...runtime.namespacedTarget,
+        namespacedSource: {
+          ...runtime.namespacedSource,
           pluginId: 'official/timeout-plugin',
         },
       },
@@ -287,6 +287,7 @@ describe('rebuild lifecycle bridge', () => {
         env: isolation.env,
         nativeCliRunner: runner,
         catalogResolution: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+        bypassDependencyPlan: true,
       };
       const options = { cwd, platform: 'codex', scope: 'project' } as const;
       const targetPlanned = deferred();

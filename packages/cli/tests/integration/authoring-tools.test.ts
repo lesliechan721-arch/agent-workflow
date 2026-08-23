@@ -6092,6 +6092,51 @@ describe('authoring tools', () => {
     });
   });
 
+  it('enforces the dependency AW floor in the authoring fallback validator', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-dependency-floor-'));
+    tempDirs.push(tempRoot);
+    const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
+    await fs.ensureDir(path.join(tempRoot, 'packages', 'cli'));
+    await Promise.all([
+      fs.copy(
+        path.join(repoRoot(), 'packages', 'cli', 'authoring', 'scripts'),
+        path.join(authoringRoot, 'scripts'),
+      ),
+      fs.symlink(
+        path.join(repoRoot(), 'packages', 'cli', 'node_modules'),
+        path.join(tempRoot, 'packages', 'cli', 'node_modules'),
+        'dir',
+      ),
+    ]);
+    const pluginDir = path.join(tempRoot, 'plugins', 'fallback-dependency');
+    await Promise.all([
+      fs.outputJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+        name: 'fallback-dependency',
+        version: '1.0.0',
+        description: 'Fallback dependency fixture.',
+        compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+        dependencies: ['shared'],
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        },
+      }),
+      fs.outputFile(path.join(pluginDir, 'README.md'), '# Fallback dependency\n'),
+    ]);
+
+    await expect(execFileAsync('node', [
+      path.join(authoringRoot, 'scripts', 'validate-plugin.mjs'),
+      pluginDir,
+    ], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('dependencies requires AW 0.1.0 or newer'),
+    });
+  });
+
   it.skip('legacy lightweight validation is removed with the published CLI authoring runtime', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-fallback-'));
     tempDirs.push(tempRoot);

@@ -3,6 +3,10 @@ import type {
   PlatformName,
   UpgradeCommandOptions,
 } from '../types.js';
+import {
+  withAwHomeMutationLock,
+  type AwHomeMutationToken,
+} from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import {
   normalizeCleanupCommandOptions,
@@ -22,12 +26,20 @@ import {
   type RebuildCommandRuntime,
 } from './rebuild-command.js';
 
+type WriteCommand = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
+
 function writeErrorCode(message: string): string {
   for (const code of [
     'legacyStateUnsupported',
     'sourceChanged',
     'sourceMissing',
     'artifactCollision',
+    'dependencyNotReady',
+    'dependencyScopeTooNarrow',
+    'dependencyScopeConflict',
+    'dependencyTargetUnsupported',
+    'dependencyInstallFailed',
+    'dependencyStillRequired',
   ]) {
     if (message.includes(code)) return code;
   }
@@ -39,7 +51,7 @@ function writeErrorCode(message: string): string {
 }
 
 function failedWriteCommandResult(
-  command: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup',
+  command: WriteCommand,
   pluginNames: string[],
   options: InstallCommandOptions,
   error: unknown,
@@ -143,6 +155,38 @@ function failedWriteCommandResult(
   };
 }
 
+async function runPublicWriteCommand(options: {
+  command: WriteCommand;
+  pluginNames: string[];
+  commandOptions: InstallCommandOptions;
+  runtime: RebuildCommandRuntime;
+  all?: boolean;
+}): Promise<RebuildCommandResult> {
+  const runtime = options.runtime;
+  const execute = (token: AwHomeMutationToken | undefined) => runRebuildCommand({
+    command: options.command,
+    pluginNames: options.pluginNames,
+    commandOptions: options.commandOptions,
+    runtime: token === undefined
+      ? runtime
+      : { ...runtime, awHomeMutationToken: token },
+    ...(options.all === undefined ? {} : { all: options.all }),
+  });
+  const execution = runtime.previewDependencyPlanOnly === true
+    ? execute(runtime.awHomeMutationToken)
+    : withAwHomeMutationLock({
+        env: runtime.env,
+        token: runtime.awHomeMutationToken,
+        action: execute,
+      });
+  return execution.catch((error) => failedWriteCommandResult(
+    options.command,
+    options.pluginNames,
+    options.commandOptions,
+    error,
+  ));
+}
+
 function requirePluginNames(command: string, pluginNames: string[], exact = false): void {
   if ((exact && pluginNames.length !== 1) || (!exact && pluginNames.length === 0)) {
     throw new Error(`${command} 命令${exact ? '需要且只接受一个' : '至少需要一个'}插件名。`);
@@ -156,8 +200,7 @@ export async function installWriteCommand(
 ): Promise<RebuildCommandResult> {
   requirePluginNames('install', pluginNames);
   const commandOptions: InstallCommandOptions = normalizeInstallCommandOptions(rawOptions);
-  return runRebuildCommand({ command: 'install', pluginNames, commandOptions, runtime })
-    .catch((error) => failedWriteCommandResult('install', pluginNames, commandOptions, error));
+  return runPublicWriteCommand({ command: 'install', pluginNames, commandOptions, runtime });
 }
 
 export async function upgradeWriteCommand(
@@ -167,13 +210,13 @@ export async function upgradeWriteCommand(
 ): Promise<RebuildCommandResult> {
   const commandOptions: UpgradeCommandOptions = normalizeUpgradeCommandOptions(rawOptions);
   if (!commandOptions.all) requirePluginNames('upgrade', pluginNames);
-  return runRebuildCommand({
+  return runPublicWriteCommand({
     command: 'upgrade',
     pluginNames,
     commandOptions,
     runtime,
     all: commandOptions.all,
-  }).catch((error) => failedWriteCommandResult('upgrade', pluginNames, commandOptions, error));
+  });
 }
 
 export async function reinstallWriteCommand(
@@ -183,8 +226,7 @@ export async function reinstallWriteCommand(
 ): Promise<RebuildCommandResult> {
   requirePluginNames('reinstall', pluginNames, true);
   const commandOptions = normalizeReinstallCommandOptions(rawOptions);
-  return runRebuildCommand({ command: 'reinstall', pluginNames, commandOptions, runtime })
-    .catch((error) => failedWriteCommandResult('reinstall', pluginNames, commandOptions, error));
+  return runPublicWriteCommand({ command: 'reinstall', pluginNames, commandOptions, runtime });
 }
 
 export async function uninstallWriteCommand(
@@ -194,8 +236,7 @@ export async function uninstallWriteCommand(
 ): Promise<RebuildCommandResult> {
   requirePluginNames('uninstall', pluginNames);
   const commandOptions = normalizeUninstallCommandOptions(rawOptions);
-  return runRebuildCommand({ command: 'uninstall', pluginNames, commandOptions, runtime })
-    .catch((error) => failedWriteCommandResult('uninstall', pluginNames, commandOptions, error));
+  return runPublicWriteCommand({ command: 'uninstall', pluginNames, commandOptions, runtime });
 }
 
 export async function cleanupWriteCommand(
@@ -205,6 +246,5 @@ export async function cleanupWriteCommand(
 ): Promise<RebuildCommandResult> {
   requirePluginNames('cleanup', pluginNames, true);
   const commandOptions = normalizeCleanupCommandOptions(rawOptions);
-  return runRebuildCommand({ command: 'cleanup', pluginNames, commandOptions, runtime })
-    .catch((error) => failedWriteCommandResult('cleanup', pluginNames, commandOptions, error));
+  return runPublicWriteCommand({ command: 'cleanup', pluginNames, commandOptions, runtime });
 }

@@ -25,8 +25,8 @@
 | `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
-| `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 stage、Git publish、fetch 和 Git provider 消费 |
-| `pnpm test:smoke:bootstrap:catalog` | 使用本地 bare remote 校验两个 orphan channel、annotated tag、幂等和 atomic failure |
+| `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
+| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 `publishPreparedRelease`，校验启用轴顺序和不确定远端失败 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 
@@ -41,7 +41,9 @@
 - Unit 使用 synthetic catalog 和 fake native runner。
 - Integration 覆盖 CLI 与真实模块桥接，但不访问用户 home。
 - 写命令测试只构造 current catalog、live owner 和平台组件 fixture。
-- Strict cache 测试只构造 cache、selector、lock 和 marketplace fixture，不依赖安装状态 fixture。
+- Catalog cache 测试只构造 source、`current` 和 `last-good` fixture，不依赖安装状态 fixture。
+- Source mutation 测试验证 config 先提交；之后 refresh 失败只出现在 receipt，不撤销已提交 config。
+- Offline cleanup 测试验证 source 缺失时仍能删除可证明属于 AW 的输出。`cleanup --force` 测试还必须证明它只删除专属目标、保留 foreign/shared 内容，并报告 dependent 的 partial 风险。
 - TUI unit 和入口测试使用真实 Ink mount；不要用静态组件快照代替交互行为。
 - Platform tests 断言 MCP、apps、hooks、permissions、roles、instructions、Skill 和 command 的最终平台输出，不建立独立安装健康数据库。
 - JSON 测试同时断言 schema、单一 stdout 对象、stderr 诊断边界和退出码。
@@ -80,7 +82,8 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 |--------|----------|----------|
 | 纯函数、helper、validator、renderer | Unit | 相关定向 unit；交付前 `pnpm test:unit` |
 | CLI 入口、write、status、config、TUI | Unit + Integration | 相关定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` 和 `pnpm build` |
-| Source strict cache 或 selector | Unit + Performance + Smoke | `packages/cli/tests/unit/catalog-providers.test.ts`、`pnpm test:perf:gate`、`pnpm test:smoke:fetch` |
+| Catalog source cache 或 source mutation | Unit + Smoke | `packages/cli/tests/unit/catalog-providers.test.ts`、`packages/cli/tests/unit/catalog-source-command.test.ts`、`pnpm test:smoke:fetch` |
+| Offline cleanup 或 `cleanup --force` 恢复 | Unit + Integration | 对应 ownership/rebuild 定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
@@ -92,7 +95,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
-Release unit/integration 使用本地 bare Git 覆盖 schema 4 CLI floor、跨 channel publication lock、tag-first pending guard、完整 ledger 串行化和 combined 同一 build generation 绑定。fixture 不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 CLI target 更新的 package 同步、local prepared artifacts、attempted marker、启用轴的 `Eval → CLI → Catalog` 顺序和 Catalog-only compatibility。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 常规 unit/integration 不应隐式执行 package manager。真实依赖安装、build 后 production closure 和 tarball 内容进入 smoke。
 
@@ -106,7 +109,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
-性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖 warm strict-cache selector、四个 Git/path source 并行 fanout、remote deadline 失败和进程清理确认；不依赖公网。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验、cache publication 和 live component probe 数量。
+性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖 `current`/`last-good` 读取、多个 Git/path source fanout、remote deadline 失败和进程清理确认；不依赖公网。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
 
 ## Test Isolation
 

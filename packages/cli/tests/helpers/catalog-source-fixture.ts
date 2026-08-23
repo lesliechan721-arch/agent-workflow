@@ -82,6 +82,64 @@ export async function createCatalogSnapshotFixture(
   }), { spaces: 2 });
 }
 
+export async function createDependencyCatalogSnapshotFixture(
+  rootDir: string,
+  plugins: Array<{
+    name: string;
+    dependencies?: string[];
+    configureManifest?: (manifest: PluginMeta['manifest']) => void;
+  }>,
+): Promise<void> {
+  for (const plugin of plugins) {
+    await createCatalogSnapshotFixture(
+      rootDir,
+      plugin.name,
+      '0.1.0',
+      `${plugin.name}\n`,
+      (manifest) => {
+        if (plugin.dependencies) manifest.dependencies = plugin.dependencies;
+        manifest.extensions = {
+          instructions: [{
+            name: `${plugin.name}-instruction`,
+            title: plugin.name,
+            content: `${plugin.name}.`,
+          }],
+        };
+        plugin.configureManifest?.(manifest);
+      },
+    );
+  }
+  const metas = await Promise.all(plugins.map((plugin) =>
+    readPluginManifest(path.join(rootDir, 'plugins', plugin.name), { mode: 'bundle' })));
+  const entries = await Promise.all(metas.map((meta) =>
+    createCatalogManifestV4Entry(meta, meta.rootDir)));
+  const marketplaceEntries = metas.map((meta) => ({
+    name: meta.manifest.name,
+    source: `./plugins/${meta.manifest.name}`,
+    description: meta.manifest.description,
+    category: meta.manifest.marketplace.category,
+    strict: meta.manifest.marketplace.strict,
+    policy: meta.manifest.marketplace.policy,
+  }));
+  const marketplace = {
+    name: 'aw',
+    owner: { name: 'Fixture Owner' },
+    interface: { displayName: 'Fixture Marketplace' },
+    plugins: marketplaceEntries,
+  };
+  await Promise.all([
+    fs.writeJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace, { spaces: 2 }),
+    fs.writeJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), marketplace, { spaces: 2 }),
+    fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV4({
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      compatibility: { aw: { minVersion: '0.1.0' } },
+      release: { state: 'development' },
+      entries,
+    }), { spaces: 2 }),
+  ]);
+}
+
 export async function git(cwd: string, args: string[]): Promise<string> {
   const result = await execFileAsync('git', ['-C', cwd, ...args], {
     env: {

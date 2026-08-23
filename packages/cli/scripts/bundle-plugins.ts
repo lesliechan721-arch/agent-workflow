@@ -21,6 +21,7 @@ import {
 } from '../src/utils/manifest.js';
 import type { PlatformName, PluginMeta } from '../src/types.js';
 import { createCatalogRuntimeImportResolver } from '../src/utils/catalog-runtime-projection.js';
+import { orderPluginMetasByDependencies } from '../src/utils/plugin-dependencies.js';
 
 export interface BundlePluginsOptions {
   repoRoot?: string;
@@ -107,10 +108,11 @@ export async function bundlePlugins(
   const buildMode = options.buildMode ?? 'build-free';
 
   await assertPackageVersions(repoRoot);
-  const [sourceMeta, plugins] = await Promise.all([
+  const [sourceMeta, discoveredPlugins] = await Promise.all([
     readMarketplaceSourceMeta(repoRoot),
     discoverPlugins(repoRoot),
   ]);
+  const plugins = orderPluginMetasByDependencies(discoveredPlugins);
 
   await fs.remove(outputRoot);
   await fs.ensureDir(path.join(outputRoot, 'plugins'));

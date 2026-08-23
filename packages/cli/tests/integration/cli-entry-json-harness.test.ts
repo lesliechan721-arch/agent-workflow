@@ -215,7 +215,7 @@ describe('CLI JSON v4 harness', () => {
       receiptSchemaVersion: 4,
       plugin: 'git-commit',
       overallState: 'failed',
-      errors: [expect.objectContaining({ code: 'catalogSourceUnavailable' })],
+      errors: [expect.objectContaining({ code: 'sourceMissing' })],
     });
   });
 });

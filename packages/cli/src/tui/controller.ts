@@ -7,6 +7,7 @@ import type {
   StatusV4PluginSummary,
 } from '../commands/status-v4.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
+import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 import type {
   RebuildProgressFeed,
   RebuildProgressSnapshot,
@@ -17,6 +18,7 @@ import {
   buildTuiViewModel,
   hasInstalledPlacement,
   type PluginListItemViewModel,
+  type PluginDependencyOverviewViewModel,
   type SourceHealthViewModel,
   type SourceDetailViewModel,
   type TuiViewModel,
@@ -38,6 +40,14 @@ export interface IssueOrigin {
   issueKey: string;
   category: UserIssueCategory;
   actionId: string;
+  consumerPluginId?: string;
+  consumerSourceIdentity?: string;
+  consumerPlatform?: PlatformName;
+  consumerScope?: Scope;
+  dependencyPluginId?: string;
+  dependencyPlatform?: PlatformName;
+  dependencyScope?: Scope;
+  dependencyProject?: 'current' | 'other' | null;
 }
 
 export type OperationIntent =
@@ -47,6 +57,7 @@ export type OperationIntent =
       pluginId: string;
       platform: PlatformName | 'both';
       scope: Scope;
+      force?: boolean;
       originIssue?: IssueOrigin;
     }
   | {
@@ -70,8 +81,6 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       projectLayer: ProjectConfigStoreLayer;
-      offline?: true;
-      sourceIdentity?: string;
     }
   | {
       kind: 'sourceMutation';
@@ -97,6 +106,7 @@ export interface OperationEvidence {
     contentDigest?: string;
   };
   targetFingerprint?: string;
+  dependencyPlan?: DependencyOperationPlan;
   config?: {
     scope: Scope;
     projectLayer: ProjectConfigStoreLayer;
@@ -115,6 +125,9 @@ export interface OperationEvidence {
 
 export interface OperationReviewChange {
   kind: 'add' | 'change' | 'remove' | 'keep' | 'warning';
+  group?: 'requested' | 'dependencies' | 'preserved';
+  pluginId?: string;
+  relation?: 'requested' | 'direct' | 'transitive';
   title: string;
   description?: string;
 }
@@ -137,6 +150,7 @@ export interface OperationReviewModel {
   };
   changes: OperationReviewChange[];
   technicalDetails?: string[];
+  equivalentCommand?: string;
   primaryLabel: string;
   destructive?: boolean;
 }
@@ -189,20 +203,32 @@ export interface OperationResultSummary {
   message: string;
   pluginId?: string;
   action?: PluginWriteOperation;
-  applySkippedReason?: 'currentCatalogUnavailable';
   elapsedMs?: number;
   messages?: string[];
   targets?: Array<{
+    pluginId?: string;
     platform: PlatformName;
     scope: Scope;
-    state: 'completed' | 'failed';
+    state: 'completed' | 'kept' | 'failed' | 'skipped';
+    relation?: 'requested' | 'direct' | 'transitive';
+    requiredBy?: string[];
   }>;
+}
+
+export interface PluginOperationProgressLine {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+  relation: 'requested' | 'direct' | 'transitive';
+  requiredBy: string[];
+  state: 'pending' | 'running' | 'completed' | 'kept' | 'failed' | 'skipped';
 }
 
 export interface TuiStatusLoadResult {
   payload: StatusV4Payload;
   pluginSummaries: StatusV4PluginSummary[];
   sourceDetails?: SourceDetailViewModel[];
+  dependencyOverviews?: PluginDependencyOverviewViewModel[];
 }
 
 export interface SourceReferenceSummaryViewModel {
@@ -273,6 +299,7 @@ export interface TuiControllerSnapshot {
   viewModel?: TuiViewModel;
   sourceHealth: SourceHealthViewModel[];
   progress: RebuildProgressSnapshot;
+  progressTargets: PluginOperationProgressLine[];
   activeReview?: OperationReviewModel;
   result?: OperationExecuteResult;
   loadError?: { code: string; message: string };
@@ -329,8 +356,11 @@ function pluginNameFromId(pluginId: string): string {
 }
 
 export function userIssueKey(issue: Pick<UserIssueViewModel,
-  'category' | 'pluginId' | 'sourceId' | 'platform' | 'scope'>): string {
-  return [issue.category, issue.pluginId ?? '', issue.sourceId ?? '', issue.platform ?? '', issue.scope ?? '']
+  'category' | 'pluginId' | 'dependencyPluginId' | 'dependencyPlatform' | 'dependencyScope'
+  | 'dependencyProject' | 'sourceId' | 'sourceIdentity' | 'platform' | 'scope'>): string {
+  return [issue.category, issue.pluginId ?? '', issue.dependencyPluginId ?? '',
+    issue.dependencyPlatform ?? '', issue.dependencyScope ?? '', issue.dependencyProject ?? '',
+    issue.sourceId ?? '', issue.sourceIdentity ?? '', issue.platform ?? '', issue.scope ?? '']
     .join('\0');
 }
 
@@ -347,6 +377,14 @@ function operationLabels(intent: OperationIntent): {
         description: '只执行所选问题处理动作；插件设置保持不变。',
         primaryLabel: '开始处理',
         destructive: intent.action !== 'reinstall',
+      };
+    }
+    if (intent.action === 'cleanup' && intent.force === true) {
+      return {
+        title: '强制清理插件',
+        description: '跳过依赖保护并清理可证明属于 AW 的现场内容。依赖者会变为不完整。配置保持不变。',
+        primaryLabel: '确认强制清理',
+        destructive: true,
       };
     }
     const labels: Record<PluginWriteOperation, [string, string, boolean]> = {
@@ -370,17 +408,15 @@ function operationLabels(intent: OperationIntent): {
   if (intent.kind === 'configReset') {
     return {
       title: '重置插件设置',
-      description: intent.offline
-        ? '删除所选设置层的已存值；当前不重新应用插件内容。'
-        : '删除所选设置层的值，恢复继承。',
+      description: '删除所选设置层的值，恢复继承。',
       primaryLabel: '重置设置',
       destructive: true,
     };
   }
   if (intent.kind === 'sourceMutation') {
     const labels = {
-      add: ['添加来源', '验证来源后保存到来源列表。', '验证并添加', false],
-      update: ['修改来源', '验证修改后保存到来源列表。', '验证并保存', false],
+      add: ['添加来源', '先保存来源配置，再尽力刷新来源。刷新失败时配置仍保留。', '保存并刷新', false],
+      update: ['修改来源', '先保存来源配置，再尽力刷新来源。刷新失败时配置仍保留。', '保存并刷新', false],
       setPrimary: ['设为主来源', '只改变默认 marketplace，不迁移安装。', '设为主来源', false],
       remove: ['移除来源', '移除来源配置；不会删除其它来源。', '移除来源', true],
     } as const;
@@ -393,8 +429,49 @@ function operationLabels(intent: OperationIntent): {
   );
 }
 
-function reviewChanges(intent: OperationIntent): OperationReviewChange[] {
+function dependencyRelation(
+  plan: DependencyOperationPlan,
+  pluginId: string,
+): 'requested' | 'direct' | 'transitive' {
+  if (plan.requestedPluginIds.includes(pluginId)) return 'requested';
+  return plan.dependencyEdges.some((edge) =>
+    plan.requestedPluginIds.includes(edge.from) && edge.to === pluginId)
+    ? 'direct'
+    : 'transitive';
+}
+
+function reviewChanges(
+  intent: OperationIntent,
+  evidence?: OperationEvidence,
+  dependencyOverview?: PluginDependencyOverviewViewModel,
+): OperationReviewChange[] {
   if (intent.kind === 'pluginWrite') {
+    const plan = evidence?.dependencyPlan;
+    if (plan && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
+      const changes = plan.targets.map((target): OperationReviewChange => {
+        const relation = dependencyRelation(plan, target.pluginId);
+        const actionKind = target.action === 'keep'
+          ? 'keep'
+          : target.action === 'install'
+            ? 'add'
+            : 'change';
+        return {
+          kind: actionKind,
+          group: relation === 'requested' ? 'requested' : 'dependencies',
+          pluginId: target.pluginId,
+          relation,
+          title: pluginNameFromId(target.pluginId),
+          description: `${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.resolvedScope === 'user' ? '所有项目' : '当前项目'}${target.action === 'keep' ? ' · 已可用' : ''}`,
+        };
+      });
+      changes.push({
+        kind: 'keep',
+        group: 'preserved',
+        title: '插件设置和已有依赖保持不变',
+        description: '移除根插件时不会自动清理依赖。',
+      });
+      return changes;
+    }
     const platforms: PlatformName[] = intent.platform === 'both'
       ? ['codex', 'claude']
       : [intent.platform];
@@ -405,6 +482,23 @@ function reviewChanges(intent: OperationIntent): OperationReviewChange[] {
         ? '插件设置不会删除。'
         : '执行前会再次检查当前安装状态。',
     }));
+    if (intent.action === 'uninstall' || intent.action === 'cleanup') {
+      changes.push(...(dependencyOverview?.dependencies ?? []).map((dependency) => ({
+        kind: 'keep' as const,
+        group: 'preserved' as const,
+        pluginId: dependency.pluginId,
+        relation: dependency.relation === 'direct' ? 'direct' as const : 'transitive' as const,
+        title: dependency.displayName,
+        description: '依赖保持安装。',
+      })));
+    }
+    if (intent.action === 'cleanup' && intent.force === true) {
+      changes.push({
+        kind: 'warning',
+        title: '跳过依赖保护',
+        description: '依赖此插件的插件会变为不完整，需重新安装后恢复。',
+      });
+    }
     if (intent.originIssue) {
       changes.push(
         { kind: 'keep', title: '插件设置保持不变' },
@@ -417,11 +511,7 @@ function reviewChanges(intent: OperationIntent): OperationReviewChange[] {
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
       : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
-    return intent.offline ? [
-      { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '当前无法取得可信 manifest。' },
-      { kind: 'warning', title: '当前不重新应用插件内容', description: '来源恢复后可重新检查插件。' },
-      { kind: 'keep', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
-    ] : [
+    return [
       { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' },
       { kind: 'change', title: '重新计算有效设置' },
       { kind: 'change', title: '重新应用当前可见安装位置' },
@@ -491,6 +581,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     if (evidence.source.contentDigest) details.push(`Content digest：${evidence.source.contentDigest}`);
   }
   if (evidence.targetFingerprint) details.push(`目标状态：${evidence.targetFingerprint}`);
+  if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${evidence.config.storeDigest}`);
   if (evidence.sourceWrite) {
     details.push(`候选配置：${evidence.sourceWrite.candidateDigest}`);
@@ -532,6 +623,7 @@ export class TuiController {
   #status?: TuiStatusLoadResult;
   #viewModel?: TuiViewModel;
   #progress: RebuildProgressSnapshot = { messages: [] };
+  #progressTargets: PluginOperationProgressLine[] = [];
   #activeReview?: OperationReviewModel;
   #result?: OperationExecuteResult;
   #loadError?: { code: string; message: string };
@@ -552,6 +644,23 @@ export class TuiController {
           messages: progress.messages.slice(-8),
           ...(this.#progress.startedAtMs !== undefined ? { startedAtMs: this.#progress.startedAtMs } : {}),
         };
+        const current = progress.current;
+        if (current) {
+          const [pluginName, placement = ''] = current.target.split(' · ', 2);
+          const platform = placement.startsWith('Codex') ? 'codex'
+            : placement.startsWith('Claude Code') ? 'claude' : undefined;
+          const scope = placement.endsWith('当前项目') ? 'project'
+            : placement.endsWith('当前用户') ? 'user' : undefined;
+          if (pluginName && platform && scope) {
+            this.#progressTargets = this.#progressTargets.map((target) =>
+              pluginNameFromId(target.pluginId) === pluginName
+              && target.platform === platform && target.scope === scope
+                ? { ...target, state: target.state === 'failed' ? 'failed'
+                    : current.phase.endsWith('失败') ? 'failed'
+                    : current.phase.endsWith('已完成') ? 'completed' : 'running' }
+                : target);
+          }
+        }
         this.#publish();
       });
     }
@@ -564,6 +673,7 @@ export class TuiController {
       ...(this.#viewModel ? { viewModel: this.#viewModel } : {}),
       sourceHealth: [...this.#health.values()],
       progress: this.#progress,
+      progressTargets: this.#progressTargets,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
       ...(this.#result ? { result: this.#result } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
@@ -601,6 +711,7 @@ export class TuiController {
       pluginSummaries: this.#status.pluginSummaries,
       sourceHealth: this.#health,
       sourceDetails: this.#status.sourceDetails,
+      dependencyOverviews: this.#status.dependencyOverviews,
     });
   }
 
@@ -610,6 +721,7 @@ export class TuiController {
       return { name: 'pluginList', mode: route.mode };
     }
     const pluginRoute = route.name === 'pluginPreview'
+      || route.name === 'pluginDependencies'
       || route.name === 'installPlacement'
       || route.name === 'installTools'
       || route.name === 'pluginDetail'
@@ -624,7 +736,8 @@ export class TuiController {
     if (pluginRoute && !this.#viewModel?.plugins.some((plugin) => plugin.pluginId === route.pluginId)) {
       return {
         name: 'pluginList',
-        mode: route.name === 'pluginPreview' || route.name === 'installPlacement' || route.name === 'installTools'
+        mode: route.name === 'pluginPreview' || route.name === 'pluginDependencies'
+          || route.name === 'installPlacement' || route.name === 'installTools'
           ? 'browse'
           : 'installed',
       };
@@ -923,6 +1036,33 @@ export class TuiController {
     return plugin ? cloneFrozen(plugin) : undefined;
   }
 
+  getPluginDependencyOverview(pluginId: string): PluginDependencyOverviewViewModel | undefined {
+    const overview = this.#viewModel?.dependencyOverviews.find((entry) => entry.pluginId === pluginId);
+    return overview ? cloneFrozen(overview) : undefined;
+  }
+
+  getBlockingDependents(
+    pluginId: string,
+    platform: PlatformName,
+    scope: Scope,
+  ): PluginDependencyOverviewViewModel['dependents'] {
+    const dependents = this.#viewModel?.dependencyOverviews.find((entry) =>
+      entry.pluginId === pluginId)?.dependents ?? [];
+    return cloneFrozen(dependents.flatMap((dependent) => {
+      const references = (dependent.placementReferences ?? []).filter((reference) =>
+        reference.dependency.pluginId === pluginId
+        && reference.dependency.platform === platform
+        && reference.dependency.scope === scope
+        && (scope === 'user' || reference.dependency.project === 'current')
+        && (reference.consumer.project === 'other'
+          || this.#status?.payload.targets.find((target) =>
+            target.pluginId === reference.consumer.pluginId
+            && target.platform === reference.consumer.platform
+            && target.scope === reference.consumer.scope)?.state !== 'absent'));
+      return references.length > 0 ? [{ ...dependent, placementReferences: references }] : [];
+    }));
+  }
+
   getPlatformPlacement(pluginId: string, platform: PlatformName): PluginListItemViewModel['installedPlacements'][number] | undefined {
     return this.getPluginOverview(pluginId)?.installedPlacements.find((placement) =>
       placement.platform === platform);
@@ -1018,6 +1158,16 @@ export class TuiController {
   async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
     try {
       this.#assertIssueOrigin(intent);
+      if (intent.kind === 'pluginWrite'
+        && (intent.action === 'uninstall' || intent.action === 'cleanup')
+        && intent.force !== true
+        && (intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform])
+          .some((platform) => this.getBlockingDependents(intent.pluginId, platform, intent.scope).length > 0)) {
+        throw new TuiOperationBlockedError(
+          'dependencyStillRequired',
+          '仍有已安装插件依赖这个插件。请先查看完整依赖关系。',
+        );
+      }
       await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
       const evidence = await this.dependencies.captureEvidence(structuredClone(intent), this.#abort.signal);
       return this.#storeOperationReview(intent, evidence, 'push', returnRoute);
@@ -1086,9 +1236,18 @@ export class TuiController {
           ? { version: this.#viewModel.plugins.find((plugin) => plugin.pluginId === intent.pluginId)!.version }
           : {}),
       },
-      changes: reviewChanges(intent),
+      changes: reviewChanges(
+        intent,
+        evidence,
+        'pluginId' in intent ? this.getPluginDependencyOverview(intent.pluginId) : undefined,
+      ),
       technicalDetails: technicalDetails(evidence),
-      primaryLabel: labels.primaryLabel,
+      ...(intent.kind === 'pluginWrite' && intent.action === 'cleanup' && intent.force === true
+        ? { equivalentCommand: `aw cleanup ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope} --force` }
+        : {}),
+      primaryLabel: intent.kind === 'pluginWrite' && evidence.dependencyPlan
+        ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
+        : labels.primaryLabel,
       ...(labels.destructive ? { destructive: true } : {}),
     };
     this.#tickets.set(reviewToken, {
@@ -1137,6 +1296,15 @@ export class TuiController {
     let generation = this.#generation;
     const startedAtMs = this.dependencies.now?.() ?? Date.now();
     this.#progressFeed?.clearCurrent?.();
+    const dependencyPlan = ticket.evidence.dependencyPlan;
+    this.#progressTargets = dependencyPlan?.targets.map((target) => ({
+      pluginId: target.pluginId,
+      platform: target.platform,
+      scope: target.resolvedScope,
+      relation: dependencyRelation(dependencyPlan, target.pluginId),
+      requiredBy: target.requiredBy,
+      state: target.action === 'keep' ? 'kept' as const : 'pending' as const,
+    })) ?? [];
     this.#progress = {
       messages: [],
       startedAtMs,
@@ -1196,6 +1364,13 @@ export class TuiController {
         structuredClone(ticket.intent),
         structuredClone(ticket.evidence),
       );
+      const executionTargets = operationResultSummary(ticket.intent, execution).targets ?? [];
+      this.#progressTargets = this.#progressTargets.map((target) => {
+        const completed = executionTargets.find((candidate) =>
+          candidate.pluginId === target.pluginId
+          && candidate.platform === target.platform && candidate.scope === target.scope);
+        return completed ? { ...target, state: completed.state } : target;
+      });
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#cancelSourceRefreshes();
       generation = ++this.#generation;
@@ -1235,7 +1410,10 @@ export class TuiController {
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
         ? operationResultSummary(ticket.intent, execution)
         : undefined;
-      if (pluginSummary?.code === 'operationFailed') {
+      const dependencyFailure = pluginSummary?.code === 'operationFailed'
+        && pluginSummary.targets?.some((target) => target.relation !== undefined
+          && (target.state === 'failed' || target.state === 'skipped'));
+      if (pluginSummary?.code === 'operationFailed' && !dependencyFailure) {
         return this.#setBlocked(operationId, 'operationFailed', {
           intent: ticket.intent,
           navigation: 'result',
@@ -1243,44 +1421,8 @@ export class TuiController {
           writeMayHaveCompleted: true,
         });
       }
-      if (ticket.intent.kind === 'configReset' && ticket.intent.offline) {
-        let availability: ConfigResetAvailability;
-        try {
-          availability = await this.getConfigResetAvailability(
-            ticket.intent.pluginId,
-            { scope: ticket.intent.scope, projectLayer: ticket.intent.projectLayer },
-          );
-          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-        } catch (error) {
-          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-          await this.#logErrorSafe(error, 'tuiStateReloadFailed', {
-            privateConfigOperation: true,
-          });
-          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-          return this.#setBlocked(operationId, 'tuiStateReloadFailed', {
-            intent: ticket.intent,
-            navigation: 'result',
-            returnRoute: ticket.returnRoute,
-            writeMayHaveCompleted: true,
-          });
-        }
-        if (availability.exists) {
-          const expectedIdentity = ticket.evidence.source?.sourceIdentity;
-          const identityChanged = availability.sourceIdentity !== undefined
-            && expectedIdentity !== undefined
-            && availability.sourceIdentity !== expectedIdentity;
-          return this.#setBlocked(operationId, identityChanged
-            ? 'operationReviewStale'
-            : 'configResetStillPresent', {
-            intent: ticket.intent,
-            navigation: 'result',
-            returnRoute: ticket.returnRoute,
-            writeMayHaveCompleted: true,
-          });
-        }
-      }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
-      if (originIssue
+      if (originIssue && !dependencyFailure
         && this.#viewModel?.issues.some((issue) => userIssueKey(issue) === originIssue.issueKey)) {
         return this.#setBlocked(operationId, 'issueStillPresent', {
           intent: ticket.intent,
@@ -1294,20 +1436,6 @@ export class TuiController {
         const configWrite = typeof execution === 'object' && execution !== null
           ? (execution as { configWrite?: unknown }).configWrite
           : undefined;
-        if (configWrite === 'rolledBack') {
-          return this.#setBlocked(operationId, 'configWriteRolledBack', {
-            intent: ticket.intent,
-            navigation: 'back',
-          });
-        }
-        if (configWrite === 'rollbackFailed') {
-          return this.#setBlocked(operationId, 'configWriteRollbackFailed', {
-            intent: ticket.intent,
-            navigation: 'result',
-            returnRoute: ticket.returnRoute,
-            writeMayHaveCompleted: true,
-          });
-        }
         if (configWrite !== 'succeeded') {
           return this.#setBlocked(operationId, 'configWriteUnconfirmed', {
             intent: ticket.intent,
@@ -1315,11 +1443,13 @@ export class TuiController {
           });
         }
       }
-      const baseSummary = pluginSummary ?? operationResultSummary(ticket.intent, execution);
+      const baseSummary = dependencyFailure && pluginSummary
+        ? { ...pluginSummary, code: 'operationPartial' as const, message: '依赖安装没有全部完成。' }
+        : pluginSummary ?? operationResultSummary(ticket.intent, execution);
       const summary: OperationResultSummary = {
         ...baseSummary,
         elapsedMs: Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs),
-        messages: this.#progress.messages.slice(-8),
+        messages: [...this.#progress.messages, ...(baseSummary.messages ?? [])].slice(-8),
       };
       this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
       if (summary.code === 'operationFailed') {
@@ -1478,11 +1608,7 @@ export class TuiController {
   ): OperationExecuteResult {
     const message = options?.writeMayHaveCompleted
       ? '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。'
-      : code === 'configWriteRolledBack'
-      ? '设置未保存。原设置已安全恢复，请检查草稿后重试。'
-      : code === 'configWriteRollbackFailed'
-        ? '设置未确认保存，且恢复未完整完成。请停止修改并检查问题。'
-        : code === 'configResetStillPresent'
+      : code === 'configResetStillPresent'
           ? '重置执行后设置层仍然存在。请重新检查设置问题。'
         : code === 'issueStillPresent'
           ? '写入已完成，但重新检查后原问题仍然存在。'
@@ -1531,12 +1657,20 @@ export class TuiController {
     const action = issue?.actions.find((candidate) => candidate.id === origin.actionId);
     if (!issue || !action || issue.category !== origin.category
       || userIssueKey(issue) !== origin.issueKey
-      || issue.pluginId !== intent.pluginId
+      || (action.pluginId ?? issue.pluginId) !== intent.pluginId
       || issue.platform !== intent.platform
       || issue.sourceId !== sourceIdFromPluginId(intent.pluginId)) {
-      throw new TuiOperationBlockedError('issueOriginInvalid', '原问题与当前状态不匹配。');
+      throw new TuiOperationBlockedError('operationReviewStale', '原问题与当前状态不匹配。');
     }
-    const expected = issue.category === 'incompleteInstallation'
+    const expected = issue.category === 'dependencyMissing'
+      ? action.id === 'installDependency' && action.writeAction === 'install'
+        ? { action: 'install' as const, scope: action.scope, platform: action.platform }
+        : undefined
+      : issue.category === 'dependencyNotReady'
+        ? action.id === 'reinstallDependency' && action.writeAction === 'reinstall'
+          ? { action: 'reinstall' as const, scope: action.scope, platform: action.platform }
+          : undefined
+        : issue.category === 'incompleteInstallation'
       ? origin.actionId === 'reinstall'
         ? { action: 'reinstall' as const, scope: issue.scope }
         : origin.actionId === 'remove'
@@ -1549,8 +1683,18 @@ export class TuiController {
             ? { action: 'uninstall' as const, scope: 'user' as const }
             : undefined
         : undefined;
-    if (!expected || intent.action !== expected.action || intent.scope !== expected.scope) {
-      throw new TuiOperationBlockedError('issueOriginInvalid', '问题动作与当前目标不匹配。');
+    const dependencyOriginValid = issue.category !== 'dependencyMissing' && issue.category !== 'dependencyNotReady'
+      || (origin.consumerPluginId === issue.pluginId
+        && origin.consumerSourceIdentity === issue.sourceIdentity
+        && origin.consumerPlatform === issue.platform
+        && origin.consumerScope === issue.scope
+        && origin.dependencyPluginId === issue.dependencyPluginId
+        && origin.dependencyPlatform === issue.dependencyPlatform
+        && origin.dependencyScope === issue.dependencyScope
+        && origin.dependencyProject === issue.dependencyProject);
+    if (!expected || intent.action !== expected.action || intent.scope !== expected.scope
+      || ('platform' in expected && intent.platform !== expected.platform) || !dependencyOriginValid) {
+      throw new TuiOperationBlockedError('operationReviewStale', '问题动作与当前目标不匹配。');
     }
   }
 
@@ -1567,6 +1711,16 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  const sourceWarnings = intent.kind === 'sourceMutation'
+    && typeof execution === 'object' && execution !== null
+    && Array.isArray((execution as { errors?: unknown }).errors)
+    ? (execution as { errors: Array<{ message?: unknown }> }).errors.flatMap((error) =>
+        typeof error?.message === 'string' ? [`警告：${error.message}`] : [])
+    : [];
+  const executionPlan = typeof execution === 'object' && execution !== null
+    && typeof (execution as { dependencyPlan?: unknown }).dependencyPlan === 'object'
+    ? (execution as { dependencyPlan: DependencyOperationPlan }).dependencyPlan
+    : undefined;
   const rawTargets = typeof execution === 'object' && execution !== null
     && Array.isArray((execution as { targetResults?: unknown }).targetResults)
     ? (execution as { targetResults: Array<Record<string, unknown>> }).targetResults
@@ -1577,14 +1731,27 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
       : entry;
     const platform = target.platform;
     const scope = target.scope;
-    const state = entry.state;
+    const pluginId = target.pluginId;
+    const rawState = entry.state;
+    const action = entry.action;
     if ((platform !== 'codex' && platform !== 'claude')
       || (scope !== 'user' && scope !== 'project')
-      || (state !== 'completed' && state !== 'failed')) return [];
+      || (rawState !== 'completed' && rawState !== 'failed')) return [];
+    const planned = executionPlan?.targets.find((candidate) =>
+      candidate.pluginId === pluginId && candidate.platform === platform
+      && candidate.resolvedScope === scope);
+    const state = action === 'keep' ? 'kept' as const
+      : action === 'skipped' ? 'skipped' as const
+        : rawState as 'completed' | 'failed';
     return [{
+      ...(typeof pluginId === 'string' ? { pluginId } : {}),
       platform: platform as PlatformName,
       scope: scope as Scope,
-      state: state as 'completed' | 'failed',
+      state,
+      ...(planned && executionPlan ? {
+        relation: dependencyRelation(executionPlan, planned.pluginId),
+        requiredBy: planned.requiredBy,
+      } : {}),
     }];
   });
   const inferredTargets = intent.kind === 'pluginWrite' && targets.length === 0
@@ -1594,30 +1761,24 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         state: 'completed' as const,
       }))
     : targets;
-  const partial = inferredTargets.some((target) => target.state === 'failed')
-    && inferredTargets.some((target) => target.state === 'completed');
+  const partial = inferredTargets.some((target) => target.state === 'failed' || target.state === 'skipped')
+    && inferredTargets.some((target) => target.state === 'completed' || target.state === 'kept');
   const overallFailed = typeof execution === 'object' && execution !== null
     && (execution as { overallState?: unknown }).overallState === 'failed';
   const failed = overallFailed || (inferredTargets.length > 0
-    && inferredTargets.every((target) => target.state === 'failed'));
-  const applySkippedReason = typeof execution === 'object' && execution !== null
-    && (execution as { applySkippedReason?: unknown }).applySkippedReason === 'currentCatalogUnavailable'
-    ? 'currentCatalogUnavailable' as const
-    : undefined;
+    && inferredTargets.every((target) => target.state === 'failed' || target.state === 'skipped'));
   return {
     code: failed && !partial ? 'operationFailed' : partial ? 'operationPartial' : 'operationSucceeded',
     message: failed && !partial
       ? '操作结果无法确认。'
       : partial
       ? '操作只完成了一部分。'
-      : intent.kind === 'configReset' && intent.offline
-        ? '设置层已重置，插件内容尚未重新应用。'
-        : '操作已完成。',
+      : '操作已完成。',
     ...(intent.kind === 'pluginWrite' ? {
       pluginId: intent.pluginId,
       action: intent.action,
     } : {}),
-    ...(applySkippedReason ? { applySkippedReason } : {}),
     ...(inferredTargets.length > 0 ? { targets: inferredTargets } : {}),
+    ...(sourceWarnings.length > 0 ? { messages: sourceWarnings } : {}),
   };
 }

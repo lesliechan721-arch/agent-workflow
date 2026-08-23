@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import {
   computeBuildOutputDigest,
 } from '../../../../scripts/build/build-cache.mjs';
-import { bootstrapCatalog } from '../../../../scripts/release/bootstrap-catalog.mjs';
+import { publishStagedCatalog } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
 
@@ -107,41 +107,25 @@ async function runBootstrap(config) {
   await execFileAsync('git', ['init', '--bare', '--quiet', config.remoteUrl]);
   const catalogModules = await loadCatalogModules(config.repoRoot);
   let snapshotIndex = 0;
-  const run = (mode, version) => bootstrapCatalog(
-    [mode, '--catalog-version', version],
-    {
-      testRemoteUrl: config.remoteUrl,
-      catalogModules,
-      assertReleaseWorktreeClean: async () => undefined,
-      assertCurrentReleaseIdentity: async () => undefined,
-      runCommand: async () => undefined,
-      withPrivateCatalogStageRoot: async (callback) => callback(config.stageRoot),
-      stageCatalogRelease: async (argv, options) => {
-        const validation = await catalogModules.catalogSnapshot.validateCatalogSnapshot(
-          options.snapshot.catalogOutputRoot,
-        );
-        return stageCatalogRelease(argv, {
-          internalOutputRoot: options.internalOutputRoot,
-          previousReleaseLedger: options.previousReleaseLedger,
-          releaseIdentity: options.releaseIdentity,
-          snapshot: options.snapshot,
-          catalogRelease: await createCatalogRelease(
-            options.snapshot.catalogOutputRoot,
-            validation.manifest,
-            argv[1],
-          ),
-        });
-      },
-      snapshotOptions: {
-        snapshotRunToken: config.snapshotTokens[snapshotIndex++],
-      },
-    },
-  );
+  const run = async (mode, version) => {
+    const buildCatalogRoot = path.join(config.repoRoot, 'packages', 'cli', 'plugins-dist');
+    const buildManifest = JSON.parse(await fs.readFile(path.join(
+      buildCatalogRoot, 'catalog-manifest.json',
+    ), 'utf8'));
+    const staged = await stageCatalogRelease(['--catalog-version', version], {
+      internalOutputRoot: config.stageRoot,
+      snapshotOptions: { snapshotRunToken: config.snapshotTokens[snapshotIndex++] },
+      catalogRelease: await createCatalogRelease(buildCatalogRoot, buildManifest, version),
+    });
+    return publishStagedCatalog({
+      mode,
+      catalogVersion: version,
+      stagedRoot: staged.outputRoot,
+    }, { remoteUrl: config.remoteUrl, catalogModules });
+  };
   const beta = await run('beta', '92.0.0-beta.1');
-  const retry = await run('beta', '92.0.0-beta.1');
   const latest = await run('latest', '92.0.0');
-  const retryAfterLatest = await run('beta', '92.0.0-beta.1');
-  return { beta, retry, latest, retryAfterLatest };
+  return { beta, latest };
 }
 
 async function main() {

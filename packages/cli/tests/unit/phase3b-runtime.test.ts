@@ -43,7 +43,6 @@ import { createCatalogManifestV3Entry } from '../../src/utils/catalog-manifest-v
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import {
   resetPluginConfigWithHelper,
-  setPluginConfigWriteTestHooksForTests,
 } from '../../src/utils/plugin-config-write.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import {
@@ -359,7 +358,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).rejects.toThrow();
   });
 
-  it('emits config receipt 4 and resets a namespaced store after its source is removed', async () => {
+  it('emits config receipt 4 and keeps a namespaced store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const primaryRoot = path.join(isolation.layout.fixtureCwd, 'primary-source');
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
@@ -374,7 +373,7 @@ describe('phase 3B namespaced runtime stores', () => {
       }),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const configured = await replaceCatalogSourcesConfig({
+    await replaceCatalogSourcesConfig({
       config: {
         schemaVersion: 1,
         sources: [
@@ -406,16 +405,7 @@ describe('phase 3B namespaced runtime stores', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 1,
-        sources: [{ id: 'primary', type: 'path', primary: true, path: primaryRoot }],
-      },
-      expectedDigest: configured.digest,
-      env: isolation.env,
-    });
+    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
     const skillsRoot = path.join(
       isolation.env.AW_HOME!,
       'marketplaces',
@@ -508,7 +498,7 @@ describe('phase 3B namespaced runtime stores', () => {
       io: changedResetOutput.io,
       interactive: false,
     })).toBe(1);
-    expect(changedResetOutput.readStderr()).toContain('sourceChanged');
+    expect(changedResetOutput.readStderr()).toContain('sourceMissing');
     await fs.remove(ownerMarker);
     await writeSkillOwnerMarker({
       skillRoot,
@@ -536,7 +526,10 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(uninstall).toMatchObject({
       overallState: 'failed',
       rebuildResults: [expect.objectContaining({
-        error: expect.objectContaining({ phase: 'active.read' }),
+        error: expect.objectContaining({
+          phase: 'preflight',
+          message: expect.stringContaining('catalogSourceUnavailable'),
+        }),
       })],
     });
     expect(await fs.pathExists(skillRoot)).toBe(true);
@@ -561,7 +554,10 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(corruptUninstall).toMatchObject({
       overallState: 'failed',
       rebuildResults: [expect.objectContaining({
-        error: expect.objectContaining({ phase: 'active.read' }),
+        error: expect.objectContaining({
+          phase: 'preflight',
+          message: expect.stringContaining('catalogSourceUnavailable'),
+        }),
       })],
     });
     expect(await fs.pathExists(skillRoot)).toBe(true);
@@ -577,7 +573,13 @@ describe('phase 3B namespaced runtime stores', () => {
         stdout: 'codex-cli 0.200.0',
         stderr: '',
       }),
-    })).resolves.toMatchObject({ overallState: 'succeeded' });
+    })).resolves.toMatchObject({
+      overallState: 'succeeded',
+      rebuildResults: [expect.objectContaining({
+        removed: expect.arrayContaining([expect.any(String)]),
+        status: 'succeeded',
+      })],
+    });
     expect(await fs.pathExists(skillRoot)).toBe(false);
 
     const resetOutput = createCapturedCliIo();
@@ -586,17 +588,19 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       io: resetOutput.io,
       interactive: false,
-    })).toBe(0);
-    expect(JSON.parse(resetOutput.readStdout())).toMatchObject({
-      receiptSchemaVersion: 4,
-      command: 'config:reset',
-      deleted: true,
-      pluginId: 'team/demo',
+    })).toBe(1);
+    expect(resetOutput.readStderr()).toContain('sourceMissing');
+    expect(await fs.pathExists(resolvePluginConfigStorePath({
       sourceId: 'team',
-    });
+      sourceIdentity: setReceipt.sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }))).toBe(true);
   });
 
-  it('recovers a lost primary native-only consumer with its persisted marketplace name', async () => {
+  it('cleans a lost-source native consumer from live inventory', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
     await Promise.all([
@@ -665,9 +669,13 @@ describe('phase 3B namespaced runtime stores', () => {
         return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
       },
     });
-    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result).toMatchObject({
+      overallState: 'succeeded',
+      targetResults: [expect.objectContaining({ state: 'completed' })],
+    });
     expect(calls).toContain('codex plugin remove demo@aw');
-    expect(calls).not.toContain('codex plugin remove demo@aw-team');
+    await expect(fs.pathExists(cacheRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(installedRoot)).resolves.toBe(false);
   });
 
   it('keeps an existing marketplace root when its strict identity is missing', async () => {
@@ -718,7 +726,7 @@ describe('phase 3B namespaced runtime stores', () => {
       entry.startsWith('team.backup-'))).toEqual([]);
   });
 
-  it('recovers live state and stored config when a configured source drops the plugin bundle', async () => {
+  it('keeps live state and stored config when a configured source drops the plugin bundle', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'bundle-removed-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
@@ -839,7 +847,7 @@ describe('phase 3B namespaced runtime stores', () => {
       io: blockedReset.io,
       interactive: false,
     })).toBe(1);
-    expect(blockedReset.readStderr()).toContain('still has live targets');
+    expect(blockedReset.readStderr()).toContain('configSchemaUnavailable');
     await expect(cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -847,7 +855,10 @@ describe('phase 3B namespaced runtime stores', () => {
     }, {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
-    })).resolves.toMatchObject({ overallState: 'succeeded' });
+    })).resolves.toMatchObject({
+      overallState: 'succeeded',
+      targetResults: [expect.objectContaining({ state: 'completed' })],
+    });
     expect(await fs.pathExists(skillRoot)).toBe(false);
     const resetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--yes', '--json'], {
@@ -855,8 +866,16 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       io: resetOutput.io,
       interactive: false,
-    })).toBe(0);
-    expect(JSON.parse(resetOutput.readStdout())).toMatchObject({ deleted: true, pluginId: 'team/demo' });
+    })).toBe(1);
+    expect(resetOutput.readStderr()).toContain('configSchemaUnavailable');
+    await expect(readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ exists: true, values: { mode: 'fast' } });
   });
 
   it('resolves only sources with live namespaced targets for upgrade --all', async () => {
@@ -1809,20 +1828,21 @@ describe('phase 3B namespaced runtime stores', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    let mutation: Awaited<ReturnType<typeof updateCatalogSourceCommand>> | undefined;
+    const originalSourceIdentity = await calculateCatalogSourceIdentity({
+      id: 'team', type: 'path', primary: true, path: sourceRoot,
+    });
+    const installBuilt = deferred();
+    const resumeInstall = deferred();
     setRebuildCommandTestHooksForTests({
       afterTargetBuilt: async () => {
-        mutation = await updateCatalogSourceCommand({
-          sourceId: 'team',
-          update: { type: 'path', path: replacementRoot },
-          cliVersion: '1.0.0',
-          cwd: isolation.layout.fixtureCwd,
-          env: isolation.env,
-        });
+        installBuilt.resolve();
+        await resumeInstall.promise;
       },
     });
+    let installing: ReturnType<typeof installWriteCommand> | undefined;
+    let mutation: ReturnType<typeof updateCatalogSourceCommand> | undefined;
     try {
-      const installed = await installWriteCommand(['team/demo'], {
+      installing = installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
         scope: 'project',
@@ -1830,23 +1850,39 @@ describe('phase 3B namespaced runtime stores', () => {
         env: isolation.env,
         nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
       });
-      expect(mutation).toMatchObject({ ok: true, sourceId: 'team' });
-      expect(installed).toMatchObject({
-        overallState: 'failed',
-        rebuildResults: [expect.objectContaining({
-          failures: [expect.objectContaining({ message: expect.stringContaining('catalogSourceConflict') })],
-        })],
+      await installBuilt.promise;
+      let mutationCompleted = false;
+      mutation = updateCatalogSourceCommand({
+        sourceId: 'team',
+        update: { type: 'path', path: replacementRoot },
+        cliVersion: '1.0.0',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
       });
+      void mutation.then(
+        () => { mutationCompleted = true; },
+        () => { mutationCompleted = true; },
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mutationCompleted).toBe(false);
+
+      resumeInstall.resolve();
+      await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
+      await expect(mutation).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+      expect(mutationCompleted).toBe(true);
       expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(configured.digest);
       const inventory = await inventoryCatalogSourceReferences({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
       });
-      expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      expect(inventory.references).toContainEqual(expect.objectContaining({
         kind: 'namespacedOwner',
         sourceId: 'team',
+        sourceIdentity: originalSourceIdentity,
       }));
     } finally {
+      resumeInstall.resolve();
+      await Promise.allSettled([installing, mutation].filter((value) => value !== undefined));
       setRebuildCommandTestHooksForTests(undefined);
     }
   });
@@ -1897,7 +1933,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }
   });
 
-  it('removes only an orphan schema 2 lifecycle snapshot during qualified cleanup', async () => {
+  it('keeps an orphan schema 2 lifecycle snapshot during qualified cleanup', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-lifecycle-source');
     await createCatalogSnapshotFixture(sourceRoot);
@@ -1959,10 +1995,6 @@ describe('phase 3B namespaced runtime stores', () => {
       sourceId: 'team', sourceIdentity, pluginName: 'demo', platform: 'codex', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
-
     await expect(cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
@@ -1970,7 +2002,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }, { env: isolation.env })).resolves.toMatchObject({
       overallState: 'failed',
       rebuildResults: [expect.objectContaining({
-        error: expect.objectContaining({ message: expect.stringContaining('liveOwnershipRequired') }),
+        error: expect.objectContaining({ message: expect.stringContaining('Ownership cleanup left residual components') }),
       })],
     });
     expect(await fs.pathExists(target.activeRoot)).toBe(true);
@@ -1986,207 +2018,8 @@ describe('phase 3B namespaced runtime stores', () => {
         throw new Error('orphan metadata cleanup must not call the native CLI');
       },
     });
-    expect(cleanup).toMatchObject({
-      overallState: 'succeeded',
-      rebuildResults: [expect.objectContaining({
-        actions: [{ name: 'active.remove', status: 'succeeded' }],
-      })],
-    });
-    expect(await fs.pathExists(target.activeRoot)).toBe(false);
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).resolves.toMatchObject({ ok: true, sourceId: 'team' });
-  });
-
-  it('serializes orphan cleanup validation and removal with a concurrent install', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-cleanup-race-source');
-    await createCatalogSnapshotFixture(sourceRoot);
-    await fs.outputFile(
-      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'uninstall.mjs'),
-      'export {};\n',
-    );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
-      manifest.scripts = {
-        lifecycle: {
-          uninstall: { default: { runner: 'node', path: './scripts/uninstall.mjs' } },
-        },
-      };
-      manifest.extensions = {
-        instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
-      };
-      manifest.marketplace.policy.products = ['CODEX'];
-    });
-    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 1,
-        sources: [
-          ...before.config.sources,
-          { id: 'team', type: 'path' as const, primary: false, path: sourceRoot },
-        ],
-      },
-      expectedDigest: before.digest,
-      env: isolation.env,
-    });
-    const sourceIdentity = await calculateCatalogSourceIdentity({
-      id: 'team', type: 'path', primary: false, path: sourceRoot,
-    });
-    const plugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'demo'), { mode: 'bundle' });
-    plugin.sourceId = 'team';
-    plugin.sourceIdentity = sourceIdentity;
-    plugin.pluginId = 'team/demo';
-    const active = await resolveLifecycleActiveTarget({
-      sourceId: 'team', sourceIdentity, pluginName: 'demo', platform: 'codex', scope: 'project',
-      cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    });
-    const publishOrphan = async (): Promise<void> => {
-      const prepared = await prepareLifecycleActiveSnapshot({
-        sourceId: 'team',
-        sourceIdentity,
-        plugin,
-        platform: 'codex',
-        scope: 'project',
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        artifacts: [],
-        loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-      });
-      expect(prepared.status).toBe('staged');
-      await promoteLifecycleActiveSnapshot(prepared);
-    };
-    const commandOptions = {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex' as const,
-      scope: 'project' as const,
-    };
-    const runtime = {
-      env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
-    };
-
-    await publishOrphan();
-    const cleanupValidated = deferred();
-    const resumeCleanup = deferred();
-    const installAttempted = deferred();
-    let installBuilt = false;
-    setRebuildCommandTestHooksForTests({
-      beforeOperationLockAcquire: async ({ command }) => {
-        if (command === 'install') installAttempted.resolve();
-      },
-      afterTargetBuilt: async ({ command }) => {
-        if (command === 'install') installBuilt = true;
-      },
-      afterOrphanCleanupValidated: async () => {
-        cleanupValidated.resolve();
-        await resumeCleanup.promise;
-      },
-    });
-    let cleaning: ReturnType<typeof cleanupWriteCommand> | undefined;
-    let installing: ReturnType<typeof installWriteCommand> | undefined;
-    try {
-      cleaning = cleanupWriteCommand(['team/demo'], commandOptions, runtime);
-      await cleanupValidated.promise;
-      installing = installWriteCommand(['team/demo'], commandOptions, runtime);
-      await installAttempted.promise;
-      expect(installBuilt).toBe(false);
-      resumeCleanup.resolve();
-      await expect(cleaning).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      expect(await fs.pathExists(active.activeRoot)).toBe(true);
-    } finally {
-      resumeCleanup.resolve();
-      await Promise.allSettled([cleaning, installing].filter((value) => value !== undefined));
-      setRebuildCommandTestHooksForTests(undefined);
-    }
-
-    await expect(cleanupWriteCommand(['team/demo'], commandOptions, runtime))
-      .resolves.toMatchObject({ overallState: 'succeeded' });
-    await publishOrphan();
-    const cleanupHasFirstCanonicalLock = deferred();
-    const allowCleanupSecondLock = deferred();
-    const configAttemptsFirstCanonicalLock = deferred();
-    let configAcquiredAnyLock = false;
-    setRebuildCommandTestHooksForTests({
-      beforeOperationLockAcquire: async ({ command, identity }) => {
-        if (command === 'cleanup' && identity.platform === 'codex') {
-          cleanupHasFirstCanonicalLock.resolve();
-          await allowCleanupSecondLock.promise;
-        }
-      },
-    });
-    setPluginConfigWriteTestHooksForTests({
-      beforeOperationLockAcquire: async ({ platform }) => {
-        if (platform === 'claude') configAttemptsFirstCanonicalLock.resolve();
-      },
-      afterOperationLockAcquire: async () => {
-        configAcquiredAnyLock = true;
-      },
-    });
-    let orderedCleanup: ReturnType<typeof cleanupWriteCommand> | undefined;
-    let orderedConfig: ReturnType<typeof resetPluginConfigWithHelper> | undefined;
-    try {
-      orderedCleanup = cleanupWriteCommand(['team/demo'], {
-        ...commandOptions,
-        platform: 'both',
-      }, runtime);
-      await cleanupHasFirstCanonicalLock.promise;
-      orderedConfig = resetPluginConfigWithHelper({
-        plugin,
-        pluginName: 'demo',
-        scope: 'project',
-        projectLayer: 'shared',
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        reviewPreflight: async () => undefined,
-      });
-      await configAttemptsFirstCanonicalLock.promise;
-      expect(configAcquiredAnyLock).toBe(false);
-      allowCleanupSecondLock.resolve();
-      await expect(orderedCleanup).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(orderedConfig).resolves.toMatchObject({ configWrite: 'succeeded' });
-    } finally {
-      allowCleanupSecondLock.resolve();
-      await Promise.allSettled([orderedCleanup, orderedConfig].filter((value) => value !== undefined));
-      setPluginConfigWriteTestHooksForTests(undefined);
-      setRebuildCommandTestHooksForTests(undefined);
-    }
-    await publishOrphan();
-    const installBuiltWithLock = deferred();
-    const resumeInstall = deferred();
-    const cleanupAttempted = deferred();
-    setRebuildCommandTestHooksForTests({
-      beforeOperationLockAcquire: async ({ command }) => {
-        if (command === 'cleanup') cleanupAttempted.resolve();
-      },
-      afterTargetBuilt: async ({ command }) => {
-        if (command === 'install') {
-          installBuiltWithLock.resolve();
-          await resumeInstall.promise;
-        }
-      },
-    });
-    cleaning = undefined;
-    installing = undefined;
-    try {
-      installing = installWriteCommand(['team/demo'], commandOptions, runtime);
-      await installBuiltWithLock.promise;
-      cleaning = cleanupWriteCommand(['team/demo'], commandOptions, runtime);
-      await cleanupAttempted.promise;
-      resumeInstall.resolve();
-      await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(cleaning).resolves.toMatchObject({
-        overallState: 'failed',
-        rebuildResults: [expect.objectContaining({
-          error: expect.objectContaining({ message: expect.stringContaining('liveOwnershipRequired') }),
-        })],
-      });
-      expect(await fs.pathExists(active.activeRoot)).toBe(true);
-    } finally {
-      resumeInstall.resolve();
-      await Promise.allSettled([cleaning, installing].filter((value) => value !== undefined));
-      setRebuildCommandTestHooksForTests(undefined);
-    }
+    expect(cleanup).toMatchObject({ overallState: 'failed' });
+    expect(await fs.pathExists(target.activeRoot)).toBe(true);
   });
 
   it('does not consume a lost-source snapshot after its last live owner disappears', async () => {
@@ -2270,7 +2103,7 @@ describe('phase 3B namespaced runtime stores', () => {
       expect(result).toMatchObject({
         overallState: 'failed',
         rebuildResults: [expect.objectContaining({
-          error: expect.objectContaining({ message: expect.stringContaining('liveOwnershipRequired') }),
+          error: expect.objectContaining({ message: expect.stringContaining('catalogSourceUnavailable') }),
         })],
       });
       expect(await fs.pathExists(active.activeRoot)).toBe(true);

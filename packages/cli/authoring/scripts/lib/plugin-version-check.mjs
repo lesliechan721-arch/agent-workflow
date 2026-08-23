@@ -13,7 +13,7 @@ import {
 } from './plugin-root.mjs';
 
 const execFileAsync = promisify(execFile);
-const EXPECTED_MANIFEST_CONTRACT_VERSION = 3;
+const EXPECTED_MANIFEST_CONTRACT_VERSION = 4;
 const CLI_PACKAGE_NAME = '@lesliechan721/aw';
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CLI_REGISTRY_RELATIVE_PATH = 'src/utils/skill-frontmatter-capabilities.json';
