@@ -45,14 +45,13 @@ export interface ComparisonAggregate {
 }
 
 export interface EvalRunBundle {
-  schemaVersion: 2
-  producer: 'run-agent-skill-evals'
+  schemaVersion: 3
+  runner: { id: string; version: string }
   independentContext: boolean
   provider: { id: string; version: string }
   planDigest: Digest
   targetSkillDigest: Digest
   caseCorpusDigest: Digest
-  preflightAuditDigest: Digest
   comparisonPlanned: boolean
   evidenceLevel: 'executed' | 'comparative'
   runs: EvalRun[]

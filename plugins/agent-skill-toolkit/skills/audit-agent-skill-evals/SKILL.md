@@ -34,7 +34,7 @@ metadata:
 
 `skill-defect | oracle-defect | fixture-defect | grader-defect | runtime-or-tool-defect | model-variance | stale-case | insufficient-runs | expected-tradeoff | unknown`
 
-运行 `node scripts/validate-eval-audit-result.mjs <audit.json> --run-bundle <bundle.json> --format json`。输出 schema v3，并把实际 bundle bytes 的 digest 写入 `runBundleDigest`。只有 preflight 与 `EvalRunBundle` 的 Skill/corpus/audit digest 全部匹配、场景现实可达、结果可复现并归因为 `skill-defect` 时，才输出 `candidate-skill-fix`。混合低样本结果默认是证据不足。
+运行 `node scripts/validate-eval-audit-result.mjs <audit.json> --run-bundle <bundle.json> --format json`。输出 schema v3，并把实际 bundle bytes 的 digest 写入 `runBundleDigest`。只有 preflight 与 `EvalRunBundle` 的 Skill/corpus digest 匹配、triage 精确绑定 bundle bytes、场景现实可达、结果可复现并归因为 `skill-defect` 时，才输出 `candidate-skill-fix`。混合低样本结果默认是证据不足。
 
 详细标准见 `references/eval-audit-standard.md`。
 

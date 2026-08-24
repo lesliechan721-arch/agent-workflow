@@ -49,7 +49,7 @@ node scripts/check-aw-plugin-release.mjs <plugin-root> \
   [--triage-audit <audit.json>]
 ```
 
-发布只接受 full、coverage 100%、总体 confidence 为 medium/high 且 effective design 为 pass 的 ReviewResultLite v2。声明 required Eval 的目标必须按 production digest 提供 Audit v3 preflight、RunBundle v2 和 Audit v3 result-triage 三段链；Review 内的 `evalEvidence` 不作为发布事实。相同 production digest 可以共享一条证据链。发布机器事实不进入普通 Review common path。
+发布只接受 full、coverage 100%、总体 confidence 为 medium/high 且 effective design 为 pass 的 ReviewResultLite v2。声明 required Eval 的目标必须按 production digest 提供 Audit v3 preflight、RunBundle v3 和 Audit v3 result-triage 三段链；Review 内的 `evalEvidence` 不作为发布事实。相同 production digest 可以共享一条证据链。发布机器事实不进入普通 Review common path。
 
 ## 边界
 

@@ -13,7 +13,7 @@ const pluginContext = process.env.AW_PLUGIN_CONTEXT
   : null;
 const sourceRoot = pluginContext?.sourceRoot ?? root;
 const runtimeRoot = pluginContext?.platform ? path.join(root, pluginContext.platform) : root;
-const runtimeSkillRoot = path.join(runtimeRoot, 'skills', 'run-agent-skill-evals');
+const runtimeSkillRoot = path.join(runtimeRoot, 'skills', 'run-aw-skill-evals');
 
 async function readRuntime(relativePath) {
   return readFile(path.join(runtimeSkillRoot, relativePath), 'utf8');
@@ -25,16 +25,17 @@ async function runInjectedBin(bin, args) {
     : execFileAsync(bin, args, { encoding: 'utf8' });
 }
 
-test('plugin installs the auditor required by the execution handoff', async () => {
+test('plugin has no runtime dependency on the review toolkit', async () => {
   const manifest = JSON.parse(await readFile(
     path.join(sourceRoot, '.agents-plugin', 'plugin.json'),
     'utf8',
   ));
-  assert.deepEqual(manifest.dependencies, ['agent-skill-toolkit']);
+  assert.equal(manifest.name, 'aw-skill-eval-runner');
+  assert.deepEqual(manifest.dependencies, []);
   assert.equal(manifest.compatibility.aw.minVersion, '0.1.0');
 });
 
-test('plugin supports implicit and explicit invocation while keeping the authorization gate', async () => {
+test('plugin supports implicit and explicit invocation while keeping only execution gates', async () => {
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
 
@@ -42,16 +43,20 @@ test('plugin supports implicit and explicit invocation while keeping the authori
   assert.match(skill, /^user-invocable: true$/mu);
   assert.match(openai, /^\s*allow_implicit_invocation: true$/mu);
   assert.match(skill, /人工授权/u);
-  assert.match(skill, /Audit 门禁/u);
+  assert.match(skill, /Capability preflight/u);
+  assert.match(skill, /若用户只要求验证，返回验证结果并停止/u);
+  assert.match(skill, /不得调用 `aw-skill-eval run <plan\.json>`/u);
+  assert.doesNotMatch(skill, /^## .*Audit/mu);
+  assert.doesNotMatch(skill, /audit-agent-skill-evals/u);
 
   const triggerCases = JSON.parse(
     await readFile(
-      path.join(sourceRoot, 'skills', 'run-agent-skill-evals', 'evals', 'trigger-cases.json'),
+      path.join(sourceRoot, 'skills', 'run-aw-skill-evals', 'evals', 'trigger-cases.json'),
       'utf8',
     ),
   );
   const positives = triggerCases.cases.filter((entry) => entry.should_load_skill);
-  assert.ok(positives.some((entry) => !entry.query.includes('$run-agent-skill-evals')));
+  assert.ok(positives.some((entry) => !entry.query.includes('$run-aw-skill-evals')));
   assert.equal(
     triggerCases.cases.find((entry) => entry.id === 'unaudited')?.should_load_skill,
     true,
@@ -62,8 +67,7 @@ test('Skill declares the stable shared CLI contract without a local execution fa
   const skill = await readRuntime('SKILL.md');
   const commands = [
     'aw-skill-eval capabilities --json',
-    'aw-skill-eval schema print eval-execution-plan',
-    'aw-skill-eval schema print eval-audit-result',
+    'aw-skill-eval schema print aw-skill-eval-execution-plan',
     'aw-skill-eval schema print eval-run-bundle',
     'aw-skill-eval plan validate <plan.json>',
     'aw-skill-eval run <plan.json>',
@@ -89,14 +93,15 @@ test('Skill declares the stable shared CLI contract without a local execution fa
     });
     assert.deepEqual(entries.filter((entry) => !entry.isDirectory()), []);
   }
-  await access(path.join(runtimeSkillRoot, 'assets', 'eval-execution-plan.template.json'));
+  await access(path.join(runtimeSkillRoot, 'assets', 'aw-skill-eval-execution-plan.template.json'));
 });
 
 test('the retained plan asset is a model-readable template, not a machine schema', async () => {
-  const template = JSON.parse(await readRuntime('assets/eval-execution-plan.template.json'));
-  assert.equal(template.schemaVersion, 2);
+  const template = JSON.parse(await readRuntime('assets/aw-skill-eval-execution-plan.template.json'));
+  assert.equal(template.schemaVersion, 3);
   assert.equal(typeof template.planId, 'string');
   assert.equal(typeof template.provider, 'object');
+  assert.equal('audit' in template, false);
   assert.equal('$schema' in template, false);
 });
 
@@ -110,15 +115,11 @@ test(
     );
     assert.equal(capabilities.schemaVersion, 1);
 
-    for (const schemaName of ['eval-execution-plan', 'eval-run-bundle']) {
+    for (const schemaName of ['aw-skill-eval-execution-plan', 'eval-run-bundle']) {
       const schema = JSON.parse(
         (await runInjectedBin(bin, ['schema', 'print', schemaName])).stdout,
       );
-      assert.equal(schema.properties.schemaVersion.const, 2);
+      assert.equal(schema.properties.schemaVersion.const, 3);
     }
-    const auditSchema = JSON.parse(
-      (await runInjectedBin(bin, ['schema', 'print', 'eval-audit-result'])).stdout,
-    );
-    assert.equal(auditSchema.properties.schemaVersion.const, 3);
   },
 );

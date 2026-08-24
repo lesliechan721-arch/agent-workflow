@@ -20,7 +20,7 @@
 - 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
 - `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，依赖 `agent-content-toolkit >= 0.1.0`。
-- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.1.0` 和 `agent-skill-toolkit >= 0.1.0`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.1.0` 或兼容 runner。
+- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.1.0` 和 `agent-skill-toolkit >= 0.1.0`；使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner >= 0.1.0`，也可以安装其它输出 `EvalRunBundle v3` 的兼容 runner。
 - AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
 - 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin`、`aw-plugin-development` Author 和 Skill Reviewer 只编排这些命令，不保存第二份核心 frontmatter 或 Codex metadata 实现。

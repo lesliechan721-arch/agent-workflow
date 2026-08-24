@@ -1,7 +1,11 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 
-const names = ['eval-execution-plan', 'eval-run-bundle', 'eval-audit-result', 'eval-runtime-capabilities']
+const names = [
+  'aw-skill-eval-execution-plan',
+  'eval-run-bundle',
+  'eval-runtime-capabilities',
+]
 const canonicalRoot = new URL('../../../plugins/agent-skill-toolkit/schemas/', import.meta.url)
 const outputRoot = new URL('../dist/schemas/', import.meta.url)
 

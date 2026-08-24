@@ -55,7 +55,7 @@ test('authoring and Eval design do not force Review, Audit, or model execution',
   for (const text of [author, designer]) {
     assert.doesNotMatch(text, /必须启动独立上下文子代理/u);
     assert.doesNotMatch(text, /validity=pass|blockedCases|case corpus digest/u);
-    assert.doesNotMatch(text, /run-agent-skill-evals/u);
+    assert.doesNotMatch(text, /run-aw-skill-evals/u);
   }
   assert.match(author, /不自动审核 Oracle、不自动运行 Eval、不自动触发独立 Review/u);
   assert.match(designer, /Audit status: not assessed/u);

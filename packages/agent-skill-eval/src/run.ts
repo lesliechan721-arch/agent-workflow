@@ -1,12 +1,17 @@
-import { createRequire } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { isPathInside, sha256, toPosixRelative } from './common.js'
+import { getRuntimeCapabilities } from './capabilities.js'
 import { comparisonAggregate, validateRunBundle } from './bundle.js'
 import { captureAndValidateExecutionPlan, promptOf } from './plan.js'
-import type { CapturedPlanFile, EvalCase, EvalConfiguration, EvalExecutionPlan } from './plan.js'
+import type {
+  AwSkillEvalExecutionPlan,
+  CapturedPlanFile,
+  EvalCase,
+  EvalConfiguration,
+} from './plan.js'
 import { hasCoreProcessReceipt, ProviderProcessCleanupError, runProviderProcess } from './process.js'
 import {
   observeProcessTree,
@@ -24,7 +29,6 @@ import type {
   ProcessResult,
   RunExecutionPlanOptions,
   RunExecutionResult,
-  RuntimeCapabilities,
 } from './types.js'
 
 const OBSERVED_PROCESS_LIMITATION =
@@ -290,7 +294,7 @@ async function writeRunnerOwnedEvidence(
 }
 
 async function runOne(input: {
-  plan: EvalExecutionPlan
+  plan: AwSkillEvalExecutionPlan
   base: string
   skillSource: SkillSource
   evalCase: EvalCase
@@ -502,47 +506,13 @@ async function runOne(input: {
   }
 }
 
-export function getRuntimeCapabilities(platform: NodeJS.Platform = process.platform): RuntimeCapabilities {
-  const require = createRequire(import.meta.url)
-  const packageJson = require('../package.json') as { version: string }
-  const processObservationAvailable = platform === 'darwin' || platform === 'linux' || platform === 'win32'
-  return {
-    schemaVersion: 1,
-    provider: 'aw-skill-eval-process',
-    providerVersion: packageJson.version,
-    capabilities: {
-      triggerDiscovery: false,
-      skillPathExecution: processObservationAvailable,
-      previousVersionBaseline: processObservationAvailable,
-      withoutSkillBaseline: processObservationAvailable,
-      cleanContext: false,
-      parallelRuns: false,
-      toolTrace: false,
-      tokenUsage: true,
-      duration: true,
-      sandbox: false,
-      materialization: true,
-    },
-    limitations: [
-      'The process provider does not prove a clean model context.',
-      'The process provider does not supply a tool trace or sandbox.',
-      ...(processObservationAvailable
-        ? [
-            `Standalone ${platform} execution uses process observation and before/after Skill digests; it does not guarantee descendant cleanup.`,
-            'Portable comparative evidence is disabled without confirmed external containment.',
-          ]
-        : [`Standalone ${platform} execution is disabled because process observation is unavailable.`]),
-    ],
-  }
-}
-
 export async function runExecutionPlan(
   planPath: string,
   options: RunExecutionPlanOptions = {},
 ): Promise<RunExecutionResult> {
   const validation = await captureAndValidateExecutionPlan(planPath)
-  if (!validation.valid) throw new Error(`EvalExecutionPlan is invalid:\n${validation.errors.join('\n')}`)
-  if (!validation.captured) throw new Error('EvalExecutionPlan capture is unavailable')
+  if (!validation.valid) throw new Error(`AwSkillEvalExecutionPlan is invalid:\n${validation.errors.join('\n')}`)
+  if (!validation.captured) throw new Error('AwSkillEvalExecutionPlan capture is unavailable')
   const captured = validation.captured
   const { plan, base, outputRoot } = captured
   const planRaw = captured.planFile.raw
@@ -556,10 +526,10 @@ export async function runExecutionPlan(
     [...captured.boundSkills].map(([id, skill]) => [id, { captured: skill, digest: skill.digest }]),
   )
   const capabilities = captured.capabilities
+  const runtimeCapabilities = getRuntimeCapabilities()
   const boundFiles = [
     captured.planFile,
     ...captured.caseFiles,
-    captured.auditFile,
     captured.capabilitiesFile,
   ]
   assertBoundInputsOutsideOutputRoot(outputRoot, boundFiles, boundSkills)
@@ -617,14 +587,13 @@ export async function runExecutionPlan(
       : `Planned comparison ${identity} has no completed with-skill and baseline pair.`)
   }
   const bundle: import('./bundle.js').EvalRunBundle = {
-    schemaVersion: 2,
-    producer: 'run-agent-skill-evals',
+    schemaVersion: 3,
+    runner: { id: 'aw-skill-eval', version: runtimeCapabilities.providerVersion },
     independentContext: capabilities.capabilities.cleanContext === true,
     provider: { id: plan.provider.id, version: capabilities.providerVersion },
     planDigest: sha256(planRaw),
     targetSkillDigest: plan.target.digest,
     caseCorpusDigest: plan.cases.corpusDigest,
-    preflightAuditDigest: plan.audit.digest,
     comparisonPlanned: comparisons.length > 0,
     evidenceLevel,
     runs,

@@ -208,14 +208,13 @@ try {
   await writeFile(path.join(temp, 'runs', 'stderr.txt'), stderr);
   const bundlePath = path.join(temp, 'bundle.json');
   const bundle = {
-    schemaVersion: 2,
-    producer: 'run-agent-skill-evals',
+    schemaVersion: 3,
+    runner: { id: 'aw-skill-eval', version: '0.1.0' },
     independentContext: false,
     provider: { id: 'fixture', version: '1' },
     planDigest: `sha256:${'3'.repeat(64)}`,
     targetSkillDigest: check.target.digest,
     caseCorpusDigest: corpusDigest,
-    preflightAuditDigest: sha256(preflightRaw),
     comparisonPlanned: false,
     evidenceLevel: 'executed',
     runs: [1, 2, 3].map((runIndex) => ({

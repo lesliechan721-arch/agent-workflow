@@ -44,8 +44,8 @@
     "plugins/agent-skill-toolkit/skills/review-agent-skill/SKILL.md",
     "plugins/agent-skill-toolkit/skills/design-agent-skill-evals/SKILL.md",
     "plugins/agent-skill-toolkit/skills/audit-agent-skill-evals/SKILL.md",
-    "plugins/agent-skill-eval-runner/.agents-plugin/plugin.json",
-    "plugins/agent-skill-eval-runner/skills/run-agent-skill-evals/SKILL.md",
+    "plugins/aw-skill-eval-runner/.agents-plugin/plugin.json",
+    "plugins/aw-skill-eval-runner/skills/run-aw-skill-evals/SKILL.md",
     "plugins/aw-plugin-development/.agents-plugin/plugin.json",
     "plugins/aw-plugin-development/skills/author-aw-plugin/SKILL.md",
     "plugins/aw-plugin-development/skills/review-aw-plugin/SKILL.md"
@@ -84,7 +84,7 @@
     {
       "id": "agent-skill-eval-execution",
       "disposition": "migrated",
-      "owner": "plugins/agent-skill-eval-runner/skills/run-agent-skill-evals/SKILL.md"
+      "owner": "plugins/aw-skill-eval-runner/skills/run-aw-skill-evals/SKILL.md"
     },
     {
       "id": "aw-plugin-authoring",
@@ -133,7 +133,7 @@
           "finding": "skill-review-F-002",
           "paths": [
             "plugins/agent-skill-toolkit/scripts/contract.test.mjs",
-            "plugins/agent-skill-eval-runner/scripts/contract.test.mjs"
+            "plugins/aw-skill-eval-runner/scripts/contract.test.mjs"
           ]
         },
         {
@@ -214,7 +214,7 @@
           "suite": "trigger"
         },
         {
-          "manifest": "plugins/agent-skill-eval-runner/skills/run-agent-skill-evals/evals/manifest.json",
+          "manifest": "plugins/aw-skill-eval-runner/skills/run-aw-skill-evals/evals/manifest.json",
           "suite": "trigger"
         },
         {
@@ -264,8 +264,8 @@
           "evidenceDigest": null
         },
         {
-          "plugin": "agent-skill-eval-runner",
-          "skill": "run-agent-skill-evals",
+          "plugin": "aw-skill-eval-runner",
+          "skill": "run-aw-skill-evals",
           "evidencePath": null,
           "evidenceDigest": null
         },
@@ -312,18 +312,18 @@
       ]
     },
     {
-      "id": "eval-audit-run-triage-e2e",
-      "owner": "agent-skill-eval-runner",
+      "id": "aw-skill-eval-runner-behavior",
+      "owner": "aw-skill-eval-runner",
       "requiredSuites": [
         {
-          "manifest": "plugins/agent-skill-eval-runner/skills/run-agent-skill-evals/evals/manifest.json",
+          "manifest": "plugins/aw-skill-eval-runner/skills/run-aw-skill-evals/evals/manifest.json",
           "suite": "behavior"
         }
       ],
       "modelEvidence": [
         {
-          "plugin": "agent-skill-eval-runner",
-          "skill": "run-agent-skill-evals",
+          "plugin": "aw-skill-eval-runner",
+          "skill": "run-aw-skill-evals",
           "evidencePath": null,
           "evidenceDigest": null
         }

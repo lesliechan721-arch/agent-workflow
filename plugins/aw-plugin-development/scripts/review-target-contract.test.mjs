@@ -414,7 +414,7 @@ test('Skills named evals or reports remain review targets with root-relative aut
       orchestration: {
         providedStages: [{
           id: 'eval-execution',
-          producer: 'run-agent-skill-evals',
+          producer: 'aw-skill-eval',
           independentContext: true,
           subjectDigest: evalsDigest,
           resultPath: 'eval-run.json',
@@ -727,7 +727,7 @@ test('Skill target projection uses the shared Eval digest and retains matching s
       orchestration: {
         providedStages: [{
           id: 'eval-execution',
-          producer: 'run-agent-skill-evals',
+          producer: 'aw-skill-eval',
           independentContext: true,
           subjectDigest: sharedDigest,
           resultPath: 'eval-run.json',

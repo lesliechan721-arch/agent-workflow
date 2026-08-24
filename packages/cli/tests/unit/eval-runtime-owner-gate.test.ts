@@ -5,17 +5,17 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { getRuntimeCapabilities } from '@lesliechan721/agent-skill-eval'
 
-import { getPortableEvalExecutionOwner } from '../../scripts/portable-eval-engine.js'
+import { getAwSkillEvalExecutionOwner } from '../../scripts/aw-skill-eval-engine.js'
 
 import {
   assertCompatibleRuntimeIdentity,
   assertRunnerSkillBundle,
 } from '../../../../scripts/verify-eval-runtime-owner.mjs'
 
-describe('portable Eval execution owner gate', () => {
+describe('aw-skill-eval execution owner gate', () => {
   it('derives the CLI bridge owner from the shared runtime capabilities', () => {
     const capabilities = getRuntimeCapabilities()
-    expect(getPortableEvalExecutionOwner()).toEqual({
+    expect(getAwSkillEvalExecutionOwner()).toEqual({
       provider: capabilities.provider,
       version: capabilities.providerVersion,
     })
@@ -34,7 +34,7 @@ describe('portable Eval execution owner gate', () => {
         provider: 'another-provider',
         version: '0.1.0-beta.2',
       },
-    })).toThrow('CLI portable bridge owner')
+    })).toThrow('CLI aw-skill-eval bridge owner')
   })
 
   async function createRunnerSkill(skill: string): Promise<string> {
@@ -53,24 +53,23 @@ describe('portable Eval execution owner gate', () => {
     await writeFile(path.join(skillRoot, 'README.md'), 'Runner\n')
     await writeFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n')
     await writeFile(
-      path.join(skillRoot, 'assets', 'eval-execution-plan.template.json'),
-      '{"schemaVersion":2}\n',
+      path.join(skillRoot, 'assets', 'aw-skill-eval-execution-plan.template.json'),
+      '{"schemaVersion":3}\n',
     )
     return skillRoot
   }
 
   it('accepts the exact final Runner Skill file set and documented CLI commands', async () => {
     const skillRoot = await createRunnerSkill([
-      'Use `assets/eval-execution-plan.template.json`.',
+      'Use `assets/aw-skill-eval-execution-plan.template.json`.',
       'Run `aw-skill-eval capabilities --json`.',
-      'Hand off to `audit-agent-skill-evals(result-triage)`.',
     ].join('\n'))
     try {
       await expect(assertRunnerSkillBundle(skillRoot)).resolves.toEqual({
         minimumPackageVersion: '0.1.0-beta.2',
         files: [
           'agents/openai.yaml',
-          'assets/eval-execution-plan.template.json',
+          'assets/aw-skill-eval-execution-plan.template.json',
           'README.md',
           'SKILL.md',
         ],
@@ -83,14 +82,14 @@ describe('portable Eval execution owner gate', () => {
   it.each(['claude', 'codex'])('accepts the current built %s Runner bundle', async (platform) => {
     const skillRoot = path.resolve(
       import.meta.dirname,
-      '../../plugins-dist/plugins/agent-skill-eval-runner',
+      '../../plugins-dist/plugins/aw-skill-eval-runner',
       platform,
-      'skills/run-agent-skill-evals',
+      'skills/run-aw-skill-evals',
     )
     await expect(assertRunnerSkillBundle(skillRoot)).resolves.toMatchObject({
       files: [
         'agents/openai.yaml',
-        'assets/eval-execution-plan.template.json',
+        'assets/aw-skill-eval-execution-plan.template.json',
         'README.md',
         'SKILL.md',
       ],
