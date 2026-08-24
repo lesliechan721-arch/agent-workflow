@@ -107,6 +107,19 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
 }
 
 describe('local prepared release', () => {
+  it('allows ignored .DS_Store files but still rejects other ignored release inputs', async () => {
+    const root = await temporaryRoot();
+    await fs.mkdir(path.join(root, 'packages', 'cli', 'src'), { recursive: true });
+    await captureCommand('git', ['init', '--quiet'], { cwd: root });
+    await fs.writeFile(path.join(root, '.git', 'info', 'exclude'), '.DS_Store\nignored.ts\n');
+    await fs.writeFile(path.join(root, 'packages', 'cli', 'src', '.DS_Store'), 'finder metadata\n');
+
+    await expect(assertTrackedHeadClean(root)).resolves.toEqual([]);
+
+    await fs.writeFile(path.join(root, 'packages', 'cli', 'src', 'ignored.ts'), 'ignored source\n');
+    await expect(assertTrackedHeadClean(root)).rejects.toThrow('packages/cli/src/ignored.ts');
+  });
+
   it('rejects assume-unchanged and skip-worktree release inputs', async () => {
     const root = await temporaryRoot();
     await fs.mkdir(path.join(root, 'release'));

@@ -695,6 +695,7 @@ const RELEASE_INPUT_PATHS = [
 ];
 
 function isAllowedIgnoredReleaseInput(relativePath) {
+  if (relativePath.split('/').at(-1) === '.DS_Store') return true;
   if (relativePath.split('/').includes('node_modules')) return true;
   return (
     /^packages\/cli\/(?:dist|plugins-dist)(?:\/|$)/.test(relativePath)
