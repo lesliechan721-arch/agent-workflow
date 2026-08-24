@@ -14,6 +14,7 @@ const context = process.env.AW_PLUGIN_CONTEXT
   : null;
 const sourceRoot = context?.sourceRoot ?? localRoot;
 const runtimeRoot = context?.platform ? path.join(localRoot, context.platform) : localRoot;
+const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const temps = [];
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
 
@@ -23,6 +24,7 @@ async function runJson(file, args = []) {
       cwd: runtimeRoot,
       encoding: 'utf8',
       maxBuffer: 20 * 1024 * 1024,
+      env: { ...process.env, AW_SKILL_VALIDATOR_BIN: skillValidatorBin },
     })).stdout);
   } catch (error) {
     if (typeof error?.stdout === 'string' && error.stdout.trim()) return JSON.parse(error.stdout);
@@ -37,9 +39,15 @@ test('review adapter runtime contains only lightweight review and release tools'
     .map((entry) => entry.target)
     .sort();
   assert.deepEqual(targets, [
+    'assets/eval-audit-result.schema.json',
+    'assets/eval-run-bundle.schema.json',
+    'assets/review-dimensions.json',
     'assets/review-result-lite.schema.json',
     'scripts/check-agent-skill.mjs',
     'scripts/check-aw-plugin-release.mjs',
+    'scripts/validate-eval-audit-result.mjs',
+    'scripts/validate-eval-run-bundle.mjs',
+    'scripts/validate-json-contract.mjs',
     'scripts/validate-review-result-lite.mjs',
   ]);
   const skillRoot = path.join(runtimeRoot, 'skills/review-aw-plugin');
@@ -85,8 +93,9 @@ test('target discovery groups identical content by digest and preserves real dif
   await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({ name: 'notify-plugin', version: '1.0.0', skills: './skills' }));
   for (const root of [sourceSkill, codexSkill, claudeSkill]) {
-    await mkdir(root, { recursive: true });
+    await mkdir(path.join(root, 'agents'), { recursive: true });
     await writeFile(path.join(root, 'SKILL.md'), skillText);
+    await writeFile(path.join(root, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
   }
   const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
   const first = await runJson(discover, [plugin, '--final', `codex-project=${path.dirname(codexSkill)}`, '--final', `claude-project=${path.dirname(claudeSkill)}`, '--format', 'json']);
@@ -110,6 +119,7 @@ test('target discovery requires real materialized content for build-generated Sk
   await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
   await mkdir(sourceSkill, { recursive: true });
   await mkdir(path.join(finalSkill, 'references'), { recursive: true });
+  await mkdir(path.join(finalSkill, 'agents'), { recursive: true });
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
     name: 'generated-plugin',
     version: '1.0.0',
@@ -119,6 +129,7 @@ test('target discovery requires real materialized content for build-generated Sk
   await writeFile(path.join(sourceSkill, 'SKILL.md'), skillText);
   await writeFile(path.join(finalSkill, 'SKILL.md'), skillText);
   await writeFile(path.join(finalSkill, 'references', 'generated.md'), '# Generated\n\nRuntime content.\n');
+  await writeFile(path.join(finalSkill, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
   const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
   await assert.rejects(runJson(discover, [plugin, '--format', 'json']), /materialized --final collection/u);
   const result = await runJson(discover, [plugin, '--final', `codex-project=${finalRoot}`, '--format', 'json']);

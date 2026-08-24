@@ -444,13 +444,14 @@ describe('plugin eval runner', () => {
     const capabilitiesDigest = sha256(await fs.readFile(capabilitiesPath));
     const auditPath = path.join(root, 'audit.json');
     await fs.writeJson(auditPath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       producer: 'audit-agent-skill-evals',
       independentContext: true,
       auditId: 'portable-fixture-audit',
       mode: 'preflight',
       targetSkillDigest: targetDigest,
       caseCorpusDigest,
+      runBundleDigest: null,
       validity: 'pass',
       optimizationPolicy: 'balanced',
       cases: [{

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +31,7 @@ test('reviewer runtime exposes only the lightweight machine contract', async () 
     .map((entry) => entry.target)
     .sort();
   assert.deepEqual(targets, [
+    'assets/review-dimensions.json',
     'assets/review-result-lite.schema.json',
     'scripts/check-agent-skill.mjs',
     'scripts/validate-review-result-lite.mjs',
@@ -61,18 +63,46 @@ test('projected runtime files match canonical sources', async () => {
   }
 });
 
-test('generated reviewer view omits scoring and release workflow state', async () => {
+test('materialized audit validator runs with its projected dependency closure', async () => {
+  if (!context) return;
+  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
+  const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
+  const templatePath = path.join(auditRoot, 'assets/eval-audit-result-template.json');
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-runtime-contract-'));
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      validator,
+      templatePath,
+      '--format',
+      'json',
+    ], {
+      cwd: auditRoot,
+      encoding: 'utf8',
+    });
+    assert.equal(JSON.parse(stdout).valid, true);
+
+    const invalid = JSON.parse(await readFile(templatePath, 'utf8'));
+    invalid.runBundleDigest = 'sha256:' + '1'.repeat(64);
+    const invalidPath = path.join(temporary, 'invalid-preflight.json');
+    await writeFile(invalidPath, JSON.stringify(invalid));
+    await assert.rejects(execFileAsync(process.execPath, [validator, invalidPath], {
+      cwd: auditRoot,
+      encoding: 'utf8',
+    }));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('generated reviewer view includes full dimensions without release workflow state', async () => {
   const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill/references');
   for (const file of ['review-rubric.generated.md', 'composition-fitness.md', 'evidence-and-severity.md']) {
     assert.ok((await readFile(path.join(reviewRoot, file), 'utf8')).length > 100, file);
   }
-  for (const file of [
-    'review-dimensions.generated.md',
-    'scoring-model.generated.md',
-    'source-map.generated.md',
-  ]) {
-    await assert.rejects(readFile(path.join(reviewRoot, file), 'utf8'));
+  for (const file of ['review-dimensions.generated.md', 'scoring-model.generated.md']) {
+    assert.ok((await readFile(path.join(reviewRoot, file), 'utf8')).length > 100, file);
   }
+  await assert.rejects(readFile(path.join(reviewRoot, 'source-map.generated.md'), 'utf8'));
 });
 
 test('starter author and Eval contracts remain valid', async () => {

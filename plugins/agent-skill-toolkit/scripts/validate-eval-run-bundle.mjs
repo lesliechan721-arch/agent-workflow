@@ -169,7 +169,8 @@ export async function validateEvalRunBundle(bundlePath, options = {}) {
   const errors = await schemaErrors(bundlePath);
   if (errors.length > 0) return { valid: false, errors, calculated: null };
 
-  const bundle = JSON.parse(await readFile(bundlePath, 'utf8'));
+  const bundleBytes = await readFile(bundlePath);
+  const bundle = JSON.parse(bundleBytes.toString('utf8'));
   const evidenceRoot = await realpath(options.evidenceRoot ?? path.dirname(bundlePath));
   const runIdentities = new Set();
   for (let runIndex = 0; runIndex < bundle.runs.length; runIndex += 1) {
@@ -212,6 +213,7 @@ export async function validateEvalRunBundle(bundlePath, options = {}) {
 
   const comparisons = comparisonAggregate(bundle.runs);
   const calculated = {
+    bundleDigest: `sha256:${createHash('sha256').update(bundleBytes).digest('hex')}`,
     cases: new Set(bundle.runs.map((run) => run.caseId)).size,
     configurations: new Set(bundle.runs.map((run) => run.configuration)).size,
     runs: bundle.runs.length,

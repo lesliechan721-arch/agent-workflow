@@ -42,12 +42,13 @@ interface AuditCase {
 }
 
 interface EvalAuditResult {
-  schemaVersion: 2;
+  schemaVersion: 3;
   producer: 'audit-agent-skill-evals';
   independentContext: boolean;
   mode: 'preflight' | 'result-triage';
   targetSkillDigest: string;
   caseCorpusDigest: string;
+  runBundleDigest: string | null;
   validity: 'pass' | 'unknown' | 'fail';
   cases: AuditCase[];
   blockedCases: string[];
@@ -214,6 +215,9 @@ async function loadAudit(auditPath: string): Promise<EvalAuditResult> {
     throw new Error(`Audit ${auditPath} has an invalid producer.`);
   }
   if (audit.mode !== 'preflight') throw new Error(`Audit ${auditPath} is not preflight.`);
+  if (audit.runBundleDigest !== null) {
+    throw new Error(`Preflight Audit ${auditPath} must use runBundleDigest=null.`);
+  }
   if (!audit.independentContext) {
     throw new Error(`Audit ${auditPath} did not come from an independent audit context.`);
   }

@@ -64,13 +64,14 @@ async function fixture() {
   ).stdout.trim();
   const targetSkillDigest = `sha256:${'1'.repeat(64)}`;
   const audit = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     producer: 'audit-agent-skill-evals',
     independentContext: true,
     auditId: 'audit-1',
     mode: 'preflight',
     targetSkillDigest,
     caseCorpusDigest: corpusDigest,
+    runBundleDigest: null,
     validity: 'pass',
     optimizationPolicy: 'balanced',
     cases: [

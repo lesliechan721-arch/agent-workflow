@@ -10,4 +10,4 @@
 
 ## 边界
 
-本 Skill 不修改 Skill、Eval、README、manifest 或 materialized final。只有用户明确要求发布准备状态时，才单独运行已有的确定性发布检查。
+本 Skill 不修改 Skill、Eval、README、manifest 或 materialized final。只有用户明确要求发布准备状态时，才单独运行确定性发布检查；检查要求完整 ReviewResultLite v2，并对 required Eval 校验 preflight、run bundle 和 result-triage 的实际 digest 链。

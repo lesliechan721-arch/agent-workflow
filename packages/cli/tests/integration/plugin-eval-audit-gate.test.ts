@@ -81,13 +81,14 @@ async function fixture(validity: 'pass' | 'fail' = 'pass') {
   const caseCorpusDigest = await computeAuditCaseCorpusDigest([casesPath]);
   const auditPath = path.join(repoRoot, 'audit.json');
   await fs.writeJson(auditPath, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     producer: 'audit-agent-skill-evals',
     independentContext: true,
     auditId: 'sample-audit',
     mode: 'preflight',
     targetSkillDigest,
     caseCorpusDigest,
+    runBundleDigest: null,
     validity,
     optimizationPolicy: 'precision-first',
     cases: [{

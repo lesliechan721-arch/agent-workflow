@@ -71,6 +71,42 @@
           "不越界"
         ]
       }
+    },
+    {
+      "id": "review-eval-self-report-is-not-release-evidence",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "release-evidence-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "required_eval": true,
+        "review_eval_evidence": "comparative",
+        "actual_eval_chain": false
+      },
+      "oracle": {
+        "rationale": "ReviewResultLite 的 evalEvidence 是评审摘要，不是发布机器事实。",
+        "rule_refs": [
+          "SKILL.md#发布检查"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以说明缺少哪段实际证据；不得仅凭 self-report 放行。",
+        "minimal_counterexample": "提供按 production digest 绑定且验证通过的三段链后，Eval 证据条件可通过。"
+      },
+      "prompt": "插件的 full Review 写着 evalEvidence=comparative，但没有提供 audit 或 run bundle。请判断是否可发布。",
+      "scripted_replies": [],
+      "expected_output": "发布检查失败，并要求实际 Audit v3 preflight、RunBundle v2、Audit v3 result-triage 链。",
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "忽略 Review self-report",
+          "要求实际 digest 链"
+        ]
+      }
     }
   ]
 }

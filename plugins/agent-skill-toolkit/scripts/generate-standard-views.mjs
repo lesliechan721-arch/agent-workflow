@@ -30,10 +30,12 @@ function parseArgs(argv) {
 }
 
 const options = parseArgs(process.argv.slice(2));
-const [contentRaw, skillRaw, dimensionsRaw] = await Promise.all([
+const [contentRaw, skillRaw, dimensionsRaw, dimensionsGuide, scoringGuide] = await Promise.all([
   readFile(options.contentRulesPath, 'utf8'),
   readFile(path.join(options.sourceRoot, 'standards', 'skill-rules.json'), 'utf8'),
   readFile(path.join(options.sourceRoot, 'standards', 'review-dimensions.json'), 'utf8'),
+  readFile(path.join(options.sourceRoot, 'standards', 'review-dimensions.md'), 'utf8'),
+  readFile(path.join(options.sourceRoot, 'standards', 'scoring-policy.md'), 'utf8'),
 ]);
 const contentSource = JSON.parse(contentRaw);
 const skillSource = JSON.parse(skillRaw);
@@ -182,6 +184,8 @@ const outputs = new Map([
   ['skills/author-agent-skill/references/composition-audit.md', renderComposition('Composition Fitness Audit', false)],
   ['skills/review-agent-skill/references/composition-fitness.md', renderComposition('Composition Fitness Review', true)],
   ['skills/review-agent-skill/references/evidence-and-severity.md', renderEvidence()],
+  ['skills/review-agent-skill/references/review-dimensions.generated.md', dimensionsGuide],
+  ['skills/review-agent-skill/references/scoring-model.generated.md', scoringGuide],
   ['standards/review-result-rules.generated.json', legacyResultRules],
 ]);
 const stale = [];

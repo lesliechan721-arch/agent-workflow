@@ -25,6 +25,15 @@ async function runInjectedBin(bin, args) {
     : execFileAsync(bin, args, { encoding: 'utf8' });
 }
 
+test('plugin installs the auditor required by the execution handoff', async () => {
+  const manifest = JSON.parse(await readFile(
+    path.join(sourceRoot, '.agents-plugin', 'plugin.json'),
+    'utf8',
+  ));
+  assert.deepEqual(manifest.dependencies, ['agent-skill-toolkit']);
+  assert.equal(manifest.compatibility.aw.minVersion, '0.1.0');
+});
+
 test('plugin supports implicit and explicit invocation while keeping the authorization gate', async () => {
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
@@ -101,15 +110,15 @@ test(
     );
     assert.equal(capabilities.schemaVersion, 1);
 
-    for (const schemaName of [
-      'eval-execution-plan',
-      'eval-audit-result',
-      'eval-run-bundle',
-    ]) {
+    for (const schemaName of ['eval-execution-plan', 'eval-run-bundle']) {
       const schema = JSON.parse(
         (await runInjectedBin(bin, ['schema', 'print', schemaName])).stdout,
       );
       assert.equal(schema.properties.schemaVersion.const, 2);
     }
+    const auditSchema = JSON.parse(
+      (await runInjectedBin(bin, ['schema', 'print', 'eval-audit-result'])).stdout,
+    );
+    assert.equal(auditSchema.properties.schemaVersion.const, 3);
   },
 );

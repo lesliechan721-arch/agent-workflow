@@ -65,6 +65,7 @@ interface AuditResult {
   recommendedAction: string
   targetSkillDigest: Digest
   caseCorpusDigest: Digest
+  runBundleDigest: Digest | null
 }
 
 export interface PlanCalculated {
@@ -339,6 +340,7 @@ export async function captureAndValidateExecutionPlan(
     const audit = loaded.value
     if (audit.validity !== 'pass') errors.push('audit validity must be pass')
     if (audit.mode !== 'preflight') errors.push('plan requires a preflight audit')
+    if (audit.runBundleDigest !== null) errors.push('preflight audit requires runBundleDigest=null')
     if (!audit.independentContext) errors.push('audit validity=pass requires independentContext=true')
     if (audit.failureTriage.length > 0) errors.push('preflight audit must not contain failureTriage entries')
     if (audit.cases.length === 0) errors.push('audit validity=pass requires audited cases')

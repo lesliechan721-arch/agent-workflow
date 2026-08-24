@@ -56,7 +56,7 @@ Skill 适合封装需要模型判断、领域知识或多步骤协作的可复�
 
 ## Frontmatter profile
 
-字段、类型、依赖、目标 profile 和版本证据的机器真值是 CLI 发布包内的 Skill frontmatter registry。`aw plugin validate`、CLI bundle 校验、表驱动测试和 `references/skill-frontmatter-capabilities.generated.md` 共同消费该 registry。字段变化时修改 registry、重生成字段表并更新测试，不在本文维护第二份字段全集。
+字段、类型、依赖、目标 profile 和版本证据的机器真值是 CLI 发布包内的 Skill frontmatter registry。`aw skill validate`、`aw plugin validate`、CLI bundle 校验、表驱动测试和 `references/skill-frontmatter-capabilities.generated.md` 共同消费该 registry。字段变化时修改 registry、重生成字段表并更新测试，不在本文维护第二份字段全集。
 
 | Profile | 用途 |
 | --- | --- |
@@ -72,7 +72,7 @@ AW source profile 为了与插件目录、脚手架及两个宿主平台保持�
 
 Claude 扩展写在 `SKILL.md`，Codex metadata 写在 `agents/openai.yaml`。双平台源码可以保留目标 profile 已知的扩展，但不能声称它严格通过 portable-only validator。需要严格可移植时，移除平台扩展，或通过模板生成分平台 frontmatter。
 
-仓库内 `aw plugin validate <plugin-directory> --strict-agent-skills` 用于和 AW manifest、目标平台一起做 portable core 预检，不是上游 reference validator 的替代品。需要发布独立 portable skill 时，在 `skills-ref` 可用的环境额外运行：
+独立 Skill 先运行 `aw skill validate <skill-directory>`；用 `--frontmatter-profile` 选择 portable 或 Claude profile，用 `--codex-metadata` 明确要求、可选或忽略 Codex metadata。仓库内 `aw plugin validate <plugin-directory> --strict-agent-skills` 用于和 AW manifest、目标平台一起做 portable core 预检。两者都不是上游 reference validator 的替代品。需要发布独立 portable skill 时，在 `skills-ref` 可用的环境额外运行：
 
 ```bash
 skills-ref validate <skill-directory>

@@ -6,6 +6,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { validateEvalRunBundle } from './validate-eval-run-bundle.mjs';
 const execFileAsync = promisify(execFile),
   scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 function stable(value) {
@@ -29,15 +30,24 @@ export async function evalCorpusDigest(casePaths) {
   return 'sha256:' + createHash('sha256').update(documents.join('\n')).digest('hex');
 }
 function parseArgs(argv) {
-  const options = { cases: [], format: 'text', digestOnly: false, targetSkillDigest: null },
+  const options = { cases: [], format: 'text', digestOnly: false, targetSkillDigest: null, runBundle: null },
     positional = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--case') options.cases.push(path.resolve(argv[++i] ?? ''));
-    else if (arg === '--format') options.format = argv[++i];
-    else if (arg === '--digest-only') options.digestOnly = true;
-    else if (arg === '--target-skill-digest') options.targetSkillDigest = argv[++i];
-    else if (arg === '--help' || arg === '-h') return { help: true };
+    if (arg === '--case') {
+      if (!argv[i + 1] || argv[i + 1].startsWith('-')) throw new Error('--case requires a value.');
+      options.cases.push(path.resolve(argv[++i]));
+    } else if (arg === '--format') {
+      if (!argv[i + 1] || argv[i + 1].startsWith('-')) throw new Error('--format requires a value.');
+      options.format = argv[++i];
+    } else if (arg === '--digest-only') options.digestOnly = true;
+    else if (arg === '--target-skill-digest') {
+      if (!argv[i + 1] || argv[i + 1].startsWith('-')) throw new Error('--target-skill-digest requires a value.');
+      options.targetSkillDigest = argv[++i];
+    } else if (arg === '--run-bundle') {
+      if (!argv[i + 1] || argv[i + 1].startsWith('-')) throw new Error('--run-bundle requires a value.');
+      options.runBundle = path.resolve(argv[++i]);
+    } else if (arg === '--help' || arg === '-h') return { help: true };
     else if (arg.startsWith('-')) throw new Error('Unknown option: ' + arg);
     else positional.push(path.resolve(arg));
   }
@@ -48,7 +58,7 @@ function parseArgs(argv) {
       throw new Error('--digest-only requires one or more --case values.');
   } else if (positional.length !== 1)
     throw new Error(
-      'Usage: validate-eval-audit-result.mjs <audit.json> [--case path] [--target-skill-digest sha256:...] [--format text|json]',
+      'Usage: validate-eval-audit-result.mjs <audit.json> [--case path] [--target-skill-digest sha256:...] [--run-bundle bundle.json] [--format text|json]',
     );
   return { ...options, auditPath: positional[0] };
 }
@@ -87,7 +97,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(
-      'Usage: validate-eval-audit-result.mjs <audit.json> [--case path] [--target-skill-digest sha256:...] [--format text|json]\n',
+      'Usage: validate-eval-audit-result.mjs <audit.json> [--case path] [--target-skill-digest sha256:...] [--run-bundle bundle.json] [--format text|json]\n',
     );
     return;
   }
@@ -97,11 +107,23 @@ async function main() {
   }
   const errors = await schemaErrors(options.auditPath);
   let calculatedCaseCorpusDigest = null;
+  let calculatedRunBundleDigest = null;
   if (errors.length === 0) {
     const audit = JSON.parse(await readFile(options.auditPath, 'utf8')),
       releaseCases = audit.cases.filter((entry) => entry.releaseRelevant);
+    if (audit.mode === 'preflight' && audit.runBundleDigest !== null)
+      errors.push('preflight audit requires runBundleDigest=null');
+    if (
+      audit.mode === 'result-triage' &&
+      (typeof audit.runBundleDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(audit.runBundleDigest))
+    )
+      errors.push('result-triage audit requires a runBundleDigest');
     if (audit.mode === 'preflight' && audit.failureTriage.length > 0)
       errors.push('preflight audit must not contain failureTriage entries');
+    if (audit.mode === 'preflight' && options.runBundle)
+      errors.push('preflight audit must not be validated with --run-bundle');
+    if (audit.mode === 'result-triage' && !options.runBundle)
+      errors.push('result-triage audit requires --run-bundle');
     if (audit.validity === 'pass') {
       if (!audit.independentContext) errors.push('validity=pass requires independentContext=true');
       if (audit.cases.length === 0) errors.push('validity=pass requires audited cases');
@@ -123,8 +145,28 @@ async function main() {
     }
     if (options.targetSkillDigest && audit.targetSkillDigest !== options.targetSkillDigest)
       errors.push('targetSkillDigest does not match the supplied Skill digest');
+    if (audit.mode === 'result-triage' && options.runBundle) {
+      const bundleValidation = await validateEvalRunBundle(options.runBundle);
+      if (!bundleValidation.valid) {
+        errors.push(...bundleValidation.errors.map((entry) => `run bundle: ${entry}`));
+      } else {
+        const bundle = JSON.parse(await readFile(options.runBundle, 'utf8'));
+        calculatedRunBundleDigest = bundleValidation.calculated.bundleDigest;
+        if (audit.runBundleDigest !== calculatedRunBundleDigest)
+          errors.push('runBundleDigest does not match the supplied EvalRunBundle bytes');
+        if (audit.targetSkillDigest !== bundle.targetSkillDigest)
+          errors.push('targetSkillDigest does not match the supplied EvalRunBundle');
+        if (audit.caseCorpusDigest !== bundle.caseCorpusDigest)
+          errors.push('caseCorpusDigest does not match the supplied EvalRunBundle');
+      }
+    }
   }
-  const output = { valid: errors.length === 0, errors, calculatedCaseCorpusDigest };
+  const output = {
+    valid: errors.length === 0,
+    errors,
+    calculatedCaseCorpusDigest,
+    calculatedRunBundleDigest,
+  };
   process.stdout.write(
     options.format === 'json'
       ? JSON.stringify(output, null, 2) + '\n'

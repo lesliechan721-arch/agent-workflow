@@ -1136,13 +1136,14 @@ test('handoff validator rejects missing or forged stage artifacts', async () => 
   await writeFile(path.join(t, 'skill', 'SKILL.md'), skillRaw);
   const skillDigest = await computeSkillDigest(path.join(t, 'skill'));
   const result = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     producer: 'audit-agent-skill-evals',
     independentContext: true,
     auditId: 'a',
     mode: 'preflight',
     targetSkillDigest: skillDigest,
     caseCorpusDigest: 'sha256:' + '2'.repeat(64),
+    runBundleDigest: null,
     validity: 'unknown',
     optimizationPolicy: 'balanced',
     cases: [],
