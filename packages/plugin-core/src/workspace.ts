@@ -18,6 +18,15 @@ import {
   readPluginManifest,
 } from './manifest-contract.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
+import {
+  appendCatalogToPluginReleaseLedger,
+  assertStablePluginVersion,
+  PLUGIN_RELEASE_LEDGER_FILENAME,
+  PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
+  resolveBetaPluginVersionOverrides,
+  validatePluginReleaseLedgerAgainstManifest,
+  type PluginReleaseLedger,
+} from './plugin-release.js';
 import type { ReservedImportRegistry } from './manifest-contract.js';
 import type {
   CatalogChannel,
@@ -29,6 +38,7 @@ import type {
 
 export const DEFAULT_WORKSPACE_CATALOG_VERSION = '0.1.0';
 export const DEFAULT_CATALOG_OUTPUT_PATH = path.join('.aw', 'catalog');
+export const DEFAULT_PUBLISHED_CATALOG_OUTPUT_PATH = path.join('.aw', 'publish', 'catalog');
 export const DEFAULT_PLUGIN_OUTPUT_PATH = path.join('.aw', 'plugins');
 export const CATALOG_MANIFEST_FILENAME = 'catalog-manifest.json';
 export const GENERATED_OUTPUT_MARKER_FILENAME = '.aw-generated.json';
@@ -399,6 +409,26 @@ function sha256(value: string | Buffer): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
 
+function publishedContentDigest(
+  manifest: Pick<CatalogManifestV4, 'schemaVersion' | 'compatibility' | 'entries'>,
+  marketplace: MarketplaceManifest,
+): string {
+  return sha256(stableStringify({
+    schemaIdentity: { schemaVersion: manifest.schemaVersion },
+    marketplaceMetadata: {
+      name: marketplace.name,
+      owner: marketplace.owner,
+      interface: marketplace.interface,
+    },
+    compatibility: manifest.compatibility,
+    plugins: manifest.entries.map((entry) => ({
+      name: entry.name,
+      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+      contentDigest: entry.contentDigest,
+    })).sort((left, right) => left.name.localeCompare(right.name)),
+  }));
+}
+
 function sourceIdentity(metadata: MarketplaceSourceMeta, plugins: readonly PluginMeta[]): string {
   return sha256(stableStringify({
     metadata,
@@ -590,6 +620,170 @@ export async function buildWorkspaceCatalog(options: {
     },
   });
   return { outputRoot: resolved.outputRoot, catalogVersion, channel, pluginNames };
+}
+
+async function rewritePublishedPluginVersions(
+  snapshotRoot: string,
+  overrides: Readonly<Record<string, string>>,
+): Promise<void> {
+  for (const [pluginName, version] of Object.entries(overrides)) {
+    assertStrictSemVer(version, `${pluginName} published version`);
+    for (const relative of [
+      '.agents-plugin/plugin.json',
+      '.claude-plugin/plugin.json',
+      '.codex-plugin/plugin.json',
+    ]) {
+      const manifestPath = path.join(snapshotRoot, 'plugins', pluginName, relative);
+      if (!(await fs.pathExists(manifestPath))) continue;
+      const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+      await fs.writeFile(manifestPath, `${JSON.stringify({ ...manifest, version }, null, 2)}\n`);
+    }
+  }
+}
+
+export async function validatePublishedCatalogSnapshot(snapshotDirectory: string): Promise<{
+  rootDir: string;
+  manifest: CatalogManifestV4;
+  ledger: PluginReleaseLedger;
+  snapshotDigest: string;
+}> {
+  const validation = await validateCatalogSnapshot(snapshotDirectory);
+  if (validation.manifest.release.state !== 'published') {
+    throw new Error('Published Catalog snapshot must have release.state published.');
+  }
+  const ledgerPath = path.join(validation.rootDir, PLUGIN_RELEASE_LEDGER_FILENAME);
+  const ledger = validatePluginReleaseLedgerAgainstManifest(
+    await readRegularJson(ledgerPath, 'Plugin release ledger'),
+    validation.manifest,
+  );
+  return { ...validation, ledger };
+}
+
+export async function preparePublishedWorkspaceCatalog(options: {
+  workspaceRoot: string;
+  sourceHead: string;
+  outputPath?: string;
+  previousSnapshotRoot?: string;
+  adapter: WorkspaceCatalogBuildAdapter;
+  reservedImports?: ReservedImportRegistry;
+}): Promise<{
+  outputRoot: string;
+  catalogVersion: string;
+  channel: CatalogChannel;
+  pluginNames: string[];
+  snapshotDigest: string;
+  contentDigest: string;
+  planId: string;
+}> {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(options.sourceHead)) {
+    throw new Error('Published Catalog sourceHead must be a committed Git object ID.');
+  }
+  const workspace = await readPluginWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
+  for (const plugin of workspace.plugins) {
+    assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
+  }
+  const catalogVersion = workspace.metadata.catalog.version;
+  const channel = deriveCatalogChannel(catalogVersion);
+  const previous = options.previousSnapshotRoot
+    ? await validatePublishedCatalogSnapshot(options.previousSnapshotRoot)
+    : null;
+  if (previous && compareStrictSemVer(catalogVersion, previous.manifest.catalogVersion) <= 0) {
+    throw new Error(
+      `Catalog version ${catalogVersion} must be higher than published ${previous.manifest.catalogVersion}.`,
+    );
+  }
+  const previousLedger = previous?.ledger ?? {
+    schemaVersion: PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
+    records: [],
+  } satisfies PluginReleaseLedger;
+  const temporaryRelative = path.join('.aw', 'publish', `.catalog-preparation-${crypto.randomUUID()}`);
+  const finalRelative = options.outputPath
+    ?? `${DEFAULT_PUBLISHED_CATALOG_OUTPUT_PATH}-v${catalogVersion}`;
+  let temporaryRoot = path.resolve(workspace.workspaceRoot, temporaryRelative);
+  try {
+    const built = await buildWorkspaceCatalog({
+      workspaceRoot: workspace.workspaceRoot,
+      outputPath: temporaryRelative,
+      adapter: options.adapter,
+      reservedImports: options.reservedImports,
+    });
+    temporaryRoot = built.outputRoot;
+    const development = await validateCatalogSnapshot(temporaryRoot);
+    const contentDigests = new Map(development.manifest.entries.map((entry) => [entry.name, entry.contentDigest]));
+    const overrides = channel === 'beta'
+      ? resolveBetaPluginVersionOverrides({
+          plugins: workspace.plugins,
+          contentDigests,
+          ledger: previousLedger,
+        })
+      : Object.fromEntries(workspace.plugins.map((plugin) => [plugin.manifest.name, plugin.manifest.version]));
+    await rewritePublishedPluginVersions(temporaryRoot, overrides);
+    const bundledPlugins = await Promise.all(
+      workspace.plugins.map((plugin) => readPluginManifest(
+        path.join(temporaryRoot, 'plugins', plugin.manifest.name),
+        { mode: 'bundle' },
+      )),
+    );
+    const entries = await Promise.all(
+      bundledPlugins.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name))
+        .map((plugin) => expectedCatalogEntry(plugin, plugin.rootDir)),
+    );
+    const marketplace = await fs.readJson(
+      path.join(temporaryRoot, '.agents', 'plugins', 'marketplace.json'),
+    ) as MarketplaceManifest;
+    const manifestWithoutRelease = {
+      ...development.manifest,
+      entries,
+    };
+    const contentDigest = publishedContentDigest(manifestWithoutRelease, marketplace);
+    const manifest: CatalogManifestV4 = {
+      ...manifestWithoutRelease,
+      release: {
+        state: 'published',
+        targetVersion: catalogVersion.replace(/-beta\.[1-9]\d*$/u, ''),
+        planId: contentDigest,
+        sourceHead: options.sourceHead,
+        contentDigest,
+      },
+    };
+    const ledger = appendCatalogToPluginReleaseLedger({
+      previous: previousLedger,
+      manifest,
+      contentDigests,
+    });
+    await Promise.all([
+      fs.writeFile(path.join(temporaryRoot, CATALOG_MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`),
+      fs.writeFile(path.join(temporaryRoot, PLUGIN_RELEASE_LEDGER_FILENAME), `${JSON.stringify(ledger, null, 2)}\n`),
+    ]);
+    const prepared = await validatePublishedCatalogSnapshot(temporaryRoot);
+    const resolved = await resolveWorkspaceOutputPath({
+      workspaceRoot: workspace.workspaceRoot,
+      outputPath: finalRelative,
+      kind: 'catalog',
+    });
+    const marker = await fs.readJson(path.join(temporaryRoot, GENERATED_OUTPUT_MARKER_FILENAME)) as Record<string, unknown>;
+    await replaceGeneratedOutput({
+      outputRoot: resolved.outputRoot,
+      force: true,
+      build: (stagingRoot) => fs.copy(temporaryRoot, stagingRoot, { dereference: false }),
+      validate: async (stagingRoot) => { await validatePublishedCatalogSnapshot(stagingRoot); },
+      assertReplaceable: async (existingRoot) => {
+        await validatePublishedCatalogSnapshot(existingRoot);
+        await assertGeneratedOutput(existingRoot, marker);
+      },
+    });
+    return {
+      outputRoot: resolved.outputRoot,
+      catalogVersion,
+      channel,
+      pluginNames: built.pluginNames,
+      snapshotDigest: prepared.snapshotDigest,
+      contentDigest,
+      planId: contentDigest,
+    };
+  } finally {
+    await fs.remove(temporaryRoot);
+  }
 }
 
 function dependencyClosure(plugin: PluginMeta, all: readonly PluginMeta[]): PluginMeta[] {

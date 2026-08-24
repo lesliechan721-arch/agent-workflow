@@ -225,7 +225,7 @@ describe('pack smoke', () => {
       cwd: tempRoot,
       env: process.env,
     })).resolves.toMatchObject({
-      stdout: expect.stringMatching(/init[\s\S]*version[\s\S]*build[\s\S]*validate/u),
+      stdout: expect.stringMatching(/init[\s\S]*version[\s\S]*build[\s\S]*validate[\s\S]*publish/u),
       stderr: '',
     });
 
@@ -262,6 +262,47 @@ describe('pack smoke', () => {
     ], { cwd: standaloneWorkspace, env: process.env })).resolves.toMatchObject({
       stdout: expect.stringContaining('"ok":true'),
       stderr: '',
+    });
+    const packedCatalogRemote = path.join(tempRoot, 'packed-catalog.git');
+    registerSmokeWritableRoot(packedCatalogRemote, 'packed CLI Catalog publication remote');
+    await execFileAsync('git', ['init', '--bare', packedCatalogRemote], { env: process.env });
+    await execFileAsync('git', ['init'], { cwd: standaloneWorkspace, env: process.env });
+    await execFileAsync('git', ['add', '.'], { cwd: standaloneWorkspace, env: process.env });
+    await execFileAsync('git', [
+      '-c', 'user.name=Pack Smoke', '-c', 'user.email=pack-smoke@example.invalid',
+      'commit', '-m', 'packed Catalog source',
+    ], { cwd: standaloneWorkspace, env: process.env });
+    await execFileAsync('git', ['remote', 'add', 'origin', packedCatalogRemote], {
+      cwd: standaloneWorkspace,
+      env: process.env,
+    });
+    const packedPublish = await execFileAsync(awBin, [
+      'catalog', 'publish', '--workspace-root', standaloneWorkspace, '--yes', '--json',
+    ], { cwd: standaloneWorkspace, env: process.env });
+    const packedPublishReceipt = JSON.parse(packedPublish.stdout) as { ok: boolean; commit: string };
+    expect(packedPublishReceipt.ok).toBe(true);
+    expect((await execFileAsync('git', [
+      '--git-dir', packedCatalogRemote, 'rev-parse', 'refs/heads/catalog',
+    ], { env: process.env })).stdout.trim()).toBe(packedPublishReceipt.commit);
+    expect((await execFileAsync('git', [
+      '--git-dir', packedCatalogRemote, 'rev-parse', 'refs/tags/catalog-v0.1.0^{}',
+    ], { env: process.env })).stdout.trim()).toBe(packedPublishReceipt.commit);
+    const packedConsumerEnv = {
+      ...process.env,
+      AW_HOME: path.join(tempRoot, 'packed-catalog-consumer-home'),
+    };
+    const sourceAdd = await execFileAsync(awBin, [
+      'catalog', 'source', 'add', 'packed', '--git', packedCatalogRemote,
+      '--ref', 'refs/heads/catalog', '--primary', '--json',
+    ], { cwd: tempRoot, env: packedConsumerEnv });
+    expect(JSON.parse(sourceAdd.stdout)).toMatchObject({ ok: true, sourceId: 'packed' });
+    const consumedStatus = await execFileAsync(awBin, ['status', 'packed/packed-build', '--json'], {
+      cwd: tempRoot,
+      env: packedConsumerEnv,
+    });
+    expect(JSON.parse(consumedStatus.stdout)).toMatchObject({
+      catalog: { sources: expect.arrayContaining([expect.objectContaining({ id: 'packed' })]) },
+      targets: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
     });
 
     const authorRepo = path.join(tempRoot, 'author-repo');

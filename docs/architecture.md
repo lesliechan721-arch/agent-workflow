@@ -59,6 +59,8 @@ Git Catalog source
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
 - `pnpm build` 生成本地 schema 4 snapshot。`packages/cli/dist/`、`packages/cli/plugins-dist/` 和 `.release/` 都是生成目录，不手工修改。
 - `aw catalog build` 从独立 workspace 生成 `.aw/catalog` development snapshot；`aw plugin build` 默认生成 `.aw/plugins/<name>`。两者先在同父 staging 完整构建和验证，再替换已证明为生成物的旧输出，并拒绝 workspace 外、符号链接及 `.git`、`plugins` 等受保护边界。
+- `aw catalog publish` 从干净且已有提交的 Source Workspace 发布到用户配置的 Git remote。Core 准备 schema 4 published snapshot、完整 release ledger 和 release identity；CLI 只负责 Git 前置条件、确认、隔离 commit/tag 和一次 atomic push。第三方 Catalog 使用独立 branch 根和不可变 `catalog-v<version>` 注解 tag，不使用官方 `catalog/latest|beta` refs。首次发布创建 root commit，后续发布只以读取并验证的远端 branch commit 为父提交。
+- 第三方发布在第一次远端写入前保存 gitignored `.aw/publish/attempts/<version>.json`。每个版本文件独立保留；文件损坏或发布结果不确定时只阻止该版本，作者用 `aw catalog version <higher>` 恢复。该恢复合同不增加 force、补偿 push 或平台专用发布路径。
 - Catalog 发布时会生成 snapshot 及其必要的 Catalog 内容。`plugin-release-ledger.json` 是 Catalog 产物合同的一部分；插件作者合同由[插件维护指南](plugin-maintenance.md)定义。
 - `<AW_HOME>/catalog-sources.json` 缺失时读取内置 `official` source；第一次来源修改才物化该文件。稳定版 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。
 

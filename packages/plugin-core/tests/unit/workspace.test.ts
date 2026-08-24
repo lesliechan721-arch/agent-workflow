@@ -8,10 +8,12 @@ import {
   buildWorkspaceCatalog,
   buildWorkspacePlugin,
   initializePluginWorkspace,
+  preparePublishedWorkspaceCatalog,
   readPluginWorkspace,
   resolveWorkspaceOutputPath,
   setWorkspaceCatalogVersion,
   validateCatalogSnapshot,
+  validatePublishedCatalogSnapshot,
 } from '../../src/workspace.js'
 import { validateMarketplaceSourceMeta } from '../../src/manifest-contract.js'
 
@@ -190,6 +192,71 @@ describe('AW plugin workspace v1', () => {
     await fs.writeJson(claudePath, claude)
     await expect(validateCatalogSnapshot(built.outputRoot))
       .rejects.toThrow(/Claude marketplace metadata or plugin inventory/u)
+  })
+
+  it('prepares first and subsequent published snapshots with immutable ledger history', async () => {
+    const root = await createWorkspace()
+    await initializePluginWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const adapter = { build: ({ outputRoot }: { outputRoot: string }) => writeBundle(outputRoot, manifest) }
+    const first = await preparePublishedWorkspaceCatalog({
+      workspaceRoot: root,
+      sourceHead: '1'.repeat(40),
+      adapter,
+    })
+    const firstValidation = await validatePublishedCatalogSnapshot(first.outputRoot)
+    expect(firstValidation.manifest.release).toMatchObject({
+      state: 'published',
+      targetVersion: '0.1.0',
+      sourceHead: '1'.repeat(40),
+    })
+    expect(firstValidation.ledger.records).toHaveLength(1)
+
+    await setWorkspaceCatalogVersion(root, '0.2.0')
+    const second = await preparePublishedWorkspaceCatalog({
+      workspaceRoot: root,
+      sourceHead: '2'.repeat(40),
+      previousSnapshotRoot: first.outputRoot,
+      adapter,
+    })
+    const secondValidation = await validatePublishedCatalogSnapshot(second.outputRoot)
+    expect(secondValidation.ledger.records).toHaveLength(2)
+    expect(secondValidation.manifest.release).toMatchObject({
+      state: 'published',
+      targetVersion: '0.2.0',
+      planId: second.contentDigest,
+      contentDigest: second.contentDigest,
+    })
+    await setWorkspaceCatalogVersion(root, '0.1.0')
+    await expect(preparePublishedWorkspaceCatalog({
+      workspaceRoot: root,
+      sourceHead: '3'.repeat(40),
+      previousSnapshotRoot: second.outputRoot,
+      adapter,
+    })).rejects.toThrow(/must be higher/u)
+  })
+
+  it('rejects reuse of a published plugin version for different content', async () => {
+    const root = await createWorkspace()
+    await initializePluginWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const first = await preparePublishedWorkspaceCatalog({
+      workspaceRoot: root,
+      sourceHead: '1'.repeat(40),
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    await setWorkspaceCatalogVersion(root, '0.2.0')
+    await expect(preparePublishedWorkspaceCatalog({
+      workspaceRoot: root,
+      sourceHead: '2'.repeat(40),
+      previousSnapshotRoot: first.outputRoot,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'changed')
+        },
+      },
+    })).rejects.toThrow(/maps to different digests/u)
   })
 
   it('rejects foreign forced outputs without changing their bytes', async () => {

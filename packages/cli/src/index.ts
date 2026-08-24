@@ -129,6 +129,7 @@ import {
   runPluginBuildCommand,
   runPluginTestCommand,
 } from './authoring/workspace-commands.js';
+import { runCatalogPublishCommand } from './commands/catalog-publish.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -1387,6 +1388,60 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
+  catalog
+    .command('publish')
+    .description('Publish a versioned Catalog snapshot to a configured Git remote')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--remote <name>', 'configured Git remote name (default: origin)')
+    .option('--branch <name>', 'dedicated Catalog branch (default: catalog)')
+    .option('-y, --yes', 'confirm publication without a prompt', false)
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (rawOptions: {
+      workspaceRoot?: string;
+      remote?: string;
+      branch?: string;
+      yes?: boolean;
+      json?: boolean;
+    }) => {
+      try {
+        const context = createActionContext('catalog:publish', {});
+        const result = await runCatalogPublishCommand({
+          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          remote: rawOptions.remote,
+          branch: rawOptions.branch,
+          yes: rawOptions.yes,
+          json: rawOptions.json,
+          env,
+          interactive: context.interactive,
+          ...(context.prompt.confirm ? {
+            confirm: async (message: string) => {
+              const response = await context.prompt.confirm!({ message, defaultValue: false });
+              return !response.cancelled && response.value === true;
+            },
+          } : {}),
+          io,
+        });
+        if (!result) return;
+        if (rawOptions.json) writeJsonReceipt(io.stdout, result);
+        else {
+          writeLine(io.stdout, `Published Catalog ${result.catalogVersion} to ${result.remote} (${result.pushUrl}).`);
+          writeLine(io.stdout, `Branch: refs/heads/${result.branch}`);
+          writeLine(io.stdout, `Tag: refs/tags/${result.tag}`);
+          writeLine(io.stdout, `Commit: ${result.commit}`);
+          writeLine(io.stdout, `Add it as a source: aw catalog source add <id> --git ${result.fetchUrl} --ref refs/heads/${result.branch}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, {
+          command: 'catalog:publish',
+          ok: false,
+          errors: [{ message }],
+        });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
   const catalogSource = catalog
     .command('source')
     .description('Manage catalog sources');
@@ -2531,7 +2586,7 @@ export async function runCli(
   };
   const jsonAuthoringCommand = argv.includes('--json')
     && (
-      (argv[0] === 'catalog' && ['init', 'version', 'build', 'validate'].includes(argv[1] ?? ''))
+      (argv[0] === 'catalog' && ['init', 'version', 'build', 'validate', 'publish'].includes(argv[1] ?? ''))
       || (argv[0] === 'plugin' && ['build', 'test'].includes(argv[1] ?? ''))
     )
     ? `${argv[0]}:${argv[1]}`
