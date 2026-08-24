@@ -1,0 +1,7 @@
+interface:
+  display_name: "Run AW Skill Evals"
+  short_description: "使用 aw-skill-eval 执行 Skill Eval plan"
+  default_prompt: "使用 $run-aw-skill-evals 执行当前 AwSkillEvalExecutionPlan，并验证 EvalRunBundle。"
+
+policy:
+  allow_implicit_invocation: true

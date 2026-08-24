@@ -16,7 +16,7 @@
           "config": {}
         },
         {
-          "name": "agent-skill-eval-runner",
+          "name": "aw-skill-eval-runner",
           "config": {}
         }
       ],

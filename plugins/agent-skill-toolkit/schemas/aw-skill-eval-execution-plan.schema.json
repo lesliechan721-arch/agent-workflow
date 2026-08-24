@@ -1,14 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-skill-toolkit.invalid/schemas/eval-execution-plan.schema.json",
-  "title": "EvalExecutionPlan",
+  "$id": "https://agent-skill-toolkit.invalid/schemas/aw-skill-eval-execution-plan.schema.json",
+  "title": "AwSkillEvalExecutionPlan",
   "type": "object",
   "required": [
     "schemaVersion",
     "planId",
     "target",
     "cases",
-    "audit",
     "provider",
     "configurations",
     "runsPerCase",
@@ -18,7 +17,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 2
+      "const": 3
     },
     "planId": {
       "type": "string",
@@ -67,38 +66,6 @@
         "corpusDigest": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
-        }
-      },
-      "additionalProperties": false
-    },
-    "audit": {
-      "type": "object",
-      "required": [
-        "path",
-        "digest",
-        "targetSkillDigest",
-        "caseCorpusDigest",
-        "validity"
-      ],
-      "properties": {
-        "path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "digest": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "targetSkillDigest": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "caseCorpusDigest": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "validity": {
-          "const": "pass"
         }
       },
       "additionalProperties": false

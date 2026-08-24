@@ -15,7 +15,7 @@ const help = `Usage: aw-skill-eval <command>
 
 Commands:
   capabilities --json
-  schema print <eval-execution-plan|eval-run-bundle|eval-audit-result>
+  schema print <aw-skill-eval-execution-plan|eval-run-bundle>
   plan validate <plan.json>
   run <plan.json>
   bundle validate <bundle.json>
@@ -41,7 +41,7 @@ async function main(argv: string[]): Promise<void> {
   }
   if (command === 'schema') {
     if (action !== 'print' || !value || !isSchemaName(value) || value === 'eval-runtime-capabilities')
-      throw new Error('Usage: aw-skill-eval schema print <eval-execution-plan|eval-run-bundle|eval-audit-result>')
+      throw new Error('Usage: aw-skill-eval schema print <aw-skill-eval-execution-plan|eval-run-bundle>')
     process.stdout.write(`${JSON.stringify(await getSchema(value), null, 2)}\n`)
     return
   }

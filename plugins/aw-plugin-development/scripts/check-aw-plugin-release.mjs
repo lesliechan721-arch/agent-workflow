@@ -435,9 +435,6 @@ async function main() {
           if (triage.value.validity !== 'pass' || triage.value.releaseEligible !== true) {
             chainErrors.push('triage audit is not release eligible');
           }
-          if (bundle.value.preflightAuditDigest !== preflight.digest) {
-            chainErrors.push('run bundle preflightAuditDigest does not match the preflight audit bytes');
-          }
           if (bundle.value.caseCorpusDigest !== preflight.value.caseCorpusDigest) {
             chainErrors.push('run bundle caseCorpusDigest does not match the preflight audit');
           }

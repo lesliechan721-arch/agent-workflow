@@ -63,7 +63,7 @@ import {
   materializePluginEvalSubjects,
   resolveMaterializedSubjectRoot,
 } from './plugin-eval-materializer.js';
-import { runPortableEvalExecutionPlan } from './portable-eval-engine.js';
+import { runAwSkillEvalExecutionPlan } from './aw-skill-eval-engine.js';
 import {
   completeSkillEvalRun,
   computeAuthorSourceDigest,
@@ -159,7 +159,7 @@ function optionValue(args: string[], index: number, flag: string): string {
 function usage(): string {
   return [
     'Usage: pnpm plugin:eval <plugin> --skill <skill> [OPTIONS]',
-    '       pnpm plugin:eval --execution-plan <plan.json>',
+    '       pnpm plugin:eval --aw-skill-eval-plan <plan.json>',
     '',
     'Options:',
     '  --skill <name>                Select exactly one Skill (required)',
@@ -179,15 +179,15 @@ function usage(): string {
     '  --materialize-only            Do not start real Codex model sessions',
     '  --allow-environment-skips     Diagnostic only; release remains incomplete',
     '  --allow-unmanaged-processes   Confirm eval without descendant process tracking',
-    '  --execution-plan <path>        Run one portable EvalExecutionPlan with the shared engine',
+    '  --aw-skill-eval-plan <path>    Run one AwSkillEvalExecutionPlan with aw-skill-eval',
   ].join('\n');
 }
 
-function portableExecutionPlanPath(args: string[]): string | undefined {
-  const index = args.indexOf('--execution-plan');
+function awSkillEvalExecutionPlanPath(args: string[]): string | undefined {
+  const index = args.indexOf('--aw-skill-eval-plan');
   if (index < 0) return undefined;
   if (args.length !== 2 || index !== 0 || !args[1] || args[1].startsWith('-')) {
-    throw new Error('--execution-plan requires exactly one plan path and no AW suite options.');
+    throw new Error('--aw-skill-eval-plan requires exactly one plan path and no AW suite options.');
   }
   return path.resolve(args[1]);
 }
@@ -1695,9 +1695,9 @@ export async function runPluginEvals(
     return 0;
   }
   try {
-    const executionPlanPath = portableExecutionPlanPath(args);
+    const executionPlanPath = awSkillEvalExecutionPlanPath(args);
     if (executionPlanPath) {
-      const result = await runPortableEvalExecutionPlan(executionPlanPath);
+      const result = await runAwSkillEvalExecutionPlan(executionPlanPath);
       stdout(`${JSON.stringify(result, null, 2)}\n`);
       return 0;
     }

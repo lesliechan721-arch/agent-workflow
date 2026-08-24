@@ -16,7 +16,7 @@
           "config": {}
         },
         {
-          "name": "agent-skill-eval-runner",
+          "name": "aw-skill-eval-runner",
           "config": {}
         },
         {
@@ -41,7 +41,7 @@
         "review-agent-skill",
         "design-agent-skill-evals",
         "audit-agent-skill-evals",
-        "run-agent-skill-evals"
+        "run-aw-skill-evals"
       ],
       "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,
@@ -71,7 +71,7 @@
         "review-agent-skill",
         "design-agent-skill-evals",
         "audit-agent-skill-evals",
-        "run-agent-skill-evals"
+        "run-aw-skill-evals"
       ],
       "cases": "./behavior-cases.json",
       "isolation": "strict",
@@ -95,7 +95,7 @@
         "review-agent-skill",
         "design-agent-skill-evals",
         "audit-agent-skill-evals",
-        "run-agent-skill-evals"
+        "run-aw-skill-evals"
       ],
       "cases": "./lightweight-delta-cases.json",
       "isolation": "strict",

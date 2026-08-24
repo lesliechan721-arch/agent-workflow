@@ -191,7 +191,7 @@
     {
       "id": "run_only",
       "split": "validation",
-      "query": "只执行已经审核的 EvalExecutionPlan。",
+      "query": "只执行一份 Runner-specific Eval plan。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",

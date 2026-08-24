@@ -8,12 +8,12 @@ import {
   type RunExecutionResult,
 } from '@lesliechan721/agent-skill-eval';
 
-export interface PortableEvalExecutionResult extends RunExecutionResult {
+export interface AwSkillEvalExecutionResult extends RunExecutionResult {
   engine: { provider: string; version: string };
   bundleValidation: Awaited<ReturnType<typeof validateRunBundle>>;
 }
 
-export function getPortableEvalExecutionOwner(): { provider: string; version: string } {
+export function getAwSkillEvalExecutionOwner(): { provider: string; version: string } {
   const capabilities = getRuntimeCapabilities();
   return {
     provider: capabilities.provider,
@@ -21,17 +21,17 @@ export function getPortableEvalExecutionOwner(): { provider: string; version: st
   };
 }
 
-// AW owns only the high-level dispatch here. The shared package owns portable plan validation,
+// AW owns only the high-level dispatch here. The shared package owns its plan validation,
 // provider execution, evidence capture, bundle construction, and bundle validation. AW-native
 // command, trigger, and conversation suites keep their separate suite/report contracts and must
-// not be translated into a portable plan without a real audit and provider capability document.
-export async function runPortableEvalExecutionPlan(
+// not be translated into an AwSkillEvalExecutionPlan.
+export async function runAwSkillEvalExecutionPlan(
   planPath: string,
-): Promise<PortableEvalExecutionResult> {
+): Promise<AwSkillEvalExecutionResult> {
   const absolutePlanPath = path.resolve(planPath);
   const planValidation = await validateExecutionPlan(absolutePlanPath);
   if (!planValidation.valid) {
-    throw new Error(`EvalExecutionPlan is invalid:\n${planValidation.errors.join('\n')}`);
+    throw new Error(`AwSkillEvalExecutionPlan is invalid:\n${planValidation.errors.join('\n')}`);
   }
   const execution = await runExecutionPlan(absolutePlanPath);
   const bundleValidation = await validateRunBundle(execution.bundlePath);
@@ -40,7 +40,7 @@ export async function runPortableEvalExecutionPlan(
   }
   return {
     ...execution,
-    engine: getPortableEvalExecutionOwner(),
+    engine: getAwSkillEvalExecutionOwner(),
     bundleValidation,
   };
 }

@@ -94,7 +94,6 @@ export interface RunExecutionResult {
 }
 
 export type SchemaName =
-  | 'eval-execution-plan'
+  | 'aw-skill-eval-execution-plan'
   | 'eval-run-bundle'
-  | 'eval-audit-result'
   | 'eval-runtime-capabilities'

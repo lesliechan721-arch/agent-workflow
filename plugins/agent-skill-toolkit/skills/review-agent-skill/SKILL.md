@@ -42,7 +42,7 @@ metadata:
 
 只有静态证据不足以完成用户要求的判断、新运行证据会实质改变结论、用户允许成本、兼容 Runner 可用且 Skill/corpus 已固定时，才进入本分支。
 
-启动独立上下文子代理，使用 `audit-agent-skill-evals` 的 `preflight` 模式审核。Audit 未通过时停止 Eval 分支，静态 Review 可以继续。通过后把计划交给兼容 Runner；运行结果经过 `result-triage` 后才能影响 finding。
+启动独立上下文子代理，使用 `audit-agent-skill-evals` 的 `preflight` 模式审核。Audit 未通过时停止 Eval 分支，静态 Review 可以继续。通过后，从已安装 Skill 中选择明确支持当前 Runner-specific plan、并输出 `EvalRunBundle v3` 的兼容 Runner；不要依赖中心 dispatcher 或固定 Skill 名称。运行结果经过 `result-triage` 后才能影响 finding。
 
 ## Finding 纪律
 

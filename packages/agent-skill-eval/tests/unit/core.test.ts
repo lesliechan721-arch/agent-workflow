@@ -86,12 +86,22 @@ describe('public Eval execution contracts', () => {
 
     const printed = await execFileAsync(
       process.execPath,
-      [bin, 'schema', 'print', 'eval-execution-plan'],
+      [bin, 'schema', 'print', 'aw-skill-eval-execution-plan'],
       { cwd: path.resolve('.') },
     )
     const schema = JSON.parse(printed.stdout)
-    expect(schema).toEqual(await getSchema('eval-execution-plan'))
-    expect(await getSchemaDigest('eval-execution-plan')).toBe(digest(JSON.stringify(schema)))
+    expect(schema).toEqual(await getSchema('aw-skill-eval-execution-plan'))
+    expect(await getSchemaDigest('aw-skill-eval-execution-plan')).toBe(digest(JSON.stringify(schema)))
+    await expect(execFileAsync(
+      process.execPath,
+      [bin, 'schema', 'print', 'eval-execution-plan'],
+      { cwd: path.resolve('.') },
+    )).rejects.toThrow()
+    await expect(execFileAsync(
+      process.execPath,
+      [bin, 'schema', 'print', 'eval-audit-result'],
+      { cwd: path.resolve('.') },
+    )).rejects.toThrow()
     await expect(validateRuntimeCapabilities(getRuntimeCapabilities())).resolves.toMatchObject({
       valid: true,
       errors: [],
@@ -202,39 +212,12 @@ describe('public Eval execution contracts', () => {
     const capabilitiesPath = path.join(root, 'capabilities.json')
     const capabilitiesRaw = JSON.stringify(capabilities)
     await writeFile(capabilitiesPath, capabilitiesRaw)
-    const audit = {
-      schemaVersion: 3,
-      producer: 'audit-agent-skill-evals',
-      independentContext: true,
-      auditId: 'audit-1',
-      mode: 'preflight',
-      targetSkillDigest: targetDigest,
-      caseCorpusDigest: digest(caseRaw),
-      runBundleDigest: null,
-      validity: 'pass',
-      optimizationPolicy: 'balanced',
-      cases: [{ caseId: 'case-1', releaseRelevant: true, admission: 'pass', oracleConfidence: 'high', findings: [] }],
-      blockedCases: [],
-      releaseEligible: true,
-      failureTriage: [],
-      recommendedAction: 'collect-more-data',
-    }
-    const auditPath = path.join(root, 'audit.json')
-    const auditRaw = JSON.stringify(audit)
-    await writeFile(auditPath, auditRaw)
     const planPath = path.join(root, 'plan.json')
     await writeFile(planPath, JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       planId: 'snapshot-race',
       target: { name: 'fixture', path: 'skill', digest: targetDigest },
       cases: { paths: ['cases.json'], corpusDigest: digest(caseRaw) },
-      audit: {
-        path: 'audit.json',
-        digest: digest(auditRaw),
-        targetSkillDigest: targetDigest,
-        caseCorpusDigest: digest(caseRaw),
-        validity: 'pass',
-      },
       provider: {
         id: 'aw-skill-eval-process',
         command: [process.execPath, '-e', 'process.stdout.write("{}")'],
@@ -386,14 +369,13 @@ describe('public Eval execution contracts', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-bundle-'))
     const bundlePath = path.join(root, 'bundle.json')
     const base = {
-      schemaVersion: 2,
-      producer: 'run-agent-skill-evals',
+      schemaVersion: 3,
+      runner: { id: 'fixture', version: '1' },
       independentContext: false,
       provider: { id: 'fixture', version: '1' },
       planDigest: digest('plan'),
       targetSkillDigest: digest('skill'),
       caseCorpusDigest: digest('cases'),
-      preflightAuditDigest: digest('audit'),
       comparisonPlanned: false,
       evidenceLevel: 'executed',
       runs: [],
@@ -507,38 +489,11 @@ describe('public Eval execution contracts', () => {
     const capabilitiesPath = path.join(root, 'capabilities.json')
     const capabilitiesRaw = capabilitiesCommand.stdout
     await writeFile(capabilitiesPath, capabilitiesRaw)
-    const audit = {
-      schemaVersion: 3,
-      producer: 'audit-agent-skill-evals',
-      independentContext: true,
-      auditId: 'audit-1',
-      mode: 'preflight',
-      targetSkillDigest: targetDigest,
-      caseCorpusDigest,
-      runBundleDigest: null,
-      validity: 'pass',
-      optimizationPolicy: 'balanced',
-      cases: [{ caseId: 'case-1', releaseRelevant: true, admission: 'pass', oracleConfidence: 'high', findings: [] }],
-      blockedCases: [],
-      releaseEligible: true,
-      failureTriage: [],
-      recommendedAction: 'collect-more-data',
-    }
-    const auditPath = path.join(root, 'audit.json')
-    const auditRaw = JSON.stringify(audit)
-    await writeFile(auditPath, auditRaw)
     const plan = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       planId: 'plan-1',
       target: { name: 'fixture', path: 'skill', digest: targetDigest },
       cases: { paths: ['cases.json'], corpusDigest: caseCorpusDigest },
-      audit: {
-        path: 'audit.json',
-        digest: digest(auditRaw),
-        targetSkillDigest: targetDigest,
-        caseCorpusDigest,
-        validity: 'pass',
-      },
       provider: {
         id: 'aw-skill-eval-process',
         command: [process.execPath, '-e', 'process.stdout.write(JSON.stringify({usage:{tokens:1,marker:process.env.AW_AGENT_SKILL_EVAL_PROCESS_MARKER},grading:{grader:{id:"fixture",version:"1"},result:{pass:true}}}))'],
@@ -562,6 +517,26 @@ describe('public Eval execution contracts', () => {
       { cwd: path.resolve('.') },
     )
     expect(JSON.parse(validatedPlan.stdout)).toMatchObject({ valid: true, errors: [] })
+
+    const mismatchedCapabilitiesRaw = JSON.stringify({
+      ...capabilities,
+      providerVersion: '9.9.9',
+    })
+    await writeFile(capabilitiesPath, mismatchedCapabilitiesRaw)
+    plan.provider.capabilitiesDigest = digest(mismatchedCapabilitiesRaw)
+    await writeFile(planPath, JSON.stringify(plan))
+    const mismatchedCapabilities = await validateExecutionPlan(planPath)
+    expect(mismatchedCapabilities.valid).toBe(false)
+    expect(mismatchedCapabilities.errors).toContain(
+      'capability providerVersion does not match the current aw-skill-eval runtime',
+    )
+    await expect(runExecutionPlan(planPath)).rejects.toThrow(
+      'capability providerVersion does not match the current aw-skill-eval runtime',
+    )
+
+    await writeFile(capabilitiesPath, capabilitiesRaw)
+    plan.provider.capabilitiesDigest = digest(capabilitiesRaw)
+    await writeFile(planPath, JSON.stringify(plan))
     const binaryRun = await execFileAsync(
       process.execPath,
       [bin, 'run', planPath],
@@ -584,6 +559,7 @@ describe('public Eval execution contracts', () => {
       calculated: { bundleDigest: result.bundleDigest },
     })
     const bundle = JSON.parse(await readFile(result.bundlePath, 'utf8'))
+    expect(bundle.runner).toEqual({ id: 'aw-skill-eval', version: capabilities.providerVersion })
     expect(bundle.runs[0].usage.marker).toBe('[redacted provider process marker]')
     expect(JSON.stringify(bundle)).not.toContain('caller-controlled-marker')
     expect(bundle.runs[0].artifacts).toEqual([])
@@ -640,14 +616,6 @@ describe('public Eval execution contracts', () => {
     }, 'case path must not be inside outputRoot')
     await expect(readFile(outputCasePath, 'utf8')).resolves.toBe(outputCaseBefore)
 
-    const outputAuditPath = path.join(outputRoot, 'bound-audit.json')
-    await writeFile(outputAuditPath, auditRaw)
-    await expectOutputInputRejected({
-      ...plan,
-      audit: { ...plan.audit, path: 'output/bound-audit.json' },
-    }, 'audit path must not be inside outputRoot')
-    await expect(readFile(outputAuditPath, 'utf8')).resolves.toBe(auditRaw)
-
     const outputCapabilitiesPath = path.join(outputRoot, 'bound-capabilities.json')
     await writeFile(outputCapabilitiesPath, capabilitiesRaw)
     await expectOutputInputRejected({
@@ -686,7 +654,6 @@ describe('public Eval execution contracts', () => {
       ...plan,
       target: { ...plan.target, path: '../../skill' },
       cases: { ...plan.cases, paths: ['../../cases.json'] },
-      audit: { ...plan.audit, path: '../../audit.json' },
       provider: {
         ...plan.provider,
         capabilitiesPath: '../../capabilities.json',
@@ -782,11 +749,6 @@ describe('public Eval execution contracts', () => {
         restore: JSON.stringify(cases),
       },
       {
-        filePath: auditPath,
-        invalid: JSON.stringify({ ...audit, validity: 'fail' }),
-        restore: auditRaw,
-      },
-      {
         filePath: capabilitiesPath,
         invalid: JSON.stringify({ ...capabilities, schemaVersion: 99 }),
         restore: capabilitiesRaw,
@@ -817,7 +779,6 @@ describe('public Eval execution contracts', () => {
 
     const mutationTargets = [
       { label: 'case corpus file 1', filePath: casePath },
-      { label: 'preflight audit', filePath: auditPath },
       { label: 'provider capabilities', filePath: capabilitiesPath },
       { label: 'execution plan', filePath: planPath },
     ]

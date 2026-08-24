@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "planId": "replace-me",
   "target": {
     "name": "example-skill",
@@ -11,13 +11,6 @@
       "./example-skill/evals/trigger-cases.json"
     ],
     "corpusDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-  },
-  "audit": {
-    "path": "./eval-audit-result.json",
-    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "targetSkillDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "caseCorpusDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "validity": "pass"
   },
   "provider": {
     "id": "aw-skill-eval-process",

@@ -25,10 +25,10 @@ import { waitForProcessExit } from '../support/process-tree.js';
 const tempDirs: string[] = [];
 const EXPECTED_PLUGINS = [
   'agent-content-toolkit',
-  'agent-skill-eval-runner',
   'agent-skill-toolkit',
   'ask-me',
   'aw-plugin-development',
+  'aw-skill-eval-runner',
   'codex-enhance',
   'dev-workflow',
   'git',
