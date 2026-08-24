@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -28,6 +29,11 @@ import {
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { redactString } from '../output/redact.js';
 import { assertTestWritablePath } from './test-path-fence.js';
+import {
+  observeProcessTree,
+  terminateProcessTree,
+  type ProcessTreeObservation,
+} from './process-tree.js';
 export {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
@@ -122,7 +128,10 @@ export interface LifecycleProcessResult {
 }
 
 export interface LifecycleProcessRunner {
-  run(invocation: LifecycleScriptInvocation, options: { timeoutMs: number }): Promise<LifecycleProcessResult>;
+  run(
+    invocation: LifecycleScriptInvocation,
+    options: { timeoutMs: number; signal?: AbortSignal },
+  ): Promise<LifecycleProcessResult>;
 }
 
 export interface RunLifecycleScriptResult {
@@ -598,19 +607,79 @@ export async function writeLifecycleScriptContext(options: {
 export const defaultPluginProcessRunner: LifecycleProcessRunner = {
   run(invocation, options) {
     return new Promise((resolve, reject) => {
+      options.signal?.throwIfAborted();
+      const processMarker = randomUUID();
       const child = spawn(invocation.command, invocation.args, {
         cwd: invocation.cwd,
-        env: invocation.env,
+        env: {
+          ...invocation.env,
+          AW_NATIVE_CLI_PROCESS_MARKER: processMarker,
+        },
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
       let stderr = '';
       let timedOut = false;
+      let aborted = false;
+      let settled = false;
+      let terminating = false;
+      let processTreeObservation: ProcessTreeObservation | undefined;
+      if (child.pid !== undefined) {
+        processTreeObservation = observeProcessTree(child.pid, processMarker);
+      }
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGTERM');
+        terminate();
       }, options.timeoutMs);
+      const abort = (): void => {
+        aborted = true;
+        terminate();
+      };
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', abort);
+        processTreeObservation?.dispose();
+      };
+      const settleAfterTermination = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        if (aborted) {
+          try {
+            options.signal?.throwIfAborted();
+          } catch (error) {
+            reject(error);
+            return;
+          }
+        }
+        resolve({
+          exitCode: child.exitCode,
+          signal: child.signalCode,
+          stdout,
+          stderr,
+          timedOut,
+        });
+      };
+      function terminate(): void {
+        if (settled || terminating) return;
+        terminating = true;
+        clearTimeout(timer);
+        const killDirectChild = (signal: 'SIGTERM' | 'SIGKILL'): void => {
+          if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+        };
+        const termination = child.pid === undefined
+          ? Promise.resolve(killDirectChild('SIGKILL'))
+          : terminateProcessTree(
+            child.pid,
+            killDirectChild,
+            {},
+            { observation: processTreeObservation },
+          );
+        void Promise.resolve(termination).then(settleAfterTermination, settleAfterTermination);
+      }
 
       child.stdout?.setEncoding('utf8');
       child.stderr?.setEncoding('utf8');
@@ -621,13 +690,19 @@ export const defaultPluginProcessRunner: LifecycleProcessRunner = {
         stderr += chunk;
       });
       child.on('error', (error) => {
-        clearTimeout(timer);
+        if (settled || terminating) return;
+        settled = true;
+        cleanup();
         reject(error);
       });
       child.on('close', (exitCode, signal) => {
-        clearTimeout(timer);
+        if (settled || terminating) return;
+        settled = true;
+        cleanup();
         resolve({ exitCode, signal, stdout, stderr, timedOut });
       });
+      options.signal?.addEventListener('abort', abort, { once: true });
+      if (options.signal?.aborted) abort();
     });
   },
 };

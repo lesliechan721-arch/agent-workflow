@@ -95,6 +95,7 @@ describe('catalog runtime projection', () => {
       },
       files: {
         'portable-skills/demo/SKILL.md': '---\nname: demo\ndescription: portable demo\n---\n',
+        'portable-skills/demo/README.md': '# Portable demo\n',
       },
     });
     const outputRoot = path.join(root, 'portable-bundle');

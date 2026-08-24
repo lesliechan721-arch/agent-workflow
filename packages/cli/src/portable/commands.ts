@@ -9,7 +9,7 @@ import type { PortableSkillCandidate, Scope } from '../types.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { resolveAwProjectRoot } from '../utils/plugin-config.js';
-import { resolveAwHome } from '../utils/paths.js';
+import { getClaudeHome, getCodexHome, resolveAwHome } from '../utils/paths.js';
 import {
   canonicalizePathThroughExistingAncestor,
   ensureRegularDirectoryPath,
@@ -126,6 +126,18 @@ interface PortableMarker extends PortableMaterializeReceipt {
   schemaVersion: 1;
 }
 
+export interface PortableCommandTestHooks {
+  beforeMaterializeOutputCommit?: (target: string) => Promise<void>;
+}
+
+let portableCommandTestHooks: PortableCommandTestHooks | undefined;
+
+export function setPortableCommandTestHooksForTests(
+  hooks: PortableCommandTestHooks | undefined,
+): void {
+  portableCommandTestHooks = hooks;
+}
+
 interface CollectedEvidence {
   materialized: MaterializedPortableSkills;
   review: PortableReview;
@@ -230,6 +242,7 @@ async function createMaterialization(options: {
   cwd: string;
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   configSnapshot: Awaited<ReturnType<typeof readCatalogSourcesConfigSnapshot>>;
 }): Promise<MaterializedPortableSkills> {
   try {
@@ -239,9 +252,11 @@ async function createMaterialization(options: {
       cwd: options.cwd,
       cliVersion: options.cliVersion,
       env: options.env,
+      signal: options.signal,
       configSnapshot: options.configSnapshot,
     });
   } catch (error) {
+    if (options.signal?.aborted) options.signal.throwIfAborted();
     classifyMaterializationError(error);
   }
 }
@@ -254,16 +269,18 @@ async function collectEvidence(options: {
   cwd: string;
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<CollectedEvidence> {
   const executionCwd = options.scope === 'project' ? resolveAwProjectRoot(options.cwd) : options.cwd;
-  const skillsCli = await probeSkillsCli({ cwd: executionCwd, env: options.env });
   const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
   const materialized = await createMaterialization({ ...options, configSnapshot });
   try {
+    const skillsCli = await probeSkillsCli({ cwd: executionCwd, env: options.env, signal: options.signal });
     const selected = selectCandidates(materialized.candidates, options.requestedSkills);
     const installed = await listInstalledSkills({
       cwd: executionCwd,
       env: options.env,
+      signal: options.signal,
       global: options.scope === 'user',
     });
     const names = new Set(selected.map((candidate) => candidate.name));
@@ -307,6 +324,7 @@ export async function preparePortableInstall(options: {
   cwd: string;
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }): Promise<PortableReview> {
   const agents = normalizePortableAgents(options.requestedAgents);
   const collected = await collectEvidence({ ...options, agents });
@@ -362,7 +380,9 @@ function installFailureReceipt(
     warnings: [],
     failures: [{
       code,
-      message: status === 'partial' ? 'skills add 已完成，但安装验证缺少目标。' : 'skills add 执行失败。',
+      message: code === 'portableSkillsCliInstallFailed'
+        ? 'skills add 执行失败，可能已写入部分目标。'
+        : 'skills add 已完成，但安装验证缺少目标。',
       recovery: '修复问题后重新运行 aw skill install；也可使用 skills remove 清理外部安装。',
     }],
   };
@@ -432,6 +452,7 @@ export async function installPortableSkills(options: {
           }
         }
         const executionCwd = options.scope === 'project' ? resolveAwProjectRoot(options.cwd) : options.cwd;
+        let addFailure: SkillsCliError | undefined;
         try {
           await options.onProgress?.('add');
           await addSkills({
@@ -444,9 +465,10 @@ export async function installPortableSkills(options: {
           });
         } catch (error) {
           if (error instanceof SkillsCliError && error.code === 'portableSkillsCliInstallFailed') {
-            return installFailureReceipt(current.review, error.code, 'failed', { records: [], missing: [] });
+            addFailure = error;
+          } else {
+            throw error;
           }
-          throw error;
         }
         let verification: PortableInstallReceipt['verification'];
         try {
@@ -460,17 +482,34 @@ export async function installPortableSkills(options: {
           });
         } catch (error) {
           if (error instanceof SkillsCliError) {
-            return installFailureReceipt(
+            const receipt = installFailureReceipt(
               current.review,
-              'portableSkillsCliVerificationFailed',
+              addFailure?.code ?? 'portableSkillsCliVerificationFailed',
               'partial',
               {
                 records: [],
-                missing: current.review.selected.map((entry) => ({ skill: entry.name })),
+                missing: [],
               },
             );
+            receipt.warnings.push('skills list 验证失败，无法确认已写入的目标。');
+            if (!addFailure) receipt.failures = [];
+            receipt.failures.push({
+              code: 'portableSkillsCliVerificationFailed',
+              message: 'skills list 验证失败，安装结果为 unknown，无法确认目标是否存在。',
+              recovery: '修复 Skills CLI 后重新运行 aw skill install，并按需使用 skills remove 清理外部安装。',
+            });
+            return receipt;
           }
           throw error;
+        }
+        if (addFailure) {
+          const expectedCount = current.review.selected.length * (agents?.length ?? 1);
+          return installFailureReceipt(
+            current.review,
+            addFailure.code,
+            verification.missing.length === expectedCount ? 'failed' : 'partial',
+            verification,
+          );
         }
         if (verification.missing.length > 0) {
           return installFailureReceipt(
@@ -516,6 +555,8 @@ async function assertSafeOutputPath(
     resolveAwProjectRoot(options.cwd),
     path.resolve(os.homedir()),
     path.resolve(resolveAwHome(options.env)),
+    path.resolve(getCodexHome(options.env)),
+    path.resolve(getClaudeHome(options.env)),
   ]);
   if (blocked.has(target)) {
     throw new PortableCommandError('portableOutputConflict', '输出目标范围过宽。');
@@ -556,14 +597,39 @@ async function prepareExistingOutput(
   }
 }
 
-async function commitOutput(staging: string, target: string): Promise<void> {
-  const existing = await fs.pathExists(target);
+async function commitOutput(
+  staging: string,
+  target: string,
+  expected: { pluginId: string; sourceIdentity: string | undefined; scope: Scope },
+): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => undefined);
   const backup = `${target}.aw-backup-${crypto.randomBytes(6).toString('hex')}`;
-  if (existing) await fs.rename(target, backup);
+  if (existing) {
+    await fs.rename(target, backup);
+    try {
+      await prepareExistingOutput(
+        backup,
+        expected.pluginId,
+        expected.sourceIdentity,
+        expected.scope,
+      );
+    } catch {
+      const replacement = await fs.lstat(target).catch(() => undefined);
+      if (!replacement) {
+        await fs.rename(backup, target).catch(() => undefined);
+      }
+      throw new PortableCommandError(
+        'portableOutputConflict',
+        '提交前输出身份发生变化；原输出已保留。',
+      );
+    }
+  }
   try {
     await fs.rename(staging, target);
   } catch (error) {
-    if (existing) await fs.rename(backup, target);
+    if (existing && !await fs.lstat(target).catch(() => undefined)) {
+      await fs.rename(backup, target).catch(() => undefined);
+    }
     throw error;
   }
   if (existing) await fs.remove(backup).catch(() => undefined);
@@ -649,7 +715,12 @@ export async function materializePortableSkillsToDirectory(options: {
         },
       };
       await fs.writeJson(path.join(staging, '.aw-materialization.json'), marker, { spaces: 2 });
-      await commitOutput(staging, target);
+      await portableCommandTestHooks?.beforeMaterializeOutputCommit?.(target);
+      await commitOutput(staging, target, {
+        pluginId: materialized.pluginId,
+        sourceIdentity: materialized.sourceIdentity,
+        scope: options.scope,
+      });
       committed = true;
       return receipt;
     } finally {

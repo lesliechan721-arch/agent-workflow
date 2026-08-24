@@ -44,7 +44,10 @@ import type {
 import { readJsonFile } from './json.js';
 import { parsePermissionCommand } from '../generators/permissions.js';
 import { applyFileRules } from './file-rules.js';
-import { validatePortableSkillDirectoriesRoot } from './dynamic-skill-tree.js';
+import {
+  validatePortableSkillDirectoriesRoot,
+  validatePortableSkillName,
+} from './dynamic-skill-tree.js';
 import {
   assertHookMatcherAllowed,
   assertNativeHookEvent,
@@ -2164,7 +2167,8 @@ function normalizeArtifactTargetEntry(
     if (!skillKey) {
       throw new Error(`Invalid ${fieldName}.skillKey: ${target} targets must declare a static skillKey.`);
     }
-    validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
+    if (portable) validatePortableSkillName(skillKey, `${fieldName}.skillKey`);
+    else validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
   } else if (skillKey !== undefined) {
     throw new Error(`Invalid ${fieldName}.skillKey: skillKey is only supported for skill targets.`);
   }
@@ -2670,20 +2674,103 @@ export interface ValidatePluginManifestOptions {
   defaultMinVersion?: string;
 }
 
-function hasNativePluginCapability(manifest: PluginManifestSource): boolean {
+function hasDeclaredNativePluginCapability(manifest: PluginManifestSource): boolean {
   return Boolean(
-    manifest.skills
-    || manifest.slashCommands
-    || manifest.mcpServers
-    || manifest.apps
-    || (manifest.extensions?.instructions?.length ?? 0) > 0
+    (manifest.extensions?.instructions?.length ?? 0) > 0
     || (manifest.extensions?.permissions?.length ?? 0) > 0
     || (manifest.extensions?.hooks?.length ?? 0) > 0
     || (manifest.extensions?.nativeHooks?.claude?.length ?? 0) > 0
     || (manifest.extensions?.nativeHooks?.codex?.length ?? 0) > 0
     || (manifest.extensions?.agents?.length ?? 0) > 0
-    || (manifest.artifacts?.targets ?? []).some((target) => target.platform !== undefined)
+    || (manifest.artifacts?.targets ?? []).some((target) =>
+      target.platform !== undefined && target.states.includes('present'))
   );
+}
+
+async function directoryContainsRegularFile(
+  root: string,
+  fileName?: string,
+  exact = false,
+): Promise<boolean> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const entryPath = path.join(root, entry.name);
+    if (entry.isFile() && (!fileName || (exact ? entry.name === fileName : entry.name.endsWith(fileName)))) {
+      return true;
+    }
+    if (entry.isDirectory() && await directoryContainsRegularFile(entryPath, fileName, exact)) return true;
+  }
+  return false;
+}
+
+async function jsonAssetHasEntries(
+  pluginRoot: string,
+  relativePath: string | undefined,
+  key: 'mcpServers' | 'apps',
+): Promise<boolean> {
+  if (!relativePath) return false;
+  const content = await fs.readJson(path.join(pluginRoot, stripDotSlash(relativePath))).catch(() => undefined);
+  if (!content || typeof content !== 'object' || Array.isArray(content)) return false;
+  const entries = (content as Record<string, unknown>)[key];
+  return Boolean(entries && typeof entries === 'object' && !Array.isArray(entries)
+    && Object.keys(entries as Record<string, unknown>).length > 0);
+}
+
+export async function assertActualNativePluginCapability(
+  pluginRoot: string,
+  manifest: PluginManifestSource,
+  mode: 'source' | 'bundle' = 'source',
+): Promise<void> {
+  if (!manifest.distributions?.agentSkills || hasDeclaredNativePluginCapability(manifest)) return;
+  const skills = manifest.skills
+    ? await directoryContainsRegularFile(path.join(pluginRoot, stripDotSlash(manifest.skills)), 'SKILL.md', true)
+    : false;
+  const slashCommands = manifest.slashCommands
+    ? await directoryContainsRegularFile(path.join(pluginRoot, stripDotSlash(manifest.slashCommands)), '.md')
+    : false;
+  const [mcpServers, apps] = await Promise.all([
+    jsonAssetHasEntries(pluginRoot, manifest.mcpServers, 'mcpServers'),
+    jsonAssetHasEntries(pluginRoot, manifest.apps, 'apps'),
+  ]);
+  let bundled = false;
+  if (mode === 'bundle' && !skills && !slashCommands && !mcpServers && !apps) {
+    for (const platform of ['claude', 'codex'] as const) {
+      const platformManifest = await fs.readJson(
+        path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'),
+      ).catch(() => undefined) as Record<string, unknown> | undefined;
+      if (!platformManifest) continue;
+      const platformSkills = typeof platformManifest.skills === 'string'
+        && await directoryContainsRegularFile(
+          path.join(pluginRoot, stripDotSlash(platformManifest.skills)),
+          'SKILL.md',
+          true,
+        );
+      const commands = typeof platformManifest.commands === 'string'
+        && await directoryContainsRegularFile(
+          path.join(pluginRoot, stripDotSlash(platformManifest.commands)),
+          '.md',
+        );
+      bundled = Boolean(platformSkills || commands
+        || (Array.isArray(platformManifest.agents) && platformManifest.agents.length > 0)
+        || (platformManifest.hooks && typeof platformManifest.hooks === 'object'
+          && Object.keys(platformManifest.hooks as Record<string, unknown>).length > 0)
+        || await jsonAssetHasEntries(
+          pluginRoot,
+          typeof platformManifest.mcpServers === 'string' ? platformManifest.mcpServers : undefined,
+          'mcpServers',
+        )
+        || await jsonAssetHasEntries(
+          pluginRoot,
+          typeof platformManifest.apps === 'string' ? platformManifest.apps : undefined,
+          'apps',
+        ));
+      if (bundled) break;
+    }
+  }
+  if (!skills && !slashCommands && !mcpServers && !apps && !bundled) {
+    throw new Error('Invalid plugin manifest: portable-only plugins are not supported in V1. Declare at least one non-empty native capability.');
+  }
 }
 
 export function validatePluginManifest(
@@ -2862,10 +2949,6 @@ export function validatePluginManifest(
   ) {
     throw new Error('Invalid artifacts.targets: agent-skills targets require distributions.agentSkills declaration.');
   }
-  if (manifest.distributions?.agentSkills && !hasNativePluginCapability(manifest)) {
-    throw new Error('Invalid plugin manifest: portable-only plugins are not supported in V1.');
-  }
-
   assertManifestPlatformSupport(manifest.name, manifest);
 
   return manifest;
@@ -3120,6 +3203,7 @@ export async function validateSourcePluginManifest(
         source: entry.source,
       })),
   ]);
+  await assertActualNativePluginCapability(pluginRoot, manifest);
   return manifest;
 }
 
@@ -3139,6 +3223,7 @@ export async function readPluginManifest(
     : validatePluginManifest(pluginRoot, rawManifest, {
       compatibilityMode: 'required',
     });
+  if (mode === 'bundle') await assertActualNativePluginCapability(pluginRoot, manifest, 'bundle');
   return {
     rootDir: pluginRoot,
     manifestPath,

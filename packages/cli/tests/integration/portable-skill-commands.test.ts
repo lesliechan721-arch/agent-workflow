@@ -1,10 +1,15 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
-import { installPortableSkills, preparePortableInstall } from '../../src/portable/commands.js';
+import {
+  installPortableSkills,
+  preparePortableInstall,
+  setPortableCommandTestHooksForTests,
+} from '../../src/portable/commands.js';
 import { createCatalogManifestV4, createCatalogManifestV4Entry } from '../../src/utils/catalog-manifest-v4.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -18,6 +23,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 async function configurePortableCatalog(): Promise<{
   cwd: string;
   env: NodeJS.ProcessEnv;
+  sourceRoot: string;
   pluginRoot: string;
 }> {
   const isolation = getCurrentSourceTestIsolation();
@@ -31,6 +37,10 @@ async function configurePortableCatalog(): Promise<{
     await fs.outputFile(
       path.join(pluginRoot, 'agent-skills', 'skills', name, 'SKILL.md'),
       `---\nname: ${name}\ndescription: ${name} description\n---\nBody.\n`,
+    );
+    await fs.outputFile(
+      path.join(pluginRoot, 'agent-skills', 'skills', name, 'README.md'),
+      `# ${name}\n`,
     );
   }
   const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
@@ -50,27 +60,30 @@ async function configurePortableCatalog(): Promise<{
     expectedDigest: snapshot.digest,
     env: isolation.env,
   });
-  return { cwd: isolation.layout.fixtureCwd, env: isolation.env, pluginRoot };
+  return { cwd: isolation.layout.fixtureCwd, env: isolation.env, sourceRoot, pluginRoot };
 }
 
 async function installFakeSkills(env: NodeJS.ProcessEnv, root: string, options: {
   before?: unknown;
   after?: unknown;
   addExit?: number;
+  addWrites?: boolean;
+  listExitAfterAdd?: number;
   version?: string;
 } = {}): Promise<{ env: NodeJS.ProcessEnv; log: string }> {
   const bin = path.join(root, 'fake-skills-bin');
   const executable = path.join(bin, 'skills');
   const log = path.join(root, 'skills-calls.jsonl');
   const added = path.join(root, 'skills-added');
+  const attempted = path.join(root, 'skills-attempted');
   await fs.ensureDir(bin);
   await fs.writeFile(executable, [
     '#!/usr/bin/env node',
     "const fs = require('node:fs');",
     "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify({args: process.argv.slice(2), cwd: process.cwd()}) + '\\n');",
     "if (process.argv[2] === '--version') { console.log(process.env.FAKE_SKILLS_VERSION); process.exit(0); }",
-    "if (process.argv[2] === 'add') { if (Number(process.env.FAKE_SKILLS_ADD_EXIT || '0')) process.exit(Number(process.env.FAKE_SKILLS_ADD_EXIT)); fs.writeFileSync(process.env.FAKE_SKILLS_ADDED, '1'); process.exit(0); }",
-    "if (process.argv[2] === 'list') { console.log(fs.existsSync(process.env.FAKE_SKILLS_ADDED) ? process.env.FAKE_SKILLS_AFTER : process.env.FAKE_SKILLS_BEFORE); process.exit(0); }",
+    "if (process.argv[2] === 'add') { fs.writeFileSync(process.env.FAKE_SKILLS_ATTEMPTED, '1'); if (process.env.FAKE_SKILLS_ADD_WRITES === '1') fs.writeFileSync(process.env.FAKE_SKILLS_ADDED, '1'); if (Number(process.env.FAKE_SKILLS_ADD_EXIT || '0')) process.exit(Number(process.env.FAKE_SKILLS_ADD_EXIT)); fs.writeFileSync(process.env.FAKE_SKILLS_ADDED, '1'); process.exit(0); }",
+    "if (process.argv[2] === 'list') { if (fs.existsSync(process.env.FAKE_SKILLS_ATTEMPTED) && Number(process.env.FAKE_SKILLS_LIST_EXIT_AFTER_ADD || '0')) process.exit(Number(process.env.FAKE_SKILLS_LIST_EXIT_AFTER_ADD)); console.log(fs.existsSync(process.env.FAKE_SKILLS_ADDED) ? process.env.FAKE_SKILLS_AFTER : process.env.FAKE_SKILLS_BEFORE); process.exit(0); }",
     'process.exit(2);',
   ].join('\n'));
   await fs.chmod(executable, 0o755);
@@ -81,6 +94,9 @@ async function installFakeSkills(env: NodeJS.ProcessEnv, root: string, options: 
       PATH: `${bin}${path.delimiter}${env.PATH ?? ''}`,
       FAKE_SKILLS_LOG: log,
       FAKE_SKILLS_ADDED: added,
+      FAKE_SKILLS_ATTEMPTED: attempted,
+      FAKE_SKILLS_ADD_WRITES: options.addWrites ? '1' : '0',
+      FAKE_SKILLS_LIST_EXIT_AFTER_ADD: String(options.listExitAfterAdd ?? 0),
       FAKE_SKILLS_VERSION: options.version ?? '1.5.23',
       FAKE_SKILLS_BEFORE: JSON.stringify(options.before ?? []),
       FAKE_SKILLS_AFTER: JSON.stringify(options.after ?? [
@@ -93,6 +109,11 @@ async function installFakeSkills(env: NodeJS.ProcessEnv, root: string, options: 
 }
 
 describe('portable skill public commands', () => {
+  afterEach(() => {
+    setPortableCommandTestHooksForTests(undefined);
+    vi.restoreAllMocks();
+  });
+
   it('rejects stale TUI evidence inside the mutation lock before skills add', async () => {
     const fixture = await configurePortableCatalog();
     const fake = await installFakeSkills(fixture.env, fixture.cwd);
@@ -117,6 +138,57 @@ describe('portable skill public commands', () => {
     expect(receipt.status).toBe('succeeded');
     expect(stages).toEqual(['prepare', 'add', 'verify']);
   });
+
+  it.each(['root symlink', 'direct file', 'direct symlink'] as const)(
+    'rejects a malformed external Catalog portable root with a %s before external or output writes',
+    async (malformedNode) => {
+      const fixture = await configurePortableCatalog();
+      const skillsRoot = path.join(fixture.pluginRoot, 'agent-skills', 'skills');
+      const externalRoot = path.join(fixture.cwd, 'catalog-private-content');
+      await fs.outputFile(
+        path.join(externalRoot, 'leaked-skill', 'SKILL.md'),
+        '---\nname: leaked-skill\ndescription: must stay private\n---\nprivate-catalog-sentinel\n',
+      );
+      await fs.outputFile(path.join(externalRoot, 'leaked-skill', 'README.md'), '# Private\n');
+      if (malformedNode === 'root symlink') {
+        await fs.remove(skillsRoot);
+        await fs.symlink(externalRoot, skillsRoot, 'dir');
+      } else if (malformedNode === 'direct file') {
+        await fs.outputFile(path.join(skillsRoot, 'invalid.txt'), 'private-catalog-sentinel\n');
+      } else {
+        await fs.symlink(
+          path.join(externalRoot, 'leaked-skill'),
+          path.join(skillsRoot, 'leaked-skill'),
+          'dir',
+        );
+      }
+      const plugin = await readPluginManifest(fixture.pluginRoot, { mode: 'bundle' });
+      await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV4({
+        catalogVersion: '1.0.0',
+        channel: 'latest',
+        compatibility: { aw: { minVersion: '0.1.0' } },
+        release: { state: 'development' },
+        entries: [await createCatalogManifestV4Entry(plugin, fixture.pluginRoot)],
+      }));
+      const fake = await installFakeSkills(fixture.env, fixture.cwd);
+      const installIo = createCapturedCliIo();
+      expect(await runCli(
+        ['skill', 'install', 'portable', '--scope', 'project', '--yes', '--json'],
+        { cwd: fixture.cwd, env: fake.env, io: installIo.io },
+      )).toBe(1);
+      expect(await fs.pathExists(fake.log)).toBe(false);
+
+      const out = path.join(fixture.cwd, `malformed-${malformedNode.replace(' ', '-')}`);
+      const materializeIo = createCapturedCliIo();
+      expect(await runCli(
+        ['skill', 'materialize', 'portable', '--scope', 'project', '--out', out, '--json'],
+        { cwd: fixture.cwd, env: fixture.env, io: materializeIo.io },
+      )).toBe(1);
+      expect(await fs.pathExists(out)).toBe(false);
+      expect(`${installIo.readStdout()}${installIo.readStderr()}${materializeIo.readStdout()}${materializeIo.readStderr()}`)
+        .not.toContain('private-catalog-sentinel');
+    },
+  );
 
   it('publishes help and requires the scope and output parameters', async () => {
     const fixture = await configurePortableCatalog();
@@ -272,15 +344,63 @@ describe('portable skill public commands', () => {
     }
   });
 
-  it('reports add failure and verification partial without rollback', async () => {
+  it('uses post-failure verification evidence without rollback or private upstream data', async () => {
     const fixture = await configurePortableCatalog();
-    const failed = await installFakeSkills(fixture.env, fixture.cwd, { addExit: 7 });
+    const partialRecord = {
+      name: 'alpha', agents: ['Codex'], scope: 'user',
+      path: '/private/upstream/materialized/alpha',
+      sourceUrl: 'https://secret@example.invalid/private.git',
+    };
+    const failed = await installFakeSkills(fixture.env, fixture.cwd, {
+      addExit: 7, addWrites: true, after: [partialRecord],
+    });
     const failedIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'install', 'portable', '--scope', 'user', '--skill', 'alpha', '--yes', '--json'],
+      ['skill', 'install', 'portable', '--scope', 'user', '--yes', '--json'],
       { cwd: fixture.cwd, env: failed.env, io: failedIo.io },
     )).toBe(1);
-    expect(JSON.parse(failedIo.readStdout())).toMatchObject({ status: 'failed' });
+    expect(JSON.parse(failedIo.readStdout())).toMatchObject({
+      status: 'partial',
+      verification: {
+        records: [{ name: 'alpha', scope: 'user', agents: ['Codex'] }],
+        missing: [{ skill: 'beta' }],
+      },
+      failures: [{ code: 'portableSkillsCliInstallFailed' }],
+    });
+    expect(`${failedIo.readStdout()}${failedIo.readStderr()}`).not.toMatch(/private\/upstream|secret@example/u);
+
+    const allMissing = await installFakeSkills(fixture.env, path.join(fixture.cwd, 'all-missing'), {
+      addExit: 7, after: [],
+    });
+    const allMissingIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--yes', '--json'],
+      { cwd: fixture.cwd, env: allMissing.env, io: allMissingIo.io },
+    )).toBe(1);
+    expect(JSON.parse(allMissingIo.readStdout())).toMatchObject({
+      status: 'failed',
+      verification: { records: [], missing: [{ skill: 'alpha' }, { skill: 'beta' }] },
+      failures: [{ code: 'portableSkillsCliInstallFailed' }],
+    });
+
+    const unknown = await installFakeSkills(fixture.env, path.join(fixture.cwd, 'unknown'), {
+      addExit: 7, listExitAfterAdd: 9,
+    });
+    const unknownIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--yes', '--json'],
+      { cwd: fixture.cwd, env: unknown.env, io: unknownIo.io },
+    )).toBe(1);
+    expect(JSON.parse(unknownIo.readStdout())).toMatchObject({
+      status: 'partial',
+      verification: { records: [], missing: [] },
+      warnings: [expect.stringContaining('无法确认')],
+      failures: [
+        { code: 'portableSkillsCliInstallFailed' },
+        { code: 'portableSkillsCliVerificationFailed' },
+      ],
+    });
+    expect((await fs.readFile(unknown.log, 'utf8'))).not.toContain('remove');
 
     const partialRoot = path.join(fixture.cwd, 'partial');
     await fs.ensureDir(partialRoot);
@@ -295,6 +415,54 @@ describe('portable skill public commands', () => {
       failures: [{ code: 'portableSkillsCliVerificationFailed' }],
     });
     expect((await fs.readFile(partial.log, 'utf8'))).not.toContain('remove');
+  });
+
+  it.each([
+    ['automatic', []],
+    ['explicit multi-agent', ['codex', 'cursor']],
+  ] as const)('reports successful add with failed verification as unknown for %s selection', async (
+    _label,
+    agents,
+  ) => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd, { listExitAfterAdd: 9 });
+    const io = createCapturedCliIo();
+    expect(await runCli([
+      'skill', 'install', 'portable', '--scope', 'project', '--yes', '--json',
+      ...(agents.length > 0 ? ['--agent', ...agents] : []),
+    ], { cwd: fixture.cwd, env: fake.env, io: io.io })).toBe(1);
+
+    const receipt = JSON.parse(io.readStdout());
+    expect(receipt).toMatchObject({
+      status: 'partial',
+      verification: { records: [], missing: [] },
+      warnings: [expect.stringContaining('无法确认')],
+      failures: [{
+        code: 'portableSkillsCliVerificationFailed',
+        message: expect.stringContaining('unknown'),
+      }],
+    });
+    expect(`${io.readStdout()}${io.readStderr()}`).not.toContain('目标缺失');
+  });
+
+  it('prints deduplicated safe recovery guidance for a non-JSON partial install', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills({
+      ...fixture.env,
+      PORTABLE_TOKEN: 'credential=top-secret',
+      PRIVATE_SOURCE_URL: 'https://user:secret@example.test/private',
+    }, fixture.cwd, { addExit: 7, addWrites: true, listExitAfterAdd: 9 });
+    const io = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'install', 'portable', '--scope', 'project', '--yes'],
+      { cwd: fixture.cwd, env: fake.env, io: io.io },
+    )).toBe(1);
+    const output = io.readStderr();
+    expect(output).toContain('警告：');
+    expect(output).toContain('aw skill install');
+    expect(output).toContain('skills remove');
+    expect(output.match(/^恢复：/gmu)).toHaveLength(1);
+    expect(output).not.toMatch(/top-secret|user:secret|example\.test|\/private/u);
   });
 
   it('materializes a filtered tree and safely replaces only matching marked output', async () => {
@@ -360,6 +528,35 @@ describe('portable skill public commands', () => {
     await expect(fs.readFile(path.join(fixture.cwd, 'foreign', 'keep.txt'), 'utf8')).resolves.toBe('keep');
   });
 
+  it('rejects default Codex and overridden Claude homes before writing existing or missing output', async () => {
+    const fixture = await configurePortableCatalog();
+    const userHome = path.join(fixture.cwd, 'isolated-user-home');
+    const codexHome = path.join(userHome, '.codex');
+    const claudeHome = path.join(fixture.cwd, 'isolated-claude-home');
+    vi.spyOn(os, 'homedir').mockReturnValue(userHome);
+    await fs.outputFile(path.join(codexHome, 'agent-owned.txt'), 'preserve these bytes\n');
+    const originalCodexBytes = await fs.readFile(path.join(codexHome, 'agent-owned.txt'));
+    const env: NodeJS.ProcessEnv = {
+      ...fixture.env,
+      AW_CLAUDE_HOME: claudeHome,
+    };
+    delete env.AW_CODEX_HOME;
+
+    for (const target of [codexHome, claudeHome]) {
+      const io = createCapturedCliIo();
+      expect(await runCli(
+        ['skill', 'materialize', 'portable', '--scope', 'project', '--out', target, '--json'],
+        { cwd: fixture.cwd, env, io: io.io },
+      )).toBe(1);
+      expect(JSON.parse(io.readStdout())).toMatchObject({
+        errors: [{ code: 'portableOutputConflict' }],
+      });
+    }
+
+    await expect(fs.readFile(path.join(codexHome, 'agent-owned.txt'))).resolves.toEqual(originalCodexBytes);
+    await expect(fs.pathExists(claudeHome)).resolves.toBe(false);
+  });
+
   it('preserves an old materialization when its source identity no longer matches', async () => {
     const fixture = await configurePortableCatalog();
     const target = path.join(fixture.cwd, 'identity-output');
@@ -384,5 +581,37 @@ describe('portable skill public commands', () => {
     });
     await expect(fs.readFile(path.join(target, 'old-sentinel.txt'), 'utf8')).resolves.toBe('old-output\n');
     expect((await fs.readJson(markerPath)).plugin.sourceIdentity).toBe('stale-source-identity');
+  });
+
+  it('revalidates a renamed output and preserves a replacement owned by another plugin', async () => {
+    const fixture = await configurePortableCatalog();
+    const target = path.join(fixture.cwd, 'raced-output');
+    const firstIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', target, '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
+    )).toBe(0);
+    const displaced = path.join(fixture.cwd, 'displaced-output');
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => {
+        await fs.rename(target, displaced);
+        await fs.ensureDir(target);
+        const marker = await fs.readJson(path.join(displaced, '.aw-materialization.json'));
+        marker.plugin.id = 'local/other-plugin';
+        await fs.writeJson(path.join(target, '.aw-materialization.json'), marker);
+        await fs.writeFile(path.join(target, 'foreign.txt'), 'preserve me');
+      },
+    });
+    const secondIo = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', target, '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: secondIo.io },
+    )).toBe(1);
+    expect(JSON.parse(secondIo.readStdout())).toMatchObject({
+      errors: [{ code: 'portableOutputConflict' }],
+    });
+    await expect(fs.readFile(path.join(target, 'foreign.txt'), 'utf8')).resolves.toBe('preserve me');
+    await expect(fs.readJson(path.join(target, '.aw-materialization.json')))
+      .resolves.toMatchObject({ plugin: { id: 'local/other-plugin' } });
   });
 });

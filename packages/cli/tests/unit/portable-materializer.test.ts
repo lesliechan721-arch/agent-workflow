@@ -45,6 +45,10 @@ async function writeSkill(root: string, name: string, body = 'Body.'): Promise<v
     path.join(root, 'agent-skills', 'skills', name, 'SKILL.md'),
     `---\nname: ${name}\ndescription: ${name} description\n---\n${body}\n`,
   );
+  await fs.outputFile(
+    path.join(root, 'agent-skills', 'skills', name, 'README.md'),
+    `# ${name}\n`,
+  );
 }
 
 async function pluginFixture(
@@ -149,6 +153,38 @@ describe('portable materializer', () => {
     expect(await fs.pathExists(materialized.rootDir)).toBe(false);
   });
 
+  it('reads candidate descriptions from CRLF and EOF-closing portable frontmatter', async () => {
+    const root = await tempRoot('aw-portable-frontmatter-');
+    const plugin = await pluginFixture(root, baseManifest('frontmatter'));
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'agent-skills', 'skills', 'crlf-skill', 'SKILL.md'),
+      '---\r\nname: crlf-skill\r\ndescription: CRLF description.\r\n---\r\nBody.\r\n',
+    );
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'agent-skills', 'skills', 'crlf-skill', 'README.md'),
+      '# CRLF\n',
+    );
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'agent-skills', 'skills', 'eof-skill', 'SKILL.md'),
+      '---\nname: eof-skill\ndescription: EOF description.\n---',
+    );
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'agent-skills', 'skills', 'eof-skill', 'README.md'),
+      '# EOF\n',
+    );
+
+    const materialized = await materializePortableSkills({
+      plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home') },
+    });
+    expect(materialized.candidates.map(({ name, description }) => ({ name, description })))
+      .toEqual([
+        { name: 'crlf-skill', description: 'CRLF description.' },
+        { name: 'eof-skill', description: 'EOF description.' },
+      ]);
+    await materialized.cleanup();
+  });
+
   it('merges dynamic sources, static runtime files, and renderer overlay while omitting disabled targets', async () => {
     const root = await tempRoot('aw-portable-dynamic-');
     const manifest: PluginManifestSource = {
@@ -188,6 +224,11 @@ describe('portable materializer', () => {
       'references',
       'source.txt',
     ), 'source');
+    await fs.outputFile(path.join(
+      plugin.rootDir,
+      getArtifactSourceBundleRelativePath({ distribution: 'agent-skills', artifactId: 'enabled', index: 0 }),
+      'README.md',
+    ), '# Owned\n');
     await fs.outputFile(
       path.join(plugin.rootDir, 'scripts', 'render.mjs'),
       `console.log(JSON.stringify({version:2,artifacts:[
@@ -255,6 +296,17 @@ describe('portable materializer', () => {
       plugins: [invalid], pluginId: invalid.pluginId!, scope: 'user', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home-c') },
     })).rejects.toThrow('frontmatter');
+
+    const uppercase = await pluginFixture(root, baseManifest('uppercase'));
+    await fs.outputFile(
+      path.join(uppercase.rootDir, 'agent-skills', 'skills', 'Foo', 'SKILL.md'),
+      '---\nname: Foo\ndescription: Must not bypass an installed lowercase foo.\n---\n',
+    );
+    await fs.outputFile(path.join(uppercase.rootDir, 'agent-skills', 'skills', 'Foo', 'README.md'), '# Foo\n');
+    await expect(materializePortableSkills({
+      plugins: [uppercase], pluginId: uppercase.pluginId!, scope: 'user', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home-uppercase') },
+    })).rejects.toThrow('ASCII lowercase hyphen-case');
   });
 
   it('uses only exact portable runtime projections for a dynamic owner', async () => {
@@ -288,6 +340,7 @@ describe('portable materializer', () => {
     await writeSkill(consumer.rootDir, 'owned', 'Static file must not own the dynamic candidate.');
     await fs.outputFile(path.join(consumer.rootDir, 'agent-skills', 'skills', 'owned', 'undeclared.txt'), 'must-not-copy');
     await fs.outputFile(path.join(consumer.rootDir, 'dynamic-source', 'SKILL.md'), '---\nname: owned\ndescription: dynamic source\n---\nSource.\n');
+    await fs.outputFile(path.join(consumer.rootDir, 'dynamic-source', 'README.md'), '# Owned\n');
     await fs.outputFile(path.join(consumer.rootDir, 'scripts', 'render.mjs'), `import fs from 'node:fs';
 const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
 if (process.env.AW_PLUGIN_PLATFORM !== undefined || process.env.AW_PLUGIN_DISTRIBUTION !== 'agent-skills') process.exit(2);
@@ -315,5 +368,52 @@ console.log(JSON.stringify({version:2,artifacts:[{id:'owned',distribution:'agent
       plugins: [bundled], pluginId: bundled.pluginId, scope: 'project', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home-failure') },
     })).rejects.toThrow('缺少 SKILL.md');
+  });
+
+  it('excludes all dynamic keys from the static root while rendering only the selected scope', async () => {
+    const root = await tempRoot('aw-portable-cross-scope-');
+    const manifest: PluginManifestSource = {
+      ...baseManifest('cross-scope'),
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: (['project', 'user'] as const).map((scope) => ({
+        id: `${scope}-only`, distribution: 'agent-skills' as const,
+        target: 'agent-skills.skill' as const, kind: 'skill' as const,
+        scopes: [scope], states: ['present' as const], refreshKeys: [], skillKey: `${scope}-only`,
+        sourceDirs: [`./agent-skills/skills/${scope}-only`],
+      })) },
+    };
+    const plugin = await pluginFixture(root, manifest);
+    await writeSkill(plugin.rootDir, 'project-only');
+    await writeSkill(plugin.rootDir, 'user-only');
+    for (const scope of ['project', 'user'] as const) {
+      await fs.copy(
+        path.join(plugin.rootDir, 'agent-skills', 'skills', `${scope}-only`),
+        path.join(plugin.rootDir, getArtifactSourceBundleRelativePath({
+          distribution: 'agent-skills', artifactId: `${scope}-only`, index: 0,
+        })),
+      );
+    }
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'render.mjs'), [
+      "import fs from 'node:fs';",
+      "const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, 'utf8'));",
+      "fs.appendFileSync(new URL('../render.log', import.meta.url), context.scope + '\\n');",
+      "const key = context.scope + '-only';",
+      "console.log(JSON.stringify({version:2,artifacts:[{id:key,distribution:'agent-skills',target:'agent-skills.skill',kind:'skill',state:'present',skillKey:key,refreshKeys:[],content:{files:{}}}]}));",
+    ].join('\n'));
+    const renderLog = path.join(plugin.rootDir, 'render.log');
+
+    const project = await materializePortableSkills({
+      plugins: [plugin], pluginId: plugin.pluginId!, scope: 'project', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home-project') },
+    });
+    expect(project.candidates.map((candidate) => candidate.name)).toEqual(['project-only']);
+    await project.cleanup();
+    const user = await materializePortableSkills({
+      plugins: [plugin], pluginId: plugin.pluginId!, scope: 'user', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home-user') },
+    });
+    expect(user.candidates.map((candidate) => candidate.name)).toEqual(['user-only']);
+    expect(await fs.readFile(renderLog, 'utf8')).toBe('project\nuser\n');
+    await user.cleanup();
   });
 });

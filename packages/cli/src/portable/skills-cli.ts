@@ -34,6 +34,7 @@ export interface InstalledSkillRecord {
 export interface SkillsCliInvocationOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
 }
 
 function compareVersion(left: readonly number[], right: readonly number[]): number {
@@ -54,6 +55,7 @@ async function invokeSkills(
       env: options.env,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     return { stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
@@ -74,6 +76,7 @@ export async function probeSkillsCli(
     output = result.stdout.trim();
   } catch (error) {
     if (error instanceof SkillsCliError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     throw new SkillsCliError('portableSkillsCliIncompatible', '无法读取 skills 版本。');
   }
   const match = output.match(/(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)/u);
@@ -126,6 +129,7 @@ export async function listInstalledSkills(options: SkillsCliInvocationOptions & 
     ({ stdout } = await invokeSkills(args, options));
   } catch (error) {
     if (error instanceof SkillsCliError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     throw new SkillsCliError('portableSkillsCliVerificationFailed', 'skills list --json 执行失败。');
   }
   try {
@@ -149,6 +153,7 @@ export async function addSkills(options: SkillsCliInvocationOptions & {
     await invokeSkills(args, options);
   } catch (error) {
     if (error instanceof SkillsCliError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     throw new SkillsCliError('portableSkillsCliInstallFailed', 'skills add 执行失败。');
   }
 }

@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import YAML from 'yaml';
 
 import type {
   CatalogFreshnessPolicy,
@@ -20,6 +19,7 @@ import { validateArtifactPlan } from '../utils/artifact-plan.js';
 import { runArtifactRenderer, resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
 import {
+  parsePortableSkillFrontmatter,
   validatePortableSkillDirectory,
   type DynamicSkillTree,
 } from '../utils/dynamic-skill-tree.js';
@@ -48,6 +48,7 @@ export interface MaterializePortableSkillsOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   outputRoot?: string;
+  signal?: AbortSignal;
 }
 
 export interface MaterializedPortableSkills {
@@ -135,8 +136,7 @@ function treeDigest(tree: DynamicSkillTree): string {
 
 function skillDescription(tree: DynamicSkillTree): string {
   const content = tree.files['SKILL.md']?.toString('utf8') ?? '';
-  const end = content.indexOf('\n---\n', 4);
-  const frontmatter = end >= 0 ? YAML.parse(content.slice(4, end)) as Record<string, unknown> : {};
+  const frontmatter = parsePortableSkillFrontmatter(content);
   return typeof frontmatter.description === 'string' ? frontmatter.description : '';
 }
 
@@ -230,15 +230,19 @@ async function materializePluginCandidates(options: {
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
   recordConfigDigest: (pluginId: string, configDigest: string) => void;
 }): Promise<CandidateTree[]> {
+  options.signal?.throwIfAborted();
   const distribution = options.plugin.manifest.distributions?.agentSkills;
   if (!distribution) return [];
   const dynamicTargets = (options.plugin.manifest.artifacts?.targets ?? [])
     .filter((target) =>
       target.distribution === 'agent-skills'
       && target.scopes.includes(options.scope));
-  const dynamicKeys = new Set(dynamicTargets.map((target) => target.skillKey!));
+  const dynamicKeys = new Set((options.plugin.manifest.artifacts?.targets ?? [])
+    .filter((target) => target.target === 'agent-skills.skill')
+    .map((target) => target.skillKey!));
   const output: CandidateTree[] = [];
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
@@ -261,12 +265,17 @@ async function materializePluginCandidates(options: {
     : undefined;
 
   if (staticRoot) {
+    const rootStats = await fs.lstat(staticRoot).catch(() => undefined);
+    if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
+      throw new Error('Portable Skills root must be a regular directory.');
+    }
     const entries = await fs.readdir(staticRoot, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      if (entry.isSymbolicLink()) {
-        throw new Error(`Portable Skills root contains a symbolic link: ${entry.name}.`);
+      const entryStats = await fs.lstat(path.join(staticRoot, entry.name)).catch(() => undefined);
+      if (!entryStats?.isDirectory() || entryStats.isSymbolicLink()) {
+        throw new Error(`Portable Skills root direct child must be a regular directory: ${entry.name}.`);
       }
-      if (!entry.isDirectory() || dynamicKeys.has(entry.name)) continue;
+      if (dynamicKeys.has(entry.name)) continue;
       output.push({
         plugin: options.plugin,
         relation: options.relation,
@@ -289,6 +298,7 @@ async function materializePluginCandidates(options: {
     scope: options.scope,
     cwd: options.cwd,
     commandEnv: options.env,
+    signal: options.signal,
   });
   const plan = validateArtifactPlan({
     pluginName: options.plugin.manifest.name,
@@ -388,6 +398,7 @@ export async function materializePortableSkillsFromCatalog(
           cwd: options.cwd,
           env: options.env,
           outputRoot,
+          signal: options.signal,
         });
         return {
           pluginId: materialized.pluginId,
@@ -439,12 +450,14 @@ export async function materializePortableSkills(
     const trees: CandidateTree[] = [];
     const configDigests: Array<[string, string]> = [];
     for (const plugin of closure) {
+      options.signal?.throwIfAborted();
       trees.push(...await materializePluginCandidates({
         plugin,
         relation: relationFor(requested, plugin),
         scope: options.scope,
         cwd: options.cwd,
         env,
+        signal: options.signal,
         recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),
       }));
     }

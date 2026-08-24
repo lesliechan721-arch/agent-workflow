@@ -18,6 +18,7 @@ async function fakeSkills(options: {
   version?: string;
   list?: unknown;
   addExitCode?: number;
+  delayVersion?: boolean;
 } = {}): Promise<{ cwd: string; env: NodeJS.ProcessEnv; log: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-fake-skills-'));
   roots.push(root);
@@ -27,7 +28,7 @@ async function fakeSkills(options: {
     '#!/usr/bin/env node',
     "const fs = require('node:fs');",
     "fs.appendFileSync(process.env.FAKE_SKILLS_LOG, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }) + '\\n');",
-    "if (process.argv[2] === '--version') { console.log(process.env.FAKE_SKILLS_VERSION); process.exit(0); }",
+    "if (process.argv[2] === '--version') { const done = () => { console.log(process.env.FAKE_SKILLS_VERSION); process.exit(0); }; if (process.env.FAKE_SKILLS_DELAY_VERSION === '1') setTimeout(done, 30_000); else done(); }",
     "if (process.argv[2] === 'list') { console.log(process.env.FAKE_SKILLS_LIST); process.exit(0); }",
     "if (process.argv[2] === 'add') process.exit(Number(process.env.FAKE_SKILLS_ADD_EXIT || '0'));",
     'process.exit(2);',
@@ -43,6 +44,7 @@ async function fakeSkills(options: {
       FAKE_SKILLS_VERSION: options.version ?? '1.5.23',
       FAKE_SKILLS_LIST: JSON.stringify(options.list ?? []),
       FAKE_SKILLS_ADD_EXIT: String(options.addExitCode ?? 0),
+      FAKE_SKILLS_DELAY_VERSION: options.delayVersion ? '1' : '0',
     },
   };
 }
@@ -121,5 +123,13 @@ describe('Skills CLI adapter', () => {
     const fake = await fakeSkills({ addExitCode: 7 });
     await expect(addSkills({ ...fake, rootDir: '/root', skills: ['alpha'], global: false }))
       .rejects.toThrow('portableSkillsCliInstallFailed');
+  });
+
+  it('aborts an in-flight Skills CLI process with the caller signal', async () => {
+    const fake = await fakeSkills({ delayVersion: true });
+    const abort = new AbortController();
+    const pending = probeSkillsCli({ ...fake, signal: abort.signal });
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

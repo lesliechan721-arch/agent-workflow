@@ -61,7 +61,7 @@ import {
   isCommandWarningError,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
-import { redactValue } from './output/redact.js';
+import { redactString, redactValue } from './output/redact.js';
 import {
   renderShellCommand,
 } from './output/equivalent-command.js';
@@ -1055,7 +1055,21 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else if (receipt.ok) writeLine(io.stdout, `portable Skill 安装完成：${receipt.selectedSkills.length} 项。`);
         else {
-          for (const failure of receipt.failures) writeLine(io.stderr, `${failure.code}: ${failure.message}`);
+          const sanitize = (value: string): string => redactString(value)
+            .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
+            .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
+            .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
+          const lines = new Set<string>();
+          for (const failure of receipt.failures) {
+            lines.add(`${failure.code}: ${sanitize(failure.message)}`);
+          }
+          for (const warning of receipt.warnings) lines.add(`警告：${sanitize(warning)}`);
+          const recoveries = receipt.failures.map((failure) => failure.recovery).filter(Boolean);
+          const recovery = recoveries.find((entry) => entry.includes('aw skill install')
+            && entry.includes('skills remove'))
+            ?? '重新运行 aw skill install；如需清理外部写入，请使用 skills remove。';
+          lines.add(`恢复：${sanitize(recovery)}`);
+          for (const line of lines) writeLine(io.stderr, line);
         }
         commandExitState.exitCode = receipt.ok ? 0 : 1;
       } catch (error) {

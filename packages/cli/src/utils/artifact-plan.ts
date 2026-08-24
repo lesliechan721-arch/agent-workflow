@@ -19,6 +19,7 @@ import type {
 } from '../types.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import { assertPlatformFieldSupported } from './manifest.js';
+import { validatePortableSkillName } from './dynamic-skill-tree.js';
 
 const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
@@ -452,7 +453,8 @@ function normalizeArtifact(options: {
 
   if (target === 'codex.skill' || target === 'claude.skill' || target === 'agent-skills.skill') {
     const skillKey = ensureNonEmptyString(options.artifact.skillKey, `${fieldName}.skillKey`);
-    validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
+    if (target === 'agent-skills.skill') validatePortableSkillName(skillKey, `${fieldName}.skillKey`);
+    else validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
     if (skillKey !== declaration.skillKey) {
       throw new Error(
         `Invalid ${fieldName}.skillKey: expected "${declaration.skillKey}" from static metadata.`,

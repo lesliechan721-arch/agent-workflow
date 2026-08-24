@@ -567,10 +567,12 @@ function assertRefreshKeysForEvent(
 async function runArtifactRendererProcess(options: {
   invocation: LifecycleScriptInvocation;
   timeoutMs: number;
+  signal?: AbortSignal;
   runner?: LifecycleProcessRunner;
 }): Promise<LifecycleProcessResult> {
   return (options.runner ?? defaultPluginProcessRunner).run(options.invocation, {
     timeoutMs: options.timeoutMs,
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 }
 
@@ -584,8 +586,10 @@ export async function runArtifactRenderer(options: {
   changedConfigKeys?: string[];
   previousArtifacts?: unknown[];
   scriptTimeoutMs?: number;
+  signal?: AbortSignal;
   runner?: LifecycleProcessRunner;
 }): Promise<RunArtifactRendererResult> {
+  options.signal?.throwIfAborted();
   const event = assertArtifactRenderEvent(options.event);
   const commandEnv = options.commandEnv ?? process.env;
   const changedConfigKeys = assertRefreshKeysForEvent(
@@ -639,6 +643,7 @@ export async function runArtifactRenderer(options: {
     const result = await runArtifactRendererProcess({
       invocation,
       timeoutMs,
+      signal: options.signal,
       runner: options.runner,
     });
     const stdoutSummary = summarizeRenderOutput(

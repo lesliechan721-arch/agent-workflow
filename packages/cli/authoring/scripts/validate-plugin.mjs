@@ -392,24 +392,37 @@ function loadSkillFrontmatterCapabilityRegistry() {
 }
 
 async function tryLoadCliManifestTools() {
-  const modulePath = path.join(
+  const manifestModulePath = path.join(
     CLI_PACKAGE_ROOT,
     'dist',
     'src',
     'utils',
     'manifest.js',
   );
-  if (!fs.existsSync(modulePath)) return null;
+  const runtimeProjectionModulePath = path.join(
+    CLI_PACKAGE_ROOT,
+    'dist',
+    'src',
+    'utils',
+    'catalog-runtime-projection.js',
+  );
+  if (!fs.existsSync(manifestModulePath) || !fs.existsSync(runtimeProjectionModulePath)) return null;
   try {
-    const mod = await import(pathToFileURL(modulePath).href);
+    const [manifestModule, runtimeProjectionModule] = await Promise.all([
+      import(pathToFileURL(manifestModulePath).href),
+      import(pathToFileURL(runtimeProjectionModulePath).href),
+    ]);
     if (
-      mod.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
+      manifestModule.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
       !== SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
     ) {
       return null;
     }
     return {
-      validateSourcePluginManifest: mod.validateSourcePluginManifest ?? null,
+      validateSourcePluginManifest: manifestModule.validateSourcePluginManifest ?? null,
+      readPluginManifest: manifestModule.readPluginManifest ?? null,
+      discoverPlugins: manifestModule.discoverPlugins ?? null,
+      createRuntimeResolver: runtimeProjectionModule.createCatalogRuntimeImportResolver ?? null,
     };
   } catch {
     return null;
@@ -652,6 +665,30 @@ function validateManifestLightweight(manifest) {
 
   validateExtensionsLightweight(manifest.extensions);
   validatePlatformFieldSupport(manifest);
+}
+
+function validatePortableNativeArtifactCapabilityLightweight(manifest) {
+  if (manifest.distributions?.agentSkills === undefined) return;
+  const hasOtherNativeDeclaration = Boolean(
+    manifest.skills
+    || manifest.slashCommands
+    || manifest.mcpServers
+    || manifest.apps
+    || (manifest.extensions?.instructions?.length ?? 0) > 0
+    || (manifest.extensions?.permissions?.length ?? 0) > 0
+    || (manifest.extensions?.hooks?.length ?? 0) > 0
+    || (manifest.extensions?.nativeHooks?.claude?.length ?? 0) > 0
+    || (manifest.extensions?.nativeHooks?.codex?.length ?? 0) > 0
+    || (manifest.extensions?.agents?.length ?? 0) > 0
+  );
+  const hasPresentNativeArtifact = (manifest.artifacts?.targets ?? []).some((target) =>
+    (target?.platform === 'claude' || target?.platform === 'codex')
+    && Array.isArray(target.states)
+    && target.states.includes('present'));
+  if (!hasOtherNativeDeclaration && !hasPresentNativeArtifact) {
+    const message = 'Invalid plugin manifest: portable-only plugins are not supported in V1. Declare at least one non-empty native capability.';
+    if (!errors.includes(message)) error(message);
+  }
 }
 
 function normalizeManifestProductToken(value) {
@@ -2974,6 +3011,15 @@ function validateCodexSkillKey(value, fieldName) {
   return skillKey;
 }
 
+function validatePortableSkillKey(value, fieldName) {
+  const skillKey = validateManifestString(value, fieldName);
+  if (!skillKey) return null;
+  if (skillKey.length > MAX_SKILL_NAME_LEN || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skillKey)) {
+    error(`${fieldName}: expected at most 64 ASCII lowercase hyphen-case characters`);
+  }
+  return skillKey;
+}
+
 function validateStringArray(value, fieldName, options = {}) {
   if (!Array.isArray(value)) {
     error(`${fieldName} must be an array`);
@@ -3141,7 +3187,9 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     error(`${fieldName}.roleKey: roleKey is only supported for codex.agentRole targets`);
   }
   if (artifactTarget === 'codex.skill' || artifactTarget === 'claude.skill' || portable) {
-    skillKey = validateCodexSkillKey(target.skillKey, `${fieldName}.skillKey`);
+    skillKey = portable
+      ? validatePortableSkillKey(target.skillKey, `${fieldName}.skillKey`)
+      : validateCodexSkillKey(target.skillKey, `${fieldName}.skillKey`);
     if (!skillKey) {
       error(`${fieldName}.skillKey: ${artifactTarget} targets must declare a static skillKey`);
     }
@@ -3325,7 +3373,118 @@ function findArtifactFilePrefixConflict(files) {
   return null;
 }
 
-function overlayPortableRuntimeFiles(files, manifest, pluginDir, skillKey) {
+function authorRuntimeImportKey(artifactId, importIndex) {
+  return `${artifactId}\0${importIndex}`;
+}
+
+async function resolveAuthorRuntimeImports(options) {
+  const artifactImports = (options.manifest.artifacts?.targets ?? []).flatMap((target) =>
+    (target.runtimeImports ?? []).map((reference, importIndex) => ({
+      key: authorRuntimeImportKey(target.id, importIndex),
+      label: `artifacts target ${JSON.stringify(target.id)} runtime import ${JSON.stringify(reference.name)}`,
+      purpose: 'artifact-runtime',
+      reference,
+    })));
+  const skillRuntimeImports = (options.manifest.buildConfig?.skillRuntimeFiles ?? []).flatMap(
+    (entry, importIndex) => {
+      if (!isRecord(entry.import)) return [];
+      const platforms = [
+        ...(entry.platforms !== undefined || entry.distributions === undefined
+          ? (entry.platforms ?? [...resolveSupportedPlatforms(options.manifest)])
+          : []),
+        ...(entry.distributions?.includes('agent-skills') ? [undefined] : []),
+      ];
+      return platforms.length > 0 ? [{
+        key: importIndex,
+        label: `buildConfig.skillRuntimeFiles[${importIndex}].import`,
+        purpose: 'skill-runtime-file',
+        reference: entry.import,
+        platforms,
+      }] : [];
+    },
+  );
+  const requested = [...artifactImports, ...skillRuntimeImports];
+  if (requested.length === 0) {
+    return { artifactImports: new Map(), skillRuntimeImports: new Map() };
+  }
+  if (
+    !options.repoRoot
+    || typeof options.cliManifestTools?.readPluginManifest !== 'function'
+    || typeof options.cliManifestTools?.discoverPlugins !== 'function'
+    || typeof options.cliManifestTools?.createRuntimeResolver !== 'function'
+  ) {
+    error('Portable runtime imports require a complete built CLI and canonical same-source Git workspace.');
+    return null;
+  }
+
+  let consumer;
+  let resolver;
+  try {
+    const sourceSet = await options.cliManifestTools.discoverPlugins(options.repoRoot);
+    consumer = await options.cliManifestTools.readPluginManifest(options.pluginDir);
+    if (!sourceSet.some((candidate) => candidate.manifest.name === consumer.manifest.name)) {
+      sourceSet.push(consumer);
+    }
+    resolver = options.cliManifestTools.createRuntimeResolver(sourceSet);
+  } catch {
+    error('Portable runtime imports could not load the canonical same-source plugin set.');
+    return null;
+  }
+
+  const resolvedArtifacts = new Map();
+  const resolvedSkillRuntimeFiles = new Map();
+  for (const request of requested) {
+    let value;
+    try {
+      for (const platform of request.platforms ?? [undefined]) {
+        const resolution = await resolver.resolve({
+          consumer,
+          reference: request.reference,
+          purpose: request.purpose,
+          platform,
+        });
+        const bytes = fs.readFileSync(resolution.sourcePath);
+        const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+        if (digest !== resolution.sourceDigest) throw new Error('runtime export changed during resolution');
+        const current = {
+          bytes,
+          digest: resolution.sourceDigest,
+          providerPluginId: resolution.provider,
+          providerVersion: resolution.providerVersion,
+          exportName: resolution.name,
+          source: resolution.source,
+        };
+        if (value && (
+          value.digest !== current.digest
+          || value.providerPluginId !== current.providerPluginId
+          || value.providerVersion !== current.providerVersion
+          || value.exportName !== current.exportName
+          || value.source !== current.source
+        )) {
+          throw new Error('runtime export changed between projection surfaces');
+        }
+        value = current;
+      }
+    } catch {
+      const provider = typeof request.reference.plugin === 'string'
+        ? JSON.stringify(request.reference.plugin)
+        : '<invalid-provider>';
+      const exportName = typeof request.reference.export === 'string'
+        ? JSON.stringify(request.reference.export)
+        : '<invalid-export>';
+      error(`Cannot resolve ${request.label} from provider ${provider} export ${exportName}.`);
+      continue;
+    }
+    if (request.purpose === 'artifact-runtime') resolvedArtifacts.set(request.key, value);
+    else resolvedSkillRuntimeFiles.set(request.key, value);
+  }
+  return {
+    artifactImports: resolvedArtifacts,
+    skillRuntimeImports: resolvedSkillRuntimeFiles,
+  };
+}
+
+function overlayPortableRuntimeFiles(files, manifest, pluginDir, skillKey, runtimeImports) {
   for (const [runtimeIndex, runtimeFile] of (manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
     if (
       runtimeFile.skill !== skillKey
@@ -3342,7 +3501,12 @@ function overlayPortableRuntimeFiles(files, manifest, pluginDir, skillKey) {
       continue;
     }
     if (isRecord(runtimeFile.import)) {
-      files.set(runtimeFile.target, Buffer.alloc(0));
+      const resolved = runtimeImports?.skillRuntimeImports.get(runtimeIndex);
+      if (!resolved) {
+        error(`buildConfig.skillRuntimeFiles[${runtimeIndex}].import could not be resolved`);
+        continue;
+      }
+      files.set(runtimeFile.target, resolved.bytes);
     }
   }
 }
@@ -3362,7 +3526,13 @@ function validateRenderedSkillTree(options) {
     );
   });
   if (declaration.target === 'agent-skills.skill') {
-    overlayPortableRuntimeFiles(files, manifest, pluginDir, declaration.skillKey);
+    overlayPortableRuntimeFiles(
+      files,
+      manifest,
+      pluginDir,
+      declaration.skillKey,
+      options.runtimeImports,
+    );
   }
   for (const [relativePath, content] of Object.entries(entry.content.files)) {
     if (isSkillAuthorOnlyPath(relativePath)) {
@@ -3443,7 +3613,7 @@ function validateRenderedSkillTree(options) {
   }
 }
 
-function validateStaticPortableFinalTrees(pluginDir, manifest) {
+function validateStaticPortableFinalTrees(pluginDir, manifest, runtimeImports) {
   const portableRoot = manifest.distributions?.agentSkills?.skills;
   if (typeof portableRoot !== 'string') return;
   const rootDir = path.join(pluginDir, normalizeRelativePath(portableRoot));
@@ -3470,6 +3640,7 @@ function validateStaticPortableFinalTrees(pluginDir, manifest) {
         fieldName: `static portable Skill "${entry.name}"`,
         pluginDir,
         manifest,
+        runtimeImports,
         materializedRoot: path.join(tempRoot, entry.name),
       });
     }
@@ -3602,6 +3773,7 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
           fieldName,
           pluginDir: options.pluginDir,
           manifest: options.manifest,
+          runtimeImports: options.runtimeImports,
           materializedRoot: path.join(options.tempRoot, `${declaration.platform ?? declaration.distribution}-${scopeLabel.split('/')[1]}-${index}`),
         });
       }
@@ -3618,7 +3790,7 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
   }
 }
 
-function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations) {
+function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations, resolvedRuntimeImports) {
   if (!renderEntry || declarations.length === 0) return;
 
   const surfaceScopes = [...new Set(declarations.flatMap((target) =>
@@ -3637,18 +3809,21 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
       const contextPath = path.join(tempRoot, `context-${surface}-${scope}.json`);
       const runtimeImports = scopedDeclarations.flatMap((target) =>
         target.runtimeImports.map((runtimeImport, importIndex) => {
+          const resolved = resolvedRuntimeImports?.artifactImports.get(
+            authorRuntimeImportKey(target.id, importIndex),
+          );
+          if (!resolved) return null;
           const importPath = path.join(tempRoot, `runtime-${target.id}-${importIndex}`);
-          const bytes = Buffer.from(`author-validator fixture for ${target.id}/${runtimeImport.name}\n`, 'utf8');
-          fs.writeFileSync(importPath, bytes);
+          fs.writeFileSync(importPath, resolved.bytes);
           return {
             artifactId: target.id,
             name: runtimeImport.name,
-            providerPluginId: runtimeImport.plugin,
-            exportName: runtimeImport.export,
+            providerPluginId: resolved.providerPluginId,
+            exportName: resolved.exportName,
             path: importPath,
-            digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+            digest: resolved.digest,
           };
-        }));
+        }).filter(Boolean));
       fs.writeFileSync(
         contextPath,
         JSON.stringify({
@@ -3760,6 +3935,7 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
       validateRenderedArtifactPlan(plan, scopedDeclarations, `${surface}/${scope}`, {
         pluginDir,
         manifest,
+        runtimeImports: resolvedRuntimeImports,
         tempRoot,
       });
     }
@@ -3768,7 +3944,7 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
   }
 }
 
-function validateDynamicArtifactsLightweight(pluginDir, manifest, renderEntry) {
+function validateDynamicArtifactsLightweight(pluginDir, manifest, renderEntry, runtimeImports) {
   const declarations = validateArtifactsConfigLightweight(pluginDir, manifest);
   const hasTargets = declarations.length > 0;
   const hasRenderer = Boolean(manifest.scripts?.artifacts?.render);
@@ -3780,7 +3956,7 @@ function validateDynamicArtifactsLightweight(pluginDir, manifest, renderEntry) {
     error('scripts.artifacts.render requires artifacts.targets');
   }
 
-  runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations);
+  runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations, runtimeImports);
 }
 
 function validateScriptsLightweight(pluginDir, manifest) {
@@ -4600,6 +4776,7 @@ async function validatePluginDir(pluginDir, options) {
       );
     }
   }
+  validatePortableNativeArtifactCapabilityLightweight(manifest);
 
   validateNameMatchesDirectory(pluginDir, manifest);
   validateNoBuildOutputDirs(pluginDir);
@@ -4608,8 +4785,14 @@ async function validatePluginDir(pluginDir, options) {
   validatePluginVersionContracts(manifest, options);
   validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
-  validateStaticPortableFinalTrees(pluginDir, manifest);
-  validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry);
+  const runtimeImports = await resolveAuthorRuntimeImports({
+    pluginDir,
+    manifest,
+    repoRoot: options.repoRoot,
+    cliManifestTools,
+  });
+  validateStaticPortableFinalTrees(pluginDir, manifest, runtimeImports);
+  validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry, runtimeImports);
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);
   warnCodexProjectScopeLimitations(manifest);

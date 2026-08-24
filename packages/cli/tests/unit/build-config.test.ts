@@ -200,12 +200,12 @@ describe('buildConfig validation', () => {
     })).toThrow('require distributions.agentSkills');
   });
 
-  it('rejects empty extensions as a portable-only plugin and accepts a real native capability', () => {
-    expect(() => validatePluginManifest('/tmp/plugin', {
+  it('defers portable native inventory checks and accepts a declared native capability', () => {
+    expect(validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
       extensions: {},
       distributions: { agentSkills: { skills: './portable-skills' } },
-    })).toThrow('portable-only plugins');
+    }).distributions?.agentSkills?.skills).toBe('./portable-skills');
 
     expect(validatePluginManifest('/tmp/plugin', {
       ...baseManifest,

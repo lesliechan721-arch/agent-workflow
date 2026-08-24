@@ -289,6 +289,15 @@ export interface PortableSkillCandidateViewModel {
   providerDisplayName: string;
   relation: 'requested' | 'direct' | 'transitive';
   dynamic: boolean;
+  availableScopes: Scope[];
+  scopeDetails: Partial<Record<Scope, {
+    description: string;
+    providerPluginId: string;
+    providerDisplayName: string;
+    relation: 'requested' | 'direct' | 'transitive';
+    dynamic: boolean;
+    filesDigest: string;
+  }>>;
 }
 
 export interface PortableSkillSelectionViewModel {

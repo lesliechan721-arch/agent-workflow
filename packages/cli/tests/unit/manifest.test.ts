@@ -1931,6 +1931,91 @@ describe('manifest utils', () => {
     });
   });
 
+  it('requires a non-empty native inventory for portable plugins in source and bundle modes', async () => {
+    const repoRoot = await makeTempRepo();
+    const fixtureManifest = await readFixturePluginManifest(repoRoot);
+    const pluginRoot = path.join(repoRoot, 'portable-inventory');
+    const manifest = {
+      name: 'portable-inventory',
+      version: '1.0.0',
+      description: 'Portable inventory fixture.',
+      compatibility: { aw: { minVersion: '0.1.0' } },
+      marketplace: fixtureManifest.marketplace,
+      skills: './skills',
+      distributions: { agentSkills: { skills: './portable-skills' } },
+    };
+    await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+    await fs.ensureDir(path.join(pluginRoot, 'skills'));
+    await fs.ensureDir(path.join(pluginRoot, 'portable-skills', 'portable'));
+    await fs.writeFile(
+      path.join(pluginRoot, 'portable-skills', 'portable', 'SKILL.md'),
+      '---\nname: portable\ndescription: Portable fixture.\n---\n',
+    );
+    await fs.writeFile(path.join(pluginRoot, 'portable-skills', 'portable', 'README.md'), '# Portable\n');
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('portable-only plugins');
+    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
+
+    Object.assign(manifest, {
+      artifacts: {
+        targets: [{
+          id: 'disabled-native',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.developerInstructionsBlock',
+          states: ['disabled'],
+          refreshKeys: [],
+        }],
+      },
+    });
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('portable-only plugins');
+    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
+
+    manifest.artifacts.targets[0].states = ['present', 'disabled'];
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
+    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' }))
+      .resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
+    delete (manifest as { artifacts?: unknown }).artifacts;
+
+    delete (manifest as { skills?: string }).skills;
+    await fs.remove(path.join(pluginRoot, 'skills'));
+    Object.assign(manifest, { slashCommands: './commands' });
+    await fs.ensureDir(path.join(pluginRoot, 'commands'));
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must contain at least one root "*.md" command file');
+    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
+
+    delete (manifest as { slashCommands?: string }).slashCommands;
+    Object.assign(manifest, { mcpServers: './mcp.json', apps: './apps.json' });
+    await fs.writeJson(path.join(pluginRoot, 'mcp.json'), { mcpServers: {} });
+    await fs.writeJson(path.join(pluginRoot, 'apps.json'), { apps: {} });
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('portable-only plugins');
+    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' })).rejects.toThrow('portable-only plugins');
+
+    delete (manifest as { mcpServers?: string }).mcpServers;
+    delete (manifest as { apps?: string }).apps;
+    Object.assign(manifest, { skills: './skills' });
+    await fs.ensureDir(path.join(pluginRoot, 'skills', 'native'));
+    await fs.writeFile(
+      path.join(pluginRoot, 'skills', 'native', 'SKILL.md'),
+      '---\nname: native\ndescription: Native fixture.\n---\n',
+    );
+    await fs.writeFile(path.join(pluginRoot, 'skills', 'native', 'README.md'), '# Native\n');
+    await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
+    await expect(readPluginManifest(pluginRoot, { mode: 'bundle' }))
+      .resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
+
+    await fs.writeFile(path.join(pluginRoot, 'portable-skills', 'README.md'), '# Invalid root file\n');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('直接子节点必须是普通目录');
+    await fs.remove(path.join(pluginRoot, 'portable-skills', 'README.md'));
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({ manifest: { name: 'portable-inventory' } });
+  });
+
   it('accepts native hooks and public session_start shared matcher values', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

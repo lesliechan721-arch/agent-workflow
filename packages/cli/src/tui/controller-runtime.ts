@@ -587,6 +587,7 @@ export function createTuiControllerDependencies(
         cwd: context.cwd,
         env: context.env,
         cliVersion: packageInfo.version,
+        signal,
       });
       return {
         catalog: {
