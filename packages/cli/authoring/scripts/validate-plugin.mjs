@@ -14,11 +14,14 @@ import { assertAuthoringPluginPathFence } from './lib/plugin-root.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLI_PACKAGE_ROOT = path.resolve(__dirname, '..', '..', '..');
+const authoringRuntimeRoot = path.resolve(__dirname, '..', '..');
+const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
+  ? path.dirname(authoringRuntimeRoot)
+  : authoringRuntimeRoot;
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 5;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 6;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -4709,16 +4712,9 @@ async function validatePluginDir(pluginDir, options) {
     }
     validatePlatformFieldSupport(manifest);
   } else {
-    warn(
-      'CLI authoring manifest contract 不完整，仅执行轻量预检；预检通过不代表完整 contract 通过，请安装完整的 aw CLI 后重试',
+    error(
+      `Plugin manifest contract v${SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION} is unavailable; install a complete current aw CLI and retry.`,
     );
-    validateManifestLightweight(manifest);
-    validateDeclaredPathsExist(pluginDir, manifest);
-    if (manifest.distributions?.agentSkills !== undefined) {
-      error(
-        `Portable Agent Skills authoring requires manifest contract v${SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION}; install a complete current aw CLI and retry.`,
-      );
-    }
   }
   validatePortableNativeArtifactCapabilityLightweight(manifest);
 

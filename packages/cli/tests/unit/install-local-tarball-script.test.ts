@@ -12,6 +12,7 @@ const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
 const cliPackageName = '@lesliechan721/aw';
 const evalPackageName = '@lesliechan721/agent-skill-eval';
+const corePackageName = '@lesliechan721/aw-plugin-core';
 
 async function createTempDirectory(): Promise<string> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-local-tarball-'));
@@ -68,13 +69,17 @@ function cliManifest(overrides: Record<string, unknown> = {}): Record<string, un
   return {
     name: cliPackageName,
     version: '1.2.3',
-    dependencies: { [evalPackageName]: '1.2.3' },
+    dependencies: { [evalPackageName]: '1.2.3', [corePackageName]: '1.2.3' },
     ...overrides,
   };
 }
 
 function evalManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { name: evalPackageName, version: '1.2.3', ...overrides };
+}
+
+function coreManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { name: corePackageName, version: '1.2.3', ...overrides };
 }
 
 afterEach(async () => {
@@ -91,9 +96,11 @@ describe('install-local-tarball script', () => {
       tarballDirectory,
       'lesliechan721-agent-skill-eval-current.tgz',
     );
+    const coreTarballPath = path.join(tarballDirectory, 'lesliechan721-aw-plugin-core-current.tgz');
     const oldTarballPath = path.join(tarballDirectory, 'lesliechan721-aw-old.tgz');
     await createPackageTarball(tarballDirectory, path.basename(cliTarballPath), cliManifest());
     await createPackageTarball(tarballDirectory, path.basename(evalTarballPath), evalManifest());
+    await createPackageTarball(tarballDirectory, path.basename(coreTarballPath), coreManifest());
     await fs.writeFile(oldTarballPath, 'old\n');
     const newerTime = new Date(Date.now() + 60_000);
     await fs.utimes(oldTarballPath, newerTime, newerTime);
@@ -103,15 +110,15 @@ describe('install-local-tarball script', () => {
     ]);
     expect(oldStats.mtimeMs).toBeGreaterThan(packedStats.mtimeMs);
 
-    const packCliBundle = vi.fn(async () => ({ cliTarballPath, evalTarballPath }));
+    const packCliBundle = vi.fn(async () => ({ cliTarballPath, evalTarballPath, coreTarballPath }));
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball(undefined, { packCliBundle, runCommand }))
-      .resolves.toEqual({ cliTarballPath, evalTarballPath });
+      .resolves.toEqual({ cliTarballPath, evalTarballPath, coreTarballPath });
     expect(packCliBundle).toHaveBeenCalledOnce();
     expect(runCommand).toHaveBeenCalledWith(
       'npm',
-      ['install', '-g', evalTarballPath, cliTarballPath],
+      ['install', '-g', evalTarballPath, coreTarballPath, cliTarballPath],
     );
   });
 
@@ -119,22 +126,25 @@ describe('install-local-tarball script', () => {
     const cwd = await createTempDirectory();
     const cliTarballPath = await createPackageTarball(cwd, 'cli.tgz', cliManifest());
     const evalTarballPath = await createPackageTarball(cwd, 'eval.tgz', evalManifest());
+    const coreTarballPath = await createPackageTarball(cwd, 'core.tgz', coreManifest());
     const packCliBundle = vi.fn(async () => ({
       cliTarballPath: path.join(cwd, 'unexpected-cli.tgz'),
       evalTarballPath: path.join(cwd, 'unexpected-eval.tgz'),
+      coreTarballPath: path.join(cwd, 'unexpected-core.tgz'),
     }));
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball('cli.tgz', {
       cwd,
       evalTarballArg: 'eval.tgz',
+      coreTarballArg: 'core.tgz',
       packCliBundle,
       runCommand,
-    })).resolves.toEqual({ cliTarballPath, evalTarballPath });
+    })).resolves.toEqual({ cliTarballPath, evalTarballPath, coreTarballPath });
     expect(packCliBundle).not.toHaveBeenCalled();
     expect(runCommand).toHaveBeenCalledWith(
       'npm',
-      ['install', '-g', evalTarballPath, cliTarballPath],
+      ['install', '-g', evalTarballPath, coreTarballPath, cliTarballPath],
     );
   });
 
@@ -176,10 +186,12 @@ describe('install-local-tarball script', () => {
     const root = await createTempDirectory();
     const cliTarballPath = await createPackageTarball(root, 'cli.tgz', cli);
     const evalTarballPath = await createPackageTarball(root, 'eval.tgz', evalPackage);
+    const coreTarballPath = await createPackageTarball(root, 'core.tgz', coreManifest());
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball(cliTarballPath, {
       evalTarballArg: evalTarballPath,
+      coreTarballArg: coreTarballPath,
       runCommand,
     })).rejects.toThrow(message);
     expect(runCommand).not.toHaveBeenCalled();
@@ -206,10 +218,12 @@ describe('install-local-tarball script', () => {
       packageJson,
       { duplicateManifest },
     );
+    const coreTarballPath = await createPackageTarball(root, 'core.tgz', coreManifest());
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball(cliTarballPath, {
       evalTarballArg: evalTarballPath,
+      coreTarballArg: coreTarballPath,
       runCommand,
     })).rejects.toThrow(message);
     expect(runCommand).not.toHaveBeenCalled();

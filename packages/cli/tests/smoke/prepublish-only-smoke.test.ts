@@ -14,6 +14,7 @@ function repoRoot(): string {
 describe('public package publish guard', () => {
   it.each([
     'packages/agent-skill-eval',
+    'packages/plugin-core',
     'packages/cli',
   ])('rejects the direct prepublishOnly entry for %s without publishing', async (packagePath) => {
     await expect(execFileAsync('npm', ['run', 'prepublishOnly', '--silent'], {

@@ -11,6 +11,7 @@ import {
   computePackageTarballTreeDigest,
   loadCatalogModules,
   packCli,
+  packCore,
   packEval,
   readPackageJson,
   releaseRoot,
@@ -41,6 +42,7 @@ export const preparedDescriptorPath = path.join(preparedReleaseRoot, 'descriptor
 export const releaseAttemptPath = path.join(releaseRoot, 'attempted.json');
 const CLI_PACKAGES = [
   '@lesliechan721/agent-skill-eval',
+  '@lesliechan721/aw-plugin-core',
   '@lesliechan721/aw',
 ];
 
@@ -206,9 +208,8 @@ function nextCandidate(targetVersion, channel, versionSets, currentVersions, lab
     .filter(Boolean)
     .map((match) => BigInt(match[1])));
   if (normalized.length > 1) {
-    const left = normalized[0].map(String).sort().join(',');
-    const right = normalized[1].map(String).sort().join(',');
-    if (left !== right) {
+    const histories = normalized.map((entries) => entries.map(String).sort().join(','));
+    if (new Set(histories).size !== 1) {
       throw new Error(`${label} beta history is partial; bump the stable target before preparing again.`);
     }
   }
@@ -224,12 +225,11 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
   const mode = channel === 'stable' ? 'latest' : 'beta';
   const axes = options.axes ?? { cli: true, catalog: true };
   const cliState = axes.cli
-    ? await Promise.all([
-        readVersions(CLI_PACKAGES[0], options),
-        readVersions(CLI_PACKAGES[1], options),
-        readChannelVersion(CLI_PACKAGES[0], channel, options),
-        readChannelVersion(CLI_PACKAGES[1], channel, options),
-      ])
+    ? {
+        versions: await Promise.all(CLI_PACKAGES.map((name) => readVersions(name, options))),
+        channels: await Promise.all(CLI_PACKAGES.map((name) =>
+          readChannelVersion(name, channel, options))),
+      }
     : null;
   const catalogState = axes.catalog
     ? await Promise.all([
@@ -242,8 +242,8 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
       ? nextCandidate(
           targets.cli,
           channel,
-          [cliState[0], cliState[1]],
-          [cliState[2], cliState[3]],
+          cliState.versions,
+          cliState.channels,
           'CLI train',
         )
       : null,
@@ -272,18 +272,24 @@ export function assertSelectedCandidates(axes, candidates) {
 
 async function stampCandidatePackages(snapshot, candidateVersion) {
   const evalPath = path.join(snapshot.evalPackageRoot, 'package.json');
+  const corePath = path.join(snapshot.corePackageRoot, 'package.json');
   const cliPath = path.join(snapshot.cliPackageRoot, 'package.json');
-  const [evalPackage, cliPackage] = await Promise.all([
+  const [evalPackage, corePackage, cliPackage] = await Promise.all([
     readPackageJson(evalPath),
+    readPackageJson(corePath),
     readPackageJson(cliPath),
   ]);
   evalPackage.version = candidateVersion;
+  corePackage.version = candidateVersion;
   cliPackage.version = candidateVersion;
   cliPackage.dependencies['@lesliechan721/agent-skill-eval'] = candidateVersion;
+  cliPackage.dependencies['@lesliechan721/aw-plugin-core'] = candidateVersion;
   delete evalPackage.awRelease;
+  delete corePackage.awRelease;
   delete cliPackage.awRelease;
   await Promise.all([
     writePackageJson(evalPath, evalPackage),
+    writePackageJson(corePath, corePackage),
     writePackageJson(cliPath, cliPackage),
   ]);
 }
@@ -324,15 +330,17 @@ export async function prepareLocalRelease(channel, options = {}) {
       let npm = null;
       if (candidates.cli !== null) {
         await stampCandidatePackages(snapshot, candidates.cli);
-        const [evalTarball, cliTarball] = await Promise.all([
+        const [evalTarball, coreTarball, cliTarball] = await Promise.all([
           (options.packEval ?? packEval)({ snapshot, destination: artifactRoot, quiet: true }),
+          (options.packCore ?? packCore)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packCli ?? packCli)({ snapshot, destination: artifactRoot, quiet: true }),
         ]);
         npm = {
           version: candidates.cli,
           packages: [
             descriptorArtifact(temporaryRoot, CLI_PACKAGES[0], evalTarball, await fileDigest(evalTarball)),
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[1], cliTarball, await fileDigest(cliTarball)),
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[1], coreTarball, await fileDigest(coreTarball)),
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[2], cliTarball, await fileDigest(cliTarball)),
           ],
           treeDigests: {
             [CLI_PACKAGES[0]]: await (options.computeTarballTreeDigest
@@ -342,9 +350,15 @@ export async function prepareLocalRelease(channel, options = {}) {
                 expectedVersion: candidates.cli,
               }),
             [CLI_PACKAGES[1]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(cliTarball, {
+              ?? computePackageTarballTreeDigest)(coreTarball, {
                 normalizeReleaseMetadata: true,
                 expectedPackageName: CLI_PACKAGES[1],
+                expectedVersion: candidates.cli,
+              }),
+            [CLI_PACKAGES[2]]: await (options.computeTarballTreeDigest
+              ?? computePackageTarballTreeDigest)(cliTarball, {
+                normalizeReleaseMetadata: true,
+                expectedPackageName: CLI_PACKAGES[2],
                 expectedVersion: candidates.cli,
               }),
           },
@@ -536,7 +550,7 @@ async function assertCandidatesUnavailable(descriptor, options = {}) {
     for (const packageName of CLI_PACKAGES) {
       const versions = await readVersions(packageName, options);
       if (versions.includes(descriptor.candidates.cli)) {
-        throw new Error(`${packageName}@${descriptor.candidates.cli} already exists; bump both npm package versions and prepare again.`);
+        throw new Error(`${packageName}@${descriptor.candidates.cli} already exists; bump all npm package versions and prepare again.`);
       }
     }
     await (options.assertCliTagAvailable ?? assertCliTagAvailable)(
@@ -564,8 +578,8 @@ async function readPublishedCliVersion(channel, options = {}) {
     ], { cwd: options.repoRoot ?? defaultRepoRoot, env: options.env });
     versions.push(JSON.parse(result.stdout));
   }
-  if (versions.some((version) => typeof version !== 'string') || versions[0] !== versions[1]) {
-    throw new Error(`Catalog-only release requires matching published ${tag} versions for both npm packages.`);
+  if (versions.some((version) => typeof version !== 'string') || new Set(versions).size !== 1) {
+    throw new Error(`Catalog-only release requires matching published ${tag} versions for all npm packages.`);
   }
   const prerelease = versions[0].includes('-');
   if ((channel === 'stable' && prerelease) || (channel === 'beta' && !prerelease)) {
@@ -677,11 +691,13 @@ export async function publishPreparedRelease(options = {}) {
   };
 
   if (descriptor.axes.cli) {
-    const [evalArtifact, cliArtifact] = descriptor.npm.packages;
+    const [evalArtifact, coreArtifact, cliArtifact] = descriptor.npm.packages;
     await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, 'cli', options);
     await publishNpm(CLI_PACKAGES[0], resolvePreparedPath(root, evalArtifact.path),
       descriptor.candidates.cli, descriptor.channel, publicationOptions);
-    await publishNpm(CLI_PACKAGES[1], resolvePreparedPath(root, cliArtifact.path),
+    await publishNpm(CLI_PACKAGES[1], resolvePreparedPath(root, coreArtifact.path),
+      descriptor.candidates.cli, descriptor.channel, publicationOptions);
+    await publishNpm(CLI_PACKAGES[2], resolvePreparedPath(root, cliArtifact.path),
       descriptor.candidates.cli, descriptor.channel, publicationOptions);
     await (options.publishCliTag ?? ensureCliTag)(
       descriptor.candidates.cli,

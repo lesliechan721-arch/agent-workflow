@@ -19,6 +19,7 @@ let packedCliPromise: Promise<{
   packageRoot: string;
   cliTarballPath: string;
   evalTarballPath: string;
+  coreTarballPath: string;
   tempRoot: string;
 }> | null = null;
 
@@ -110,6 +111,7 @@ async function preparePackedCli(): Promise<{
   packageRoot: string;
   cliTarballPath: string;
   evalTarballPath: string;
+  coreTarballPath: string;
   tempRoot: string;
 }> {
   if (packedCliPromise) {
@@ -147,18 +149,23 @@ async function preparePackedCli(): Promise<{
     const tarballs = (await fs.readdir(packDir))
       .filter((entry) => entry.endsWith('.tgz'))
       .sort();
-    expect(tarballs).toHaveLength(2);
-    const cliTarballName = tarballs.find((entry) => entry.includes('-aw-'));
+    expect(tarballs).toHaveLength(3);
+    const cliTarballName = tarballs.find((entry) =>
+      entry.includes('-aw-') && !entry.includes('-aw-plugin-core-'));
     const evalTarballName = tarballs.find((entry) => entry.includes('-agent-skill-eval-'));
+    const coreTarballName = tarballs.find((entry) => entry.includes('-aw-plugin-core-'));
     expect(cliTarballName).toBeDefined();
     expect(evalTarballName).toBeDefined();
+    expect(coreTarballName).toBeDefined();
     const cliTarballPath = path.join(packDir, cliTarballName!);
     const evalTarballPath = path.join(packDir, evalTarballName!);
+    const coreTarballPath = path.join(packDir, coreTarballName!);
 
     return {
       packageRoot: await unpackTarball(cliTarballPath, unpackDir),
       cliTarballPath,
       evalTarballPath,
+      coreTarballPath,
       tempRoot,
     };
   })();
@@ -170,8 +177,8 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
-  it('installs both local tarballs into a clean prefix and runs both package bins', async () => {
-    const { packageRoot, cliTarballPath, evalTarballPath, tempRoot } = await preparePackedCli();
+  it('installs all local tarballs into a clean prefix and runs both package bins', async () => {
+    const { packageRoot, cliTarballPath, evalTarballPath, coreTarballPath, tempRoot } = await preparePackedCli();
     const installPrefix = path.join(tempRoot, 'install-prefix');
     registerSmokeWritableRoot(installPrefix, 'pack smoke clean npm install prefix');
     await fs.ensureDir(installPrefix);
@@ -184,6 +191,7 @@ describe('pack smoke', () => {
         '--prefix',
         installPrefix,
         evalTarballPath,
+        coreTarballPath,
         cliTarballPath,
       ],
       {
@@ -461,6 +469,8 @@ describe('pack smoke', () => {
       files: ['dist/'],
     });
     expect(unpackedPackageJson.dependencies['@lesliechan721/agent-skill-eval'])
+      .toBe(unpackedPackageJson.version);
+    expect(unpackedPackageJson.dependencies['@lesliechan721/aw-plugin-core'])
       .toBe(unpackedPackageJson.version);
     expect(unpackedPackageJson.bin).toEqual({ aw: './dist/index.js' });
 

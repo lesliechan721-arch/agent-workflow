@@ -2,6 +2,8 @@
 
 本文件定义 CLI 的稳定产品合同和模块边界。TypeScript 实现方式见[编码约定](coding-conventions.md)，测试选择见[测试指南](testing.md)，插件作者工作流见[插件维护指南](plugin-maintenance.md)。
 
+公开包 `@lesliechan721/aw-plugin-core` 拥有 plugin manifest 的版本、JSON Schema 和运行时结构验证合同。CLI 依赖同版本 core，并在该结构合同之上提供平台 adapter、Catalog、作者工具和 transport。Eval、core 与 CLI 使用同一版本发布，顺序为 `Eval → Core → CLI`。
+
 ## 设计边界
 
 - AW 是个人本地工具。一个 `AW_HOME` 写锁足以保护强配置；不要为未证明的并发增加全局协调协议。
@@ -148,9 +150,9 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 根级正常发布入口只有 `pnpm release`。它要求 `beta|release` 渠道和 `--cli|--catalog|--all` 中一个显式发布轴。
 
 - `--cli-bump`、`--catalog-bump` 和可重复的 `--plugin <name>=major|minor|patch` 只提升所选轴的稳定 target。命令只提交这些白名单元数据，不提交其它工作树内容，也不推当前分支。
-- 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取；Catalog-only 仍要求对应渠道已有兼容且一致的两个 CLI npm 包。
+- 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取；Catalog-only 仍要求对应渠道已有兼容且一致的三个 CLI train npm 包。
 - 元数据 commit 后运行所选轴的完整 release verify，再从干净 source HEAD 生成 `.release/prepared/descriptor.json`。
-- 发布顺序是 `Eval → CLI → CLI tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
+- 发布顺序是 `Eval → Core → CLI → CLI tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
 - `pnpm release -- --repair-cli-tag` 只从有效 prepared descriptor 核验并补发 CLI tag。它不准备新候选或修改分支。
 
 `.release/prepared/` 在 gitignore 下，是可删除的弱状态；删除后重新 prepare。`attempted.json` 是 gitignored 的本地安全门禁，不得手动删除。任何远端尝试前写入该 marker；远端失败或结果不确定后，必须 bump 相关 target。工具在 target digest 改变后处理旧 marker，再 prepare 和 publish 新版本；不得重跑同一候选。

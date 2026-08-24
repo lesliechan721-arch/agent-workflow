@@ -26,7 +26,7 @@
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
-| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Eval → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
+| `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 
@@ -95,7 +95,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
-Release unit/integration 覆盖 CLI target 更新的 package 同步、local prepared artifacts、attempted marker、启用轴的 `Eval → CLI → CLI tag → Catalog` 顺序和 Catalog-only compatibility。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 CLI target 更新的 package 同步、local prepared artifacts、attempted marker、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序和 Catalog-only compatibility。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 

@@ -211,27 +211,43 @@ export async function updateReleaseTargets(argv, options = {}) {
   const requested = parseTargetArgs(argv);
   const current = await readVersionTargets(repoRoot);
   const cliPackages = requested.cli ? await Promise.all([
-    readCliPackage(repoRoot, 'packages/cli/package.json', '@lesliechan721/aw'),
     readCliPackage(
       repoRoot,
       'packages/agent-skill-eval/package.json',
       '@lesliechan721/agent-skill-eval',
     ),
+    readCliPackage(
+      repoRoot,
+      'packages/plugin-core/package.json',
+      '@lesliechan721/aw-plugin-core',
+    ),
+    readCliPackage(repoRoot, 'packages/cli/package.json', '@lesliechan721/aw'),
   ]) : [];
   if (requested.cli && cliPackages.some((entry) => entry.version !== current.cli)) {
     throw new Error(
       `CLI release target ${current.cli} must match packages/cli/package.json and ` +
-      'packages/agent-skill-eval/package.json before release metadata can update it.',
+      'packages/agent-skill-eval/package.json and packages/plugin-core/package.json ' +
+      'before release metadata can update it.',
     );
   }
   if (
     requested.cli
-    && cliPackages[0].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
+    && cliPackages[2].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
       !== `workspace:${current.cli}`
   ) {
     throw new Error(
       `packages/cli/package.json must exactly depend on ` +
       `@lesliechan721/agent-skill-eval@workspace:${current.cli}.`,
+    );
+  }
+  if (
+    requested.cli
+    && cliPackages[2].manifest.dependencies?.['@lesliechan721/aw-plugin-core']
+      !== `workspace:${current.cli}`
+  ) {
+    throw new Error(
+      `packages/cli/package.json must exactly depend on ` +
+      `@lesliechan721/aw-plugin-core@workspace:${current.cli}.`,
     );
   }
   const next = {
@@ -268,6 +284,7 @@ export async function updateReleaseTargets(argv, options = {}) {
             dependencies: {
               ...entry.manifest.dependencies,
               '@lesliechan721/agent-skill-eval': `workspace:${next.cli}`,
+              '@lesliechan721/aw-plugin-core': `workspace:${next.cli}`,
             },
           }
         : { ...entry.manifest, version: next.cli };
@@ -280,12 +297,12 @@ export async function updateReleaseTargets(argv, options = {}) {
     const lockPath = await assertRegularPathChain(repoRoot, 'pnpm-lock.yaml');
     const lockContents = await fs.readFile(lockPath, 'utf8');
     const currentSpecifier = `specifier: workspace:${current.cli}`;
-    if (lockContents.split(currentSpecifier).length !== 2) {
-      throw new Error(`pnpm-lock.yaml must contain one exact ${currentSpecifier} entry.`);
+    if (lockContents.split(currentSpecifier).length !== 3) {
+      throw new Error(`pnpm-lock.yaml must contain two exact ${currentSpecifier} entries.`);
     }
     changes.push({
       path: lockPath,
-      contents: lockContents.replace(currentSpecifier, `specifier: workspace:${next.cli}`),
+      contents: lockContents.replaceAll(currentSpecifier, `specifier: workspace:${next.cli}`),
       mode: (await fs.stat(lockPath)).mode & 0o777,
     });
   }

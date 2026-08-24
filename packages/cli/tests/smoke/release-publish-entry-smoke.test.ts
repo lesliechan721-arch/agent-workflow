@@ -34,9 +34,11 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
     await fs.writeFile(path.join(remoteUrl, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   }
   const evalBytes = Buffer.from('eval');
+  const coreBytes = Buffer.from('core');
   const cliBytes = Buffer.from('cli');
   await Promise.all([
     fs.writeFile(path.join(artifacts, 'eval.tgz'), evalBytes),
+    fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes),
     fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes),
     fs.writeFile(path.join(catalogRoot, 'catalog-manifest.json'), JSON.stringify({
       catalogVersion: '2.0.0', channel: 'latest',
@@ -54,9 +56,14 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
       version: '1.0.0',
       packages: [
         { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz', contentDigest: digest(evalBytes) },
+        { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz', contentDigest: digest(coreBytes) },
         { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz', contentDigest: digest(cliBytes) },
       ],
-      treeDigests: { '@lesliechan721/agent-skill-eval': 'eval-tree', '@lesliechan721/aw': 'cli-tree' },
+      treeDigests: {
+        '@lesliechan721/agent-skill-eval': 'eval-tree',
+        '@lesliechan721/aw-plugin-core': 'core-tree',
+        '@lesliechan721/aw': 'cli-tree',
+      },
     } : null,
     catalog: axes.catalog ? {
       version: '2.0.0', path: 'artifacts/catalog', snapshotDigest: 'catalog-snapshot',
@@ -83,10 +90,10 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
 
 it('spawns the public publisher orchestration for all axes and uncertain failures', async () => {
   await expect(runCase({ cli: true, catalog: true })).resolves.toMatchObject({
-    ok: true, events: ['eval', 'cli', 'tag', 'catalog'],
+    ok: true, events: ['eval', 'core', 'cli', 'tag', 'catalog'],
   });
   await expect(runCase({ cli: true, catalog: false })).resolves.toMatchObject({
-    ok: true, events: ['eval', 'cli', 'tag'],
+    ok: true, events: ['eval', 'core', 'cli', 'tag'],
   });
   await expect(runCase({ cli: false, catalog: true })).resolves.toMatchObject({
     ok: true, events: ['catalog'],

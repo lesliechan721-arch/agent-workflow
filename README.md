@@ -228,7 +228,7 @@ tarball；本地安装必须同时提供它们，不能从 registry 补齐依赖
 pnpm release:pack:cli
 pnpm release:install:local
 # 或安装已经生成的两个文件：
-pnpm release:install:local -- <cli.tgz> <eval.tgz>
+pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz>
 ```
 
 `pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
@@ -250,9 +250,9 @@ pnpm release -- beta --catalog --catalog-bump patch --plugin <plugin-name>=patch
 pnpm release -- beta --all --cli-bump patch --catalog-bump patch --plugin <plugin-name>=patch
 ```
 
-产品源码必须先提交，且工作树必须干净。命令只在指定 bump 时原子更新并提交白名单发布元数据，然后运行所选轴的完整验证。它在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，再按 `Eval → CLI → cli-v<version> tag → Catalog` 发布启用的轴。CLI tag 只推送到 `origin`；当前分支不自动推送。
+产品源码必须先提交，且工作树必须干净。命令只在指定 bump 时原子更新并提交白名单发布元数据，然后运行所选轴的完整验证。它在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，再按 `Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。CLI tag 只推送到 `origin`；当前分支不自动推送。
 
-远端包或 Catalog 发布失败或结果不确定后，不要重试同一候选。提升受影响 target，再运行一键发布。`attempted.json` 是本地安全门禁，不要手动删除。若两个 npm 包已发布但 CLI tag 缺失，保留 prepared state 并运行 `pnpm release -- --repair-cli-tag`；命令会核验 artifact 和源码提交，只补 tag。
+远端包或 Catalog 发布失败或结果不确定后，不要重试同一候选。提升受影响 target，再运行一键发布。`attempted.json` 是本地安全门禁，不要手动删除。若三个 npm 包已发布但 CLI tag 缺失，保留 prepared state 并运行 `pnpm release -- --repair-cli-tag`；命令会核验 artifact 和源码提交，只补 tag。
 
 CLI 读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。
 

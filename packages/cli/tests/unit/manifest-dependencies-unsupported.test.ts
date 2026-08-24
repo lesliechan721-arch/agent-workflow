@@ -27,15 +27,15 @@ describe('plugin manifest dependencies contract', () => {
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...source,
       dependencies: 'child',
-    })).toThrow('expected an array');
+    })).toThrow('/dependencies must be array');
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...source,
       dependencies: ['source/child'],
-    })).toThrow('lowercase hyphen-case');
+    })).toThrow('/dependencies/0 must match pattern');
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...source,
       dependencies: ['child', 'child'],
-    })).toThrow('duplicate plugin "child"');
+    })).toThrow('/dependencies must NOT have duplicate items');
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...source,
       dependencies: ['parent'],
@@ -43,7 +43,7 @@ describe('plugin manifest dependencies contract', () => {
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...source,
       dependencies: Array.from({ length: 65 }, (_, index) => `child-${index}`),
-    })).toThrow('at most 64');
+    })).toThrow('/dependencies must NOT have more than 64 items');
   });
 
   it('accepts dependencies without a dedicated AW feature floor', () => {

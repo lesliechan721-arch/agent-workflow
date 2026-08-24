@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "name": "dev-workflow",
   "version": "0.1.0",
   "description": "按风险和当前阶段组织开发任务，并提供可独立使用的规格、实现与审查闭环。",

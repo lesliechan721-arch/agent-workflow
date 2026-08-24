@@ -6,6 +6,7 @@
 
 | 字段 | 类型 | 必填 | 约束 |
 |------|------|------|------|
+| `schemaVersion` | number | 是 | 固定为 `1`；历史缺失字段按 legacy v1 读取，未知版本拒绝 |
 | `name` | string | 是 | 小写短横线格式，必须与目录名一致 |
 | `version` | string | 是 | 严格 SemVer，例如 `0.1.0`；插件内容身份变化时必须递增 |
 | `description` | string | 是 | 非空字符串 |
@@ -49,6 +50,7 @@ AW 版本管理里有三套身份，不能混用：
 
 ```json
 {
+  "schemaVersion": 1,
   "name": "code-review",
   "version": "0.2.0",
   "compatibility": {
@@ -469,6 +471,7 @@ project shared config 位于 `.agent-workflows/plugin-config/<sourceId>/<pluginN
 
 ```json
 {
+  "schemaVersion": 1,
   "name": "coding-standards",
   "version": "0.1.0",
   "compatibility": {
@@ -509,6 +512,7 @@ project shared config 位于 `.agent-workflows/plugin-config/<sourceId>/<pluginN
 
 ```json
 {
+  "schemaVersion": 1,
   "name": "code-review",
   "version": "0.2.0",
   "compatibility": {

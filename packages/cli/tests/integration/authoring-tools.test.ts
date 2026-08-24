@@ -529,6 +529,7 @@ describe('authoring tools', () => {
       path.join(tempRepo, 'plugins', 'repo-check', '.agents-plugin', 'plugin.json'),
     );
     expect(scaffoldManifest).toMatchObject({
+      schemaVersion: 1,
       name: 'repo-check',
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
@@ -2467,7 +2468,7 @@ describe('authoring tools', () => {
       version: 'v0.1.0',
     });
     await expect(runValidatePlugin(invalidPluginVersionDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('strict SemVer 2.0.0'),
+      stdout: expect.stringContaining('/version must match pattern'),
     });
 
     const invalidAuthenticationDir = path.join(pluginsRoot, 'invalid-authentication');
@@ -2484,7 +2485,7 @@ describe('authoring tools', () => {
     });
     await expect(runValidatePlugin(invalidAuthenticationDir)).rejects.toMatchObject({
       stdout: expect.stringContaining(
-        'Invalid marketplace.policy.authentication: expected "ON_INSTALL" or "ON_USE".',
+        '/marketplace/policy/authentication must be equal to one of the allowed values',
       ),
     });
 
@@ -2520,7 +2521,7 @@ describe('authoring tools', () => {
       { preserveCompatibility: true },
     );
     await expect(runValidatePlugin(perAgentVersionDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('compatibility has unknown field "codex"'),
+      stdout: expect.stringContaining('/compatibility must NOT have additional properties'),
     });
   });
 
@@ -4447,7 +4448,7 @@ describe('authoring tools', () => {
       },
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('expected agent-skills'),
+      stdout: expect.stringContaining('/buildConfig/skillRuntimeFiles/0/distributions/0'),
     });
 
     const uppercaseDynamicKey = structuredClone(manifest);
@@ -6544,7 +6545,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('accepts dependencies at the default AW floor in the authoring fallback validator', async () => {
+  it('fails closed without the installed manifest contract even at the default AW floor', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-dependency-floor-'));
     tempDirs.push(tempRoot);
     const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
@@ -6584,12 +6585,12 @@ describe('authoring tools', () => {
       cwd: tempRoot,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
-    })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('Plugin manifest contract v6 is unavailable'),
     });
   });
 
-  it('fails closed for Portable manifests when only a stale v4 runtime validator is available', async () => {
+  it('fails closed for all manifests when only a stale runtime validator is available', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-v4-'));
     tempDirs.push(tempRoot);
     const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
@@ -6634,7 +6635,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('requires manifest contract v5'),
+      stdout: expect.stringContaining('Plugin manifest contract v6 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6646,8 +6647,8 @@ describe('authoring tools', () => {
       cwd: tempRoot,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
-    })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('Plugin manifest contract v6 is unavailable'),
     });
   });
 

@@ -29,11 +29,12 @@ afterEach(async () => {
   temporaryRoot = null;
 });
 
-async function writeSyntheticEvalBuildOutputs(sourceRoot: string): Promise<void> {
-  const evalOutputs = buildCacheContract.requiredOutputs.filter((relativePath: string) =>
+async function writeSyntheticPackageBuildOutputs(sourceRoot: string): Promise<void> {
+  const packageOutputs = buildCacheContract.requiredOutputs.filter((relativePath: string) =>
     relativePath.startsWith('packages/agent-skill-eval/dist/')
+    || relativePath.startsWith('packages/plugin-core/dist/')
   );
-  await Promise.all(evalOutputs.map(async (relativePath: string) => {
+  await Promise.all(packageOutputs.map(async (relativePath: string) => {
     const outputPath = path.join(sourceRoot, relativePath);
     if (await fs.pathExists(outputPath)) return;
     await fs.outputFile(
@@ -86,8 +87,17 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
         'aw-skill-eval': './dist/bin.js',
       },
     }),
+    fs.outputJson(path.join(sourceRoot, 'packages', 'plugin-core', 'package.json'), {
+      name: '@lesliechan721/aw-plugin-core',
+      version: '1.0.0',
+      type: 'module',
+      files: ['dist/', 'schemas/'],
+      exports: './dist/index.js',
+    }),
     fs.ensureDir(path.join(sourceRoot, 'packages', 'cli', 'node_modules')),
     fs.ensureDir(path.join(sourceRoot, 'packages', 'agent-skill-eval', 'node_modules')),
+    fs.ensureDir(path.join(sourceRoot, 'packages', 'plugin-core', 'node_modules')),
+    fs.ensureDir(path.join(sourceRoot, 'packages', 'plugin-core', 'schemas')),
   ]);
   const build = async () => {
     await fs.remove(path.join(sourceRoot, 'packages', 'cli', 'dist'));
@@ -112,7 +122,7 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       phase: 'development',
       catalogVersion: '1.0.0',
     });
-    await writeSyntheticEvalBuildOutputs(sourceRoot);
+    await writeSyntheticPackageBuildOutputs(sourceRoot);
   };
   const snapshot = await createBuildSnapshot(sourceRoot, { build });
   const sourceValidation = await catalogSnapshot.validateCatalogSnapshot(snapshot.catalogOutputRoot);

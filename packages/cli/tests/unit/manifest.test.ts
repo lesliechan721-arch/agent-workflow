@@ -133,10 +133,21 @@ describe('manifest utils', () => {
       },
     });
     expect(plugin.manifest.marketplace.policy.products).toBeUndefined();
+    expect(plugin.manifest.schemaVersion).toBe(1);
     expect(plugin.manifest.extensions?.hooks?.[0]).toMatchObject({
       event: 'before_tool',
       matcher: 'Bash',
     });
+  });
+
+  it('rejects an unknown manifest schema version through the CLI bridge', async () => {
+    const repoRoot = await makeTempRepo();
+    const rawManifest = await readFixturePluginManifest(repoRoot);
+    await writeFixturePluginManifest(repoRoot, { ...rawManifest, schemaVersion: 2 });
+
+    await expect(readPluginManifest(
+      path.join(repoRoot, 'plugins', 'git-commit'),
+    )).rejects.toThrow('Unsupported plugin manifest schemaVersion');
   });
 
   it('defaults source plugin minVersion but requires it for remote bundle manifests', async () => {
@@ -183,7 +194,7 @@ describe('manifest utils', () => {
 
     await expect(
       readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit')),
-    ).rejects.toThrow('unknown field "claude"');
+    ).rejects.toThrow('must NOT have additional properties');
   });
 
   it('rejects non-strict SemVer plugin versions in source manifests', async () => {
@@ -205,7 +216,7 @@ describe('manifest utils', () => {
       await writeFixturePluginManifest(repoRoot, manifest);
 
       await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-        `Invalid plugin manifest.version: expected a strict SemVer 2.0.0 string. Received ${JSON.stringify(version)}.`,
+        '/version must match pattern',
       );
     }
   });
@@ -281,7 +292,7 @@ describe('manifest utils', () => {
     manifest.extensions.hooks[0].description = 'old field';
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'unknown field "description"',
+      '/extensions/hooks/0 must NOT have additional properties',
     );
 
     delete manifest.extensions.hooks[0].description;
@@ -321,7 +332,7 @@ describe('manifest utils', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid marketplace.policy.authentication: expected "ON_INSTALL" or "ON_USE".',
+      '/marketplace/policy/authentication must be equal to one of the allowed values',
     );
   });
 
@@ -569,7 +580,7 @@ describe('manifest utils', () => {
       },
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported runner "deno"');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/lifecycle/install/linux/runner');
 
     manifest.scripts = {
       lifecycle: {
@@ -691,7 +702,7 @@ describe('manifest utils', () => {
       unknown: true,
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unknown field "unknown"');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts must NOT have additional properties');
   });
 
   it('rejects unsafe packageRoot metadata before staging install', async () => {
@@ -928,7 +939,7 @@ describe('manifest utils', () => {
     const invalidCases = [
       {
         presentation: { unknown: true },
-        error: 'config.presentation: unknown field "unknown"',
+        error: '/config/presentation must NOT have additional properties',
       },
       {
         presentation: {
@@ -1073,13 +1084,13 @@ describe('manifest utils', () => {
       targets: [{ ...validTarget, target: 'codex.unknown' }],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported artifact target "codex.unknown"');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/artifacts/targets/0/target');
 
     manifest.artifacts = {
       targets: [{ ...validTarget, states: ['present', 'archived'] }],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported artifact state "archived"');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/artifacts/targets/0/states/1');
 
     manifest.artifacts = {
       targets: [{ ...validTarget, refreshKeys: ['missingKey'] }],
@@ -1091,7 +1102,7 @@ describe('manifest utils', () => {
       targets: [{ ...validTarget, projectManagedKind: 'codexRole' }],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('unsupported Codex project managed kind "codexRole"');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/artifacts/targets/0/projectManagedKind');
 
     manifest.artifacts = {
       targets: [{ ...validTarget, projectManagedKind: 'agent' }],
@@ -2149,7 +2160,7 @@ describe('manifest utils', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'extensions.nativeHooks: unknown field "openai"',
+      '/extensions/nativeHooks must NOT have additional properties',
     );
 
     manifest.extensions.nativeHooks = {
@@ -2220,7 +2231,7 @@ describe('manifest utils', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'unknown field "description"',
+      '/extensions/nativeHooks/claude/0 must NOT have additional properties',
     );
 
     manifest.extensions.nativeHooks = {
@@ -2237,7 +2248,7 @@ describe('manifest utils', () => {
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'unknown field "agentOverrides"',
+      '/extensions/nativeHooks/claude/0 must NOT have additional properties',
     );
 
     manifest.extensions.nativeHooks = {

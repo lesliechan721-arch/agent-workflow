@@ -79,6 +79,7 @@ function compareStrictSemVer(left, right) {
 
 function buildPluginManifest(pluginName, version, minVersion, description, displayName, shortDescription, opts) {
   const manifest = {
+    schemaVersion: 1,
     name: pluginName,
     version,
     description,

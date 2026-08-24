@@ -156,7 +156,7 @@ describe('manifest coverage', () => {
           },
         },
       }),
-    ).toThrow('absolute paths are not allowed');
+    ).toThrow('/apps must match pattern');
   });
 
   it('discovers, resolves, and selects plugins from repo and catalog directories', async () => {

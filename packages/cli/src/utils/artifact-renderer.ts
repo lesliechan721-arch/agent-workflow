@@ -9,7 +9,7 @@ import type {
   PlatformName,
   PluginArtifactRenderScriptEntry,
   PluginConfigSchema,
-  PluginManifestSource,
+  NormalizedPluginManifest,
   PluginMeta,
   Scope,
 } from '../types.js';
@@ -108,7 +108,7 @@ export interface ArtifactRendererTarget {
   entry?: PluginArtifactRenderScriptEntry;
   entryPath?: string;
   bundleRoot?: string;
-  sourceManifest?: PluginManifestSource;
+  sourceManifest?: NormalizedPluginManifest;
   manifestPath?: string;
   manifestDigest?: string;
   rendererDigest?: string;
@@ -206,7 +206,7 @@ export async function resolveArtifactRenderConfig(options: {
   sourceId?: string;
   sourceIdentity?: string;
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;

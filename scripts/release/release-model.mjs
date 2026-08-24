@@ -4,6 +4,7 @@ const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const CLI_TRAIN_PACKAGES = [
   '@lesliechan721/agent-skill-eval',
+  '@lesliechan721/aw-plugin-core',
   '@lesliechan721/aw',
 ];
 
@@ -110,7 +111,8 @@ export function calculateCliTrainContentDigest(rawPackages) {
       name: normalizeNonEmptyString(packageEntry.name, `${fieldName}.name`),
       contentDigest: normalizeDigest(packageEntry.contentDigest, `${fieldName}.contentDigest`),
     };
-  }).sort((left, right) => compareCodeUnitStrings(left.name, right.name));
+  }).sort((left, right) =>
+    CLI_TRAIN_PACKAGES.indexOf(left.name) - CLI_TRAIN_PACKAGES.indexOf(right.name));
   if (
     packages.length !== CLI_TRAIN_PACKAGES.length
     || packages.some((entry, index) => entry.name !== CLI_TRAIN_PACKAGES[index])
