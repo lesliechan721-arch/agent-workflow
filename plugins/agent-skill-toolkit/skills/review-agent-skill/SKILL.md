@@ -57,12 +57,12 @@ metadata:
 
 主报告按 `assets/human-report-template.md` 输出，只包含机器检查、`design`、`complexity`、2–4 句判断、所有 critical/major、最多 3 项高价值改进、会改变结论的 unknown，以及停止或重新打开条件。
 
-full 主报告还显示一行 `Score: <n>/100 · coverage: <n>% · confidence: <level>`；coverage 不完整时显示 `Score: not-assessed`。维度明细只保存在 JSON。quick/delta 不显示评分行。不要输出 quality band、release readiness、stage 列表或多重 gate 表。`evalEvidence` 只是评审摘要，不是发布证据。
+full 主报告还显示一行 `Score: <n>/100 · coverage: <n>% · confidence: <level>`；coverage 不完整时显示 `Score: not-assessed`。维度明细只保存在 JSON。quick/delta 不显示评分行。不要输出 quality band、release readiness、stage 列表或多重 gate 表。QualityReviewResult 不声明 Eval 证据等级。
 
-需要结构化结果时，填写 `assets/review-result-lite.template.json`，再运行：
+需要结构化结果时，填写 `assets/quality-review-result.template.json`，再运行：
 
 ```bash
-node scripts/validate-review-result-lite.mjs <review.json> \
+node scripts/validate-quality-review-result.mjs <review.json> \
   --check <check.json> \
   --format json
 ```

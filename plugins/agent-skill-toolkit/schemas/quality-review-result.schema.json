@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-skill-toolkit.invalid/review-result-lite.schema.json",
-  "title": "ReviewResultLite",
+  "$id": "https://agent-skill-toolkit.invalid/quality-review-result.schema.json",
+  "title": "QualityReviewResult",
   "type": "object",
   "required": [
     "schemaVersion",
@@ -9,14 +9,12 @@
     "mode",
     "design",
     "complexity",
-    "summary",
     "findings",
     "unknowns",
-    "evalEvidence",
     "dimensions"
   ],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "const": 1 },
     "target": {
       "type": "object",
       "required": ["name", "digest"],
@@ -29,7 +27,6 @@
     "mode": { "enum": ["quick", "full", "delta"] },
     "design": { "enum": ["pass", "needs-fixes", "redesign", "fail", "not-assessed"] },
     "complexity": { "enum": ["proportionate", "over-specified", "over-engineered", "not-assessed"] },
-    "summary": { "type": "string", "minLength": 1 },
     "findings": {
       "type": "array",
       "items": {
@@ -71,7 +68,6 @@
       "items": { "type": "string", "minLength": 1 },
       "uniqueItems": true
     },
-    "evalEvidence": { "enum": ["none", "structural", "executed", "comparative"] },
     "dimensions": {
       "type": "array",
       "items": {

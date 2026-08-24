@@ -56,18 +56,18 @@
       },
       {
         "skill": "review-aw-plugin",
-        "target": "scripts/validate-review-result-lite.mjs",
+        "target": "scripts/validate-quality-review-result.mjs",
         "import": {
           "plugin": "agent-skill-toolkit",
-          "export": "validate-review-result-lite"
+          "export": "validate-quality-review-result"
         }
       },
       {
         "skill": "review-aw-plugin",
-        "target": "assets/review-result-lite.schema.json",
+        "target": "assets/quality-review-result.schema.json",
         "import": {
           "plugin": "agent-skill-toolkit",
-          "export": "review-result-lite-schema"
+          "export": "quality-review-result-schema"
         }
       },
       {

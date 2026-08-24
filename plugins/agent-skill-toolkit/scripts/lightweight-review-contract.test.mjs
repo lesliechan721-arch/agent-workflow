@@ -18,7 +18,7 @@ const root = context
   ? path.join(context.plugin.rootDir, context.platform, 'skills/review-agent-skill/scripts')
   : localRoot;
 const checker = path.join(root, 'check-agent-skill.mjs');
-const validator = path.join(root, 'validate-review-result-lite.mjs');
+const validator = path.join(root, 'validate-quality-review-result.mjs');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'lightweight-review-'));
 const dimensionIds = [
   'specification',
@@ -115,15 +115,13 @@ try {
 
   const reviewPath = path.join(temp, 'review.json');
   await writeFile(reviewPath, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     target: { name: goodCheck.target.name, digest: goodCheck.target.digest },
     mode: 'quick',
     design: 'pass',
     complexity: 'proportionate',
-    summary: 'The Skill is focused and proportionate.',
     findings: [],
     unknowns: [],
-    evalEvidence: 'structural',
     dimensions: []
   }, null, 2));
   const valid = JSON.parse((await run(validator, [reviewPath, '--check', goodCheckPath])).stdout);
@@ -131,24 +129,80 @@ try {
   assert.equal(valid.effectiveDecision, 'pass');
   assert.equal(valid.complexity, 'proportionate');
 
-  const legacy = JSON.parse(await readFile(reviewPath, 'utf8'));
-  legacy.schemaVersion = 1;
-  const legacyPath = path.join(temp, 'legacy-review.json');
-  await writeFile(legacyPath, JSON.stringify(legacy));
-  const legacyRun = await run(validator, [legacyPath, '--check', goodCheckPath], true);
-  assert.equal(JSON.parse(legacyRun.stdout).valid, false);
+  const invalidVersion = JSON.parse(await readFile(reviewPath, 'utf8'));
+  invalidVersion.schemaVersion = 2;
+  const invalidVersionPath = path.join(temp, 'invalid-version-review.json');
+  await writeFile(invalidVersionPath, JSON.stringify(invalidVersion));
+  const invalidVersionRun = await run(validator, [invalidVersionPath, '--check', goodCheckPath], true);
+  assert.equal(JSON.parse(invalidVersionRun.stdout).valid, false);
+
+  const declaredEvalEvidence = JSON.parse(await readFile(reviewPath, 'utf8'));
+  declaredEvalEvidence.evalEvidence = 'comparative';
+  const declaredEvalEvidencePath = path.join(temp, 'declared-eval-evidence.json');
+  await writeFile(declaredEvalEvidencePath, JSON.stringify(declaredEvalEvidence));
+  const declaredEvalEvidenceRun = await run(
+    validator,
+    [declaredEvalEvidencePath, '--check', goodCheckPath],
+    true,
+  );
+  assert.ok(JSON.parse(declaredEvalEvidenceRun.stdout).errors.includes('review.evalEvidence is not allowed'));
+
+  const declaredMachineTruth = JSON.parse(await readFile(reviewPath, 'utf8'));
+  Object.assign(declaredMachineTruth, {
+    weightedScore: 100,
+    coverage: 100,
+    confidence: 'high',
+    effectiveDecision: 'pass',
+  });
+  const declaredMachineTruthPath = path.join(temp, 'declared-machine-truth.json');
+  await writeFile(declaredMachineTruthPath, JSON.stringify(declaredMachineTruth));
+  const declaredMachineTruthRun = await run(
+    validator,
+    [declaredMachineTruthPath, '--check', goodCheckPath],
+    true,
+  );
+  const declaredMachineTruthErrors = JSON.parse(declaredMachineTruthRun.stdout).errors;
+  for (const field of ['weightedScore', 'coverage', 'confidence', 'effectiveDecision']) {
+    assert.ok(declaredMachineTruthErrors.includes(`review.${field} is not allowed`));
+  }
+
+  const emptyOptionalFindingFields = JSON.parse(await readFile(reviewPath, 'utf8'));
+  emptyOptionalFindingFields.design = 'needs-fixes';
+  emptyOptionalFindingFields.findings = [{
+    severity: 'minor',
+    area: 'maintainability',
+    evidenceType: 'structural',
+    evidence: ['SKILL.md:1'],
+    issue: 'The maintenance boundary is unclear.',
+    affectedScenario: '',
+    owner: 'skill',
+    action: 'Clarify the maintenance boundary.',
+    validation: '',
+  }];
+  const emptyOptionalFindingFieldsPath = path.join(temp, 'empty-optional-finding-fields.json');
+  await writeFile(emptyOptionalFindingFieldsPath, JSON.stringify(emptyOptionalFindingFields));
+  const emptyOptionalFindingFieldsRun = await run(
+    validator,
+    [emptyOptionalFindingFieldsPath, '--check', goodCheckPath],
+    true,
+  );
+  const emptyOptionalFindingFieldErrors = JSON.parse(emptyOptionalFindingFieldsRun.stdout).errors;
+  assert.ok(emptyOptionalFindingFieldErrors.includes(
+    'findings[0].affectedScenario must be a non-empty string',
+  ));
+  assert.ok(emptyOptionalFindingFieldErrors.includes(
+    'findings[0].validation must be a non-empty string',
+  ));
 
   const badReviewPath = path.join(temp, 'bad-review.json');
   await writeFile(badReviewPath, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     target: { name: badCheck.target.name, digest: badCheck.target.digest },
     mode: 'full',
     design: 'pass',
     complexity: 'proportionate',
-    summary: 'Semantic design is otherwise focused.',
     findings: [],
     unknowns: [],
-    evalEvidence: 'none',
     dimensions: fullDimensions()
   }, null, 2));
   const combined = JSON.parse((await run(validator, [badReviewPath, '--check', badCheckPath])).stdout);

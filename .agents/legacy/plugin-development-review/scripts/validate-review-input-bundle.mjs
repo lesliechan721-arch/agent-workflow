@@ -7,7 +7,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { isDeepStrictEqual, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { validateEvalRunBundle } from './validate-eval-run-bundle.mjs';
+import { validateEvalRunBundle } from '../../../../plugins/agent-skill-toolkit/scripts/validate-eval-run-bundle.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -563,7 +563,7 @@ async function firstReadable(candidates) {
 }
 
 async function schemaErrors(schemaPath, valuePath) {
-  const validator = path.join(scriptRoot, 'validate-json-contract.mjs');
+  const validator = path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/scripts/validate-json-contract.mjs');
   try {
     const { stdout } = await execFileAsync(
       process.execPath,
@@ -646,6 +646,7 @@ async function validateObject(schemaName, value, label, temporaryRoot, evidenceR
   const schemaPath = await firstReadable([
     path.join(scriptRoot, '..', 'schemas', schemaName),
     path.join(scriptRoot, '..', 'assets', schemaName),
+    path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/schemas', schemaName),
   ]);
   return (await schemaErrors(schemaPath, valuePath)).map((entry) => `${label}: ${entry}`);
 }
@@ -772,6 +773,7 @@ async function main() {
           const schemaPath = await firstReadable([
             path.join(scriptRoot, '..', 'schemas', schemaName),
             path.join(scriptRoot, '..', 'assets', schemaName),
+            path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/schemas', schemaName),
           ]);
           errors.push(
             ...(await schemaErrors(schemaPath, actual)).map((entry) => `${stage.id}: ${entry}`),

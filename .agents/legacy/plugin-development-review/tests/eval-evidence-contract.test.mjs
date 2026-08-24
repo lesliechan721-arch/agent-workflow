@@ -9,14 +9,11 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
 const execFileAsync = promisify(execFile);
-const localPluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pluginContext = process.env.AW_PLUGIN_CONTEXT
-  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
-  : null;
-const runtimeRoot = pluginContext?.platform
-  ? path.join(localPluginRoot, pluginContext.platform)
-  : localPluginRoot;
-const reviewScripts = path.join(runtimeRoot, 'skills', 'review-aw-plugin', 'scripts');
+const legacyRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repositoryRoot = path.resolve(legacyRoot, '../../..');
+const runtimeRoot = legacyRoot;
+const reviewScripts = path.join(legacyRoot, 'scripts');
+const canonicalScripts = path.join(repositoryRoot, 'plugins', 'agent-skill-toolkit', 'scripts');
 const temporaryRoots = [];
 
 after(async () =>
@@ -56,7 +53,7 @@ async function fixture() {
   await mkdir(evidenceRoot, { recursive: true });
   await writeFile(casePath, JSON.stringify({ cases: [{ id: 'case-1', query: 'review' }] }), 'utf8');
   const corpusDigest = (
-    await run(path.join(reviewScripts, 'validate-eval-audit-result.mjs'), [
+    await run(path.join(canonicalScripts, 'validate-eval-audit-result.mjs'), [
       '--digest-only',
       '--case',
       casePath,

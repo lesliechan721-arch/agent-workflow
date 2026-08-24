@@ -23,8 +23,8 @@ const OWNERS = new Set(['skill', 'schema', 'client', 'runtime', 'script', 'role'
 const DIMENSION_CONFIDENCE = new Set(['high', 'medium', 'low', 'unknown']);
 const CONFIDENCE_FACTOR = { high: 1, medium: 0.7, low: 0.4, unknown: 0 };
 const ROOT_FIELDS = new Set([
-  'schemaVersion', 'target', 'mode', 'design', 'complexity', 'summary',
-  'findings', 'unknowns', 'evalEvidence', 'dimensions',
+  'schemaVersion', 'target', 'mode', 'design', 'complexity',
+  'findings', 'unknowns', 'dimensions',
 ]);
 const TARGET_FIELDS = new Set(['name', 'digest']);
 const FINDING_FIELDS = new Set([
@@ -34,7 +34,7 @@ const FINDING_FIELDS = new Set([
 const DIMENSION_FIELDS = new Set(['id', 'score', 'confidence', 'basis']);
 
 function usage() {
-  return 'Usage: validate-review-result-lite.mjs <review.json> --check <skill-check.json> [--format json|text]';
+  return 'Usage: validate-quality-review-result.mjs <review.json> --check <skill-check.json> [--format json|text]';
 }
 
 function parseArgs(argv) {
@@ -116,13 +116,19 @@ function validateFinding(finding, index, errors) {
   }
   if (!nonEmpty(finding.issue)) errors.push(`${prefix}.issue is required`);
   if (!nonEmpty(finding.action)) errors.push(`${prefix}.action is required`);
+  if (finding.affectedScenario !== undefined && !nonEmpty(finding.affectedScenario)) {
+    errors.push(`${prefix}.affectedScenario must be a non-empty string`);
+  }
+  if (finding.validation !== undefined && !nonEmpty(finding.validation)) {
+    errors.push(`${prefix}.validation must be a non-empty string`);
+  }
   if (finding.severity === 'critical' || finding.severity === 'major') {
     if (!STRONG_EVIDENCE_TYPES.has(finding.evidenceType)) {
       errors.push(`${prefix} high severity requires observed, normative, or structural evidence`);
     }
-    if (!nonEmpty(finding.affectedScenario)) errors.push(`${prefix}.affectedScenario is required`);
+    if (finding.affectedScenario === undefined) errors.push(`${prefix}.affectedScenario is required`);
     if (finding.owner === undefined) errors.push(`${prefix}.owner is required`);
-    if (!nonEmpty(finding.validation)) errors.push(`${prefix}.validation is required`);
+    if (finding.validation === undefined) errors.push(`${prefix}.validation is required`);
   }
   if (finding.owner !== undefined && !OWNERS.has(finding.owner)) {
     errors.push(`${prefix}.owner is invalid`);
@@ -203,7 +209,7 @@ function validateReview(review, dimensions) {
     return { errors, scoring: null };
   }
   rejectUnknownFields(review, ROOT_FIELDS, 'review', errors);
-  if (review?.schemaVersion !== 2) errors.push('schemaVersion must be 2');
+  if (review?.schemaVersion !== 1) errors.push('schemaVersion must be 1');
   if (!isRecord(review.target)) errors.push('target must be an object');
   else rejectUnknownFields(review.target, TARGET_FIELDS, 'target', errors);
   if (!nonEmpty(review?.target?.name)) errors.push('target.name is required');
@@ -211,16 +217,12 @@ function validateReview(review, dimensions) {
   if (!REVIEW_MODES.has(review?.mode)) errors.push('mode must be quick, full, or delta');
   if (!DESIGNS.has(review?.design)) errors.push('design is invalid');
   if (!COMPLEXITIES.has(review?.complexity)) errors.push('complexity is invalid');
-  if (!nonEmpty(review?.summary)) errors.push('summary is required');
   if (!Array.isArray(review?.findings)) errors.push('findings must be an array');
   else for (const [index, finding] of review.findings.entries()) validateFinding(finding, index, errors);
   if (!Array.isArray(review?.unknowns) || review.unknowns.some((entry) => !nonEmpty(entry))) {
     errors.push('unknowns must be an array of non-empty strings');
   } else if (new Set(review.unknowns).size !== review.unknowns.length) {
     errors.push('unknowns must contain unique strings');
-  }
-  if (!['none', 'structural', 'executed', 'comparative'].includes(review?.evalEvidence)) {
-    errors.push('evalEvidence is invalid');
   }
   const scoring = validateDimensions(review, dimensions, errors);
   if (review?.complexity === 'over-engineered' && !['redesign', 'fail'].includes(review?.design)) {
@@ -265,7 +267,7 @@ function validateCheck(check) {
   return errors;
 }
 
-export async function validateReviewResultLite(review, check) {
+export async function validateQualityReviewResult(review, check) {
   const dimensions = await loadDimensions();
   const reviewValidation = validateReview(review, dimensions);
   const errors = [...reviewValidation.errors, ...validateCheck(check)];
@@ -296,12 +298,12 @@ async function main() {
     readFile(options.review, 'utf8').then(JSON.parse),
     readFile(options.check, 'utf8').then(JSON.parse),
   ]);
-  const output = await validateReviewResultLite(review, check);
+  const output = await validateQualityReviewResult(review, check);
   const scoringLine = output.scoring
     ? `Score: ${output.scoring.weightedScore ?? 'not-assessed'}; coverage: ${output.scoring.coveragePercent}%; confidence: ${output.scoring.confidence}`
     : null;
   process.stdout.write(options.format === 'json' ? `${JSON.stringify(output, null, 2)}\n` : [
-    output.valid ? 'ReviewResultLite is valid.' : output.errors.join('\n'),
+    output.valid ? 'QualityReviewResult is valid.' : output.errors.join('\n'),
     `Machine check: ${output.machineCheck}`,
     `Design: ${output.design}`,
     `Complexity: ${output.complexity}`,

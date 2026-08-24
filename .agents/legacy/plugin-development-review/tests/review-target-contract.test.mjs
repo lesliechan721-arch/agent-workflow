@@ -8,19 +8,16 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 const execFileAsync = promisify(execFile),
-  root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
-  pluginContext = process.env.AW_PLUGIN_CONTEXT
-    ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
-    : null,
-  runtimeRoot = pluginContext?.platform ? path.join(root, pluginContext.platform) : root,
-  sourceRoot = pluginContext?.sourceRoot ?? root,
+  root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..'),
+  runtimeRoot = path.join(root, '.agents', 'legacy', 'plugin-development-review'),
+  sourceRoot = root,
   temps = [];
 async function computeSkillDigest(skillRoot) {
   return (
     await execFileAsync(
       process.execPath,
       [
-        path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/bin.js'),
+        path.resolve(sourceRoot, 'packages/agent-skill-eval/dist/bin.js'),
         'digest',
         'skill',
         skillRoot,
@@ -45,7 +42,7 @@ function sha(d) {
 async function prepareBundle(plugin, repoRoot, args = []) {
   return JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs', [
+      await run('scripts/prepare-aw-review-bundle.mjs', [
         plugin,
         '--repo-root',
         repoRoot,
@@ -57,7 +54,7 @@ async function prepareBundle(plugin, repoRoot, args = []) {
 async function validatePreparedBundle(bundle, directory, name) {
   const bundlePath = path.join(directory, name);
   await writeFile(bundlePath, JSON.stringify(bundle));
-  return run('skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs', [
+  return run('scripts/validate-review-input-bundle.mjs', [
     bundlePath,
     '--format',
     'json',
@@ -66,7 +63,7 @@ async function validatePreparedBundle(bundle, directory, name) {
 async function sourceSkillDigest(plugin) {
   const value = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--repo-root',
         path.dirname(plugin),
@@ -93,7 +90,7 @@ test('review metadata and target projection support an external workspace', asyn
   await writeFile(path.join(final, 'SKILL.md'), '---\nname: one\ndescription: final\n---\n');
   const bundle = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs', [
+      await run('scripts/prepare-aw-review-bundle.mjs', [
         plugin,
         '--repo-root',
         ws,
@@ -105,7 +102,7 @@ test('review metadata and target projection support an external workspace', asyn
   assert.ok(bundle.artifacts.every((artifact) => ['100644', '100755'].includes(artifact.mode)));
   const targets = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--repo-root',
         ws,
@@ -125,7 +122,7 @@ test('review metadata and target projection support an external workspace', asyn
   const handoffRoot = path.join(t, 'handoff');
   const materialized = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--repo-root',
         ws,
@@ -146,7 +143,7 @@ test('review metadata and target projection support an external workspace', asyn
     assert.equal(
       JSON.parse(
         (
-          await run('skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs', [
+          await run('scripts/validate-review-input-bundle.mjs', [
             target.bundlePath,
             '--handoff-root',
             handoffRoot,
@@ -232,7 +229,7 @@ test('prepare and target projection use globally sorted POSIX production records
   assert.equal(
     JSON.parse(
       (
-        await run('skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs', [
+        await run('scripts/validate-review-input-bundle.mjs', [
           pluginBundlePath,
           '--handoff-root',
           t,
@@ -246,7 +243,7 @@ test('prepare and target projection use globally sorted POSIX production records
 
   const projected = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--repo-root',
         t,
@@ -260,7 +257,7 @@ test('prepare and target projection use globally sorted POSIX production records
   assert.equal(
     JSON.parse(
       (
-        await run('skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs', [
+        await run('scripts/validate-review-input-bundle.mjs', [
           projectedPath,
           '--handoff-root',
           t,
@@ -347,7 +344,7 @@ test('review digests exclude only direct Skill author evidence', async () => {
 
   const targets = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--repo-root',
         t,
@@ -387,7 +384,7 @@ test('Skills named evals or reports remain review targets with root-relative aut
 
   const initial = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--repo-root',
         t,
@@ -428,7 +425,7 @@ test('Skills named evals or reports remain review targets with root-relative aut
   );
   const projected = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -442,7 +439,7 @@ test('Skills named evals or reports remain review targets with root-relative aut
   await writeFile(path.join(evalsRoot, 'evals', 'cases.json'), '{"case":2}\n');
   const authorOnlyChanged = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -455,7 +452,7 @@ test('Skills named evals or reports remain review targets with root-relative aut
   await writeFile(path.join(evalsRoot, 'references', 'evals', 'runtime.md'), 'changed runtime\n');
   const productionChanged = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -633,7 +630,7 @@ test('ignored production is dirty while ignored author evidence does not pollute
   await writeFile(bundlePath, JSON.stringify(dirty));
   const projected = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -742,7 +739,7 @@ test('Skill target projection uses the shared Eval digest and retains matching s
 
   const first = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -756,7 +753,7 @@ test('Skill target projection uses the shared Eval digest and retains matching s
   await writeFile(authorEvidence, '{"case":2}\n');
   const authorOnlyChanged = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -771,7 +768,7 @@ test('Skill target projection uses the shared Eval digest and retains matching s
   assert.notEqual(modeChangedDigest, sharedDigest);
   const modeChanged = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -784,7 +781,7 @@ test('Skill target projection uses the shared Eval digest and retains matching s
   await symlink(path.join(skill, 'SKILL.md'), path.join(skill, 'linked-skill.md'));
   await assert.rejects(computeSkillDigest(skill), /Command failed/u);
   await assert.rejects(
-    run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [plugin]),
+    run('scripts/prepare-aw-review-targets.mjs', [plugin]),
     /Command failed/u,
   );
 });
@@ -834,7 +831,7 @@ test('Skill targets inherit matching artifact currentness and default unmatched 
   await writeFile(bundlePath, JSON.stringify(bundle));
   const targets = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--final',
         `codex=${finalRoot}`,
@@ -891,7 +888,7 @@ test('production deletions dirty targets while author evidence deletions do not 
   await writeFile(bundlePath, JSON.stringify(runtimeDeleted));
   const projected = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         plugin,
         '--bundle',
         bundlePath,
@@ -1007,7 +1004,7 @@ test('renames and copies preserve production currentness without dirtying author
   await writeFile(productionBundlePath, JSON.stringify(productionRenamed));
   const productionTarget = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         productionMove.plugin,
         '--bundle',
         productionBundlePath,
@@ -1053,7 +1050,7 @@ test('renames and copies preserve production currentness without dirtying author
   await writeFile(skillBundlePath, JSON.stringify(skillRenamed));
   const renamedSkillTarget = JSON.parse(
     (
-      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+      await run('scripts/prepare-aw-review-targets.mjs', [
         skillMove.plugin,
         '--bundle',
         skillBundlePath,
@@ -1197,7 +1194,7 @@ test('handoff validator rejects missing or forged stage artifacts', async () => 
   assert.equal(
     JSON.parse(
       (
-        await run('skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs', [
+        await run('scripts/validate-review-input-bundle.mjs', [
           bp,
           '--handoff-root',
           t,
@@ -1211,7 +1208,7 @@ test('handoff validator rejects missing or forged stage artifacts', async () => 
   bundle.orchestration.providedStages[0].resultDigest = 'sha256:' + '0'.repeat(64);
   await writeFile(bp, JSON.stringify(bundle));
   await assert.rejects(
-    run('skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs', [
+    run('scripts/validate-review-input-bundle.mjs', [
       bp,
       '--handoff-root',
       t,

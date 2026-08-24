@@ -45,7 +45,7 @@ function approximatelyEqual(left, right) {
   return Math.abs(left - right) <= 0.01;
 }
 async function schemaErrors(schemaPath, valuePath) {
-  const validator = path.join(scriptRoot, 'validate-json-contract.mjs');
+  const validator = path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/scripts/validate-json-contract.mjs');
   try {
     const { stdout } = await execFileAsync(
       process.execPath,
@@ -131,8 +131,14 @@ async function main() {
     path.join(scriptRoot, '..', 'schemas', 'review-result.schema.json'),
     path.join(scriptRoot, '..', 'assets', 'review-result.schema.json'),
   ]);
-  const dimensionsPath = path.join(scriptRoot, '..', 'standards', 'review-dimensions.json');
-  const skillRulesPath = path.join(scriptRoot, '..', 'standards', 'skill-rules.json');
+  const dimensionsPath = path.resolve(
+    scriptRoot,
+    '../../../../plugins/agent-skill-toolkit/standards/review-dimensions.json',
+  );
+  const skillRulesPath = path.resolve(
+    scriptRoot,
+    '../../../../plugins/agent-skill-toolkit/standards/skill-rules.json',
+  );
   const errors = await schemaErrors(schemaPath, options.valuePath);
   const bundle = await validatedBundle(options.bundlePath, errors);
   const inspection = bundle

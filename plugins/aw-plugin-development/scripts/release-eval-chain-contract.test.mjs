@@ -21,8 +21,8 @@ const skillChecker = context
   ? path.join(scriptRoot, 'check-agent-skill.mjs')
   : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'check-agent-skill.mjs');
 const reviewValidator = context
-  ? path.join(scriptRoot, 'validate-review-result-lite.mjs')
-  : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-review-result-lite.mjs');
+  ? path.join(scriptRoot, 'validate-quality-review-result.mjs')
+  : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-quality-review-result.mjs');
 const auditValidator = context
   ? path.join(scriptRoot, 'validate-eval-audit-result.mjs')
   : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-eval-audit-result.mjs');
@@ -142,7 +142,7 @@ try {
     AW_SKILL_VALIDATOR_BIN: skillValidatorBin,
     AW_PLUGIN_VALIDATOR_BIN: skillValidatorBin,
     AW_SKILL_CHECK_BIN: skillChecker,
-    AW_REVIEW_LITE_VALIDATOR: reviewValidator,
+    AW_QUALITY_REVIEW_VALIDATOR: reviewValidator,
     AW_EVAL_AUDIT_VALIDATOR: auditValidator,
     AW_EVAL_BUNDLE_VALIDATOR: bundleValidator,
   };
@@ -156,15 +156,13 @@ try {
 
   const reviewPath = path.join(temp, 'review.json');
   await writeFile(reviewPath, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     target: { name: 'demo', digest: check.target.digest },
     mode: 'full',
     design: 'pass',
     complexity: 'proportionate',
-    summary: 'The evaluated Skill is focused and supported.',
     findings: [],
     unknowns: [],
-    evalEvidence: 'none',
     dimensions: dimensions.map((id) => ({
       id,
       score: 4,

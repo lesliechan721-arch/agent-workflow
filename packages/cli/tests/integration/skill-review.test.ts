@@ -104,10 +104,9 @@ describe('skill-review author tools', () => {
     const expectedDigest = await computeAuthorSourceDigest(roots);
     const script = path.join(
       root,
-      'plugins',
-      'aw-plugin-development',
-      'skills',
-      'review-aw-plugin',
+      '.agents',
+      'legacy',
+      'plugin-development-review',
       'scripts',
       'prepare-aw-review-bundle.mjs',
     );

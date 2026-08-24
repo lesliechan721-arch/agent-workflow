@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -81,16 +81,3 @@ await writeFile(
   renderFrontmatterReference(frontmatterRegistry),
   'utf8',
 );
-
-// Transitional source-only tools are retained for old publication commands, but never enter the Agent-visible Skill bundle.
-for (const relative of [
-  'skills/review-aw-plugin/assets/aw-review-summary.json',
-  'skills/review-aw-plugin/assets/review-input-bundle.json',
-  'skills/review-aw-plugin/scripts/inspect-aw-target.mjs',
-  'skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs',
-  'skills/review-aw-plugin/scripts/prepare-aw-review-target-plan.mjs',
-  'skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs',
-  'skills/review-aw-plugin/scripts/review-artifact-policy.mjs',
-]) {
-  await rm(path.join(pluginRoot, relative), { force: true });
-}

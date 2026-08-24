@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { legacyReviewScript } from './legacy-review/source-owner.js';
 
 import fs from 'fs-extra';
 
@@ -409,13 +410,7 @@ async function validateReviewResult(
   valuePath: string,
   bundlePath: string,
 ): Promise<void> {
-  const validator = path.join(
-    repoRoot,
-    'plugins',
-    'agent-skill-toolkit',
-    'scripts',
-    'validate-review-result.mjs',
-  );
+  const validator = legacyReviewScript(repoRoot, 'validate-review-result.mjs');
   try {
     await execFileAsync(process.execPath, [
       validator,
@@ -443,13 +438,7 @@ async function validateAwReviewSummary(
   planPath: string,
   evidence: Array<{ id: string; resultPath: string; bundlePath: string }>,
 ): Promise<void> {
-  const validator = path.join(
-    repoRoot,
-    'plugins',
-    'aw-plugin-development',
-    'scripts',
-    'validate-aw-review-summary.mjs',
-  );
+  const validator = legacyReviewScript(repoRoot, 'validate-aw-review-summary.mjs');
   try {
     const args = [
       validator,

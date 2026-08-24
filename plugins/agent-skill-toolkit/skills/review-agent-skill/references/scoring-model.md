@@ -29,7 +29,7 @@
 
 ## 计算
 
-权重只从 `assets/review-dimensions.json` 读取，不复制进 ReviewResultLite。
+权重只从 `assets/review-dimensions.json` 读取，不复制进 QualityReviewResult。
 
 - `coverage = assessed_weight / 100`。
 - coverage 为 100% 时，`weighted_score = Σ(weight × score / 5)`；否则为 `null`。

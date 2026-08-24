@@ -15,6 +15,10 @@
 
 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查旧的 `create-aw-plugin` 工作流和新的 `aw-plugin-development` 适配器。迁移期间两个入口都必须保持准确。
 
+旧版插件开发 Review 合同的源码 owner 是 `.agents/legacy/plugin-development-review/`。旧 `create-aw-plugin`、`skill-review`、`review:publish` 和静态报告流程可以继续使用该 owner。`agent-skill-toolkit` 与 `aw-plugin-development` 不拥有、导出或投影旧版 Review schema、validator、inspector、bundle、target plan 或摘要 producer。
+
+依赖方向只能从旧 owner 指向仍为 canonical 的新合同，例如 Review 维度、Eval audit 和 run bundle。新插件的 production source、manifest、staging 和 runtime bundle 不得导入旧 owner，也不得重新包装旧版合同。迁移阶段继续使用旧默认路由；本边界不切换入口。
+
 ## 维护入口
 
 - 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。

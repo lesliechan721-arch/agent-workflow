@@ -490,7 +490,7 @@ async function main() {
   const stages = [];
   let evalAuditDigest = null;
   if (options.evalAudit) {
-    const validator = path.join(scriptRoot, 'validate-eval-audit-result.mjs');
+    const validator = path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/scripts/validate-eval-audit-result.mjs');
     await runValidator(
       validator,
       [
@@ -517,8 +517,8 @@ async function main() {
   const evalResults = [];
   for (const resultPath of options.evalResults) {
     const result = await jsonDocument(resultPath, 'Eval result');
-    const validator = path.join(scriptRoot, 'validate-json-contract.mjs');
-    const schema = path.join(scriptRoot, '..', 'assets', 'eval-run-bundle.schema.json');
+    const validator = path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/scripts/validate-json-contract.mjs');
+    const schema = path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/schemas/eval-run-bundle.schema.json');
     await runValidator(validator, [schema, resultPath, '--format', 'json'], 'Eval result');
     if (result.targetSkillDigest !== evalAudit.targetSkillDigest)
       fail('Eval result targetSkillDigest does not match Eval audit.');

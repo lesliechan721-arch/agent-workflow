@@ -29,17 +29,44 @@ async function runtimeExportSource(plugin, exportName) {
   return path.join(providerRoot, item.source);
 }
 
-test('reviewer runtime exposes only the lightweight machine contract', async () => {
+test('reviewer manifest and runtime expose only the current quality contract', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
+  assert.deepEqual(
+    manifest.buildConfig.runtimeExports.map((entry) => entry.name).sort(),
+    [
+      'check-agent-skill',
+      'eval-audit-result-schema',
+      'eval-run-bundle-schema',
+      'quality-review-result-schema',
+      'review-dimensions',
+      'skill-design-brief-schema',
+      'skill-rules',
+      'validate-eval-audit-result',
+      'validate-eval-run-bundle',
+      'validate-json-contract',
+      'validate-quality-review-result',
+    ],
+  );
+  // Static contract exception: legacy schema and producer ownership in current plugin source would re-enter its published closure; behavior test is not suitable because ownership is the absence of these exact source files.
+  for (const relative of [
+    'schemas/review-input-bundle.schema.json',
+    'schemas/review-result.schema.json',
+    'schemas/skill-inspection-result.schema.json',
+    'scripts/inspect-agent-skill.mjs',
+    'scripts/validate-review-input-bundle.mjs',
+    'scripts/validate-review-result.mjs',
+  ]) {
+    await assert.rejects(readFile(path.join(sourceRoot, relative), 'utf8'), relative);
+  }
   const targets = manifest.buildConfig.skillRuntimeFiles
     .filter((entry) => entry.skill === 'review-agent-skill')
     .map((entry) => entry.target)
     .sort();
   assert.deepEqual(targets, [
+    'assets/quality-review-result.schema.json',
     'assets/review-dimensions.json',
-    'assets/review-result-lite.schema.json',
     'scripts/check-agent-skill.mjs',
-    'scripts/validate-review-result-lite.mjs',
+    'scripts/validate-quality-review-result.mjs',
   ]);
   const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill');
   for (const relative of [

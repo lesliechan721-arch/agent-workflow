@@ -315,9 +315,9 @@ async function main() {
   const checker = process.env.AW_SKILL_CHECK_BIN
     ? path.resolve(process.env.AW_SKILL_CHECK_BIN)
     : path.join(scriptRoot, 'check-agent-skill.mjs');
-  const validator = process.env.AW_REVIEW_LITE_VALIDATOR
-    ? path.resolve(process.env.AW_REVIEW_LITE_VALIDATOR)
-    : path.join(scriptRoot, 'validate-review-result-lite.mjs');
+  const validator = process.env.AW_QUALITY_REVIEW_VALIDATOR
+    ? path.resolve(process.env.AW_QUALITY_REVIEW_VALIDATOR)
+    : path.join(scriptRoot, 'validate-quality-review-result.mjs');
   const evalAuditValidator = process.env.AW_EVAL_AUDIT_VALIDATOR
     ? path.resolve(process.env.AW_EVAL_AUDIT_VALIDATOR)
     : path.join(scriptRoot, 'validate-eval-audit-result.mjs');

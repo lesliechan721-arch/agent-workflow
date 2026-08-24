@@ -54,8 +54,7 @@ async function schemaErrors(valuePath, schemaName) {
   }
   if (!schemaPath) throw new Error('Cannot locate AWReviewSummary schema.');
   const validatorCandidates = [
-    path.join(scriptRoot, 'validate-json-contract.mjs'),
-    path.join(scriptRoot, '..', 'skills', 'review-aw-plugin', 'scripts', 'validate-json-contract.mjs'),
+    path.resolve(scriptRoot, '../../../../plugins/agent-skill-toolkit/scripts/validate-json-contract.mjs'),
   ];
   let validator;
   for (const candidate of validatorCandidates) {
@@ -242,10 +241,7 @@ async function validatedEvidence(entries) {
   const errors = [];
   const evidenceById = new Map();
   let validator = null;
-  for (const candidate of [
-    path.join(scriptRoot, 'validate-review-result.mjs'),
-    path.join(scriptRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-review-result.mjs'),
-  ]) {
+  for (const candidate of [path.join(scriptRoot, 'validate-review-result.mjs')]) {
     try {
       await readFile(candidate);
       validator = candidate;

@@ -67,15 +67,13 @@ try {
   const check = JSON.parse(checkStdout);
   const review = path.join(temp, 'review.json');
   await writeFile(review, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     target: { name: 'demo', digest: check.target.digest },
     mode: 'full',
     design: 'pass',
     complexity: 'proportionate',
-    summary: 'The Skill is focused.',
     findings: [],
     unknowns: [],
-    evalEvidence: 'structural',
     dimensions: [
       'specification', 'problem_value', 'triggering', 'scope_composition',
       'instruction_design', 'minimum_control', 'context_disclosure', 'architecture',
@@ -86,7 +84,7 @@ try {
   const env = {
     ...process.env,
     AW_SKILL_CHECK_BIN: path.join(sharedScripts, 'check-agent-skill.mjs'),
-    AW_REVIEW_LITE_VALIDATOR: path.join(sharedScripts, 'validate-review-result-lite.mjs'),
+    AW_QUALITY_REVIEW_VALIDATOR: path.join(sharedScripts, 'validate-quality-review-result.mjs'),
     AW_SKILL_VALIDATOR_BIN: skillValidatorBin,
     AW_PLUGIN_VALIDATOR_BIN: skillValidatorBin,
   };

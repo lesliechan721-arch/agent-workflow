@@ -32,23 +32,38 @@ async function runJson(file, args = []) {
   }
 }
 
-test('review adapter runtime contains only lightweight review and release tools', async () => {
+test('review adapter manifest and runtime contain only current quality and release tools', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
   const targets = manifest.buildConfig.skillRuntimeFiles
     .filter((entry) => entry.skill === 'review-aw-plugin')
     .map((entry) => entry.target)
     .sort();
+  // Static contract exception: legacy AW review ownership in current adapter source would re-enter its published closure; behavior test is not suitable because ownership is the absence of these exact source files.
+  for (const relative of [
+    'schemas/aw-review-summary.schema.json',
+    'schemas/aw-review-target-plan.schema.json',
+    'scripts/legacy-review/inspect-aw-target.mjs',
+    'scripts/legacy-review/prepare-aw-review-bundle.mjs',
+    'scripts/legacy-review/prepare-aw-review-target-plan.mjs',
+    'scripts/legacy-review/prepare-aw-review-targets.mjs',
+    'scripts/legacy-review/review-artifact-policy.mjs',
+    'scripts/validate-aw-review-summary.mjs',
+    'skills/review-aw-plugin/references/aw-report-publication.md',
+    'skills/review-aw-plugin/references/aw-review-bundle.md',
+  ]) {
+    await assert.rejects(readFile(path.join(sourceRoot, relative), 'utf8'), relative);
+  }
   assert.deepEqual(targets, [
     'assets/eval-audit-result.schema.json',
     'assets/eval-run-bundle.schema.json',
+    'assets/quality-review-result.schema.json',
     'assets/review-dimensions.json',
-    'assets/review-result-lite.schema.json',
     'scripts/check-agent-skill.mjs',
     'scripts/check-aw-plugin-release.mjs',
     'scripts/validate-eval-audit-result.mjs',
     'scripts/validate-eval-run-bundle.mjs',
     'scripts/validate-json-contract.mjs',
-    'scripts/validate-review-result-lite.mjs',
+    'scripts/validate-quality-review-result.mjs',
   ]);
   const skillRoot = path.join(runtimeRoot, 'skills/review-aw-plugin');
   for (const relative of [

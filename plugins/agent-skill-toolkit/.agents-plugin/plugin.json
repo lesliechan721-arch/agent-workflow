@@ -27,18 +27,6 @@
         "source": "./scripts/validate-json-contract.mjs"
       },
       {
-        "name": "validate-review-result",
-        "source": "./scripts/validate-review-result.mjs"
-      },
-      {
-        "name": "inspect-agent-skill",
-        "source": "./scripts/inspect-agent-skill.mjs"
-      },
-      {
-        "name": "validate-review-input-bundle",
-        "source": "./scripts/validate-review-input-bundle.mjs"
-      },
-      {
         "name": "validate-eval-audit-result",
         "source": "./scripts/validate-eval-audit-result.mjs"
       },
@@ -51,12 +39,12 @@
         "source": "./scripts/check-agent-skill.mjs"
       },
       {
-        "name": "validate-review-result-lite",
-        "source": "./scripts/validate-review-result-lite.mjs"
+        "name": "validate-quality-review-result",
+        "source": "./scripts/validate-quality-review-result.mjs"
       },
       {
-        "name": "review-result-lite-schema",
-        "source": "./schemas/review-result-lite.schema.json"
+        "name": "quality-review-result-schema",
+        "source": "./schemas/quality-review-result.schema.json"
       },
       {
         "name": "skill-design-brief-schema",
@@ -65,18 +53,6 @@
       {
         "name": "eval-audit-result-schema",
         "source": "./schemas/eval-audit-result.schema.json"
-      },
-      {
-        "name": "review-input-bundle-schema",
-        "source": "./schemas/review-input-bundle.schema.json"
-      },
-      {
-        "name": "review-result-schema",
-        "source": "./schemas/review-result.schema.json"
-      },
-      {
-        "name": "skill-inspection-result-schema",
-        "source": "./schemas/skill-inspection-result.schema.json"
       },
       {
         "name": "eval-run-bundle-schema",
@@ -108,13 +84,13 @@
       },
       {
         "skill": "review-agent-skill",
-        "source": "./scripts/validate-review-result-lite.mjs",
-        "target": "scripts/validate-review-result-lite.mjs"
+        "source": "./scripts/validate-quality-review-result.mjs",
+        "target": "scripts/validate-quality-review-result.mjs"
       },
       {
         "skill": "review-agent-skill",
-        "source": "./schemas/review-result-lite.schema.json",
-        "target": "assets/review-result-lite.schema.json"
+        "source": "./schemas/quality-review-result.schema.json",
+        "target": "assets/quality-review-result.schema.json"
       },
       {
         "skill": "review-agent-skill",
