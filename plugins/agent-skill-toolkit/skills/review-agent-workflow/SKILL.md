@@ -1,14 +1,14 @@
 ---
 name: review-agent-workflow
 description: >-
-  当用户明确要求只读审核一个由多个 Agent Skill、角色、工具、脚本或运行阶段共同完成的既有工作流时使用。目标必须有明确用户结果、入口和参与组件；评估端到端路由、职责、handoff、状态与证据 owner、权限成本、失败传播和最小架构。不评审单个 Skill 包内部细节，也不对未界定的整个仓库或系统给出完整结论。
+  当用户明确要求只读审核一个由多个 Agent Skill、角色、工具、脚本或运行阶段共同完成的既有工作流时使用；显式审核整仓 Agent 能力或多个尚未界定的 Agent 组件时也使用，但只做 Scope Admission 和 workflow partitions。评估端到端路由、职责、handoff、状态与证据 owner、权限成本、失败传播和最小架构。不评审单个 Skill 包内部细节；普通代码仓库 Review 不使用。请求涉及 `.agents-plugin/plugin.json`、单个 AW 插件或跨 AW 插件时不使用，分别交给 `review-aw-plugin` 或 `review-aw-workflow`。
 metadata:
   short-description: 只读评审有界的跨 Skill 工作流与最小架构
 ---
 
 # Review Agent Workflow
 
-评审对象是一个有界用户工作流，不是“很多文件”或“整个系统”。
+完整评审对象是一个有界用户工作流。显式整仓 Agent 能力或多个未界定 Agent 组件的 Review 仍由本 Skill 接收，但本轮只做准入与分区。
 
 ## 依赖
 
@@ -27,7 +27,7 @@ metadata:
 - 明确排除；
 - 用户要做的决策。
 
-无法建立边界时，先列出可独立评审的 workflow 分区；本轮只能输出 `partial` 或 `rejected`，不能给整个仓库或系统 `pass`。
+触发本 Skill 不等于全局 scope 已准入。无法建立边界时，先列出可独立评审的 workflow partitions；本轮只能输出 `partial` 或 `rejected`，不能给整个仓库或系统 `pass`，也不能把各分区的局部结果合成为全局 pass。
 
 ## 工作流
 

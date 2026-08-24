@@ -19,7 +19,7 @@ const discover = context
 const temps = [];
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
 
-async function plugin(root, name, imports = [], exports = [`${name}-export`]) {
+async function plugin(root, name, imports = [], exports = [`${name}-export`], options = {}) {
   await mkdir(path.join(root, '.agents-plugin'), { recursive: true });
   await mkdir(path.join(root, 'skills', `${name}-skill`), { recursive: true });
   await writeFile(path.join(root, 'skills', `${name}-skill`, 'SKILL.md'),
@@ -28,6 +28,9 @@ async function plugin(root, name, imports = [], exports = [`${name}-export`]) {
     name,
     version: '0.1.0',
     skills: './skills',
+    dependencies: options.dependencies ?? [...new Set(imports
+      .map((dependency) => typeof dependency === 'string' ? dependency : dependency.plugin)
+      .filter((dependency) => dependency !== '@aw/cli'))],
     buildConfig: {
       buildImports: imports.map((dependency) => ({
         plugin: typeof dependency === 'string' ? dependency : dependency.plugin,
@@ -36,31 +39,49 @@ async function plugin(root, name, imports = [], exports = [`${name}-export`]) {
       })),
       runtimeExports: exports.map((exportName) => ({ name: exportName, source: './x.json' })),
     },
-    marketplace: { policy: { products: ['CODEX', 'CLAUDE'] } },
+    marketplace: { policy: { products: options.products ?? ['CODEX', 'CLAUDE'] } },
   }));
 }
 
-test('AW workflow inventory exposes plugins, imports, products and no semantic verdict', async () => {
+test('AW workflow inventory exposes four typed edge collections and no untyped machine truth', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-'));
   temps.push(temp);
   const a = path.join(temp, 'a');
   const b = path.join(temp, 'b');
   await plugin(a, 'a', ['b']);
   await plugin(b, 'b');
+  const manifestPath = path.join(a, '.agents-plugin', 'plugin.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.buildConfig.skillRuntimeFiles = [{
+    skill: 'a-skill',
+    target: 'references/b.json',
+    import: { plugin: 'b', export: 'b-export' },
+  }];
+  manifest.artifacts = { targets: [{
+    id: 'portable-a',
+    runtimeImports: [{ name: 'b-data', plugin: 'b', export: 'b-export' }],
+  }] };
+  await writeFile(manifestPath, JSON.stringify(manifest));
   const { stdout } = await execFileAsync(process.execPath, [
     discover, '--entry', 'a-skill', '--plugin', a, '--plugin', b, '--format', 'json',
   ], { encoding: 'utf8' });
   const result = JSON.parse(stdout);
+  assert.equal(result.schemaVersion, 2);
   assert.equal(result.entryResolution.resolved, true);
   assert.deepEqual(result.plugins.map((entry) => entry.name), ['a', 'b']);
-  assert.ok(result.edges.some((edge) => edge.from === 'a' && edge.to === 'b'));
-  assert.deepEqual(result.unresolvedImports, []);
-  assert.deepEqual(result.cycles, []);
+  assert.deepEqual(result.dependencyEdges.map(({ from, to }) => ({ from, to })), [{ from: 'a', to: 'b' }]);
+  assert.deepEqual(result.buildImportEdges.map(({ from, to }) => ({ from, to })), [{ from: 'a', to: 'b' }]);
+  assert.deepEqual(result.skillRuntimeFileImportEdges.map(({ from, to }) => ({ from, to })), [{ from: 'a', to: 'b' }]);
+  assert.deepEqual(result.artifactRuntimeImportEdges.map(({ from, to }) => ({ from, to })), [{ from: 'a', to: 'b' }]);
+  assert.equal('edges' in result, false);
+  assert.equal('imports' in result.plugins[0], false);
+  assert.ok(Object.values(result.unresolved).every((entries) => entries.length === 0));
+  assert.ok(Object.values(result.cycles).every((entries) => entries.length === 0));
   assert.equal('design' in result, false);
   assert.equal('complexity' in result, false);
 });
 
-test('AW workflow inventory distinguishes missing providers and exports and accepts the CLI virtual export', async () => {
+test('AW workflow inventory groups missing providers, exports, and manifest dependencies by edge type', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-imports-'));
   temps.push(temp);
   const a = path.join(temp, 'a');
@@ -68,9 +89,55 @@ test('AW workflow inventory distinguishes missing providers and exports and acce
   await plugin(a, 'a', [
     { plugin: 'b', export: 'missing' },
     { plugin: 'missing-plugin', export: 'x' },
+    { plugin: 'b', export: 'b-export' },
+  ], ['a-export'], { dependencies: ['missing-dependency'] });
+  await plugin(b, 'b');
+  const manifestPath = path.join(a, '.agents-plugin', 'plugin.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.buildConfig.skillRuntimeFiles = [
+    { skill: 'a-skill', target: 'references/missing-provider.json', import: { plugin: 'missing-plugin', export: 'x' } },
+    { skill: 'a-skill', target: 'references/missing-export.json', import: { plugin: 'b', export: 'missing' } },
+    { skill: 'a-skill', target: 'references/missing-dependency.json', import: { plugin: 'b', export: 'b-export' } },
+  ];
+  manifest.artifacts = { targets: [{
+    id: 'portable-a',
+    runtimeImports: [
+      { name: 'missing-provider', plugin: 'missing-plugin', export: 'x' },
+      { name: 'missing-export', plugin: 'b', export: 'missing' },
+      { name: 'missing-dependency', plugin: 'b', export: 'b-export' },
+    ],
+  }] };
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const { stdout } = await execFileAsync(process.execPath, [
+    discover, '--entry', 'a', '--plugin', a, '--plugin', b, '--format', 'json',
+  ], { encoding: 'utf8' });
+  const result = JSON.parse(stdout);
+  assert.deepEqual(result.unresolved.dependencyEdges.map(({ to, reason }) => ({ to, reason })), [
+    { to: 'missing-dependency', reason: 'missing-provider' },
+  ]);
+  for (const edgeType of ['buildImportEdges', 'skillRuntimeFileImportEdges', 'artifactRuntimeImportEdges']) {
+    assert.deepEqual(
+      result.unresolved[edgeType]
+        .map(({ to, export: exportName, reason }) => ({ to, export: exportName, reason }))
+        .sort((left, right) => left.reason.localeCompare(right.reason)),
+      [
+        { to: 'b', export: 'missing', reason: 'missing-export' },
+        { to: 'b', export: 'b-export', reason: 'missing-manifest-dependency' },
+        { to: 'missing-plugin', export: 'x', reason: 'missing-provider' },
+      ],
+    );
+  }
+});
+
+test('AW workflow inventory accepts only the canonical CLI virtual build import', async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-cli-import-'));
+  temps.push(temp);
+  const a = path.join(temp, 'a');
+  const b = path.join(temp, 'b');
+  await plugin(a, 'a', [
     { plugin: '@aw/cli', export: 'skill-frontmatter-capabilities' },
     { plugin: '@aw/cli', export: 'unknown-export' },
-  ]);
+  ], ['a-export'], { dependencies: [] });
   await plugin(b, 'b');
   const manifestPath = path.join(a, '.agents-plugin', 'plugin.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -84,11 +151,11 @@ test('AW workflow inventory distinguishes missing providers and exports and acce
     discover, '--entry', 'a', '--plugin', a, '--plugin', b, '--format', 'json',
   ], { encoding: 'utf8' });
   const result = JSON.parse(stdout);
-  assert.deepEqual(result.unresolvedImports.map(({ to, export: exportName, reason }) => ({ to, export: exportName, reason })), [
-    { to: 'b', export: 'missing', reason: 'missing-export' },
-    { to: 'missing-plugin', export: 'x', reason: 'missing-provider' },
-    { to: '@aw/cli', export: 'unknown-export', reason: 'missing-export' },
-    { to: '@aw/cli', export: 'skill-frontmatter-capabilities', reason: 'unsupported-virtual-import-kind' },
+  assert.deepEqual(result.unresolved.buildImportEdges.map(({ export: exportName, reason }) => ({ export: exportName, reason })), [
+    { export: 'unknown-export', reason: 'missing-export' },
+  ]);
+  assert.deepEqual(result.unresolved.skillRuntimeFileImportEdges.map(({ reason }) => reason), [
+    'unsupported-virtual-import-kind',
   ]);
 });
 
@@ -165,13 +232,27 @@ test('AW workflow inventory rejects escaping and symlinked Skill roots without r
   );
 });
 
-test('AW workflow inventory detects cycles before semantic review', async () => {
+test('AW workflow inventory reports dependency and each import cycle independently', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-cycle-'));
   temps.push(temp);
   const a = path.join(temp, 'a');
   const b = path.join(temp, 'b');
   await plugin(a, 'a', ['b']);
   await plugin(b, 'b', ['a']);
+  for (const [root, ownName, peerName] of [[a, 'a', 'b'], [b, 'b', 'a']]) {
+    const manifestPath = path.join(root, '.agents-plugin', 'plugin.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.buildConfig.skillRuntimeFiles = [{
+      skill: `${ownName}-skill`,
+      target: `references/${peerName}.json`,
+      import: { plugin: peerName, export: `${peerName}-export` },
+    }];
+    manifest.artifacts = { targets: [{
+      id: `portable-${ownName}`,
+      runtimeImports: [{ name: peerName, plugin: peerName, export: `${peerName}-export` }],
+    }] };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+  }
   let output;
   try {
     await execFileAsync(process.execPath, [
@@ -180,7 +261,59 @@ test('AW workflow inventory detects cycles before semantic review', async () => 
   } catch (error) {
     output = JSON.parse(error.stdout);
   }
-  assert.ok(output.cycles.length > 0);
+  for (const edgeType of ['dependencyEdges', 'buildImportEdges', 'skillRuntimeFileImportEdges', 'artifactRuntimeImportEdges']) {
+    assert.deepEqual(output.cycles[edgeType], [['a', 'b', 'a']]);
+  }
+});
+
+test('AW workflow inventory does not create a cycle by mixing import edge types', async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-no-union-cycle-'));
+  temps.push(temp);
+  const a = path.join(temp, 'a');
+  const b = path.join(temp, 'b');
+  await plugin(a, 'a', ['b']);
+  await plugin(b, 'b', [], ['b-export'], { dependencies: ['a'] });
+  const manifestPath = path.join(b, '.agents-plugin', 'plugin.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.buildConfig.skillRuntimeFiles = [{
+    skill: 'b-skill', target: 'references/a.json', import: { plugin: 'a', export: 'a-export' },
+  }];
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  let output;
+  try {
+    await execFileAsync(process.execPath, [
+      discover, '--entry', 'a', '--plugin', a, '--plugin', b, '--format', 'json',
+    ], { encoding: 'utf8' });
+  } catch (error) {
+    output = JSON.parse(error.stdout);
+  }
+  assert.deepEqual(output.cycles.dependencyEdges, [['a', 'b', 'a']]);
+  assert.deepEqual(output.cycles.buildImportEdges, []);
+  assert.deepEqual(output.cycles.skillRuntimeFileImportEdges, []);
+});
+
+test('AW workflow inventory applies canonical default and normalized product coverage semantics', async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-products-'));
+  temps.push(temp);
+  const both = path.join(temp, 'both');
+  const codexConsumer = path.join(temp, 'codex-consumer');
+  const codexProvider = path.join(temp, 'codex-provider');
+  await plugin(both, 'both', [], ['both-export'], { dependencies: ['codex-provider'], products: [] });
+  await plugin(codexConsumer, 'codex-consumer', [], ['consumer-export'], {
+    dependencies: ['codex-provider'],
+    products: [' codex '],
+  });
+  await plugin(codexProvider, 'codex-provider', [], ['provider-export'], { products: ['CODEX'] });
+  const { stdout } = await execFileAsync(process.execPath, [
+    discover, '--entry', 'both', '--plugin', both, '--plugin', codexConsumer,
+    '--plugin', codexProvider, '--format', 'json',
+  ], { encoding: 'utf8' });
+  const result = JSON.parse(stdout);
+  assert.deepEqual(result.unresolved.dependencyEdges.map(({ from, reason, missingPlatforms }) => ({
+    from, reason, missingPlatforms,
+  })), [{
+    from: 'both', reason: 'incomplete-product-coverage', missingPlatforms: ['claude'],
+  }]);
 });
 
 test('AW reviewers have non-overlapping boundaries', async () => {

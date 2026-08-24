@@ -66,7 +66,7 @@
       },
       "prompt": "评审整个大型仓库的所有 Agent 系统并给一个统一结论。",
       "scripted_replies": [],
-      "expected_output": "scope rejected/partial；先拆工作流。",
+      "expected_output": "Scope status 只能是 partial/rejected；列出可独立评审的 workflow partitions；明确不提供整个仓库的 global pass。",
       "review": {
         "platforms": [
           "codex"
@@ -74,6 +74,8 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
+          "输出 workflow partitions",
+          "Scope status 为 partial 或 rejected",
           "不输出全局 pass"
         ]
       }

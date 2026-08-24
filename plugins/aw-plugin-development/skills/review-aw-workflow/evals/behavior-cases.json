@@ -33,9 +33,9 @@
       "workspace_files": {
         "plugins/eval-designer/.agents-plugin/plugin.json": "{\"name\":\"eval-designer\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"runtimeExports\":[{\"name\":\"eval-plan\",\"source\":\"./plan.json\"}]}}\n",
         "plugins/eval-designer/skills/design/SKILL.md": "---\nname: design\ndescription: Design Eval assets.\n---\n\nDesign cases and mark audit not assessed.\n",
-        "plugins/eval-auditor/.agents-plugin/plugin.json": "{\"name\":\"eval-auditor\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-designer\",\"export\":\"eval-plan\",\"env\":\"PLAN\"}],\"runtimeExports\":[{\"name\":\"audit-result\",\"source\":\"./audit.json\"}]}}\n",
+        "plugins/eval-auditor/.agents-plugin/plugin.json": "{\"name\":\"eval-auditor\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-designer\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-designer\",\"export\":\"eval-plan\",\"env\":\"PLAN\"}],\"runtimeExports\":[{\"name\":\"audit-result\",\"source\":\"./audit.json\"}]}}\n",
         "plugins/eval-auditor/skills/audit/SKILL.md": "---\nname: audit\ndescription: Audit Eval assets.\n---\n\nOwn semantic preflight.\n",
-        "plugins/eval-runner/.agents-plugin/plugin.json": "{\"name\":\"eval-runner\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-auditor\",\"export\":\"audit-result\",\"env\":\"AUDIT\"}]}}\n",
+        "plugins/eval-runner/.agents-plugin/plugin.json": "{\"name\":\"eval-runner\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-auditor\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-auditor\",\"export\":\"audit-result\",\"env\":\"AUDIT\"}]}}\n",
         "plugins/eval-runner/skills/run/SKILL.md": "---\nname: run\ndescription: Run admitted Eval assets.\n---\n\nOwn the machine execution gate.\n"
       },
       "review": {
@@ -61,20 +61,20 @@
         "dependency_cycle": true
       },
       "oracle": {
-        "rationale": "依赖环由 inventory 脚本证明，架构影响由 Reviewer 判断。",
+        "rationale": "manifest dependency cycle 由 inventory 的 dependencyEdges 证明，架构影响由 Reviewer 判断。",
         "rule_refs": [
           "SKILL.md#工作流"
         ],
         "confidence": "high",
-        "allowed_variance": "不得让脚本自动输出 redesign。"
+        "allowed_variance": "必须报告 dependencyEdges cycle；本 fixture 没有 import cycle。不得让脚本自动输出 redesign。"
       },
-      "prompt": "审核 plugins/cycle-a 和 plugins/cycle-b 联合完成的交接工作流。用户结果：从 cycle-a 生成结果并由 cycle-b 消费；入口：cycle-a；参与插件：两个给定插件；代表路径：cycle-a → cycle-b；外部依赖：AW buildImport；明确排除：真实模型执行和插件修改；用户决策：是否必须先删除依赖环。两个插件互相 buildImport。",
+      "prompt": "审核 plugins/cycle-a 和 plugins/cycle-b 联合完成的交接工作流。用户结果：从 cycle-a 生成结果并由 cycle-b 消费；入口：cycle-a；参与插件：两个给定插件；代表路径：cycle-a → cycle-b；外部依赖：AW manifest dependency；明确排除：真实模型执行和插件修改；用户决策：是否必须先删除依赖环。两个插件互相声明 manifest dependency。",
       "scripted_replies": [],
-      "expected_output": "报告 cycle 机器事实，再评估对用户路径的影响。",
+      "expected_output": "报告 dependencyEdges cycle，明确 buildImportEdges cycle 为空，再评估对用户路径的影响。",
       "workspace_files": {
-        "plugins/cycle-a/.agents-plugin/plugin.json": "{\"name\":\"cycle-a\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"cycle-b\",\"export\":\"b-export\",\"env\":\"B\"}],\"runtimeExports\":[{\"name\":\"a-export\",\"source\":\"./a.json\"}]}}\n",
+        "plugins/cycle-a/.agents-plugin/plugin.json": "{\"name\":\"cycle-a\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-b\"],\"skills\":\"./skills\"}\n",
         "plugins/cycle-a/skills/a/SKILL.md": "---\nname: cycle-a-skill\ndescription: Produce the cycle A result.\n---\n\nProduce A.\n",
-        "plugins/cycle-b/.agents-plugin/plugin.json": "{\"name\":\"cycle-b\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"cycle-a\",\"export\":\"a-export\",\"env\":\"A\"}],\"runtimeExports\":[{\"name\":\"b-export\",\"source\":\"./b.json\"}]}}\n",
+        "plugins/cycle-b/.agents-plugin/plugin.json": "{\"name\":\"cycle-b\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-a\"],\"skills\":\"./skills\"}\n",
         "plugins/cycle-b/skills/b/SKILL.md": "---\nname: cycle-b-skill\ndescription: Consume the cycle A result.\n---\n\nConsume A and produce B.\n"
       },
       "review": {
@@ -84,7 +84,7 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "区分机器事实与语义判断"
+          "区分 dependencyEdges cycle、空 buildImportEdges cycle 与语义判断"
         ]
       }
     },
@@ -109,7 +109,7 @@
       },
       "prompt": "评审仓库中的所有 AW 插件并给一个统一通过结论。",
       "scripted_replies": [],
-      "expected_output": "scope rejected/partial，先拆 workflow。",
+      "expected_output": "Scope status 只能是 partial/rejected；列出可独立评审的 AW workflow partitions；明确不提供全仓 global pass。",
       "review": {
         "platforms": [
           "codex"
@@ -117,6 +117,8 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
+          "输出 AW workflow partitions",
+          "Scope status 为 partial 或 rejected",
           "不输出全仓 pass"
         ]
       }
