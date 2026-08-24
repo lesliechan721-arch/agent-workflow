@@ -480,12 +480,10 @@ async function terminatePosixProcessTree(
       Math.min(PROCESS_TREE_LOOKUP_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
     );
     if (!next) break;
-    snapshot = next;
     markerLookupEverFailed ||=
-      state.marker !== undefined && !snapshot.markerLookupSucceeded;
-    if (markerLookupEverFailed) {
-      throw cleanupUnconfirmed('POSIX process marker lookup failed.');
-    }
+      state.marker !== undefined && !next.markerLookupSucceeded;
+    if (markerLookupEverFailed) break;
+    snapshot = next;
     const previousSize = state.descendants.size;
     refreshObservedProcesses(
       state,
