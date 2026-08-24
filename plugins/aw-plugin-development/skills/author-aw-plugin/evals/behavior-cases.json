@@ -211,35 +211,36 @@
       }
     },
     {
-      "id": "extension-and-config-helper",
+      "id": "config-driven-instructions-artifact",
       "eval_type": "outcome",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "composite-extension-config",
+      "scenario_family": "config-driven-instructions",
       "unit_under_test": "full-skill",
       "preconditions": {
         "plugin_exists": true,
-        "extension_requested": true,
-        "config_helper_requested": true
+        "codex_instructions_requested": true,
+        "config_driven_content_requested": true
       },
       "oracle": {
-        "rationale": "extension 与 config helper 分属不同作者分支，helper 必须被声明的配置消费，不能只创建孤立脚本。",
+        "rationale": "配置驱动的 Codex 受管 instructions 必须由 dynamic artifact renderer 输出；manifest 以 artifacts.targets 声明能力真值，并用 refreshKeys 连接 severityPrefix 配置。",
         "rule_refs": [
           "SKILL.md#工作流",
-          "references/extensions-spec.md",
-          "references/aw-config-and-helper.md"
+          "references/aw-artifact-renderer.md",
+          "references/plugin-manifest-spec.md"
         ],
         "confidence": "high",
-        "allowed_variance": "实现细节可不同；extension、config-helper、manifest 及消费关系必须完整。"
+        "allowed_variance": "renderer 的内部组织和 instructions 文案可不同；manifest、ArtifactPlan V2、severityPrefix refreshKeys 和默认/非默认配置的可观察差异必须完整。",
+        "minimal_counterexample": "若事故响应 instructions 内容固定且不由 AW config 控制，则应改用静态 extensions.instructions，不需要 dynamic artifact renderer。"
       },
-      "prompt": "在 plugins/incident-policy 增加 Codex extension，源码写到 extensions/incident-instructions.json，注入项目级事故响应 instructions；再把 config helper 写到 scripts/aw-config.mjs，使 severityPrefix 配置能进入该 extension 的生成输入。更新 manifest，只实现这两个能力并验证。",
+      "prompt": "给 plugins/incident-policy 增加可配置的 Codex 项目级事故响应 instructions。新增 severityPrefix 字符串配置，非默认值必须改变受管 instructions，且配置更新能触发对应产物刷新。只实现这个能力，并验证默认值和一个非默认值。",
       "scripted_replies": [],
-      "expected_output": "交付 extension、config helper 和 manifest 连接，验证非默认 severityPrefix 会影响生成输入。",
+      "expected_output": "交付 dynamic instructions artifact、renderer 和 manifest 配置连接，验证默认与非默认 severityPrefix 产生不同的受管 instructions。",
       "sandbox": "workspace-write",
       "workspace_files": {
-        "plugins/incident-policy/.agents-plugin/plugin.json": "{\"name\":\"incident-policy\",\"version\":\"0.4.0\",\"description\":\"Incident policy\",\"marketplace\":{\"policy\":{\"products\":[\"CODEX\"]}}}\n",
+        "plugins/incident-policy/.agents-plugin/plugin.json": "{\"name\":\"incident-policy\",\"version\":\"0.4.0\",\"description\":\"Incident policy\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.1.0\"}},\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\"]}}}\n",
         "plugins/incident-policy/README.md": "# Incident Policy\n",
-        "AGENTS.md": "# Workspace rules\nOnly change the incident-policy manifest, extensions, and scripts directories.\n"
+        "AGENTS.md": "# Workspace rules\nOnly change the incident-policy manifest and scripts directory.\n"
       },
       "review": {
         "platforms": [
@@ -249,7 +250,6 @@
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
           "plugins/incident-policy/.agents-plugin/plugin.json",
-          "plugins/incident-policy/extensions/**",
           "plugins/incident-policy/scripts/**"
         ],
         "artifacts": [
@@ -258,19 +258,16 @@
             "exists": true
           },
           {
-            "path": "plugins/incident-policy/extensions/incident-instructions.json",
-            "exists": true
-          },
-          {
-            "path": "plugins/incident-policy/scripts/aw-config.mjs",
+            "path": "plugins/incident-policy/scripts/render-artifacts.mjs",
             "exists": true
           }
         ],
         "checks": [
-          "AWAuthoringContext components 直接包含 manifest、extension 和 config-helper，并在跨分支交接后保留三项",
-          "config helper 被 manifest 声明的配置路径消费，非默认 severityPrefix 能进入 extension 生成输入；不存在孤立 helper",
-          "trace 读取并调用稳定 aw plugin validate，且使用工作区声明的直接测试验证配置变化",
-          "只改请求的 extension/config 源码面，不增加 Skill、App 或发布动作",
+          "AWAuthoringContext components 直接包含 manifest 和 dynamic-artifact，并在后续实现与验证中保留两项",
+          "manifest 声明 config.schema.severityPrefix、scripts.artifacts.render 和 codex.developerInstructionsBlock target，且 refreshKeys 包含 severityPrefix",
+          "renderer 只输出 ArtifactPlan V2；默认值和一个非默认 severityPrefix 产生不同的 instructions content",
+          "trace 读取并调用稳定 aw plugin validate，且使用工作区声明的直接测试验证 renderer 配置变化",
+          "只改请求的 manifest/renderer 源码面，不增加静态 extension、config helper、Skill、App 或发布动作",
           "不调用独立 Reviewer 或输出评分"
         ]
       }

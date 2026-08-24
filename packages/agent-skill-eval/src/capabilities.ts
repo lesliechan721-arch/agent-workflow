@@ -29,7 +29,9 @@ export function getRuntimeCapabilities(platform: NodeJS.Platform = process.platf
       ...(processObservationAvailable
         ? [
             `Standalone ${platform} execution uses process observation and before/after Skill digests; it does not guarantee descendant cleanup.`,
-            'Portable comparative evidence is disabled without confirmed external containment.',
+            ...(platform === 'darwin' || platform === 'linux'
+              ? ['Comparative evidence requires Full Access verified process observation or confirmed external containment.']
+              : ['Comparative evidence is disabled without confirmed external containment.']),
           ]
         : [`Standalone ${platform} execution is disabled because process observation is unavailable.`]),
     ],

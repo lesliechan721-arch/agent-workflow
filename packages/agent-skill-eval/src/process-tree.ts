@@ -537,6 +537,14 @@ async function terminatePosixProcessTree(
   if (unobservedMarkedProcess) {
     throw cleanupUnconfirmed('an unverified marker process is still running.');
   }
+  if (
+    requireConfirmedCleanup &&
+    state.marker !== undefined &&
+    state.root === undefined &&
+    state.descendants.size === 0
+  ) {
+    throw cleanupUnconfirmed('no marked process identity was observed.');
+  }
   if (requireConfirmedCleanup && state.marker === undefined && observedAtTermination.size === 0) {
     throw cleanupUnconfirmed('no inherited-pipe process identity was observed.');
   }

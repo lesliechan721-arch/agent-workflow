@@ -140,6 +140,7 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 - Eval Runner 是可替换的执行适配器。每个 Runner 可以定义自己的执行计划输入；Review 从已安装 Skill 能力中选择兼容 Runner，不维护中心 dispatcher 或 Runner 配置表。
 - 所有兼容 Runner 输出统一的 `EvalRunBundle v3`。bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，不包含 Audit 字段。
 - 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。它消费 `AwSkillEvalExecutionPlan v3`，只负责本次副作用授权、运行时能力检查、执行和 bundle 完整性。
+- Plan 可用可选的 `minimumEvidenceLevel` 固定最低证据要求。省略时为 `executed`；要求 `comparative` 时，默认 runner 只在 macOS/Linux 的 Full Access verified observation 或更强 external containment 下接受 grading。verified observation 必须在 bundle 中保留非 OS 强隔离限制，不能记录后代清理保证。
 - Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。未经 Audit/triage 的 bundle 可以作为原始诊断证据，但不得影响 Review finding、生产 Skill 修改或发布结论。
 
 ## Release Flow

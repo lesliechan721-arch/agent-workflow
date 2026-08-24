@@ -99,6 +99,7 @@ test('Skill declares the stable shared CLI contract without a local execution fa
 test('the retained plan asset is a model-readable template, not a machine schema', async () => {
   const template = JSON.parse(await readRuntime('assets/aw-skill-eval-execution-plan.template.json'));
   assert.equal(template.schemaVersion, 3);
+  assert.equal(template.minimumEvidenceLevel, 'executed');
   assert.equal(typeof template.planId, 'string');
   assert.equal(typeof template.provider, 'object');
   assert.equal('audit' in template, false);

@@ -82,6 +82,15 @@ test('author adapter still delegates deterministic work to stable AW CLI command
   assert.match(skill, /不得回退到本 Skill 的本地工具副本/u);
 });
 
+test('author adapter exposes structured context tools from the final Skill entrypoint', async () => {
+  // Static contract exception: installed agents must discover the bundled context preparation and validation interfaces; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
+  assert.match(skill, /scripts\/prepare-aw-authoring-context\.mjs/u);
+  assert.match(skill, /scripts\/validate-json-contract\.mjs/u);
+  assert.match(skill, /assets\/aw-authoring-context\.schema\.json/u);
+  assert.match(skill, /assets\/aw-authoring-context\.json/u);
+});
+
 test('target discovery groups identical content by digest and preserves real differences', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-light-review-'));
   temps.push(temp);

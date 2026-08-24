@@ -172,6 +172,27 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "app"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "profiles": {
+                  "const": [
+                    "CODEX"
+                  ]
+                }
+              }
+            }
           }
         ],
         "additionalProperties": false

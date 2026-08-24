@@ -56,6 +56,7 @@ async function main(argv: string[]): Promise<void> {
     if (value !== undefined) throw new Error('Usage: aw-skill-eval run <plan.json>')
     const result = await runExecutionPlan(requirePath(action, 'Usage: aw-skill-eval run <plan.json>'))
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    if (!result.requirementsMet) process.exitCode = 1
     return
   }
   if (command === 'bundle') {

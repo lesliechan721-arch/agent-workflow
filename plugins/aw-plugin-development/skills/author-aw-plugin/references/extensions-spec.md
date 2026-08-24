@@ -4,7 +4,7 @@
 
 不要新增顶层 `claude` block，也不要把 hooks / agents 塞进 `buildConfig.manifestOverrides.claude`。
 
-`extensions.*` 适合简单静态产物：内容固定，或只需要通过 `buildConfig.templates` 做平台差异渲染。需要根据 AW config 动态开启/关闭、刷新完整 Skill 目录、诊断 stale / failed refresh，或管理 Codex role registration 时，不要把逻辑塞进 lifecycle；改用 `artifacts.targets` + `scripts.artifacts.render`。配置驱动 Skill 使用 `codex.skill` 或 `claude.skill`。静态资源通过 target `sourceDirs` 以字节复制，renderer V2 只用 `content.files` 动态覆盖 UTF-8 文本，AW apply 校验并保留最终文件树中的平台原生调用元数据；详见 `references/plugin-manifest-spec.md` 和 `references/aw-scripts-config-lifecycle.md`。
+`extensions.*` 适合简单静态产物：内容固定，或只需要通过 `buildConfig.templates` 做平台差异渲染。需要根据 AW config 动态开启/关闭、刷新完整 Skill 目录、诊断 stale / failed refresh，或管理 Codex role registration 时，不要把逻辑塞进 lifecycle；改用 `artifacts.targets` + `scripts.artifacts.render`。配置驱动 Skill 使用 `codex.skill` 或 `claude.skill`。静态资源通过 target `sourceDirs` 以字节复制，renderer V2 只用 `content.files` 动态覆盖 UTF-8 文本，AW apply 校验并保留最终文件树中的平台原生调用元数据；详见 `references/plugin-manifest-spec.md` 和 `references/aw-artifact-renderer.md`。
 
 对 Codex 来说，extensions 在 project scope 是 repo-managed surface：安装到 `--scope project` 时会写当前仓库的 `.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/`，并用 AW ownership marker 标记归属，不调用 Codex native CLI。写入前仍要求本机 Codex `>= 0.145.0`。
 

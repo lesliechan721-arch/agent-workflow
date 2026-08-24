@@ -14,8 +14,10 @@ import type {
 } from './plan.js'
 import { hasCoreProcessReceipt, ProviderProcessCleanupError, runProviderProcess } from './process.js'
 import {
+  assertProcessTreeInspectionAvailable,
   observeProcessTree,
   terminateProcessTree,
+  type ProcessTreeDependencies,
   type ProcessTreeObservation,
 } from './process-tree.js'
 import { assertSafeOutputPath } from './output-path.js'
@@ -33,6 +35,19 @@ import type {
 
 const OBSERVED_PROCESS_LIMITATION =
   'Portable process observation does not guarantee descendant cleanup; comparative evidence is disabled.'
+const VERIFIED_OBSERVED_PROCESS_LIMITATION =
+  'Verified process observation is not OS-enforced containment and does not guarantee descendant cleanup.'
+const CLEANUP_FAILURE_LIMITATION = 'Provider process cleanup could not be verified.'
+const RESTRICTED_PERMISSION_PROFILES = new Set(['workspace', 'read-only'])
+const FULL_ACCESS_PERMISSION_PROFILE = 'danger-full-access'
+const PROVIDER_PROCESS_MARKER_ENV = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER'
+
+interface ProcessExecutionContext {
+  containment: 'managed' | 'verified-observed' | 'observed'
+  hooks: NonNullable<RunExecutionPlanOptions['processHooks']>
+  processTree?: ProcessTreeDependencies
+  limitation?: string
+}
 
 function hasConfirmedExternalContainment(options: RunExecutionPlanOptions): boolean {
   const containment = options.processHooks?.externalContainment
@@ -42,11 +57,13 @@ function hasConfirmedExternalContainment(options: RunExecutionPlanOptions): bool
     options.processHooks?.terminateProcessTree !== undefined
 }
 
-function createObservedProcessHooks(): NonNullable<RunExecutionPlanOptions['processHooks']> {
+function createObservedProcessHooks(
+  processTree?: ProcessTreeDependencies,
+): NonNullable<RunExecutionPlanOptions['processHooks']> {
   let observation: ProcessTreeObservation | undefined
   return {
     onSpawn: ({ pid }) => {
-      observation = observeProcessTree(pid, undefined)
+      observation = observeProcessTree(pid, undefined, processTree)
     },
     terminateProcessTree: async ({ pid }) => {
       await terminateProcessTree(
@@ -58,11 +75,67 @@ function createObservedProcessHooks(): NonNullable<RunExecutionPlanOptions['proc
             // The direct child can already be closed.
           }
         },
-        {},
-        { observation, allowInspectionUnavailable: true },
+        processTree,
+        {
+          observation,
+          allowInspectionUnavailable: true,
+        },
       )
       return { confirmed: true }
     },
+  }
+}
+
+function normalizedPermissionProfile(sourceEnv: NodeJS.ProcessEnv): string | null {
+  const value = sourceEnv.CODEX_PERMISSION_PROFILE?.trim()
+  return value ? value.replace(/^:/u, '') : null
+}
+
+async function resolveProcessExecutionContext(
+  plan: AwSkillEvalExecutionPlan,
+  options: RunExecutionPlanOptions,
+): Promise<ProcessExecutionContext> {
+  if (options.processHooks) {
+    if (!hasConfirmedExternalContainment(options)) {
+      throw new Error(
+        'Portable Eval execution requires explicitly confirmed external containment with descendant cleanup and read-only Skill snapshots.',
+      )
+    }
+    return { containment: 'managed', hooks: options.processHooks }
+  }
+  if ((plan.minimumEvidenceLevel ?? 'executed') === 'executed') {
+    return {
+      containment: 'observed',
+      hooks: createObservedProcessHooks(options.processTree),
+      processTree: options.processTree,
+      limitation: OBSERVED_PROCESS_LIMITATION,
+    }
+  }
+  const platform = options.platform ?? options.processTree?.platform ?? process.platform
+  if (platform !== 'darwin' && platform !== 'linux') {
+    throw new Error(
+      `minimumEvidenceLevel comparative requires Full Access verified process observation; ${platform} is not supported. No provider process was started.`,
+    )
+  }
+  const profile = normalizedPermissionProfile(options.sourceEnv ?? process.env)
+  if (profile && profile !== FULL_ACCESS_PERMISSION_PROFILE) {
+    const known = RESTRICTED_PERMISSION_PROFILES.has(profile) ? 'restricted' : 'unknown'
+    throw new Error(
+      `minimumEvidenceLevel comparative is blocked because CODEX_PERMISSION_PROFILE=${profile} is ${known}. ` +
+        'A one-off sandbox_permissions=require_escalated request is not Full Access. No provider process was started.',
+    )
+  }
+  const processTree = {
+    ...options.processTree,
+    platform,
+    markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+  }
+  await assertProcessTreeInspectionAvailable(processTree)
+  return {
+    containment: 'verified-observed',
+    hooks: {},
+    processTree,
+    limitation: VERIFIED_OBSERVED_PROCESS_LIMITATION,
   }
 }
 
@@ -300,11 +373,11 @@ async function runOne(input: {
   evalCase: EvalCase
   configuration: EvalConfiguration
   runIndex: number
-  options: RunExecutionPlanOptions
+  processExecution: ProcessExecutionContext
   executionLimitations: string[]
   beforeRunDirectoryReset: () => Promise<void>
-}): Promise<import('./bundle.js').EvalRun> {
-  const { plan, base, skillSource, evalCase, configuration, runIndex, options, executionLimitations } = input
+}): Promise<{ run: import('./bundle.js').EvalRun; cleanupFailed: boolean }> {
+  const { plan, base, skillSource, evalCase, configuration, runIndex, executionLimitations } = input
   const caseId = String(evalCase.id)
   const outputRoot = path.resolve(base, plan.outputRoot)
   const runDirectory = path.resolve(outputRoot, caseId, configuration.id, String(runIndex))
@@ -355,14 +428,8 @@ async function runOne(input: {
   }
   const started = Date.now()
   let result: ProcessResult
-  if (options.processHooks && !hasConfirmedExternalContainment(options)) {
-    throw new Error(
-      'Portable Eval execution requires explicitly confirmed external containment with descendant cleanup and read-only Skill snapshots.',
-    )
-  }
-  const externallyContained = hasConfirmedExternalContainment(options)
-  const processHooks = externallyContained ? options.processHooks : createObservedProcessHooks()
   const snapshotDigestBefore = skillSnapshot === null ? null : await computeSkillDigest(skillSnapshot)
+  let cleanupFailed = false
   try {
     result = await runProviderProcess({
       executable,
@@ -371,22 +438,15 @@ async function runOne(input: {
       env,
       timeoutMs: plan.timeoutMs,
       maxBufferBytes: 20 * 1024 * 1024,
-    }, processHooks, { containment: externallyContained ? 'managed' : 'observed' })
+    }, input.processExecution.hooks, {
+      containment: input.processExecution.containment,
+      processTree: input.processExecution.processTree,
+    })
   } catch (error) {
-    if (error instanceof ProviderProcessCleanupError) throw error
-    result = {
-      stdout: '',
-      stderr: (error as Error).message,
-      exitCode: null,
-      signal: null,
-      timedOut: false,
-      cancelled: false,
-      terminationReason: null,
-      maxBufferExceeded: false,
-      stdoutTruncated: false,
-      stderrTruncated: false,
-      descendantCleanupGuaranteed: false,
-    }
+    if (error instanceof ProviderProcessCleanupError && error.result) {
+      result = error.result
+      cleanupFailed = true
+    } else throw error
   }
   if (skillSnapshot !== null && await computeSkillDigest(skillSnapshot) !== snapshotDigestBefore) {
     throw new Error('Provider modified the captured Runtime Skill snapshot')
@@ -397,7 +457,9 @@ async function runOne(input: {
   if (!result.descendantCleanupGuaranteed) {
     executionLimitations.push(result.containmentLimitation ?? OBSERVED_PROCESS_LIMITATION)
   }
-  let status: import('./bundle.js').EvalRun['status'] = result.timedOut
+  let status: import('./bundle.js').EvalRun['status'] = cleanupFailed
+    ? 'error'
+    : result.timedOut
     ? 'timeout'
     : result.maxBufferExceeded
       ? 'process-failed'
@@ -421,8 +483,8 @@ async function runOne(input: {
     const parsed = JSON.parse(result.stdout.trim()) as ProviderOutput
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('provider stdout must be a JSON object')
     usage = parsed.usage && typeof parsed.usage === 'object' && !Array.isArray(parsed.usage) ? parsed.usage : null
-    grading = result.descendantCleanupGuaranteed ? gradingOf(parsed.grading) : null
-    if (!result.descendantCleanupGuaranteed && parsed.grading !== undefined) {
+    grading = result.gradingEvidenceAccepted ? gradingOf(parsed.grading) : null
+    if (!result.gradingEvidenceAccepted && parsed.grading !== undefined) {
       executionLimitations.push(
         `Run ${caseId}/${configuration.id}/${runIndex}: provider grading was not accepted because descendant cleanup is not guaranteed.`,
       )
@@ -486,7 +548,7 @@ async function runOne(input: {
   } catch (error) {
     throw new RunnerOwnedOutputError(`Cannot commit runner-owned process evidence: ${(error as Error).message}`)
   }
-  return {
+  return { run: {
     caseId,
     configuration: configuration.id,
     comparisonId: configuration.comparisonId,
@@ -503,7 +565,7 @@ async function runOne(input: {
     usage,
     grading: grading as import('./bundle.js').EvalGrading | null,
     artifacts,
-  }
+  }, cleanupFailed }
 }
 
 export async function runExecutionPlan(
@@ -536,6 +598,7 @@ export async function runExecutionPlan(
   await assertBoundInputsUnchanged(boundFiles, boundSkills)
   const cases = new Map<string, EvalCase>()
   for (const evalCase of captured.cases) cases.set(String(evalCase.id), evalCase)
+  const processExecution = await resolveProcessExecutionContext(plan, options)
   try {
     await prepareOutputRoot(base, outputRoot)
   } catch (error) {
@@ -546,26 +609,33 @@ export async function runExecutionPlan(
   }
   const runs: import('./bundle.js').EvalRun[] = []
   const executionLimitations: string[] = []
-  for (const evalCase of cases.values()) {
+  let executionCleanupFailed = false
+  execution: for (const evalCase of cases.values()) {
     for (const configuration of plan.configurations) {
       const skillSource = sources.get(configuration.id)
       if (!skillSource) throw new Error(`Missing Skill source for ${configuration.id}`)
       for (let runIndex = 1; runIndex <= plan.runsPerCase; runIndex += 1) {
-        runs.push(await runOne({
+        const result = await runOne({
           plan,
           base,
           skillSource,
           evalCase,
           configuration,
           runIndex,
-          options,
+          processExecution,
           executionLimitations,
           beforeRunDirectoryReset: async () => {
             assertBoundInputsOutsideOutputRoot(outputRoot, boundFiles, boundSkills)
             await assertBoundInputsUnchanged(boundFiles, boundSkills)
           },
-        }))
+        })
+        runs.push(result.run)
         await assertBoundInputsUnchanged(boundFiles, boundSkills)
+        if (result.cleanupFailed) {
+          executionCleanupFailed = true
+          executionLimitations.push(CLEANUP_FAILURE_LIMITATION)
+          break execution
+        }
       }
     }
   }
@@ -573,8 +643,19 @@ export async function runExecutionPlan(
   await assertSafeOutputPath(base, outputRoot)
   const comparisons = comparisonAggregate(runs)
   const evidenceLevel = comparisons.some((entry) => entry.comparable) ? 'comparative' : 'executed'
+  const minimumEvidenceLevel = plan.minimumEvidenceLevel ?? 'executed'
+  const plannedComparisons = cases.size * new Set(
+    plan.configurations.flatMap((entry) => entry.comparisonId === null ? [] : [entry.comparisonId]),
+  ).size * plan.runsPerCase
+  const comparableComparisons = comparisons.filter((entry) => entry.comparable).length
+  const requirementsMet = !executionCleanupFailed && (
+    minimumEvidenceLevel === 'executed' || (
+      plannedComparisons > 0 && comparableComparisons === plannedComparisons
+    )
+  )
   const limitations = [...capabilities.limitations]
   limitations.push(...executionLimitations)
+  if (processExecution.limitation) limitations.push(processExecution.limitation)
   if (!capabilities.capabilities.cleanContext) limitations.push('Provider does not prove a clean model context.')
   if (!capabilities.capabilities.toolTrace) limitations.push('Provider does not capture a tool trace.')
   if (!capabilities.capabilities.tokenUsage) limitations.push('Provider does not capture token usage.')
@@ -596,10 +677,25 @@ export async function runExecutionPlan(
     caseCorpusDigest: plan.cases.corpusDigest,
     comparisonPlanned: comparisons.length > 0,
     evidenceLevel,
+    evidenceRequirement: {
+      minimumEvidenceLevel,
+      plannedComparisons,
+      comparableComparisons,
+      satisfied: requirementsMet,
+    },
+    processManagement: {
+      mode: executionCleanupFailed ? 'observed' : processExecution.containment,
+      descendantCleanupGuaranteed: !executionCleanupFailed && processExecution.containment === 'managed',
+      ...(executionCleanupFailed
+        ? { limitation: CLEANUP_FAILURE_LIMITATION }
+        : processExecution.limitation
+          ? { limitation: processExecution.limitation }
+          : {}),
+    },
     runs,
     aggregate: {
-      cases: cases.size,
-      configurations: plan.configurations.length,
+      cases: new Set(runs.map((entry) => entry.caseId)).size,
+      configurations: new Set(runs.map((entry) => entry.configuration)).size,
       runs: runs.length,
       completed: runs.filter((entry) => entry.status === 'completed').length,
       processFailed: runs.filter((entry) => entry.status === 'process-failed' || entry.status === 'error').length,
@@ -637,7 +733,7 @@ export async function runExecutionPlan(
     if (!bundleValidation.valid || bundleValidation.calculated?.bundleDigest !== bundleDigest) {
       throw new Error(`Generated EvalRunBundle is invalid:\n${bundleValidation.errors.join('\n')}`)
     }
-    return { valid: true, bundlePath, bundleDigest, evidenceLevel }
+    return { valid: true, bundlePath, bundleDigest, evidenceLevel, requirementsMet }
   } catch (error) {
     await unlink(bundleTemp).catch(() => undefined)
     await unlink(bundlePath).catch(() => undefined)

@@ -78,12 +78,17 @@ export interface ProcessResult {
   stdoutTruncated: boolean
   stderrTruncated: boolean
   descendantCleanupGuaranteed: boolean
+  gradingEvidenceAccepted: boolean
+  containmentMode: 'managed' | 'verified-observed' | 'observed' | 'unmanaged-confirmed'
   containmentLimitation?: string
 }
 
 export interface RunExecutionPlanOptions {
   processHooks?: ProcessLifecycleHooks
   beforeBundleCommit?: () => void | Promise<void>
+  sourceEnv?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+  processTree?: import('./process-tree.js').ProcessTreeDependencies
 }
 
 export interface RunExecutionResult {
@@ -91,6 +96,7 @@ export interface RunExecutionResult {
   bundlePath: string
   bundleDigest: Digest
   evidenceLevel: 'executed' | 'comparative'
+  requirementsMet: boolean
 }
 
 export type SchemaName =

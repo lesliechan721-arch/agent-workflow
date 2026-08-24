@@ -158,6 +158,16 @@ async function main() {
           errors.push('targetSkillDigest does not match the supplied EvalRunBundle');
         if (audit.caseCorpusDigest !== bundle.caseCorpusDigest)
           errors.push('caseCorpusDigest does not match the supplied EvalRunBundle');
+        if (bundle.evidenceRequirement?.satisfied === false) {
+          if (audit.releaseEligible)
+            errors.push('releaseEligible=true requires the EvalRunBundle evidence requirement to be satisfied');
+          if (!['collect-more-data', 'runtime-issue'].includes(audit.recommendedAction))
+            errors.push(
+              'an unmet EvalRunBundle evidence requirement requires recommendedAction=collect-more-data or runtime-issue',
+            );
+          if (audit.failureTriage.some((entry) => entry.action === 'candidate-skill-fix'))
+            errors.push('an unmet EvalRunBundle evidence requirement forbids candidate-skill-fix triage actions');
+        }
       }
     }
   }

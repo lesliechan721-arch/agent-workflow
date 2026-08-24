@@ -105,6 +105,10 @@ test('schema v3 publishes components without a release target field', async () =
     'readme',
     'eval-assets',
   ]);
+  const appProfileRule = schema.properties.components.items.allOf.find(
+    (rule) => rule.if?.properties?.type?.const === 'app',
+  );
+  assert.deepEqual(appProfileRule?.then?.properties?.profiles?.const, ['CODEX']);
 });
 
 test('round-trips a new plugin with two skills', async () => {
@@ -122,7 +126,7 @@ test('round-trips a new plugin with two skills', async () => {
   assert.deepEqual(context.components, components);
 });
 
-test('round-trips MCP and App using existing manifest facts', async () => {
+test('round-trips MCP using existing CLAUDE-only manifest facts', async () => {
   const target = await fixture({
     manifest: {
       name: 'target-plugin',
@@ -131,13 +135,25 @@ test('round-trips MCP and App using existing manifest facts', async () => {
   });
   const components = [
     component('mcp', 'mcp', 'change', ['.mcp.json'], ['CLAUDE']),
-    component('app', 'app', 'create', ['.app.json'], ['CLAUDE'], null),
   ];
   const context = await roundTrip(target, components);
   assert.equal(context.plugin, 'target-plugin');
   assert.equal(context.changeMode, 'change');
   assert.deepEqual(context.products, ['CLAUDE']);
   assert.deepEqual(context.components, components);
+});
+
+test('round-trips App using a CODEX profile', async () => {
+  const target = await fixture({
+    manifest: {
+      name: 'target-plugin',
+      marketplace: { policy: { products: ['CODEX', 'CLAUDE'] } },
+    },
+  });
+  const components = [
+    component('app', 'app', 'create', ['.app.json'], ['CODEX'], null),
+  ];
+  assert.deepEqual((await roundTrip(target, components)).components, components);
 });
 
 test('round-trips slash command and README', async () => {
@@ -245,5 +261,30 @@ test('rejects claude-model-only outside the CLAUDE-only profile', async () => {
   await assert.rejects(
     execFileAsync(process.execPath, [prepare, target.pluginRoot, '--components', invalidPath]),
     (error) => error.stderr.includes('must use profiles ["CLAUDE"]'),
+  );
+});
+
+test('rejects App outside the CODEX profile', async () => {
+  const target = await fixture({
+    manifest: {
+      name: 'target-plugin',
+      marketplace: { policy: { products: ['CLAUDE'] } },
+    },
+  });
+  const componentsPath = path.join(target.directory, 'claude-app-components.json');
+  await writeFile(
+    componentsPath,
+    JSON.stringify([
+      component('app', 'app', 'create', ['.app.json'], ['CLAUDE'], null),
+    ]),
+  );
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      prepare,
+      target.pluginRoot,
+      '--components',
+      componentsPath,
+    ]),
+    (error) => error.stderr.includes('with app must use profiles ["CODEX"]'),
   );
 });

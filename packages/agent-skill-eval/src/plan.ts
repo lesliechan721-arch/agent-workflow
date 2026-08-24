@@ -20,6 +20,7 @@ export interface EvalConfiguration {
 export interface AwSkillEvalExecutionPlan {
   schemaVersion: 3
   planId: string
+  minimumEvidenceLevel?: 'executed' | 'comparative'
   target: { name: string; path: string; digest: Digest }
   cases: { paths: string[]; corpusDigest: Digest }
   provider: {
@@ -194,6 +195,8 @@ export async function captureAndValidateExecutionPlan(
     if (!configurations.some((entry) => entry.skillMode !== 'with-skill'))
       errors.push(`${comparisonId} comparison requires a baseline configuration`)
   }
+  if ((plan.minimumEvidenceLevel ?? 'executed') === 'comparative' && comparisonGroups.size === 0)
+    errors.push('minimumEvidenceLevel comparative requires at least one comparison')
 
   let capabilities: RuntimeCapabilities | null = null
   let capabilitiesFile: CapturedPlanFile | null = null

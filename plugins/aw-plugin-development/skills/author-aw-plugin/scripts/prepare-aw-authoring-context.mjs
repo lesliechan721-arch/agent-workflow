@@ -173,6 +173,12 @@ function validateComponents(value, products) {
     } else if (component.skillInvocation !== undefined && component.skillInvocation !== null) {
       fail(label + '.skillInvocation must be null or omitted for non-skill components.');
     }
+    if (
+      component.type === 'app' &&
+      (component.profiles.length !== 1 || component.profiles[0] !== 'CODEX')
+    ) {
+      fail(label + ' with app must use profiles ["CODEX"].');
+    }
   }
   return value;
 }
