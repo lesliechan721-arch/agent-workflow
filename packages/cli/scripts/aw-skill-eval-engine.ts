@@ -5,6 +5,7 @@ import {
   runExecutionPlan,
   validateExecutionPlan,
   validateRunBundle,
+  type RunExecutionPlanOptions,
   type RunExecutionResult,
 } from '@lesliechan721/agent-skill-eval';
 
@@ -27,13 +28,14 @@ export function getAwSkillEvalExecutionOwner(): { provider: string; version: str
 // not be translated into an AwSkillEvalExecutionPlan.
 export async function runAwSkillEvalExecutionPlan(
   planPath: string,
+  options: RunExecutionPlanOptions = {},
 ): Promise<AwSkillEvalExecutionResult> {
   const absolutePlanPath = path.resolve(planPath);
   const planValidation = await validateExecutionPlan(absolutePlanPath);
   if (!planValidation.valid) {
     throw new Error(`AwSkillEvalExecutionPlan is invalid:\n${planValidation.errors.join('\n')}`);
   }
-  const execution = await runExecutionPlan(absolutePlanPath);
+  const execution = await runExecutionPlan(absolutePlanPath, options);
   const bundleValidation = await validateRunBundle(execution.bundlePath);
   if (!bundleValidation.valid) {
     throw new Error(`EvalRunBundle is invalid:\n${bundleValidation.errors.join('\n')}`);

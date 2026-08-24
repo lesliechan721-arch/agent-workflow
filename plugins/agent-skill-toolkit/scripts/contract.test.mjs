@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -107,6 +108,118 @@ test('materialized audit validator runs with its projected dependency closure', 
       cwd: auditRoot,
       encoding: 'utf8',
     }));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('audit triage rejects conclusions from an unmet bundle evidence requirement', async () => {
+  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
+  const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-evidence-requirement-'));
+  const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex');
+  const targetSkillDigest = 'sha256:' + '1'.repeat(64);
+  const caseCorpusDigest = 'sha256:' + '2'.repeat(64);
+  try {
+    await writeFile(path.join(temporary, 'stdout.txt'), '');
+    await writeFile(path.join(temporary, 'stderr.txt'), '');
+    const bundle = {
+      schemaVersion: 3,
+      runner: { id: 'fixture', version: '1' },
+      independentContext: true,
+      provider: { id: 'fixture', version: '1' },
+      planDigest: 'sha256:' + '3'.repeat(64),
+      targetSkillDigest,
+      caseCorpusDigest,
+      comparisonPlanned: false,
+      evidenceLevel: 'executed',
+      evidenceRequirement: {
+        minimumEvidenceLevel: 'executed',
+        plannedComparisons: 0,
+        comparableComparisons: 0,
+        satisfied: false,
+      },
+      processManagement: {
+        mode: 'observed',
+        descendantCleanupGuaranteed: false,
+        limitation: 'Provider process cleanup could not be verified.',
+      },
+      runs: [{
+        caseId: 'case-1',
+        configuration: 'current',
+        comparisonId: null,
+        skillMode: 'with-skill',
+        skillDigest: targetSkillDigest,
+        runIndex: 1,
+        status: 'error',
+        exitCode: 0,
+        durationMs: 1,
+        stdoutPath: 'stdout.txt',
+        stdoutDigest: digest(''),
+        stderrPath: 'stderr.txt',
+        stderrDigest: digest(''),
+        usage: null,
+        grading: null,
+        artifacts: [],
+      }],
+      aggregate: {
+        cases: 1,
+        configurations: 1,
+        runs: 1,
+        completed: 0,
+        processFailed: 1,
+        timedOut: 0,
+        comparisons: [],
+      },
+      limitations: ['Provider process cleanup could not be verified.'],
+    };
+    const bundlePath = path.join(temporary, 'bundle.json');
+    const bundleBytes = JSON.stringify(bundle);
+    await writeFile(bundlePath, bundleBytes);
+    const audit = {
+      schemaVersion: 3,
+      producer: 'audit-agent-skill-evals',
+      independentContext: true,
+      auditId: 'unmet-evidence-fixture',
+      mode: 'result-triage',
+      targetSkillDigest,
+      caseCorpusDigest,
+      runBundleDigest: digest(bundleBytes),
+      validity: 'pass',
+      optimizationPolicy: 'balanced',
+      cases: [{
+        caseId: 'case-1',
+        releaseRelevant: true,
+        admission: 'pass',
+        oracleConfidence: 'high',
+        findings: [],
+      }],
+      blockedCases: [],
+      releaseEligible: true,
+      failureTriage: [{
+        caseId: 'case-1',
+        attribution: 'skill-defect',
+        action: 'candidate-skill-fix',
+        evidence: ['fixture'],
+      }],
+      recommendedAction: 'candidate-skill-fix',
+    };
+    const auditPath = path.join(temporary, 'audit.json');
+    await writeFile(auditPath, JSON.stringify(audit));
+
+    await assert.rejects(
+      execFileAsync(process.execPath, [validator, auditPath, '--run-bundle', bundlePath, '--format', 'json'], {
+        cwd: auditRoot,
+        encoding: 'utf8',
+      }),
+      (error) => {
+        const errors = JSON.parse(error.stdout).errors;
+        assert.ok(errors.some((entry) => entry.startsWith('releaseEligible=true')));
+        assert.ok(errors.some((entry) => entry.includes('recommendedAction=collect-more-data or runtime-issue')));
+        assert.ok(errors.some((entry) => entry.includes('forbids candidate-skill-fix triage actions')));
+        return true;
+      },
+    );
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

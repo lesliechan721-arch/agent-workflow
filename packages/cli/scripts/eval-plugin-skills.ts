@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   runProviderProcess,
   type ProcessLifecycleHooks,
+  type ProcessTreeDependencies,
 } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
 
@@ -110,6 +111,7 @@ export interface PluginEvalRunnerOptions {
   platform?: NodeJS.Platform;
   readUserKeychainSearchList?: () => Promise<string>;
   inspectProcessTree?: () => Promise<void>;
+  evalProcessTree?: ProcessTreeDependencies;
   createRunLayout?: typeof createPluginEvalRunLayout;
 }
 
@@ -1697,9 +1699,13 @@ export async function runPluginEvals(
   try {
     const executionPlanPath = awSkillEvalExecutionPlanPath(args);
     if (executionPlanPath) {
-      const result = await runAwSkillEvalExecutionPlan(executionPlanPath);
+      const result = await runAwSkillEvalExecutionPlan(executionPlanPath, {
+        sourceEnv: options.env ?? process.env,
+        platform: options.platform,
+        processTree: options.evalProcessTree,
+      });
       stdout(`${JSON.stringify(result, null, 2)}\n`);
-      return 0;
+      return result.requirementsMet ? 0 : 1;
     }
   } catch (error) {
     stderr(`${error instanceof Error ? error.message : String(error)}\n`);

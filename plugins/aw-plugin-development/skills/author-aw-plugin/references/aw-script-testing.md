@@ -75,12 +75,3 @@ test('config helper reads AW_PLUGIN_CONTEXT', async () => {
   assert.equal(stdout.trim(), 'strict');
 });
 ```
-
-## 示例插件
-
-完整组合示例见 `references/.examples/code-review/`：
-
-- `.agents-plugin/plugin.json` 同时声明 `config.schema`、`scripts.helpers.config`、`scripts.lifecycle` 和 `scripts.tests.node`。
-- `scripts/aw-config.mjs` 展示标准 helper。
-- `scripts/lifecycle.mjs` 展示如何读取 context、effective config 和 AW home。
-- `scripts/lifecycle.test.mjs` 展示 helper 与 lifecycle 的 Node 测试写法。

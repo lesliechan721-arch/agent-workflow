@@ -18,7 +18,7 @@ metadata:
 ## 工作流
 
 1. 明确 `<plugin-root>` 与 `<workspace-root>`，读取 manifest、源码、工作区规则和允许修改文件。
-2. 新建插件、多组件请求、组件增删或 manifest capability 变化时，先读 `references/aw-authoring-profile.md`；结构化请求使用 `AWAuthoringContext.components[]`。
+2. 新建插件、多组件请求、组件增删或 manifest capability 变化时，先读 `references/aw-authoring-profile.md`。结构化分支把完整 `components[]` 写入临时 JSON，再从本 Skill 根运行 `node scripts/prepare-aw-authoring-context.mjs <plugin-root> --repo-root <workspace-root> --components <json-file>`；stdout 是 `AWAuthoringContext` v3，输出形状见 `assets/aw-authoring-context.json`。把 stdout 保存到临时文件后，从同一目录运行 `node scripts/validate-json-contract.mjs assets/aw-authoring-context.schema.json <context-json>`；只把验证通过的 context 交给后续作者分支，不写入插件源码。单一已有 Skill 正文的轻量 delta 跳过该工具。
 3. 调用作者命令前运行 `aw --version` 和对应帮助：`aw plugin init --help`、`aw plugin add-skill --help`、`aw plugin validate --help` 或 `aw plugin status --help`。只使用帮助公开的参数；分别通过 `aw plugin init <plugin-name>`、`aw plugin add-skill <plugin-name>`、`aw plugin validate <plugin-root>` 和 `aw plugin status <plugin-name>` 执行，不得回退到本 Skill 的本地工具副本。
 4. 只读取实际变更面对应的 reference。新建或重大变更 Skill 时使用 `author-agent-skill`；轻量 delta 只传意图、允许路径和验收证据。
 5. 用户明确要求创建或修改 Eval 资产时使用 `design-agent-skill-evals`。本 Skill不自动审核或运行 Eval。

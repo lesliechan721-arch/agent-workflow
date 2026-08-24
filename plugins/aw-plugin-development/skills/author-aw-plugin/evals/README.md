@@ -7,4 +7,6 @@ pnpm plugin:eval aw-plugin-development --skill author-aw-plugin \
   --batch-name materialization --materialize-only
 ```
 
-`behavior` suite 是单次诊断资产，不进入 release gate。本轮只运行 materialize-only；没有真实模型执行记录。
+`evals/manifest.json` 是 release target 的真值。当前 `behavior` 和 `lightweight-delta` suite 都是 release-required；它们的空 `releaseSplits` 表示运行全部 case。
+
+本轮只运行 materialize-only；该结果只提供最终制品物化证据，不提供模型行为或 release evidence。

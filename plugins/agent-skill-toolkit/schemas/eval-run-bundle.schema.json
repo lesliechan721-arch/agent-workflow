@@ -81,6 +81,81 @@
         "comparative"
       ]
     },
+    "evidenceRequirement": {
+      "type": "object",
+      "required": [
+        "minimumEvidenceLevel",
+        "plannedComparisons",
+        "comparableComparisons",
+        "satisfied"
+      ],
+      "properties": {
+        "minimumEvidenceLevel": {
+          "enum": [
+            "executed",
+            "comparative"
+          ]
+        },
+        "plannedComparisons": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "comparableComparisons": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "satisfied": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "processManagement": {
+      "type": "object",
+      "required": [
+        "mode",
+        "descendantCleanupGuaranteed"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "managed",
+            "verified-observed",
+            "observed"
+          ]
+        },
+        "descendantCleanupGuaranteed": {
+          "type": "boolean"
+        },
+        "limitation": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "verified-observed",
+                  "observed"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "limitation"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
     "runs": {
       "type": "array",
       "minItems": 1,
