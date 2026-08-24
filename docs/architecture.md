@@ -24,7 +24,9 @@
 - `utils/multi-source-catalog.ts` 和 `utils/catalog-source-cache.ts` 解析 schema 1 Git/path source，并管理可重建的本地快照。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
-- `authoring/` 是 `aw plugin init`、`add-skill`、`validate` 和 `status` 的确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。
+- `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；只有基于 Git base 的 status 差异检查依赖 Git。
+
+公开包 `@lesliechan721/aw-plugin-core` 还拥有 AW Plugin Workspace v1 metadata、单插件 bundle 和 schema 4 Catalog snapshot build/validate 的机器合同。固定源码入口是 `plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 是严格 SemVer。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
 
 ### Module Invariants
 
@@ -56,6 +58,7 @@ Git Catalog source
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
 - `pnpm build` 生成本地 schema 4 snapshot。`packages/cli/dist/`、`packages/cli/plugins-dist/` 和 `.release/` 都是生成目录，不手工修改。
+- `aw catalog build` 从独立 workspace 生成 `.aw/catalog` development snapshot；`aw plugin build` 默认生成 `.aw/plugins/<name>`。两者先在同父 staging 完整构建和验证，再替换已证明为生成物的旧输出，并拒绝 workspace 外、符号链接及 `.git`、`plugins` 等受保护边界。
 - Catalog 发布时会生成 snapshot 及其必要的 Catalog 内容。`plugin-release-ledger.json` 是 Catalog 产物合同的一部分；插件作者合同由[插件维护指南](plugin-maintenance.md)定义。
 - `<AW_HOME>/catalog-sources.json` 缺失时读取内置 `official` source；第一次来源修改才物化该文件。稳定版 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。
 

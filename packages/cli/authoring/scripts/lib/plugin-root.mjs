@@ -33,13 +33,13 @@ export function assertAuthoringPluginPathFence(options) {
     : path.resolve(options.repoRoot);
   const requestedPluginRoot = path.resolve(options.pluginRoot);
   if (requestedRepoRoot) {
-    if (!assertDirectoryNode(requestedRepoRoot, 'Repository root')) {
-      throw new Error(`Repository root is not a directory: ${requestedRepoRoot}`);
+    if (!assertDirectoryNode(requestedRepoRoot, 'Workspace root')) {
+      throw new Error(`Workspace root is not a directory: ${requestedRepoRoot}`);
     }
   }
   const repoRoot = requestedRepoRoot ? fs.realpathSync(requestedRepoRoot) : null;
   if (requestedRepoRoot && !isInsideRoot(requestedRepoRoot, requestedPluginRoot)) {
-    throw new Error(`Plugin root must be inside the repository root: ${requestedPluginRoot}`);
+    throw new Error(`Plugin root must be inside the workspace root: ${requestedPluginRoot}`);
   }
   const pluginRoot = repoRoot
     ? path.join(repoRoot, path.relative(requestedRepoRoot, requestedPluginRoot))
@@ -93,8 +93,8 @@ export function assertAuthoringPluginPathFence(options) {
 
 export function resolveAuthoringPluginRoot(options) {
   const requestedRepoRoot = path.resolve(options.repoRoot ?? '.');
-  if (!assertDirectoryNode(requestedRepoRoot, 'Repository root')) {
-    throw new Error(`Repository root is not a directory: ${requestedRepoRoot}`);
+  if (!assertDirectoryNode(requestedRepoRoot, 'Workspace root')) {
+    throw new Error(`Workspace root is not a directory: ${requestedRepoRoot}`);
   }
   const repoRoot = fs.realpathSync(requestedRepoRoot);
   const explicit = options.pluginRoot !== undefined;
@@ -102,7 +102,7 @@ export function resolveAuthoringPluginRoot(options) {
     ? path.resolve(repoRoot, options.pluginRoot)
     : path.join(repoRoot, 'plugins', options.pluginName);
   if (!isInsideRoot(repoRoot, pluginRoot)) {
-    throw new Error(`--plugin-root must be inside the repository root: ${pluginRoot}`);
+    throw new Error(`--plugin-root must be inside the workspace root: ${pluginRoot}`);
   }
   if (path.basename(pluginRoot) !== options.pluginName) {
     throw new Error(

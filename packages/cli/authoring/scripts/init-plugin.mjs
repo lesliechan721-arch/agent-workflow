@@ -295,8 +295,8 @@ Options:
   --min-version <semver>        Plugin compatibility.aw.minVersion. Default: --catalog-min-version or 0.0.0
   --catalog-min-version <semver>
                                 Target catalog compatibility.aw.minVersion used for authoring-time validation.
-  --repo-root <path>            Repository root. Default: current directory.
-  --plugin-root <path>          Plugin root, relative to --repo-root by default.
+  --workspace-root <path>            Workspace root. Default: current directory.
+  --plugin-root <path>          Plugin root, relative to --workspace-root by default.
   --no-skills                   Create plugin without skills directory.
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
   --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
@@ -415,7 +415,7 @@ function parseArgs(argv) {
       case '--catalog-min-version':
         options.catalogMinVersion = value;
         break;
-      case '--repo-root':
+      case '--workspace-root':
         options.repoRoot = value;
         break;
       case '--plugin-root':

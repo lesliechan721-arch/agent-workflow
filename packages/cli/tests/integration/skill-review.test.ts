@@ -677,7 +677,7 @@ describe('skill-review author tools', () => {
       'Generate structured notes from repository changes.',
       '--skill-invocation',
       'model',
-      '--repo-root',
+      '--workspace-root',
       subjectRoot,
     ], { cwd: subjectRoot, env: childEnv });
 
@@ -694,6 +694,8 @@ describe('skill-review author tools', () => {
       'plugin',
       'validate',
       pluginRoot,
+      '--workspace-root',
+      subjectRoot,
     ], {
       cwd: subjectRoot,
       env: childEnv,

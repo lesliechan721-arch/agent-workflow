@@ -2686,12 +2686,16 @@ function normalizeExtensions(
 
 export function validateMarketplaceSourceMeta(rawValue: unknown): MarketplaceSourceMeta {
   const input = assertObject(rawValue, 'marketplace source metadata');
-  assertAllowedKeys(input, 'marketplace source metadata', ['owner', 'interface']);
+  assertAllowedKeys(input, 'marketplace source metadata', ['owner', 'interface', 'catalog']);
 
   const ownerInput = assertObject(input.owner, 'marketplace source metadata.owner');
   assertAllowedKeys(ownerInput, 'marketplace source metadata.owner', ['name', 'url']);
   const interfaceInput = assertObject(input.interface, 'marketplace source metadata.interface');
   assertAllowedKeys(interfaceInput, 'marketplace source metadata.interface', ['displayName']);
+  const catalogInput = input.catalog === undefined
+    ? null
+    : assertObject(input.catalog, 'marketplace source metadata.catalog');
+  if (catalogInput) assertAllowedKeys(catalogInput, 'marketplace source metadata.catalog', ['version']);
 
   return {
     owner: {
@@ -2703,6 +2707,14 @@ export function validateMarketplaceSourceMeta(rawValue: unknown): MarketplaceSou
         interfaceInput.displayName,
         'marketplace source metadata.interface.displayName',
       ),
+    },
+    catalog: {
+      version: catalogInput === null
+        ? '0.1.0'
+        : assertStrictSemVer(
+            catalogInput.version,
+            'marketplace source metadata.catalog.version',
+          ),
     },
   };
 }

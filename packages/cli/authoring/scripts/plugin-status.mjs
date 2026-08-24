@@ -21,15 +21,15 @@ function readOptionValue(args, index, flag) {
 function printUsage(command) {
   console.log(`Usage:
   aw plugin ${command} \\
-    (<plugin-name> | --all) [--base <git-ref>] [--json] [--repo-root .]
+    (<plugin-name> | --all) [--base <git-ref>] [--json] [--workspace-root .]
 
 Options:
-  --all               Check every plugin relative to the Git base.
-  --base <git-ref>    Git comparison base. Default: HEAD.
+  --all               Check every current workspace plugin.
+  --base <git-ref>    Compare against an explicit Git base.
   --json              Emit one schema v3 JSON document.
-  --repo-root <path>  Repository root. Default: current directory.
+  --workspace-root <path>  Workspace root. Default: current directory.
   --plugin-root <path>
-                      Single plugin root, relative to --repo-root by default.
+                      Single plugin root, relative to --workspace-root by default.
   -h, --help          Show this help message.
 `);
 }
@@ -40,7 +40,6 @@ function parseArgs(argv) {
   const command = deprecatedAlias ? 'check-versions' : 'status';
   const options = {
     all: false,
-    base: 'HEAD',
     json: false,
     repoRoot: '.',
     pluginNames: [],
@@ -69,7 +68,7 @@ function parseArgs(argv) {
     const { value, nextIndex } = readOptionValue(args, index, flag);
     index = nextIndex;
     if (flag === '--base') options.base = value;
-    else if (flag === '--repo-root') options.repoRoot = value;
+    else if (flag === '--workspace-root') options.repoRoot = value;
     else if (flag === '--plugin-root') options.pluginRoot = value;
     else fail(`Unknown option: ${flag}`);
   }

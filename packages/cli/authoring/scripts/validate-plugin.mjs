@@ -4665,6 +4665,7 @@ Options:
   --claude-skill-profile <minimum|current>
                                Validate Claude fields at AW minimum 2.1.88 (default) or current docs.
   --version-base <git-ref>     Compare the production bundle against this Git base. Default: HEAD.
+  --workspace-root <path>      Workspace root. Default: current directory.
   --json                       Emit one machine-readable JSON result to stdout.
   -h, --help                   Show this help message.
 `);
@@ -4750,7 +4751,7 @@ async function validatePluginDir(pluginDir, options) {
     const repoRoot = resolveCanonicalRepoRoot(
       pluginDir,
       manifest.name ?? '',
-      options.repoRoot,
+      options.gitRoot,
     );
     if (repoRoot) {
       try {
@@ -4789,6 +4790,7 @@ function parseArgs(argv) {
     strictAgentSkills: false,
     claudeSkillProfile: 'minimum',
     versionBase: 'HEAD',
+    workspaceRoot: null,
     json: args.includes('--json'),
   };
 
@@ -4829,6 +4831,15 @@ function parseArgs(argv) {
       options.versionBase = value;
       continue;
     }
+    if (arg === '--workspace-root') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        exitCliError('--workspace-root requires a value.', options.json);
+      }
+      index += 1;
+      options.workspaceRoot = value;
+      continue;
+    }
     if (!arg.startsWith('--')) {
       if (!options.pluginDir) {
         options.pluginDir = arg;
@@ -4865,11 +4876,14 @@ async function main() {
     exitCliError('plugin-directory is required; run with --help for usage.', args.json);
   }
 
-  const resolved = path.resolve(args.pluginDir);
+  const requestedWorkspaceRoot = args.workspaceRoot === null
+    ? null
+    : path.resolve(args.workspaceRoot);
+  const resolved = path.resolve(requestedWorkspaceRoot ?? '.', args.pluginDir);
   if (!fs.existsSync(resolved)) {
     exitCliError(`[ERROR] Directory not found: ${resolved}`, args.json);
   }
-  const repoRootCandidate = findRepoRootCandidate(resolved);
+  const repoRootCandidate = requestedWorkspaceRoot ?? findRepoRootCandidate(resolved);
   try {
     assertAuthoringPluginPathFence({
       repoRoot: repoRootCandidate ?? undefined,
@@ -4880,7 +4894,8 @@ async function main() {
   } catch (pathError) {
     exitCliError(`[ERROR] ${pathError.message}`, args.json);
   }
-  const repoRoot = discoverCanonicalRepoRoot(repoRootCandidate);
+  const repoRoot = requestedWorkspaceRoot ?? discoverCanonicalRepoRoot(repoRootCandidate);
+  const gitRoot = discoverCanonicalRepoRoot(findRepoRootCandidate(resolved));
 
   await validatePluginDir(resolved, {
     catalogMinVersion: args.catalogMinVersion,
@@ -4888,6 +4903,7 @@ async function main() {
     claudeSkillProfile: args.claudeSkillProfile,
     versionBase: args.versionBase,
     repoRoot,
+    gitRoot,
   });
 
   if (args.json) {

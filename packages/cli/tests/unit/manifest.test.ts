@@ -122,6 +122,9 @@ describe('manifest utils', () => {
       interface: {
         displayName: 'Agent Workflows',
       },
+      catalog: {
+        version: '0.1.0',
+      },
     });
 
     expect(plugin.manifest.marketplace).toMatchObject({

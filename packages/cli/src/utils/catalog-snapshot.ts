@@ -20,7 +20,7 @@ const REQUIRED_ROOT_ENTRIES = new Set([
   '.claude-plugin',
   'plugins',
 ]);
-const OPTIONAL_ROOT_ENTRY = 'plugin-release-ledger.json';
+const OPTIONAL_ROOT_ENTRIES = new Set(['plugin-release-ledger.json', '.aw-generated.json']);
 
 export interface CatalogSnapshotValidation {
   rootDir: string;
@@ -139,7 +139,7 @@ async function collectSnapshotEntries(
   const result: SnapshotDigestEntry[] = [];
   for (const entry of dirEntries.sort((left, right) =>
     left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
-    if (currentDir === rootDir && entry.name === OPTIONAL_ROOT_ENTRY) continue;
+    if (currentDir === rootDir && OPTIONAL_ROOT_ENTRIES.has(entry.name)) continue;
     const absolutePath = path.join(currentDir, entry.name);
     const relativePath = path.relative(rootDir, absolutePath).split(path.sep).join('/');
     const stat = await fs.lstat(absolutePath);
@@ -184,7 +184,7 @@ async function validateRootLayout(rootDir: string): Promise<void> {
   }
   const entries = await fs.readdir(rootDir);
   const unexpected = entries.filter((entry) =>
-    !REQUIRED_ROOT_ENTRIES.has(entry) && entry !== OPTIONAL_ROOT_ENTRY);
+    !REQUIRED_ROOT_ENTRIES.has(entry) && !OPTIONAL_ROOT_ENTRIES.has(entry));
   const missing = [...REQUIRED_ROOT_ENTRIES].filter((entry) => !entries.includes(entry));
   if (missing.length > 0 || unexpected.length > 0) {
     throw new Error(
@@ -197,12 +197,30 @@ async function validateRootLayout(rootDir: string): Promise<void> {
       throw new Error(`Invalid catalog snapshot root layout: "${directory}" must be a regular directory.`);
     }
   }
-  for (const fileName of [CURRENT_CATALOG_MANIFEST_FILE, ...(entries.includes(OPTIONAL_ROOT_ENTRY)
-    ? [OPTIONAL_ROOT_ENTRY]
-    : [])]) {
+  for (const fileName of [
+    CURRENT_CATALOG_MANIFEST_FILE,
+    ...entries.filter((entry) => OPTIONAL_ROOT_ENTRIES.has(entry)),
+  ]) {
     const stat = await fs.lstat(path.join(rootDir, fileName));
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error(`Invalid catalog snapshot root layout: "${fileName}" must be a regular file.`);
+    }
+  }
+  if (entries.includes('.aw-generated.json')) {
+    const marker = await fs.readJson(path.join(rootDir, '.aw-generated.json')) as Record<string, unknown>;
+    const digestPattern = /^sha256:[0-9a-f]{64}$/u;
+    if (
+      !isDeepStrictEqual(Object.keys(marker).sort(), [
+        'kind', 'schemaVersion', 'sourceIdentity', 'workspaceIdentity',
+      ])
+      || marker.schemaVersion !== 1
+      || marker.kind !== 'catalog'
+      || typeof marker.workspaceIdentity !== 'string'
+      || !digestPattern.test(marker.workspaceIdentity)
+      || typeof marker.sourceIdentity !== 'string'
+      || !digestPattern.test(marker.sourceIdentity)
+    ) {
+      throw new Error('Invalid catalog generated output marker.');
     }
   }
 }

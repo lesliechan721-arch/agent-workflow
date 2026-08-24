@@ -71,8 +71,8 @@ Options:
   --skill-short-description <text>
                                 Skill UI summary (25-64 characters). Default: description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
-  --repo-root <path>            Repository root. Default: current directory.
-  --plugin-root <path>          Plugin root, relative to --repo-root by default.
+  --workspace-root <path>            Workspace root. Default: current directory.
+  --plugin-root <path>          Plugin root, relative to --workspace-root by default.
   -h, --help                    Show this help message.
 
 The command only adds one static Skill. It does not edit the plugin README.
@@ -122,7 +122,7 @@ function parseArgs(argv) {
         }
         options.skillInvocation = value;
         break;
-      case '--repo-root':
+      case '--workspace-root':
         options.repoRoot = value;
         break;
       case '--plugin-root':

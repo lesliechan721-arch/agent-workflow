@@ -25,6 +25,7 @@ export interface MarketplaceInterfaceMeta { displayName: string }
 export interface MarketplaceSourceMeta {
   owner: MarketplaceOwner;
   interface: MarketplaceInterfaceMeta;
+  catalog: { version: string };
 }
 export type MarketplacePolicy = PluginManifestSourceV1['marketplace']['policy'];
 export type MarketplaceAuthenticationPolicy = MarketplacePolicy['authentication'];

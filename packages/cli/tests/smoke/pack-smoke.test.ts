@@ -218,7 +218,49 @@ describe('pack smoke', () => {
       cwd: tempRoot,
       env: process.env,
     })).resolves.toMatchObject({
-      stdout: expect.stringContaining('status'),
+      stdout: expect.stringMatching(/(?=[\s\S]*status)(?=[\s\S]*test)(?=[\s\S]*build)/u),
+      stderr: '',
+    });
+    await expect(execFileAsync(awBin, ['catalog', '--help'], {
+      cwd: tempRoot,
+      env: process.env,
+    })).resolves.toMatchObject({
+      stdout: expect.stringMatching(/init[\s\S]*version[\s\S]*build[\s\S]*validate/u),
+      stderr: '',
+    });
+
+    const standaloneWorkspace = path.join(tempRoot, 'standalone-workspace');
+    registerSmokeWritableRoot(standaloneWorkspace, 'packed CLI standalone author workspace');
+    await fs.ensureDir(standaloneWorkspace);
+    await execFileAsync(awBin, ['catalog', 'init', '--workspace-root', standaloneWorkspace], {
+      cwd: standaloneWorkspace,
+      env: process.env,
+    });
+    await execFileAsync(awBin, [
+      'plugin', 'init', 'packed-build',
+      '--description', 'Packed build fixture.',
+      '--no-skills', '--with-mcp',
+      '--workspace-root', standaloneWorkspace,
+    ], { cwd: standaloneWorkspace, env: process.env });
+    const packedPluginDirectory = path.join('plugins', 'packed-build');
+    await expect(execFileAsync(awBin, [
+      'plugin', 'test', packedPluginDirectory,
+      '--workspace-root', standaloneWorkspace, '--json',
+    ], { cwd: standaloneWorkspace, env: process.env })).resolves.toMatchObject({
+      stdout: expect.stringContaining('"ok":true'),
+      stderr: '',
+    });
+    await execFileAsync(awBin, [
+      'plugin', 'build', packedPluginDirectory,
+      '--workspace-root', standaloneWorkspace,
+    ], { cwd: standaloneWorkspace, env: process.env });
+    await execFileAsync(awBin, [
+      'catalog', 'build', '--workspace-root', standaloneWorkspace,
+    ], { cwd: standaloneWorkspace, env: process.env });
+    await expect(execFileAsync(awBin, [
+      'catalog', 'validate', path.join(standaloneWorkspace, '.aw', 'catalog'), '--json',
+    ], { cwd: standaloneWorkspace, env: process.env })).resolves.toMatchObject({
+      stdout: expect.stringContaining('"ok":true'),
       stderr: '',
     });
 
@@ -232,7 +274,7 @@ describe('pack smoke', () => {
       '--description',
       'A deterministic fixture for the packed CLI validator.',
       '--no-skills',
-      '--repo-root',
+      '--workspace-root',
       authorRepo,
     ], { cwd: authorRepo, env: process.env });
     const validation = await execFileAsync(awBin, [
@@ -372,7 +414,7 @@ describe('pack smoke', () => {
       'Create and validate a deterministic packed CLI authoring fixture.',
       '--skill-short-description',
       'Create a packed CLI authoring fixture.',
-      '--repo-root',
+      '--workspace-root',
       authorRepo,
       '--plugin-root',
       'tools/author-smoke',
@@ -387,7 +429,7 @@ describe('pack smoke', () => {
       'Add a second deterministic Skill from the packed CLI runtime.',
       '--skill-short-description',
       'Add a second packed CLI Skill fixture.',
-      '--repo-root',
+      '--workspace-root',
       authorRepo,
       '--plugin-root',
       'tools/author-smoke',

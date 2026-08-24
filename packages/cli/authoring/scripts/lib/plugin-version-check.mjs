@@ -773,7 +773,7 @@ async function listPluginNames(sourceSetRoot) {
 export async function checkPluginVersions(options = {}) {
   const requestedRepoRoot = path.resolve(options.repoRoot ?? '.');
   const cliPackageRoot = path.resolve(options.cliPackageRoot ?? CLI_PACKAGE_ROOT);
-  const requestedBase = options.base ?? 'HEAD';
+  const requestedBase = options.base;
   assertAuthoringPluginPathFence({
     repoRoot: requestedRepoRoot,
     pluginRoot: requestedRepoRoot,
@@ -786,6 +786,54 @@ export async function checkPluginVersions(options = {}) {
         pluginName: options.pluginNames?.[0],
       });
   const repoRoot = explicitRoot?.repoRoot ?? requestedRepoRoot;
+  if (requestedBase === undefined) {
+    let pluginNames = options.all
+      ? (await listPluginNames(repoRoot)).sort()
+      : [...new Set(options.pluginNames ?? [])].sort();
+    if (explicitRoot) pluginNames = [...new Set(options.pluginNames ?? [])].sort();
+    if (pluginNames.length === 0 && !options.all) {
+      throw codedError('usage', 'Provide a plugin name or use --all.');
+    }
+    const checks = [];
+    for (const pluginName of pluginNames) {
+      const currentRoot = explicitRoot?.pluginRoot ?? path.join(repoRoot, 'plugins', pluginName);
+      assertAuthoringPluginPathFence({
+        repoRoot,
+        pluginRoot: currentRoot,
+        requireManifest: true,
+      });
+      try {
+        const document = await readManifestDocument(currentRoot);
+        if (document.manifest.name !== pluginName) {
+          throw codedError(
+            'invalidPlugin',
+            `Current manifest name ${JSON.stringify(document.manifest.name)} does not match ${JSON.stringify(pluginName)}.`,
+          );
+        }
+        parseStablePluginVersion(document.manifest.version, 'current plugin version');
+        checks.push(createCheckResult(pluginName, {
+          status: 'current',
+          currentVersion: document.manifest.version,
+        }));
+      } catch (error) {
+        checks.push(createCheckResult(pluginName, {
+          ok: false,
+          status: 'error',
+          errors: [error.message],
+        }));
+      }
+    }
+    return {
+      schemaVersion: 3,
+      policy: 'development',
+      ok: checks.every((check) => check.ok),
+      base: null,
+      requestedBase: null,
+      baseCommit: null,
+      checkedPlugins: pluginNames.length,
+      checks,
+    };
+  }
   const baseCommit = await resolveBaseCommit(repoRoot, requestedBase);
   const bundler = await loadProductionBundler(cliPackageRoot);
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-version-check-'));
@@ -875,7 +923,9 @@ export async function checkPluginVersions(options = {}) {
 
 export function formatPluginVersionCheck(result) {
   if (result.checkedPlugins === 0) {
-    return `[PASS] No plugin source changes relative to ${result.requestedBase}.`;
+    return result.requestedBase
+      ? `[PASS] No plugin source changes relative to ${result.requestedBase}.`
+      : '[PASS] No current workspace plugins.';
   }
   const lines = [];
   for (const check of result.checks) {

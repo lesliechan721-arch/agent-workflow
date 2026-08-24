@@ -144,9 +144,11 @@ describe('build smoke', () => {
         checkerPath,
         'plugin',
         'status',
+        '--base',
+        'HEAD',
         'version-gate-smoke',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(development.stdout)).toMatchObject({
@@ -165,9 +167,11 @@ describe('build smoke', () => {
       checkerPath,
       'plugin',
       'status',
+      '--base',
+      'HEAD',
       'version-gate-smoke',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(bumped.stdout)).toMatchObject({
