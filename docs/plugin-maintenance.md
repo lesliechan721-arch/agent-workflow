@@ -27,38 +27,6 @@
 - 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `status` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `status` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
 
-## 旧入口迁移门禁
-
-当前迁移状态是 `parallel`。旧 `create-aw-plugin` 和 `skill-review` 仍是仓库默认路由，不能删除或由新插件静默替换。原因有两点：真实模型行为证据尚未完成；repo-local static Skill 的 batch 执行、证据 currentness 和正式报告发布仍由旧 `skill-review` 拥有。
-
-[迁移合同](plugin-development-migration.json)记录旧到新能力 owner、保留能力和 cutover gate。运行：
-
-```bash
-pnpm migration:verify:plugin-development
-```
-
-迁移合同使用 schema v2，并保留 `parallel`、`ready-for-cutover` 和 `retired` 三个状态。它要求旧路由、全部旧入口、新入口、12 项固定能力 owner、7 项固定 gate 声明和当前结构性证据路径都存在。`parallel` 和 `ready-for-cutover` 状态继续启用旧默认路由；`replacementRoutes` 只声明未来路由，不能据此声称路由已生效。
-
-`ready-for-cutover` 必须同时满足：
-
-1. 四个旧 P1 有结构性实现证据。
-2. materialized Skill runtime closure 有生产实现和单测证据。
-3. Reviewer behavior 的 release suite 和正式模型证据完成。
-4. 四层所有新 Skill 的 trigger release suite 和正式模型证据完成。
-5. AW Author/Reviewer behavior 的 release suite 和正式模型证据完成。
-6. Eval audit → run → result triage 端到端 release 证据完成。
-7. repo-local static Skill 的 batch、currentness 和报告发布已明确决定保留、迁移或退役。
-
-当前合同仍为 `parallel`，因此 `modelEvidence` 保持 `null`。进入 `ready-for-cutover` 时，每项证据必须复制到 `docs/plugin-development-evidence/<plugin>/<skill>/<batch>/evaluation.json`，提交后再写入路径和文件 digest。验证器要求 evidence 与当前 HEAD 中的文件一致，核对 owner、证据 source revision 是当前 HEAD 的祖先、当前 production source digest、干净且没有 ignored production file 的 plugin set、release-required model profile，以及每个 required target 的 passed/complete/mechanical 状态。只修改迁移 JSON或手工填写通过状态不能通过门禁。
-
-验证为 ready 后，可先预览 cutover；不带 `--apply` 时不会修改文件：
-
-```bash
-pnpm migration:cutover:plugin-development
-```
-
-显式执行 `pnpm migration:cutover:plugin-development -- --apply` 才会原子更新默认路由并把状态改为 `retired`。工具在修改前后都运行同一迁移验证，并在后置验证失败时恢复原文件。本次实现不执行该命令。
-
 ## Catalog build-time 文件复用
 
 manifest `dependencies` 声明安装或升级某插件时必须同时满足的同 source 插件。它只接受插件名，不接受 `source/plugin`；非空数组要求 `compatibility.aw.minVersion >= 0.1.0`。`buildConfig.buildImports` 和 `skillRuntimeFiles.import` 只复用构建期 canonical 文件，不声明安装依赖，也不能用于推断 `dependencies`。

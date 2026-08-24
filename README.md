@@ -199,14 +199,6 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 
 ## 本地开发与发版流程
 
-插件开发工作流迁移当前保持 `parallel`。发布验证会先运行机器迁移门禁；该状态允许 cutover evidence 未完成，因此不会阻塞正常发布，但会阻止缩减或改址固定路由、入口、能力 owner 和 gate 声明。当前验证器不支持 cutover 验证，`ready-for-cutover` 和 `retired` 会 fail closed：
-
-```bash
-pnpm migration:verify:plugin-development
-```
-
-状态、能力 owner 和完整 cutover 清单见[插件维护指南](docs/plugin-maintenance.md#旧入口迁移门禁)及[机器迁移合同](docs/plugin-development-migration.json)。
-
 插件作者先确认已安装的 CLI，再使用稳定、非交互的公开入口：
 
 ```bash
