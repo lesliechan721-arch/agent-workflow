@@ -63,6 +63,32 @@ import { targetCanBeUninstalled } from '../utils/target-eligibility.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
+import {
+  installPortableSkills,
+  preparePortableInstall,
+  PortableCommandError,
+} from '../portable/commands.js';
+
+async function loadPortablePluginIds(options: {
+  context: CliExecutionContext;
+  cliVersion: string;
+  signal: AbortSignal;
+}): Promise<string[]> {
+  return withResolvedMultiSourceCatalog({
+    cliVersion: options.cliVersion,
+    freshnessPolicy: 'cacheFirst',
+    env: options.context.env,
+    signal: options.signal,
+    consume: async (catalog) => (await Promise.all(catalog.sources.flatMap((item) => item.resolution
+      ? [resolvePluginsFromCatalog(item.resolution.rootDir, undefined).then((plugins) => plugins
+          .filter((plugin) => plugin.manifest.distributions?.agentSkills)
+          .map((plugin) => formatPluginId({
+            sourceId: item.resolution!.sourceId,
+            pluginName: plugin.manifest.name,
+          })))]
+      : []))).flat(),
+  });
+}
 
 export interface TuiControllerRuntimeTestHooks {
   afterMutationEvidenceCapture?: () => Promise<void>;
@@ -470,12 +496,18 @@ export function createTuiControllerDependencies(
         status: result,
         signal,
       });
+      const portablePluginIds = await loadPortablePluginIds({
+        context,
+        cliVersion: packageInfo.version,
+        signal,
+      });
       signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
         dependencyOverviews,
+        portablePluginIds,
         sourceDetails: configured.sources.map((source) => {
           const status = statusById.get(source.id);
           return {
@@ -546,6 +578,25 @@ export function createTuiControllerDependencies(
     }
     signal?.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
+    if (intent.kind === 'portableInstall') {
+      const portable = await preparePortableInstall({
+        selector: intent.pluginId,
+        scope: intent.scope,
+        ...(intent.selectedSkills.length > 0 ? { requestedSkills: intent.selectedSkills } : {}),
+        ...(intent.requestedAgents ? { requestedAgents: intent.requestedAgents } : {}),
+        cwd: context.cwd,
+        env: context.env,
+        cliVersion: packageInfo.version,
+        signal,
+      });
+      return {
+        catalog: {
+          configDigest: portable.configDigest,
+          compositeDigest: portable.evidenceDigest,
+        },
+        portable,
+      };
+    }
     const status = await statusCommandV4({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
@@ -827,6 +878,35 @@ export function createTuiControllerDependencies(
       };
     },
     async executeIntent(intent, expectedEvidence) {
+      if (intent.kind === 'portableInstall') {
+        if (!expectedEvidence.portable) {
+          throw operationReviewStale('确认信息缺少 Portable evidence。');
+        }
+        const packageInfo = await readCliPackageInfo();
+        try {
+          return await installPortableSkills({
+            selector: intent.pluginId,
+            scope: intent.scope,
+            requestedSkills: intent.selectedSkills,
+            ...(intent.requestedAgents ? { requestedAgents: intent.requestedAgents } : {}),
+            yes: true,
+            cwd: context.cwd,
+            env: context.env,
+            cliVersion: packageInfo.version,
+            expectedEvidenceDigest: expectedEvidence.portable.evidenceDigest,
+            onProgress(stage) {
+              const phase = stage === 'prepare' ? '检查插件依赖并生成候选'
+                : stage === 'add' ? '安装已选择的 Skills' : '验证安装结果';
+              progressFeed?.setCurrent({ target: 'Skills CLI', phase }, `Portable Skills：${phase}`);
+            },
+          });
+        } catch (error) {
+          if (error instanceof PortableCommandError && error.code === 'reviewStale') {
+            throw operationReviewStale('确认后 Portable 安装证据发生变化。');
+          }
+          throw error;
+        }
+      }
       return withAwHomeMutationLock({
         env: context.env,
         action: async (awHomeMutationToken) => {

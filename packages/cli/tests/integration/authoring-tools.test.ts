@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { validatePluginManifest } from '../../src/utils/manifest.js';
+import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
+import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
+import { readPluginManifest, validatePluginManifest } from '../../src/utils/manifest.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -1958,9 +1960,13 @@ describe('authoring tools', () => {
     try {
       await validation;
     } catch (error) {
-      expect(JSON.parse((error as { stdout: string }).stdout).errors).toEqual([
-        expect.stringContaining('provider plugin "missing-provider" is unavailable'),
+      const errors = JSON.parse((error as { stdout: string }).stdout).errors as string[];
+      expect(errors).toEqual([
+        expect.stringContaining(
+          'Cannot resolve buildConfig.skillRuntimeFiles[0].import from provider "missing-provider" export "provider-file"',
+        ),
       ]);
+      expect(errors.join('\n')).not.toContain(tempRoot);
     }
   });
 
@@ -4103,6 +4109,366 @@ describe('authoring tools', () => {
     });
   });
 
+  it('keeps author validation aligned with Catalog build across native and portable runtime surfaces', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-author-runtime-surfaces-'));
+    tempDirs.push(tempRoot);
+    await execFileAsync('git', ['init'], { cwd: tempRoot });
+    const providerBytes = 'author-surface-private-bytes\n';
+    const { pluginDir: providerDir } = await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'surface-provider',
+      createBaseManifest('surface-provider', {
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        },
+        extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+        buildConfig: { runtimeExports: [{ name: 'shared', source: './shared.txt' }] },
+      }),
+      { 'shared.txt': providerBytes },
+    );
+    const invalidManifest = createBaseManifest('surface-consumer', {
+      compatibility: { aw: { minVersion: '0.1.0' } },
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      skills: './skills',
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      buildConfig: {
+        skillRuntimeFiles: [{
+          skill: 'demo',
+          target: 'references/shared.txt',
+          import: { plugin: 'surface-provider', export: 'shared' },
+        }],
+      },
+    });
+    const { pluginDir: consumerDir, manifestPath } = await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'surface-consumer',
+      invalidManifest,
+      {
+        'skills/demo/SKILL.md': '---\nname: demo\ndescription: Native demo.\n---\n',
+        'skills/demo/agents/openai.yaml': [
+          'interface:',
+          '  display_name: Demo',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+        'portable-skills/demo/SKILL.md': '---\nname: demo\ndescription: Portable demo.\n---\n',
+        'portable-skills/demo/README.md': '# Portable demo\n',
+      },
+    );
+    await execFileAsync('git', ['add', '.'], { cwd: tempRoot });
+    await execFileAsync(
+      'git',
+      ['-c', 'user.name=AW Test', '-c', 'user.email=aw-test@example.invalid', 'commit', '-m', 'fixture'],
+      { cwd: tempRoot },
+    );
+
+    const invalidValidation = await runValidatePlugin(consumerDir).catch(
+      (failure: unknown) => failure as { stdout: string; stderr: string },
+    );
+    expect(invalidValidation.stdout).toContain('Cannot resolve buildConfig.skillRuntimeFiles[0].import');
+    expect(`${invalidValidation.stdout}${invalidValidation.stderr}`).not.toContain(tempRoot);
+    expect(`${invalidValidation.stdout}${invalidValidation.stderr}`).not.toContain(providerBytes.trim());
+    const invalidProvider = await readPluginManifest(providerDir);
+    const invalidConsumer = await readPluginManifest(consumerDir);
+    await expect(bundleLocalPlugin(invalidConsumer, path.join(tempRoot, 'invalid-bundle'), {
+      runtimeResolver: createCatalogRuntimeImportResolver([invalidProvider, invalidConsumer]),
+    })).rejects.toThrow('unavailable for platform "claude"');
+
+    const validManifest = structuredClone(invalidManifest);
+    validManifest.buildConfig.skillRuntimeFiles[0].platforms = ['codex'];
+    validManifest.buildConfig.skillRuntimeFiles[0].distributions = ['agent-skills'];
+    await fs.writeJson(manifestPath, validManifest, { spaces: 2 });
+    await execFileAsync('git', ['add', '.'], { cwd: tempRoot });
+    await execFileAsync(
+      'git',
+      ['-c', 'user.name=AW Test', '-c', 'user.email=aw-test@example.invalid', 'commit', '-m', 'valid surfaces'],
+      { cwd: tempRoot },
+    );
+    await expect(runValidatePlugin(consumerDir, ['--json'])).resolves.toMatchObject({
+      stdout: expect.stringContaining('"ok": true'),
+    });
+    const validProvider = await readPluginManifest(providerDir);
+    const validConsumer = await readPluginManifest(consumerDir);
+    const validBundle = path.join(tempRoot, 'valid-bundle');
+    await expect(bundleLocalPlugin(validConsumer, validBundle, {
+      runtimeResolver: createCatalogRuntimeImportResolver([validProvider, validConsumer]),
+    })).resolves.toMatchObject({ outputRoot: validBundle });
+    await expect(fs.readFile(
+      path.join(validBundle, 'codex', 'skills', 'demo', 'references', 'shared.txt'),
+      'utf8',
+    )).resolves.toBe(providerBytes);
+    await expect(fs.readFile(
+      path.join(validBundle, 'agent-skills', 'skills', 'demo', 'references', 'shared.txt'),
+      'utf8',
+    )).resolves.toBe(providerBytes);
+  });
+
+  it('aw plugin validate accepts mixed portable static and dynamic synthetic authoring contracts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-authoring-'));
+    tempDirs.push(tempRoot);
+    await execFileAsync('git', ['init'], { cwd: tempRoot });
+    const providerBytes = '{"profile":"portable-author-validator"}\n';
+    await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'portable-provider',
+      createBaseManifest('portable-provider', {
+        extensions: {
+          instructions: [{ name: 'native', title: 'Native provider', content: 'Native provider.' }],
+        },
+        buildConfig: {
+          runtimeExports: [
+            { name: 'registry', source: './registry.json' },
+            { name: 'unsafe-runtime', source: './unsafe-runtime.txt' },
+          ],
+        },
+      }),
+      {
+        'registry.json': providerBytes,
+        'unsafe-runtime.txt': 'safe runtime bytes\n',
+      },
+    );
+    const { pluginDir } = await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'portable-authoring',
+      createBaseManifest('portable-authoring', {
+        compatibility: { aw: { minVersion: '0.1.0' } },
+        extensions: {
+          instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
+        },
+        distributions: { agentSkills: { skills: './portable-skills' } },
+        buildConfig: {
+          skillRuntimeFiles: [
+            {
+              skill: 'portable-static',
+              target: 'references/runtime.txt',
+              distributions: ['agent-skills'],
+              source: './runtime.txt',
+            },
+            {
+              skill: 'portable-dynamic',
+              target: 'references/dynamic.txt',
+              distributions: ['agent-skills'],
+              source: './dynamic-runtime.txt',
+            },
+          ],
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        config: {
+          schema: { variant: { type: 'string', default: 'standard' } },
+        },
+        artifacts: {
+          targets: [{
+            id: 'portable-dynamic',
+            distribution: 'agent-skills',
+            scopes: ['user', 'project'],
+            target: 'agent-skills.skill',
+            states: ['present', 'disabled'],
+            refreshKeys: ['variant'],
+            skillKey: 'portable-dynamic',
+            sourceDirs: ['./portable-source'],
+            runtimeImports: [{ name: 'registry', plugin: 'portable-provider', export: 'registry' }],
+          }],
+        },
+      }),
+      {
+        'runtime.txt': 'portable runtime projection\n',
+        'dynamic-runtime.txt': 'dynamic runtime projection\n',
+        'portable-skills/portable-static/SKILL.md': '---\nname: portable-static\ndescription: Static portable Skill.\n---\n\n# Static\n',
+        'portable-skills/portable-static/README.md': '# Static portable Skill\n',
+        'portable-skills/portable-dynamic/SKILL.md': '---\nname: portable-dynamic\ndescription: Dynamic owner placeholder.\n---\n',
+        'portable-skills/portable-dynamic/README.md': '# Dynamic owner placeholder\n',
+        'portable-source/SKILL.md': '---\nname: portable-dynamic\ndescription: Dynamic portable Skill.\n---\n\n# Dynamic\n',
+        'portable-source/README.md': '# Dynamic portable Skill\n',
+        'scripts/render.mjs': [
+          'const fs = await import("node:fs");',
+          'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          'if (context.surface.kind === "platform" && context.surface.name === "codex") {',
+          '  if (context.distribution !== undefined || process.env.AW_PLUGIN_PLATFORM !== "codex") process.exit(2);',
+          '  process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '    id: "native-capability", platform: "codex", target: "codex.developerInstructionsBlock", kind: "instruction",',
+          '    state: "present", refreshKeys: [], content: "Native capability."',
+          '  }] }));',
+          '} else {',
+          '  if (context.surface.kind !== "distribution" || context.surface.name !== "agent-skills") process.exit(3);',
+          '  if (context.platform !== undefined || context.distribution !== "agent-skills") process.exit(4);',
+          '  if (process.env.AW_PLUGIN_PLATFORM !== undefined || process.env.AW_PLUGIN_DISTRIBUTION !== "agent-skills") process.exit(5);',
+          '  if (context.runtimeImports[0]?.artifactId !== "portable-dynamic") process.exit(6);',
+          '  if (!fs.statSync(context.runtimeImports[0].path).isFile()) process.exit(7);',
+          '  const registry = JSON.parse(fs.readFileSync(context.runtimeImports[0].path, "utf8"));',
+          '  if (registry.profile !== "portable-author-validator") process.exit(8);',
+          '  process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '    id: "portable-dynamic", distribution: "agent-skills", target: "agent-skills.skill", kind: "skill",',
+          '    state: "present", refreshKeys: ["variant"], skillKey: "portable-dynamic",',
+          '    content: { files: { "references/rendered.txt": "rendered\\n" } }',
+          '  }] }));',
+          '}',
+        ].join('\n'),
+      },
+    );
+    await execFileAsync('git', ['add', '.'], { cwd: tempRoot });
+    await execFileAsync(
+      'git',
+      ['-c', 'user.name=AW Test', '-c', 'user.email=aw-test@example.invalid', 'commit', '-m', 'fixture'],
+      { cwd: tempRoot },
+    );
+
+    const result = await runValidatePlugin(pluginDir, ['--json']).catch((failure: unknown) => {
+      const output = failure as { stdout?: string; stderr?: string };
+      throw new Error(`${output.stdout ?? ''}${output.stderr ?? ''}`);
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
+
+    await fs.writeFile(path.join(pluginDir, 'portable-skills', 'README.md'), '# Invalid root file\n');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('直接子节点必须是普通目录'),
+    });
+    await fs.remove(path.join(pluginDir, 'portable-skills', 'README.md'));
+
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+
+    await fs.writeFile(path.join(pluginDir, 'dynamic-runtime.txt'), '{{unresolvedRuntime}}\n', 'utf8');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('final file tree contains an unresolved template'),
+    });
+    await fs.writeFile(path.join(pluginDir, 'dynamic-runtime.txt'), 'dynamic runtime projection\n', 'utf8');
+
+    const importedFinalTreeManifest = structuredClone(manifest);
+    importedFinalTreeManifest.buildConfig.skillRuntimeFiles[1] = {
+      skill: 'portable-dynamic',
+      target: 'references/dynamic.txt',
+      distributions: ['agent-skills'],
+      import: { plugin: 'portable-provider', export: 'unsafe-runtime' },
+    };
+    await fs.writeFile(
+      path.join(tempRoot, 'plugins', 'portable-provider', 'unsafe-runtime.txt'),
+      '{{unresolvedProviderTemplate}}\n',
+      'utf8',
+    );
+    await fs.writeJson(manifestPath, importedFinalTreeManifest, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('final file tree contains an unresolved template'),
+    });
+    await fs.writeFile(
+      path.join(tempRoot, 'plugins', 'portable-provider', 'unsafe-runtime.txt'),
+      'safe runtime bytes\n',
+      'utf8',
+    );
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    for (const reference of [
+      { plugin: 'missing-provider', export: 'registry' },
+      { plugin: 'portable-provider', export: 'missing-export' },
+    ]) {
+      const unresolvedManifest = structuredClone(manifest);
+      unresolvedManifest.artifacts.targets[0].runtimeImports[0] = {
+        name: 'registry',
+        ...reference,
+      };
+      await fs.writeJson(manifestPath, unresolvedManifest, { spaces: 2 });
+      const failure = await runValidatePlugin(pluginDir).catch((error: unknown) => error as { stdout: string });
+      expect(failure.stdout).toContain('Cannot resolve artifacts target');
+      expect(failure.stdout).not.toContain(tempRoot);
+      expect(failure.stdout).not.toContain(providerBytes.trim());
+    }
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    const importCollisionManifest = structuredClone(manifest);
+    importCollisionManifest.buildConfig.skillRuntimeFiles[0] = {
+      skill: 'portable-static',
+      target: 'references/runtime.txt',
+      distributions: ['agent-skills'],
+      import: { plugin: 'portable-provider', export: 'registry' },
+    };
+    await fs.writeFile(
+      path.join(pluginDir, 'portable-skills', 'portable-static', 'references'),
+      'file blocks imported child\n',
+      'utf8',
+    );
+    await fs.writeJson(manifestPath, importCollisionManifest, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('final file tree path "references" conflicts with "references/runtime.txt"'),
+    });
+    await fs.remove(path.join(pluginDir, 'portable-skills', 'portable-static', 'references'));
+
+    const withoutDistribution = structuredClone(manifest);
+    delete withoutDistribution.distributions;
+    await fs.writeJson(manifestPath, withoutDistribution, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('agent-skills targets require distributions.agentSkills'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      extensions: {},
+      artifacts: {
+        targets: [...manifest.artifacts.targets, {
+          id: 'native-capability',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.developerInstructionsBlock',
+          states: ['disabled'],
+          refreshKeys: [],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('portable-only plugins are not supported'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      extensions: {},
+      artifacts: {
+        targets: [...manifest.artifacts.targets, {
+          id: 'native-capability',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.developerInstructionsBlock',
+          states: ['present'],
+          refreshKeys: [],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir, ['--json'])).resolves.toMatchObject({
+      stdout: expect.stringContaining('"ok": true'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      buildConfig: {
+        skillRuntimeFiles: [{
+          ...manifest.buildConfig.skillRuntimeFiles[0],
+          distributions: ['native'],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('expected agent-skills'),
+    });
+
+    const uppercaseDynamicKey = structuredClone(manifest);
+    uppercaseDynamicKey.artifacts.targets[0].skillKey = 'Foo';
+    await fs.writeJson(manifestPath, uppercaseDynamicKey, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('ASCII lowercase hyphen-case'),
+    });
+
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.writeFile(
+      path.join(pluginDir, 'portable-skills', 'portable-static', 'SKILL.md'),
+      '---\nname: wrong-name\ndescription: Invalid portable Skill.\n---\n',
+      'utf8',
+    );
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('name 必须与 Skill 目录一致'),
+    });
+  });
+
   it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifact-env-'));
     tempDirs.push(tempRoot);
@@ -5896,6 +6262,28 @@ describe('authoring tools', () => {
 
     await fs.writeFile(
       skillMdPath,
+      '---\r\nname: frontmatter-test\r\ndescription: Validate CRLF frontmatter.\r\n---\r\n\r\n# CRLF\r\n',
+      'utf8',
+    );
+    await expect(execFileAsync(
+      'node',
+      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+      { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 },
+    )).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
+
+    await fs.writeFile(
+      skillMdPath,
+      '---\nname: frontmatter-test\ndescription: Validate EOF closing frontmatter.\n---',
+      'utf8',
+    );
+    await expect(execFileAsync(
+      'node',
+      [scriptPath, pluginDir, '--strict-agent-skills', '--json'],
+      { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 },
+    )).resolves.toMatchObject({ stdout: expect.stringContaining('"ok": true') });
+
+    await fs.writeFile(
+      skillMdPath,
       [
         '---',
         'name: frontmatter-test',
@@ -6199,6 +6587,68 @@ describe('authoring tools', () => {
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
       stdout: expect.stringContaining('dependencies requires AW 0.1.0 or newer'),
+    });
+  });
+
+  it('fails closed for Portable manifests when only a stale v4 runtime validator is available', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-v4-'));
+    tempDirs.push(tempRoot);
+    const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
+    await fs.ensureDir(path.join(tempRoot, 'packages', 'cli'));
+    await Promise.all([
+      fs.copy(
+        path.join(repoRoot(), 'packages', 'cli', 'authoring', 'scripts'),
+        path.join(authoringRoot, 'scripts'),
+      ),
+      fs.symlink(
+        path.join(repoRoot(), 'packages', 'cli', 'node_modules'),
+        path.join(tempRoot, 'packages', 'cli', 'node_modules'),
+        'dir',
+      ),
+      fs.outputFile(
+        path.join(tempRoot, 'packages', 'cli', 'dist', 'src', 'utils', 'manifest.js'),
+        [
+          'exports.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 4;',
+          'exports.validateSourcePluginManifest = async () => { throw new Error("stale v4 validator was trusted"); };',
+        ].join('\n'),
+      ),
+    ]);
+    const pluginDir = path.join(tempRoot, 'plugins', 'stale-portable');
+    await Promise.all([
+      fs.outputJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
+        ...createBaseManifest('stale-portable'),
+        compatibility: { aw: { minVersion: '0.1.0' } },
+        extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+        distributions: { agentSkills: { skills: './portable-skills' } },
+      }),
+      fs.outputFile(path.join(pluginDir, 'README.md'), '# Stale portable\n'),
+      fs.outputFile(
+        path.join(pluginDir, 'portable-skills', 'portable', 'SKILL.md'),
+        '---\nname: portable\ndescription: Stale runtime fixture.\n---\n',
+      ),
+      fs.outputFile(path.join(pluginDir, 'portable-skills', 'portable', 'README.md'), '# Portable\n'),
+    ]);
+
+    const validator = path.join(authoringRoot, 'scripts', 'validate-plugin.mjs');
+    await expect(execFileAsync('node', [validator, pluginDir], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('requires manifest contract v5'),
+    });
+
+    const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
+    await Promise.all([
+      fs.outputJson(path.join(legacyDir, '.agents-plugin', 'plugin.json'), createBaseManifest('legacy-native')),
+      fs.outputFile(path.join(legacyDir, 'README.md'), '# Legacy native\n'),
+    ]);
+    await expect(execFileAsync('node', [validator, legacyDir], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
   });
 

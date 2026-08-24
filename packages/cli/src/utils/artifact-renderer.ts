@@ -4,6 +4,8 @@ import fs from 'fs-extra';
 
 import type {
   ArtifactPlan,
+  ArtifactSurface,
+  DistributionName,
   PlatformName,
   PluginArtifactRenderScriptEntry,
   PluginConfigSchema,
@@ -39,7 +41,7 @@ import {
 import { resolveAwHome } from './paths.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 
-export type ArtifactRenderEvent = 'install' | 'upgrade' | 'refresh';
+export type ArtifactRenderEvent = 'install' | 'upgrade' | 'refresh' | 'materialize';
 
 export interface ResolvedArtifactRenderConfig {
   mode: 'artifact-render';
@@ -53,7 +55,9 @@ export interface ResolvedArtifactRenderConfig {
 
 export interface ArtifactRendererContext {
   event: ArtifactRenderEvent;
-  platform: PlatformName;
+  surface: ArtifactSurface;
+  platform?: PlatformName;
+  distribution?: DistributionName;
   scope: Scope;
   plugin: {
     name: string;
@@ -74,6 +78,14 @@ export interface ArtifactRendererContext {
     id: string;
     target: string;
     sourceDirs: string[];
+  }>;
+  runtimeImports: Array<{
+    artifactId: string;
+    name: string;
+    providerPluginId: string;
+    exportName: string;
+    path: string;
+    digest: string;
   }>;
   paths: {
     awHome: string;
@@ -125,6 +137,7 @@ const SUPPORTED_ARTIFACT_RENDER_EVENTS = new Set<ArtifactRenderEvent>([
   'install',
   'upgrade',
   'refresh',
+  'materialize',
 ]);
 
 function artifactRendererCodexHome(env: NodeJS.ProcessEnv): string {
@@ -142,7 +155,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function assertArtifactRenderEvent(value: string): ArtifactRenderEvent {
   if (!SUPPORTED_ARTIFACT_RENDER_EVENTS.has(value as ArtifactRenderEvent)) {
     throw new Error(
-      `Artifact renderer only supports install, upgrade, and refresh events; received "${value}".`,
+      `Artifact renderer only supports install, upgrade, refresh, and materialize events; received "${value}".`,
     );
   }
   return value as ArtifactRenderEvent;
@@ -357,7 +370,7 @@ export async function writeArtifactRendererContext(options: {
   sourceIdentity?: string;
   target: ArtifactRendererTarget;
   event: ArtifactRenderEvent;
-  platform: PlatformName;
+  platform: PlatformName | DistributionName;
   scope: Scope;
   cwd: string;
   commandEnv: NodeJS.ProcessEnv;
@@ -387,11 +400,14 @@ export async function writeArtifactRendererContext(options: {
     cwd: options.cwd,
     env: options.commandEnv,
   });
+  const distribution = options.platform === 'agent-skills' ? options.platform : undefined;
+  const platform = distribution ? undefined : options.platform as PlatformName;
 
   const artifactSources = await Promise.all(
     (options.target.sourceManifest.artifacts?.targets ?? [])
       .filter((target) =>
-        target.platform === options.platform && target.scopes.includes(options.scope))
+        (distribution ? target.distribution === distribution : target.platform === platform)
+        && target.scopes.includes(options.scope))
       .map(async (target) => ({
         id: target.id,
         target: target.target,
@@ -401,6 +417,7 @@ export async function writeArtifactRendererContext(options: {
               bundleRoot: options.target.bundleRoot!,
               pluginRelativePath: `./${getArtifactSourceBundleRelativePath({
                 platform: target.platform,
+                distribution: target.distribution,
                 artifactId: target.id,
                 index,
               })}`,
@@ -413,7 +430,11 @@ export async function writeArtifactRendererContext(options: {
 
   const context: ArtifactRendererContext = {
     event,
-    platform: options.platform,
+    surface: distribution
+      ? { kind: 'distribution', name: distribution }
+      : { kind: 'platform', name: platform! },
+    platform,
+    distribution,
     scope: options.scope,
     plugin: {
       name: options.target.sourceManifest.name,
@@ -431,6 +452,23 @@ export async function writeArtifactRendererContext(options: {
     changedConfigKeys: options.changedConfigKeys ?? [],
     previousArtifacts: options.previousArtifacts ?? [],
     artifactSources,
+    runtimeImports: (options.target.sourceManifest.artifacts?.targets ?? [])
+      .filter((target) =>
+        (distribution ? target.distribution === distribution : target.platform === platform)
+        && target.scopes.includes(options.scope))
+      .flatMap((target) => (target.runtimeImports ?? []).map((runtimeImport) => {
+        if (!runtimeImport.resolved) {
+          throw new Error(`Artifact runtime import "${target.id}/${runtimeImport.name}" is not resolved in the bundle.`);
+        }
+        return {
+          artifactId: target.id,
+          name: runtimeImport.name,
+          providerPluginId: runtimeImport.resolved.providerPluginId,
+          exportName: runtimeImport.export,
+          path: path.join(options.target.bundleRoot!, runtimeImport.resolved.path.replace(/^\.\//u, '')),
+          digest: runtimeImport.resolved.digest,
+        };
+      })),
     paths: {
       awHome: resolveAwHome(options.commandEnv),
       codexHome: artifactRendererCodexHome(options.commandEnv),
@@ -529,25 +567,29 @@ function assertRefreshKeysForEvent(
 async function runArtifactRendererProcess(options: {
   invocation: LifecycleScriptInvocation;
   timeoutMs: number;
+  signal?: AbortSignal;
   runner?: LifecycleProcessRunner;
 }): Promise<LifecycleProcessResult> {
   return (options.runner ?? defaultPluginProcessRunner).run(options.invocation, {
     timeoutMs: options.timeoutMs,
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 }
 
 export async function runArtifactRenderer(options: {
   event: ArtifactRenderEvent;
   plugin: PluginMeta;
-  platform: PlatformName;
+  platform: PlatformName | DistributionName;
   scope: Scope;
   cwd: string;
   commandEnv?: NodeJS.ProcessEnv;
   changedConfigKeys?: string[];
   previousArtifacts?: unknown[];
   scriptTimeoutMs?: number;
+  signal?: AbortSignal;
   runner?: LifecycleProcessRunner;
 }): Promise<RunArtifactRendererResult> {
+  options.signal?.throwIfAborted();
   const event = assertArtifactRenderEvent(options.event);
   const commandEnv = options.commandEnv ?? process.env;
   const changedConfigKeys = assertRefreshKeysForEvent(
@@ -585,7 +627,9 @@ export async function runArtifactRenderer(options: {
       tempDir: writtenContext.tempDir,
       plugin: writtenContext.context.plugin,
       event,
-      platform: options.platform,
+      ...(options.platform === 'agent-skills'
+        ? { distribution: options.platform }
+        : { platform: options.platform }),
       scope: options.scope,
       bundleRoot: writtenContext.context.plugin.rootDir,
     });
@@ -599,6 +643,7 @@ export async function runArtifactRenderer(options: {
     const result = await runArtifactRendererProcess({
       invocation,
       timeoutMs,
+      signal: options.signal,
       runner: options.runner,
     });
     const stdoutSummary = summarizeRenderOutput(

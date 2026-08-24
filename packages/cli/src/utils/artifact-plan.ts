@@ -6,28 +6,33 @@ import type {
   ArtifactPlanArtifact,
   ArtifactState,
   ArtifactTarget,
+  AgentSkillsSkillArtifact,
   ClaudeSkillArtifact,
   CodexAgentRoleArtifact,
   CodexSkillArtifact,
   DeveloperInstructionsBlockArtifact,
   PlatformName,
+  DistributionName,
   PluginArtifactTargetDefinition,
   PluginManifestSource,
   Scope,
 } from '../types.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import { assertPlatformFieldSupported } from './manifest.js';
+import { validatePortableSkillName } from './dynamic-skill-tree.js';
 
 const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
   'codex.skill',
   'claude.skill',
+  'agent-skills.skill',
 ]);
 const SUPPORTED_ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 const TARGET_ORDER: ArtifactTarget[] = [
   'codex.skill',
   'claude.skill',
+  'agent-skills.skill',
   'codex.developerInstructionsBlock',
   'codex.agentRole',
 ];
@@ -36,6 +41,7 @@ const ARTIFACT_KIND_BY_TARGET: Record<ArtifactTarget, ArtifactPlanArtifact['kind
   'codex.agentRole': 'codexRole',
   'codex.skill': 'skill',
   'claude.skill': 'skill',
+  'agent-skills.skill': 'skill',
 };
 
 export type ValidatedArtifactPlanArtifact = ArtifactPlanArtifact & {
@@ -126,19 +132,21 @@ function resolvePlanObject(plan: unknown): ArtifactPlan {
 
 function getDeclaredTargets(options: {
   manifest: PluginManifestSource;
-  platform: PlatformName;
+  platform: PlatformName | DistributionName;
   scope: Scope;
 }): Map<string, PluginArtifactTargetDefinition> {
   const output = new Map<string, PluginArtifactTargetDefinition>();
 
   for (const [index, target] of (options.manifest.artifacts?.targets ?? []).entries()) {
-    assertPlatformFieldSupported({
-      pluginName: options.manifest.name,
-      manifest: options.manifest,
-      fieldPath: `artifacts.targets[${index}].platform`,
-      requiredPlatform: target.platform,
-    });
-    if (target.platform !== options.platform || !target.scopes.includes(options.scope)) {
+    if (target.platform) {
+      assertPlatformFieldSupported({
+        pluginName: options.manifest.name,
+        manifest: options.manifest,
+        fieldPath: `artifacts.targets[${index}].platform`,
+        requiredPlatform: target.platform,
+      });
+    }
+    if ((target.platform ?? target.distribution) !== options.platform || !target.scopes.includes(options.scope)) {
       continue;
     }
     if (
@@ -340,7 +348,7 @@ function targetRequiresCodexProjectConfig(target: ArtifactTarget): boolean {
 function normalizeArtifact(options: {
   artifact: unknown;
   index: number;
-  platform: PlatformName;
+  platform: PlatformName | DistributionName;
   pluginName: string;
   declarationMap: Map<string, PluginArtifactTargetDefinition>;
   renderConfig: Pick<ResolvedArtifactRenderConfig, 'values'>;
@@ -365,7 +373,7 @@ function normalizeArtifact(options: {
       ? ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'content']
       : target === 'codex.agentRole'
         ? ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'roleKey', 'content']
-        : ['id', 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'skillKey', 'content'],
+        : ['id', target === 'agent-skills.skill' ? 'distribution' : 'platform', 'target', 'kind', 'state', 'refreshKeys', 'disabledReason', 'skillKey', 'content'],
   );
 
   const declaration = options.declarationMap.get(`${id}:${target}`);
@@ -375,12 +383,15 @@ function normalizeArtifact(options: {
     );
   }
 
-  const platform = ensureNonEmptyString(options.artifact.platform, `${fieldName}.platform`) as PlatformName;
-  if (platform !== options.platform) {
+  const surfaceField = target === 'agent-skills.skill' ? 'distribution' : 'platform';
+  const surface = ensureNonEmptyString(options.artifact[surfaceField], `${fieldName}.${surfaceField}`) as PlatformName | DistributionName;
+  if (surface !== options.platform) {
     throw new Error(
-      `Invalid ${fieldName}.platform: expected "${options.platform}" but received "${platform}".`,
+      `Invalid ${fieldName}.${surfaceField}: expected "${options.platform}" but received "${surface}".`,
     );
   }
+  const platform = surface === 'agent-skills' ? undefined : surface;
+  const distribution = surface === 'agent-skills' ? surface : undefined;
 
   const kind = ensureNonEmptyString(options.artifact.kind, `${fieldName}.kind`);
   const expectedKind = declaration.kind ?? ARTIFACT_KIND_BY_TARGET[target];
@@ -440,9 +451,10 @@ function normalizeArtifact(options: {
     };
   }
 
-  if (target === 'codex.skill' || target === 'claude.skill') {
+  if (target === 'codex.skill' || target === 'claude.skill' || target === 'agent-skills.skill') {
     const skillKey = ensureNonEmptyString(options.artifact.skillKey, `${fieldName}.skillKey`);
-    validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
+    if (target === 'agent-skills.skill') validatePortableSkillName(skillKey, `${fieldName}.skillKey`);
+    else validateCodexSkillKey(skillKey, `${fieldName}.skillKey`);
     if (skillKey !== declaration.skillKey) {
       throw new Error(
         `Invalid ${fieldName}.skillKey: expected "${declaration.skillKey}" from static metadata.`,
@@ -451,17 +463,17 @@ function normalizeArtifact(options: {
     const content = state === 'present'
       ? validateSkillArtifactContent(options.artifact.content, `${fieldName}.content`)
       : undefined;
-    const normalized: CodexSkillArtifact | ClaudeSkillArtifact = {
+    const normalized = {
       id,
       kind: 'skill',
-      platform,
+      ...(platform ? { platform } : { distribution: distribution! }),
       target,
       state,
       skillKey,
       refreshKeys,
       ...(disabledReason === undefined ? {} : { disabledReason }),
       ...(content === undefined ? {} : { content }),
-    };
+    } as CodexSkillArtifact | ClaudeSkillArtifact | AgentSkillsSkillArtifact;
     return {
       ...normalized,
       declaration,
@@ -528,13 +540,14 @@ function resolveDigestSalt(options: {
 }
 
 export function createArtifactConfigDigest(options: {
-  artifact: Pick<ArtifactPlanArtifact, 'id' | 'platform' | 'target' | 'refreshKeys'>;
+  artifact: Pick<ArtifactPlanArtifact, 'id' | 'platform' | 'distribution' | 'target' | 'refreshKeys'>;
   configValues: Record<string, unknown>;
   digestSalt: string;
 }): string {
   return digestHex({
     digestSalt: options.digestSalt,
     platform: options.artifact.platform,
+    distribution: options.artifact.distribution,
     target: options.artifact.target,
     id: options.artifact.id,
     refreshValues: options.artifact.refreshKeys.map((key) => ({
@@ -549,7 +562,7 @@ export function validateArtifactPlan(options: {
   pluginName?: string;
   manifest: PluginManifestSource;
   plan: unknown;
-  platform: PlatformName;
+  platform: PlatformName | DistributionName;
   scope: Scope;
   renderConfig: Pick<ResolvedArtifactRenderConfig, 'values'>;
   rendererDigest?: string;

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -14,6 +15,7 @@ import {
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
+const descendantPids = new Set<number>();
 
 async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -96,6 +98,23 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
   };
 }
 
+function processIsRunning(pid: number): boolean {
+  try {
+    const state = execFileSync('ps', ['-o', 'state=', '-p', String(pid)], {
+      encoding: 'utf8',
+    }).trim();
+    return state !== '' && !state.startsWith('Z');
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100 && processIsRunning(pid); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 async function writePlugin(
   root: string,
   manifest = createManifest(),
@@ -154,10 +173,92 @@ async function writePlugin(
 }
 
 afterEach(async () => {
+  for (const pid of descendantPids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // The renderer cleanup can already have terminated the descendant.
+    }
+  }
+  descendantPids.clear();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('artifact renderer runtime', () => {
+  it.runIf(process.platform !== 'win32')('terminates an inherited-pipe descendant and preserves the abort reason', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-abort-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    const started = path.join(root, 'started');
+    const descendantStarted = path.join(root, 'descendant-started');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root, createManifest(), [
+      'import { spawn } from "node:child_process";',
+      'import { writeFileSync } from "node:fs";',
+      `const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
+      `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
+      `writeFileSync(${JSON.stringify(started)}, String(process.pid));`,
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+    const controller = new AbortController();
+    const abortReason = new DOMException('renderer cancelled', 'AbortError');
+    const rendering = runArtifactRenderer({
+      event: 'materialize', plugin, platform: 'agent-skills', scope: 'project', cwd,
+      commandEnv: {
+        AW_HOME: awHome,
+        PATH: process.env.PATH,
+      },
+      signal: controller.signal,
+    });
+    for (let attempt = 0; attempt < 100 && (!await fs.pathExists(started) || !await fs.pathExists(descendantStarted)); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(await fs.pathExists(started)).toBe(true);
+    const descendantPid = Number(await fs.readFile(descendantStarted, 'utf8'));
+    descendantPids.add(descendantPid);
+    controller.abort(abortReason);
+    await expect(rendering).rejects.toBe(abortReason);
+    await waitForProcessExit(descendantPid);
+    expect(processIsRunning(descendantPid)).toBe(false);
+    descendantPids.delete(descendantPid);
+  });
+
+  it.runIf(process.platform !== 'win32')('times out after terminating an inherited-pipe descendant', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-timeout-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    const descendantStarted = path.join(root, 'descendant-started');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root, createManifest(), [
+      'import { spawn } from "node:child_process";',
+      'import { writeFileSync } from "node:fs";',
+      'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });',
+      `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+    const controller = new AbortController();
+    const rendering = runArtifactRenderer({
+      event: 'materialize', plugin, platform: 'agent-skills', scope: 'project', cwd,
+      commandEnv: { AW_HOME: awHome, PATH: process.env.PATH },
+      scriptTimeoutMs: 1_000,
+      signal: controller.signal,
+    });
+    for (let attempt = 0; attempt < 100 && !await fs.pathExists(descendantStarted); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(await fs.pathExists(descendantStarted)).toBe(true);
+    const descendantPid = Number(await fs.readFile(descendantStarted, 'utf8'));
+    descendantPids.add(descendantPid);
+    try {
+      await expect(rendering).rejects.toThrow('Artifact renderer timed out after 1000 ms');
+    } finally {
+      controller.abort();
+    }
+    await waitForProcessExit(descendantPid);
+    expect(processIsRunning(descendantPid)).toBe(false);
+    descendantPids.delete(descendantPid);
+  });
+
   it('writes target-scoped artifact render config into renderer context', async () => {
     const root = await makeTempRoot('aw-artifact-renderer-');
     const cwd = path.join(root, 'repo');
@@ -320,7 +421,7 @@ describe('artifact renderer runtime', () => {
       scope: 'user',
       cwd,
       commandEnv: env,
-    })).rejects.toThrow('only supports install, upgrade, and refresh events');
+    })).rejects.toThrow('only supports install, upgrade, refresh, and materialize events');
   });
 
   it('fails when stdout is not JSON and redacts sensitive diagnostics', async () => {

@@ -40,6 +40,7 @@ import {
   validateRuntimeSkillClosuresRoot,
   validateSkillRuntimeProjectionFreshness,
 } from '../utils/runtime-skill-closure.js';
+import { validatePortableSkillDirectoriesRoot } from '../utils/dynamic-skill-tree.js';
 import {
   renderClaudeSlashCommand,
   renderCodexSlashCommandOpenAiYaml,
@@ -48,6 +49,7 @@ import {
 } from '../utils/slash-commands.js';
 import type {
   AgentDefinition,
+  DistributionName,
   PluginLifecycleScriptEntry,
   PlatformName,
   PlatformPluginManifest,
@@ -98,7 +100,8 @@ export interface RuntimeImportProvenance {
 }
 
 export interface SkillRuntimeFileProvenance extends RuntimeImportProvenance {
-  platform: PlatformName;
+  platform?: PlatformName;
+  distribution?: DistributionName;
   skill: string;
   target: string;
   targetDigest: string;
@@ -440,6 +443,7 @@ async function copyArtifactSourceDirectories(
         sourcePath,
         path.join(outputRoot, getArtifactSourceBundleRelativePath({
           platform: target.platform,
+          distribution: target.distribution,
           artifactId: target.id,
           index: sourceIndex,
         })),
@@ -453,6 +457,63 @@ async function copyArtifactSourceDirectories(
       );
     }
   }
+}
+
+async function copyPortableStaticSkills(plugin: PluginMeta, outputRoot: string): Promise<void> {
+  const skillsPath = plugin.manifest.distributions?.agentSkills?.skills;
+  if (!skillsPath) return;
+  const sourceRoot = path.join(plugin.rootDir, stripDotSlash(skillsPath));
+  const targetRoot = path.join(outputRoot, 'agent-skills', 'skills');
+  await assertArtifactSourceTreePortable(sourceRoot, 'distributions.agentSkills.skills');
+  await fs.copy(sourceRoot, targetRoot, {
+    dereference: false,
+    filter: (source) => {
+      const relative = path.relative(sourceRoot, source).split(path.sep).join('/');
+      return !isMacOsMetadataName(path.basename(source))
+        && !isSkillCollectionAuthorOnlyPath(relative);
+    },
+  });
+}
+
+async function resolveArtifactRuntimeImports(options: {
+  plugin: PluginMeta;
+  outputRoot: string;
+  resolver?: CatalogRuntimeImportResolver;
+}): Promise<PluginMeta['manifest']> {
+  const manifest = createBundleSourceManifest(options.plugin);
+  for (const [targetIndex, target] of (manifest.artifacts?.targets ?? []).entries()) {
+    for (const [importIndex, runtimeImport] of (target.runtimeImports ?? []).entries()) {
+      if (!options.resolver) {
+        throw new Error(
+          `Cannot resolve artifacts.targets[${targetIndex}].runtimeImports[${importIndex}]: catalog runtime import resolver is required.`,
+        );
+      }
+      const resolution = await options.resolver.resolve({
+        consumer: options.plugin,
+        reference: runtimeImport,
+        purpose: 'artifact-runtime',
+      });
+      const relativePath = `./.agents-plugin/runtime-imports/${target.id}/${runtimeImport.name}`;
+      const targetPath = path.join(options.outputRoot, stripDotSlash(relativePath));
+      await fs.ensureDir(path.dirname(targetPath));
+      await fs.copyFile(resolution.sourcePath, targetPath);
+      const digest = await calculateFileDigest(targetPath);
+      if (digest !== resolution.sourceDigest) {
+        throw new Error(`Artifact runtime import digest mismatch at "${target.id}/${runtimeImport.name}".`);
+      }
+      runtimeImport.resolved = {
+        path: relativePath,
+        digest,
+        providerPluginId: resolution.provider,
+        providerVersion: resolution.providerVersion,
+        source: resolution.source,
+      };
+    }
+  }
+  if (manifest.distributions?.agentSkills?.skills) {
+    manifest.distributions.agentSkills.skills = './agent-skills/skills';
+  }
+  return manifest;
 }
 
 async function copySlashCommandAsset(
@@ -1075,18 +1136,30 @@ async function assertSkillRuntimeTargetAbsent(
 
 async function assertSkillRuntimeProjectionTargets(plugin: PluginMeta): Promise<void> {
   for (const [index, entry] of (plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    const skillRoot = path.join(plugin.rootDir, 'skills', entry.skill);
-    const skillRootStats = await fs.lstat(skillRoot).catch(() => undefined);
-    if (!skillRootStats?.isDirectory() || skillRootStats.isSymbolicLink()) {
-      throw new Error(
-        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
+    const roots: string[] = [];
+    if (entry.platforms !== undefined || entry.distributions === undefined) {
+      roots.push(path.join(plugin.rootDir, 'skills', entry.skill));
+    }
+    if (entry.distributions?.includes('agent-skills')) {
+      const portableRoot = plugin.manifest.distributions?.agentSkills?.skills;
+      if (!portableRoot) {
+        throw new Error(`Invalid buildConfig.skillRuntimeFiles[${index}].distributions: agent-skills is not declared.`);
+      }
+      roots.push(path.join(plugin.rootDir, stripDotSlash(portableRoot), entry.skill));
+    }
+    for (const skillRoot of roots) {
+      const skillRootStats = await fs.lstat(skillRoot).catch(() => undefined);
+      if (!skillRootStats?.isDirectory() || skillRootStats.isSymbolicLink()) {
+        throw new Error(
+          `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
+        );
+      }
+      await assertSkillRuntimeTargetAbsent(
+        skillRoot,
+        entry.target,
+        `buildConfig.skillRuntimeFiles[${index}].target`,
       );
     }
-    await assertSkillRuntimeTargetAbsent(
-      skillRoot,
-      entry.target,
-      `buildConfig.skillRuntimeFiles[${index}].target`,
-    );
   }
 }
 
@@ -1099,14 +1172,21 @@ async function projectSkillRuntimeFiles(options: {
   const projections: SkillRuntimeFileProjection[] = [];
   const claims = new Set<string>();
   for (const [index, entry] of (options.plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    const platforms = entry.platforms ?? [...options.supportedPlatforms];
-    for (const platform of platforms) {
+    const surfaces: Array<{ platform?: PlatformName; distribution?: DistributionName }> = [];
+    if (entry.platforms !== undefined || entry.distributions === undefined) {
+      surfaces.push(...(entry.platforms ?? [...options.supportedPlatforms]).map((platform) => ({ platform })));
+    }
+    surfaces.push(...(entry.distributions ?? []).map((distribution) => ({ distribution })));
+    for (const surface of surfaces) {
+      const { platform, distribution } = surface;
+      if (platform) {
       if (!options.supportedPlatforms.has(platform)) {
         throw new Error(
           `Invalid buildConfig.skillRuntimeFiles[${index}].platforms: plugin does not support "${platform}".`,
         );
       }
-      const claim = `${platform}:${entry.skill}/${entry.target}`;
+      }
+      const claim = `${platform ?? distribution}:${entry.skill}/${entry.target}`;
       if (claims.has(claim)) {
         throw new Error(`Invalid buildConfig.skillRuntimeFiles: target collision at "${claim}".`);
       }
@@ -1151,7 +1231,7 @@ async function projectSkillRuntimeFiles(options: {
 
       const targetPath = path.join(
         options.outputRoot,
-        platform,
+        platform ?? distribution!,
         'skills',
         entry.skill,
         ...entry.target.split('/'),
@@ -1173,6 +1253,7 @@ async function projectSkillRuntimeFiles(options: {
         provenance: {
           ...runtimeProvenance,
           platform,
+          distribution,
           skill: entry.skill,
           target: entry.target,
           targetDigest,
@@ -1700,6 +1781,21 @@ export async function bundleLocalPlugin(
       resolver: buildPlugin.runtimeContext.resolver,
     });
     const skillRuntimeFiles = skillRuntimeFileProjections.map(({ provenance }) => provenance);
+    const portableRuntimeFiles = skillRuntimeFiles
+      .filter((entry) => entry.distribution === 'agent-skills')
+      .map((entry) => ({
+        skill: entry.skill,
+        target: entry.target,
+        path: `./agent-skills/skills/${entry.skill}/${entry.target}`,
+        digest: entry.targetDigest,
+        provider: entry.provider,
+        providerVersion: entry.providerVersion,
+        exportName: entry.name,
+        source: entry.source,
+        sourceDigest: entry.sourceDigest,
+      }));
+
+    await copyPortableStaticSkills(plugin, outputRoot);
 
     if (await fs.pathExists(path.join(plugin.rootDir, 'README.md'))) {
       await copyBundleRootFile(plugin.rootDir, outputRoot, 'README.md');
@@ -1710,10 +1806,21 @@ export async function bundleLocalPlugin(
     await copyArtifactSourceDirectories(plugin, outputRoot);
     await copyProductionPackageRoot(plugin, outputRoot);
 
+    const bundleManifest = await resolveArtifactRuntimeImports({
+      plugin,
+      outputRoot,
+      resolver: buildPlugin.runtimeContext.resolver,
+    });
     await writeJsonFile(
       path.join(outputRoot, '.agents-plugin', 'plugin.json'),
-      createBundleSourceManifest(plugin),
+      bundleManifest,
     );
+    if (portableRuntimeFiles.length > 0) {
+      await writeJsonFile(
+        path.join(outputRoot, '.agents-plugin', 'portable-runtime-files.json'),
+        portableRuntimeFiles,
+      );
+    }
     for (const platform of PLATFORM_ORDER) {
       const manifest = platformManifests[platform];
       if (!manifest) {
@@ -1726,12 +1833,20 @@ export async function bundleLocalPlugin(
     }
 
     await validateSkillRuntimeProjectionSources(skillRuntimeFileProjections);
-    await validateSkillRuntimeProjectionFreshness(outputRoot, skillRuntimeFiles);
+    await validateSkillRuntimeProjectionFreshness(
+      outputRoot,
+      skillRuntimeFiles.filter((entry): entry is SkillRuntimeFileProvenance & { platform: PlatformName } =>
+        entry.platform !== undefined),
+    );
     if ((options.runtimeSkillClosureValidation ?? 'current') === 'current') {
       for (const platform of PLATFORM_ORDER) {
         const skillsPath = platformManifests[platform]?.skills;
         if (!skillsPath) continue;
         await validateRuntimeSkillClosuresRoot(path.join(outputRoot, stripDotSlash(skillsPath)));
+      }
+      if (plugin.manifest.distributions?.agentSkills?.skills) {
+        await validatePortableSkillDirectoriesRoot(path.join(outputRoot, 'agent-skills', 'skills'));
+        await validateRuntimeSkillClosuresRoot(path.join(outputRoot, 'agent-skills', 'skills'));
       }
     }
     await validateBuildImportProjectionSources(

@@ -1,10 +1,23 @@
 import type { PlatformName, Scope } from '../types.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 
+export type PortableBlockerCode =
+  | 'requiredConfigMissing'
+  | 'portableSkillsCliMissing'
+  | 'portableSkillsCliIncompatible'
+  | 'portableScopeUnavailable'
+  | 'portableValidationFailed';
+
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
   | { name: 'pluginPreview'; pluginId: string }
+  | { name: 'portableSkillSelect'; pluginId: string }
+  | { name: 'portableDependencies'; pluginId: string }
+  | { name: 'portableAgentMode'; pluginId: string }
+  | { name: 'portableAgentInput'; pluginId: string }
+  | { name: 'portableScope'; pluginId: string }
+  | { name: 'portableBlocker'; pluginId: string; code: PortableBlockerCode; diagnosticCode: string }
   | {
       name: 'pluginDependencies';
       pluginId: string;
@@ -81,6 +94,7 @@ function copyFrame(frame: TuiRouteFrame): TuiRouteFrame {
 
 export class TuiRouter {
   readonly #stack: TuiRouteFrame[] = [{ route: { name: 'home' }, context: {} }];
+  #portableOrigin?: { pluginId: string; index: number };
 
   get snapshot(): TuiRouterSnapshot {
     return { current: copyFrame(this.#stack.at(-1)!), depth: this.#stack.length };
@@ -107,6 +121,49 @@ export class TuiRouter {
     return this.snapshot;
   }
 
+  beginPortableFlow(pluginId: string): TuiRoute {
+    const currentIndex = this.#stack.length - 1;
+    const currentFrame = this.#stack[currentIndex]!;
+    if ((currentFrame.route.name === 'pluginPreview' || currentFrame.route.name === 'pluginDetail')
+      && currentFrame.route.pluginId === pluginId) {
+      this.#portableOrigin = { pluginId, index: currentIndex };
+      return copyFrame(currentFrame).route;
+    }
+    if (this.#portableOrigin?.pluginId === pluginId) {
+      const frame = this.#stack[this.#portableOrigin.index];
+      if (frame && (frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail')
+        && frame.route.pluginId === pluginId) {
+        return copyFrame(frame).route;
+      }
+      this.#portableOrigin = undefined;
+    }
+    let existingOrigin = -1;
+    for (let candidate = this.#stack.length - 1; candidate >= 0; candidate -= 1) {
+      const frame = this.#stack[candidate]!;
+      if ((frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail')
+        && frame.route.pluginId === pluginId) {
+        existingOrigin = candidate;
+        break;
+      }
+    }
+    const index = existingOrigin >= 0 ? existingOrigin : this.#stack.length - 1;
+    let route = this.#stack[index]!.route;
+    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
+      || route.pluginId !== pluginId) {
+      this.replace({ name: 'pluginPreview', pluginId });
+      route = this.#stack[index]!.route;
+    }
+    this.#portableOrigin = { pluginId, index };
+    return structuredClone(route);
+  }
+
+  portableOrigin(pluginId: string): TuiRoute {
+    if (this.#portableOrigin?.pluginId === pluginId) {
+      return copyFrame(this.#stack[this.#portableOrigin.index]!).route;
+    }
+    return { name: 'pluginPreview', pluginId };
+  }
+
   discardSourceFlow(owner: string, returnRoute: Extract<TuiRoute, { name: 'sourceList' | 'sourceDetail' }>): TuiRouterSnapshot {
     const start = this.#stack.findIndex((frame) =>
       frame.route.name === 'sourceAdd' && frame.route.owner === owner);
@@ -124,6 +181,19 @@ export class TuiRouter {
     if (!atReturnRoute) {
       this.replace(returnRoute);
     }
+    return this.snapshot;
+  }
+
+  resetPortableFlow(pluginId: string): TuiRouterSnapshot {
+    const origin = this.#portableOrigin?.pluginId === pluginId
+      ? this.#portableOrigin.index
+      : -1;
+    if (origin >= 0 && origin < this.#stack.length) {
+      this.#stack.splice(origin + 1);
+    } else {
+      this.replace({ name: 'pluginPreview', pluginId });
+    }
+    this.#portableOrigin = undefined;
     return this.snapshot;
   }
 }

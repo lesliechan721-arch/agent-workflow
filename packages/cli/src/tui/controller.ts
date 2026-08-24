@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import type { CatalogSource, PlatformName, Scope } from '../types.js';
+import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import type {
   StatusV4Payload,
@@ -19,6 +20,8 @@ import {
   hasInstalledPlacement,
   type PluginListItemViewModel,
   type PluginDependencyOverviewViewModel,
+  type PortableSkillCandidateViewModel,
+  type PortableSkillSelectionViewModel,
   type SourceHealthViewModel,
   type SourceDetailViewModel,
   type TuiViewModel,
@@ -27,6 +30,7 @@ import {
 } from './model.js';
 import {
   TuiRouter,
+  type PortableBlockerCode,
   type TuiPageContext,
   type TuiRoute,
   type TuiRouterSnapshot,
@@ -59,6 +63,13 @@ export type OperationIntent =
       scope: Scope;
       force?: boolean;
       originIssue?: IssueOrigin;
+    }
+  | {
+      kind: 'portableInstall';
+      pluginId: string;
+      scope: Scope;
+      selectedSkills: string[];
+      requestedAgents?: string[];
     }
   | {
       kind: 'configSave';
@@ -121,11 +132,12 @@ export interface OperationEvidence {
     referenceCount: number;
     inventoryComplete: boolean;
   };
+  portable?: PortableReview;
 }
 
 export interface OperationReviewChange {
   kind: 'add' | 'change' | 'remove' | 'keep' | 'warning';
-  group?: 'requested' | 'dependencies' | 'preserved';
+  group?: 'requested' | 'dependencies' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'preserved';
   pluginId?: string;
   relation?: 'requested' | 'direct' | 'transitive';
   title: string;
@@ -205,6 +217,17 @@ export interface OperationResultSummary {
   action?: PluginWriteOperation;
   elapsedMs?: number;
   messages?: string[];
+  portable?: {
+    selectedSkills: string[];
+    agentMode: 'automatic' | 'explicit';
+    requestedAgents: string[];
+    scope: Scope;
+    materializationDigest: string;
+    missing: Array<{ skill: string; agent?: string }>;
+    verificationUnknown: boolean;
+    recovery?: string;
+    failureCode?: string;
+  };
   targets?: Array<{
     pluginId?: string;
     platform: PlatformName;
@@ -229,6 +252,7 @@ export interface TuiStatusLoadResult {
   pluginSummaries: StatusV4PluginSummary[];
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
+  portablePluginIds?: string[];
 }
 
 export interface SourceReferenceSummaryViewModel {
@@ -303,6 +327,11 @@ export interface TuiControllerSnapshot {
   activeReview?: OperationReviewModel;
   result?: OperationExecuteResult;
   loadError?: { code: string; message: string };
+  portableDraft?: PortableSkillSelectionViewModel & {
+    agentMode: 'automatic' | 'explicit';
+    requestedAgents: string[];
+    scope: Scope;
+  };
 }
 
 interface ReviewTicket {
@@ -370,6 +399,14 @@ function operationLabels(intent: OperationIntent): {
   primaryLabel: string;
   destructive: boolean;
 } {
+  if (intent.kind === 'portableInstall') {
+    return {
+      title: '确认安装通用 Skills',
+      description: '只安装已选择的 Skills；不会修改原生插件安装。',
+      primaryLabel: `开始安装 ${intent.selectedSkills.length} 个 Skills`,
+      destructive: false,
+    };
+  }
   if (intent.kind === 'pluginWrite') {
     if (intent.originIssue) {
       return {
@@ -445,6 +482,28 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
+  if (intent.kind === 'portableInstall') {
+    const review = evidence?.portable;
+    if (!review) throw new TuiOperationBlockedError('portablePrepareFailed', '缺少通用 Skills Review 证据。');
+    return [
+      ...review.selected.map((skill): OperationReviewChange => ({
+        kind: 'add',
+        group: skill.relation === 'requested' ? 'requested' : 'dependencies',
+        pluginId: skill.providerPluginId,
+        relation: skill.relation,
+        title: skill.name,
+        description: `${skill.description} · ${skill.providerDisplayName}${skill.dynamic ? ' · 按设置生成' : ''}`,
+      })),
+      { kind: 'change', group: 'portableTarget', title: 'Agent', description: review.agentMode === 'automatic'
+        ? '自动选择检测到的 Agent；未检测到时可能选择全部 Agent'
+        : review.requestedAgents.join('、') },
+      { kind: 'change', group: 'portableTarget', title: '范围', description: review.scope === 'project' ? '当前项目' : '所有项目' },
+      { kind: review.dependencies.length > 0 ? 'keep' : 'change', group: 'portableInputs', title: '插件依赖', description: review.dependencies.length > 0
+        ? `${review.dependencies.length} 个依赖用于生成，不能取消` : '无需插件依赖' },
+      ...(review.collisions.length > 0 ? [{ kind: 'warning' as const, group: 'portableWarnings' as const, title: '同名覆盖',
+        description: review.collisions.map((collision) => collision.name).join('、') }] : []),
+    ];
+  }
   if (intent.kind === 'pluginWrite') {
     const plan = evidence?.dependencyPlan;
     if (plan && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
@@ -587,6 +646,11 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     details.push(`候选配置：${evidence.sourceWrite.candidateDigest}`);
     details.push(`引用清单：${evidence.sourceWrite.inventoryDigest} · ${evidence.sourceWrite.referenceCount} 项`);
   }
+  if (evidence.portable) {
+    details.push(`Portable 候选：${evidence.portable.selected.length} 个`);
+    details.push(`Materialization：${evidence.portable.materializationDigest}`);
+    details.push(`Skills CLI：${evidence.portable.skillsCliVersion}`);
+  }
   return details;
 }
 
@@ -598,6 +662,24 @@ function issueCode(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const prefix = message.split(':', 1)[0];
   return /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'operationBlocked';
+}
+
+export function extractPortableError(error: unknown): {
+  code: PortableBlockerCode;
+  diagnosticCode: string;
+} {
+  const typedCode = typeof error === 'object' && error !== null
+    && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+    ? (error as { code: string }).code
+    : undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  const fallback = message.match(/^([A-Za-z][A-Za-z0-9]*):/u)?.[1];
+  const diagnosticCode = typedCode ?? fallback ?? 'portableValidationFailed';
+  if (diagnosticCode === 'requiredConfigMissing') return { code: 'requiredConfigMissing', diagnosticCode };
+  if (diagnosticCode === 'portableSkillsCliMissing') return { code: 'portableSkillsCliMissing', diagnosticCode };
+  if (diagnosticCode === 'portableSkillsCliIncompatible') return { code: 'portableSkillsCliIncompatible', diagnosticCode };
+  if (diagnosticCode === 'portableScopeUnavailable') return { code: 'portableScopeUnavailable', diagnosticCode };
+  return { code: 'portableValidationFailed', diagnosticCode };
 }
 
 export class TuiController {
@@ -627,6 +709,11 @@ export class TuiController {
   #activeReview?: OperationReviewModel;
   #result?: OperationExecuteResult;
   #loadError?: { code: string; message: string };
+  #portableDraft?: TuiControllerSnapshot['portableDraft'];
+  #portableRepreparePluginId?: string;
+  #portableRequestToken = 0;
+  #portableRequestAbort?: AbortController;
+  #portablePending?: { key: string; promise: Promise<unknown> };
   #generation = 0;
   #refreshSequence = 0;
   #appliedRefreshSequence = 0;
@@ -677,6 +764,7 @@ export class TuiController {
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
       ...(this.#result ? { result: this.#result } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
+      ...(this.#portableDraft ? { portableDraft: this.#portableDraft } : {}),
     });
   }
 
@@ -712,6 +800,7 @@ export class TuiController {
       sourceHealth: this.#health,
       sourceDetails: this.#status.sourceDetails,
       dependencyOverviews: this.#status.dependencyOverviews,
+      portablePluginIds: this.#status.portablePluginIds,
     });
   }
 
@@ -721,6 +810,12 @@ export class TuiController {
       return { name: 'pluginList', mode: route.mode };
     }
     const pluginRoute = route.name === 'pluginPreview'
+      || route.name === 'portableSkillSelect'
+      || route.name === 'portableDependencies'
+      || route.name === 'portableAgentMode'
+      || route.name === 'portableAgentInput'
+      || route.name === 'portableScope'
+      || route.name === 'portableBlocker'
       || route.name === 'pluginDependencies'
       || route.name === 'installPlacement'
       || route.name === 'installTools'
@@ -968,11 +1063,198 @@ export class TuiController {
   }
 
   push(route: TuiRoute, context?: TuiPageContext): void {
+    this.#cancelPortableRequest();
+    this.#discardPortableDraftForRoute(route);
     this.#router.push(route, context);
     this.#publish();
   }
 
+  hasPortableSkills(pluginId: string): boolean {
+    return this.#status?.portablePluginIds?.includes(pluginId) ?? false;
+  }
+
+  preparePortableInstall(
+    pluginId: string,
+    navigation: 'push' | 'replace' = 'push',
+  ): Promise<PortableSkillSelectionViewModel> {
+    if (!this.hasPortableSkills(pluginId)) {
+      throw new TuiOperationBlockedError('portableUnsupported', '插件不提供通用 Skills。');
+    }
+    this.#router.beginPortableFlow(pluginId);
+    const expectedRoute = this.#router.snapshot.current.route;
+    return this.#runPortableRequest(`prepare:${pluginId}`, async (signal, token) => {
+      const draft = await this.#buildPortableDraft(pluginId, false, signal);
+      this.#assertPortableRequestCurrent(token, expectedRoute);
+      this.#portableDraft = draft;
+      this.#router[navigation]({ name: 'portableSkillSelect', pluginId });
+      this.#publish();
+      return cloneFrozen(draft);
+    });
+  }
+
+  refreshPortableInstallDraft(pluginId: string): Promise<PortableSkillSelectionViewModel> {
+    const expectedRoute = this.#router.snapshot.current.route;
+    return this.#runPortableRequest(`refresh:${pluginId}`, async (signal, token) => {
+      const draft = await this.#buildPortableDraft(pluginId, true, signal);
+      this.#assertPortableRequestCurrent(token, expectedRoute);
+      this.#portableDraft = draft;
+      this.#publish();
+      return cloneFrozen(draft);
+    });
+  }
+
+  async #buildPortableDraft(
+    pluginId: string,
+    preserveSelection: boolean,
+    signal: AbortSignal,
+  ): Promise<NonNullable<TuiControllerSnapshot['portableDraft']>> {
+    const previous = preserveSelection && this.#portableDraft?.pluginId === pluginId
+      ? this.#portableDraft
+      : undefined;
+    const prepared = await Promise.allSettled((['project', 'user'] as const).map(async (scope) => ({
+      scope,
+      evidence: await this.dependencies.captureEvidence({
+        kind: 'portableInstall',
+        pluginId,
+        scope,
+        selectedSkills: [],
+      }, signal),
+    })));
+    const available = prepared.flatMap((entry) =>
+      entry.status === 'fulfilled' && entry.value.evidence.portable ? [entry.value] : []);
+    if (available.length === 0) {
+      const failure = prepared.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+      if (failure) throw failure.reason;
+      throw new TuiOperationBlockedError('portablePrepareFailed', '无法准备通用 Skills。');
+    }
+    const merged = new Map<string, PortableSkillCandidateViewModel>();
+    for (const { scope, evidence } of available) {
+      for (const candidate of evidence.portable!.selected) {
+        const current = merged.get(candidate.name);
+        const scopeDetail = {
+          description: candidate.description,
+          providerPluginId: candidate.providerPluginId,
+          providerDisplayName: candidate.providerDisplayName,
+          relation: candidate.relation,
+          dynamic: candidate.dynamic,
+          filesDigest: candidate.filesDigest,
+        };
+        if (current) {
+          current.availableScopes.push(scope);
+          current.scopeDetails[scope] = scopeDetail;
+          continue;
+        }
+        merged.set(candidate.name, {
+          ...candidate,
+          selected: true,
+          availableScopes: [scope],
+          scopeDetails: { [scope]: scopeDetail },
+        });
+      }
+    }
+    const selectedNames = new Set(previous?.candidates
+      .filter((candidate) => candidate.selected)
+      .map((candidate) => candidate.name) ?? []);
+    const candidates = [...merged.values()].map((candidate) => ({
+      ...candidate,
+      selected: previous ? selectedNames.has(candidate.name) : true,
+    }));
+    const dependencies = this.getPluginDependencyOverview(pluginId);
+    const selectedCount = candidates.filter((candidate) => candidate.selected).length;
+    return {
+      pluginId,
+      candidates,
+      selectedCount,
+      totalCount: candidates.length,
+      canContinue: selectedCount > 0,
+      ...(dependencies ? { dependencySummary: {
+        directCount: dependencies.summary.directCount,
+        transitiveCount: dependencies.summary.transitiveCount,
+        contributingSkillCount: candidates.filter((candidate) => candidate.relation !== 'requested').length,
+      } } : {}),
+      agentMode: previous?.agentMode ?? 'automatic',
+      requestedAgents: previous?.requestedAgents ?? [],
+      scope: previous?.scope ?? 'project',
+    };
+  }
+
+  togglePortableSkill(name: string): void {
+    if (!this.#portableDraft) return;
+    this.#portableDraft.candidates = this.#portableDraft.candidates.map((candidate) =>
+      candidate.name === name ? { ...candidate, selected: !candidate.selected } : candidate);
+    this.#portableDraft.selectedCount = this.#portableDraft.candidates.filter((candidate) => candidate.selected).length;
+    this.#portableDraft.canContinue = this.#portableDraft.selectedCount > 0;
+    this.#publish();
+  }
+
+  selectAllPortableSkills(): void {
+    if (!this.#portableDraft) return;
+    this.#portableDraft.candidates = this.#portableDraft.candidates.map((candidate) => ({ ...candidate, selected: true }));
+    this.#portableDraft.selectedCount = this.#portableDraft.totalCount;
+    this.#portableDraft.canContinue = this.#portableDraft.totalCount > 0;
+    this.#publish();
+  }
+
+  setPortableAgentMode(mode: 'automatic' | 'explicit', requestedAgents: string[] = []): void {
+    if (!this.#portableDraft) return;
+    this.#portableDraft.agentMode = mode;
+    this.#portableDraft.requestedAgents = [...requestedAgents];
+    this.#publish();
+  }
+
+  setPortableScope(scope: Scope): void {
+    if (!this.#portableDraft) return;
+    this.#portableDraft.scope = scope;
+    this.#publish();
+  }
+
+  async buildPortableInstallReview(): Promise<OperationReviewModel> {
+    const draft = this.#portableDraft;
+    if (!draft?.canContinue) {
+      throw new TuiOperationBlockedError('portableNoSkillsSelected', '至少选择一个 Skill。');
+    }
+    const unavailable = draft.candidates.filter((candidate) =>
+      candidate.selected && !candidate.availableScopes.includes(draft.scope));
+    if (unavailable.length > 0) {
+      throw new TuiOperationBlockedError(
+        'portableScopeUnavailable',
+        `所选范围不提供这些 Skill：${unavailable.map((candidate) => candidate.name).join(', ')}。请返回 Skill 选择或更改范围。`,
+      );
+    }
+    const intent: OperationIntent = {
+      kind: 'portableInstall',
+      pluginId: draft.pluginId,
+      scope: draft.scope,
+      selectedSkills: draft.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.name),
+      ...(draft.agentMode === 'explicit' ? { requestedAgents: draft.requestedAgents } : {}),
+    };
+    const expectedRoute = this.#router.snapshot.current.route;
+    return this.#runPortableRequest(`review:${JSON.stringify(intent)}`, async (signal, token) => {
+      const evidence = await this.dependencies.captureEvidence(structuredClone(intent), signal);
+      this.#assertPortableRequestCurrent(token, expectedRoute);
+      return this.#storeOperationReview(
+        intent,
+        evidence,
+        'push',
+        this.#router.portableOrigin(draft.pluginId),
+      );
+    });
+  }
+
+  discardPortableDraft(): void {
+    this.#cancelPortableRequest();
+    this.#portableDraft = undefined;
+    this.#publish();
+  }
+
   replace(route: TuiRoute, context?: TuiPageContext): void {
+    this.#cancelPortableRequest();
+    const current = this.#router.snapshot.current.route;
+    if (current.name === 'portableBlocker' && current.code === 'requiredConfigMissing'
+      && route.name === 'configLayer' && route.pluginId === current.pluginId) {
+      this.#portableRepreparePluginId = current.pluginId;
+    }
+    this.#discardPortableDraftForRoute(route);
     this.#router.replace(route, context);
     this.#publish();
   }
@@ -983,6 +1265,7 @@ export class TuiController {
   }
 
   back(): void {
+    this.#cancelPortableRequest();
     const route = this.#router.snapshot.current.route;
     if (route.name === 'review' && this.#activeReview?.operationId === route.operationId) {
       this.#tickets.delete(this.#activeReview.reviewToken);
@@ -990,6 +1273,7 @@ export class TuiController {
     }
     this.#router.back();
     this.#normalizeCurrentRoute();
+    this.#discardPortableDraftForRoute(this.#router.snapshot.current.route);
     this.#publish();
   }
 
@@ -1009,14 +1293,94 @@ export class TuiController {
 
   leaveResult(target?: TuiRoute): void {
     if (this.#router.snapshot.current.route.name !== 'result') return;
+    if (this.#result?.operationKind === 'portableInstall'
+      && 'pluginId' in this.#result && this.#result.pluginId) {
+      const preserveDraft = target?.name === 'portableSkillSelect'
+        || target?.name === 'portableAgentInput';
+      this.resetPortableFlowToPreview(this.#result.pluginId, target, preserveDraft);
+      return;
+    }
     const route = target ?? (this.#result && 'returnRoute' in this.#result
       ? this.#result.returnRoute
       : undefined);
     this.#router.back();
     if (route) this.#router.replace(this.#normalizeRoute(route));
     else this.#normalizeCurrentRoute();
+    this.#discardPortableDraftForRoute(this.#router.snapshot.current.route);
     this.#result = undefined;
     this.#publish();
+  }
+
+  #discardPortableDraftForRoute(route: TuiRoute): void {
+    const portableRoute = route.name === 'portableSkillSelect'
+      || route.name === 'portableDependencies'
+      || route.name === 'portableAgentMode'
+      || route.name === 'portableAgentInput'
+      || route.name === 'portableScope'
+      || route.name === 'portableBlocker';
+    const portableOperationRoute = (route.name === 'review' || route.name === 'progress' || route.name === 'result')
+      && (this.#activeReview?.operationKind === 'portableInstall'
+        || this.#result?.operationKind === 'portableInstall');
+    if (!portableRoute && !portableOperationRoute) {
+      this.#cancelPortableRequest();
+      this.#portableDraft = undefined;
+    }
+  }
+
+  resetPortableFlowToPreview(
+    pluginId: string,
+    target?: TuiRoute,
+    preserveDraft = false,
+  ): void {
+    this.#cancelPortableRequest();
+    if (!preserveDraft) this.#portableDraft = undefined;
+    if (this.#activeReview?.operationKind === 'portableInstall') {
+      this.#tickets.delete(this.#activeReview.reviewToken);
+      this.#activeReview = undefined;
+    }
+    if (this.#result?.operationKind === 'portableInstall') this.#result = undefined;
+    this.#router.resetPortableFlow(pluginId);
+    if (target && JSON.stringify(this.#router.snapshot.current.route) !== JSON.stringify(target)) {
+      this.#router.beginPortableFlow(pluginId);
+      this.#router.push(this.#normalizeRoute(target));
+    }
+    this.#publish();
+  }
+
+  #cancelPortableRequest(): void {
+    this.#portableRequestToken += 1;
+    this.#portableRequestAbort?.abort();
+    this.#portableRequestAbort = undefined;
+    this.#portablePending = undefined;
+  }
+
+  #runPortableRequest<T>(
+    key: string,
+    action: (signal: AbortSignal, token: number) => Promise<T>,
+  ): Promise<T> {
+    if (this.#portablePending?.key === key) {
+      return this.#portablePending.promise as Promise<T>;
+    }
+    this.#cancelPortableRequest();
+    const abort = new AbortController();
+    this.#portableRequestAbort = abort;
+    const token = this.#portableRequestToken;
+    const signal = AbortSignal.any([this.#abort.signal, abort.signal]);
+    const promise = action(signal, token).finally(() => {
+      if (this.#portableRequestToken === token) {
+        this.#portableRequestAbort = undefined;
+        this.#portablePending = undefined;
+      }
+    });
+    this.#portablePending = { key, promise };
+    return promise;
+  }
+
+  #assertPortableRequestCurrent(token: number, expectedRoute: TuiRoute): void {
+    if (this.#disposed || this.#abort.signal.aborted || token !== this.#portableRequestToken
+      || JSON.stringify(this.#router.snapshot.current.route) !== JSON.stringify(expectedRoute)) {
+      throw new DOMException('Portable request was cancelled.', 'AbortError');
+    }
   }
 
   listPlugins(options: {
@@ -1453,6 +1817,21 @@ export class TuiController {
       };
       this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
       if (summary.code === 'operationFailed') {
+        if (ticket.intent.kind === 'portableInstall') {
+          const result: OperationExecuteResult = {
+            state: 'partial',
+            operationId,
+            summary,
+            operationKind: ticket.intent.kind,
+            pluginId: ticket.intent.pluginId,
+            returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
+          };
+          this.#result = structuredClone(result);
+          this.#activeReview = undefined;
+          this.#router.replace({ name: 'result', operationId });
+          this.#publish();
+          return cloneFrozen(result);
+        }
         return this.#setBlocked(operationId, 'operationFailed', {
           intent: ticket.intent,
           navigation: 'result',
@@ -1478,6 +1857,14 @@ export class TuiController {
               : ticket.returnRoute,
         )),
       };
+      if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
+        && this.#portableRepreparePluginId === ticket.intent.pluginId) {
+        this.#portableRepreparePluginId = undefined;
+        this.#activeReview = undefined;
+        this.#result = undefined;
+        await this.preparePortableInstall(ticket.intent.pluginId, 'replace');
+        return cloneFrozen(result);
+      }
       this.#result = result;
       this.#activeReview = undefined;
       this.#router.replace({ name: 'result', operationId });
@@ -1588,6 +1975,17 @@ export class TuiController {
       }
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+    if (ticket.intent.kind === 'portableInstall') {
+      try {
+        await this.refreshPortableInstallDraft(ticket.intent.pluginId);
+      } catch (error) {
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        const code = issueCode(error);
+        await this.#logOperationError(error, code, ticket.intent);
+        return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
+      }
+    }
+    if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     const review = this.#storeOperationReview(ticket.intent, evidence, 'replace', ticket.returnRoute);
     const result: OperationExecuteResult = { state: 'stale', operationId, review, ...this.#operationIdentity(ticket.intent) };
     this.#result = result;
@@ -1606,7 +2004,9 @@ export class TuiController {
       verification?: 'issueStillPresent' | 'verificationFailed';
     },
   ): OperationExecuteResult {
-    const message = options?.writeMayHaveCompleted
+    const message = code === 'portableSkillsCliInstallFailed'
+      ? 'Skills CLI 安装失败。请修改 Agent 或重试。'
+      : options?.writeMayHaveCompleted
       ? '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。'
       : code === 'configResetStillPresent'
           ? '重置执行后设置层仍然存在。请重新检查设置问题。'
@@ -1701,6 +2101,7 @@ export class TuiController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#cancelPortableRequest();
     this.#abort.abort();
     this.#cancelSourceRefreshes();
     this.#progressUnsubscribe?.();
@@ -1711,6 +2112,36 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'portableInstall') {
+    const receipt = execution as PortableInstallReceipt;
+    const verificationUnknown = receipt.failures.some((failure) =>
+      failure.code === 'portableSkillsCliVerificationFailed'
+      && receipt.verification.records.length === 0
+      && receipt.verification.missing.length === 0);
+    return {
+      code: receipt.status === 'succeeded' ? 'operationSucceeded'
+        : receipt.status === 'partial' ? 'operationPartial' : 'operationFailed',
+      message: receipt.status === 'succeeded' ? '通用 Skills 已安装。'
+        : receipt.status === 'partial' ? '安装命令已完成，但结果无法完全确认。'
+          : 'Skills CLI 安装失败。',
+      pluginId: intent.pluginId,
+      messages: [
+        ...receipt.selectedSkills.map((skill) => skill.name),
+        ...receipt.failures.map((failure) => failure.message),
+      ],
+      portable: {
+        selectedSkills: receipt.selectedSkills.map((skill) => skill.name),
+        agentMode: receipt.agentMode,
+        requestedAgents: receipt.requestedAgents,
+        scope: receipt.scope,
+        materializationDigest: receipt.materializationDigest,
+        missing: receipt.verification.missing,
+        verificationUnknown,
+        ...(receipt.failures[0]?.recovery ? { recovery: receipt.failures[0].recovery } : {}),
+        ...(receipt.failures[0]?.code ? { failureCode: receipt.failures[0].code } : {}),
+      },
+    };
+  }
   const sourceWarnings = intent.kind === 'sourceMutation'
     && typeof execution === 'object' && execution !== null
     && Array.isArray((execution as { errors?: unknown }).errors)

@@ -11,6 +11,7 @@ import type {
   PluginManifestSource,
 } from '../types.js';
 import {
+  assertActualNativePluginCapability,
   assertStrictSemVer,
   validatePluginManifest,
 } from './manifest.js';
@@ -23,7 +24,10 @@ import {
 } from './rendered-contract.js';
 import { scanNodeImportContract } from './plugin-script-contract.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
-import { validateSkillDirectory } from './dynamic-skill-tree.js';
+import {
+  validatePortableSkillDirectoriesRoot,
+  validateSkillDirectory,
+} from './dynamic-skill-tree.js';
 import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
@@ -508,6 +512,30 @@ async function validateAwRuntimeLayout(
     throw new Error('Invalid bundle source manifest: scripts.node.build must not be included in runtime bundle.');
   }
 
+  const portableSkillsRoot = manifest.distributions?.agentSkills?.skills;
+  if (portableSkillsRoot) {
+    const resolvedRoot = await resolveExistingBundlePath(
+      pluginRoot,
+      portableSkillsRoot,
+      'distributions.agentSkills.skills',
+      './',
+    );
+    const stats = await fs.lstat(path.join(pluginRoot, stripDotSlash(portableSkillsRoot)));
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new Error('Invalid distributions.agentSkills.skills: skills root must be a regular directory.');
+    }
+    const entries = await fs.readdir(resolvedRoot, { withFileTypes: true });
+    const invalidEntry = entries.find((entry) => entry.isSymbolicLink() || !entry.isDirectory());
+    if (invalidEntry) {
+      throw new Error(
+        `Invalid distributions.agentSkills.skills: direct child ${JSON.stringify(invalidEntry.name)} must be a regular directory.`,
+      );
+    }
+    const trees = await validatePortableSkillDirectoriesRoot(resolvedRoot);
+    await Promise.all(trees.map((tree) =>
+      validateRuntimeSkillClosure(path.join(resolvedRoot, tree.skillKey))));
+  }
+
   const runtimeFiles = new Set<string>();
   const nodeEntries = new Set<string>();
   const lifecycle = manifest.scripts?.lifecycle;
@@ -556,6 +584,7 @@ async function validateAwRuntimeLayout(
     for (const [sourceIndex] of (target.sourceDirs ?? []).entries()) {
       const relativePath = getArtifactSourceBundleRelativePath({
         platform: target.platform,
+        distribution: target.distribution,
         artifactId: target.id,
         index: sourceIndex,
       });
@@ -762,6 +791,7 @@ export async function validateBundleLayout(
         );
       }
     }
+    await assertActualNativePluginCapability(pluginRoot, sourceManifest, 'bundle');
   }
 
   validateMarketplaceEntriesForPlatform(

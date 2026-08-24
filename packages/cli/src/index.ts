@@ -61,7 +61,7 @@ import {
   isCommandWarningError,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
-import { redactValue } from './output/redact.js';
+import { redactString, redactValue } from './output/redact.js';
 import {
   renderShellCommand,
 } from './output/equivalent-command.js';
@@ -114,6 +114,13 @@ import type {
   PluginConfigSchemaField,
   Scope,
 } from './types.js';
+import {
+  installPortableSkills,
+  materializePortableSkillsToDirectory,
+  PortableCommandError,
+  renderPortableReview,
+} from './portable/commands.js';
+import { SkillsCliError } from './portable/skills-cli.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -970,6 +977,160 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('plugin')
     .description('Create and validate AW plugin source');
 
+  const skill = program
+    .command('skill')
+    .description('Install, materialize, or validate Agent Skills');
+
+  skill
+    .command('install')
+    .description('Install portable Skills through the skills CLI')
+    .argument('<plugin>', 'plugin or source/plugin selector')
+    .requiredOption('-s, --scope <scope>', 'project or user')
+    .option('--skill <name...>', 'install only selected Skill names')
+    .option('--agent <id...>', 'install to explicit Agent IDs')
+    .option('-y, --yes', 'confirm the reviewed install', false)
+    .option('-j, --json', 'emit one receipt v4 JSON object', false)
+    .action(async (selector: string, rawOptions: {
+      scope: string;
+      skill?: string[];
+      agent?: string[];
+      yes?: boolean;
+      json?: boolean;
+    }) => {
+      const context = createActionContext('skill:install', {});
+      const writeFailure = (error: unknown): void => {
+        const code = error instanceof PortableCommandError || error instanceof SkillsCliError
+          ? error.code
+          : 'portableInstallFailed';
+        writeJsonReceipt(io.stdout, {
+          receiptSchemaVersion: 4,
+          command: 'skill:install',
+          ok: false,
+          status: 'failed',
+          plugin: { id: selector },
+          scope: rawOptions.scope,
+          selectedSkills: [],
+          ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
+          agentMode: rawOptions.agent ? 'explicit' : 'automatic',
+          requestedAgents: rawOptions.agent ?? [],
+          skillsCliVersion: null,
+          collisions: [],
+          dependencies: [],
+          materializationDigest: null,
+          verification: { records: [], missing: [] },
+          warnings: [],
+          failures: [{ code, message: `${code}: portable Skill 安装未执行。` }],
+        });
+      };
+      if (rawOptions.json && !rawOptions.yes) {
+        writeFailure(new PortableCommandError(
+          'confirmationRequired',
+          '写入型 --json 必须同时使用 --yes。',
+        ));
+        commandExitState.exitCode = 1;
+        return;
+      }
+      try {
+        const receipt = await runActionWithContext(context, () => installPortableSkills({
+          selector,
+          scope: rawOptions.scope,
+          ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
+          ...(rawOptions.agent ? { requestedAgents: rawOptions.agent } : {}),
+          yes: rawOptions.yes,
+          cwd: context.cwd,
+          cliVersion: resolveCliVersion(),
+          env: context.env,
+          ...(context.interactive && context.prompt.confirm ? {
+            confirm: async () => context.prompt.confirm!({
+              message: '确认按以上 Review 安装 portable Skills？',
+              defaultValue: false,
+            }),
+          } : {}),
+          ...(!rawOptions.json ? {
+            onReview: (review) => {
+              for (const line of renderPortableReview(review)) writeLine(io.stdout, line);
+            },
+          } : {}),
+        }));
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else if (receipt.ok) writeLine(io.stdout, `portable Skill 安装完成：${receipt.selectedSkills.length} 项。`);
+        else {
+          const sanitize = (value: string): string => redactString(value)
+            .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
+            .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
+            .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
+          const lines = new Set<string>();
+          for (const failure of receipt.failures) {
+            lines.add(`${failure.code}: ${sanitize(failure.message)}`);
+          }
+          for (const warning of receipt.warnings) lines.add(`警告：${sanitize(warning)}`);
+          const recoveries = receipt.failures.map((failure) => failure.recovery).filter(Boolean);
+          const recovery = recoveries.find((entry) => entry.includes('aw skill install')
+            && entry.includes('skills remove'))
+            ?? '重新运行 aw skill install；如需清理外部写入，请使用 skills remove。';
+          lines.add(`恢复：${sanitize(recovery)}`);
+          for (const line of lines) writeLine(io.stderr, line);
+        }
+        commandExitState.exitCode = receipt.ok ? 0 : 1;
+      } catch (error) {
+        if (!rawOptions.json) throw error;
+        writeFailure(error);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  skill
+    .command('materialize')
+    .description('Write portable Skills to a safe output directory')
+    .argument('<plugin>', 'plugin or source/plugin selector')
+    .requiredOption('-s, --scope <scope>', 'project or user')
+    .requiredOption('--out <dir>', 'output directory')
+    .option('--skill <name...>', 'write only selected Skill names')
+    .option('-j, --json', 'emit one receipt v4 JSON object', false)
+    .action(async (selector: string, rawOptions: {
+      scope: string;
+      out: string;
+      skill?: string[];
+      json?: boolean;
+    }) => {
+      const context = createActionContext('skill:materialize', {});
+      try {
+        const receipt = await runActionWithContext(context, () =>
+          materializePortableSkillsToDirectory({
+            selector,
+            scope: rawOptions.scope,
+            out: rawOptions.out,
+            ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
+            cwd: context.cwd,
+            cliVersion: resolveCliVersion(),
+            env: context.env,
+          }));
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else writeLine(io.stdout, `portable Skill 已写入 ${receipt.out}：${receipt.selectedSkills.length} 项。`);
+      } catch (error) {
+        if (!rawOptions.json) throw error;
+        const code = error instanceof PortableCommandError || error instanceof SkillsCliError
+          ? error.code
+          : 'portableMaterializeFailed';
+        writeJsonReceipt(io.stdout, {
+          receiptSchemaVersion: 4,
+          command: 'skill:materialize',
+          ok: false,
+          plugin: { id: selector },
+          scope: rawOptions.scope,
+          out: path.resolve(context.cwd, rawOptions.out),
+          selectedSkills: [],
+          ...(rawOptions.skill ? { requestedSkills: rawOptions.skill } : {}),
+          dependencies: [],
+          configDigest: null,
+          materializationDigest: null,
+          outputDigest: null,
+          errors: [{ code, message: `${code}: portable Skill 导出未执行。` }],
+        });
+        commandExitState.exitCode = 1;
+      }
+    });
+
   plugin
     .command('init')
     .description('Create a new deterministic plugin scaffold')
@@ -1046,10 +1207,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--json', 'emit one schema v3 JSON document', false)
     .option('--repo-root <path>', 'repository root (default: current directory)')
     .option('--plugin-root <path>', 'single plugin root, relative to --repo-root by default');
-
-  const skill = program
-    .command('skill')
-    .description('Validate standalone Agent Skill source');
 
   skill
     .command('validate')

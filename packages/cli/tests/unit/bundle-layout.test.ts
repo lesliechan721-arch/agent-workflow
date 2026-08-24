@@ -262,6 +262,81 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
 
+  it('validates static portable distribution roots and generated dynamic sources', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    await updateFixturePluginManifest(repoRoot, (manifest) => {
+      manifest.compatibility.aw.minVersion = '0.1.0';
+      manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
+      manifest.artifacts = { targets: [{
+        id: 'portable-source',
+        distribution: 'agent-skills',
+        target: 'agent-skills.skill',
+        kind: 'skill',
+        scopes: ['project'],
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'portable-source',
+        sourceDirs: ['./portable-source'],
+      }] };
+    });
+    await fs.outputFile(
+      path.join(pluginRoot, 'agent-skills', 'skills', 'static-portable', 'SKILL.md'),
+      '---\nname: static-portable\ndescription: Static portable fixture.\n---\nBody.\n',
+    );
+    await fs.outputFile(
+      path.join(pluginRoot, 'agent-skills', 'skills', 'static-portable', 'README.md'),
+      '# Static portable\n',
+    );
+    await fs.outputFile(path.join(pluginRoot, 'portable-source', 'README.md'), '# Portable source\n');
+
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const bundledSource = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      '.agents-plugin',
+      'artifact-sources',
+      'agent-skills',
+      'portable-source',
+      '0',
+    );
+    await expect(fs.pathExists(bundledSource)).resolves.toBe(true);
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+
+    await fs.remove(bundledSource);
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'artifacts.targets[0].sourceDirs[0]',
+    );
+    await fs.ensureDir(bundledSource);
+
+    const bundledPortableRoot = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      'agent-skills',
+      'skills',
+    );
+    const savedPortableRoot = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      'saved-portable-skills',
+    );
+    await fs.rename(bundledPortableRoot, savedPortableRoot);
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'distributions.agentSkills.skills',
+    );
+
+    if (process.platform !== 'win32') {
+      await fs.symlink(path.relative(path.dirname(bundledPortableRoot), savedPortableRoot), bundledPortableRoot, 'dir');
+      await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+        'distributions.agentSkills.skills',
+      );
+    }
+  });
+
   it('rejects plugin directories that are missing .agents-plugin/plugin.json', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture();
 

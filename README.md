@@ -27,6 +27,7 @@ Codex 和 Claude Code 都有自己的原生 Skill、命令和插件能力。Agen
 | 两种安装范围 | User scope 适合个人跨项目复用；Project scope 适合把受管能力随仓库共享 |
 | 安全 ownership | 只更新或清理能够证明属于 AW 的组件，避免把平台目录中的其它内容误当作插件状态 |
 | 动态原生产物 | 插件可以按平台和配置物化 Skill、Agent role、instructions、hooks 等平台能力 |
+| 可选 Portable Skill 层 | 插件可在完整 native plugin closure 之外显式声明 Agent Skills 分发；该层是增量能力，不把原生 Skill 自动转换为 portable source |
 | 组合式工作流 | 需求澄清、结构化开发、Git、探索和作者工具保持独立，可按任务组合 |
 | 作者与评测工具链 | 仓库同时提供脚手架、确定性测试、materialization 校验和 Skill Eval / Review 工作流 |
 
@@ -153,12 +154,22 @@ aw status git --verbose
 # 项目级安装
 aw install ask-me -p codex -s project
 
+# 先导出并检查一个声明了 Portable 能力的合成本地 Catalog 插件
+aw skill materialize <source>/<plugin> --scope project --out ./.aw-review/<plugin>
+
+# Review 完整依赖闭包后，通过 PATH 中的兼容 Skills CLI 安装
+aw skill install <source>/<plugin> --scope project
+
 # 清理 AW 管理的现场组件，再按 catalog 重建
 aw cleanup git -p codex -s project
 aw reinstall git -p codex -s user
 ```
 
 `cleanup`、`uninstall` 和 `reinstall` 不会删除 AW 保存的插件配置；配置只由 `aw config reset` 删除。
+
+Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使用 PATH 中 `skills >=1.5.23 <2.0.0`：project scope 使用当前项目根，user scope 使用 Skills CLI 的 global 模式。Agent 默认使用 Skills CLI 的自动选择；命令行可传 `--agent <id...>`，TUI 也可改为显式 Agent。`--skill` 只筛选最终安装项；验证仍覆盖完整 plugin dependency closure。外部安装允许部分成功，不做补偿回滚；失败后可重跑命令，或按 receipt 提示使用外部 `skills remove`。
+
+`aw skill materialize` 先在临时目录验证完整候选，再写 schema 1 `.aw-materialization.json` ownership marker。它只替换 marker 中 plugin ID、source identity 和 scope 都与本次输出相同的 AW 目标；foreign、符号链接或身份不匹配目标会停止操作。TUI 从插件详情进入 Portable 流程，依次选择 Skill、Agent 和 scope，再显示 Review。详情页的 P13 只表示插件声明了该能力，安装状态仍是未知；AW 不维护 Portable installed state 或 Agent registry。
 
 ## 配置 `codex-enhance`
 
