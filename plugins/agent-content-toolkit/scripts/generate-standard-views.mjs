@@ -23,12 +23,12 @@ const source = JSON.parse(await readFile(path.join(sourceRoot, 'standards', 'rul
 const views = [
   [
     'writing',
-    'skills/write-agent-content/references/writing-standard.generated.md',
+    'skills/write-agent-content/references/writing-standard.md',
     'Agent-facing 写作标准',
   ],
   [
     'content_review',
-    'skills/review-agent-content/references/review-standard.generated.md',
+    'skills/review-agent-content/references/review-standard.md',
     'Agent-facing 内容评审标准',
   ],
 ];
@@ -41,8 +41,6 @@ function evidenceLabel(rule) {
 function renderView(audience, title) {
   const lines = [
     `# ${title}`,
-    '',
-    '> GENERATED from `standards/rules.json`; do not edit manually.',
     '',
   ];
   for (const rule of source.rules) {

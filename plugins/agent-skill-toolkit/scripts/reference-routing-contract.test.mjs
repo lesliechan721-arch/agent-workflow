@@ -21,10 +21,11 @@ test('author Skill directly routes every maintained author reference', async () 
     'package-and-disclosure.md',
     'script-authoring.md',
     'completion-and-validation.md',
+    'author-standard.md',
     'composition-audit.md',
   ]) {
     assert.match(skill, new RegExp(`references/${reference.replaceAll('.', '\\.')}`, 'u'));
-    if (!reference.endsWith('.generated.md') && reference !== 'composition-audit.md') {
+    if (!['author-standard.md', 'composition-audit.md'].includes(reference)) {
       const source = path.join(sourceRoot, 'skills', 'author-agent-skill', 'references', reference);
       assert.ok((await readFile(source, 'utf8')).length > 150, reference);
     }
@@ -37,7 +38,7 @@ test('single-Skill Reviewer directly exposes delta and conditional specialist re
   const skill = await readFile(path.join(root, 'SKILL.md'), 'utf8');
   for (const reference of [
     'delta-review.md',
-    'review-rubric.generated.md',
+    'review-rubric.md',
     'composition-fitness.md',
     'architecture-boundaries.md',
     'scripts-and-resources.md',

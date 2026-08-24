@@ -275,7 +275,7 @@
         "rationale": "full 模式恢复固定 12 维度，但主报告只显示总分、coverage 和总体 confidence。",
         "rule_refs": [
           "SKILL.md#输出",
-          "references/scoring-model.generated.md"
+          "references/scoring-model.md"
         ],
         "confidence": "high",
         "allowed_variance": "各维度分数可因证据判断不同；必须完整覆盖且不输出 quality band。",
@@ -313,7 +313,7 @@
       "oracle": {
         "rationale": "缺少必要证据时不得猜分；full coverage 不完整或总体 confidence 低时必须 not-assessed。",
         "rule_refs": [
-          "references/scoring-model.generated.md#Design-边界"
+          "references/scoring-model.md#Design-边界"
         ],
         "confidence": "high",
         "allowed_variance": "可以继续报告已证实 finding 和 unknown；不得用其余高分补齐结论。",
@@ -351,7 +351,7 @@
       "oracle": {
         "rationale": "评分是 finding-first 后的诊断摘要，不能反向生成 finding 或提高严重度。",
         "rule_refs": [
-          "references/scoring-model.generated.md#置信度"
+          "references/scoring-model.md#置信度"
         ],
         "confidence": "high",
         "allowed_variance": "可以保留 unknown 或建议收集证据；不得只因低分创建 major。",

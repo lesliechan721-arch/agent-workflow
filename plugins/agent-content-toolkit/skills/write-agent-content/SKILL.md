@@ -41,7 +41,7 @@ metadata:
    - 以真实输入或 minimal pair 检查 pointer、步骤和输出是否改变目标行为。
    - 若删除某规则的影响未知，标记 `needs-ablation`，不因担心而永久保留。
 
-需要详细标准时读取 `references/writing-standard.generated.md`。
+需要详细标准时读取 `references/writing-standard.md`。
 
 ## 输出
 

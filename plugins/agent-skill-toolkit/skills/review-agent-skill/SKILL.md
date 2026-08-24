@@ -35,7 +35,7 @@ metadata:
 
    机器错误直接阻断，不复制成多重 gate。
 3. 检查没有该 Skill 时的具体失败、description 与 near-miss、一个 Skill 内部是否混入多个独立职责、强制规则是否最小充分、reference/script/asset 是否必要且可达，以及已有 Eval 是否能支持当前结论。
-4. `full` 时读取 `references/review-rubric.generated.md`、`references/review-dimensions.generated.md`、`references/scoring-model.generated.md` 和 `references/composition-fitness.md`。先完成 finding 和 unknown，再按固定顺序填写全部 12 个维度。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
+4. `full` 时读取 `references/review-rubric.md`、`references/review-dimensions.md`、`references/scoring-model.md` 和 `references/composition-fitness.md`。先完成 finding 和 unknown，再按固定顺序填写全部 12 个维度。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
 5. 被审材料很多且能按 package、reference、scripts 或 Eval 独立划分时，可以使用独立上下文子代理分别审核；每个子代理只返回结论、证据位置和关键 unknown，最终 finding 由当前 Reviewer 判断。
 
 ## 可选 Eval 分支

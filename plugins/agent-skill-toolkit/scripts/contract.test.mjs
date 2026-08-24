@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -15,6 +15,10 @@ const context = process.env.AW_PLUGIN_CONTEXT
 const sourceRoot = context?.sourceRoot ?? localRoot;
 const bundleRoot = context?.plugin?.rootDir ?? localRoot;
 const runtimeRoot = context ? path.join(bundleRoot, context.platform) : localRoot;
+
+async function exists(root, relative) {
+  return access(path.join(root, relative)).then(() => true, () => false);
+}
 
 async function runtimeExportSource(plugin, exportName) {
   const providerRoot = path.resolve(sourceRoot, '..', plugin);
@@ -63,6 +67,20 @@ test('projected runtime files match canonical sources', async () => {
   }
 });
 
+test('source excludes standard views rendered during staging', async () => {
+  for (const relative of [
+    'skills/author-agent-skill/references/author-standard.md',
+    'skills/author-agent-skill/references/composition-audit.md',
+    'skills/review-agent-skill/references/review-rubric.md',
+    'skills/review-agent-skill/references/composition-fitness.md',
+    'skills/review-agent-skill/references/evidence-and-severity.md',
+    'skills/design-agent-skill-evals/references/eval-design-standard.md',
+    'skills/audit-agent-skill-evals/references/eval-audit-standard.md',
+  ]) {
+    assert.equal(await exists(sourceRoot, relative), false, `${relative} must not exist in source`);
+  }
+});
+
 test('materialized audit validator runs with its projected dependency closure', async () => {
   if (!context) return;
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
@@ -94,15 +112,16 @@ test('materialized audit validator runs with its projected dependency closure', 
   }
 });
 
-test('generated reviewer view includes full dimensions without release workflow state', async () => {
+test('reviewer runtime includes full dimensions without release workflow state', async () => {
+  if (!context) return;
   const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill/references');
-  for (const file of ['review-rubric.generated.md', 'composition-fitness.md', 'evidence-and-severity.md']) {
+  for (const file of ['review-rubric.md', 'composition-fitness.md', 'evidence-and-severity.md']) {
     assert.ok((await readFile(path.join(reviewRoot, file), 'utf8')).length > 100, file);
   }
-  for (const file of ['review-dimensions.generated.md', 'scoring-model.generated.md']) {
+  for (const file of ['review-dimensions.md', 'scoring-model.md']) {
     assert.ok((await readFile(path.join(reviewRoot, file), 'utf8')).length > 100, file);
   }
-  await assert.rejects(readFile(path.join(reviewRoot, 'source-map.generated.md'), 'utf8'));
+  await assert.rejects(readFile(path.join(reviewRoot, 'source-map.md'), 'utf8'));
 });
 
 test('starter author and Eval contracts remain valid', async () => {

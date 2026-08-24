@@ -56,7 +56,7 @@ Skill 适合封装需要模型判断、领域知识或多步骤协作的可复�
 
 ## Frontmatter profile
 
-字段、类型、依赖、目标 profile 和版本证据的机器真值是 CLI 发布包内的 Skill frontmatter registry。`aw skill validate`、`aw plugin validate`、CLI bundle 校验、表驱动测试和 `references/skill-frontmatter-capabilities.generated.md` 共同消费该 registry。字段变化时修改 registry、重生成字段表并更新测试，不在本文维护第二份字段全集。
+字段、类型、依赖、目标 profile 和版本证据的机器真值是 CLI 发布包内的 Skill frontmatter registry。`aw skill validate`、`aw plugin validate`、CLI bundle 校验、表驱动测试和 `references/skill-frontmatter-capabilities.md` 共同消费该 registry。字段变化时修改 registry、重建字段表并更新测试，不在本文维护第二份字段全集。
 
 | Profile | 用途 |
 | --- | --- |

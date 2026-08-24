@@ -1,7 +1,5 @@
 # 评分模型
 
-> 权威人类策略。`generate-standard-views.mjs` 会把此文件复制到 `review-agent-skill`；不要手动编辑复制后的 Skill reference。
-
 评分用于诊断完整评审的薄弱维度。它不创建 finding，不决定 design，也不提供发布事实。
 
 ## 适用模式
@@ -31,7 +29,7 @@
 
 ## 计算
 
-权重只从 `standards/review-dimensions.json` 读取，不复制进 ReviewResultLite。
+权重只从 `assets/review-dimensions.json` 读取，不复制进 ReviewResultLite。
 
 - `coverage = assessed_weight / 100`。
 - coverage 为 100% 时，`weighted_score = Σ(weight × score / 5)`；否则为 `null`。
