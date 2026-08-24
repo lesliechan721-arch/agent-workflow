@@ -34,7 +34,7 @@ metadata:
 | 新建插件、多组件、组件增删、manifest capability | `references/aw-authoring-profile.md` |
 | manifest、版本或兼容性 | `references/plugin-manifest-spec.md` |
 | 验证、版本、materialization、Eval 或 release | `references/aw-validation-and-version.md` |
-| Skill | `references/aw-skill-integration.md` 与 `references/skill-frontmatter-capabilities.generated.md` |
+| Skill | `references/aw-skill-integration.md` 与 `references/skill-frontmatter-capabilities.md` |
 | Extension/hooks/permissions/agents | `references/extensions-spec.md` |
 | Slash command | `references/slash-commands.md` |
 | MCP/App | `references/mcp-and-apps.md` |

@@ -21,7 +21,7 @@ test('AW author maps every supported component and core lifecycle branch to a di
     'plugin-manifest-spec.md',
     'aw-validation-and-version.md',
     'aw-skill-integration.md',
-    'skill-frontmatter-capabilities.generated.md',
+    'skill-frontmatter-capabilities.md',
     'extensions-spec.md',
     'slash-commands.md',
     'mcp-and-apps.md',

@@ -40,7 +40,7 @@ node scripts/validate-json-contract.mjs \
 | 完整创建或重大变更交付前 | `references/completion-and-validation.md` |
 | 需要判断是否拆分一个 Skill | `references/composition-audit.md` |
 
-详细通用规则见 `references/author-standard.generated.md`；只读取与当前变更面相关的部分。
+详细通用规则见 `references/author-standard.md`；只读取与当前变更面相关的部分。
 
 ## 编写原则
 

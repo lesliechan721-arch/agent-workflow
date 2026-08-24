@@ -21,8 +21,6 @@ function renderFrontmatterReference(registry) {
   const lines = [
     '# Skill Frontmatter Capability Reference',
     '',
-    '<!-- Generated from the AW CLI Skill frontmatter capability registry. Do not edit by hand. -->',
-    '',
     `Registry schema: ${registry.schemaVersion}. Verified: ${registry.verifiedOn}.`,
     '',
     `Required semantics: ${registry.requiredSemantics}.`,
@@ -79,7 +77,7 @@ if (frontmatterRegistry.schemaVersion !== 1 || !frontmatterRegistry.profiles || 
   throw new Error('Invalid Skill frontmatter capability registry build import.');
 }
 await writeFile(
-  path.join(pluginRoot, 'skills/author-aw-plugin/references/skill-frontmatter-capabilities.generated.md'),
+  path.join(pluginRoot, 'skills/author-aw-plugin/references/skill-frontmatter-capabilities.md'),
   renderFrontmatterReference(frontmatterRegistry),
   'utf8',
 );

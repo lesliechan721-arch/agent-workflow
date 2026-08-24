@@ -62,8 +62,8 @@ test('staged runtime contains fresh generated views and projected contracts', as
 
 test('source keeps canonical files and excludes runtime projections', async () => {
   const forbidden = [
-    'skills/write-agent-content/references/writing-standard.generated.md',
-    'skills/review-agent-content/references/review-standard.generated.md',
+    'skills/write-agent-content/references/writing-standard.md',
+    'skills/review-agent-content/references/review-standard.md',
     'skills/review-agent-content/assets/reference-audit-result.schema.json',
     'skills/review-agent-content/scripts/validate-json-contract.mjs',
   ];

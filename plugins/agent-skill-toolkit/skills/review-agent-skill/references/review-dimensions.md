@@ -1,7 +1,5 @@
 # 评审维度
 
-> 权威人类量表。`generate-standard-views.mjs` 会把此文件复制到 `review-agent-skill`；不要手动编辑复制后的 Skill reference。
-
 ## 1. 规范与包完整性（6）
 
 检查：

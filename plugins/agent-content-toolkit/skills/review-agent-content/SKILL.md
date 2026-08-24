@@ -26,7 +26,7 @@ metadata:
 5. **事实源与维护**：环境可查事实是否被低价值缓存；是否存在 duplication、scattering、过期和 sediment。
 6. **证据与现实性**：缺陷、启发式建议和未知项分开；没有行为证据时，不把可读性偏好升级成阻断项。
 
-基础规则见 `references/review-standard.generated.md`。
+基础规则见 `references/review-standard.md`。
 
 ## 输出
 

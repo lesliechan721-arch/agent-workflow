@@ -26,7 +26,7 @@ plugins/<name>/skills/
 
 ## SKILL.md profile
 
-AW 使用版本化 registry 区分 portable、最低宿主和当前宿主能力。机器真值位于 `packages/cli/src/utils/skill-frontmatter-capabilities.json`；作者 validator、CLI bundle validator、生成的 `references/skill-frontmatter-capabilities.generated.md` 和表驱动测试共同消费它。本文只保留选择原则，不复制易变字段全集。
+AW 使用版本化 registry 区分 portable、最低宿主和当前宿主能力。机器真值位于 `packages/cli/src/utils/skill-frontmatter-capabilities.json`；作者 validator、CLI bundle validator、`references/skill-frontmatter-capabilities.md` 和表驱动测试共同消费它。本文只保留选择原则，不复制易变字段全集。
 
 | Profile | 入口 | 结果用途 |
 | --- | --- | --- |
