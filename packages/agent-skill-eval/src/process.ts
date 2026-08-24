@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import process from 'node:process'
-import type { ProcessTreeDependencies } from './process-tree.js'
+import {
+  observeProcessTree,
+  terminateProcessTree,
+  type ProcessTreeDependencies,
+  type ProcessTreeObservation,
+} from './process-tree.js'
 import type {
   ProcessLifecycleHooks,
   ProcessRequest,
@@ -17,15 +22,17 @@ const OBSERVED_HOOK_CONFIRMATION_TIMEOUT_MS = 4_000
 const DIRECT_CHILD_CLOSE_TIMEOUT_MS = 750
 const OBSERVED_CONTAINMENT_LIMITATION =
   'Observed process management is non-portable and does not guarantee descendant cleanup.'
+const VERIFIED_OBSERVED_CONTAINMENT_LIMITATION =
+  'Verified process observation is not OS-enforced containment and does not guarantee descendant cleanup.'
 const CORE_PROCESS_RECEIPT = Symbol('core-process-receipt')
 
 export interface ProviderProcessDependencies {
-  containment?: 'managed' | 'observed' | 'unmanaged-confirmed'
+  containment?: 'managed' | 'verified-observed' | 'observed' | 'unmanaged-confirmed'
   processTree?: ProcessTreeDependencies
 }
 
 export class ProviderProcessCleanupError extends Error {
-  constructor(message: string, cause: unknown) {
+  constructor(message: string, cause: unknown, readonly result?: ProcessResult) {
     super(message, { cause })
     this.name = 'ProviderProcessCleanupError'
   }
@@ -96,13 +103,16 @@ export async function runProviderProcess(
   const platform = dependencies.processTree?.platform ?? process.platform
   const containment = dependencies.containment ?? 'managed'
   const descendantCleanupGuaranteed = containment === 'managed'
+  const gradingEvidenceAccepted = descendantCleanupGuaranteed || containment === 'verified-observed'
   if (descendantCleanupGuaranteed) assertProviderProcessSupported(platform, hooks)
   if (containment === 'observed' && !hooks.terminateProcessTree) {
     throw new Error('Observed provider execution requires a process cleanup hook.')
   }
   const containmentLimitation = containment === 'observed'
     ? OBSERVED_CONTAINMENT_LIMITATION
-    : undefined
+    : containment === 'verified-observed'
+      ? VERIFIED_OBSERVED_CONTAINMENT_LIMITATION
+      : undefined
   if (request.signal?.aborted) {
     return issueCoreProcessReceipt({
       stdout: '',
@@ -116,6 +126,8 @@ export async function runProviderProcess(
       stdoutTruncated: false,
       stderrTruncated: false,
       descendantCleanupGuaranteed,
+      gradingEvidenceAccepted,
+      containmentMode: containment,
       ...(containmentLimitation ? { containmentLimitation } : {}),
     })
   }
@@ -133,6 +145,10 @@ export async function runProviderProcess(
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const handle = child.pid === undefined ? null : { pid: child.pid }
+    const verifiedObservation: ProcessTreeObservation | undefined =
+      containment === 'verified-observed' && handle
+        ? observeProcessTree(handle.pid, marker, dependencies.processTree)
+        : undefined
     let stdout = Buffer.alloc(0)
     let stderr = Buffer.alloc(0)
     let terminationReason: ProcessTerminationReason | null = null
@@ -160,12 +176,28 @@ export async function runProviderProcess(
         return
       }
       try {
-        const timeoutMs = containment === 'observed'
+        const timeoutMs = containment === 'observed' || containment === 'verified-observed'
           ? OBSERVED_HOOK_CONFIRMATION_TIMEOUT_MS
           : platform === 'win32'
             ? WINDOWS_HOOK_CONFIRMATION_TIMEOUT_MS
             : WINDOWS_CLEANUP_DEADLINE_MS
-        const confirmation = await withDeadline(hooks.terminateProcessTree!(handle, reason), timeoutMs)
+        const confirmation = await withDeadline(
+          containment === 'verified-observed'
+            ? terminateProcessTree(
+                handle.pid,
+                (signal) => {
+                  try {
+                    child.kill(signal)
+                  } catch {
+                    // The direct child can already be closed.
+                  }
+                },
+                dependencies.processTree,
+                { observation: verifiedObservation, requireConfirmedCleanup: true },
+              ).then(() => ({ confirmed: true as const }))
+            : hooks.terminateProcessTree!(handle, reason),
+          timeoutMs,
+        )
         if (confirmation?.confirmed !== true) {
           throw new Error('the external containment hook did not return confirmed cleanup evidence')
         }
@@ -186,7 +218,7 @@ export async function runProviderProcess(
           cleanupFailure = error
         })
         if (!settled) {
-          const hookTimeoutMs = containment === 'observed'
+          const hookTimeoutMs = containment === 'observed' || containment === 'verified-observed'
             ? OBSERVED_HOOK_CONFIRMATION_TIMEOUT_MS
             : platform === 'win32'
               ? WINDOWS_HOOK_CONFIRMATION_TIMEOUT_MS
@@ -250,11 +282,7 @@ export async function runProviderProcess(
       void (async () => {
         await spawnReady
         await (cleanupStarted ?? startCleanup('complete'))
-        if (cleanupFailure) throw cleanupFailure
-        if (spawnHookError) {
-          throw safeErrorCause(spawnHookError, marker)
-        }
-        resolve(issueCoreProcessReceipt({
+        const result = issueCoreProcessReceipt({
           stdout: output(stdout, stdoutTruncated),
           stderr: output(stderr, stderrTruncated),
           exitCode: spawnError ? null : exitCode,
@@ -266,8 +294,26 @@ export async function runProviderProcess(
           stdoutTruncated,
           stderrTruncated,
           descendantCleanupGuaranteed,
+          gradingEvidenceAccepted,
+          containmentMode: containment,
           ...(containmentLimitation ? { containmentLimitation } : {}),
-        }))
+        })
+        if (cleanupFailure) {
+          throw new ProviderProcessCleanupError(
+            errorMessage(cleanupFailure, marker),
+            safeErrorCause(cleanupFailure, marker),
+            issueCoreProcessReceipt({
+              ...result,
+              stderr: `${result.stderr}${result.stderr && !result.stderr.endsWith('\n') ? '\n' : ''}${errorMessage(cleanupFailure, marker)}\n`,
+              descendantCleanupGuaranteed: false,
+              gradingEvidenceAccepted: false,
+            }),
+          )
+        }
+        if (spawnHookError) {
+          throw safeErrorCause(spawnHookError, marker)
+        }
+        resolve(result)
       })().catch(reject)
     })
 

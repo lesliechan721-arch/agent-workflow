@@ -486,6 +486,7 @@ describe('plugin eval runner', () => {
     expect(result).toMatchObject({
       valid: true,
       evidenceLevel: 'executed',
+      requirementsMet: true,
       engine: {
         provider: capabilities.provider,
         version: capabilities.providerVersion,
@@ -497,10 +498,98 @@ describe('plugin eval runner', () => {
       runner: { id: 'aw-skill-eval', version: capabilities.providerVersion },
       aggregate: { runs: 1, completed: 1 },
       evidenceLevel: 'executed',
+      evidenceRequirement: {
+        minimumEvidenceLevel: 'executed',
+        satisfied: true,
+      },
       limitations: expect.arrayContaining([
         expect.stringContaining('does not guarantee descendant cleanup'),
       ]),
     });
+
+    const failedCleanupProcessTree = {
+      platform: 'win32' as const,
+      execFile: (
+        _command: string,
+        _args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => callback(new Error('cleanup inspection fixture failure'), ''),
+    };
+    stdout = '';
+    stderr = '';
+    const failedCleanupExitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
+      evalProcessTree: failedCleanupProcessTree,
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+    });
+    expect(failedCleanupExitCode, stderr).toBe(1);
+    expect(JSON.parse(stdout)).toMatchObject({
+      valid: true,
+      evidenceLevel: 'executed',
+      requirementsMet: false,
+      bundleValidation: { valid: true, errors: [] },
+    });
+
+    const plan = await fs.readJson(planPath);
+    plan.minimumEvidenceLevel = 'comparative';
+    plan.configurations = [
+      { id: 'with-skill', skillMode: 'with-skill', comparisonId: 'pair-1', env: {} },
+      { id: 'without-skill', skillMode: 'without-skill', comparisonId: 'pair-1', env: {} },
+    ];
+    await fs.writeJson(planPath, plan, { spaces: 2 });
+    const evalProcessTree = {
+      platform: 'linux' as const,
+      execFile: (
+        _command: string,
+        _args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => callback(null, ''),
+    };
+    stdout = '';
+    stderr = '';
+    const unmetExitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
+      env: { ...process.env, CODEX_PERMISSION_PROFILE: ':danger-full-access' },
+      platform: 'linux',
+      evalProcessTree,
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+    });
+    expect(unmetExitCode, stderr).toBe(1);
+    const unmet = JSON.parse(stdout);
+    expect(unmet).toMatchObject({
+      valid: true,
+      evidenceLevel: 'executed',
+      requirementsMet: false,
+      bundleValidation: { valid: true, errors: [] },
+    });
+    await expect(fs.readJson(unmet.bundlePath)).resolves.toMatchObject({
+      evidenceRequirement: {
+        minimumEvidenceLevel: 'comparative',
+        plannedComparisons: 1,
+        comparableComparisons: 0,
+        satisfied: false,
+      },
+      processManagement: {
+        mode: 'observed',
+        descendantCleanupGuaranteed: false,
+        limitation: 'Provider process cleanup could not be verified.',
+      },
+    });
+
+    stdout = '';
+    stderr = '';
+    const restrictedExitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
+      env: { ...process.env, CODEX_PERMISSION_PROFILE: ':workspace' },
+      platform: 'linux',
+      evalProcessTree,
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+    });
+    expect(restrictedExitCode).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('one-off sandbox_permissions=require_escalated request is not Full Access');
   });
 
   it('persists the observed command execution mode through the complete production run', async () => {

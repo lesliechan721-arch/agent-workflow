@@ -279,6 +279,70 @@ describe('shared provider process behavior', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  it('rejects grading when verified observation never sees a marked process identity', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-verified-'))
+    try {
+      await expect(runProviderProcess({
+        ...baseRequest(root),
+        args: ['-e', `process.stdout.write(process.env.${PROVIDER_PROCESS_MARKER_ENV})`],
+      }, {}, {
+        containment: 'verified-observed',
+        processTree: {
+          platform: 'linux',
+          markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+          execFile: (_command, _args, _options, callback) => callback(null, ''),
+        },
+      })).rejects.toThrow('no marked process identity was observed')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts grading after verified observation without claiming OS containment', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-verified-'))
+    const identityPath = path.join(root, 'identity.json')
+    let live = true
+    let stopped = false
+    try {
+      const result = await runProviderProcess({
+        ...baseRequest(root),
+        args: ['-e', [
+          `require('node:fs').writeFileSync(${JSON.stringify(identityPath)}, JSON.stringify({pid:process.pid,marker:process.env.${PROVIDER_PROCESS_MARKER_ENV}}))`,
+          `setTimeout(() => process.stdout.write(process.env.${PROVIDER_PROCESS_MARKER_ENV}), 100)`,
+        ].join(';')],
+      }, {}, {
+        containment: 'verified-observed',
+        processTree: {
+          platform: 'linux',
+          markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+          execFile: (_command, args, _options, callback) => {
+            void readFile(identityPath, 'utf8').then((raw) => {
+              const identity = JSON.parse(raw) as { pid: number; marker: string }
+              if (!live) return callback(null, '')
+              callback(null, args.includes('pid=,command=')
+                ? `${identity.pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${identity.marker}`
+                : `${identity.pid} 1 ${stopped ? 'T' : 'S'} Mon Aug 24 12:00:00 2026`)
+            }, () => callback(null, ''))
+          },
+          kill: (_pid, signal) => {
+            if (signal === 'SIGSTOP') stopped = true
+            if (signal === 'SIGKILL') live = false
+          },
+        },
+      })
+      expect(result).toMatchObject({
+        stdout: '[redacted provider process marker]',
+        exitCode: 0,
+        containmentMode: 'verified-observed',
+        gradingEvidenceAccepted: true,
+        descendantCleanupGuaranteed: false,
+        containmentLimitation: expect.stringContaining('not OS-enforced'),
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('explicit unmanaged-confirmed provider mode', () => {

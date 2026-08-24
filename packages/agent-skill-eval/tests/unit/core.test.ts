@@ -467,6 +467,42 @@ describe('public Eval execution contracts', () => {
     expect(mismatched.valid).toBe(false)
     expect(mismatched.errors).toContain('runs[0] grading artifact does not match run.grading')
     expect(mismatched.errors).toContain('evidenceLevel must be executed for the supplied runs')
+
+    const matchingGrading = JSON.stringify(run.grading)
+    await writeFile(path.join(root, 'grading-current.json'), matchingGrading)
+    await writeFile(path.join(root, 'grading-baseline.json'), matchingGrading)
+    forged.runs[0].artifacts[0].digest = digest(matchingGrading)
+    forged.runs[1].artifacts[0].digest = digest(matchingGrading)
+    forged.aggregate.comparisons[0].comparable = true
+    Object.assign(forged, {
+      evidenceRequirement: {
+        minimumEvidenceLevel: 'comparative',
+        plannedComparisons: 1,
+        comparableComparisons: 1,
+        satisfied: true,
+      },
+      processManagement: {
+        mode: 'observed',
+        descendantCleanupGuaranteed: false,
+        limitation: 'Observed process management cannot support comparative evidence.',
+      },
+      limitations: ['Observed process management cannot support comparative evidence.'],
+    })
+    await writeFile(bundlePath, JSON.stringify(forged))
+    const observedComparative = await validateRunBundle(bundlePath)
+    expect(observedComparative.valid).toBe(false)
+    expect(observedComparative.errors).toContain(
+      'accepted comparative evidence requires managed or verified-observed process management',
+    )
+
+    forged.evidenceRequirement.minimumEvidenceLevel = 'executed'
+    delete (forged as typeof forged & { processManagement?: unknown }).processManagement
+    await writeFile(bundlePath, JSON.stringify(forged))
+    const missingProcessEvidence = await validateRunBundle(bundlePath)
+    expect(missingProcessEvidence.valid).toBe(false)
+    expect(missingProcessEvidence.errors).toContain(
+      'accepted comparative evidence requires processManagement evidence',
+    )
   })
 
   it('runs a valid plan and emits a self-validating evidence bundle', async () => {
@@ -517,6 +553,17 @@ describe('public Eval execution contracts', () => {
       { cwd: path.resolve('.') },
     )
     expect(JSON.parse(validatedPlan.stdout)).toMatchObject({ valid: true, errors: [] })
+    await writeFile(planPath, JSON.stringify({
+      ...plan,
+      minimumEvidenceLevel: 'comparative',
+    }))
+    await expect(validateExecutionPlan(planPath)).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([
+        'minimumEvidenceLevel comparative requires at least one comparison',
+      ]),
+    })
+    await writeFile(planPath, JSON.stringify(plan))
 
     const mismatchedCapabilitiesRaw = JSON.stringify({
       ...capabilities,
@@ -568,6 +615,97 @@ describe('public Eval execution contracts', () => {
       expect.stringContaining('provider grading was not accepted'),
     ]))
     expect(await computeSkillDigest(skill)).toBe(targetDigest)
+
+    plan.minimumEvidenceLevel = 'comparative'
+    plan.configurations = [
+      { id: 'current', skillMode: 'with-skill', comparisonId: 'pair-1', env: {} },
+      { id: 'baseline', skillMode: 'without-skill', comparisonId: 'pair-1', env: {} },
+    ]
+    await writeFile(planPath, JSON.stringify(plan))
+    const comparative = await runExecutionPlan(planPath)
+    expect(comparative).toMatchObject({
+      evidenceLevel: 'comparative',
+      requirementsMet: true,
+    })
+    const comparativeBundle = JSON.parse(await readFile(comparative.bundlePath, 'utf8'))
+    expect(comparativeBundle).toMatchObject({
+      evidenceRequirement: {
+        minimumEvidenceLevel: 'comparative',
+        plannedComparisons: 1,
+        comparableComparisons: 1,
+        satisfied: true,
+      },
+      processManagement: {
+        mode: 'managed',
+        descendantCleanupGuaranteed: true,
+      },
+    })
+
+    const startedPath = path.join(root, 'restricted-started')
+    plan.provider.command = [
+      process.execPath,
+      '-e',
+      `require('node:fs').writeFileSync(${JSON.stringify(startedPath)}, 'started')`,
+    ]
+    await writeFile(planPath, JSON.stringify(plan))
+    const priorBundle = await readFile(path.join(root, 'output', 'eval-run-bundle.json'), 'utf8')
+    await expect(runExecutionPlanWithoutContainment(planPath, {
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':workspace' },
+      platform: 'linux',
+    })).rejects.toThrow('one-off sandbox_permissions=require_escalated request is not Full Access')
+    await expect(stat(startedPath)).rejects.toThrow()
+    await expect(readFile(path.join(root, 'output', 'eval-run-bundle.json'), 'utf8')).resolves.toBe(priorBundle)
+
+    plan.provider.command = [
+      process.execPath,
+      '-e',
+      'process.stdout.write(JSON.stringify({grading:{grader:{id:"fixture",version:"1"},result:{pass:true}}}))',
+    ]
+    await writeFile(planPath, JSON.stringify(plan))
+    const diagnostic = await runExecutionPlan(planPath, {
+      processHooks: {
+        terminateProcessTree: async () => { throw new Error('cleanup fixture failure') },
+      },
+    })
+    expect(diagnostic).toMatchObject({ evidenceLevel: 'executed', requirementsMet: false })
+    const diagnosticBundle = JSON.parse(await readFile(diagnostic.bundlePath, 'utf8'))
+    expect(diagnosticBundle).toMatchObject({
+      evidenceRequirement: {
+        minimumEvidenceLevel: 'comparative',
+        plannedComparisons: 1,
+        comparableComparisons: 0,
+        satisfied: false,
+      },
+      processManagement: {
+        mode: 'observed',
+        descendantCleanupGuaranteed: false,
+        limitation: 'Provider process cleanup could not be verified.',
+      },
+      aggregate: { runs: 1, processFailed: 1 },
+    })
+    expect(diagnosticBundle.runs[0].grading).toBeNull()
+
+    delete plan.minimumEvidenceLevel
+    plan.configurations = [{ id: 'current', skillMode: 'with-skill', comparisonId: null, env: {} }]
+
+    await writeFile(planPath, JSON.stringify(plan))
+    const executedDiagnostic = await runExecutionPlan(planPath, {
+      processHooks: {
+        terminateProcessTree: async () => { throw new Error('executed cleanup fixture failure') },
+      },
+    })
+    expect(executedDiagnostic).toMatchObject({ evidenceLevel: 'executed', requirementsMet: false })
+    await expect(readFile(executedDiagnostic.bundlePath, 'utf8').then(JSON.parse)).resolves.toMatchObject({
+      evidenceRequirement: {
+        minimumEvidenceLevel: 'executed',
+        satisfied: false,
+      },
+      processManagement: {
+        mode: 'observed',
+        descendantCleanupGuaranteed: false,
+        limitation: 'Provider process cleanup could not be verified.',
+      },
+    })
 
     plan.provider.command = [
       process.execPath,

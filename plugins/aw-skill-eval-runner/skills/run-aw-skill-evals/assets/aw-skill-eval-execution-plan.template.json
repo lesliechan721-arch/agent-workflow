@@ -1,6 +1,7 @@
 {
   "schemaVersion": 3,
   "planId": "replace-me",
+  "minimumEvidenceLevel": "executed",
   "target": {
     "name": "example-skill",
     "path": "./example-skill",

@@ -54,6 +54,17 @@ export interface EvalRunBundle {
   caseCorpusDigest: Digest
   comparisonPlanned: boolean
   evidenceLevel: 'executed' | 'comparative'
+  evidenceRequirement?: {
+    minimumEvidenceLevel: 'executed' | 'comparative'
+    plannedComparisons: number
+    comparableComparisons: number
+    satisfied: boolean
+  }
+  processManagement?: {
+    mode: 'managed' | 'verified-observed' | 'observed'
+    descendantCleanupGuaranteed: boolean
+    limitation?: string
+  }
   runs: EvalRun[]
   aggregate: {
     cases: number
@@ -254,6 +265,47 @@ export async function validateRunBundle(
   const evidenceLevel = comparisons.some((entry) => entry.comparable) ? 'comparative' : 'executed'
   if (bundle.evidenceLevel !== evidenceLevel)
     errors.push(`evidenceLevel must be ${evidenceLevel} for the supplied runs`)
+  if (bundle.evidenceRequirement) {
+    const comparableComparisons = comparisons.filter((entry) => entry.comparable).length
+    if (bundle.evidenceRequirement.comparableComparisons !== comparableComparisons)
+      errors.push('evidenceRequirement.comparableComparisons does not match aggregate comparisons')
+    if (bundle.evidenceRequirement.plannedComparisons < comparisons.length)
+      errors.push('evidenceRequirement.plannedComparisons is smaller than aggregate comparisons')
+    const comparisonCoverageSatisfied = bundle.evidenceRequirement.minimumEvidenceLevel === 'executed' || (
+      bundle.evidenceRequirement.plannedComparisons > 0 &&
+      comparableComparisons === bundle.evidenceRequirement.plannedComparisons
+    )
+    if (bundle.evidenceRequirement.satisfied && !comparisonCoverageSatisfied)
+      errors.push('evidenceRequirement.satisfied cannot be true without required comparison coverage')
+  }
+  if (
+    bundle.processManagement?.mode === 'managed' &&
+    bundle.processManagement.descendantCleanupGuaranteed !== true
+  ) errors.push('managed processManagement must guarantee descendant cleanup')
+  if (
+    bundle.processManagement &&
+    bundle.processManagement.mode !== 'managed' &&
+    bundle.processManagement.descendantCleanupGuaranteed !== false
+  ) errors.push('observed processManagement must not guarantee descendant cleanup')
+  if (
+    bundle.processManagement &&
+    bundle.processManagement.mode !== 'managed' &&
+    !bundle.processManagement.limitation
+  ) errors.push('observed processManagement requires a limitation')
+  if (
+    bundle.processManagement?.limitation &&
+    !bundle.limitations.includes(bundle.processManagement.limitation)
+  ) errors.push('processManagement limitation must be preserved in limitations')
+  if (
+    bundle.evidenceLevel === 'comparative' &&
+    bundle.evidenceRequirement?.satisfied !== false &&
+    bundle.processManagement?.mode === 'observed'
+  ) errors.push('accepted comparative evidence requires managed or verified-observed process management')
+  if (
+    bundle.evidenceLevel === 'comparative' &&
+    bundle.evidenceRequirement?.satisfied === true &&
+    bundle.processManagement === undefined
+  ) errors.push('accepted comparative evidence requires processManagement evidence')
   if (comparisons.some((entry) => !entry.comparable) && bundle.limitations.length === 0)
     errors.push('non-comparable planned comparisons require a limitation')
   return { valid: errors.length === 0, errors, calculated }
