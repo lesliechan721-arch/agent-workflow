@@ -19,14 +19,11 @@
 ## 插件脚本测试
 
 ```bash
-pnpm plugin:test <plugin>
-pnpm plugin:test <plugin> --platform codex --scope project
-pnpm plugin:test <dual-platform-plugin> --platform both --scope project
-pnpm plugin:test <plugin> --test-name "reads config"
-pnpm plugin:test --all
+aw plugin test <plugin-root> --workspace-root <workspace-root>
+aw plugin test <plugin-root> --workspace-root <workspace-root> --json
 ```
 
-`pnpm plugin:test` 会先编译 CLI，再用 staging 模式准备 source，并从 build 后 staging manifest 解析最终支持平台。省略 `--platform` 时按 `both` 处理；`--platform auto` 无效并会失败；显式 `claude` 或 `codex` 遇到任一选中插件不支持该平台时，会在测试执行前失败；`both` 按每个插件最终支持平台集合展开，单平台插件只跑自己支持的平台，双平台插件分别跑 Codex 和 Claude 两轮。
+`aw plugin test` 先读取 Workspace v1 source，并运行该插件 `scripts.tests.node` 声明匹配的确定性 Node 测试。它不使用工作区 package manager 作为公开合同。无匹配测试时是 skipped/no-op，退出码为 0；`--json` 输出单一 receipt。
 
 校验通过后，runner 会准备临时 bundle、隔离 `AW_HOME` 和受管临时 project root，然后执行 `scripts.tests.node` 匹配到的 Node 测试。无匹配测试时是 skipped/no-op，退出码为 0。
 

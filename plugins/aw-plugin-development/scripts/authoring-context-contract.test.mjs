@@ -54,7 +54,7 @@ async function roundTrip(target, components, extraArgs = []) {
     [
       prepare,
       target.pluginRoot,
-      '--repo-root',
+      '--workspace-root',
       target.workspace,
       '--components',
       componentsPath,
@@ -109,6 +109,23 @@ test('schema v3 publishes components without a release target field', async () =
     (rule) => rule.if?.properties?.type?.const === 'app',
   );
   assert.deepEqual(appProfileRule?.then?.properties?.profiles?.const, ['CODEX']);
+});
+
+test('context tool exposes workspace-root and rejects the former repo-root option', async () => {
+  const help = await execFileAsync(process.execPath, [prepare, '--help'], { encoding: 'utf8' });
+  assert.match(help.stdout, /--workspace-root <path>/u);
+  assert.doesNotMatch(help.stdout, /--repo-root/u);
+  const target = await fixture();
+  const componentsPath = path.join(target.directory, 'components.json');
+  await writeFile(componentsPath, JSON.stringify([
+    component('manifest', 'manifest', 'create', ['.agents-plugin/plugin.json'], ['CODEX', 'CLAUDE']),
+  ]));
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      prepare, target.pluginRoot, '--components', componentsPath, '--repo-root', target.workspace,
+    ]),
+    (error) => error.stderr.includes('Unknown option: --repo-root'),
+  );
 });
 
 test('round-trips a new plugin with two skills', async () => {

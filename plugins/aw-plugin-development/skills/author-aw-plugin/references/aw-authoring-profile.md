@@ -3,7 +3,7 @@
 ## 源码真值
 
 - 显式提供的 `<plugin-root>/.agents-plugin/plugin.json` 和该插件根下源码是人工维护入口；`plugins/<name>/` 只是可能的工作区布局之一。
-- 当前 `pnpm build` 生成平台 manifest 和本地 schema 4 snapshot；published candidate 由 immutable release plan 的内部 staging 生成。publisher 内部事务和历史恢复不是插件作者手改入口。
+- `aw plugin build` 生成一个插件 bundle，`aw catalog build` 生成本地 schema 4 snapshot；published Catalog 由 `aw catalog publish` 生成。publisher 内部 staging、digest、marketplace 和历史恢复不是插件作者手改入口。
 - 插件名和 Skill 名使用小写短横线，并与各自目录一致。
 - 插件与 Skill README 按同目录的 `aw-readme-authoring.md` 维护，不读取宿主仓库的 README 规范作为运行时合同。
 

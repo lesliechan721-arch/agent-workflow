@@ -18,6 +18,7 @@
     "test:smoke": "pnpm --filter @lesliechan721/aw test:smoke",
     "test:smoke:build": "pnpm --filter @lesliechan721/aw test:smoke:build",
     "test:smoke:pack:cli": "pnpm --filter @lesliechan721/aw test:smoke:pack:cli",
+    "test:smoke:authoring:external": "pnpm --filter @lesliechan721/aw test:smoke:authoring:external",
     "test:smoke:stage:catalog": "pnpm --filter @lesliechan721/aw test:smoke:stage:catalog",
     "test:smoke:publish:catalog": "pnpm --filter @lesliechan721/aw test:smoke:publish:catalog",
     "test:smoke:publish:release": "pnpm --filter @lesliechan721/aw test:smoke:publish:release",

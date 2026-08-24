@@ -74,7 +74,7 @@ aw status
 | --- | --- | --- |
 | [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写或评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
 | [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审 Agent Skill，设计或审核 Skill Eval；人工依赖 `agent-content-toolkit` | Codex / Claude Code |
-| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在本仓库创建或评审 AW 插件；人工依赖前两个通用工具插件 | Codex / Claude Code |
+| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在任意 Workspace v1 创建或评审 AW 插件；人工依赖前两个通用工具插件 | Codex / Claude Code |
 
 ## 使用示例
 
@@ -199,21 +199,36 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 
 ## 本地开发与发版流程
 
-插件作者先确认已安装的 CLI，再使用稳定、非交互的公开入口：
+### 第三方插件作者快速闭环
+
+第三方作者只需要 Node.js 22+ 和已安装的 `aw` CLI，不需要 clone 本仓库、`pnpm` monorepo 或官方 release 脚本。先运行各命令的 `--help`，并使用 Workspace v1：
 
 ```bash
+workspace=/absolute/path/to/workspace
+
 aw --version
-aw plugin init <plugin-name> --description "..." --skill-description "..."
-aw plugin add-skill <plugin-name> --skill-name <skill-name> --skill-description "..."
-aw plugin validate plugins/<plugin-name>
-aw plugin status --all --base HEAD
-aw skill validate <skill-directory> --frontmatter-profile portable-agent-skills
+aw catalog init --workspace-root "$workspace"
+aw plugin init example-plugin \
+  --description "Example plugin." \
+  --skill-description "Create an example plugin Skill." \
+  --workspace-root "$workspace"
+aw plugin validate plugins/example-plugin --workspace-root "$workspace" --json
+aw plugin test plugins/example-plugin --workspace-root "$workspace" --json
+aw plugin build plugins/example-plugin --workspace-root "$workspace" --json
+aw catalog build --workspace-root "$workspace" --json
+aw catalog validate "$workspace/.aw/catalog" --json
+
+AW_HOME=/tmp/aw-home \
+  aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json
+AW_HOME=/tmp/aw-home \
+  aw install local-example/example-plugin -p both --json
 ```
 
-这些命令可用 `--help` 查看完整参数。`plugin validate --json` 和 `skill validate --json` 各输出一个机器结果对象；`status --json` 输出 schema 3 development 结果。deprecated `check-versions` 返回相同对象，并向 stderr 输出迁移提示。不要用 `npx` 隐式安装作者工具。
-目标插件不在默认 `plugins/<plugin-name>` 时，`init`、`add-skill` 和单插件
-`status` 传 `--plugin-root <path>`；相对路径按 `--repo-root` 解析，且目标必须位于该 Git 工作区内。
-`validate` 和 `status` 会拒绝 repo/plugin root、`.agents-plugin` 或 manifest 路径链中的符号链接和错误节点类型；不要用链接重定向作者根或 manifest。
+`aw plugin status <plugin> --workspace-root "$workspace"` 不要求 Git；只有明确传入 `--base <git-ref>` 时才要求 Git。生成的 snapshot、digest 和 platform marketplace 都不能手改。完整 layout、Git 发布、依赖选择器、信任边界和恢复规则见[第三方插件作者指南](docs/plugin-authoring.md)。
+
+### 本仓库维护与官方发版
+
+以下命令只面向本仓库维护者，不是第三方插件作者的常规路径：
 
 ```bash
 make install

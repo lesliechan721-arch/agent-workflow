@@ -1,6 +1,6 @@
 # Architecture
 
-本文件定义 CLI 的稳定产品合同和模块边界。TypeScript 实现方式见[编码约定](coding-conventions.md)，测试选择见[测试指南](testing.md)，插件作者工作流见[插件维护指南](plugin-maintenance.md)。
+本文件定义 CLI 的稳定产品合同和模块边界。TypeScript 实现方式见[编码约定](coding-conventions.md)，测试选择见[测试指南](testing.md)，第三方作者工作流见[插件作者指南](plugin-authoring.md)，本仓库维护流程见[插件维护指南](plugin-maintenance.md)。
 
 公开包 `@lesliechan721/aw-plugin-core` 拥有 plugin manifest 的版本、JSON Schema 和运行时结构验证合同。CLI 依赖同版本 core，并在该结构合同之上提供平台 adapter、Catalog、作者工具和 transport。Eval、core 与 CLI 使用同一版本发布，顺序为 `Eval → Core → CLI`。
 
@@ -39,15 +39,16 @@
 ## Distribution and Runtime State
 
 ```text
-插件源码
+Source Workspace
+  plugins/marketplace-source.json
   plugins/<name>/.agents-plugin/plugin.json
   plugins/<name>/skills/**
-          ↓ pnpm build
-本地 schema 4 Catalog snapshot
-  packages/cli/plugins-dist/
-          ↓ Catalog 发布
-Git Catalog source
+          ↓ aw catalog build
+generated schema 4 Catalog snapshot
+  .aw/catalog/
           ↓ Git/path source 解析
+installed plugin
+          ↓ AW 写入
 <AW_HOME>/
   catalog-sources.json                 [强配置]
   plugin-config/**                     [强配置]
@@ -57,7 +58,7 @@ Git Catalog source
 ```
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
-- `pnpm build` 生成本地 schema 4 snapshot。`packages/cli/dist/`、`packages/cli/plugins-dist/` 和 `.release/` 都是生成目录，不手工修改。
+- 第三方 workspace 用 `aw catalog build` 生成 `.aw/catalog` schema 4 snapshot；本仓库维护者的 `pnpm build` 还会生成本地 staging。两种输出都是生成目录，不手工修改。
 - `aw catalog build` 从独立 workspace 生成 `.aw/catalog` development snapshot；`aw plugin build` 默认生成 `.aw/plugins/<name>`。两者先在同父 staging 完整构建和验证，再替换已证明为生成物的旧输出，并拒绝 workspace 外、符号链接及 `.git`、`plugins` 等受保护边界。
 - `aw catalog publish` 从干净且已有提交的 Source Workspace 发布到用户配置的 Git remote。Core 准备 schema 4 published snapshot、完整 release ledger 和 release identity；CLI 只负责 Git 前置条件、确认、隔离 commit/tag 和一次 atomic push。第三方 Catalog 使用独立 branch 根和不可变 `catalog-v<version>` 注解 tag，不使用官方 `catalog/latest|beta` refs。首次发布创建 root commit，后续发布只以读取并验证的远端 branch commit 为父提交。
 - 第三方发布在第一次远端写入前保存 gitignored `.aw/publish/attempts/<version>.json`。每个版本文件独立保留；文件损坏或发布结果不确定时只阻止该版本，作者用 `aw catalog version <higher>` 恢复。该恢复合同不增加 force、补偿 push 或平台专用发布路径。

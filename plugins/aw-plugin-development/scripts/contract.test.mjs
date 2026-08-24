@@ -72,13 +72,19 @@ test('review adapter runtime contains only lightweight review and release tools'
   assert.ok((await readFile(path.join(skillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
 });
 
-test('author adapter still delegates deterministic work to stable AW CLI commands', async () => {
+test('author adapter uses public workspace-root CLI commands and never auto-publishes', async () => {
   const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
-  // Static contract exception: installed agents must discover every public authoring command and must not execute an undeclared fallback; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
-  for (const command of ['init', 'add-skill', 'validate', 'status']) {
+  // Static contract exception: installed agents must discover every public authoring command and preserve the no-auto-publish boundary; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  for (const command of ['init', 'add-skill', 'validate', 'test', 'build', 'status']) {
     assert.match(skill, new RegExp(`aw plugin ${command} --help`, 'u'));
-    assert.match(skill, new RegExp(`aw plugin ${command}(?: <| --)`, 'u'));
+    assert.match(skill, new RegExp(`aw plugin ${command}[\\s\\S]*--workspace-root`, 'u'));
   }
+  for (const command of ['init', 'build', 'validate']) {
+    assert.match(skill, new RegExp(`aw catalog ${command} --help`, 'u'));
+  }
+  assert.match(skill, /aw catalog publish --help/u);
+  assert.match(skill, /绝不自动 publish/u);
+  assert.doesNotMatch(skill, /--repo-root|pnpm plugin:test|pnpm build/u);
   assert.match(skill, /不得回退到本 Skill 的本地工具副本/u);
 });
 

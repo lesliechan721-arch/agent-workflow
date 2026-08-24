@@ -64,7 +64,7 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 
 ## 运行时 Context
 
-AW 会为 lifecycle 和 `pnpm plugin:test` 写入一个临时 JSON context，并把路径放到 `AW_PLUGIN_CONTEXT`。Node 入口建议这样读取：
+AW 会为 lifecycle 和 `aw plugin test` 写入一个临时 JSON context，并把路径放到 `AW_PLUGIN_CONTEXT`。Node 入口建议这样读取：
 
 ```js
 import { readFile } from 'node:fs/promises';
@@ -89,7 +89,7 @@ const context = await readAwContext();
 | `plugin.sourceId`、`plugin.sourceIdentity`                     | namespaced source identity；真实 multi-source lifecycle 提供                   |
 | `plugin.pluginId`                                              | canonical `sourceId/pluginName`；由已验证的 source identity 和插件名构造       |
 | `plugin.rootDir`                                               | 当前运行的 bundle root，等同 `AW_PLUGIN_ROOT`                                  |
-| `sourceRoot`                                                   | 仅 `pnpm plugin:test` 提供，指向原始源码插件根                                 |
+| `sourceRoot`                                                   | 仅 `aw plugin test` 提供，指向原始源码插件根                                   |
 | `platform`                                                     | `codex` 或 `claude`                                                            |
 | `scope`                                                        | `user` 或 `project`                                                            |
 | `cwd`                                                          | 命令项目根或测试 runner 的隔离项目根                                           |
@@ -101,7 +101,7 @@ const context = await readAwContext();
 | `config.values`                                                | 已校验的 effective values                                                      |
 | `config.sources`                                               | 每个 key 的来源：`default`、`user`、`projectShared`、`projectLocal`、`missing` |
 | `config.issues`                                                | 配置问题，lifecycle 正常执行前应为空                                           |
-| `script.runner`、`script.path`、`script.args`、`script.source` | 当前脚本解析结果；`pnpm plugin:test` 中 `script.path` 可为 `null`              |
+| `script.runner`、`script.path`、`script.args`、`script.source` | 当前脚本解析结果；`aw plugin test` 中 `script.path` 可为 `null`                |
 | `artifacts`                                                    | install/upgrade 过程中生成的 managed artifacts                                 |
 
 环境变量白名单：

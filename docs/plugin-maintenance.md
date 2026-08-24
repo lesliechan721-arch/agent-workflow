@@ -1,6 +1,6 @@
 # 插件维护指南
 
-本文件面向人类维护者，负责插件源码边界、维护入口和仓库级验证。它不保存完整 Agent 工作流、字段规范或模型 Eval 运行手册。
+本文件面向本仓库人类维护者，负责插件源码边界、维护入口和仓库级验证。它不保存完整 Agent 工作流、字段规范或模型 Eval 运行手册。第三方作者先读[插件作者指南](plugin-authoring.md)；它使用公开 CLI，不需要 clone 本仓库。
 
 ## 源码与生成物
 
@@ -22,6 +22,7 @@
 - `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，并依赖 `agent-content-toolkit`。
 - `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，并依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`；使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`，也可以安装其它输出 `EvalRunBundle v3` 的兼容 runner。
 - AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- `aw-plugin-development` 是 Agent-facing Developer Assistant，不是 SDK 或规范真值。它只能编排已安装 `aw` CLI 的公开作者命令；第三方 workspace 不要求有本仓库的 `packages/cli`、`node_modules` 或 release 脚本。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
 - 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin`、`aw-plugin-development` Author 和 Skill Reviewer 只编排这些命令，不保存第二份核心 frontmatter 或 Codex metadata 实现。
 - 默认插件根是 `<workspace-root>/plugins/<plugin-name>`。所有作者命令使用 `--workspace-root`；`init`、`add-skill` 和单插件 `status` 可显式传 `--plugin-root <path>`。该路径必须位于 workspace 内并与 plugin name 匹配。`validate` 和 `status` 拒绝 workspace/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到 workspace 外。只有使用 `status --base` 等差异功能时要求 Git；`status --all` 保留 `plugins/` 扫描语义。

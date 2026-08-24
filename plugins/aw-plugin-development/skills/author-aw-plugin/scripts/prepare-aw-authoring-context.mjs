@@ -25,7 +25,7 @@ function usage() {
     '  --components <json-file>  Required JSON array of component requests.',
     '  --plugin <name>            Required only when the manifest does not exist.',
     '  --change-mode <mode>       create or change. Inferred from the manifest by default.',
-    '  --repo-root <path>         Target AW workspace root. Default: current directory.',
+    '  --workspace-root <path>    Target AW workspace root. Default: current directory.',
     '  --allowed-file <path>      Add an authorized file or directory. Repeatable.',
     '  --product <name>           CODEX or CLAUDE. Repeatable.',
     '  --source-profile <id>      Default: aw-default.',
@@ -62,7 +62,7 @@ function parseArgs(argv) {
     products: [],
     sourceProfile: 'aw-default',
     buildRequired: true,
-    repoRoot: process.cwd(),
+    workspaceRoot: process.cwd(),
     validators: [],
   };
   for (let index = 1; index < args.length; index += 1) {
@@ -82,7 +82,7 @@ function parseArgs(argv) {
     if (flag === '--components') options.componentsFile = path.resolve(value);
     else if (flag === '--plugin') options.plugin = value;
     else if (flag === '--change-mode') options.changeMode = value;
-    else if (flag === '--repo-root') options.repoRoot = path.resolve(value);
+    else if (flag === '--workspace-root') options.workspaceRoot = path.resolve(value);
     else if (flag === '--allowed-file') options.allowedFiles.push(value);
     else if (flag === '--product') options.products.push(value.toUpperCase());
     else if (flag === '--source-profile') options.sourceProfile = value;
@@ -100,7 +100,7 @@ function parseArgs(argv) {
   }
   options.pluginRoot = path.isAbsolute(options.pluginRoot)
     ? path.resolve(options.pluginRoot)
-    : path.resolve(options.repoRoot, options.pluginRoot);
+    : path.resolve(options.workspaceRoot, options.pluginRoot);
   return options;
 }
 
@@ -207,7 +207,7 @@ async function main() {
 
   process.stdout.write(JSON.stringify({
     schemaVersion: 3,
-    repository: path.basename(options.repoRoot) || 'aw-workspace',
+    repository: path.basename(options.workspaceRoot) || 'aw-workspace',
     plugin,
     pluginRoot: options.pluginRoot,
     changeMode,

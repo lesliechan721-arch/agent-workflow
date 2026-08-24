@@ -55,6 +55,31 @@ test('AW author does not make Audit, Review, or model Eval part of change comple
   assert.match(validation, /Author 的完成条件不依赖模型 Eval/u);
 });
 
+test('AW author references keep public commands aligned to workspace-root authoring', async () => {
+  // Static contract exception: the final reference table is the installed agent-facing command contract; behavior test is not suitable because the CLI is external to this plugin and the risk is an agent being instructed to use an obsolete command.
+  const reference = await readFile(
+    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-validation-and-version.md'),
+    'utf8',
+  );
+  for (const command of [
+    'aw catalog init',
+    'aw catalog version',
+    'aw catalog build',
+    'aw catalog validate',
+    'aw catalog publish',
+    'aw catalog source add',
+    'aw plugin init',
+    'aw plugin add-skill',
+    'aw plugin validate',
+    'aw plugin test',
+    'aw plugin build',
+    'aw plugin status',
+    'aw install',
+  ]) assert.match(reference, new RegExp(command.replaceAll(' ', '\\s+'), 'u'));
+  assert.match(reference, /--workspace-root <workspace-root>/u);
+  assert.doesNotMatch(reference, /--repo-root|pnpm plugin:test|pnpm build/u);
+});
+
 test('AW config reference keeps private values out of presets', async () => {
   // Static contract exception: installed author instructions must retain the no-secret preset rule; behavior test is not suitable because this plugin supplies author guidance and does not execute config writes itself.
   const reference = await readFile(
