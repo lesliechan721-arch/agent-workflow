@@ -827,6 +827,7 @@ async function assertRegularSkillLocalFile(options: {
   lexicalTarget: string;
   relativeTarget: string;
   origin?: string;
+  declaredGeneratedFiles?: ReadonlySet<string>;
 }): Promise<void> {
   const referenceLabel = formatReference(
     options.skillKey,
@@ -843,6 +844,7 @@ async function assertRegularSkillLocalFile(options: {
       stats = await fs.lstat(current);
     } catch (error) {
       if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        if (options.declaredGeneratedFiles?.has(options.relativeTarget)) return;
         throw new Error(`Invalid runtime Skill closure: ${referenceLabel} is missing.`);
       }
       throw error;
@@ -889,7 +891,10 @@ function isAgentFacingTextResource(relativeTarget: string): boolean {
   return ['.md', '.markdown', '.txt'].includes(path.posix.extname(relativeTarget).toLowerCase());
 }
 
-export async function validateRuntimeSkillClosure(skillRoot: string): Promise<void> {
+export async function validateRuntimeSkillClosure(
+  skillRoot: string,
+  options: { declaredGeneratedFiles?: ReadonlySet<string> } = {},
+): Promise<void> {
   const skillRootStats = await fs.lstat(skillRoot).catch(() => undefined);
   if (!skillRootStats?.isDirectory() || skillRootStats.isSymbolicLink()) {
     throw new Error(`Invalid runtime Skill closure: skill ${JSON.stringify(path.basename(skillRoot))} root must be a regular directory.`);
@@ -948,8 +953,13 @@ export async function validateRuntimeSkillClosure(skillRoot: string): Promise<vo
         lexicalTarget: reference.lexicalTarget,
         relativeTarget,
         origin,
+        declaredGeneratedFiles: options.declaredGeneratedFiles,
       });
-      if (isAgentFacingTextResource(relativeTarget) && !visited.has(relativeTarget)) {
+      if (
+        !options.declaredGeneratedFiles?.has(relativeTarget)
+        && isAgentFacingTextResource(relativeTarget)
+        && !visited.has(relativeTarget)
+      ) {
         pending.push(relativeTarget);
       }
     }

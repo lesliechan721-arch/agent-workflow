@@ -152,6 +152,23 @@ describe('buildConfig validation', () => {
     });
   });
 
+  it('normalizes declared build-generated Skill runtime targets', () => {
+    const manifest = validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      buildConfig: {
+        generatedSkillRuntimeFiles: [{
+          skill: 'author',
+          target: 'references/manifest.generated.md',
+        }],
+      },
+    });
+
+    expect(manifest.buildConfig?.generatedSkillRuntimeFiles).toEqual([{
+      skill: 'author',
+      target: 'references/manifest.generated.md',
+    }]);
+  });
+
   it('keeps native runtime file defaults and accepts explicit portable distribution projection', () => {
     const native = validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
@@ -280,6 +297,22 @@ describe('buildConfig validation', () => {
     {
       buildConfig: { runtimeExports: [{ name: 'registry', source: './registry.json', extra: true }] },
       error: 'unknown field "extra"',
+    },
+    {
+      buildConfig: {
+        generatedSkillRuntimeFiles: [{ skill: 'demo', target: 'SKILL.md' }],
+      },
+      error: 'below references/, assets/, or scripts/',
+    },
+    {
+      buildConfig: {
+        generatedSkillRuntimeFiles: [{
+          skill: 'demo',
+          target: 'references/generated.md',
+          platforms: ['codex'],
+        }],
+      },
+      error: 'unknown field "platforms"',
     },
   ])('rejects an unsafe catalog runtime projection manifest', ({ buildConfig, error }) => {
     expect(() => validatePluginManifest('/tmp/plugin', {

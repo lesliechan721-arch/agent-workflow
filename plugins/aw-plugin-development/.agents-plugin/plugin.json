@@ -17,7 +17,21 @@
         "plugin": "@aw/cli",
         "export": "skill-frontmatter-capabilities",
         "env": "AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES"
+      },
+      {
+        "plugin": "@aw/cli",
+        "export": "plugin-authoring-capabilities",
+        "env": "AW_PLUGIN_IMPORT_PLUGIN_AUTHORING_CAPABILITIES"
       }
+    ],
+    "generatedSkillRuntimeFiles": [
+      { "skill": "author-aw-plugin", "target": "references/skill-frontmatter-capabilities.md" },
+      { "skill": "author-aw-plugin", "target": "references/plugin-manifest-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/build-config-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/extensions-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/slash-command-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/mcp-app-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/config-lifecycle-artifact-capabilities.generated.md" }
     ],
     "skillRuntimeFiles": [
       {

@@ -23,10 +23,12 @@
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `authoring/` 是 `aw plugin init`、`add-skill`、`validate` 和 `status` 的确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。
+- `utils/plugin-authoring-capabilities.json` 是插件作者聚焦字段视图的 canonical registry。CLI virtual build export 只投影该真值；复杂规则通过 `verifiedSource` 继续归属 canonical manifest/author validator。
 
 ### Module Invariants
 
 - renderer 只返回 `ArtifactPlan`，不直接写平台文件。
+- build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
 - live ownership 和实际平台组件是插件存在、清理和 status 的唯一真值。不得新增安装合同存储、第二套安装状态或持久依赖图。

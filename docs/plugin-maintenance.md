@@ -33,6 +33,10 @@
 
 ## Catalog build-time 文件复用
 
+CLI 的 `plugin-authoring-capabilities` registry 是 AW 插件作者字段视图的 canonical 数据源。`aw-plugin-development` 在 staging build 中通过 reserved `@aw/cli` build import 读取它，并生成六个聚焦 reference；插件源码不保存 registry 副本。复杂校验仍由 registry 的 `verifiedSource` 指向 canonical validator。
+
+`buildConfig.generatedSkillRuntimeFiles` 只声明 `scripts.node.build` 必须创建的最终 Skill 文件。源码 closure 仅允许这些精确 target 尚未存在；build/materialization 后每个选中 surface 都必须存在 regular file，并通过完整 nested runtime closure。该字段不复制文件，也不形成安装依赖。
+
 manifest `dependencies` 声明安装或升级某插件时必须同时满足的同 source 插件。它只接受插件名，不接受 `source/plugin`。`buildConfig.buildImports` 和 `skillRuntimeFiles.import` 只复用构建期 canonical 文件，不声明安装依赖，也不能用于推断 `dependencies`。
 
 - provider 用 `buildConfig.runtimeExports: [{ "name": "<stable-kebab-name>", "source": "./<file>" }]` 显式发布 canonical source file。source 必须是插件根内 regular non-symlink file，且不能位于 Skill、report、eval、dependency 或 build temporary tree。

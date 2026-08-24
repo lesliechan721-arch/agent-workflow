@@ -1280,6 +1280,25 @@ describe('runtime Skill resource closure', () => {
     await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
   });
 
+  it('allows only exact declared generated files during source closure validation', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '[generated](references/generated.md)',
+      '[nested missing](references/nested/missing.md)',
+    ].join('\n'));
+
+    await expect(validateRuntimeSkillClosure(skillRoot, {
+      declaredGeneratedFiles: new Set(['references/generated.md']),
+    })).rejects.toThrow('references/nested/missing.md');
+
+    await fs.outputFile(
+      path.join(skillRoot, 'references', 'nested', 'missing.md'),
+      '[deep missing](deep.md)\n',
+    );
+    await expect(validateRuntimeSkillClosure(skillRoot, {
+      declaredGeneratedFiles: new Set(['references/generated.md']),
+    })).rejects.toThrow('markdown-link target "deep.md" from "references/nested/missing.md"');
+  });
+
   it('scans balanced, angle, escaped, and reference-definition Markdown destinations', async () => {
     const skillRoot = await createRuntimeSkill([
       '[balanced](references/guide_(v2).md)',

@@ -72,7 +72,9 @@ import {
   resolveSlashCommands,
 } from './slash-commands.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
+import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
 import { resolveRuntimeExportSource } from './catalog-runtime-projection.js';
+import { getPluginAuthoringAcceptedValues } from './plugin-authoring-capabilities.js';
 import {
   formatMarketplaceProductsForError,
   normalizeMarketplaceProductToken,
@@ -83,11 +85,18 @@ import {
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 5;
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
-const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
+const MANIFEST_POLICY_PRODUCTS = new Set(
+  getPluginAuthoringAcceptedValues('plugin-manifest', 'marketplace.policy.products'),
+);
 const MARKETPLACE_AUTHENTICATION_POLICIES = new Set<MarketplaceAuthenticationPolicy>([
-  'ON_INSTALL',
-  'ON_USE',
+  ...getPluginAuthoringAcceptedValues(
+    'plugin-manifest',
+    'marketplace.policy.authentication',
+  ) as MarketplaceAuthenticationPolicy[],
 ]);
+const MARKETPLACE_INSTALLATION_POLICIES = new Set(
+  getPluginAuthoringAcceptedValues('plugin-manifest', 'marketplace.policy.installation'),
+);
 const CATALOG_CHANNELS = new Set<CatalogChannel>(['latest', 'beta']);
 const NODE_RUNNABLE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
@@ -713,9 +722,15 @@ function normalizeMarketplacePolicy(
       `Invalid ${fieldName}.authentication: expected "ON_INSTALL" or "ON_USE".`,
     );
   }
+  const installation = ensureString(input.installation, `${fieldName}.installation`);
+  if (!MARKETPLACE_INSTALLATION_POLICIES.has(installation)) {
+    throw new Error(
+      `Invalid ${fieldName}.installation: expected ${[...MARKETPLACE_INSTALLATION_POLICIES].map((value) => JSON.stringify(value)).join(', ')}.`,
+    );
+  }
 
   return {
-    installation: ensureString(input.installation, `${fieldName}.installation`),
+    installation,
     authentication: authentication as MarketplaceAuthenticationPolicy,
     products: normalizeMarketplaceProducts(input.products, `${fieldName}.products`),
   };
@@ -1032,6 +1047,44 @@ function normalizeSkillRuntimeFiles(
   });
 }
 
+function normalizeGeneratedSkillRuntimeFiles(
+  value: unknown,
+  fieldName: string,
+): NonNullable<BuildConfig['generatedSkillRuntimeFiles']> {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an array.`);
+  }
+  const targets = new Set<string>();
+  return value.map((entry, index) => {
+    const entryField = `${fieldName}[${index}]`;
+    const input = assertObject(entry, entryField);
+    assertAllowedKeys(input, entryField, ['skill', 'target', 'distributions']);
+    const skill = ensurePluginName(input.skill, `${entryField}.skill`);
+    const target = normalizeSkillRuntimeTarget(input.target, `${entryField}.target`);
+    const collisionKey = `${skill}/${target}`;
+    if (targets.has(collisionKey)) {
+      throw new Error(`Invalid ${fieldName}: duplicate target "${collisionKey}".`);
+    }
+    targets.add(collisionKey);
+    const distributions: Array<'agent-skills'> | undefined = input.distributions === undefined
+      ? undefined
+      : ensureStringArray(input.distributions, `${entryField}.distributions`).map((distribution, distributionIndex) => {
+          if (distribution !== 'agent-skills') {
+            throw new Error(`Invalid ${entryField}.distributions[${distributionIndex}]: expected agent-skills.`);
+          }
+          return distribution;
+        });
+    if (distributions && new Set(distributions).size !== distributions.length) {
+      throw new Error(`Invalid ${entryField}.distributions: duplicate distribution.`);
+    }
+    return {
+      skill,
+      target,
+      ...(distributions ? { distributions } : {}),
+    };
+  });
+}
+
 function normalizeBuildConfig(
   pluginRoot: string,
   value: unknown,
@@ -1046,6 +1099,7 @@ function normalizeBuildConfig(
     'runtimeExports',
     'buildImports',
     'skillRuntimeFiles',
+    'generatedSkillRuntimeFiles',
   ]);
 
   const buildConfig: BuildConfig = {};
@@ -1138,6 +1192,12 @@ function normalizeBuildConfig(
       pluginRoot,
       input.skillRuntimeFiles,
       `${fieldName}.skillRuntimeFiles`,
+    );
+  }
+  if (input.generatedSkillRuntimeFiles !== undefined) {
+    buildConfig.generatedSkillRuntimeFiles = normalizeGeneratedSkillRuntimeFiles(
+      input.generatedSkillRuntimeFiles,
+      `${fieldName}.generatedSkillRuntimeFiles`,
     );
   }
 
@@ -1794,7 +1854,9 @@ function normalizePluginConfigSchema(value: unknown, fieldName: string): PluginC
 
   const schemaInput = assertObject(input.schema, `${fieldName}.schema`);
   const schema: PluginConfigSchema['schema'] = {};
-  const supportedTypes = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
+  const supportedTypes = new Set(
+    getPluginAuthoringAcceptedValues('config-lifecycle-artifact', 'config.schema.<key>.type'),
+  );
 
   for (const [key, rawField] of Object.entries(schemaInput)) {
     validateConfigKey(key, `${fieldName}.schema`);
@@ -1896,15 +1958,19 @@ function normalizePluginConfigSchema(value: unknown, fieldName: string): PluginC
   };
 }
 
-const ARTIFACT_TARGETS = new Set<ArtifactTarget>([
-  'codex.developerInstructionsBlock',
-  'codex.agentRole',
-  'codex.skill',
-  'claude.skill',
-  'agent-skills.skill',
-]);
+const ARTIFACT_TARGETS = new Set<ArtifactTarget>(
+  getPluginAuthoringAcceptedValues(
+    'config-lifecycle-artifact',
+    'artifacts.targets[].target',
+  ) as ArtifactTarget[],
+);
 
-const ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
+const ARTIFACT_STATES = new Set<ArtifactState>(
+  getPluginAuthoringAcceptedValues(
+    'config-lifecycle-artifact',
+    'ArtifactPlan.artifacts[].state',
+  ) as ArtifactState[],
+);
 const DYNAMIC_ARTIFACT_KINDS = new Set<DynamicArtifactKind>(['instruction', 'codexRole', 'skill']);
 const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET: Partial<Record<ArtifactTarget, CodexProjectManagedKind>> = {
   'codex.developerInstructionsBlock': 'instruction',
@@ -3058,7 +3124,7 @@ async function validateSourceSkillInventory(
   );
 
   for (const [index, entry] of (manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    const nativeSelected = entry.platforms !== undefined || entry.distributions === undefined;
+    const nativeSelected = entry.distributions === undefined;
     const portableSelected = entry.distributions?.includes('agent-skills') ?? false;
     if (nativeSelected && (!manifest.skills || !staticSkillNameSet.has(entry.skill))) {
       throw new Error(
@@ -3074,6 +3140,53 @@ async function validateSourceSkillInventory(
       throw new Error(
         `Invalid buildConfig.skillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
       );
+    }
+  }
+  for (const [index, entry] of (manifest.buildConfig?.generatedSkillRuntimeFiles ?? []).entries()) {
+    const nativeSelected = entry.distributions === undefined;
+    const portableSelected = entry.distributions?.includes('agent-skills') ?? false;
+    if (nativeSelected && (!manifest.skills || !staticSkillNameSet.has(entry.skill))) {
+      throw new Error(
+        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
+      );
+    }
+    if (portableSelected && !portableSkillNameSet.has(entry.skill)) {
+      throw new Error(
+        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared portable Skill key.`,
+      );
+    }
+    if (nativeSelected && dynamicSkillNameSet.has(entry.skill)) {
+      throw new Error(
+        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
+      );
+    }
+  }
+
+  const generatedEntries = manifest.buildConfig?.generatedSkillRuntimeFiles ?? [];
+  const runtimeEntries = manifest.buildConfig?.skillRuntimeFiles ?? [];
+  const closureSurfaces = [
+    {
+      root: skillsRoot,
+      generated: generatedEntries.filter((entry) => entry.distributions === undefined),
+      runtime: runtimeEntries.filter((entry) =>
+        entry.platforms !== undefined || entry.distributions === undefined),
+    },
+    {
+      root: portableSkillsRoot,
+      generated: generatedEntries.filter((entry) => entry.distributions?.includes('agent-skills')),
+      runtime: runtimeEntries.filter((entry) => entry.distributions?.includes('agent-skills')),
+    },
+  ];
+  for (const surface of closureSurfaces) {
+    const generatedSkillNames = new Set(surface.generated.map((entry) => entry.skill));
+    for (const skillName of [...generatedSkillNames].sort()) {
+      const declaredGeneratedFiles = new Set([
+        ...surface.runtime.filter((entry) => entry.skill === skillName).map((entry) => entry.target),
+        ...surface.generated.filter((entry) => entry.skill === skillName).map((entry) => entry.target),
+      ]);
+      await validateRuntimeSkillClosure(path.join(surface.root!, skillName), {
+        declaredGeneratedFiles,
+      });
     }
   }
 
@@ -3460,6 +3573,7 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
     delete buildConfig.runtimeExports;
     delete buildConfig.buildImports;
     delete buildConfig.skillRuntimeFiles;
+    delete buildConfig.generatedSkillRuntimeFiles;
     if (Object.keys(buildConfig).length === 0) {
       buildConfig = undefined;
     }

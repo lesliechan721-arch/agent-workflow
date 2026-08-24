@@ -136,26 +136,34 @@ async function resolveCliVirtualExport(
   if (purpose !== 'build') {
     throw new Error('Invalid catalog runtime import: virtual provider "@aw/cli" is only available to buildImports.');
   }
-  if (reference.export !== 'skill-frontmatter-capabilities') {
+  const virtualExports = {
+    'skill-frontmatter-capabilities': 'skill-frontmatter-capabilities.json',
+    'plugin-authoring-capabilities': 'plugin-authoring-capabilities.json',
+  } as const;
+  const sourceFile = virtualExports[reference.export as keyof typeof virtualExports];
+  if (!sourceFile) {
     throw new Error(`Invalid catalog runtime import: unknown @aw/cli export "${reference.export}".`);
   }
   const packageRoot = options.cliVirtualExportRoot ?? resolveCliPackageRoot();
   const sourceCandidates = options.cliVirtualExportRoot
-    ? [path.join(packageRoot, 'src', 'utils', 'skill-frontmatter-capabilities.json')]
+    ? [path.join(packageRoot, 'src', 'utils', sourceFile)]
     : [
-        path.join(packageRoot, 'src', 'utils', 'skill-frontmatter-capabilities.json'),
-        path.join(packageRoot, 'dist', 'src', 'utils', 'skill-frontmatter-capabilities.json'),
+        path.join(packageRoot, 'src', 'utils', sourceFile),
+        path.join(packageRoot, 'dist', 'src', 'utils', sourceFile),
       ];
   const sourceCandidate = sourceCandidates.find((candidate) => fs.existsSync(candidate));
   if (!sourceCandidate) {
+    const registryName = reference.export === 'skill-frontmatter-capabilities'
+      ? 'skill frontmatter'
+      : reference.export;
     throw new Error(
-      `Invalid @aw/cli runtime export: canonical skill frontmatter registry is missing from ${packageRoot}.`,
+      `Invalid @aw/cli runtime export: canonical ${registryName} registry is missing from ${packageRoot}.`,
     );
   }
   const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
     packageRoot,
     `./${path.relative(packageRoot, sourceCandidate).split(path.sep).join('/')}`,
-    '@aw/cli runtime export "skill-frontmatter-capabilities"',
+    `@aw/cli runtime export "${reference.export}"`,
   );
   const packageJson = options.cliProviderVersion === undefined
     ? await fs.readJson(path.join(packageRoot, 'package.json')) as { version?: unknown }
@@ -168,7 +176,7 @@ async function resolveCliVirtualExport(
     provider: '@aw/cli',
     providerVersion,
     name: reference.export,
-    source: './src/utils/skill-frontmatter-capabilities.json',
+    source: `./src/utils/${sourceFile}`,
     sourcePath: canonicalSource.sourceRealPath,
     sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
     canonicalSource,

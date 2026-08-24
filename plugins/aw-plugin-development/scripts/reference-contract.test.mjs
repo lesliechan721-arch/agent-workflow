@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -11,6 +12,7 @@ const pluginContext = process.env.AW_PLUGIN_CONTEXT
 const runtimeRoot = pluginContext?.platform
   ? path.join(pluginRoot, pluginContext.platform)
   : pluginRoot;
+const sourceRoot = pluginContext?.sourceRoot ?? pluginRoot;
 
 test('AW author maps every supported component and core lifecycle branch to a direct reference', async () => {
   // Static contract exception: installed agents must discover each maintained AW author reference from the final Skill entrypoint; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
@@ -37,6 +39,75 @@ test('AW author maps every supported component and core lifecycle branch to a di
     const content = await readFile(path.join(root, 'references', ref), 'utf8');
     assert.ok(content.length > 150, ref + ' must contain focused guidance');
     assert.match(skill, new RegExp('references/' + ref.replaceAll('.', '\\.'), 'u'));
+  }
+  for (const ref of [
+    'plugin-manifest-capabilities.generated.md',
+    'build-config-capabilities.generated.md',
+    'extensions-capabilities.generated.md',
+    'slash-command-capabilities.generated.md',
+    'mcp-app-capabilities.generated.md',
+    'config-lifecycle-artifact-capabilities.generated.md',
+  ]) {
+    const content = await readFile(path.join(root, 'references', ref), 'utf8');
+    assert.ok(content.length > 150, ref + ' must contain a focused generated view');
+  }
+});
+
+test('generated authoring views are fresh projections of the CLI canonical registry', async () => {
+  // Static contract exception: installed agents consume these generated tables as a public field contract; behavior test is not suitable because freshness is byte provenance between the canonical registry and final runtime reference.
+  const registryPath = path.resolve(
+    sourceRoot,
+    '..',
+    '..',
+    'packages/cli/src/utils/plugin-authoring-capabilities.json',
+  );
+  const bytes = await readFile(registryPath);
+  const registry = JSON.parse(bytes.toString('utf8'));
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const expected = {
+    'plugin-manifest': 'plugin-manifest-capabilities.generated.md',
+    'build-config': 'build-config-capabilities.generated.md',
+    extensions: 'extensions-capabilities.generated.md',
+    'slash-command': 'slash-command-capabilities.generated.md',
+    'mcp-app': 'mcp-app-capabilities.generated.md',
+    'config-lifecycle-artifact': 'config-lifecycle-artifact-capabilities.generated.md',
+  };
+  for (const [surface, fileName] of Object.entries(expected)) {
+    const content = await readFile(
+      path.join(runtimeRoot, 'skills/author-aw-plugin/references', fileName),
+      'utf8',
+    );
+    assert.match(content, new RegExp(digest, 'u'));
+    for (const entry of registry.surfaces[surface].entries) {
+      const field = entry.field.replaceAll('|', '\\|');
+      assert.ok(content.includes(`| \`${field}\` |`), `${fileName} must include ${entry.field}`);
+    }
+  }
+});
+
+test('author references exclude repository release internals and known drift', async () => {
+  // Static contract exception: these strings would direct installed agents to unavailable or workspace-private commands; behavior test is not suitable because absence in the shipped guidance is the safety boundary.
+  const referencesRoot = path.join(runtimeRoot, 'skills/author-aw-plugin/references');
+  const files = [
+    'aw-authoring-profile.md',
+    'aw-config-and-helper.md',
+    'aw-lifecycle.md',
+    'aw-script-testing.md',
+    'aw-validation-and-version.md',
+    'build-config-spec.md',
+    'mcp-and-apps.md',
+    'plugin-manifest-spec.md',
+  ];
+  const content = (await Promise.all(files.map((file) => readFile(path.join(referencesRoot, file), 'utf8')))).join('\n');
+  for (const forbidden of [
+    'release:recover',
+    'npx -y',
+    'pnpm plugin:test',
+    'plugin-release-ledger',
+    'dist-tag',
+    'receipt schema 4',
+  ]) {
+    assert.doesNotMatch(content, new RegExp(forbidden, 'u'));
   }
 });
 

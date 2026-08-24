@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
 import { readPluginManifest, validatePluginManifest } from '../../src/utils/manifest.js';
+import { getPluginAuthoringAcceptedValues } from '../../src/utils/plugin-authoring-capabilities.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -3967,6 +3968,10 @@ describe('authoring tools', () => {
     await fs.ensureDir(copiedScripts);
     await fs.copy(path.join(sourceScripts, 'validate-plugin.mjs'), path.join(copiedScripts, 'validate-plugin.mjs'));
     await fs.copy(path.join(sourceScripts, 'lib'), path.join(copiedScripts, 'lib'));
+    await fs.copy(
+      path.join(repoRoot(), 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
+      path.join(tempRoot, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
+    );
     const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'private-preset', {});
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
@@ -5561,7 +5566,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.mjs validates manifest marketplace policy products', async () => {
+  it('validate_plugin.mjs follows registry marketplace policy values', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-manifest-products-'));
     tempDirs.push(tempRoot);
 
@@ -5605,16 +5610,33 @@ describe('authoring tools', () => {
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.marketplace.policy.products = ['codex', 'claude'];
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    for (const installation of getPluginAuthoringAcceptedValues(
+      'plugin-manifest',
+      'marketplace.policy.installation',
+    )) {
+      manifest.marketplace.policy.installation = installation;
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await expect(
+        execFileAsync('node', [scriptPath, pluginDir], {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        }),
+      ).resolves.toMatchObject({
+        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      });
+    }
 
+    manifest.marketplace.policy.installation = 'UNKNOWN';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
         env: process.env,
         maxBuffer: 10 * 1024 * 1024,
       }),
-    ).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('marketplace.policy.installation'),
     });
   });
 
@@ -6559,6 +6581,10 @@ describe('authoring tools', () => {
         path.join(tempRoot, 'packages', 'cli', 'node_modules'),
         'dir',
       ),
+      fs.copy(
+        path.join(repoRoot(), 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
+        path.join(tempRoot, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
+      ),
     ]);
     const pluginDir = path.join(tempRoot, 'plugins', 'fallback-dependency');
     await Promise.all([
@@ -6610,6 +6636,10 @@ describe('authoring tools', () => {
           'exports.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 4;',
           'exports.validateSourcePluginManifest = async () => { throw new Error("stale v4 validator was trusted"); };',
         ].join('\n'),
+      ),
+      fs.copy(
+        path.join(repoRoot(), 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
+        path.join(tempRoot, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
       ),
     ]);
     const pluginDir = path.join(tempRoot, 'plugins', 'stale-portable');
