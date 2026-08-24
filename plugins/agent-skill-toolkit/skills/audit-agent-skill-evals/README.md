@@ -1,6 +1,6 @@
 # audit-agent-skill-evals
 
-只读审核 Agent Skill Eval 的有效性和运行结果，不创建 case、不运行 Eval，也不修改生产 Skill。
+只读审核 Agent Skill Eval 的有效性和运行结果，不创建 case、不运行 Eval，也不修改生产 Skill。preflight 和 result-triage 使用 schema v3；result-triage 精确绑定实际 EvalRunBundle digest。
 
 ## 适合使用
 

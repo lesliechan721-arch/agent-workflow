@@ -36,10 +36,10 @@ async function firstReadable(candidates) {
       await readFile(candidate, 'utf8');
       return candidate;
     } catch {
-      // Try the next generated or canonical location.
+      // Try the next canonical location.
     }
   }
-  throw new Error('Cannot locate ReviewResult schema or generated rules.');
+  throw new Error('Cannot locate ReviewResult schema.');
 }
 function approximatelyEqual(left, right) {
   return Math.abs(left - right) <= 0.01;
@@ -131,10 +131,8 @@ async function main() {
     path.join(scriptRoot, '..', 'schemas', 'review-result.schema.json'),
     path.join(scriptRoot, '..', 'assets', 'review-result.schema.json'),
   ]);
-  const rulesPath = await firstReadable([
-    path.join(scriptRoot, '..', 'standards', 'review-result-rules.generated.json'),
-    path.join(scriptRoot, '..', 'assets', 'review-result-rules.generated.json'),
-  ]);
+  const dimensionsPath = path.join(scriptRoot, '..', 'standards', 'review-dimensions.json');
+  const skillRulesPath = path.join(scriptRoot, '..', 'standards', 'skill-rules.json');
   const errors = await schemaErrors(schemaPath, options.valuePath);
   const bundle = await validatedBundle(options.bundlePath, errors);
   const inspection = bundle
@@ -143,14 +141,15 @@ async function main() {
   let calculated = { weightedScore: null, coverage: null };
 
   if (errors.length === 0) {
-    const [result, rules] = await Promise.all([
+    const [result, dimensionSource, skillRules] = await Promise.all([
       readFile(options.valuePath, 'utf8').then(JSON.parse),
-      readFile(rulesPath, 'utf8').then(JSON.parse),
+      readFile(dimensionsPath, 'utf8').then(JSON.parse),
+      readFile(skillRulesPath, 'utf8').then(JSON.parse),
     ]);
-    const policy = rules.reviewResultPolicy;
-    if (!policy) errors.push('generated ReviewResult rules are missing reviewResultPolicy');
+    const policy = skillRules.reviewResultPolicy;
+    if (!policy) errors.push('Skill rules are missing reviewResultPolicy');
     const expectedDimensions = new Map(
-      rules.dimensions.map((dimension) => [dimension.id, dimension.weight]),
+      dimensionSource.dimensions.map((dimension) => [dimension.id, dimension.weight]),
     );
     const dimensions = new Map();
     for (const dimension of result.dimensions) {

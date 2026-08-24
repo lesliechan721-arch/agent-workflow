@@ -135,6 +135,13 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 - active marketplace、backup、quarantine 和 lifecycle snapshot 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
 
+## Agent Skill Eval Runner 边界
+
+- Eval Runner 是可替换的执行适配器。每个 Runner 可以定义自己的执行计划输入；Review 从已安装 Skill 能力中选择兼容 Runner，不维护中心 dispatcher 或 Runner 配置表。
+- 所有兼容 Runner 输出统一的 `EvalRunBundle v3`。bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，不包含 Audit 字段。
+- 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。它消费 `AwSkillEvalExecutionPlan v3`，只负责本次副作用授权、运行时能力检查、执行和 bundle 完整性。
+- Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。未经 Audit/triage 的 bundle 可以作为原始诊断证据，但不得影响 Review finding、生产 Skill 修改或发布结论。
+
 ## Release Flow
 
 根级正常发布入口只有 `release:status`、`release:target`、`release:prepare` 和 `release:publish`。不提供其它正常发布命令，也不要求额外提交生成状态。

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 3,
+  "planId": "replace-me",
+  "target": {
+    "name": "example-skill",
+    "path": "./example-skill",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "cases": {
+    "paths": [
+      "./example-skill/evals/trigger-cases.json"
+    ],
+    "corpusDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "provider": {
+    "id": "aw-skill-eval-process",
+    "command": [
+      "node",
+      "provider.mjs",
+      "{prompt}"
+    ],
+    "cwd": null,
+    "env": {},
+    "capabilitiesPath": "./eval-runtime-capabilities.json",
+    "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "inheritEnvironment": false
+  },
+  "configurations": [
+    {
+      "id": "with-skill",
+      "skillMode": "with-skill",
+      "comparisonId": null,
+      "env": {}
+    }
+  ],
+  "runsPerCase": 3,
+  "timeoutMs": 180000,
+  "outputRoot": "./eval-output",
+  "capture": {
+    "outputs": true,
+    "trace": false,
+    "timing": true,
+    "usage": false
+  }
+}

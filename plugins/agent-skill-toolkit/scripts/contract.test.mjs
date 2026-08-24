@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +15,10 @@ const context = process.env.AW_PLUGIN_CONTEXT
 const sourceRoot = context?.sourceRoot ?? localRoot;
 const bundleRoot = context?.plugin?.rootDir ?? localRoot;
 const runtimeRoot = context ? path.join(bundleRoot, context.platform) : localRoot;
+
+async function exists(root, relative) {
+  return access(path.join(root, relative)).then(() => true, () => false);
+}
 
 async function runtimeExportSource(plugin, exportName) {
   const providerRoot = path.resolve(sourceRoot, '..', plugin);
@@ -30,6 +35,7 @@ test('reviewer runtime exposes only the lightweight machine contract', async () 
     .map((entry) => entry.target)
     .sort();
   assert.deepEqual(targets, [
+    'assets/review-dimensions.json',
     'assets/review-result-lite.schema.json',
     'scripts/check-agent-skill.mjs',
     'scripts/validate-review-result-lite.mjs',
@@ -61,18 +67,61 @@ test('projected runtime files match canonical sources', async () => {
   }
 });
 
-test('generated reviewer view omits scoring and release workflow state', async () => {
+test('source excludes standard views rendered during staging', async () => {
+  for (const relative of [
+    'skills/author-agent-skill/references/author-standard.md',
+    'skills/author-agent-skill/references/composition-audit.md',
+    'skills/review-agent-skill/references/review-rubric.md',
+    'skills/review-agent-skill/references/composition-fitness.md',
+    'skills/review-agent-skill/references/evidence-and-severity.md',
+    'skills/design-agent-skill-evals/references/eval-design-standard.md',
+    'skills/audit-agent-skill-evals/references/eval-audit-standard.md',
+  ]) {
+    assert.equal(await exists(sourceRoot, relative), false, `${relative} must not exist in source`);
+  }
+});
+
+test('materialized audit validator runs with its projected dependency closure', async () => {
+  if (!context) return;
+  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
+  const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
+  const templatePath = path.join(auditRoot, 'assets/eval-audit-result-template.json');
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-runtime-contract-'));
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [
+      validator,
+      templatePath,
+      '--format',
+      'json',
+    ], {
+      cwd: auditRoot,
+      encoding: 'utf8',
+    });
+    assert.equal(JSON.parse(stdout).valid, true);
+
+    const invalid = JSON.parse(await readFile(templatePath, 'utf8'));
+    invalid.runBundleDigest = 'sha256:' + '1'.repeat(64);
+    const invalidPath = path.join(temporary, 'invalid-preflight.json');
+    await writeFile(invalidPath, JSON.stringify(invalid));
+    await assert.rejects(execFileAsync(process.execPath, [validator, invalidPath], {
+      cwd: auditRoot,
+      encoding: 'utf8',
+    }));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('reviewer runtime includes full dimensions without release workflow state', async () => {
+  if (!context) return;
   const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill/references');
-  for (const file of ['review-rubric.generated.md', 'composition-fitness.md', 'evidence-and-severity.md']) {
+  for (const file of ['review-rubric.md', 'composition-fitness.md', 'evidence-and-severity.md']) {
     assert.ok((await readFile(path.join(reviewRoot, file), 'utf8')).length > 100, file);
   }
-  for (const file of [
-    'review-dimensions.generated.md',
-    'scoring-model.generated.md',
-    'source-map.generated.md',
-  ]) {
-    await assert.rejects(readFile(path.join(reviewRoot, file), 'utf8'));
+  for (const file of ['review-dimensions.md', 'scoring-model.md']) {
+    assert.ok((await readFile(path.join(reviewRoot, file), 'utf8')).length > 100, file);
   }
+  await assert.rejects(readFile(path.join(reviewRoot, 'source-map.md'), 'utf8'));
 });
 
 test('starter author and Eval contracts remain valid', async () => {

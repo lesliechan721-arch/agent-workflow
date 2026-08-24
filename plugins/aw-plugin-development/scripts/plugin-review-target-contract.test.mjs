@@ -14,6 +14,8 @@ const context = process.env.AW_PLUGIN_CONTEXT
   : null;
 const runtimeRoot = context?.platform ? path.join(localRoot, context.platform) : localRoot;
 const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
+const sourceRoot = context?.sourceRoot ?? localRoot;
+const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const temps = [];
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
 
@@ -33,7 +35,10 @@ test('target discovery emits one bounded single-plugin review inventory', async 
   await writeFile(path.join(review, 'SKILL.md'),
     '---\nname: review\ndescription: Review one plugin.\n---\n');
 
-  const { stdout } = await execFileAsync(process.execPath, [discover, plugin, '--format', 'json'], { encoding: 'utf8' });
+  const { stdout } = await execFileAsync(process.execPath, [discover, plugin, '--format', 'json'], {
+    encoding: 'utf8',
+    env: { ...process.env, AW_SKILL_VALIDATOR_BIN: skillValidatorBin },
+  });
   const result = JSON.parse(stdout);
   assert.equal(result.plugin, 'review-chain');
   assert.equal(result.targets.length, 2);

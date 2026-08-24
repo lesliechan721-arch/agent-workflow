@@ -21,7 +21,7 @@ test('AW author maps every supported component and core lifecycle branch to a di
     'plugin-manifest-spec.md',
     'aw-validation-and-version.md',
     'aw-skill-integration.md',
-    'skill-frontmatter-capabilities.generated.md',
+    'skill-frontmatter-capabilities.md',
     'extensions-spec.md',
     'slash-commands.md',
     'mcp-and-apps.md',
@@ -50,7 +50,7 @@ test('AW author does not make Audit, Review, or model Eval part of change comple
     path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-validation-and-version.md'),
     'utf8',
   );
-  assert.doesNotMatch(skill, /validity=pass|blockedCases|result-triage|run-agent-skill-evals/u);
+  assert.doesNotMatch(skill, /validity=pass|blockedCases|result-triage|run-aw-skill-evals/u);
   assert.match(skill, /完成条件不包括独立 Review 或模型 Eval/u);
   assert.match(validation, /Author 的完成条件不依赖模型 Eval/u);
 });

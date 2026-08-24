@@ -429,6 +429,34 @@ async function tryLoadCliManifestTools() {
   }
 }
 
+async function tryLoadCliSkillValidationTools() {
+  const modulePath = path.join(
+    CLI_PACKAGE_ROOT,
+    'dist',
+    'src',
+    'utils',
+    'skill-validation.js',
+  );
+  if (!fs.existsSync(modulePath)) return null;
+  try {
+    const mod = await import(pathToFileURL(modulePath).href);
+    if (
+      typeof mod.parseSkillFrontmatter !== 'function'
+      || typeof mod.validateSkillFrontmatter !== 'function'
+      || typeof mod.validateCodexMetadata !== 'function'
+    ) {
+      return null;
+    }
+    return {
+      parseSkillFrontmatter: mod.parseSkillFrontmatter,
+      validateSkillFrontmatter: mod.validateSkillFrontmatter,
+      validateCodexMetadata: mod.validateCodexMetadata,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function findRepoRootCandidate(pluginDir) {
   let currentPath = path.dirname(pluginDir);
   while (true) {
@@ -3512,7 +3540,15 @@ function overlayPortableRuntimeFiles(files, manifest, pluginDir, skillKey, runti
 }
 
 function validateRenderedSkillTree(options) {
-  const { entry, declaration, fieldName, pluginDir, manifest, materializedRoot } = options;
+  const {
+    entry,
+    declaration,
+    fieldName,
+    pluginDir,
+    manifest,
+    materializedRoot,
+    skillValidationTools,
+  } = options;
   if (entry.state !== 'present' || !isRecord(entry.content) || !isRecord(entry.content.files)) {
     return;
   }
@@ -3553,19 +3589,26 @@ function validateRenderedSkillTree(options) {
   const skillFile = files.get('SKILL.md');
   if (!skillFile || skillFile.toString('utf8').trim() === '') {
     error(`${fieldName} final file tree must contain a non-empty SKILL.md`);
+  } else if (!skillValidationTools) {
+    error(`${fieldName} final SKILL.md cannot be validated because the shared CLI Skill validator is unavailable`);
   } else {
-    try {
-      const frontmatter = parseFrontmatter(skillFile.toString('utf8'), `${fieldName} final SKILL.md`);
-      if (!frontmatter) {
-        error(`${fieldName} final SKILL.md must contain YAML frontmatter`);
-      } else {
-        validateSkillFrontmatter(frontmatter, declaration.skillKey, {
-          strictAgentSkills: declaration.target === 'agent-skills.skill',
-          targetsClaude: declaration.platform === 'claude',
-        });
+    const sourcePath = `${fieldName} final SKILL.md`;
+    const parsed = skillValidationTools.parseSkillFrontmatter(
+      skillFile.toString('utf8'),
+      sourcePath,
+    );
+    for (const diagnostic of parsed.errors) {
+      error(`${diagnostic.path} [${diagnostic.code}] ${diagnostic.message}`);
+    }
+    if (parsed.frontmatter) {
+      const diagnostics = skillValidationTools.validateSkillFrontmatter(parsed.frontmatter, {
+        profile: declaration.platform === 'claude' ? 'claude-2.1.88' : 'portable-agent-skills',
+        expectedName: declaration.skillKey,
+        sourcePath,
+      });
+      for (const diagnostic of diagnostics) {
+        error(`${diagnostic.path} [${diagnostic.code}] ${diagnostic.message}`);
       }
-    } catch (e) {
-      error(`${fieldName} final SKILL.md frontmatter is not valid YAML: ${e.message}`);
     }
   }
   const readme = files.get('README.md');
@@ -3609,11 +3652,17 @@ function validateRenderedSkillTree(options) {
       true,
       manifest,
       materializedRoot,
+      skillValidationTools,
     );
   }
 }
 
-function validateStaticPortableFinalTrees(pluginDir, manifest, runtimeImports) {
+function validateStaticPortableFinalTrees(
+  pluginDir,
+  manifest,
+  runtimeImports,
+  skillValidationTools,
+) {
   const portableRoot = manifest.distributions?.agentSkills?.skills;
   if (typeof portableRoot !== 'string') return;
   const rootDir = path.join(pluginDir, normalizeRelativePath(portableRoot));
@@ -3642,6 +3691,7 @@ function validateStaticPortableFinalTrees(pluginDir, manifest, runtimeImports) {
         manifest,
         runtimeImports,
         materializedRoot: path.join(tempRoot, entry.name),
+        skillValidationTools,
       });
     }
   } finally {
@@ -3775,6 +3825,7 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
           manifest: options.manifest,
           runtimeImports: options.runtimeImports,
           materializedRoot: path.join(options.tempRoot, `${declaration.platform ?? declaration.distribution}-${scopeLabel.split('/')[1]}-${index}`),
+          skillValidationTools: options.skillValidationTools,
         });
       }
     } else if (entry.skillKey !== undefined) {
@@ -3790,7 +3841,14 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
   }
 }
 
-function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations, resolvedRuntimeImports) {
+function runArtifactRendererFixture(
+  pluginDir,
+  manifest,
+  renderEntry,
+  declarations,
+  resolvedRuntimeImports,
+  skillValidationTools,
+) {
   if (!renderEntry || declarations.length === 0) return;
 
   const surfaceScopes = [...new Set(declarations.flatMap((target) =>
@@ -3937,6 +3995,7 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
         manifest,
         runtimeImports: resolvedRuntimeImports,
         tempRoot,
+        skillValidationTools,
       });
     }
   } finally {
@@ -3944,7 +4003,13 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
   }
 }
 
-function validateDynamicArtifactsLightweight(pluginDir, manifest, renderEntry, runtimeImports) {
+function validateDynamicArtifactsLightweight(
+  pluginDir,
+  manifest,
+  renderEntry,
+  runtimeImports,
+  skillValidationTools,
+) {
   const declarations = validateArtifactsConfigLightweight(pluginDir, manifest);
   const hasTargets = declarations.length > 0;
   const hasRenderer = Boolean(manifest.scripts?.artifacts?.render);
@@ -3956,7 +4021,14 @@ function validateDynamicArtifactsLightweight(pluginDir, manifest, renderEntry, r
     error('scripts.artifacts.render requires artifacts.targets');
   }
 
-  runArtifactRendererFixture(pluginDir, manifest, renderEntry, declarations, runtimeImports);
+  runArtifactRendererFixture(
+    pluginDir,
+    manifest,
+    renderEntry,
+    declarations,
+    runtimeImports,
+    skillValidationTools,
+  );
 }
 
 function validateScriptsLightweight(pluginDir, manifest) {
@@ -4190,7 +4262,14 @@ function validateExtensionNameUniqueness(manifest) {
   }
 }
 
-function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, pluginDir) {
+function validateOpenAiYaml(
+  openaiYamlPath,
+  skillName,
+  required,
+  manifest,
+  pluginDir,
+  skillValidationTools,
+) {
   const fieldName = `skills/${skillName}/agents/openai.yaml`;
 
   if (!fs.existsSync(openaiYamlPath)) {
@@ -4202,166 +4281,36 @@ function validateOpenAiYaml(openaiYamlPath, skillName, required, manifest, plugi
     return;
   }
 
-  let config;
+  if (!skillValidationTools) {
+    error(`${fieldName} cannot be validated because the shared CLI Skill validator is unavailable`);
+    return;
+  }
+
   try {
     const relativePath = path.relative(pluginDir, openaiYamlPath);
     const rawContent = fs.readFileSync(openaiYamlPath, 'utf8');
-    config = parseYaml(
+    const validation = skillValidationTools.validateCodexMetadata(
       renderTemplateForPlatform(manifest, relativePath, rawContent, 'codex'),
+      skillName,
       fieldName,
     );
+    for (const entry of validation.errors) {
+      error(`${entry.path} [${entry.code}] ${entry.message}`);
+    }
+    const skillRoot = path.dirname(path.dirname(openaiYamlPath));
+    for (const assetPath of validation.assetPaths) {
+      const absoluteAssetPath = path.join(skillRoot, ...assetPath.split('/'));
+      const stats = fs.lstatSync(absoluteAssetPath, { throwIfNoEntry: false });
+      if (!stats?.isFile() || stats.isSymbolicLink()) {
+        error(`${fieldName} references missing regular file "${assetPath}"`);
+      }
+    }
   } catch (e) {
-    error(`${fieldName} is not valid YAML: ${e.message}`);
-    return;
-  }
-
-  const root = expectRecord(config, fieldName);
-  if (!root) return;
-  validateAllowedKeys(root, fieldName, ['interface', 'dependencies', 'policy']);
-
-  if (root.interface !== undefined) {
-    const interfaceBlock = expectRecord(root.interface, `${fieldName}.interface`);
-    if (interfaceBlock) {
-      validateAllowedKeys(interfaceBlock, `${fieldName}.interface`, [
-        'display_name',
-        'short_description',
-        'icon_small',
-        'icon_large',
-        'brand_color',
-        'default_prompt',
-      ]);
-      validateCodexMetadataString(
-        interfaceBlock,
-        'display_name',
-        `${fieldName}.interface`,
-        MAX_OPENAI_INTERFACE_NAME_LEN,
-      );
-      validateCodexShortDescription(interfaceBlock, `${fieldName}.interface`);
-      validateCodexDefaultPrompt(
-        interfaceBlock,
-        'default_prompt',
-        `${fieldName}.interface`,
-        MAX_OPENAI_DEFAULT_PROMPT_LEN,
-        skillName,
-      );
-      validateCodexIconPath(interfaceBlock, 'icon_small', `${fieldName}.interface`);
-      validateCodexIconPath(interfaceBlock, 'icon_large', `${fieldName}.interface`);
-      validateCodexBrandColor(interfaceBlock, 'brand_color', `${fieldName}.interface`);
-    }
-  }
-
-  if (root.dependencies !== undefined) {
-    const dependenciesBlock = expectRecord(root.dependencies, `${fieldName}.dependencies`);
-    if (dependenciesBlock) {
-      validateAllowedKeys(dependenciesBlock, `${fieldName}.dependencies`, ['tools']);
-      if (dependenciesBlock.tools !== undefined) {
-        if (!Array.isArray(dependenciesBlock.tools)) {
-          error(`${fieldName}.dependencies.tools must be an array`);
-        } else {
-          for (const [index, tool] of dependenciesBlock.tools.entries()) {
-            const toolField = `${fieldName}.dependencies.tools[${index}]`;
-            const toolBlock = expectRecord(tool, toolField);
-            if (!toolBlock) continue;
-            validateAllowedKeys(toolBlock, toolField, [
-              'type',
-              'value',
-              'description',
-              'transport',
-              'url',
-              'command',
-            ]);
-            validateCodexMetadataString(
-              toolBlock,
-              'type',
-              toolField,
-              MAX_OPENAI_DEPENDENCY_TYPE_LEN,
-              true,
-            );
-            validateCodexMetadataString(
-              toolBlock,
-              'value',
-              toolField,
-              MAX_OPENAI_DEPENDENCY_VALUE_LEN,
-              true,
-            );
-            validateCodexMetadataString(
-              toolBlock,
-              'description',
-              toolField,
-              MAX_OPENAI_DEPENDENCY_DESCRIPTION_LEN,
-            );
-            const transport = validateCodexMetadataString(
-              toolBlock,
-              'transport',
-              toolField,
-              MAX_OPENAI_DEPENDENCY_TRANSPORT_LEN,
-            );
-            validateCodexMetadataString(
-              toolBlock,
-              'url',
-              toolField,
-              MAX_OPENAI_DEPENDENCY_URL_LEN,
-            );
-            validateCodexMetadataString(
-              toolBlock,
-              'command',
-              toolField,
-              MAX_OPENAI_DEPENDENCY_COMMAND_LEN,
-            );
-            if (
-              transport !== null &&
-              transport !== 'streamable_http' &&
-              transport !== 'stdio'
-            ) {
-              error(`${toolField}.transport must be "streamable_http" or "stdio"`);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (root.policy === undefined) {
-    if (required) {
-      error(`${fieldName}.policy is required for Codex-targeted skills`);
-    }
-    return;
-  }
-
-  const policyBlock = expectRecord(root.policy, `${fieldName}.policy`);
-  if (!policyBlock) return;
-  validateAllowedKeys(policyBlock, `${fieldName}.policy`, [
-    'allow_implicit_invocation',
-    'products',
-  ]);
-
-  if (policyBlock.allow_implicit_invocation === undefined) {
-    if (required) {
-      error(`${fieldName}.policy.allow_implicit_invocation is required`);
-    }
-  } else if (typeof policyBlock.allow_implicit_invocation !== 'boolean') {
-    error(`${fieldName}.policy.allow_implicit_invocation must be a boolean`);
-  }
-
-  if (policyBlock.products !== undefined) {
-    if (!Array.isArray(policyBlock.products)) {
-      error(`${fieldName}.policy.products must be an array`);
-    } else {
-      for (const [index, product] of policyBlock.products.entries()) {
-        const productField = `${fieldName}.policy.products[${index}]`;
-        if (typeof product !== 'string' || product.trim() === '') {
-          error(`${productField} must be a non-empty string`);
-        } else if (!CODEX_POLICY_PRODUCTS.has(product)) {
-          error(
-            `${productField} must be one of "codex", "chatgpt", "atlas" or uppercase aliases`,
-          );
-        }
-      }
-    }
+    error(`${fieldName} shared validation failed: ${e.message}`);
   }
 }
 
-function validateSkills(pluginDir, manifest, options) {
+function validateSkills(pluginDir, manifest, options, skillValidationTools) {
   if (!manifest.skills) return;
   const skillsDir = path.join(pluginDir, manifest.skills);
   if (!fs.existsSync(skillsDir)) return;
@@ -4404,25 +4353,28 @@ function validateSkills(pluginDir, manifest, options) {
       const sourceName = variant.platform
         ? `skills/${dir.name}/SKILL.md (${variant.platform} render)`
         : `skills/${dir.name}/SKILL.md`;
-      let fm;
-      let frontmatterParseFailed = false;
-      try {
-        fm = parseFrontmatter(variant.content, sourceName);
-      } catch (e) {
-        error(`skills/${dir.name}/SKILL.md has invalid YAML frontmatter: ${e.message}`);
-        frontmatterParseFailed = true;
-        fm = null;
-      }
-      if (!fm) {
-        if (!frontmatterParseFailed) {
-          error(`skills/${dir.name}/SKILL.md has no YAML frontmatter`);
-        }
+      if (!skillValidationTools) {
+        error(`${sourceName} cannot be validated because the shared CLI Skill validator is unavailable`);
       } else {
-        validateSkillFrontmatter(fm, dir.name, {
-          strictAgentSkills: options.strictAgentSkills,
-          targetsClaude,
-          claudeSkillProfile: options.claudeSkillProfile,
-        });
+        const parsed = skillValidationTools.parseSkillFrontmatter(variant.content, sourceName);
+        for (const entry of parsed.errors) {
+          error(`${entry.path} [${entry.code}] ${entry.message}`);
+        }
+        if (parsed.frontmatter) {
+          const profile = options.strictAgentSkills || !targetsClaude
+            ? 'portable-agent-skills'
+            : options.claudeSkillProfile === 'current'
+              ? 'claude-current'
+              : 'claude-2.1.88';
+          const diagnostics = skillValidationTools.validateSkillFrontmatter(parsed.frontmatter, {
+            profile,
+            expectedName: dir.name,
+            sourcePath: sourceName,
+          });
+          for (const entry of diagnostics) {
+            error(`${entry.path} [${entry.code}] ${entry.message}`);
+          }
+        }
       }
     }
 
@@ -4432,6 +4384,7 @@ function validateSkills(pluginDir, manifest, options) {
       requiresCodexMetadata,
       manifest,
       pluginDir,
+      skillValidationTools,
     );
 
     if (/\[TODO[:\]]/i.test(content)) {
@@ -4756,7 +4709,10 @@ async function validatePluginDir(pluginDir, options) {
     return;
   }
 
-  const cliManifestTools = await tryLoadCliManifestTools();
+  const [cliManifestTools, skillValidationTools] = await Promise.all([
+    tryLoadCliManifestTools(),
+    tryLoadCliSkillValidationTools(),
+  ]);
   if (cliManifestTools?.validateSourcePluginManifest) {
     try {
       await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
@@ -4791,13 +4747,19 @@ async function validatePluginDir(pluginDir, options) {
     repoRoot: options.repoRoot,
     cliManifestTools,
   });
-  validateStaticPortableFinalTrees(pluginDir, manifest, runtimeImports);
-  validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry, runtimeImports);
+  validateStaticPortableFinalTrees(pluginDir, manifest, runtimeImports, skillValidationTools);
+  validateDynamicArtifactsLightweight(
+    pluginDir,
+    manifest,
+    artifactRenderEntry,
+    runtimeImports,
+    skillValidationTools,
+  );
   validateMcpContent(pluginDir, manifest);
   validateAppsContent(pluginDir, manifest);
   warnCodexProjectScopeLimitations(manifest);
   validateExtensionNameUniqueness(manifest);
-  validateSkills(pluginDir, manifest, options);
+  validateSkills(pluginDir, manifest, options, skillValidationTools);
   validateSlashCommands(pluginDir, manifest);
 
   if (errors.length === 0) {

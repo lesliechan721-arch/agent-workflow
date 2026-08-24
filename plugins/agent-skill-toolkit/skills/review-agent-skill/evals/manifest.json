@@ -16,7 +16,7 @@
           "config": {}
         },
         {
-          "name": "agent-skill-eval-runner",
+          "name": "aw-skill-eval-runner",
           "config": {}
         }
       ],
@@ -36,7 +36,7 @@
         "review-agent-workflow",
         "design-agent-skill-evals",
         "audit-agent-skill-evals",
-        "run-agent-skill-evals"
+        "run-aw-skill-evals"
       ],
       "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,

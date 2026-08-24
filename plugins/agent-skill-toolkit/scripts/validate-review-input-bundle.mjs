@@ -616,7 +616,7 @@ const stageCatalog = {
     targetKind: 'materialized-skill',
   },
   'eval-execution': {
-    producer: 'run-agent-skill-evals',
+    producer: null,
     schema: 'EvalRunBundle',
     profile: 'null',
   },
@@ -709,7 +709,7 @@ async function main() {
 
       for (const stage of bundle.orchestration.providedStages) {
         const stageContract = stageCatalog[stage.id];
-        if (stage.producer !== stageContract.producer) {
+        if (stageContract.producer !== null && stage.producer !== stageContract.producer) {
           errors.push(`${stage.id} producer must be ${stageContract.producer}`);
         }
         if (stage.schema !== stageContract.schema) {
@@ -794,8 +794,12 @@ async function main() {
             `${stage.id} provided review/audit stage must come from an independent context`,
           );
         }
-        if (result.producer !== stage.producer)
+        if (stage.id === 'eval-execution') {
+          if (result.runner?.id !== stage.producer)
+            errors.push('eval-execution producer does not match result runner id');
+        } else if (result.producer !== stage.producer) {
           errors.push(`${stage.id} producer does not match result`);
+        }
         if (result.independentContext !== stage.independentContext) {
           errors.push(`${stage.id} independentContext does not match result`);
         }
@@ -899,7 +903,6 @@ async function main() {
           isDeepStrictEqual(triage.stage.evalExecution, {
             targetSkillDigest: execution.result.targetSkillDigest,
             caseCorpusDigest: execution.result.caseCorpusDigest,
-            preflightAuditDigest: execution.result.preflightAuditDigest,
             planDigest: execution.result.planDigest,
             resultDigest: execution.stage.resultDigest,
           }));
@@ -919,8 +922,7 @@ async function main() {
           errors.push('eval-result-triage result does not match eval-execution target and corpus');
         }
         const matchingAudits = auditStages.filter((audit) =>
-          audit.stage.resultDigest === execution.result.preflightAuditDigest
-          && audit.result.targetSkillDigest === execution.result.targetSkillDigest
+          audit.result.targetSkillDigest === execution.result.targetSkillDigest
           && audit.result.caseCorpusDigest === execution.result.caseCorpusDigest);
         if (matchingAudits.length !== 1) {
           errors.push('eval-result-triage eval-execution requires one matching eval-audit stage');
@@ -982,9 +984,6 @@ async function main() {
       const boundExecutionStages = new Set();
       for (let index = 0; index < bundle.evalResults.length; index += 1) {
         const result = bundle.evalResults[index];
-        const auditStage = stageResults.get(
-          stageSlotKey('eval-audit', null, result.targetSkillDigest),
-        );
         const executionStage = stageResults.get(
           stageSlotKey('eval-execution', null, result.targetSkillDigest),
         );
@@ -1008,9 +1007,6 @@ async function main() {
         }
         if (bundle.evalAudit && result.targetSkillDigest !== bundle.evalAudit.targetSkillDigest) {
           errors.push(`evalResults[${index}] targetSkillDigest does not match evalAudit`);
-        }
-        if (auditStage && result.preflightAuditDigest !== auditStage.stage.resultDigest) {
-          errors.push(`evalResults[${index}] preflightAuditDigest does not match eval-audit stage`);
         }
         if (!executionStage) {
           errors.push(`evalResults[${index}] requires one matching eval-execution stage`);

@@ -30,14 +30,12 @@ function parseArgs(argv) {
 }
 
 const options = parseArgs(process.argv.slice(2));
-const [contentRaw, skillRaw, dimensionsRaw] = await Promise.all([
+const [contentRaw, skillRaw] = await Promise.all([
   readFile(options.contentRulesPath, 'utf8'),
   readFile(path.join(options.sourceRoot, 'standards', 'skill-rules.json'), 'utf8'),
-  readFile(path.join(options.sourceRoot, 'standards', 'review-dimensions.json'), 'utf8'),
 ]);
 const contentSource = JSON.parse(contentRaw);
 const skillSource = JSON.parse(skillRaw);
-const dimensionSource = JSON.parse(dimensionsRaw);
 const contentDigest = 'sha256:' + createHash('sha256').update(contentRaw).digest('hex');
 if (contentDigest !== skillSource.contentRuleSource.digest) {
   throw new Error(
@@ -83,8 +81,6 @@ function renderView(audience, title) {
   const lines = [
     `# ${title}`,
     '',
-    '> GENERATED from canonical content rules plus `standards/skill-rules.json`; do not edit manually.',
-    '',
   ];
   for (const rule of allRules) {
     const view = rule[audience];
@@ -99,8 +95,6 @@ function renderComposition(title, reviewer) {
   const model = skillSource.compositionModel;
   const lines = [
     `# ${title}`,
-    '',
-    '> GENERATED from `standards/skill-rules.json`; do not edit manually.',
     '',
   ];
   if (Array.isArray(model.targetLevels)) {
@@ -153,8 +147,6 @@ function renderEvidence() {
   return [
     '# Evidence and severity',
     '',
-    '> GENERATED from `standards/skill-rules.json`; do not edit manually.',
-    '',
     '## Evidence',
     '',
     ...admission.evidenceTypes.map(([type, meaning]) => `- \`${type}\`：${meaning}`),
@@ -168,21 +160,14 @@ function renderEvidence() {
   ].join('\n').replace(/\n+$/u, '') + '\n';
 }
 
-const legacyResultRules = JSON.stringify({
-  schemaVersion: 2,
-  dimensions: dimensionSource.dimensions,
-  reviewResultPolicy: skillSource.reviewResultPolicy,
-}, null, 2) + '\n';
-
 const outputs = new Map([
-  ['skills/author-agent-skill/references/author-standard.generated.md', renderView('skill_author', 'Agent Skill 作者标准')],
-  ['skills/review-agent-skill/references/review-rubric.generated.md', renderView('skill_review', 'Agent Skill 评审标准')],
-  ['skills/design-agent-skill-evals/references/eval-design-standard.generated.md', renderView('eval_design', 'Skill Eval 设计标准')],
-  ['skills/audit-agent-skill-evals/references/eval-audit-standard.generated.md', renderView('eval_audit', 'Skill Eval 审核标准')],
+  ['skills/author-agent-skill/references/author-standard.md', renderView('skill_author', 'Agent Skill 作者标准')],
+  ['skills/review-agent-skill/references/review-rubric.md', renderView('skill_review', 'Agent Skill 评审标准')],
+  ['skills/design-agent-skill-evals/references/eval-design-standard.md', renderView('eval_design', 'Skill Eval 设计标准')],
+  ['skills/audit-agent-skill-evals/references/eval-audit-standard.md', renderView('eval_audit', 'Skill Eval 审核标准')],
   ['skills/author-agent-skill/references/composition-audit.md', renderComposition('Composition Fitness Audit', false)],
   ['skills/review-agent-skill/references/composition-fitness.md', renderComposition('Composition Fitness Review', true)],
   ['skills/review-agent-skill/references/evidence-and-severity.md', renderEvidence()],
-  ['standards/review-result-rules.generated.json', legacyResultRules],
 ]);
 const stale = [];
 for (const [relative, content] of outputs) {

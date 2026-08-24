@@ -256,9 +256,6 @@
                       "id": {
                         "const": "eval-execution"
                       },
-                      "producer": {
-                        "const": "run-agent-skill-evals"
-                      },
                       "schema": {
                         "const": "EvalRunBundle"
                       },
@@ -310,7 +307,7 @@
         "type": "object",
         "required": [
           "schemaVersion",
-          "producer",
+          "runner",
           "targetSkillDigest",
           "caseCorpusDigest",
           "comparisonPlanned",
@@ -318,10 +315,25 @@
         ],
         "properties": {
           "schemaVersion": {
-            "const": 2
+            "const": 3
           },
-          "producer": {
-            "const": "run-agent-skill-evals"
+          "runner": {
+            "type": "object",
+            "required": [
+              "id",
+              "version"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
           },
           "targetSkillDigest": {
             "type": "string",
@@ -415,7 +427,6 @@
       "required": [
         "targetSkillDigest",
         "caseCorpusDigest",
-        "preflightAuditDigest",
         "planDigest",
         "resultDigest"
       ],
@@ -425,10 +436,6 @@
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
         "caseCorpusDigest": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "preflightAuditDigest": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         },

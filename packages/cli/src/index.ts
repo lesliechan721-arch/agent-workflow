@@ -979,7 +979,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   const skill = program
     .command('skill')
-    .description('Install or materialize portable Agent Skills');
+    .description('Install, materialize, or validate Agent Skills');
 
   skill
     .command('install')
@@ -1207,6 +1207,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--json', 'emit one schema v3 JSON document', false)
     .option('--repo-root <path>', 'repository root (default: current directory)')
     .option('--plugin-root <path>', 'single plugin root, relative to --repo-root by default');
+
+  skill
+    .command('validate')
+    .description('Validate one Agent Skill directory')
+    .argument('<skill-directory>', 'Agent Skill directory')
+    .option(
+      '--frontmatter-profile <profile>',
+      'portable-agent-skills | claude-2.1.88 | claude-current (default: portable-agent-skills)',
+    )
+    .option('--codex-metadata <policy>', 'required | optional | ignore (default: optional)')
+    .option('--json', 'emit one machine-readable JSON result', false);
 
   const catalogSource = program
     .command('catalog')
@@ -2361,7 +2372,11 @@ export async function runCli(
       status: 'plugin-status.mjs',
       'check-versions': 'check-plugin-versions.mjs',
     };
-    const authoringScript = argv[0] === 'plugin' ? authoringScriptByCommand[argv[1] ?? ''] : undefined;
+    const authoringScript = argv[0] === 'plugin'
+      ? authoringScriptByCommand[argv[1] ?? '']
+      : argv[0] === 'skill' && argv[1] === 'validate'
+        ? 'validate-skill.mjs'
+        : undefined;
     if (authoringScript && !argv.includes('--help') && !argv.includes('-h')) {
       return runAuthoringScript({
         scriptName: authoringScript,

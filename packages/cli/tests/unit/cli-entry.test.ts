@@ -28,10 +28,19 @@ describe('CLI entry v4', () => {
       'status',
       'config',
       'plugin',
+      'skill',
     ]) {
       expect(output.stdout()).toContain(command);
     }
     expect(output.stdout()).not.toContain('diagnose');
+  });
+
+  it('publishes the standalone Skill validator options', async () => {
+    const output = capture();
+    expect(await runCli(['skill', 'validate', '--help'], { io: output.io })).toBe(0);
+    expect(output.stdout()).toContain('Usage: aw skill validate');
+    expect(output.stdout()).toContain('--frontmatter-profile');
+    expect(output.stdout()).toContain('--codex-metadata');
   });
 
   it('treats diagnose as an unknown command', async () => {

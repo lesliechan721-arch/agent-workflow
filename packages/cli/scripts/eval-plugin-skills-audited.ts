@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 
 import {
   computeSkillDigest,
-  getSchema,
   validateJsonSchema,
 } from '@lesliechan721/agent-skill-eval';
 
@@ -42,12 +41,13 @@ interface AuditCase {
 }
 
 interface EvalAuditResult {
-  schemaVersion: 2;
+  schemaVersion: 3;
   producer: 'audit-agent-skill-evals';
   independentContext: boolean;
   mode: 'preflight' | 'result-triage';
   targetSkillDigest: string;
   caseCorpusDigest: string;
+  runBundleDigest: string | null;
   validity: 'pass' | 'unknown' | 'fail';
   cases: AuditCase[];
   blockedCases: string[];
@@ -112,7 +112,7 @@ function parseGateArguments(args: string[]): GateArguments {
     '--batch-name',
     '--batch-id',
     '--run-id',
-    '--execution-plan',
+    '--aw-skill-eval-plan',
   ]);
 
   for (let index = 0; index < args.length; index += 1) {
@@ -139,7 +139,7 @@ function parseGateArguments(args: string[]): GateArguments {
       else if (arg === '--suite') suiteId = value;
       else if (arg === '--split') split = value;
       else if (arg === '--case') caseId = value;
-      else if (arg === '--execution-plan') executionPlan = true;
+      else if (arg === '--aw-skill-eval-plan') executionPlan = true;
       continue;
     }
     if (!arg.startsWith('-') && arg !== '--') positional.push(arg);
@@ -203,9 +203,12 @@ async function selectedCaseIds(
   return ids;
 }
 
-async function loadAudit(auditPath: string): Promise<EvalAuditResult> {
+async function loadAudit(
+  auditPath: string,
+  auditSchema: Parameters<typeof validateJsonSchema>[0],
+): Promise<EvalAuditResult> {
   const value = JSON.parse(await readFile(auditPath, 'utf8')) as unknown;
-  const errors = validateJsonSchema(await getSchema('eval-audit-result'), value);
+  const errors = validateJsonSchema(auditSchema, value);
   if (errors.length > 0) {
     throw new Error(`Invalid EvalAuditResult ${auditPath}: ${errors.join('; ')}`);
   }
@@ -214,6 +217,9 @@ async function loadAudit(auditPath: string): Promise<EvalAuditResult> {
     throw new Error(`Audit ${auditPath} has an invalid producer.`);
   }
   if (audit.mode !== 'preflight') throw new Error(`Audit ${auditPath} is not preflight.`);
+  if (audit.runBundleDigest !== null) {
+    throw new Error(`Preflight Audit ${auditPath} must use runBundleDigest=null.`);
+  }
   if (!audit.independentContext) {
     throw new Error(`Audit ${auditPath} did not come from an independent audit context.`);
   }
@@ -232,7 +238,7 @@ async function loadAudit(auditPath: string): Promise<EvalAuditResult> {
 function casePathForSuite(pluginRoot: string, suite: PluginEvalSuite): string {
   if (!('cases' in suite) || !suite.cases) {
     throw new Error(
-      `Suite ${suite.id} has no auditable case corpus; use a canonical EvalExecutionPlan.`,
+      `Suite ${suite.id} has no auditable case corpus; use a Runner-specific execution plan.`,
     );
   }
   return path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, ''));
@@ -256,6 +262,27 @@ async function enforceAuditGate(
     options.repoRoot ?? env[REPO_ROOT_ENV] ?? path.resolve(resolveCliPackageRoot(), '..', '..'),
   );
   const pluginRoot = path.join(repoRoot, 'plugins', parsed.pluginName);
+  const auditSchemaCandidates = [
+    path.join(repoRoot, 'plugins', 'agent-skill-toolkit', 'schemas', 'eval-audit-result.schema.json'),
+    path.resolve(
+      resolveCliPackageRoot(),
+      '..',
+      '..',
+      'plugins',
+      'agent-skill-toolkit',
+      'schemas',
+      'eval-audit-result.schema.json',
+    ),
+  ];
+  let auditSchema: Parameters<typeof validateJsonSchema>[0] | null = null;
+  for (const schemaPath of new Set(auditSchemaCandidates)) {
+    const raw = await readFile(schemaPath, 'utf8').catch(() => null);
+    if (raw !== null) {
+      auditSchema = JSON.parse(raw) as Parameters<typeof validateJsonSchema>[0];
+      break;
+    }
+  }
+  if (auditSchema === null) throw new Error('Cannot locate the EvalAuditResult schema.');
   const skillRoot = await resolvePluginSkillAuthorRoot(pluginRoot, parsed.skillName);
   const targetSkillDigest = await computeSkillDigest(skillRoot);
   const manifest = await readPluginEvalManifest(
@@ -268,7 +295,7 @@ async function enforceAuditGate(
     : manifest.suites;
   if (suites.length === 0) throw new Error(`Unknown Eval suite: ${parsed.suiteId}.`);
 
-  const audits = await Promise.all(parsed.auditPaths.map(loadAudit));
+  const audits = await Promise.all(parsed.auditPaths.map((auditPath) => loadAudit(auditPath, auditSchema)));
   const auditByBinding = new Map<string, EvalAuditResult>();
   for (const audit of audits) {
     const key = `${audit.targetSkillDigest}:${audit.caseCorpusDigest}`;
@@ -309,13 +336,13 @@ export async function runAuditedPluginEvals(
       stdout(
         '\nAudit gate: model-running plugin Eval requires one or more ' +
           '`--audit <EvalAuditResult.json>` values. ' +
-          '`--materialize-only` and `--execution-plan` are already gated separately.\n',
+          '`--materialize-only` and `--aw-skill-eval-plan` are already gated separately.\n',
       );
       return code;
     }
     if (parsed.executionPlan) {
       if (parsed.auditPaths.length > 0) {
-        throw new Error('--execution-plan already binds its Audit; do not also pass --audit.');
+        throw new Error('--aw-skill-eval-plan is a raw execution path; do not pass --audit to the Runner.');
       }
       return await delegate(parsed.forwarded, runnerOptions);
     }

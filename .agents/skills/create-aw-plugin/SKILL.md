@@ -19,7 +19,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 | 任务 | 必读 | 条件性补充 |
 |------|------|------------|
 | 新建或重写 skill | `references/skill-design.md`、`references/skills-and-triggers.md`、`references/plugin-manifest-spec.md` 的基础字段与平台原生调用元数据 | skill 内含脚本时读 `references/skill-scripts.md`；完成前读 `references/skill-evaluation.md` |
-| 设计或调整 Skill 原生调用元数据 | `references/skills-and-triggers.md`、`references/skill-frontmatter-capabilities.generated.md` | 改 description 时读 `references/skill-design.md` 和 `references/skill-evaluation.md` |
+| 设计或调整 Skill 原生调用元数据 | `references/skills-and-triggers.md`、`references/skill-frontmatter-capabilities.md` | 改 description 时读 `references/skill-design.md` 和 `references/skill-evaluation.md` |
 | Extensions | `references/extensions-spec.md`、manifest 对应章节 | — |
 | MCP / Apps | `references/mcp-and-apps.md`、manifest 对应章节 | — |
 | 公共 slashCommands | `references/slash-commands.md` | 复杂工作流仍放 skill，并读 skill 设计文档 |

@@ -1,5 +1,6 @@
 export { validateExecutionPlan } from './plan.js'
-export { runExecutionPlan, getRuntimeCapabilities } from './run.js'
+export { getRuntimeCapabilities } from './capabilities.js'
+export { runExecutionPlan } from './run.js'
 export { validateRunBundle } from './bundle.js'
 export { computeSkillDigest, createRuntimeSkillSnapshot } from './runtime-skill.js'
 export type { RuntimeSkillDigestOptions } from './runtime-skill.js'
@@ -17,9 +18,9 @@ export {
 export { getSchema, getSchemaDigest, validateRuntimeCapabilities } from './schemas.js'
 export { validateJsonSchema } from './json-schema.js'
 export type {
+  AwSkillEvalExecutionPlan,
   EvalCase,
   EvalConfiguration,
-  EvalExecutionPlan,
   PlanCalculated,
 } from './plan.js'
 export type {

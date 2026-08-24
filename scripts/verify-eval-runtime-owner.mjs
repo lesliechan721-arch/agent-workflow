@@ -13,20 +13,19 @@ const scriptPath = fileURLToPath(import.meta.url)
 const repositoryRoot = path.resolve(path.dirname(scriptPath), '..')
 const expectedProvider = 'aw-skill-eval-process'
 const canonicalSchemaNames = [
-  'eval-execution-plan',
-  'eval-audit-result',
+  'aw-skill-eval-execution-plan',
   'eval-run-bundle',
 ]
 const runnerSkillFiles = new Set([
   'README.md',
   'SKILL.md',
   'agents/openai.yaml',
-  'assets/eval-execution-plan.template.json',
+  'assets/aw-skill-eval-execution-plan.template.json',
 ])
 const runnerSkillDirectories = new Set(['agents', 'assets'])
 const allowedRunnerCommands = [
   /^aw-skill-eval capabilities --json$/u,
-  /^aw-skill-eval schema print (?:eval-execution-plan|eval-audit-result|eval-run-bundle)$/u,
+  /^aw-skill-eval schema print (?:aw-skill-eval-execution-plan|eval-run-bundle)$/u,
   /^aw-skill-eval digest skill <skill-dir>$/u,
   /^aw-skill-eval plan validate <plan\.json>$/u,
   /^aw-skill-eval run <plan\.json>$/u,
@@ -109,7 +108,7 @@ const shellFenceLanguages = new Set([
 function looksLikeInlineShellCommand(candidate) {
   const normalized = candidate.trim()
   if (normalized === '' || /^[{[]/u.test(normalized)) return false
-  if (normalized === 'assets/eval-execution-plan.template.json') return false
+  if (normalized === 'assets/aw-skill-eval-execution-plan.template.json') return false
   if (/^(?:\.\/)?(?:assets|providers|schemas|scripts)\/[A-Za-z0-9._/-]+$/u.test(normalized)) {
     return true
   }
@@ -204,8 +203,8 @@ export async function assertRunnerSkillBundle(skillRoot) {
     'Runner final agents/openai.yaml',
   )
   await assertRegularFile(
-    path.join(canonicalRoot, 'assets', 'eval-execution-plan.template.json'),
-    'Runner final assets/eval-execution-plan.template.json',
+    path.join(canonicalRoot, 'assets', 'aw-skill-eval-execution-plan.template.json'),
+    'Runner final assets/aw-skill-eval-execution-plan.template.json',
   )
   const entries = await collectBundleFiles(canonicalRoot)
 
@@ -246,9 +245,9 @@ export function assertCompatibleRuntimeIdentity({
   if (compareStrictSemVer(packageVersion, minimumPackageVersion) < 0) {
     fail(`agent-skill-eval ${packageVersion} does not satisfy Runner >= ${minimumPackageVersion}.`)
   }
-  const bridge = assertRecord(bridgeOwner, 'CLI portable bridge owner')
+  const bridge = assertRecord(bridgeOwner, 'CLI aw-skill-eval bridge owner')
   if (bridge.provider !== runtime.provider || bridge.version !== runtime.providerVersion) {
-    fail('CLI portable bridge owner does not match the shared runtime provider and version.')
+    fail('CLI aw-skill-eval bridge owner does not match the shared runtime provider and version.')
   }
 }
 
@@ -276,7 +275,7 @@ export async function verifyEvalRuntimeOwner() {
     'cli',
     'dist',
     'scripts',
-    'portable-eval-engine.js',
+    'aw-skill-eval-engine.js',
   )
   const closureValidatorPath = path.join(
     repositoryRoot,
@@ -293,7 +292,7 @@ export async function verifyEvalRuntimeOwner() {
     'cli',
     'plugins-dist',
     'plugins',
-    'agent-skill-eval-runner',
+    'aw-skill-eval-runner',
   )
   const packageJson = JSON.parse(await readFile(path.join(evalRoot, 'package.json'), 'utf8'))
   if (packageJson.name !== '@lesliechan721/agent-skill-eval') {
@@ -321,19 +320,19 @@ export async function verifyEvalRuntimeOwner() {
     if (JSON.stringify(printed) !== JSON.stringify(canonical)) {
       fail(`aw-skill-eval schema print ${name} does not match the canonical package schema.`)
     }
-    if (printed?.properties?.schemaVersion?.const !== 2) {
-      fail(`${name} canonical schemaVersion must be 2.`)
+    if (printed?.properties?.schemaVersion?.const !== 3) {
+      fail(`${name} canonical schemaVersion must be 3.`)
     }
     const digest = await evalApi.getSchemaDigest(name)
     if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) fail(`${name} canonical schema digest is unreadable.`)
     if (digest !== sha256(JSON.stringify(canonical))) fail(`${name} canonical schema digest does not match its bytes.`)
-    schemas.push({ name, schemaVersion: 2, digest })
+    schemas.push({ name, schemaVersion: 3, digest })
   }
 
   const closureValidator = await import(pathToFileURL(closureValidatorPath).href)
   const runnerBundles = []
   for (const platform of ['claude', 'codex']) {
-    const skillRoot = path.join(runnerRoot, platform, 'skills', 'run-agent-skill-evals')
+    const skillRoot = path.join(runnerRoot, platform, 'skills', 'run-aw-skill-evals')
     await closureValidator.validateRuntimeSkillClosure(skillRoot)
     const result = await assertRunnerSkillBundle(skillRoot)
     runnerBundles.push({
@@ -348,7 +347,7 @@ export async function verifyEvalRuntimeOwner() {
   }
 
   const bridge = await import(pathToFileURL(bridgePath).href)
-  const bridgeOwner = bridge.getPortableEvalExecutionOwner()
+  const bridgeOwner = bridge.getAwSkillEvalExecutionOwner()
   assertCompatibleRuntimeIdentity({
     capabilities,
     packageVersion: packageJson.version,
@@ -358,8 +357,8 @@ export async function verifyEvalRuntimeOwner() {
 
   return {
     schemaVersion: 1,
-    invariant: 'portableExecutionOwner',
-    portableExecutionOwner: {
+    invariant: 'awSkillEvalExecutionOwner',
+    awSkillEvalExecutionOwner: {
       provider: capabilities.provider,
       version: capabilities.providerVersion,
       package: packageJson.name,

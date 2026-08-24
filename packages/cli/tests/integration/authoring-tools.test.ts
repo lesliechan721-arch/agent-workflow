@@ -342,7 +342,7 @@ async function writeDynamicArtifactPlugin(
   await fs.writeFile(
     path.join(pluginDir, 'skills', 'dynamic-authoring-test', 'agents', 'openai.yaml'),
     options.omitCodexInvocationPolicy
-      ? ''
+      ? 'interface: {}\n'
       : [
           'policy:',
           '  allow_implicit_invocation: false',
@@ -4618,6 +4618,65 @@ describe('authoring tools', () => {
       ),
     });
 
+    const dynamicCodex = await writeSourcePlugin(
+      path.join(tempRoot, 'codex-dynamic'),
+      'codex-dynamic',
+      createBaseManifest('codex-dynamic', {
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+            products: ['CODEX'],
+          },
+        },
+        scripts: {
+          artifacts: {
+            render: {
+              runner: 'node',
+              path: './scripts/render-artifacts.mjs',
+            },
+          },
+        },
+        artifacts: {
+          targets: [{
+            id: 'codex-dynamic-skill',
+            platform: 'codex',
+            scopes: ['project'],
+            target: 'codex.skill',
+            projectManagedKind: 'skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'codex-dynamic',
+            sourceDirs: ['./skills/codex-dynamic'],
+          }],
+        },
+      }),
+      {
+        'skills/codex-dynamic/SKILL.md': '---\nname: codex-dynamic\ndescription: Dynamic Codex skill.\n---\n\n# Dynamic Codex\n',
+        'skills/codex-dynamic/README.md': '# Dynamic Codex\n',
+        'skills/codex-dynamic/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+        'scripts/render-artifacts.mjs': [
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '  id: "codex-dynamic-skill", platform: "codex", target: "codex.skill", kind: "skill",',
+          '  state: "present", refreshKeys: [], skillKey: "codex-dynamic",',
+          '  content: { files: {} }',
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+    await expect(runValidatePlugin(dynamicCodex.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+    await fs.writeFile(
+      path.join(dynamicCodex.pluginDir, 'skills', 'codex-dynamic', 'SKILL.md'),
+      '---\nname: codex-dynamic\ndescription: Dynamic Codex skill.\nuser-invocable: true\n---\n\n# Dynamic Codex\n',
+    );
+    await expect(runValidatePlugin(dynamicCodex.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('[portable-profile-platform-extension]'),
+    });
+
     const dynamicClaude = await writeSourcePlugin(
       path.join(tempRoot, 'claude-dynamic'),
       'claude-dynamic',
@@ -4832,7 +4891,7 @@ describe('authoring tools', () => {
       { omitCodexInvocationPolicy: true },
     );
     await expect(runValidatePlugin(missingPolicy.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('policy is required for Codex-targeted skills'),
+      stdout: expect.stringContaining('[missing-policy]'),
     });
   });
 
@@ -5399,15 +5458,15 @@ describe('authoring tools', () => {
     } catch (error) {
       invalidOpenAiYamlStdout = (error as { stdout?: string }).stdout ?? '';
     }
-    expect(invalidOpenAiYamlStdout).toContain('interface.display_name must not be empty');
-    expect(invalidOpenAiYamlStdout).toContain('interface.short_description must be <= 64 characters');
-    expect(invalidOpenAiYamlStdout).toContain('interface.default_prompt must not be empty');
-    expect(invalidOpenAiYamlStdout).toContain('interface.icon_small must be a relative path under assets/');
-    expect(invalidOpenAiYamlStdout).toContain('interface.icon_large must be a relative path under assets/');
-    expect(invalidOpenAiYamlStdout).toContain('interface.brand_color must match #RRGGBB');
-    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].type is required');
-    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].value is required');
-    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].transport must be "streamable_http" or "stdio"');
+    expect(invalidOpenAiYamlStdout).toContain('interface.display_name [invalid-string]');
+    expect(invalidOpenAiYamlStdout).toContain('interface.short_description [string-too-long]');
+    expect(invalidOpenAiYamlStdout).toContain('interface.default_prompt [invalid-string]');
+    expect(invalidOpenAiYamlStdout).toContain('interface.icon_small [invalid-asset-path]');
+    expect(invalidOpenAiYamlStdout).toContain('interface.icon_large [invalid-asset-path]');
+    expect(invalidOpenAiYamlStdout).toContain('interface.brand_color [invalid-brand-color]');
+    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].type [invalid-string]');
+    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].value [invalid-string]');
+    expect(invalidOpenAiYamlStdout).toContain('dependencies.tools[0].transport [invalid-transport]');
 
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'metadata-test', 'agents', 'openai.yaml'),
@@ -5426,7 +5485,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('interface.default_prompt must explicitly mention "$metadata-test"'),
+      stdout: expect.stringContaining('interface.default_prompt [default-prompt-skill-reference]'),
     });
 
     await fs.writeFile(
@@ -5447,7 +5506,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('interface.short_description must be >= 25 characters'),
+      stdout: expect.stringContaining('interface.short_description [string-too-short]'),
     });
 
     await fs.writeFile(
@@ -5477,7 +5536,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('invalid YAML frontmatter'),
+      stdout: expect.stringContaining('[invalid-yaml]'),
     });
 
     await fs.writeFile(
@@ -5499,7 +5558,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('plain scalar values containing ": " must be quoted'),
+      stdout: expect.stringContaining('[invalid-yaml]'),
     });
   });
 
@@ -5963,12 +6022,18 @@ describe('authoring tools', () => {
       '[known-field-invalid-type-value] field "when_to_use"',
     );
     expect(invalidFrontmatterStdout).toContain('[unknown-field] field "when_to_uses"');
-    expect(invalidFrontmatterStdout).toContain('frontmatter.license must be a string');
-    expect(invalidFrontmatterStdout).toContain('frontmatter.compatibility must be a string');
+    expect(invalidFrontmatterStdout).toContain(
+      'SKILL.md#license [known-field-invalid-type-value]',
+    );
+    expect(invalidFrontmatterStdout).toContain(
+      'SKILL.md#compatibility [known-field-invalid-type-value]',
+    );
     expect(invalidFrontmatterStdout).toContain(
       '[known-field-invalid-type-value] field "user-invocable"',
     );
-    expect(invalidFrontmatterStdout).toContain('frontmatter.metadata.short-description must be a string');
+    expect(invalidFrontmatterStdout).toContain(
+      'SKILL.md#metadata.short-description [known-field-invalid-type-value]',
+    );
     expect(invalidFrontmatterStdout).toContain(
       '[known-field-invalid-type-value] field "allowed-tools"',
     );
@@ -6272,10 +6337,10 @@ describe('authoring tools', () => {
       unicodeLimitReport = JSON.parse((error as { stdout?: string }).stdout ?? '{}');
     }
     expect(unicodeLimitReport?.errors.join('\n')).toContain(
-      'frontmatter.description must be <= 1024 characters',
+      'SKILL.md#description [string-too-long]',
     );
     expect(unicodeLimitReport?.errors.join('\n')).toContain(
-      'frontmatter.compatibility must be <= 500 characters',
+      'SKILL.md#compatibility [string-too-long]',
     );
 
     const lineBoundarySkill = [

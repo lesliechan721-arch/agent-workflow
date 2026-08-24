@@ -64,13 +64,14 @@ async function fixture() {
   ).stdout.trim();
   const targetSkillDigest = `sha256:${'1'.repeat(64)}`;
   const audit = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     producer: 'audit-agent-skill-evals',
     independentContext: true,
     auditId: 'audit-1',
     mode: 'preflight',
     targetSkillDigest,
     caseCorpusDigest: corpusDigest,
+    runBundleDigest: null,
     validity: 'pass',
     optimizationPolicy: 'balanced',
     cases: [
@@ -100,14 +101,13 @@ async function fixture() {
     writeFile(stderrPath, stderr, 'utf8'),
   ]);
   const result = {
-    schemaVersion: 2,
-    producer: 'run-agent-skill-evals',
+    schemaVersion: 3,
+    runner: { id: 'fixture-eval-runner', version: '9.0.0' },
     independentContext: false,
     provider: { id: 'command', version: 'test' },
     planDigest: `sha256:${'2'.repeat(64)}`,
     targetSkillDigest,
     caseCorpusDigest: corpusDigest,
-    preflightAuditDigest: sha256(auditRaw),
     comparisonPlanned: false,
     evidenceLevel: 'executed',
     runs: [
@@ -146,7 +146,7 @@ async function fixture() {
   return { root, workspace, target, casePath, auditPath, resultPath, result, stdoutPath };
 }
 
-test('AW bundle binds Eval execution to its audit and keeps external workspace identity', async () => {
+test('AW bundle binds Eval execution to preflight target and corpus and keeps external workspace identity', async () => {
   const value = await fixture();
   const prepare = path.join(reviewScripts, 'prepare-aw-review-bundle.mjs');
   const prepared = await run(prepare, [
@@ -166,6 +166,7 @@ test('AW bundle binds Eval execution to its audit and keeps external workspace i
     (entry) => entry.id === 'eval-execution',
   );
   assert.equal(execution.independentContext, false);
+  assert.equal(execution.producer, 'fixture-eval-runner');
   assert.equal(execution.subjectDigest, value.result.targetSkillDigest);
 
   const bundlePath = path.join(value.root, 'bundle.json');
@@ -194,7 +195,7 @@ test('AW bundle binds Eval execution to its audit and keeps external workspace i
   );
 });
 
-test('AW bundle rejects Eval result without an audit or with a different audit digest', async () => {
+test('AW bundle rejects Eval result without an audit or with a different corpus binding', async () => {
   const value = await fixture();
   const prepare = path.join(reviewScripts, 'prepare-aw-review-bundle.mjs');
   await assert.rejects(
@@ -202,7 +203,7 @@ test('AW bundle rejects Eval result without an audit or with a different audit d
     /Command failed/u,
   );
 
-  value.result.preflightAuditDigest = `sha256:${'3'.repeat(64)}`;
+  value.result.caseCorpusDigest = `sha256:${'3'.repeat(64)}`;
   await writeFile(value.resultPath, JSON.stringify(value.result), 'utf8');
   await assert.rejects(
     run(prepare, [

@@ -1,5 +1,6 @@
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
+import { getRuntimeCapabilities } from './capabilities.js'
 import { isPathInside, pathsOverlap, safeSegment, sha256, stable } from './common.js'
 import { validateJsonSchema } from './json-schema.js'
 import { captureRuntimeSkill, type CapturedRuntimeSkill } from './runtime-skill.js'
@@ -16,18 +17,11 @@ export interface EvalConfiguration {
   env?: Record<string, string>
 }
 
-export interface EvalExecutionPlan {
-  schemaVersion: 2
+export interface AwSkillEvalExecutionPlan {
+  schemaVersion: 3
   planId: string
   target: { name: string; path: string; digest: Digest }
   cases: { paths: string[]; corpusDigest: Digest }
-  audit: {
-    path: string
-    digest: Digest
-    targetSkillDigest: Digest
-    caseCorpusDigest: Digest
-    validity: 'pass'
-  }
   provider: {
     id: string
     command: string[]
@@ -48,29 +42,9 @@ export interface EvalCase extends Record<string, unknown> {
   id?: string | number
 }
 
-interface AuditCase {
-  caseId: string
-  releaseRelevant: boolean
-  admission: 'pass' | 'unknown' | 'fail'
-}
-
-interface AuditResult {
-  validity: 'pass' | 'unknown' | 'fail'
-  mode: 'preflight' | 'result-triage'
-  independentContext: boolean
-  failureTriage: Array<{ attribution: string }>
-  cases: AuditCase[]
-  blockedCases: string[]
-  releaseEligible: boolean
-  recommendedAction: string
-  targetSkillDigest: Digest
-  caseCorpusDigest: Digest
-}
-
 export interface PlanCalculated {
   targetSkillDigest: Digest | null
   caseCorpusDigest: Digest | null
-  auditDigest: Digest | null
   capabilitiesDigest: Digest | null
   configurationSkillDigests: Record<string, Digest | null>
 }
@@ -84,12 +58,11 @@ export interface CapturedPlanFile {
 }
 
 export interface CapturedExecutionPlan {
-  plan: EvalExecutionPlan
+  plan: AwSkillEvalExecutionPlan
   base: string
   outputRoot: string
   planFile: CapturedPlanFile
   caseFiles: CapturedPlanFile[]
-  auditFile: CapturedPlanFile
   capabilitiesFile: CapturedPlanFile
   cases: EvalCase[]
   capabilities: RuntimeCapabilities
@@ -160,11 +133,10 @@ export async function captureAndValidateExecutionPlan(
   const calculated: PlanCalculated = {
     targetSkillDigest: null,
     caseCorpusDigest: null,
-    auditDigest: null,
     capabilitiesDigest: null,
     configurationSkillDigests: {},
   }
-  let plan: EvalExecutionPlan
+  let plan: AwSkillEvalExecutionPlan
   let planFile: CapturedPlanFile
   try {
     const requestedPath = path.resolve(planPath)
@@ -180,9 +152,9 @@ export async function captureAndValidateExecutionPlan(
       raw,
     }
     const value = JSON.parse(raw) as unknown
-    errors.push(...validateJsonSchema(await getSchema('eval-execution-plan'), value))
+    errors.push(...validateJsonSchema(await getSchema('aw-skill-eval-execution-plan'), value))
     if (errors.length > 0) return { valid: false, errors, calculated, captured: null }
-    plan = value as EvalExecutionPlan
+    plan = value as AwSkillEvalExecutionPlan
   } catch (error) {
     return {
       valid: false,
@@ -236,7 +208,12 @@ export async function captureAndValidateExecutionPlan(
     calculated.capabilitiesDigest = loaded.file.digest
     errors.push(...validateJsonSchema(await getSchema('eval-runtime-capabilities'), loaded.value).map((entry) => `capabilities: ${entry}`))
     capabilities = loaded.value
+    const runtimeCapabilities = getRuntimeCapabilities()
     if (capabilities.provider !== plan.provider.id) errors.push('provider id does not match capability document')
+    if (capabilities.provider !== runtimeCapabilities.provider)
+      errors.push('capability provider does not match the current aw-skill-eval runtime')
+    if (capabilities.providerVersion !== runtimeCapabilities.providerVersion)
+      errors.push('capability providerVersion does not match the current aw-skill-eval runtime')
     for (const configuration of plan.configurations) {
       if (configuration.skillMode === 'with-skill' && !capabilities.capabilities.skillPathExecution)
         errors.push('provider does not support with-skill execution')
@@ -330,46 +307,10 @@ export async function captureAndValidateExecutionPlan(
     errors.push(`case corpus is unavailable or invalid: ${(error as Error).message}`)
   }
 
-  let auditFile: CapturedPlanFile | null = null
-  try {
-    const loaded = await readFencedJson<AuditResult>(base, plan.audit.path, 'audit path', outputRoot)
-    auditFile = { ...loaded.file, label: 'preflight audit' }
-    calculated.auditDigest = loaded.file.digest
-    errors.push(...validateJsonSchema(await getSchema('eval-audit-result'), loaded.value).map((entry) => `audit: ${entry}`))
-    const audit = loaded.value
-    if (audit.validity !== 'pass') errors.push('audit validity must be pass')
-    if (audit.mode !== 'preflight') errors.push('plan requires a preflight audit')
-    if (!audit.independentContext) errors.push('audit validity=pass requires independentContext=true')
-    if (audit.failureTriage.length > 0) errors.push('preflight audit must not contain failureTriage entries')
-    if (audit.cases.length === 0) errors.push('audit validity=pass requires audited cases')
-    const auditCases = new Map<string, AuditCase>()
-    for (const entry of audit.cases) {
-      if (auditCases.has(entry.caseId)) errors.push(`audit case ${entry.caseId} is duplicated`)
-      auditCases.set(entry.caseId, entry)
-    }
-    for (const caseId of caseIds)
-      if (auditCases.get(caseId)?.admission !== 'pass') errors.push(`plan case ${caseId} requires passing audit admission`)
-    if (audit.cases.some((entry) => entry.releaseRelevant && entry.admission !== 'pass'))
-      errors.push('audit validity=pass requires every release-relevant case to pass admission')
-    if (audit.blockedCases.length > 0) errors.push('audit validity=pass requires no blocked cases')
-    if (audit.releaseEligible && !audit.cases.some((entry) => entry.releaseRelevant))
-      errors.push('releaseEligible=true requires release-relevant cases')
-    if (audit.recommendedAction === 'candidate-skill-fix' && !audit.failureTriage.some((entry) => entry.attribution === 'skill-defect'))
-      errors.push('candidate-skill-fix requires skill-defect triage evidence')
-    if (audit.targetSkillDigest !== plan.audit.targetSkillDigest || audit.targetSkillDigest !== plan.target.digest)
-      errors.push('audit targetSkillDigest does not bind the plan target')
-    if (audit.caseCorpusDigest !== plan.audit.caseCorpusDigest || audit.caseCorpusDigest !== plan.cases.corpusDigest)
-      errors.push('audit caseCorpusDigest does not bind the plan corpus')
-  } catch (error) {
-    errors.push(`audit is unavailable or invalid: ${(error as Error).message}`)
-  }
-
   if (calculated.targetSkillDigest && calculated.targetSkillDigest !== plan.target.digest)
     errors.push('target digest does not match target content')
   if (calculated.caseCorpusDigest && calculated.caseCorpusDigest !== plan.cases.corpusDigest)
     errors.push('case corpus digest does not match case documents')
-  if (calculated.auditDigest && calculated.auditDigest !== plan.audit.digest)
-    errors.push('audit digest does not match audit document')
   if (calculated.capabilitiesDigest && calculated.capabilitiesDigest !== plan.provider.capabilitiesDigest)
     errors.push('capabilitiesDigest does not match capability document')
   if (plan.provider.command.some((value) => value.includes('\0')))
@@ -380,7 +321,7 @@ export async function captureAndValidateExecutionPlan(
     for (const [configurationId, skillRoot] of configurationRoots)
       if (pathsOverlap(skillRoot, providerCwd)) errors.push(`provider cwd must not overlap ${configurationId} Skill content`)
   }
-  if (errors.length > 0 || !capabilities || !capabilitiesFile || !auditFile || !targetSkill) {
+  if (errors.length > 0 || !capabilities || !capabilitiesFile || !targetSkill) {
     return { valid: false, errors, calculated, captured: null }
   }
   return {
@@ -393,7 +334,6 @@ export async function captureAndValidateExecutionPlan(
       outputRoot,
       planFile,
       caseFiles,
-      auditFile,
       capabilitiesFile: { ...capabilitiesFile, label: 'provider capabilities' },
       cases: capturedCases,
       capabilities,

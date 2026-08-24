@@ -416,10 +416,10 @@ describe('plugin eval runner', () => {
     expect(stdout).toContain('--model-provider');
     expect(stdout).toContain('--codex-config');
     expect(stdout).toContain('--no-inherit-codex-config');
-    expect(stdout).toContain('--execution-plan');
+    expect(stdout).toContain('--aw-skill-eval-plan');
   });
 
-  it('runs a portable execution plan through the production bridge without test-only containment', async () => {
+  it('runs an AwSkillEvalExecutionPlan through the production bridge without Audit', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-eval-plan-'));
     tempDirs.push(root);
     registerCurrentTestWritableStateRoot(root);
@@ -442,30 +442,6 @@ describe('plugin eval runner', () => {
     const capabilitiesPath = path.join(root, 'capabilities.json');
     await fs.writeJson(capabilitiesPath, capabilities, { spaces: 2 });
     const capabilitiesDigest = sha256(await fs.readFile(capabilitiesPath));
-    const auditPath = path.join(root, 'audit.json');
-    await fs.writeJson(auditPath, {
-      schemaVersion: 2,
-      producer: 'audit-agent-skill-evals',
-      independentContext: true,
-      auditId: 'portable-fixture-audit',
-      mode: 'preflight',
-      targetSkillDigest: targetDigest,
-      caseCorpusDigest,
-      validity: 'pass',
-      optimizationPolicy: 'balanced',
-      cases: [{
-        caseId: 'portable_case',
-        releaseRelevant: false,
-        admission: 'pass',
-        oracleConfidence: 'high',
-        findings: [],
-      }],
-      blockedCases: [],
-      releaseEligible: false,
-      failureTriage: [],
-      recommendedAction: 'accepted-risk',
-    }, { spaces: 2 });
-    const auditDigest = sha256(await fs.readFile(auditPath));
     const providerPath = path.join(root, 'provider.mjs');
     await fs.writeFile(providerPath, [
       "import process from 'node:process';",
@@ -473,17 +449,10 @@ describe('plugin eval runner', () => {
     ].join('\n'), 'utf8');
     const planPath = path.join(root, 'plan.json');
     await fs.writeJson(planPath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       planId: 'portable-fixture',
       target: { name: 'portable-fixture', path: './skill', digest: targetDigest },
       cases: { paths: ['./cases.json'], corpusDigest: caseCorpusDigest },
-      audit: {
-        path: './audit.json',
-        digest: auditDigest,
-        targetSkillDigest: targetDigest,
-        caseCorpusDigest,
-        validity: 'pass',
-      },
       provider: {
         id: capabilities.provider,
         command: [process.execPath, providerPath],
@@ -507,7 +476,7 @@ describe('plugin eval runner', () => {
     let stdout = '';
     let stderr = '';
 
-    const exitCode = await runPluginEvals(['--execution-plan', planPath], {
+    const exitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
     });
@@ -524,8 +493,8 @@ describe('plugin eval runner', () => {
       bundleValidation: { valid: true, errors: [] },
     });
     await expect(fs.readJson(result.bundlePath)).resolves.toMatchObject({
-      schemaVersion: 2,
-      producer: 'run-agent-skill-evals',
+      schemaVersion: 3,
+      runner: { id: 'aw-skill-eval', version: capabilities.providerVersion },
       aggregate: { runs: 1, completed: 1 },
       evidenceLevel: 'executed',
       limitations: expect.arrayContaining([

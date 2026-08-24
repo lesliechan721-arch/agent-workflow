@@ -38,7 +38,18 @@ metadata:
 
 ## 发布检查
 
-用户明确要求发布准备状态时，才运行现有确定性 release checker。发布机器事实不进入普通 Review common path。
+用户明确要求发布准备状态时，才运行确定性 release checker：
+
+```bash
+node scripts/check-aw-plugin-release.mjs <plugin-root> \
+  --review <review.json> \
+  --final <profile=path> \
+  [--preflight-audit <audit.json>] \
+  [--run-bundle <bundle.json>] \
+  [--triage-audit <audit.json>]
+```
+
+发布只接受 full、coverage 100%、总体 confidence 为 medium/high 且 effective design 为 pass 的 ReviewResultLite v2。声明 required Eval 的目标必须按 production digest 提供 Audit v3 preflight、RunBundle v3 和 Audit v3 result-triage 三段链；Review 内的 `evalEvidence` 不作为发布事实。相同 production digest 可以共享一条证据链。发布机器事实不进入普通 Review common path。
 
 ## 边界
 

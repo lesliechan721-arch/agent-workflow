@@ -524,12 +524,10 @@ async function main() {
       fail('Eval result targetSkillDigest does not match Eval audit.');
     if (result.caseCorpusDigest !== evalAudit.caseCorpusDigest)
       fail('Eval result caseCorpusDigest does not match Eval audit.');
-    if (result.preflightAuditDigest !== evalAuditDigest)
-      fail('Eval result preflightAuditDigest does not match the supplied Eval audit file.');
     evalResults.push(result);
     stages.push({
       id: 'eval-execution',
-      producer: result.producer,
+      producer: result.runner.id,
       independentContext: result.independentContext,
       subjectDigest: result.targetSkillDigest,
       resultPath: path.resolve(resultPath),

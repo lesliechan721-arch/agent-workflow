@@ -21,10 +21,11 @@ test('author Skill directly routes every maintained author reference', async () 
     'package-and-disclosure.md',
     'script-authoring.md',
     'completion-and-validation.md',
+    'author-standard.md',
     'composition-audit.md',
   ]) {
     assert.match(skill, new RegExp(`references/${reference.replaceAll('.', '\\.')}`, 'u'));
-    if (!reference.endsWith('.generated.md') && reference !== 'composition-audit.md') {
+    if (!['author-standard.md', 'composition-audit.md'].includes(reference)) {
       const source = path.join(sourceRoot, 'skills', 'author-agent-skill', 'references', reference);
       assert.ok((await readFile(source, 'utf8')).length > 150, reference);
     }
@@ -37,7 +38,7 @@ test('single-Skill Reviewer directly exposes delta and conditional specialist re
   const skill = await readFile(path.join(root, 'SKILL.md'), 'utf8');
   for (const reference of [
     'delta-review.md',
-    'review-rubric.generated.md',
+    'review-rubric.md',
     'composition-fitness.md',
     'architecture-boundaries.md',
     'scripts-and-resources.md',
@@ -54,7 +55,7 @@ test('authoring and Eval design do not force Review, Audit, or model execution',
   for (const text of [author, designer]) {
     assert.doesNotMatch(text, /必须启动独立上下文子代理/u);
     assert.doesNotMatch(text, /validity=pass|blockedCases|case corpus digest/u);
-    assert.doesNotMatch(text, /run-agent-skill-evals/u);
+    assert.doesNotMatch(text, /run-aw-skill-evals/u);
   }
   assert.match(author, /不自动审核 Oracle、不自动运行 Eval、不自动触发独立 Review/u);
   assert.match(designer, /Audit status: not assessed/u);

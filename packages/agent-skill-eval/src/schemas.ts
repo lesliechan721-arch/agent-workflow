@@ -8,9 +8,8 @@ import type {
 } from './types.js'
 
 const schemaNames = new Set<SchemaName>([
-  'eval-execution-plan',
+  'aw-skill-eval-execution-plan',
   'eval-run-bundle',
-  'eval-audit-result',
   'eval-runtime-capabilities',
 ])
 
