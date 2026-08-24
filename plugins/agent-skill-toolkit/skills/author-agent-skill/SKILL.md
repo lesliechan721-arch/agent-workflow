@@ -2,7 +2,7 @@
 name: author-agent-skill
 description: >-
   当用户要从零创建、重写或变更一个通用 Agent Skill 包时使用，包括 SKILL.md、description、references、scripts、assets、平台元数据和作者期 Eval 资产。负责写入和确定性自检；不负责独立质量评审、Eval Oracle 审核、昂贵 Eval 执行或发布裁决。
-compatibility: bundled validator 需要 Node.js 20+；依赖 agent-content-toolkit >= 0.1.0。
+compatibility: bundled validator 需要 Node.js 20+；依赖 agent-content-toolkit。
 metadata:
   short-description: 创建或变更最小、可组合、可验证的 Agent Skill 包
 ---

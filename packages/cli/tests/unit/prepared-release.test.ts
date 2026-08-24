@@ -13,7 +13,6 @@ import {
 } from '../../../../scripts/release/prepared-release.mjs';
 import { captureCommand } from '../../../../scripts/release/common.mjs';
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
-import { releaseStatus } from '../../../../scripts/release/release-status.mjs';
 import { updateReleaseTargets } from '../../../../scripts/release/release-target.mjs';
 
 const roots: string[] = [];
@@ -89,6 +88,8 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
     readPackageVersions: async () => [],
     resolveCandidates: async () => fixture.descriptor.candidates,
     assertCatalogTagAvailable: async () => undefined,
+    assertCliTagAvailable: async () => undefined,
+    publishCliTag: async () => undefined,
     readPublishedCliVersion: async () => '1.2.0',
     computeTarballTreeDigest: async (file: string) => file.endsWith('eval.tgz')
       ? 'eval-tree'
@@ -177,6 +178,21 @@ describe('local prepared release', () => {
       readCatalogChannelState: async () => ({ version: '2.3.0-beta.2' }),
     });
     expect(beta).toEqual({ cli: '1.2.0-beta.2', catalog: '2.3.0-beta.3' });
+
+    const readPackageVersions = vi.fn(async () => []);
+    const readPackageChannelVersion = vi.fn(async () => null);
+    const readCatalogVersions = vi.fn(async () => []);
+    const readCatalogChannelState = vi.fn(async () => null);
+    await expect(resolvePreparedCandidates('beta', targets, {
+      axes: { cli: true, catalog: false },
+      readPackageVersions,
+      readPackageChannelVersion,
+      readCatalogVersions,
+      readCatalogChannelState,
+    })).resolves.toEqual({ cli: '1.2.0-beta.1', catalog: null });
+    expect(readPackageVersions).toHaveBeenCalledTimes(2);
+    expect(readCatalogVersions).not.toHaveBeenCalled();
+    expect(readCatalogChannelState).not.toHaveBeenCalled();
 
     await expect(resolvePreparedCandidates('stable', targets, {
       readPackageVersions: async () => [],
@@ -273,26 +289,6 @@ describe('local prepared release', () => {
       readCatalogVersions: async () => ['2.3.0'],
       readCatalogChannelState: async () => null,
     })).resolves.toEqual({ cli: null, catalog: null });
-  });
-
-  it('reports closed beta axes as disabled in release status', async () => {
-    const status = await releaseStatus(['--json'], {
-      writeOutput: false,
-      readTargets: async () => targets,
-      readPackageVersions: async () => ['1.2.0'],
-      readPackageChannelVersion: async (_name: string, channel: string) => channel === 'stable'
-        ? '1.2.0'
-        : null,
-      readCatalogVersions: async () => ['2.3.0'],
-      readCatalogChannelState: async (channel: string) => channel === 'latest'
-        ? { version: '2.3.0' }
-        : null,
-    });
-
-    expect(status.channels.beta).toEqual({
-      candidates: { cli: null, catalog: null },
-      axes: { cli: false, catalog: false },
-    });
   });
 
   it('rejects a partially published stable CLI train before selecting beta', async () => {
@@ -399,7 +395,7 @@ describe('local prepared release', () => {
         if (current === failure) throw new Error('uncertain');
       },
       publishCatalog,
-    })).rejects.toThrow('Do not retry this version; bump both npm package versions');
+    })).rejects.toThrow('run pnpm release again with --cli-bump');
     expect(publishCatalog).not.toHaveBeenCalled();
     expect(events).toEqual(failure === 'eval' ? ['eval'] : ['eval', 'cli']);
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))

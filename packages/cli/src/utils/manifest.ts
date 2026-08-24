@@ -82,8 +82,6 @@ import {
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 5;
-export const PLUGIN_DEPENDENCIES_AW_MIN_VERSION = '0.1.0';
-export const PORTABLE_AGENT_SKILLS_AW_MIN_VERSION = '0.1.0';
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
 const MARKETPLACE_AUTHENTICATION_POLICIES = new Set<MarketplaceAuthenticationPolicy>([
@@ -2834,15 +2832,6 @@ export function validatePluginManifest(
     });
     if (normalizedDependencies.length > 0) {
       manifest.dependencies = normalizedDependencies;
-      const minVersion = manifest.compatibility?.aw.minVersion;
-      if (
-        minVersion === undefined
-        || compareStrictSemVer(minVersion, PLUGIN_DEPENDENCIES_AW_MIN_VERSION) < 0
-      ) {
-        throw new Error(
-          `Invalid plugin manifest.compatibility.aw.minVersion: dependencies requires AW ${PLUGIN_DEPENDENCIES_AW_MIN_VERSION} or newer.`,
-        );
-      }
     }
   }
 
@@ -2900,18 +2889,6 @@ export function validatePluginManifest(
       };
     } else {
       manifest.distributions = {};
-    }
-  }
-
-  if (manifest.distributions?.agentSkills) {
-    const minVersion = manifest.compatibility?.aw.minVersion;
-    if (
-      minVersion === undefined
-      || compareStrictSemVer(minVersion, PORTABLE_AGENT_SKILLS_AW_MIN_VERSION) < 0
-    ) {
-      throw new Error(
-        `Invalid plugin manifest.compatibility.aw.minVersion: distributions.agentSkills requires AW ${PORTABLE_AGENT_SKILLS_AW_MIN_VERSION} or newer.`,
-      );
     }
   }
 

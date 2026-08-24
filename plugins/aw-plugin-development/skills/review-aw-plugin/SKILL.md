@@ -2,7 +2,7 @@
 name: review-aw-plugin
 description: >-
   当用户要只读审核一个 AW 插件源码、其内部组件或 materialized Skill 时使用。负责单个插件的 manifest、组件组合、共享脚本、build/materialization、profile 差异和按 digest 去重的 leaf Skill Review；不修改插件，不评审跨多个插件的完整工作流，不输出发布资格。
-compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit >= 0.1.0 和 agent-skill-toolkit >= 0.1.0。
+compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit 和 agent-skill-toolkit。
 user-invocable: true
 metadata:
   short-description: 只读评审一个 AW 插件及其 materialized profiles

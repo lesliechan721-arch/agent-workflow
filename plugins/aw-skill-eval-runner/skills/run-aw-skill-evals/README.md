@@ -24,7 +24,7 @@
 
 ## 边界
 
-- 需要 `@lesliechan721/agent-skill-eval >= 0.1.0`。运行时根据 bin、capabilities v1 及 plan/bundle schema v3 fail closed。
+- 需要已安装 `@lesliechan721/agent-skill-eval`。运行时根据 bin、capabilities v1 及 plan/bundle schema v3 fail closed。
 - 不使用 `npx`，也不隐式安装或下载依赖。
 - Provider 命令、模型成本、认证环境、网络和外部进程必须由用户明确授权。
 - 共享包负责 provider、snapshot、进程、timeout、采集、bundle 和 evidence level；本 Skill 只负责人工授权、能力检查、命令编排和 bundle 完整性。

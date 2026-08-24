@@ -19,7 +19,6 @@ const CLI_PACKAGE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const errors = [];
 const warnings = [];
 const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 5;
-const PLUGIN_DEPENDENCIES_AW_MIN_VERSION = '0.1.0';
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -623,17 +622,6 @@ function validateManifestLightweight(manifest) {
         }
         seen.add(dependency);
       }
-    }
-  }
-
-  if (Array.isArray(manifest.dependencies) && manifest.dependencies.length > 0) {
-    const minVersion = manifest.compatibility?.aw?.minVersion;
-    if (
-      typeof minVersion !== 'string'
-      || !STRICT_SEMVER_PATTERN.test(minVersion)
-      || compareStrictSemVer(minVersion, PLUGIN_DEPENDENCIES_AW_MIN_VERSION) < 0
-    ) {
-      error(`dependencies requires AW ${PLUGIN_DEPENDENCIES_AW_MIN_VERSION} or newer`);
     }
   }
 

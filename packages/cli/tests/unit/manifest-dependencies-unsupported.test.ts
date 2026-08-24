@@ -9,7 +9,7 @@ const marketplace = {
   policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
 };
 
-const compatibility = { aw: { minVersion: '0.1.0' } };
+const compatibility = { aw: { minVersion: '0.0.0' } };
 
 describe('plugin manifest dependencies contract', () => {
   it('accepts canonical dependency names and rejects invalid declarations', () => {
@@ -46,22 +46,22 @@ describe('plugin manifest dependencies contract', () => {
     })).toThrow('at most 64');
   });
 
-  it('requires AW 0.1.0 only for non-empty dependencies', () => {
+  it('accepts dependencies without a dedicated AW feature floor', () => {
     const source = {
       name: 'parent',
       version: '1.0.0',
       description: 'parent',
       marketplace,
     };
-    expect(() => validatePluginManifest('/tmp/plugin', {
+    expect(validatePluginManifest('/tmp/plugin', {
       ...source,
-      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      compatibility,
       dependencies: ['child'],
-    })).toThrow('dependencies requires AW 0.1.0 or newer');
-    expect(() => validatePluginManifest('/tmp/plugin', {
+    }).dependencies).toEqual(['child']);
+    expect(validatePluginManifest('/tmp/plugin', {
       ...source,
       dependencies: ['child'],
-    })).toThrow('dependencies requires AW 0.1.0 or newer');
+    }).compatibility.aw.minVersion).toBe('0.0.0');
     expect(validatePluginManifest('/tmp/plugin', {
       ...source,
       compatibility,

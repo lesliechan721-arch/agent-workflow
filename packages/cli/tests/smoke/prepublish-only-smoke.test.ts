@@ -20,7 +20,7 @@ describe('public package publish guard', () => {
       cwd: path.join(repoRoot(), packagePath),
       env: process.env,
     })).rejects.toMatchObject({
-      stderr: expect.stringContaining('Direct package publication is disabled. Use pnpm release:publish.'),
+      stderr: expect.stringContaining('Direct package publication is disabled. Use pnpm release.'),
     });
   });
 });

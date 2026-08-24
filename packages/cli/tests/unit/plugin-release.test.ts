@@ -182,7 +182,7 @@ describe('plugin release workflow', () => {
       schemaVersion: 4,
       catalogVersion: cliPackage.version,
       channel: String(cliPackage.version).includes('-') ? 'beta' : 'latest',
-      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      compatibility: { aw: { minVersion: '0.0.0' } },
       release: { state: 'development' },
     });
     expect(developmentManifest.entries[0]).toMatchObject({
@@ -203,7 +203,7 @@ describe('plugin release workflow', () => {
       schemaVersion: 4,
       catalogVersion: '9.0.0-beta.1',
       channel: 'beta',
-      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      compatibility: { aw: { minVersion: '0.0.0' } },
       release: { state: 'development' },
     });
     expect(staged.manifest).not.toHaveProperty('packages');
@@ -245,7 +245,7 @@ describe('plugin release workflow', () => {
     await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
     await expect(fs.readJson(path.join(outputRoot, 'catalog-manifest.json')))
       .resolves.toMatchObject({
-        compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+        compatibility: { aw: { minVersion: '0.0.0' } },
         entries: [expect.objectContaining({
           compatibility: { aw: { minVersion: '0.0.0' } },
         })],

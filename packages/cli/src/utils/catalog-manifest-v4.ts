@@ -18,7 +18,7 @@ import {
 
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const SOURCE_HEAD_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-export const CATALOG_SCHEMA_4_CLI_FLOOR = '0.1.0-beta.3';
+export const CATALOG_SCHEMA_4_CLI_FLOOR = '0.0.0';
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {

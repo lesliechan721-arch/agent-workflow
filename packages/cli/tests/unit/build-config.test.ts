@@ -214,13 +214,13 @@ describe('buildConfig validation', () => {
     }).distributions?.agentSkills?.skills).toBe('./portable-skills');
   });
 
-  it('requires the public portable distribution AW compatibility floor', () => {
-    expect(() => validatePluginManifest('/tmp/plugin', {
+  it('accepts the portable distribution without a dedicated AW feature floor', () => {
+    expect(validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
       compatibility: { aw: { minVersion: '0.0.0' } },
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       distributions: { agentSkills: { skills: './portable-skills' } },
-    })).toThrow('distributions.agentSkills requires AW 0.1.0 or newer');
+    }).distributions?.agentSkills?.skills).toBe('./portable-skills');
   });
 
   it('rejects unsafe portable distribution paths', () => {

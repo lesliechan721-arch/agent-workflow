@@ -2,7 +2,7 @@
 name: run-aw-skill-evals
 description: >-
   当任务需要使用 aw-skill-eval 验证或执行 AwSkillEvalExecutionPlan，并在执行时生成 EvalRunBundle 时使用。负责本次副作用授权、运行时能力检查、共享 CLI 编排和 bundle 完整性验证；不审核 case，不执行 Audit 或 result triage，不解释失败归因，不修改 Skill，也不发布 Review。
-compatibility: 需要 Node.js 22+、@lesliechan721/agent-skill-eval >= 0.1.0，且 aw-skill-eval 位于 PATH。
+compatibility: 需要 Node.js 22+、@lesliechan721/agent-skill-eval >= 0.0.0，且 aw-skill-eval 位于 PATH。
 user-invocable: true
 metadata:
   short-description: 使用 aw-skill-eval 执行 Eval plan 并生成证据

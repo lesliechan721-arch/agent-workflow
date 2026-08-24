@@ -2,7 +2,7 @@
 name: review-aw-workflow
 description: >-
   当用户明确要求只读审核一个跨多个 AW 插件或多个插件边界的既有工作流时使用。目标必须有明确用户结果、入口和参与插件；负责发现 manifest、插件依赖、runtime imports/exports、profiles、materialized targets 和跨插件 handoff，并组合通用工作流评审。不修改插件，不评审单个插件内部实现，也不对未界定的整个仓库给出完整结论。
-compatibility: bundled inventory script 需要 Node.js 22+；依赖 agent-skill-toolkit >= 0.1.0。
+compatibility: bundled inventory script 需要 Node.js 22+；依赖 agent-skill-toolkit。
 user-invocable: true
 metadata:
   short-description: 只读评审有界的跨 AW 插件工作流

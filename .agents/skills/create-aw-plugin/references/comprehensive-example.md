@@ -59,7 +59,7 @@ code-review/
 
 `skills/review-workflow/evals/evals.json` 属于作者期质量材料，不是 runtime 指令，也不会进入 production runtime bundle。真实插件需要由同目录 `manifest.json` 声明 owner、profile 和 suite 后才能通过 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 运行；本示例只保留小型、脱敏的 seed corpus，并示范 policy、scenario family、oracle 和边界 minimal counterexample。大型日志、仓库快照和私有输入应保存在项目 `.tmp/agent-workflows/evals/` 下的隔离 workspace。
 
-插件需要同一 source 的其它插件才能工作时，使用顶层 `dependencies` 声明必需插件，并把 `compatibility.aw.minVersion` 设置为至少 `0.1.0`。外部工具或服务要求仍在 Skill、MCP 或 lifecycle 合同中表达。
+插件需要同一 source 的其它插件才能工作时，使用顶层 `dependencies` 声明必需插件。`compatibility.aw.minVersion` 只声明真实最低版本；没有真实要求时使用 `0.0.0`。外部工具或服务要求仍在 Skill、MCP 或 lifecycle 合同中表达。
 
 ## 构建产物预览
 

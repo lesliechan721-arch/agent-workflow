@@ -901,9 +901,8 @@ describe('authoring tools', () => {
     expect(dualManifest.interface.capabilities).toContain('Skills');
     expect(dualAdded.stdout).toContain('Keep the current stable target during development');
     expect(dualAdded.stdout).toContain(
-      'pnpm release:target -- --plugin git-commit=patch',
+      'pnpm release -- beta|release --catalog|--all --plugin git-commit=patch',
     );
-    expect(dualAdded.stdout).toContain('release:prepare` creates the candidate identity');
     await expect(fs.pathExists(path.join(tempRepo, '.changes'))).resolves.toBe(false);
     const dualSkillRoot = path.join(dualPluginRoot, 'skills', 'release-notes');
     await expect(fs.readFile(path.join(dualSkillRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
@@ -6545,7 +6544,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('enforces the dependency AW floor in the authoring fallback validator', async () => {
+  it('accepts dependencies at the default AW floor in the authoring fallback validator', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-dependency-floor-'));
     tempDirs.push(tempRoot);
     const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
@@ -6567,7 +6566,7 @@ describe('authoring tools', () => {
         name: 'fallback-dependency',
         version: '1.0.0',
         description: 'Fallback dependency fixture.',
-        compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+        compatibility: { aw: { minVersion: '0.0.0' } },
         dependencies: ['shared'],
         marketplace: {
           category: 'workflow',
@@ -6585,8 +6584,8 @@ describe('authoring tools', () => {
       cwd: tempRoot,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
-    })).rejects.toMatchObject({
-      stdout: expect.stringContaining('dependencies requires AW 0.1.0 or newer'),
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
   });
 

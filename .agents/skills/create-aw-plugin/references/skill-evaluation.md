@@ -98,7 +98,7 @@ Profile 规则：
 
 - v2 平台固定为 Codex。manifest 的 `plugin` 和 `skill` 定义证据 owner。
 - `plugins[]` 按声明顺序安装到同一个隔离 subject；必须包含 owner 插件，名称不能重复。每项 `config` 必须经对应插件的 AW 配置存储和真实 renderer 消费，不能用字符串替换模拟最终 Skill。
-- companion 插件只从当前仓库 `plugins/<name>` 解析。Eval fixture 的组合安装不会自动形成 production dependency；只有生产运行确实必需时才显式声明同 source `dependencies`，并把 `compatibility.aw.minVersion` 设置为至少 `0.1.0`。
+- companion 插件只从当前仓库 `plugins/<name>` 解析。Eval fixture 的组合安装不会自动形成 production dependency；只有生产运行确实必需时才显式声明同 source `dependencies`。`compatibility.aw.minVersion` 只声明真实最低版本；没有真实要求时使用 `0.0.0`。
 - 同一 profile 的已安装插件不能生成重名 Codex Skill。
 - 真实模型只允许 `scope: "project"` 且 `runModel: true` 的 profile。
 - user profile 必须 `runModel: false`；它只证明 native 写入前的确定性 materialized artifact，不声称经过 user native cache 的真实模型运行。
