@@ -32,7 +32,7 @@ test('plugin has no runtime dependency on the review toolkit', async () => {
   ));
   assert.equal(manifest.name, 'aw-skill-eval-runner');
   assert.deepEqual(manifest.dependencies, []);
-  assert.equal(manifest.compatibility.aw.minVersion, '0.1.0');
+  assert.equal(manifest.compatibility.aw.minVersion, '0.0.0');
 });
 
 test('plugin supports implicit and explicit invocation while keeping only execution gates', async () => {

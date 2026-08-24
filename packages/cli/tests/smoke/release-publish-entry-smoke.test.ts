@@ -83,18 +83,18 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
 
 it('spawns the public publisher orchestration for all axes and uncertain failures', async () => {
   await expect(runCase({ cli: true, catalog: true })).resolves.toMatchObject({
-    ok: true, events: ['eval', 'cli', 'catalog'],
+    ok: true, events: ['eval', 'cli', 'tag', 'catalog'],
   });
   await expect(runCase({ cli: true, catalog: false })).resolves.toMatchObject({
-    ok: true, events: ['eval', 'cli'],
+    ok: true, events: ['eval', 'cli', 'tag'],
   });
   await expect(runCase({ cli: false, catalog: true })).resolves.toMatchObject({
     ok: true, events: ['catalog'],
   });
   await expect(runCase({ cli: true, catalog: true }, 'eval')).resolves.toMatchObject({
-    ok: false, events: ['eval'], error: expect.stringContaining('bump both npm package versions'),
+    ok: false, events: ['eval'], error: expect.stringContaining('--cli-bump'),
   });
   await expect(runCase({ cli: false, catalog: true }, 'catalog')).resolves.toMatchObject({
-    ok: false, events: ['catalog'], error: expect.stringContaining('bump the Catalog version'),
+    ok: false, events: ['catalog'], error: expect.stringContaining('--catalog-bump'),
   });
 });

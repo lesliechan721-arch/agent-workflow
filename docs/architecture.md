@@ -59,7 +59,7 @@ Git Catalog source
 
 ### Portable Agent Skills Distribution
 
-`agent-skills` 是独立 distribution，不是 `PlatformName`，也不改变 marketplace product eligibility。插件通过 `distributions.agentSkills` 显式声明该能力；原生 `skills` 不自动成为 portable source，V1 也不支持 portable-only plugin。使用该公开字段的 manifest 必须声明 `compatibility.aw.minVersion >= 0.1.0`。
+`agent-skills` 是独立 distribution，不是 `PlatformName`，也不改变 marketplace product eligibility。插件通过 `distributions.agentSkills` 显式声明该能力；原生 `skills` 不自动成为 portable source，V1 也不支持 portable-only plugin。manifest 仍必须声明严格 SemVer 的 `compatibility.aw.minVersion`，但该字段没有 Portable 专用版本门槛。
 
 Catalog build 把 portable static Skill、明确选择 `distributions: ["agent-skills"]` 的 `skillRuntimeFiles`，以及 dynamic artifact 的 `runtimeImports` 复制到 consumer bundle。runtime import 带 bundle-local path、digest 和 provider provenance；materialize 运行时不读取其它插件 bundle，也不导入其它 renderer 的输出。
 
@@ -145,21 +145,24 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 
 ## Release Flow
 
-根级正常发布入口只有 `release:status`、`release:target`、`release:prepare` 和 `release:publish`。不提供其它正常发布命令，也不要求额外提交生成状态。
+根级正常发布入口只有 `pnpm release`。它要求 `beta|release` 渠道和 `--cli|--catalog|--all` 中一个显式发布轴。
 
-- `release:status [-- --json]` 读取当前 target 和远端版本，显示 beta 与 stable 候选。
-- `release:target` 接受一个或多个 `--cli major|minor|patch`、`--catalog major|minor|patch`、`--plugin <name>=major|minor|patch`，并原子更新相应 source target。
-- `release:prepare -- beta|stable` 从干净 source HEAD 构建本地 artifacts，写入 `.release/prepared/descriptor.json`。
-- `release:publish` 不接受版本参数。它只读取并验证本地 prepared artifacts，然后按 `Eval → CLI → Catalog` 的固定顺序发布已启用的轴。
+- `--cli-bump`、`--catalog-bump` 和可重复的 `--plugin <name>=major|minor|patch` 只提升所选轴的稳定 target。命令只提交这些白名单元数据，不提交其它工作树内容，也不推当前分支。
+- 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取；Catalog-only 仍要求对应渠道已有兼容且一致的两个 CLI npm 包。
+- 元数据 commit 后运行所选轴的完整 release verify，再从干净 source HEAD 生成 `.release/prepared/descriptor.json`。
+- 发布顺序是 `Eval → CLI → CLI tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
+- `pnpm release -- --repair-cli-tag` 只从有效 prepared descriptor 核验并补发 CLI tag。它不准备新候选或修改分支。
 
 `.release/prepared/` 在 gitignore 下，是可删除的弱状态；删除后重新 prepare。`attempted.json` 是 gitignored 的本地安全门禁，不得手动删除。任何远端尝试前写入该 marker；远端失败或结果不确定后，必须 bump 相关 target。工具在 target digest 改变后处理旧 marker，再 prepare 和 publish 新版本；不得重跑同一候选。
 
-Catalog publisher 使用 prepared snapshot 写入相应 channel 和版本 tag。远端原子写失败或结果不确定时，同样必须提升 Catalog 版本后重发。
+Catalog publisher 使用 prepared snapshot 写入相应 channel 和版本 tag。远端原子写失败或结果不确定时，同样必须提升 Catalog 版本后重发。CLI tag 推送异常时先读取远端；预期 tag 已指向 source commit 即成功，缺失时用 tag repair 补发，冲突时停止。
 
 ## Key Paths
 
 - `packages/cli/scripts/bundle-plugins.ts`：生成 catalog snapshot。
 - `packages/cli/scripts/plugin-staging.ts`：生成 Catalog staging 内容。
 - `scripts/release/prepared-release.mjs`：生成、验证和消费本地 prepared release。
+- `scripts/release/release.mjs`：一键发布公共编排入口。
+- `scripts/release/cli-git-tag.mjs`：CLI source tag 检查、发布和恢复。
 - `scripts/release/git-catalog-publisher.mjs`：发布 prepared Catalog snapshot。
 - `packages/cli/authoring/`：随 CLI 发布的确定性插件作者实现。

@@ -65,8 +65,8 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 5. **管理插件版本**
    - 新插件保留脚手架写入的初始稳定 version（默认 `0.1.0`）
    - 日常开发保持 `.agents-plugin/plugin.json` 中的当前稳定目标不变；不要为每次 production bundle 变化直接改 version
-   - release train 开始时，使用 `pnpm release:target -- --plugin <name>=patch` 一次设置目标稳定版本；bump 也可选择 `major` 或 `minor`，candidate 身份由 `pnpm release:prepare` 生成
-   - workspace 正常发布只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`；历史 `release:recover` 不是插件作者入口
+   - release train 使用 `pnpm release -- beta|release --catalog|--all --plugin <name>=patch` 一次设置目标稳定版本并发布；bump 也可选择 `major` 或 `minor`
+   - workspace 正常发布只使用 `pnpm release`；candidate 身份由 registry、immutable Catalog history 和 ledger 生成
    - `aw plugin add-skill` 只创建 Skill 骨架和必要 manifest 能力字段，不修改 manifest version
    - Skill 根的直接子目录 `evals/**`、`reports/**`、插件根 `reports/**` 和 test-only 文件不进入 production bundle；更深层的同名目录、Skill README 和其它 runtime 文件进入 production bundle
    - 完成条件：日常开发保持当前稳定 target；`aw plugin status` 准确报告 production 状态；release train 需要新 target 时由 workspace release workflow 一次设置
@@ -114,7 +114,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。
-- 插件只在确实需要同一 source 的其它插件才能工作时声明 `dependencies: ["<plugin-name>"]`。非空依赖要求 `compatibility.aw.minVersion >= 0.1.0`；`buildImports` 只是构建期文件输入，不形成安装依赖。
+- 插件只在确实需要同一 source 的其它插件才能工作时声明 `dependencies: ["<plugin-name>"]`。`buildImports` 只是构建期文件输入，不形成安装依赖。
 - `plugins/marketplace-source.json`、`packages/cli/plugins-dist/`、`~/.aw/` 和平台 manifest 都不是单插件作者手改入口。
 
 ## 验证入口

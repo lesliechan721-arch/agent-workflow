@@ -2,7 +2,7 @@
 name: review-agent-skill
 description: >-
   当用户明确要求只读审核一个已有 Agent Skill 包或其修订版时使用。评估该 Skill 的真实价值、触发、职责、最小控制、信息层级、资源和已有 Eval 证据；不修改目标，不评审完整插件或跨 Skill 工作流，不输出发布资格。
-compatibility: 机器包检查需要 Node.js 22+、提供 `aw skill validate` 的已安装 AW CLI；依赖 agent-content-toolkit >= 0.1.0。
+compatibility: 机器包检查需要 Node.js 22+、提供 `aw skill validate` 的已安装 AW CLI；依赖 agent-content-toolkit。
 metadata:
   short-description: 轻量只读评审一个 Agent Skill 包
 ---

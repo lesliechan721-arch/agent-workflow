@@ -24,7 +24,7 @@
 
 ## 边界
 
-- 需要 `@lesliechan721/agent-skill-eval >= 0.1.0`。运行时根据 bin、capabilities v1 及 plan/bundle schema v3 fail closed。
+- 需要已安装 `@lesliechan721/agent-skill-eval`。运行时根据 bin、capabilities v1 及 plan/bundle schema v3 fail closed。
 - 不使用 `npx`，也不隐式安装或下载依赖。
 - Provider 命令、模型成本、认证环境、网络和外部进程必须由用户明确授权。
 - Plan 可用可选的 `minimumEvidenceLevel` 要求 `executed` 或 `comparative`；省略时保持 `executed`。

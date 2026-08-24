@@ -87,7 +87,7 @@ describe('simple Catalog Git publisher', () => {
     await expect(publishStagedCatalog({
       mode: 'latest', catalogVersion: '3.0.0', stagedRoot,
     }, { remoteUrl: remote, catalogModules: catalogModules('latest', '3.0.0') }))
-      .rejects.toThrow('Do not retry 3.0.0; bump the Catalog version');
+      .rejects.toThrow('Do not retry 3.0.0');
     await expect(git(['--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
       .rejects.toThrow();
     await expect(git(['--git-dir', remote, 'rev-parse', 'refs/tags/catalog-v3.0.0']))

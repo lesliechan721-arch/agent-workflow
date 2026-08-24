@@ -30,12 +30,16 @@ try {
     withSnapshot: async (callback) => callback(descriptor.build),
     resolveCandidates: async () => descriptor.candidates,
     readPackageVersions: async () => [],
+    assertCliTagAvailable: async () => undefined,
     readPublishedCliVersion: async () => config.publishedCliVersion,
     computeTarballTreeDigest: async (file) => file.includes('eval') ? 'eval-tree' : 'cli-tree',
     runNpmCommand: async (_command, args) => {
       const event = args[1].includes('eval') ? 'eval' : 'cli';
       events.push(event);
       if (config.fail === event) throw new Error('fake npm failure');
+    },
+    publishCliTag: async () => {
+      events.push('tag');
     },
     beforeRemoteWrite: async (target) => {
       if (target === undefined) events.push('catalog');

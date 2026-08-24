@@ -27,6 +27,10 @@ import {
   readCatalogChannelLedger,
   readCatalogVersions,
 } from './git-catalog-publisher.mjs';
+import {
+  assertCliTagAvailable,
+  ensureCliTag,
+} from './cli-git-tag.mjs';
 import { calculateCanonicalDigest } from './release-model.mjs';
 import { readCurrentReleaseContent } from './release-observe.mjs';
 import { assertVersionTargetsMatchHead, readVersionTargets } from './release-target.mjs';
@@ -82,7 +86,21 @@ async function assertCandidateNotAttempted(targetsDigest, candidates, options = 
   const attempt = await readAttempt(options);
   if (!attempt) return;
   if (reusesAttemptedCandidate(attempt, candidates)) {
-    throw new Error('This release candidate was already attempted. Bump the involved target, then prepare again.');
+    throw new Error('This release candidate was already attempted. Run pnpm release again with the involved target bump.');
+  }
+}
+
+export async function assertPreparedCliAttempt(descriptor, options = {}) {
+  const attempt = await (options.readAttempt ?? readAttempt)(options);
+  if (
+    attempt?.schemaVersion !== 1
+    || attempt.targetsDigest !== descriptor.source.targetsDigest
+    || attempt.candidates?.cli !== descriptor.candidates.cli
+    || attempt.descriptorDigest !== calculateCanonicalDigest(descriptor)
+  ) {
+    throw new Error(
+      'Cannot repair the CLI tag: the local attempt marker does not match the prepared release.',
+    );
   }
 }
 
@@ -204,23 +222,52 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
   const readVersions = options.readPackageVersions ?? readPackageVersions;
   const readChannelVersion = options.readPackageChannelVersion ?? readPackageChannelVersion;
   const mode = channel === 'stable' ? 'latest' : 'beta';
-  const [evalVersions, cliVersions, catalogVersions, evalCurrent, cliCurrent, catalogState] = await Promise.all([
-    readVersions(CLI_PACKAGES[0], options),
-    readVersions(CLI_PACKAGES[1], options),
-    (options.readCatalogVersions ?? readCatalogVersions)(options),
-    readChannelVersion(CLI_PACKAGES[0], channel, options),
-    readChannelVersion(CLI_PACKAGES[1], channel, options),
-    (options.readCatalogChannelState ?? readCatalogChannelState)(mode, options),
-  ]);
-  const cli = nextCandidate(
-    targets.cli, channel, [evalVersions, cliVersions], [evalCurrent, cliCurrent], 'CLI train',
-  );
+  const axes = options.axes ?? { cli: true, catalog: true };
+  const cliState = axes.cli
+    ? await Promise.all([
+        readVersions(CLI_PACKAGES[0], options),
+        readVersions(CLI_PACKAGES[1], options),
+        readChannelVersion(CLI_PACKAGES[0], channel, options),
+        readChannelVersion(CLI_PACKAGES[1], channel, options),
+      ])
+    : null;
+  const catalogState = axes.catalog
+    ? await Promise.all([
+        (options.readCatalogVersions ?? readCatalogVersions)(options),
+        (options.readCatalogChannelState ?? readCatalogChannelState)(mode, options),
+      ])
+    : null;
   return {
-    cli,
-    catalog: nextCandidate(
-      targets.catalog, channel, [catalogVersions], [catalogState?.version ?? null], 'Catalog',
-    ),
+    cli: cliState
+      ? nextCandidate(
+          targets.cli,
+          channel,
+          [cliState[0], cliState[1]],
+          [cliState[2], cliState[3]],
+          'CLI train',
+        )
+      : null,
+    catalog: catalogState
+      ? nextCandidate(
+          targets.catalog,
+          channel,
+          [catalogState[0]],
+          [catalogState[1]?.version ?? null],
+          'Catalog',
+        )
+      : null,
   };
+}
+
+export function assertSelectedCandidates(axes, candidates) {
+  for (const axis of ['cli', 'catalog']) {
+    if (axes[axis] && candidates[axis] === null) {
+      throw new Error(
+        `Selected ${axis === 'cli' ? 'CLI' : 'Catalog'} axis has no release candidate; ` +
+        'select another axis or bump its stable target.',
+      );
+    }
+  }
 }
 
 async function stampCandidatePackages(snapshot, candidateVersion) {
@@ -247,7 +294,7 @@ function descriptorArtifact(root, name, filePath, contentDigest) {
 
 export async function prepareLocalRelease(channel, options = {}) {
   if (channel !== 'beta' && channel !== 'stable') {
-    throw new Error('Usage: pnpm release:prepare -- beta|stable');
+    throw new Error('Prepared release channel must be beta or stable.');
   }
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const localReleaseRoot = options.releaseRoot ?? releaseRoot;
@@ -261,8 +308,9 @@ export async function prepareLocalRelease(channel, options = {}) {
   ]);
   if (versions.targetVersion !== targets.cli) throw new Error('CLI package versions do not match release targets.');
   const candidates = await (options.resolveCandidates ?? resolvePreparedCandidates)(channel, targets, {
-    ...options, repoRoot,
+    ...options, repoRoot, axes: options.axes ?? { cli: true, catalog: true },
   });
+  assertSelectedCandidates(options.axes ?? { cli: true, catalog: true }, candidates);
   const targetsDigest = calculateCanonicalDigest(targets);
   await assertCandidateNotAttempted(targetsDigest, candidates, { ...options, releaseRoot: localReleaseRoot });
   await fs.mkdir(localReleaseRoot, { recursive: true });
@@ -376,7 +424,7 @@ export async function readPreparedDescriptor(options = {}) {
     }
     descriptor = JSON.parse(await fs.readFile(path.join(root, 'descriptor.json'), 'utf8'));
   } catch (error) {
-    throw new Error('No valid local prepared release exists; run release:prepare first.', { cause: error });
+    throw new Error('No valid local prepared release exists; run pnpm release first.', { cause: error });
   }
   if (descriptor?.schemaVersion !== 1 || !descriptor.axes || !descriptor.source || !descriptor.build) {
     throw new Error('The local prepared release descriptor is invalid; prepare again.');
@@ -426,7 +474,7 @@ function resolvePreparedPath(root, relativePath) {
   return resolved;
 }
 
-async function assertPreparedArtifacts(root, descriptor, options = {}) {
+export async function assertPreparedCliArtifacts(root, descriptor, options = {}) {
   if (descriptor.npm) {
     for (const artifact of descriptor.npm.packages) {
       const artifactPath = resolvePreparedPath(root, artifact.path);
@@ -453,6 +501,10 @@ async function assertPreparedArtifacts(root, descriptor, options = {}) {
       }
     }
   }
+}
+
+async function assertPreparedArtifacts(root, descriptor, options = {}) {
+  await assertPreparedCliArtifacts(root, descriptor, options);
   if (descriptor.catalog) {
     const modules = options.catalogModules ?? await loadCatalogModules(options.cliDistRoot);
     const catalogRoot = resolvePreparedPath(root, descriptor.catalog.path);
@@ -487,6 +539,10 @@ async function assertCandidatesUnavailable(descriptor, options = {}) {
         throw new Error(`${packageName}@${descriptor.candidates.cli} already exists; bump both npm package versions and prepare again.`);
       }
     }
+    await (options.assertCliTagAvailable ?? assertCliTagAvailable)(
+      descriptor.candidates.cli,
+      { ...options, repoRoot: options.repoRoot ?? defaultRepoRoot },
+    );
   }
   if (descriptor.axes.catalog) {
     await (options.assertCatalogTagAvailable ?? assertCatalogTagAvailable)(
@@ -522,7 +578,7 @@ async function assertRemoteCandidateGate(descriptor, targets, options = {}) {
   const live = await (options.resolveCandidates ?? resolvePreparedCandidates)(
     descriptor.channel,
     targets,
-    options,
+    { ...options, axes: descriptor.axes },
   );
   if (!sameCandidates(live, descriptor.candidates)) {
     throw new Error('Published channel state changed after prepare; bump the involved target and prepare again.');
@@ -567,7 +623,8 @@ async function publishNpm(packageName, tarballPath, version, channel, options = 
     });
   } catch (error) {
     throw new Error(
-      `${packageName}@${version} publish failed or its result is uncertain. Do not retry this version; bump both npm package versions, then run target, prepare, and publish again.`,
+      `${packageName}@${version} publish failed or its result is uncertain. ` +
+      'Do not retry this version; run pnpm release again with --cli-bump and the intended CLI axis.',
       { cause: error },
     );
   }
@@ -626,6 +683,11 @@ export async function publishPreparedRelease(options = {}) {
       descriptor.candidates.cli, descriptor.channel, publicationOptions);
     await publishNpm(CLI_PACKAGES[1], resolvePreparedPath(root, cliArtifact.path),
       descriptor.candidates.cli, descriptor.channel, publicationOptions);
+    await (options.publishCliTag ?? ensureCliTag)(
+      descriptor.candidates.cli,
+      descriptor.source.head,
+      { ...publicationOptions, repoRoot },
+    );
   }
   if (descriptor.axes.catalog) {
     await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, 'catalog', options);

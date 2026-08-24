@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import {
   calculateCanonicalDigest,
@@ -222,7 +221,7 @@ export async function updateReleaseTargets(argv, options = {}) {
   if (requested.cli && cliPackages.some((entry) => entry.version !== current.cli)) {
     throw new Error(
       `CLI release target ${current.cli} must match packages/cli/package.json and ` +
-      'packages/agent-skill-eval/package.json before release:target can update it.',
+      'packages/agent-skill-eval/package.json before release metadata can update it.',
     );
   }
   if (
@@ -298,15 +297,3 @@ export async function updateReleaseTargets(argv, options = {}) {
     targetsDigest: calculateCanonicalDigest(next),
   };
 }
-
-export async function main(argv = process.argv.slice(2)) {
-  try {
-    const result = await updateReleaseTargets(argv);
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  }
-}
-
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

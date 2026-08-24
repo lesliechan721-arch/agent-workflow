@@ -26,7 +26,7 @@ function createManifestFixture() {
     schemaVersion: 4,
     catalogVersion: '1.2.3',
     channel: 'latest',
-    compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+    compatibility: { aw: { minVersion: '0.0.0' } },
     release: { state: 'development' as const },
     entries: [{
       name: 'demo',
@@ -83,8 +83,8 @@ describe('catalog manifest schema 4', () => {
     expect(validateCatalogManifestV4(published).release).toEqual(published.release);
 
     const belowFloor = createManifestFixture();
-    belowFloor.compatibility.aw.minVersion = '0.1.0-beta.2';
-    expect(() => validateCatalogManifestV4(belowFloor)).toThrow('schema 4 requires 0.1.0-beta.3');
+    belowFloor.compatibility.aw.minVersion = '0.0.0-beta.1';
+    expect(() => validateCatalogManifestV4(belowFloor)).toThrow('schema 4 requires 0.0.0');
 
     const wrongTarget = structuredClone(published);
     (wrongTarget.release as Record<string, unknown>).targetVersion = '1.2.4';

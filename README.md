@@ -199,14 +199,6 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 
 ## 本地开发与发版流程
 
-插件开发工作流迁移当前保持 `parallel`。发布验证会先运行机器迁移门禁；该状态允许 cutover evidence 未完成，因此不会阻塞正常发布，但会阻止缩减或改址固定路由、入口、能力 owner 和 gate 声明。当前验证器不支持 cutover 验证，`ready-for-cutover` 和 `retired` 会 fail closed：
-
-```bash
-pnpm migration:verify:plugin-development
-```
-
-状态、能力 owner 和完整 cutover 清单见[插件维护指南](docs/plugin-maintenance.md#旧入口迁移门禁)及[机器迁移合同](docs/plugin-development-migration.json)。
-
 插件作者先确认已安装的 CLI，再使用稳定、非交互的公开入口：
 
 ```bash
@@ -241,42 +233,28 @@ pnpm release:install:local -- <cli.tgz> <eval.tgz>
 
 `pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
 
-正常维护只使用 `status`、`target`、`prepare`、`publish`。先检查状态，再选择要 bump 的轴：
+正常发布只使用一个非交互入口。渠道必须是 `beta` 或 `release`，并显式选择 CLI、Catalog 或两者：
 
 ```bash
-pnpm release:status
-
-# 提升 CLI target
-pnpm release:target -- --cli patch
-
-# 提升 Catalog target；有插件版本变更时同时指定 --plugin
-pnpm release:target -- --catalog patch --plugin <plugin-name>=patch
-
-# 提升多个 target；--plugin 可按需重复
-pnpm release:target -- --cli patch --catalog patch --plugin <plugin-name>=patch
+pnpm release -- beta --cli
+pnpm release -- beta --catalog
+pnpm release -- beta --all
+pnpm release -- release --all
 ```
 
-`release:target` 的参数只表示要提升哪些 target，不保证本次会发布哪些轴。实际 CLI、Catalog 轴由 `release:status` 和 `release:prepare` 的输出决定。bump 只能是 `major`、`minor` 或 `patch`。命令会更新对应 source 文件：CLI target 更新时还会同步两个 public package version 和 `pnpm-lock.yaml`。提交本次有意的 source 改动后，再 prepare 和 publish：
+进入下一条稳定版本线时，在同一命令中指定 bump。`--plugin` 可按需重复：
 
 ```bash
-git add \
-  release/version-targets.json \
-  packages/cli/package.json \
-  packages/agent-skill-eval/package.json \
-  pnpm-lock.yaml \
-  plugins/git/.agents-plugin/plugin.json \
-  README.md
-git commit -m "chore(release): set release targets"
-pnpm release:prepare -- beta
-# 或：pnpm release:prepare -- stable
-pnpm release:publish
+pnpm release -- beta --cli --cli-bump patch
+pnpm release -- beta --catalog --catalog-bump patch --plugin <plugin-name>=patch
+pnpm release -- beta --all --cli-bump patch --catalog-bump patch --plugin <plugin-name>=patch
 ```
 
-示例中的 `plugins/git/.agents-plugin/plugin.json` 和 `README.md` 只是本次选择的 source 路径；只暂存实际有意的插件与 source 改动。`release:prepare` 必须在干净、已提交的 source HEAD 上运行，并在 gitignored 的 `.release/prepared/` 创建本地 artifact 和 descriptor。它是可删除的弱状态，不需要也不得提交。`release:publish` 不接受参数，只验证该 prepared state，并按 `Eval → CLI → Catalog` 的顺序发布已启用的轴。
+产品源码必须先提交，且工作树必须干净。命令只在指定 bump 时原子更新并提交白名单发布元数据，然后运行所选轴的完整验证。它在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，再按 `Eval → CLI → cli-v<version> tag → Catalog` 发布启用的轴。CLI tag 只推送到 `origin`；当前分支不自动推送。
 
-远端发布失败或结果不确定后，不要重试同一版本。提升相关 target，重新提交 source 改动，再运行 prepare 和 publish。`attempted.json` 是本地安全门禁，不要手动删除；工具会在 target digest 改变后处理它。不需要额外的恢复命令或提交生成状态。
+远端包或 Catalog 发布失败或结果不确定后，不要重试同一候选。提升受影响 target，再运行一键发布。`attempted.json` 是本地安全门禁，不要手动删除。若两个 npm 包已发布但 CLI tag 缺失，保留 prepared state 并运行 `pnpm release -- --repair-cli-tag`；命令会核验 artifact 和源码提交，只补 tag。
 
-新 CLI 只读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；stable 使用 `refs/heads/catalog/latest`，prerelease 使用 `refs/heads/catalog/beta`。旧 npm catalog packages 在 cutover 后冻结，不删除或 unpublish，也不再更新。
+CLI 读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。
 
 维护者入口：
 
@@ -284,7 +262,6 @@ pnpm release:publish
 - [编码约定](docs/coding-conventions.md)
 - [测试指南](docs/testing.md)
 - [插件维护指南](docs/plugin-maintenance.md)
-- [发布迁移交接与回归矩阵](docs/release-migration.md)
 - [插件与 Skill README 规范](docs/readme-standard.md)
 - [Agent 项目指令](AGENTS.md)
 

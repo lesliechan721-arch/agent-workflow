@@ -283,7 +283,8 @@ export async function publishStagedCatalog({ mode, catalogVersion, stagedRoot },
         `${tagRef(catalogVersion)}:${tagRef(catalogVersion)}`]);
     } catch (error) {
       throw new Error(
-        `Catalog atomic push failed or its result is uncertain. Do not retry ${catalogVersion}; bump the Catalog version, then run target, prepare, and publish again.`,
+        `Catalog atomic push failed or its result is uncertain. Do not retry ${catalogVersion}; ` +
+        'run pnpm release again with --catalog-bump and the intended Catalog axis.',
         { cause: error },
       );
     }

@@ -113,6 +113,59 @@ describe('managed provider containment gate', () => {
 })
 
 describe('shared provider process behavior', () => {
+  it('kills identities frozen from the last trusted POSIX marker snapshot when refresh fails', async () => {
+    const marker = 'marker-value'
+    const processes = new Map([
+      [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      [101, { ppid: 100, state: 'S', startTime: 'descendant-start' }],
+    ])
+    const renderTable = () => [...processes].map(([pid, entry]) =>
+      `${pid} ${entry.ppid} ${entry.state} ${entry.startTime}`
+    ).join('\n')
+    let markerLookup = 0
+    const execFile = (
+      _command: string,
+      args: string[],
+      _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+      callback: (error: Error | null, stdout: string) => void,
+    ): void => {
+      if (args.includes('pid=,command=')) {
+        markerLookup += 1
+        callback(
+          markerLookup === 3 ? new Error('marker refresh failed') : null,
+          markerLookup === 3
+            ? ''
+            : [...processes.keys()].map((pid) =>
+              `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+            ).join('\n'),
+        )
+        return
+      }
+      callback(null, renderTable())
+    }
+    const kill = (pid: number, signal: string): void => {
+      const entry = processes.get(pid)
+      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' })
+      if (signal === 'SIGKILL') processes.delete(pid)
+    }
+    const dependencies = {
+      platform: 'linux' as const,
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      execFile,
+      kill,
+    }
+    const observation = observeProcessTree(100, marker, dependencies)
+
+    await expect(terminateProcessTree(
+      100,
+      () => undefined,
+      dependencies,
+      { observation },
+    )).rejects.toThrow('POSIX process marker lookup failed')
+
+    expect(processes.has(101)).toBe(false)
+  })
+
   it('falls back to direct-child cleanup when optional POSIX inspection is unavailable', async () => {
     let directChildKilled = false
     const execFile = (
