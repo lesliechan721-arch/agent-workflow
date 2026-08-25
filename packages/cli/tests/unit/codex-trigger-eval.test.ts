@@ -85,14 +85,17 @@ async function createFixture(options: {
   subjectRoot: string;
   codexBin: string;
   descendantPidPath: string;
+  workspaceTracePath: string;
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-trigger-driver-test-'));
   tempDirs.push(root);
   const pluginRoot = path.join(root, 'plugin');
   const subjectRoot = path.join(root, 'subject');
   const descendantPidPath = path.join(root, 'descendant-pid.txt');
+  const workspaceTracePath = path.join(root, 'workspace-trace.jsonl');
   await fs.ensureDir(path.join(pluginRoot, 'evals'));
   await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'eval-fixture'));
+  await fs.ensureDir(path.join(root, '.codex'));
   if (options.routeToCompanion || options.routeToBoth) {
     await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'companion'));
     await fs.writeFile(
@@ -111,6 +114,16 @@ async function createFixture(options: {
   await fs.writeFile(
     path.join(subjectRoot, '.codex', 'rules', 'eval.rules'),
     'prefix_rule(pattern = ["node"], decision = "allow")\n',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(root, '.codex', 'config.toml'),
+    'developer_instructions = "host ancestor must stay isolated"\n',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(subjectRoot, '.codex', 'config.toml'),
+    'developer_instructions = "workspace project layer"\n',
     'utf8',
   );
   await fs.writeJson(path.join(pluginRoot, 'evals', 'trigger-cases.json'), {
@@ -167,18 +180,50 @@ async function createFixture(options: {
       `fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
     ] : []),
     "if (process.argv[2] !== 'app-server') process.exit(3);",
-    `if (fs.existsSync(path.join(process.cwd(), '.codex', 'rules', 'eval.rules')) !== ${
+    `const hostRoot = ${JSON.stringify(root)};`,
+    `const workspaceTracePath = ${JSON.stringify(workspaceTracePath)};`,
+    "const cwd = fs.realpathSync(process.cwd());",
+    "const isolatedConfig = fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8');",
+    "const insideHost = cwd === hostRoot || cwd.startsWith(hostRoot + path.sep);",
+    "const discoveredProject = insideHost ? hostRoot : cwd;",
+    "const projectTrusted = isolatedConfig.includes('[projects.' + JSON.stringify(discoveredProject) + ']');",
+    "const isIsolationProbe = path.basename(path.dirname(cwd)).startsWith('isolation-probe-');",
+    "fs.appendFileSync(workspaceTracePath, JSON.stringify({ cwd, discoveredProject, projectTrusted, config: isolatedConfig }) + '\\n');",
+    `if (!isIsolationProbe && fs.existsSync(path.join(process.cwd(), '.codex', 'rules', 'eval.rules')) !== ${
       options.useProjectRules === true
     }) process.exit(3);`,
-    "if (!process.argv.includes('features.multi_agent=true')) process.exit(3);",
-    "if (!process.argv.includes('features.multi_agent_v2.hide_spawn_agent_metadata=true')) process.exit(3);",
-    "if (!process.argv.includes('features.multi_agent_v2.expose_spawn_agent_model_overrides=true')) process.exit(3);",
+    "if (!isIsolationProbe && !process.argv.includes('features.multi_agent=true')) process.exit(3);",
+    "if (!isIsolationProbe && !process.argv.includes('features.multi_agent_v2.hide_spawn_agent_metadata=true')) process.exit(3);",
+    "if (!isIsolationProbe && !process.argv.includes('features.multi_agent_v2.expose_spawn_agent_model_overrides=true')) process.exit(3);",
     'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
     "const readline = require('node:readline');",
     'const input = readline.createInterface({ input: process.stdin });',
     "input.on('line', (line) => {",
     '  const frame = JSON.parse(line);',
-    "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+    "  if (frame.method === 'initialize') {",
+    "    send({ id: frame.id, result: {} });",
+    "    if (!projectTrusted) send({ method: 'configWarning', params: { summary: 'Project-local config is disabled until the project is trusted.' } });",
+    "  }",
+    "  else if (frame.method === 'config/read') send({ id: frame.id, result: {",
+    "    config: {",
+    "      cli_auth_credentials_store: 'file', mcp_oauth_credentials_store: 'file',",
+    "      include_apps_instructions: false, include_collaboration_mode_instructions: false,",
+    "      mcp_servers: {},",
+    "      features: { secret_auth_storage: false, default_mode_request_user_input: true, apps: false, plugins: false, remote_plugin: false, plugin_sharing: false, tool_suggest: false, skill_mcp_dependency_install: false },",
+    "      skills: { bundled: { enabled: false } },",
+    "      orchestrator: { skills: { enabled: false }, mcp: { enabled: false } },",
+    "    },",
+    "    origins: {},",
+    "    layers: [",
+    "      { name: { type: 'system', file: '/etc/codex/config.toml' }, version: '1', config: {} },",
+    "      { name: { type: 'user', file: path.join(process.env.CODEX_HOME, 'config.toml') }, version: '1', config: {} },",
+    "      { name: { type: 'project', dotCodexFolder: path.join(discoveredProject, '.codex') }, version: '1', config: {}, disabledReason: projectTrusted ? null : 'project is not trusted' },",
+    "      { name: { type: 'sessionFlags' }, version: '1', config: {} },",
+    "    ],",
+    "  } });",
+    "  else if (frame.method === 'configRequirements/read') send({ id: frame.id, result: { requirements: null } });",
+    "  else if (frame.method === 'skills/list') { const skillPath = path.join(cwd, '.agents', 'skills', 'eval-fixture', 'SKILL.md'); send({ id: frame.id, result: { data: [{ cwd, skills: [{ name: 'eval-fixture', path: skillPath, scope: 'repo', enabled: true }], errors: [] }] } }); }",
+    "  else if (frame.method === 'mcpServerStatus/list') send({ id: frame.id, result: { data: [], nextCursor: null } });",
     "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
     "  else if (frame.method === 'turn/start') {",
     "    send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });",
@@ -218,6 +263,7 @@ async function createFixture(options: {
     subjectRoot,
     codexBin,
     descendantPidPath,
+    workspaceTracePath,
   };
 }
 
@@ -544,6 +590,52 @@ describe('Codex native trigger eval driver', () => {
       });
       expect(evidence.results[0].runs[0].spawn_calls).toHaveLength(1);
       expect(evidence.results[0].runs[0].fixture_unchanged).toBe(true);
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'keeps strict probe and trigger projects outside a host config ancestor',
+    async () => {
+      const fixture = await createFixture();
+      const hostRoot = path.dirname(fixture.pluginRoot);
+      const workRoot = path.join(hostRoot, 'work', 'run-1');
+      const report = await runCodexTriggerSuite({
+        suite: suite({
+          fixtureModule: './evals/fixture.mjs',
+          isolation: 'strict',
+        }),
+        split: 'validation',
+        subjectRoot: fixture.subjectRoot,
+        pluginRoot: fixture.pluginRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: fixture.codexBin,
+        sourceEnv: process.env,
+        workRoot,
+      });
+
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+      });
+      const trace = (await fs.readFile(fixture.workspaceTracePath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as {
+          cwd: string;
+          discoveredProject: string;
+          projectTrusted: boolean;
+          config: string;
+        });
+      expect(trace).toHaveLength(2);
+      for (const entry of trace) {
+        expect(path.relative(hostRoot, entry.cwd)).toMatch(/^\.\.(?:[/\\]|$)/u);
+        expect(entry.discoveredProject).toBe(entry.cwd);
+        expect(entry.projectTrusted).toBe(true);
+        expect(entry.config).toContain(`[projects.${JSON.stringify(entry.cwd)}]`);
+        expect(entry.config).not.toContain(`[projects.${JSON.stringify(hostRoot)}]`);
+      }
     },
   );
 

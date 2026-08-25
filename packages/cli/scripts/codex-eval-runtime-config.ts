@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { ParseError, parseTOML, type AST } from 'toml-eslint-parser';
@@ -59,9 +61,12 @@ const ACTIVE_SIGNAL_CLEANUPS = new Set<() => void | Promise<void>>();
 const CAPSULE_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 const RUNTIME_ROOT_REMOVE_ATTEMPTS = 4;
 const RUNTIME_ROOT_REMOVE_RETRY_MS = 50;
+export const CODEX_EVAL_CLI_ENTRY_ENV = 'AW_PLUGIN_EVAL_CLI_ENTRY';
+export const CODEX_EVAL_CLI_NODE_ENV = 'AW_PLUGIN_EVAL_CLI_NODE';
 const capsuleSignalHandlers = new Map<NodeJS.Signals, () => void>();
 let capsuleSignalCleanupInProgress = false;
 let codexEvalSignalShutdownRequested = false;
+const execFileAsync = promisify(execFile);
 
 export type CodexEvalCredentialSource =
   | 'embedded'
@@ -94,7 +99,210 @@ export interface ResolveCodexEvalRuntimeOptions {
 export interface CodexEvalRuntimeCapsule {
   home: string;
   env: NodeJS.ProcessEnv;
+  runtime: CodexEvalRuntimeConfig;
+  cli: CodexEvalCliCapsuleEvidence | null;
   cleanup(): Promise<void>;
+}
+
+export interface CodexEvalCliCapsuleEvidence {
+  packageName: string;
+  packageVersion: string;
+  contentDigest: string;
+}
+
+async function materializeEvalCliLauncher(
+  root: string,
+  cliEntry: string,
+): Promise<string> {
+  const entry = path.resolve(cliEntry);
+  const stat = await fs.stat(entry).catch(() => null);
+  if (!stat?.isFile()) {
+    throw new Error(`Codex eval CLI entry is not a regular file: ${entry}`);
+  }
+  const bin = path.join(root, 'bin');
+  await fs.ensureDir(bin, { mode: 0o700 });
+  if (process.platform === 'win32') {
+    const launcher = path.join(bin, 'aw.cmd');
+    await fs.writeFile(
+      launcher,
+      `@"%${CODEX_EVAL_CLI_NODE_ENV}%" "%${CODEX_EVAL_CLI_ENTRY_ENV}%" %*\r\n` +
+        '@exit /b %errorlevel%\r\n',
+      { encoding: 'utf8', mode: 0o700 },
+    );
+    return bin;
+  }
+  const launcher = path.join(bin, 'aw');
+  await fs.writeFile(
+    launcher,
+    `#!/bin/sh\nexec "$${CODEX_EVAL_CLI_NODE_ENV}" "$${CODEX_EVAL_CLI_ENTRY_ENV}" "$@"\n`,
+    { encoding: 'utf8', mode: 0o700 },
+  );
+  await fs.chmod(launcher, 0o700);
+  return bin;
+}
+
+async function pruneEvalCliDeployment(root: string): Promise<void> {
+  await Promise.all([
+    fs.remove(path.join(root, 'plugins')),
+    fs.remove(path.join(root, 'dist', 'scripts')),
+    fs.remove(path.join(
+      root,
+      'node_modules',
+      '.pnpm',
+      'node_modules',
+      '@lesliechan721',
+      'aw',
+    )),
+  ]);
+  const removals: string[] = [];
+  async function visit(current: string, insideNodeModules = false): Promise<void> {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const target = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (
+          ['.git', '.agents', '.codex'].includes(entry.name) ||
+          (insideNodeModules && entry.name === '.bin')
+        ) {
+          removals.push(target);
+        } else {
+          await visit(target, insideNodeModules || entry.name === 'node_modules');
+        }
+      } else if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.map'))) {
+        removals.push(target);
+      }
+    }
+  }
+  await visit(root);
+  for (let index = 0; index < removals.length; index += 64) {
+    await Promise.all(removals.slice(index, index + 64).map((target) => fs.remove(target)));
+  }
+}
+
+async function assertContainedEvalCliDeployment(
+  root: string,
+  forbiddenBytes: string[],
+): Promise<string> {
+  const canonicalRoot = await fs.realpath(root);
+  const files: string[] = [];
+  const links: Array<{ path: string; target: string }> = [];
+  async function visit(current: string, insideNodeModules = false): Promise<void> {
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const target = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        const resolved = await fs.realpath(target);
+        if (resolved !== canonicalRoot && !resolved.startsWith(`${canonicalRoot}${path.sep}`)) {
+          throw new Error(`Codex eval CLI deployment contains escaping symlink ${target}.`);
+        }
+        links.push({
+          path: path.relative(root, target).split(path.sep).join('/'),
+          target: await fs.readlink(target),
+        });
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (
+          ['.git', '.agents', '.codex', 'plugins'].includes(entry.name) ||
+          (insideNodeModules && entry.name === '.bin')
+        ) {
+          throw new Error(`Codex eval CLI deployment contains forbidden directory ${target}.`);
+        }
+        await visit(target, insideNodeModules || entry.name === 'node_modules');
+      } else if (entry.isFile()) {
+        if (entry.name.endsWith('.ts') || entry.name.endsWith('.map')) {
+          throw new Error(`Codex eval CLI deployment contains non-runtime file ${target}.`);
+        }
+        files.push(target);
+      }
+    }
+  }
+  await visit(root);
+  const fragments = [...new Set(forbiddenBytes.filter(Boolean))].map((value) => Buffer.from(value));
+  const records: Array<{ path: string; mode: number; digest: string }> = [];
+  for (let index = 0; index < files.length; index += 64) {
+    await Promise.all(files.slice(index, index + 64).map(async (file) => {
+      const [content, stat] = await Promise.all([fs.readFile(file), fs.stat(file)]);
+      if (fragments.some((fragment) => content.includes(fragment))) {
+        throw new Error(`Codex eval CLI deployment contains forbidden host path bytes in ${file}.`);
+      }
+      records.push({
+        path: path.relative(root, file).split(path.sep).join('/'),
+        mode: stat.mode & 0o777,
+        digest: createHash('sha256').update(content).digest('hex'),
+      });
+    }));
+  }
+  records.sort((left, right) => left.path.localeCompare(right.path));
+  links.sort((left, right) => left.path.localeCompare(right.path));
+  return `sha256:${createHash('sha256').update(JSON.stringify({
+    files: records,
+    links,
+  })).digest('hex')}`;
+}
+
+async function materializeEvalCliDeployment(options: {
+  root: string;
+  cliPackageRoot: string;
+  sourceEnv: NodeJS.ProcessEnv;
+  deployCli?: (target: string) => Promise<void>;
+}): Promise<{ entry: string; evidence: CodexEvalCliCapsuleEvidence }> {
+  const target = path.join(options.root, 'cli');
+  if (options.deployCli) {
+    await options.deployCli(target);
+  } else {
+    const inheritedPnpmEntry = options.sourceEnv.npm_execpath?.trim();
+    const pnpmEntry = inheritedPnpmEntry && path.isAbsolute(inheritedPnpmEntry)
+      ? inheritedPnpmEntry
+      : path.join(options.cliPackageRoot, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs');
+    const pnpmStat = await fs.stat(pnpmEntry).catch(() => null);
+    if (!pnpmStat?.isFile()) {
+      throw new Error(
+        'Codex eval CLI deployment requires the workspace pnpm runtime. Run pnpm install first.',
+      );
+    }
+    await execFileAsync(process.execPath, [
+      path.resolve(pnpmEntry),
+      '--filter',
+      '@lesliechan721/aw',
+      'deploy',
+      '--prod',
+      '--legacy',
+      '--config.package-import-method=copy',
+      target,
+    ], {
+      cwd: path.resolve(options.cliPackageRoot, '..', '..'),
+      env: options.sourceEnv,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+  }
+  await pruneEvalCliDeployment(target);
+  const repoRoot = path.resolve(options.cliPackageRoot, '..', '..');
+  const canonicalRepoRoot = await fs.realpath(repoRoot).catch(() => repoRoot);
+  const contentDigest = await assertContainedEvalCliDeployment(
+    target,
+    [repoRoot, canonicalRepoRoot],
+  );
+  const entry = path.join(target, 'dist', 'index.js');
+  const stat = await fs.stat(entry).catch(() => null);
+  if (!stat?.isFile()) {
+    throw new Error(`Codex eval CLI deployment is missing ${entry}.`);
+  }
+  const packageJson = await fs.readJson(path.join(target, 'package.json')) as {
+    name?: unknown;
+    version?: unknown;
+  };
+  if (typeof packageJson.name !== 'string' || typeof packageJson.version !== 'string') {
+    throw new Error('Codex eval CLI deployment has invalid package identity.');
+  }
+  return {
+    entry,
+    evidence: {
+      packageName: packageJson.name,
+      packageVersion: packageJson.version,
+      contentDigest,
+    },
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -723,7 +931,11 @@ function installCapsuleSignalHandlers(): void {
 export async function createCodexEvalRuntimeCapsule(
   runtime: CodexEvalRuntimeConfig,
   sourceEnv: NodeJS.ProcessEnv = process.env,
-  options: { allocate?: () => Promise<string> } = {},
+  options: {
+    allocate?: () => Promise<string>;
+    cliPackageRoot?: string;
+    deployCli?: (target: string) => Promise<void>;
+  } = {},
 ): Promise<CodexEvalRuntimeCapsule> {
   const temporaryRoot = await createCodexEvalTemporaryRoot(
     'aw-codex-eval-runtime-',
@@ -740,17 +952,44 @@ export async function createCodexEvalRuntimeCapsule(
   try {
     await materializeCodexEvalRuntimeHome(runtime, home);
     const baseEnv = filteredEvalProcessEnvironment(sourceEnv);
+    const cliDeployment = options.cliPackageRoot
+      ? await materializeEvalCliDeployment({
+          root,
+          cliPackageRoot: options.cliPackageRoot,
+          sourceEnv,
+          deployCli: options.deployCli,
+        })
+      : undefined;
+    const cliEntry = cliDeployment?.entry;
+    const cliBin = cliEntry ? await materializeEvalCliLauncher(root, cliEntry) : undefined;
+    const capsuleRuntime = cliEntry
+      ? {
+          ...runtime,
+          sensitiveValues: [
+            ...runtime.sensitiveValues,
+            cliEntry,
+            root,
+          ],
+        }
+      : runtime;
     return {
       home,
       env: applyCodexEvalProviderEnvironment({
         ...baseEnv,
+        ...(cliBin ? {
+          PATH: [cliBin, baseEnv.PATH].filter(Boolean).join(path.delimiter),
+          [CODEX_EVAL_CLI_ENTRY_ENV]: cliEntry,
+          [CODEX_EVAL_CLI_NODE_ENV]: process.execPath,
+        } : {}),
         CODEX_HOME: home,
         AW_CODEX_EVAL_RUNTIME_HOME: home,
         AW_CODEX_EVAL_MODEL_PROVIDER: runtime.modelProvider,
         AW_CODEX_EVAL_SENSITIVE_ENV_NAMES: JSON.stringify(
           runtime.sensitiveEnvironmentNames,
         ),
-      }, runtime),
+      }, capsuleRuntime),
+      runtime: capsuleRuntime,
+      cli: cliDeployment?.evidence ?? null,
       cleanup,
     };
   } catch (error) {

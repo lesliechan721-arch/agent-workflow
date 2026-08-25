@@ -1,4 +1,5 @@
 export { validateExecutionPlan } from './plan.js'
+export { canonicalJson, computeCaseCorpusDigest } from './corpus-digest.js'
 export { getRuntimeCapabilities } from './capabilities.js'
 export { runExecutionPlan } from './run.js'
 export { validateRunBundle } from './bundle.js'

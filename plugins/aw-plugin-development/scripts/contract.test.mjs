@@ -60,6 +60,7 @@ test('review adapter manifest and runtime contain only current quality and relea
     'assets/review-dimensions.json',
     'scripts/check-agent-skill.mjs',
     'scripts/check-aw-plugin-release.mjs',
+    'scripts/corpus-digest.mjs',
     'scripts/validate-eval-audit-result.mjs',
     'scripts/validate-eval-run-bundle.mjs',
     'scripts/validate-json-contract.mjs',
@@ -85,6 +86,7 @@ test('review adapter manifest and runtime contain only current quality and relea
     await assert.rejects(readFile(path.join(skillRoot, relative), 'utf8'), relative);
   }
   assert.ok((await readFile(path.join(skillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
+  assert.ok((await readFile(path.join(skillRoot, 'scripts/corpus-digest.mjs'), 'utf8')).length > 100);
 });
 
 test('author adapter still delegates deterministic work to stable AW CLI commands', async () => {
@@ -104,6 +106,36 @@ test('author adapter exposes structured context tools from the final Skill entry
   assert.match(skill, /scripts\/validate-json-contract\.mjs/u);
   assert.match(skill, /assets\/aw-authoring-context\.schema\.json/u);
   assert.match(skill, /assets\/aw-authoring-context\.json/u);
+});
+
+test('config-driven artifact eval keeps renderer filename flexible', async () => {
+  const cases = JSON.parse(await readFile(
+    path.join(sourceRoot, 'skills/author-aw-plugin/evals/behavior-cases.json'),
+    'utf8',
+  ));
+  const evalCase = cases.evals.find((entry) => entry.id === 'config-driven-instructions-artifact');
+  assert.ok(evalCase, 'missing config-driven-instructions-artifact case');
+
+  assert.deepEqual(evalCase.review.artifacts, [
+    {
+      path: 'plugins/incident-policy/.agents-plugin/plugin.json',
+      exists: true,
+    },
+  ]);
+  assert.deepEqual(evalCase.review.allowed_workspace_changes, [
+    'plugins/incident-policy/.agents-plugin/plugin.json',
+    'plugins/incident-policy/scripts/**',
+  ]);
+
+  // Static contract exception: these reviewer-facing qualitative checks are the public Eval oracle; behavior test is not suitable because no deterministic runner can judge their semantic trace evidence.
+  assert.ok(evalCase.review.checks.some((check) => (
+    check.includes('manifest 声明 config.schema.severityPrefix、scripts.artifacts.render 和 codex.developerInstructionsBlock target')
+      && check.includes('refreshKeys 包含 severityPrefix')
+  )));
+  assert.ok(evalCase.review.checks.some((check) => (
+    check.includes('renderer 只输出 ArtifactPlan V2')
+      && check.includes('默认值和一个非默认 severityPrefix 产生不同的 instructions content')
+  )));
 });
 
 test('target discovery groups identical content by digest and preserves real differences', async () => {

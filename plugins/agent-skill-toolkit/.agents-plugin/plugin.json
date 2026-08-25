@@ -64,6 +64,11 @@
         "plugin": "agent-content-toolkit",
         "export": "content-rules",
         "env": "AW_PLUGIN_IMPORT_CONTENT_RULES"
+      },
+      {
+        "plugin": "@aw/agent-skill-eval",
+        "export": "case-corpus-digest",
+        "env": "AW_PLUGIN_IMPORT_CASE_CORPUS_DIGEST"
       }
     ],
     "skillRuntimeFiles": [
@@ -121,6 +126,40 @@
         "skill": "audit-agent-skill-evals",
         "source": "./schemas/eval-run-bundle.schema.json",
         "target": "assets/eval-run-bundle.schema.json"
+      }
+    ],
+    "generatedSkillRuntimeFiles": [
+      {
+        "skill": "author-agent-skill",
+        "target": "references/author-standard.md"
+      },
+      {
+        "skill": "author-agent-skill",
+        "target": "references/composition-audit.md"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "references/review-rubric.md"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "references/composition-fitness.md"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "references/evidence-and-severity.md"
+      },
+      {
+        "skill": "design-agent-skill-evals",
+        "target": "references/eval-design-standard.md"
+      },
+      {
+        "skill": "audit-agent-skill-evals",
+        "target": "references/eval-audit-standard.md"
+      },
+      {
+        "skill": "audit-agent-skill-evals",
+        "target": "scripts/corpus-digest.mjs"
       }
     ]
   },

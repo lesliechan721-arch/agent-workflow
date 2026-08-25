@@ -138,20 +138,18 @@ function validateFinding(finding, index, errors) {
 function validateDimensions(review, dimensions, errors) {
   if (!Array.isArray(review.dimensions)) {
     errors.push('dimensions must be an array');
-    return null;
+    return { scoring: null, notAssessed: false };
   }
   if (review.mode !== 'full') {
     if (review.dimensions.length !== 0) errors.push('quick and delta reviews must use an empty dimensions array');
-    return null;
+    return { scoring: null, notAssessed: false };
   }
   if (review.dimensions.length !== dimensions.length) {
     errors.push(`full review must contain exactly ${dimensions.length} dimensions`);
-    return null;
+    return { scoring: null, notAssessed: false };
   }
 
-  let assessedWeight = 0;
-  let weightedPoints = 0;
-  let confidencePoints = 0;
+  let notAssessed = false;
   for (const [index, canonical] of dimensions.entries()) {
     const entry = review.dimensions[index];
     const prefix = `dimensions[${index}]`;
@@ -165,6 +163,7 @@ function validateDimensions(review, dimensions, errors) {
     if (!DIMENSION_CONFIDENCE.has(entry.confidence)) errors.push(`${prefix}.confidence is invalid`);
     if (entry.score === null) {
       if (entry.confidence !== 'unknown') errors.push(`${prefix} score=null requires confidence=unknown`);
+      notAssessed = true;
       continue;
     }
     if (
@@ -178,6 +177,25 @@ function validateDimensions(review, dimensions, errors) {
       continue;
     }
     if (entry.confidence === 'unknown') errors.push(`${prefix} assessed score cannot use confidence=unknown`);
+  }
+
+  if (notAssessed) {
+    return {
+      scoring: {
+        weightedScore: null,
+        confidenceIndex: null,
+        confidence: 'unknown',
+      },
+      notAssessed: true,
+    };
+  }
+
+  let assessedWeight = 0;
+  let weightedPoints = 0;
+  let confidencePoints = 0;
+  for (const [index, canonical] of dimensions.entries()) {
+    const entry = review.dimensions[index];
+    if (typeof entry?.score !== 'number' || !DIMENSION_CONFIDENCE.has(entry.confidence)) continue;
     assessedWeight += canonical.weight;
     weightedPoints += canonical.weight * entry.score / 5;
     confidencePoints += canonical.weight * (CONFIDENCE_FACTOR[entry.confidence] ?? 0);
@@ -195,10 +213,13 @@ function validateDimensions(review, dimensions, errors) {
         ? 'medium'
         : 'low';
   return {
-    weightedScore: coveragePercent === 100 ? Math.round(weightedPoints * 10) / 10 : null,
-    coveragePercent,
-    confidenceIndex,
-    confidence,
+    scoring: {
+      weightedScore: coveragePercent === 100 ? Math.round(weightedPoints * 10) / 10 : null,
+      coveragePercent,
+      confidenceIndex,
+      confidence,
+    },
+    notAssessed: false,
   };
 }
 
@@ -224,25 +245,30 @@ function validateReview(review, dimensions) {
   } else if (new Set(review.unknowns).size !== review.unknowns.length) {
     errors.push('unknowns must contain unique strings');
   }
-  const scoring = validateDimensions(review, dimensions, errors);
-  if (review?.complexity === 'over-engineered' && !['redesign', 'fail'].includes(review?.design)) {
+  const dimensionValidation = validateDimensions(review, dimensions, errors);
+  const { scoring, notAssessed } = dimensionValidation;
+  if (notAssessed && review?.design !== 'not-assessed') {
+    errors.push('unassessed full review requires design=not-assessed');
+  }
+  if (!notAssessed && review?.complexity === 'over-engineered' && !['redesign', 'fail'].includes(review?.design)) {
     errors.push('over-engineered complexity requires redesign or fail');
   }
   if (review?.complexity === 'over-engineered' && review?.findings?.length === 0) {
     errors.push('over-engineered complexity requires at least one evidence-based finding');
   }
-  if (review?.complexity === 'over-specified' && review?.design === 'pass') {
+  if (!notAssessed && review?.complexity === 'over-specified' && review?.design === 'pass') {
     errors.push('over-specified complexity cannot use design=pass');
   }
-  if (review?.findings?.some((finding) => finding?.severity === 'critical') && review?.design !== 'fail') {
+  if (!notAssessed && review?.findings?.some((finding) => finding?.severity === 'critical') && review?.design !== 'fail') {
     errors.push('critical finding requires design=fail');
   }
-  if (review?.findings?.some((finding) => finding?.severity === 'major') && review?.design === 'pass') {
+  if (!notAssessed && review?.findings?.some((finding) => finding?.severity === 'major') && review?.design === 'pass') {
     errors.push('major finding cannot use design=pass');
   }
   if (
     review?.mode === 'full'
     && scoring
+    && !notAssessed
     && (scoring.coveragePercent < 100 || ['low', 'unknown'].includes(scoring.confidence))
     && !review?.findings?.some((finding) => finding?.severity === 'critical')
     && review?.complexity !== 'over-engineered'
@@ -300,7 +326,9 @@ async function main() {
   ]);
   const output = await validateQualityReviewResult(review, check);
   const scoringLine = output.scoring
-    ? `Score: ${output.scoring.weightedScore ?? 'not-assessed'}; coverage: ${output.scoring.coveragePercent}%; confidence: ${output.scoring.confidence}`
+    ? Object.hasOwn(output.scoring, 'coveragePercent')
+      ? `Score: ${output.scoring.weightedScore ?? 'not-assessed'}; coverage: ${output.scoring.coveragePercent}%; confidence: ${output.scoring.confidence}`
+      : `Score: not-assessed; coverage: not-calculated; confidence: ${output.scoring.confidence}`
     : null;
   process.stdout.write(options.format === 'json' ? `${JSON.stringify(output, null, 2)}\n` : [
     output.valid ? 'QualityReviewResult is valid.' : output.errors.join('\n'),

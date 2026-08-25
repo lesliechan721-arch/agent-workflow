@@ -297,6 +297,40 @@ describe('catalog runtime projection', () => {
     })).rejects.toThrow(`canonical skill frontmatter registry is missing from ${missingVirtualRoot}`);
   });
 
+  it('exposes only the self-contained Eval corpus digest through its reserved provider', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-virtual-projection-'));
+    tempRoots.push(root);
+    const consumer = await createPlugin({ root, name: 'consumer' });
+    const resolver = createCatalogRuntimeImportResolver([consumer]);
+    const resolution = await resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
+      purpose: 'build',
+    });
+    expect(resolution).toMatchObject({
+      provider: '@aw/agent-skill-eval',
+      name: 'case-corpus-digest',
+      source: './dist/corpus-digest.js',
+      virtual: true,
+    });
+    await expect(fs.readFile(resolution.sourcePath, 'utf8')).resolves.toContain('computeCaseCorpusDigest');
+    await expect(resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
+      purpose: 'skill-runtime-file',
+    })).resolves.toMatchObject({ sourcePath: resolution.sourcePath });
+    await expect(resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'unknown' },
+      purpose: 'build',
+    })).rejects.toThrow('unknown @aw/agent-skill-eval export');
+    await expect(resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
+      purpose: 'artifact-runtime',
+    })).rejects.toThrow('only available to buildImports and skillRuntimeFiles');
+  });
+
   it('injects read-only catalog build imports and projects own and provider bytes with provenance', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-projection-'));
     tempRoots.push(root);

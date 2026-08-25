@@ -1,11 +1,15 @@
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cleanupActiveCodexEvalRuntimeCapsules,
+  CODEX_EVAL_CLI_ENTRY_ENV,
+  CODEX_EVAL_CLI_NODE_ENV,
   createCodexEvalTemporaryRoot,
   createCodexEvalRuntimeCapsule,
   DEFAULT_CODEX_EVAL_MODEL,
@@ -17,6 +21,7 @@ import {
 } from '../../scripts/codex-eval-runtime-config.js';
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 async function tempRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-eval-config-test-'));
@@ -235,6 +240,197 @@ describe('Codex eval runtime config', () => {
     await cleanupActiveCodexEvalRuntimeCapsules();
     await expect(fs.pathExists(capsuleRoot)).resolves.toBe(false);
     await expect(capsule.cleanup()).resolves.toBeUndefined();
+  });
+
+  it('puts a run-owned current CLI launcher before an old host aw and removes it', async () => {
+    const root = await tempRoot();
+    const oldBin = path.join(root, 'old-bin');
+    const oldMarker = path.join(root, 'old-aw-ran');
+    const currentPackage = path.join(root, 'current-cli');
+    const currentEntry = path.join(currentPackage, 'dist', 'index.js');
+    await fs.outputJson(path.join(currentPackage, 'package.json'), {
+      name: '@fixture/aw',
+      version: '0.1.0',
+    });
+    await fs.ensureDir(oldBin);
+    await fs.ensureDir(path.dirname(currentEntry));
+    if (process.platform === 'win32') {
+      await fs.writeFile(
+        path.join(oldBin, 'aw.cmd'),
+        `@echo old>"${oldMarker}"\r\n@exit /b 19\r\n`,
+        'utf8',
+      );
+    } else {
+      await fs.writeFile(
+        path.join(oldBin, 'aw'),
+        `#!/bin/sh\nprintf old > ${JSON.stringify(oldMarker)}\nexit 19\n`,
+        { encoding: 'utf8', mode: 0o700 },
+      );
+    }
+    await fs.writeFile(currentEntry, [
+      '#!/usr/bin/env node',
+      "if (process.argv[2] === '--version') process.stdout.write('aw-current 0.1.0\\n');",
+      "else if (process.argv.slice(2).join(' ') === 'plugin validate --help') process.stdout.write('Usage: aw plugin validate\\n');",
+      "else if (process.argv[2] === '--exit') process.exit(Number(process.argv[3]));",
+      "else if (process.argv[2] === '--signal') process.kill(process.pid, 'SIGTERM');",
+      'else process.exit(18);',
+    ].join('\n'), { encoding: 'utf8', mode: 0o700 });
+    await fs.outputFile(path.join(currentPackage, 'dist', 'index.js.map'), '{}');
+    await fs.outputFile(path.join(currentPackage, 'dist', 'src', 'source.d.ts'), 'export {};\n');
+    await fs.outputFile(path.join(currentPackage, 'plugins', 'host-source', 'SKILL.md'), '# no\n');
+    await fs.outputFile(path.join(currentPackage, '.git', 'config'), 'no\n');
+    await fs.outputFile(
+      path.join(currentPackage, 'node_modules', 'fixture', 'index.js'),
+      'export const fixture = true;\n',
+    );
+    for (const binRoot of [
+      path.join(currentPackage, 'node_modules', '.bin'),
+      path.join(
+        currentPackage,
+        'node_modules',
+        '.pnpm',
+        'fixture@1.0.0',
+        'node_modules',
+        '.bin',
+      ),
+    ]) {
+      await fs.outputFile(
+        path.join(binRoot, 'host-tool'),
+        `#!/bin/sh\nexec ${JSON.stringify(currentEntry)} "$@"\n`,
+      );
+      await fs.outputFile(
+        path.join(binRoot, 'host-tool.cmd'),
+        `@node "${currentEntry}" %*\r\n`,
+      );
+      await fs.outputFile(
+        path.join(binRoot, 'host-tool.ps1'),
+        `& node "${currentEntry}" $args\r\n`,
+      );
+    }
+    await fs.symlink(
+      'fixture',
+      path.join(currentPackage, 'node_modules', 'fixture-link'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root },
+      inheritUserConfig: false,
+    });
+    const capsule = await createCodexEvalRuntimeCapsule(runtime, {
+      CODEX_HOME: root,
+      PATH: [oldBin, process.env.PATH].filter(Boolean).join(path.delimiter),
+    }, {
+      cliPackageRoot: currentPackage,
+      deployCli: (target) => fs.copy(currentPackage, target, { dereference: false }),
+    });
+    const capsuleRoot = path.dirname(capsule.home);
+    const deployedPackage = path.join(capsuleRoot, 'cli');
+    const deployedEntry = path.join(deployedPackage, 'dist', 'index.js');
+    const launcher = path.join(capsuleRoot, 'bin', process.platform === 'win32' ? 'aw.cmd' : 'aw');
+
+    expect((await execFileAsync('aw', ['--version'], { env: capsule.env })).stdout)
+      .toBe('aw-current 0.1.0\n');
+    expect((await execFileAsync('aw', ['plugin', 'validate', '--help'], { env: capsule.env })).stdout)
+      .toBe('Usage: aw plugin validate\n');
+    await expect(execFileAsync('aw', ['--exit', '7'], { env: capsule.env }))
+      .rejects.toMatchObject({ code: 7 });
+    if (process.platform !== 'win32') {
+      await expect(execFileAsync('aw', ['--signal'], { env: capsule.env }))
+        .rejects.toMatchObject({ signal: 'SIGTERM' });
+    }
+    await expect(fs.pathExists(oldMarker)).resolves.toBe(false);
+    expect(capsule.env[CODEX_EVAL_CLI_ENTRY_ENV]).toBe(deployedEntry);
+    expect(capsule.env[CODEX_EVAL_CLI_NODE_ENV]).toBe(process.execPath);
+    expect(capsule.cli).toMatchObject({
+      packageName: '@fixture/aw',
+      packageVersion: '0.1.0',
+      contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    expect(await fs.readFile(launcher, 'utf8')).not.toContain(currentPackage);
+    expect(await fs.realpath(deployedEntry)).not.toContain(currentPackage);
+    expect(await fs.realpath(path.join(deployedPackage, 'node_modules', 'fixture-link')))
+      .toBe(await fs.realpath(path.join(deployedPackage, 'node_modules', 'fixture')));
+    await expect(fs.pathExists(path.join(deployedPackage, 'plugins'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(deployedPackage, '.git'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(deployedPackage, 'dist', 'src', 'source.d.ts')))
+      .resolves.toBe(false);
+    await expect(fs.pathExists(path.join(deployedPackage, 'dist', 'index.js.map')))
+      .resolves.toBe(false);
+    const remainingBinDirectories: string[] = [];
+    async function findBinDirectories(current: string, insideNodeModules = false): Promise<void> {
+      for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const target = path.join(current, entry.name);
+        if (insideNodeModules && entry.name === '.bin') {
+          remainingBinDirectories.push(target);
+        } else {
+          await findBinDirectories(target, insideNodeModules || entry.name === 'node_modules');
+        }
+      }
+    }
+    await findBinDirectories(deployedPackage);
+    expect(remainingBinDirectories).toEqual([]);
+    if (process.platform !== 'win32') {
+      expect((await fs.stat(launcher)).mode & 0o777).toBe(0o700);
+    }
+    expect(redactCodexEvalValue(
+      `${deployedEntry} ${capsuleRoot}`,
+      capsule.runtime,
+    )).not.toContain(root);
+
+    const matchingCapsule = await createCodexEvalRuntimeCapsule(runtime, {
+      CODEX_HOME: root,
+      PATH: process.env.PATH,
+    }, {
+      cliPackageRoot: currentPackage,
+      deployCli: (target) => fs.copy(currentPackage, target, { dereference: false }),
+    });
+    expect(matchingCapsule.cli).toEqual(capsule.cli);
+    await fs.writeFile(
+      path.join(currentPackage, 'node_modules', 'fixture', 'index.js'),
+      'export const fixture = false;\n',
+    );
+    const changedCapsule = await createCodexEvalRuntimeCapsule(runtime, {
+      CODEX_HOME: root,
+      PATH: process.env.PATH,
+    }, {
+      cliPackageRoot: currentPackage,
+      deployCli: (target) => fs.copy(currentPackage, target, { dereference: false }),
+    });
+    expect(changedCapsule.cli?.contentDigest).not.toBe(capsule.cli?.contentDigest);
+
+    await Promise.all([capsule.cleanup(), matchingCapsule.cleanup(), changedCapsule.cleanup()]);
+    await expect(fs.pathExists(launcher)).resolves.toBe(false);
+    await expect(fs.pathExists(capsuleRoot)).resolves.toBe(false);
+  });
+
+  it('rejects a deployed CLI dependency link that escapes the capsule', async () => {
+    const root = await tempRoot();
+    const sourcePackage = path.join(root, 'source-cli');
+    const externalDependency = path.join(root, 'external-dependency');
+    await fs.outputFile(path.join(sourcePackage, 'dist', 'index.js'), 'export {};\n');
+    await fs.outputJson(path.join(sourcePackage, 'package.json'), {
+      name: '@fixture/aw',
+      version: '0.1.0',
+    });
+    await fs.outputFile(path.join(externalDependency, 'index.js'), 'export {};\n');
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root },
+      inheritUserConfig: false,
+    });
+
+    await expect(createCodexEvalRuntimeCapsule(runtime, { CODEX_HOME: root }, {
+      cliPackageRoot: sourcePackage,
+      deployCli: async (target) => {
+        await fs.copy(sourcePackage, target);
+        await fs.ensureDir(path.join(target, 'node_modules'));
+        await fs.symlink(
+          externalDependency,
+          path.join(target, 'node_modules', 'external'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+      },
+    })).rejects.toThrow('contains escaping symlink');
   });
 
   it('supports explicit provider/model overrides and clean official fallback', async () => {

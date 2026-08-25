@@ -185,6 +185,48 @@ async function resolveCliVirtualExport(
   };
 }
 
+async function resolveEvalVirtualExport(
+  reference: BuildConfigImportReference,
+  purpose: CatalogRuntimeImportPurpose,
+): Promise<CatalogRuntimeExportResolution> {
+  if (purpose !== 'build' && purpose !== 'skill-runtime-file') {
+    throw new Error('Invalid catalog runtime import: virtual provider "@aw/agent-skill-eval" is only available to buildImports and skillRuntimeFiles.');
+  }
+  if (reference.export !== 'case-corpus-digest') {
+    throw new Error(`Invalid catalog runtime import: unknown @aw/agent-skill-eval export "${reference.export}".`);
+  }
+  const cliPackageRoot = resolveCliPackageRoot();
+  const packageRootCandidates = [
+    path.resolve(cliPackageRoot, '..', 'agent-skill-eval'),
+    path.join(cliPackageRoot, 'node_modules', '@lesliechan721', 'agent-skill-eval'),
+  ];
+  const packageRoot = packageRootCandidates.find((candidate) =>
+    fs.existsSync(path.join(candidate, 'package.json')));
+  if (!packageRoot) {
+    throw new Error('Invalid @aw/agent-skill-eval runtime export: package root is unavailable.');
+  }
+  const packageJson = await fs.readJson(path.join(packageRoot, 'package.json')) as { version?: unknown };
+  if (typeof packageJson.version !== 'string' || packageJson.version.trim() === '') {
+    throw new Error('Invalid @aw/agent-skill-eval runtime export: package version is missing.');
+  }
+  const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
+    packageRoot,
+    './dist/corpus-digest.js',
+    '@aw/agent-skill-eval runtime export "case-corpus-digest"',
+  );
+  return {
+    provider: '@aw/agent-skill-eval',
+    providerVersion: packageJson.version,
+    name: reference.export,
+    source: './dist/corpus-digest.js',
+    sourcePath: canonicalSource.sourceRealPath,
+    sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
+    canonicalSource,
+    supportedPlatforms: new Set<PlatformName>(['claude', 'codex']),
+    virtual: true,
+  };
+}
+
 export function createCatalogRuntimeImportResolver(
   plugins: readonly PluginMeta[],
   options: CatalogRuntimeImportResolverOptions = {},
@@ -208,6 +250,9 @@ export function createCatalogRuntimeImportResolver(
   return {
     async resolve({ consumer, reference, purpose, platform }) {
       if (reference.plugin.startsWith('@aw/')) {
+        if (reference.plugin === '@aw/agent-skill-eval') {
+          return resolveEvalVirtualExport(reference, purpose);
+        }
         if (reference.plugin !== '@aw/cli') {
           throw new Error(`Invalid catalog runtime import: unknown reserved provider "${reference.plugin}".`);
         }

@@ -256,10 +256,6 @@
           {
             "path": "plugins/incident-policy/.agents-plugin/plugin.json",
             "exists": true
-          },
-          {
-            "path": "plugins/incident-policy/scripts/render-artifacts.mjs",
-            "exists": true
           }
         ],
         "checks": [

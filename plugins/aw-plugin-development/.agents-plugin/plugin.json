@@ -110,6 +110,14 @@
       },
       {
         "skill": "review-aw-plugin",
+        "target": "scripts/corpus-digest.mjs",
+        "import": {
+          "plugin": "@aw/agent-skill-eval",
+          "export": "case-corpus-digest"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
         "target": "scripts/validate-eval-run-bundle.mjs",
         "import": {
           "plugin": "agent-skill-toolkit",

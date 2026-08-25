@@ -2,6 +2,7 @@ import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { getRuntimeCapabilities } from './capabilities.js'
 import { isPathInside, pathsOverlap, safeSegment, sha256, stable } from './common.js'
+export { computeCaseCorpusDigest } from './corpus-digest.js'
 import { validateJsonSchema } from './json-schema.js'
 import { captureRuntimeSkill, type CapturedRuntimeSkill } from './runtime-skill.js'
 import { getSchema } from './schemas.js'
@@ -98,14 +99,6 @@ export function promptOf(evalCase: EvalCase): string {
     if (typeof message?.content === 'string') return message.content
   }
   throw new Error(`case ${String(evalCase.id ?? '?')} has no prompt/query/input`)
-}
-
-export async function computeCaseCorpusDigest(casePaths: string[]): Promise<Digest> {
-  const documents = await Promise.all(
-    casePaths.map(async (filePath) => stable(JSON.parse(await readFile(filePath, 'utf8')))),
-  )
-  documents.sort()
-  return sha256(documents.join('\n'))
 }
 
 async function readFencedJson<T>(

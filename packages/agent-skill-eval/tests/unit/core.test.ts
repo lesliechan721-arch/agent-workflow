@@ -7,6 +7,8 @@ import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import {
   assertProviderProcessSupported,
+  canonicalJson,
+  computeCaseCorpusDigest,
   computeSkillDigest,
   createRuntimeSkillSnapshot,
   getRuntimeCapabilities,
@@ -78,6 +80,19 @@ function digest(value: string | Buffer): `sha256:${string}` {
 }
 
 describe('public Eval execution contracts', () => {
+  it('uses code-unit key ordering for the canonical case corpus digest', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-corpus-'))
+    const casePath = path.join(root, 'cases.json')
+    try {
+      const document = { path: { 'a/b': 1, 'A.b': 2, '_key': 3 }, cases: [] }
+      await writeFile(casePath, JSON.stringify(document))
+      expect(canonicalJson(document)).toBe('{"cases":[],"path":{"A.b":2,"_key":3,"a/b":1}}')
+      expect(await computeCaseCorpusDigest([casePath])).toBe(digest(canonicalJson(document)))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('prints stable command help and embedded canonical schemas', async () => {
     const bin = path.resolve('dist/bin.js')
     const help = await execFileAsync(process.execPath, [bin, '--help'], { cwd: path.resolve('.') })

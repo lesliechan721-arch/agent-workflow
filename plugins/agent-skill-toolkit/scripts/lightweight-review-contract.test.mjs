@@ -39,6 +39,29 @@ function fullDimensions(score = 4, confidence = 'medium') {
   return dimensionIds.map((id) => ({ id, score, confidence, basis: `${id} is supported by the supplied package.` }));
 }
 
+function unassessedDimensions() {
+  return dimensionIds.map((id) => ({
+    id,
+    score: null,
+    confidence: 'unknown',
+    basis: `${id} cannot be assessed because required evidence is unavailable.`,
+  }));
+}
+
+function highSeverityFinding(severity) {
+  return {
+    severity,
+    area: 'reliability',
+    evidenceType: 'observed',
+    evidence: ['trace.json:1'],
+    issue: 'The core workflow corrupts the target artifact.',
+    affectedScenario: 'Every normal execution overwrites the target with invalid bytes.',
+    owner: 'script',
+    action: 'Stop the invalid write before release.',
+    validation: 'Run the observed reproduction and confirm the target remains valid.',
+  };
+}
+
 async function run(file, args, expectFailure = false) {
   try {
     return await execFileAsync(process.execPath, [file, ...args], {
@@ -231,42 +254,59 @@ try {
   assert.equal(JSON.parse(overSpecifiedRun.stdout).valid, false);
 
   const incomplete = JSON.parse(await readFile(badReviewPath, 'utf8'));
+  incomplete.target = { name: goodCheck.target.name, digest: goodCheck.target.digest };
   incomplete.design = 'not-assessed';
-  incomplete.dimensions[0] = {
-    id: 'specification',
-    score: null,
-    confidence: 'unknown',
-    basis: 'The target client contract is unavailable.',
-  };
+  incomplete.dimensions = unassessedDimensions();
   const incompletePath = path.join(temp, 'incomplete.json');
   await writeFile(incompletePath, JSON.stringify(incomplete));
-  const incompleteResult = JSON.parse((await run(validator, [incompletePath, '--check', badCheckPath])).stdout);
+  const incompleteResult = JSON.parse((await run(validator, [incompletePath, '--check', goodCheckPath])).stdout);
   assert.equal(incompleteResult.valid, true);
-  assert.equal(incompleteResult.scoring.weightedScore, null);
-  assert.equal(incompleteResult.scoring.coveragePercent, 94);
-  assert.equal(incompleteResult.scoring.confidence, 'medium');
-
-  const incompleteCritical = JSON.parse(await readFile(incompletePath, 'utf8'));
-  incompleteCritical.design = 'fail';
-  incompleteCritical.findings = [{
-    severity: 'critical',
-    area: 'reliability',
-    evidenceType: 'observed',
-    evidence: ['trace.json:1'],
-    issue: 'The core workflow corrupts the target artifact.',
-    affectedScenario: 'Every normal execution overwrites the target with invalid bytes.',
-    owner: 'script',
-    action: 'Stop the invalid write before release.',
-    validation: 'Run the observed reproduction and confirm the target remains valid.',
-  }];
-  const incompleteCriticalPath = path.join(temp, 'incomplete-critical.json');
-  await writeFile(incompleteCriticalPath, JSON.stringify(incompleteCritical));
-  const incompleteCriticalResult = JSON.parse((await run(
+  assert.deepEqual(incompleteResult.scoring, {
+    weightedScore: null,
+    confidenceIndex: null,
+    confidence: 'unknown',
+  });
+  const incompleteText = (await run(
     validator,
-    [incompleteCriticalPath, '--check', badCheckPath],
+    [incompletePath, '--check', goodCheckPath, '--format', 'text'],
+  )).stdout;
+  assert.match(incompleteText, /coverage: not-calculated/u);
+  assert.doesNotMatch(incompleteText, /coverage: [0-9.]+%/u);
+
+  for (const severity of ['major', 'critical']) {
+    const unassessedWithFinding = JSON.parse(await readFile(incompletePath, 'utf8'));
+    unassessedWithFinding.findings = [highSeverityFinding(severity)];
+    const unassessedWithFindingPath = path.join(temp, `incomplete-${severity}.json`);
+    await writeFile(unassessedWithFindingPath, JSON.stringify(unassessedWithFinding));
+    const result = JSON.parse((await run(
+      validator,
+      [unassessedWithFindingPath, '--check', goodCheckPath],
+    )).stdout);
+    assert.equal(result.valid, true);
+    assert.equal(result.design, 'not-assessed');
+    assert.equal(Object.hasOwn(result.scoring, 'coveragePercent'), false);
+  }
+
+  const assessedCritical = JSON.parse(await readFile(badReviewPath, 'utf8'));
+  assessedCritical.target = { name: goodCheck.target.name, digest: goodCheck.target.digest };
+  assessedCritical.design = 'needs-fixes';
+  assessedCritical.findings = [highSeverityFinding('critical')];
+  const assessedCriticalPath = path.join(temp, 'assessed-critical.json');
+  await writeFile(assessedCriticalPath, JSON.stringify(assessedCritical));
+  const assessedCriticalResult = JSON.parse((await run(
+    validator,
+    [assessedCriticalPath, '--check', goodCheckPath],
+    true,
   )).stdout);
-  assert.equal(incompleteCriticalResult.valid, true);
-  assert.equal(incompleteCriticalResult.design, 'fail');
+  assert.ok(assessedCriticalResult.errors.includes('critical finding requires design=fail'));
+  assessedCritical.design = 'fail';
+  await writeFile(assessedCriticalPath, JSON.stringify(assessedCritical));
+  const assessedCriticalFail = JSON.parse((await run(
+    validator,
+    [assessedCriticalPath, '--check', goodCheckPath],
+  )).stdout);
+  assert.equal(assessedCriticalFail.valid, true);
+  assert.equal(assessedCriticalFail.scoring.coveragePercent, 100);
 
   const major = JSON.parse(await readFile(reviewPath, 'utf8'));
   major.design = 'needs-fixes';

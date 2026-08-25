@@ -35,6 +35,7 @@ import {
   registerCodexEvalSignalCleanup,
   resolveCodexEvalRuntimeConfig,
   type CodexEvalRuntimeConfig,
+  type CodexEvalCliCapsuleEvidence,
 } from './codex-eval-runtime-config.js';
 import { runCodexTriggerSuite } from './codex-trigger-eval.js';
 import {
@@ -113,6 +114,7 @@ export interface PluginEvalRunnerOptions {
   inspectProcessTree?: () => Promise<void>;
   evalProcessTree?: ProcessTreeDependencies;
   createRunLayout?: typeof createPluginEvalRunLayout;
+  deployEvalCli?: (target: string) => Promise<void>;
 }
 
 interface ChildResult {
@@ -1224,6 +1226,7 @@ async function runOnePlugin(options: {
   env: NodeJS.ProcessEnv;
   modelEnv: NodeJS.ProcessEnv;
   codexRuntime?: CodexEvalRuntimeConfig;
+  cliCapsule?: CodexEvalCliCapsuleEvidence | null;
   codexRuntimeHome?: string;
   layout?: EvalRunLayout;
   stderr: (text: string) => void;
@@ -1547,6 +1550,7 @@ async function runOnePlugin(options: {
     modelProvider: options.codexRuntime?.modelProvider ?? null,
     credentialSource: options.codexRuntime?.credentialSource ?? null,
     codexConfigDigest: options.codexRuntime?.evidenceDigest ?? null,
+    cliCapsule: options.cliCapsule ?? null,
     processManagement: options.processManagement,
     outcome: coverageComplete ? reportOutcome : 'incomplete',
     complete: coverageComplete && reportsComplete,
@@ -1633,6 +1637,7 @@ async function writePublishedEvalReport(options: {
     model: options.bundle.model,
     modelProvider: options.bundle.modelProvider,
     codexConfigDigest: options.bundle.codexConfigDigest,
+    cliCapsule: options.bundle.cliCapsule,
     processManagement,
     source: options.sourceRevision,
     subjects: options.bundle.subjects.map((subject) => ({
@@ -1795,13 +1800,6 @@ export async function runPluginEvals(
     platform: process.platform,
     architecture: process.arch,
   });
-  const modelEnvironmentDigest = parsed.materializeOnly ? null : createEnvironmentDigest({
-    model: parsed.model ?? codexRuntime?.model ?? null,
-    modelProvider: codexRuntime?.modelProvider ?? null,
-    codexConfigDigest: codexRuntime?.evidenceDigest ?? null,
-    codexVersion: await readCodexVersion(parsed.codexBin, env),
-    processManagement: publicProcessManagement(processManagement),
-  });
   const harnessRepoRoot = resolveRepoRoot();
   const harnessDigest = await computeAuthorSourceDigest([
     { name: 'packages/cli/scripts', root: path.join(harnessRepoRoot, 'packages', 'cli', 'scripts') },
@@ -1809,8 +1807,23 @@ export async function runPluginEvals(
   ]);
   const requiredTargets = pluginReleaseTargets(prepared.manifest);
   const targetCompositions = await releaseTargetCompositions(prepared);
+  let runtimeCapsule: Awaited<ReturnType<typeof createCodexEvalRuntimeCapsule>> | undefined;
   let layout: EvalRunLayout;
   try {
+    runtimeCapsule = codexRuntime
+      ? await createCodexEvalRuntimeCapsule(codexRuntime, env, {
+          cliPackageRoot: resolveCliPackageRoot(),
+          deployCli: options.deployEvalCli,
+        })
+      : undefined;
+    const modelEnvironmentDigest = parsed.materializeOnly ? null : createEnvironmentDigest({
+      model: parsed.model ?? codexRuntime?.model ?? null,
+      modelProvider: codexRuntime?.modelProvider ?? null,
+      codexConfigDigest: codexRuntime?.evidenceDigest ?? null,
+      codexVersion: await readCodexVersion(parsed.codexBin, env),
+      processManagement: publicProcessManagement(processManagement),
+      cliCapsule: runtimeCapsule?.cli ?? null,
+    });
     layout = await (options.createRunLayout ?? createPluginEvalRunLayout)({
       repoRoot,
       plugin: parsed.pluginName!,
@@ -1830,6 +1843,7 @@ export async function runPluginEvals(
       targetCompositions,
     });
   } catch (error) {
+    await runtimeCapsule?.cleanup().catch(() => undefined);
     stderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 2;
   }
@@ -1858,14 +1872,8 @@ export async function runPluginEvals(
         'is not an eval failure. Do not start separate status-poll commands.\n',
     );
   }
-  let runtimeCapsule: Awaited<ReturnType<typeof createCodexEvalRuntimeCapsule>> | undefined;
   let exitCode = 1;
   try {
-    runtimeCapsule = codexRuntime
-      ? await createCodexEvalRuntimeCapsule(codexRuntime, env, {
-          allocate: () => fs.mkdtemp(path.join(layout.workRoot, 'runtime-')),
-        })
-      : undefined;
     assertCodexEvalCanStartWork();
     const bundle = await runOnePlugin({
       sourcePlugin: prepared.sourcePlugin,
@@ -1877,7 +1885,8 @@ export async function runPluginEvals(
       processManagement,
       env,
       modelEnv: runtimeCapsule?.env ?? env,
-      codexRuntime,
+      codexRuntime: runtimeCapsule?.runtime ?? codexRuntime,
+      cliCapsule: runtimeCapsule?.cli ?? null,
       codexRuntimeHome: runtimeCapsule?.home,
       layout,
       stderr,

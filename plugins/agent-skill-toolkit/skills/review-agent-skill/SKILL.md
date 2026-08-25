@@ -35,7 +35,7 @@ metadata:
 
    机器错误直接阻断，不复制成多重 gate。
 3. 检查没有该 Skill 时的具体失败、description 与 near-miss、一个 Skill 内部是否混入多个独立职责、强制规则是否最小充分、reference/script/asset 是否必要且可达，以及已有 Eval 是否能支持当前结论。
-4. `full` 时读取 `references/review-rubric.md`、`references/review-dimensions.md`、`references/scoring-model.md` 和 `references/composition-fitness.md`。先完成 finding 和 unknown，再按固定顺序填写全部 12 个维度。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
+4. `full` 时读取 `references/review-rubric.md`、`references/review-dimensions.md`、`references/scoring-model.md` 和 `references/composition-fitness.md`。先完成 finding 和 unknown。任何必要 evidence 缺失时，整个 Review 立即进入优先于普通 full 报告的 `not-assessed` 分支，输出字段仅为：机器检查、findings（如有）、evidence gap、unknown、`Score: not-assessed`、`coverage: not-calculated`、`design: not-assessed` 和 complexity；不得评分、加权或计算 coverage，不得输出数值总分、百分比或维度名、状态、分数列表，finding severity 不得改变 design。需要结构化 result 时，未评估维度仍写 `score=null`、`confidence=unknown`。否则按固定顺序填写全部 12 个维度。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
 5. 被审材料很多且能按 package、reference、scripts 或 Eval 独立划分时，可以使用独立上下文子代理分别审核；每个子代理只返回结论、证据位置和关键 unknown，最终 finding 由当前 Reviewer 判断。
 
 ## 可选 Eval 分支
@@ -57,7 +57,7 @@ metadata:
 
 主报告按 `assets/human-report-template.md` 输出，只包含机器检查、`design`、`complexity`、2–4 句判断、所有 critical/major、最多 3 项高价值改进、会改变结论的 unknown，以及停止或重新打开条件。
 
-full 主报告还显示一行 `Score: <n>/100 · coverage: <n>% · confidence: <level>`；coverage 不完整时显示 `Score: not-assessed`。维度明细只保存在 JSON。quick/delta 不显示评分行。不要输出 quality band、release readiness、stage 列表或多重 gate 表。QualityReviewResult 不声明 Eval 证据等级。
+full 主报告仅在全部维度已评估时显示 `Score: <n>/100 · coverage: <n>% · confidence: <level>`。主报告不展开维度分数，维度明细只保存在 JSON。quick/delta 不显示评分行。不要输出 quality band、release readiness、stage 列表或多重 gate 表。QualityReviewResult 不声明 Eval 证据等级。
 
 需要结构化结果时，填写 `assets/quality-review-result.template.json`，再运行：
 

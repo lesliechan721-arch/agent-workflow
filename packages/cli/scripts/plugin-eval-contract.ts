@@ -203,6 +203,11 @@ export interface PluginEvaluationBundle {
   modelProvider: string | null;
   credentialSource: 'embedded' | 'environment' | 'openai-auth' | 'none' | null;
   codexConfigDigest: string | null;
+  cliCapsule: {
+    packageName: string;
+    packageVersion: string;
+    contentDigest: string;
+  } | null;
   processManagement: PluginEvalProcessManagementEvidence;
   outcome: PluginEvalOutcome;
   complete: boolean;

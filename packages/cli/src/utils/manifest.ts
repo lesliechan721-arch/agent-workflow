@@ -905,7 +905,7 @@ function normalizeImportReference(
   const input = assertObject(value, fieldName);
   assertAllowedKeys(input, fieldName, ['plugin', 'export']);
   const plugin = ensureString(input.plugin, `${fieldName}.plugin`);
-  if (plugin !== '@aw/cli') {
+  if (plugin !== '@aw/cli' && plugin !== '@aw/agent-skill-eval') {
     ensurePluginName(plugin, `${fieldName}.plugin`);
   }
   return {

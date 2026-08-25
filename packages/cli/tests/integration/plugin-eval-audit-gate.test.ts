@@ -1,5 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 import {
   computeSkillDigest,
@@ -13,6 +16,7 @@ import {
 } from '../../scripts/eval-plugin-skills-audited.js';
 
 const temporaryRoots: string[] = [];
+const execFileAsync = promisify(execFile);
 
 async function fixture(validity: 'pass' | 'fail' = 'pass') {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-audit-gate-'));
@@ -68,6 +72,7 @@ async function fixture(validity: 'pass' | 'fail' = 'pass') {
   }, { spaces: 2 });
   const casesPath = path.join(evalRoot, 'trigger-cases.json');
   await fs.writeJson(casesPath, {
+    'a/b': { '_key': true, 'A.b': false },
     schemaVersion: 1,
     skill: 'sample-skill',
     cases: [{
@@ -78,7 +83,30 @@ async function fixture(validity: 'pass' | 'fail' = 'pass') {
     }],
   }, { spaces: 2 });
   const targetSkillDigest = await computeSkillDigest(skillRoot);
-  const caseCorpusDigest = await computeAuditCaseCorpusDigest([casesPath]);
+  const validatorRoot = path.join(repoRoot, 'materialized-validator');
+  const workspaceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  await fs.ensureDir(validatorRoot);
+  await Promise.all([
+    fs.copyFile(
+      path.join(workspaceRoot, 'plugins/agent-skill-toolkit/scripts/validate-eval-audit-result.mjs'),
+      path.join(validatorRoot, 'validate-eval-audit-result.mjs'),
+    ),
+    fs.copyFile(
+      path.join(workspaceRoot, 'plugins/agent-skill-toolkit/scripts/validate-eval-run-bundle.mjs'),
+      path.join(validatorRoot, 'validate-eval-run-bundle.mjs'),
+    ),
+    fs.copyFile(
+      path.join(workspaceRoot, 'packages/agent-skill-eval/dist/corpus-digest.js'),
+      path.join(validatorRoot, 'corpus-digest.mjs'),
+    ),
+  ]);
+  const { stdout: digestOutput } = await execFileAsync(process.execPath, [
+    path.join(validatorRoot, 'validate-eval-audit-result.mjs'),
+    '--digest-only',
+    '--case', casesPath,
+  ], { encoding: 'utf8' });
+  const caseCorpusDigest = digestOutput.trim();
+  expect(caseCorpusDigest).toBe(await computeAuditCaseCorpusDigest([casesPath]));
   const auditPath = path.join(repoRoot, 'audit.json');
   await fs.writeJson(auditPath, {
     schemaVersion: 3,

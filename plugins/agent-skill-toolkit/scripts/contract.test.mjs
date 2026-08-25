@@ -140,6 +140,23 @@ test('materialized audit validator runs with its projected dependency closure', 
   }
 });
 
+test('materialized audit validator matches the canonical digest for a formerly divergent corpus', async () => {
+  if (!context) return;
+  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
+  const runtimeDigest = path.join(auditRoot, 'scripts/corpus-digest.mjs');
+  const packageDigest = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/corpus-digest.js');
+  assert.deepEqual(await readFile(runtimeDigest), await readFile(packageDigest));
+  const casePath = path.join(sourceRoot, 'skills/review-agent-skill/evals/behavior-cases.json');
+  const { stdout } = await execFileAsync(process.execPath, [
+    path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs'),
+    '--digest-only', '--case', casePath,
+  ], { cwd: auditRoot, encoding: 'utf8' });
+  assert.equal(
+    stdout.trim(),
+    'sha256:02dff039738578a52da17e2d4f41400af2c50b941059e649d110981f5ec1b252',
+  );
+});
+
 test('audit triage rejects conclusions from an unmet bundle evidence requirement', async () => {
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
   const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
