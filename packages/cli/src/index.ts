@@ -121,6 +121,17 @@ import {
   renderPortableReview,
 } from './portable/commands.js';
 import { SkillsCliError } from './portable/skills-cli.js';
+import {
+  listReviewRecords,
+  parseReviewAttachment,
+  publishReviewRecord,
+  showReviewRecord,
+  verifyReviewRecord,
+  type ReviewAttachmentInput,
+  type ReviewPublicationKind,
+  type ReviewRecord,
+} from './commands/review-publication.js';
+import { resolveRepoRoot } from './utils/state-paths.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -980,6 +991,174 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const skill = program
     .command('skill')
     .description('Install, materialize, or validate Agent Skills');
+
+  const review = program
+    .command('review')
+    .description('Publish and inspect immutable review records');
+
+  const reviewRecordDir = (repoRoot: string, record: ReviewRecord): string =>
+    path.relative(fs.realpathSync(repoRoot), record.root).split(path.sep).join('/');
+
+  const reviewJsonRecord = (repoRoot: string, record: ReviewRecord) => ({
+    recordDir: reviewRecordDir(repoRoot, record),
+    manifest: record.manifest,
+  });
+
+  review
+    .command('publish')
+    .description('Publish one immutable review record')
+    .requiredOption('--kind <skill|workflow|aw-plugin|aw-workflow>', 'review target kind')
+    .requiredOption('--target <path-or-id>', 'review target path or ID')
+    .requiredOption('--report <report.md>', 'review report Markdown file')
+    .option('--scope <scope.json>', 'workflow scope JSON file')
+    .option('--result <review-result.json>', 'review result JSON file')
+    .option(
+      '--check <kind=path>',
+      'archive one JSON check attachment',
+      (value: string, previous: ReviewAttachmentInput[]) => [
+        ...previous,
+        parseReviewAttachment(value, 'Check'),
+      ],
+      [],
+    )
+    .option(
+      '--evidence <kind=path>',
+      'archive one JSON evidence attachment',
+      (value: string, previous: ReviewAttachmentInput[]) => [
+        ...previous,
+        parseReviewAttachment(value, 'Evidence'),
+      ],
+      [],
+    )
+    .option('--release-check <release-check.json>', 'release check JSON file')
+    .option('--supersedes <review-id>', 'review ID that this record supersedes')
+    .option('--json', 'emit one review record JSON object', false)
+    .action(async (rawOptions: {
+      kind: string;
+      target: string;
+      report: string;
+      scope?: string;
+      result?: string;
+      check: ReviewAttachmentInput[];
+      evidence: ReviewAttachmentInput[];
+      releaseCheck?: string;
+      supersedes?: string;
+      json?: boolean;
+    }) => {
+      const repoRoot = await resolveRepoRoot(cwd);
+      const record = await publishReviewRecord({
+        repoRoot,
+        kind: rawOptions.kind as ReviewPublicationKind,
+        target: rawOptions.target,
+        report: rawOptions.report,
+        ...(rawOptions.scope === undefined ? {} : { scope: rawOptions.scope }),
+        ...(rawOptions.result === undefined ? {} : { result: rawOptions.result }),
+        ...(rawOptions.check.length === 0 ? {} : { checks: rawOptions.check }),
+        ...(rawOptions.evidence.length === 0 ? {} : { evidence: rawOptions.evidence }),
+        ...(rawOptions.releaseCheck === undefined ? {} : { releaseCheck: rawOptions.releaseCheck }),
+        ...(rawOptions.supersedes === undefined ? {} : { supersedes: rawOptions.supersedes }),
+      });
+      const recordDir = reviewRecordDir(repoRoot, record);
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'review:publish',
+          ok: true,
+          ...reviewJsonRecord(repoRoot, record),
+          existing: record.existing,
+        });
+        return;
+      }
+      writeLine(
+        io.stdout,
+        `${record.existing ? 'Existing' : 'Published'} review ${record.manifest.reviewId}: ${recordDir}`,
+      );
+    });
+
+  review
+    .command('verify')
+    .description('Verify one archived review record')
+    .argument('<report-dir>', 'review record directory')
+    .option('--json', 'emit one review record JSON object', false)
+    .action(async (reportDir: string, rawOptions: { json?: boolean }) => {
+      const repoRoot = await resolveRepoRoot(cwd);
+      const record = await verifyReviewRecord({ repoRoot, reportDir });
+      const relativeRecordDir = reviewRecordDir(repoRoot, record);
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'review:verify',
+          ok: true,
+          ...reviewJsonRecord(repoRoot, record),
+        });
+        return;
+      }
+      writeLine(io.stdout, `Verified review ${record.manifest.reviewId}: ${relativeRecordDir}`);
+    });
+
+  review
+    .command('list')
+    .description('List immutable review records')
+    .option('--kind <kind>', 'filter by review target kind')
+    .option('--target <id>', 'filter by review target ID')
+    .option('--json', 'emit one review records JSON object', false)
+    .action(async (rawOptions: { kind?: string; target?: string; json?: boolean }) => {
+      const repoRoot = await resolveRepoRoot(cwd);
+      const records = await listReviewRecords({
+        repoRoot,
+        ...(rawOptions.kind === undefined ? {} : { kind: rawOptions.kind as ReviewPublicationKind }),
+        ...(rawOptions.target === undefined ? {} : { targetId: rawOptions.target }),
+      });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'review:list',
+          ok: true,
+          records: records.map((record) => reviewJsonRecord(repoRoot, record)),
+        });
+        return;
+      }
+      for (const record of records) {
+        writeLine(
+          io.stdout,
+          [
+            record.manifest.reviewId,
+            record.manifest.target.kind,
+            record.manifest.target.id,
+            record.manifest.publishedAt,
+          ].join(' '),
+        );
+      }
+    });
+
+  review
+    .command('show')
+    .description('Show one immutable review record')
+    .argument('<review-id>', 'review record ID')
+    .option('--json', 'emit one review record JSON object', false)
+    .action(async (reviewId: string, rawOptions: { json?: boolean }) => {
+      const repoRoot = await resolveRepoRoot(cwd);
+      const record = await showReviewRecord({ repoRoot, reviewId });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'review:show',
+          ok: true,
+          ...reviewJsonRecord(repoRoot, record),
+        });
+        return;
+      }
+      const manifest = record.manifest;
+      writeLine(io.stdout, `Review: ${manifest.reviewId}`);
+      writeLine(io.stdout, `Target: ${manifest.target.kind} ${manifest.target.id}`);
+      writeLine(io.stdout, `Published: ${manifest.publishedAt}`);
+      writeLine(io.stdout, `Report: ${manifest.report.path}`);
+      writeLine(io.stdout, `Result: ${manifest.result?.path ?? 'none'}`);
+      writeLine(io.stdout, `Checks: ${manifest.checks.map((entry) => entry.kind).join(', ') || 'none'}`);
+      writeLine(io.stdout, `Evidence: ${manifest.evidence.map((entry) => entry.kind).join(', ') || 'none'}`);
+      writeLine(io.stdout, `Release check: ${manifest.releaseCheck?.path ?? 'none'}`);
+      writeLine(io.stdout, `Supersedes: ${manifest.supersedes ?? 'none'}`);
+    });
 
   skill
     .command('install')

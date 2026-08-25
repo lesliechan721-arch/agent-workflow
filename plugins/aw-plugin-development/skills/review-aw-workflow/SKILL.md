@@ -41,3 +41,11 @@ metadata:
 ## 输出
 
 先报告 Scope status 和 inventory，再给 workflow design/complexity、跨插件 findings、Leaf Fix Admission 结果、最小架构、关键 unknown 和停止条件。没有 admitted scope 时必须列出 workflow partitions，只能给 `partial` 或 `rejected`，不得给完整或全局 pass。
+
+## 可选报告归档
+
+默认只在聊天中交付；只有用户明确要求归档时才写入。归档不改变 workflow findings、design 或 complexity，不自动运行 Eval 或 Release Check，也不更新 README。
+
+先把 admitted scope 写成 `scope.json`：`schemaVersion: 1`、`kind: "aw-workflow"`、scope id、用户结果、入口、非空 components（每项含 kind/id/path/digest）、非空 representativePaths、externalDependencies 和 excluded。先运行 `aw review publish --help`；若未显示该子命令则停止。再用 `--kind aw-workflow --target <scope-id> --scope <scope.json> --report <report.md>` 发布已有材料；可附加已有 result、checks、evidence 或独立生成的 `release-check.json`。不得调用旧 `pnpm review:publish` 或旧 publisher。
+
+`quick` 默认不归档，但用户明确要求时可以归档；`full` 可以归档；`delta` 必须创建新的不可变 record，并用 `--supersedes <review-id>` 指向同一 target 的旧 record。Release 不是 Review mode；Quality Review 不计算 readiness，独立 Release Check 只可作为附件。

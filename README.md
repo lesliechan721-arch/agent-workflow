@@ -208,12 +208,18 @@ aw plugin add-skill <plugin-name> --skill-name <skill-name> --skill-description 
 aw plugin validate plugins/<plugin-name>
 aw plugin status --all --base HEAD
 aw skill validate <skill-directory> --frontmatter-profile portable-agent-skills
+# 在用户明确要求归档 Review 前，先确认当前公开参数
+aw review publish --help
 ```
 
 这些命令可用 `--help` 查看完整参数。`plugin validate --json` 和 `skill validate --json` 各输出一个机器结果对象；`status --json` 输出 schema 3 development 结果。deprecated `check-versions` 返回相同对象，并向 stderr 输出迁移提示。不要用 `npx` 隐式安装作者工具。
 目标插件不在默认 `plugins/<plugin-name>` 时，`init`、`add-skill` 和单插件
 `status` 传 `--plugin-root <path>`；相对路径按 `--repo-root` 解析，且目标必须位于该 Git 工作区内。
 `validate` 和 `status` 会拒绝 repo/plugin root、`.agents-plugin` 或 manifest 路径链中的符号链接和错误节点类型；不要用链接重定向作者根或 manifest。
+
+新 Review archive 只在用户明确要求时使用：先由 Reviewer 产出 `report.md`，再用 `aw review publish` 归档。它只写不可变的 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`，不重新评审、不运行或封存 Eval、也不更新 README。完整参数以 `aw review publish --help` 为准；workflow publication 还必须传入其 `scope.json`。Quality Review 不计算发布准备度；独立的机器 `release-check.json` 只能作为可选附件。
+
+兼容窗口内，旧 `pnpm review:publish` 和旧 `.agents` Skills 仍可用于原有工作流。新 `aw review` 不使用旧 ReviewInputBundle、AW summary、target plan、batch 或 seal；只有新开发和模型 Eval 均完成并经过观察窗口后，才切换或删除旧入口。
 
 ```bash
 make install

@@ -66,3 +66,11 @@ node scripts/validate-quality-review-result.mjs <review.json> \
   --check <check.json> \
   --format json
 ```
+
+## 可选报告归档
+
+默认只在聊天中交付；只有用户明确要求归档时才写入。归档不改变 findings、design 或 complexity，不自动运行 Eval 或 Release Check，也不更新 README。
+
+先运行 `aw review publish --help`；若未显示该子命令则停止。随后使用 `--kind skill` 和当前 Skill root 或 `plugin/skill` target 发布已有 `report.md`；需要时附加已有 `--result`、`--check`、`--evidence` 或独立生成的 `--release-check`。不得调用旧 `pnpm review:publish` 或旧 publisher。
+
+`quick` 默认不归档，但用户明确要求时可以归档；`full` 可以归档；`delta` 必须创建新的不可变 record，并用 `--supersedes <review-id>` 指向同一 target 的旧 record。Release 不是 Review mode；Quality Review 不计算 readiness，独立 `release-check.json` 只可作为附件。

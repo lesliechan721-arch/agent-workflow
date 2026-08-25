@@ -36,9 +36,9 @@ metadata:
 
 没有 materialized final 时，只评价当前可见 source 和插件组合质量；不声明 release readiness。跨多个插件共同完成一个用户结果时，不给完整结论。
 
-## 发布检查
+## 独立 Release Check
 
-用户明确要求发布准备状态时，才运行确定性 release checker：
+用户明确要求 Release Check 时，才运行确定性 checker：
 
 ```bash
 node scripts/check-aw-plugin-release.mjs <plugin-root> \
@@ -49,7 +49,15 @@ node scripts/check-aw-plugin-release.mjs <plugin-root> \
   [--triage-audit <audit.json>]
 ```
 
-发布只接受 full、coverage 100%、总体 confidence 为 medium/high 且 effective design 为 pass 的 QualityReviewResult v1。声明 required Eval 的目标必须按 production digest 提供 Audit v3 preflight、RunBundle v3 和 Audit v3 result-triage 三段链；QualityReviewResult 不声明 Eval 证据等级。相同 production digest 可以共享一条证据链。发布机器事实不进入普通 Review common path。
+输出为独立 `release-check.json`。它拥有机器 readiness，不能写回 Quality Review；QualityReviewResult 不声明 Eval 证据等级。相同 production digest 可以共享一条证据链。Release Check 不进入普通 Review common path，也不是 Review mode。
+
+## 可选报告归档
+
+默认只在聊天中交付；只有用户明确要求归档时才写入。归档不改变插件 findings、design 或 complexity，不自动运行 Eval 或 Release Check，也不更新 README。
+
+先运行 `aw review publish --help`；若未显示该子命令则停止。再用 `--kind aw-plugin` 和插件 root 或 plugin id 发布已有 `report.md`；需要时附加已有 result、checks、evidence 或独立生成的 `--release-check <release-check.json>`。不得调用旧 `pnpm review:publish` 或旧 publisher。
+
+`quick` 默认不归档，但用户明确要求时可以归档；`full` 可以归档；`delta` 必须创建新的不可变 record，并用 `--supersedes <review-id>` 指向同一 target 的旧 record。Release 不是 Review mode；Quality Review 不计算 readiness。
 
 ## 边界
 

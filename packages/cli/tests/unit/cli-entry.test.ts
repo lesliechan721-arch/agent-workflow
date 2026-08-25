@@ -29,6 +29,7 @@ describe('CLI entry v4', () => {
       'config',
       'plugin',
       'skill',
+      'review',
     ]) {
       expect(output.stdout()).toContain(command);
     }
