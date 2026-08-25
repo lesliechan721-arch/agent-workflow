@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'fs-extra';
 
 import {
   buildWorkspaceCatalog,
@@ -74,8 +75,10 @@ export async function runCatalogVersionCommand(options: {
   io: AuthoringCommandIo;
 }): Promise<void> {
   const metadata = options.version === undefined
-    ? (await readPluginWorkspace(options.workspaceRoot)).metadata
-    : await setWorkspaceCatalogVersion(options.workspaceRoot, options.version);
+    ? (await readPluginWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS })).metadata
+    : await setWorkspaceCatalogVersion(options.workspaceRoot, options.version, {
+        reservedImports: CLI_RESERVED_IMPORTS,
+      });
   const receipt = {
     command: 'catalog:version',
     ok: true,
@@ -152,7 +155,7 @@ export async function runPluginTestCommand(options: {
   io: AuthoringCommandIo;
 }): Promise<number> {
   const workspace = await readPluginWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
-  const pluginRoot = path.resolve(workspace.workspaceRoot, options.pluginDirectory);
+  const pluginRoot = await fs.realpath(path.resolve(workspace.workspaceRoot, options.pluginDirectory));
   const plugin = workspace.plugins.find((entry) => entry.rootDir === pluginRoot);
   if (!plugin) throw new Error(`Plugin directory is not part of this workspace source: ${pluginRoot}`);
   let stdout = '';

@@ -5,6 +5,38 @@ import fs from 'fs-extra';
 const FORBIDDEN_EXPORT_ROOTS = new Set([
   '.release', '.tmp', 'build', 'dist', 'evals', 'node_modules', 'reports', 'skills', 'tmp',
 ]);
+const AUTHORING_TREE_IGNORED_DIRECTORIES = new Set(['.git', 'node_modules']);
+
+export function isIgnoredPluginInputDirectory(name: string): boolean {
+  return AUTHORING_TREE_IGNORED_DIRECTORIES.has(name);
+}
+
+export async function assertPluginInputTree(rootDir: string): Promise<string> {
+  const rootPath = path.resolve(rootDir);
+  const rootStats = await fs.lstat(rootPath);
+  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+    throw new Error('Invalid plugin input tree: plugin root must be a regular directory.');
+  }
+  const rootRealPath = await fs.realpath(rootPath);
+  const walk = async (directory: string, relativeRoot = ''): Promise<void> => {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const relativePath = relativeRoot
+        ? path.posix.join(relativeRoot, entry.name)
+        : entry.name;
+      if (entry.isDirectory() && isIgnoredPluginInputDirectory(entry.name)) continue;
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Invalid plugin input tree: symbolic links are not supported (${relativePath}).`);
+      }
+      if (entry.isDirectory()) {
+        await walk(path.join(directory, entry.name), relativePath);
+      } else if (!entry.isFile()) {
+        throw new Error(`Invalid plugin input tree: only regular files and directories are supported (${relativePath}).`);
+      }
+    }
+  };
+  await walk(rootRealPath);
+  return rootRealPath;
+}
 
 export interface CanonicalRuntimeSourceIdentity {
   rootPath: string;

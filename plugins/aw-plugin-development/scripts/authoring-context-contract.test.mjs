@@ -33,8 +33,8 @@ async function fixture({ manifest = null } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'aw-authoring-context-v3-'));
   temps.push(directory);
   const workspace = path.join(directory, 'workspace');
-  const pluginRoot = path.join(workspace, 'packages', 'target-plugin');
-  await mkdir(pluginRoot, { recursive: true });
+  const pluginRoot = path.join(workspace, 'plugins', 'target-plugin');
+  await mkdir(path.join(workspace, 'plugins'), { recursive: true });
   if (manifest) {
     await mkdir(path.join(pluginRoot, '.agents-plugin'), { recursive: true });
     await writeFile(
@@ -42,7 +42,7 @@ async function fixture({ manifest = null } = {}) {
       JSON.stringify(manifest),
     );
   }
-  return { directory, workspace, pluginRoot };
+  return { directory, workspace, pluginRoot, mode: manifest ? 'edit' : 'create' };
 }
 
 async function roundTrip(target, components, extraArgs = []) {
@@ -54,6 +54,8 @@ async function roundTrip(target, components, extraArgs = []) {
     [
       prepare,
       target.pluginRoot,
+      '--mode',
+      target.mode,
       '--workspace-root',
       target.workspace,
       '--components',
@@ -125,6 +127,40 @@ test('context tool exposes workspace-root and rejects the former repo-root optio
       prepare, target.pluginRoot, '--components', componentsPath, '--repo-root', target.workspace,
     ]),
     (error) => error.stderr.includes('Unknown option: --repo-root'),
+  );
+});
+
+test('rejects a plugin root outside the canonical workspace inventory before reading components', async () => {
+  const target = await fixture({
+    manifest: {
+      name: 'target-plugin',
+      marketplace: { policy: { products: ['CODEX', 'CLAUDE'] } },
+    },
+  });
+  const nonCanonicalRoot = path.join(target.workspace, 'packages', 'target-plugin');
+  await mkdir(path.join(nonCanonicalRoot, '.agents-plugin'), { recursive: true });
+  await writeFile(
+    path.join(nonCanonicalRoot, '.agents-plugin', 'plugin.json'),
+    JSON.stringify({
+      name: 'target-plugin',
+      marketplace: { policy: { products: ['CODEX', 'CLAUDE'] } },
+    }),
+  );
+  const missingComponents = path.join(target.directory, 'must-not-be-read.json');
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      prepare,
+      nonCanonicalRoot,
+      '--mode',
+      'edit',
+      '--workspace-root',
+      target.workspace,
+      '--components',
+      missingComponents,
+    ]),
+    (error) =>
+      error.stdout === '' &&
+      error.stderr.includes('Plugin root must be the canonical workspace path'),
   );
 });
 
@@ -248,13 +284,19 @@ test('rejects invalid invocation placement and legacy single-component flags', a
     execFileAsync(process.execPath, [
       prepare,
       target.pluginRoot,
+      '--mode',
+      'edit',
+      '--workspace-root',
+      target.workspace,
       '--components',
       invalidPath,
     ]),
     (error) => error.stderr.includes('skillInvocation must be null or omitted'),
   );
   await assert.rejects(
-    execFileAsync(process.execPath, [prepare, target.pluginRoot, '--component-type', 'skill']),
+    execFileAsync(process.execPath, [
+      prepare, target.pluginRoot, '--mode', 'edit', '--component-type', 'skill',
+    ]),
     (error) =>
       error.stderr.includes('was removed') &&
       error.stderr.includes('--components <json-file>'),
@@ -276,7 +318,10 @@ test('rejects claude-model-only outside the CLAUDE-only profile', async () => {
     ]),
   );
   await assert.rejects(
-    execFileAsync(process.execPath, [prepare, target.pluginRoot, '--components', invalidPath]),
+    execFileAsync(process.execPath, [
+      prepare, target.pluginRoot, '--mode', 'edit',
+      '--workspace-root', target.workspace, '--components', invalidPath,
+    ]),
     (error) => error.stderr.includes('must use profiles ["CLAUDE"]'),
   );
 });
@@ -299,6 +344,10 @@ test('rejects App outside the CODEX profile', async () => {
     execFileAsync(process.execPath, [
       prepare,
       target.pluginRoot,
+      '--mode',
+      'edit',
+      '--workspace-root',
+      target.workspace,
       '--components',
       componentsPath,
     ]),

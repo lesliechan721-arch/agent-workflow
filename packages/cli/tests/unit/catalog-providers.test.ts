@@ -1,4 +1,7 @@
+import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
@@ -9,7 +12,9 @@ import {
   cleanupLegacyCatalogSourceCache,
 } from '../../src/utils/catalog-source-cache.js';
 import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
+import { createCatalogManifestV4Entry } from '../../src/utils/catalog-manifest-v4.js';
 import { calculateCatalogSourcesConfigDigest } from '../../src/utils/catalog-sources.js';
+import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import {
   formatPluginId,
   parsePluginId,
@@ -18,6 +23,8 @@ import {
 } from '../../src/utils/multi-source-catalog.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
 
 const {
   publishCatalogSourceCacheEntry,
@@ -25,6 +32,58 @@ const {
   resolveCatalogSourceCacheLocation,
 } = catalogSourceCacheInternal;
 const identity = `sha256:${'1'.repeat(64)}`;
+const execFileAsync = promisify(execFile);
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value: unknown): string {
+  return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`;
+}
+
+async function publishFixtureManifest(root: string): Promise<void> {
+  const manifestPath = path.join(root, 'catalog-manifest.json');
+  const manifest = await fs.readJson(manifestPath);
+  const contentDigest = sha256({
+    schemaIdentity: { schemaVersion: manifest.schemaVersion },
+    marketplaceMetadata: { name: 'aw', ...manifest.marketplace },
+    compatibility: manifest.compatibility,
+    plugins: manifest.entries.map((entry: Record<string, string>) => ({
+      name: entry.name,
+      targetVersion: entry.version,
+      contentDigest: entry.contentDigest,
+    })),
+  });
+  manifest.release = {
+    state: 'published',
+    targetVersion: manifest.catalogVersion,
+    planId: contentDigest,
+    sourceHead: '1'.repeat(40),
+    contentDigest,
+  };
+  await Promise.all([
+    fs.writeJson(manifestPath, manifest),
+    fs.writeJson(path.join(root, 'plugin-release-ledger.json'), {
+      schemaVersion: 2,
+      records: manifest.entries.map((entry: Record<string, string>) => ({
+        plugin: entry.name,
+        version: entry.version,
+        contentDigest: entry.contentDigest,
+        artifactDigest: entry.artifactDigest,
+        manifestDigest: entry.manifestDigest,
+        channel: manifest.channel,
+        catalogVersion: manifest.catalogVersion,
+      })),
+    }),
+  ]);
+}
 
 function fixturePath(name: string): string {
   return path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, name);
@@ -48,6 +107,17 @@ async function publish(root: string, resolvedCommit: string): Promise<ReturnType
 }
 
 describe('catalog source current and last-good cache', () => {
+  it('rejects a cached published snapshot after its required ledger is removed', async () => {
+    const root = fixturePath('cache-published-ledger');
+    await createCatalogSnapshotFixture(root);
+    await publishFixtureManifest(root);
+    const location = await publish(root, '1'.repeat(40));
+    await fs.remove(path.join(location.currentDir, 'snapshot', 'plugin-release-ledger.json'));
+    await expect(readCatalogSourceCache({
+      location, sourceId: 'team', sourceIdentity: identity,
+      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
+    })).resolves.toBeNull();
+  });
   it('publishes complete validated snapshots and rotates current to last-good', async () => {
     const first = fixturePath('cache-first');
     const second = fixturePath('cache-second');
@@ -213,6 +283,112 @@ describe('catalog source current and last-good cache', () => {
 });
 
 describe('multi-source resolver public behavior', () => {
+  it('rejects published CLI and path source validation without the release ledger', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('published-without-ledger');
+    await createCatalogSnapshotFixture(root);
+    await publishFixtureManifest(root);
+    await fs.remove(path.join(root, 'plugin-release-ledger.json'));
+
+    await expect(validateCatalogSnapshot(root)).rejects.toThrow(/must include plugin-release-ledger/u);
+    await expect(catalogPathProviderInternal.resolve({
+      id: 'missing-ledger', type: 'path', primary: true, path: root,
+    }, {
+      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
+    })).rejects.toThrow(/must include plugin-release-ledger/u);
+  });
+
+  it('rejects joint marketplace root metadata changes against the canonical manifest identity', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('joint-marketplace-metadata');
+    await createCatalogSnapshotFixture(root);
+    for (const marketplacePath of [
+      path.join(root, '.agents', 'plugins', 'marketplace.json'),
+      path.join(root, '.claude-plugin', 'marketplace.json'),
+    ]) {
+      const marketplace = await fs.readJson(marketplacePath);
+      marketplace.owner = { name: 'Tampered Owner', url: 'https://example.invalid/tampered' };
+      marketplace.interface = { displayName: 'Tampered Marketplace' };
+      await fs.writeJson(marketplacePath, marketplace);
+    }
+
+    await expect(catalogPathProviderInternal.resolve({
+      id: 'joint-metadata', type: 'path', primary: true, path: root,
+    }, {
+      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
+    })).rejects.toThrow(/marketplace metadata or plugin inventory/u);
+  });
+  it('rejects a path source with a tampered Codex marketplace projection', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('tampered-path-marketplace');
+    await createCatalogSnapshotFixture(root);
+    const marketplacePath = path.join(root, '.agents', 'plugins', 'marketplace.json');
+    const marketplace = await fs.readJson(marketplacePath);
+    marketplace.plugins[0].description = 'tampered';
+    await fs.writeJson(marketplacePath, marketplace);
+
+    await expect(catalogPathProviderInternal.resolve({
+      id: 'tampered-path', type: 'path', primary: true, path: root,
+    }, {
+      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
+    })).rejects.toThrow(/Codex marketplace metadata or plugin inventory/u);
+  });
+
+  it('rejects a path source with a tampered platform manifest after digest recomputation', async () => {
+    const root = fixturePath('tampered-path-platform-manifest');
+    await createCatalogSnapshotFixture(root);
+    const pluginRoot = path.join(root, 'plugins', 'demo');
+    const platformManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+    const platformManifest = await fs.readJson(platformManifestPath);
+    platformManifest.version = '9.9.9';
+    await fs.writeJson(platformManifestPath, platformManifest);
+    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+    const catalogManifestPath = path.join(root, 'catalog-manifest.json');
+    const catalogManifest = await fs.readJson(catalogManifestPath);
+    catalogManifest.entries = [await createCatalogManifestV4Entry(plugin, pluginRoot)];
+    await fs.writeJson(catalogManifestPath, catalogManifest);
+
+    await expect(catalogPathProviderInternal.resolve({
+      id: 'tampered-platform', type: 'path', primary: true, path: root,
+    }, {
+      cliVersion: '99.0.0',
+      freshnessPolicy: 'forceRemote',
+      env: getCurrentSourceTestIsolation().env,
+    })).rejects.toThrow(/codex platform manifest projection/u);
+  });
+
+  it('rejects a Git source with a tampered Claude marketplace projection', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('tampered-git-source');
+    const remoteRoot = fixturePath('tampered-git-remote.git');
+    await createCatalogSnapshotFixture(sourceRoot);
+    for (const marketplacePath of [
+      path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'),
+      path.join(sourceRoot, '.claude-plugin', 'marketplace.json'),
+    ]) {
+      const marketplace = await fs.readJson(marketplacePath);
+      marketplace.owner = { name: 'Tampered Owner', url: 'https://example.invalid/tampered' };
+      marketplace.interface = { displayName: 'Tampered Marketplace' };
+      await fs.writeJson(marketplacePath, marketplace);
+    }
+    await execFileAsync('git', ['init'], { cwd: sourceRoot });
+    await execFileAsync('git', ['add', '.'], { cwd: sourceRoot });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-m', 'tampered snapshot',
+    ], { cwd: sourceRoot });
+    await execFileAsync('git', ['init', '--bare', remoteRoot]);
+    await execFileAsync('git', ['remote', 'add', 'origin', remoteRoot], { cwd: sourceRoot });
+    await execFileAsync('git', ['push', 'origin', 'HEAD:refs/heads/catalog/latest'], { cwd: sourceRoot });
+
+    await expect(catalogGitProviderInternal.resolve({
+      id: 'tampered-git', type: 'git', primary: true, url: remoteRoot,
+      refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+    }, {
+      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
+    })).rejects.toThrow(/marketplace metadata or plugin inventory/u);
+  });
+
   it('isolates one source failure and preserves the other source result', async () => {
     const root = fixturePath('resolver-good');
     await createCatalogSnapshotFixture(root);

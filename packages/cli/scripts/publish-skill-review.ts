@@ -436,7 +436,7 @@ async function validateReviewResult(
   }
 }
 
-async function validateAwReviewSummary(
+export async function validateAwReviewSummary(
   repoRoot: string,
   pluginRoot: string,
   valuePath: string,

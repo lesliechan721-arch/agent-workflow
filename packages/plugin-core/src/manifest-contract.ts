@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import fs from 'fs-extra';
 import {
@@ -8,6 +9,7 @@ import {
 } from './manifest.js';
 
 import type {
+  CatalogMarketplaceIdentity,
   AgentDefinition,
   ArtifactState,
   ArtifactTarget,
@@ -51,6 +53,7 @@ import type {
 import { readJsonFile } from './read-json.js';
 import { parsePermissionCommand } from './permission-command.js';
 import { applyFileRules } from './file-rules.js';
+import { resolvePlatformEntries } from './platform-entries.js';
 import {
   validatePortableSkillDirectoriesRoot,
   validatePortableSkillName,
@@ -79,7 +82,7 @@ import {
   resolveSlashCommands,
 } from './slash-commands.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
-import { validateRuntimeExportSource } from './runtime-export-source.js';
+import { assertPluginInputTree, validateRuntimeExportSource } from './runtime-export-source.js';
 import {
   formatMarketplaceProductsForError,
   normalizeMarketplaceProductToken,
@@ -245,6 +248,19 @@ function ensureString(value: unknown, fieldName: string): string {
 
 export function assertStrictSemVer(value: unknown, fieldPath: string): string {
   return parseStrictSemVer(value, fieldPath).raw;
+}
+
+export function assertCatalogVersion(value: unknown, fieldPath: string): string {
+  const parsed = parseStrictSemVer(value, fieldPath);
+  const isStable = parsed.prerelease.length === 0 && parsed.build.length === 0;
+  const isBeta = parsed.prerelease.length === 2
+    && parsed.prerelease[0] === 'beta'
+    && /^[1-9]\d*$/u.test(parsed.prerelease[1] ?? '')
+    && parsed.build.length === 0;
+  if (!isStable && !isBeta) {
+    throw new Error(`Invalid ${fieldPath}: expected a stable SemVer or an exact x.y.z-beta.N version.`);
+  }
+  return parsed.raw;
 }
 
 export function tryParseStrictSemVer(value: unknown): StrictSemVer | null {
@@ -641,7 +657,7 @@ export function ensurePluginName(value: unknown, fieldName: string): string {
   return name;
 }
 
-export function normalizePluginRelativePath(
+function normalizePluginChildPath(
   pluginRoot: string,
   value: string,
   fieldName: string,
@@ -666,6 +682,20 @@ export function normalizePluginRelativePath(
   }
 
   return normalized.startsWith('./') ? normalized : `./${normalized}`;
+}
+
+export function normalizePluginRelativePath(
+  pluginRoot: string,
+  value: string,
+  fieldName: string,
+): string {
+  const normalized = normalizePluginChildPath(pluginRoot, value, fieldName);
+  const ignoredSegment = normalized.split(/[\\/]/u).find((segment) =>
+    segment === '.git' || segment === 'node_modules');
+  if (ignoredSegment) {
+    throw new Error(`Invalid ${fieldName}: source paths must not enter ${ignoredSegment}.`);
+  }
+  return normalized;
 }
 
 function normalizePathArray(
@@ -1979,7 +2009,7 @@ function normalizeArtifactRuntimeImports(
         'path', 'digest', 'providerPluginId', 'providerVersion', 'source',
       ]);
       resolved = {
-        path: normalizePluginRelativePath('', ensureString(resolvedInput.path, `${entryField}.resolved.path`), `${entryField}.resolved.path`),
+        path: normalizePluginChildPath('', ensureString(resolvedInput.path, `${entryField}.resolved.path`), `${entryField}.resolved.path`),
         digest: ensureDigestString(resolvedInput.digest, `${entryField}.resolved.digest`),
         providerPluginId: ensureString(resolvedInput.providerPluginId, `${entryField}.resolved.providerPluginId`),
         providerVersion: assertStrictSemVer(resolvedInput.providerVersion, `${entryField}.resolved.providerVersion`),
@@ -2711,12 +2741,26 @@ export function validateMarketplaceSourceMeta(rawValue: unknown): MarketplaceSou
     catalog: {
       version: catalogInput === null
         ? '0.1.0'
-        : assertStrictSemVer(
+        : assertCatalogVersion(
             catalogInput.version,
             'marketplace source metadata.catalog.version',
           ),
     },
   };
+}
+
+export function normalizeCatalogMarketplaceIdentity(
+  rawValue: unknown,
+  fieldName = 'catalog manifest marketplace',
+): CatalogMarketplaceIdentity {
+  const input = assertObject(rawValue, fieldName);
+  assertAllowedKeys(input, fieldName, ['owner', 'interface']);
+  const normalized = validateMarketplaceSourceMeta({
+    owner: input.owner,
+    interface: input.interface,
+    catalog: { version: '0.1.0' },
+  });
+  return { owner: normalized.owner, interface: normalized.interface };
 }
 
 export async function readMarketplaceSourceMeta(repoRoot: string): Promise<MarketplaceSourceMeta> {
@@ -3221,6 +3265,7 @@ export async function validateSourcePluginManifest(
   rawManifest: unknown,
   options: Pick<ValidatePluginManifestOptions, 'reservedImports'> = {},
 ): Promise<NormalizedPluginManifest> {
+  await assertPluginInputTree(pluginRoot);
   const manifest = validatePluginManifest(pluginRoot, rawManifest, {
     compatibilityMode: 'defaulted',
     defaultMinVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
@@ -3268,6 +3313,7 @@ export async function readPluginManifest(
   pluginRoot: string,
   options: ReadPluginManifestOptions = {},
 ): Promise<PluginMeta> {
+  await assertPluginInputTree(pluginRoot);
   const manifestPath = path.join(pluginRoot, SOURCE_MANIFEST_PATH);
   const rawManifest = await readJsonFile<unknown>(manifestPath);
   const mode = options.mode ?? 'source';
@@ -3475,7 +3521,7 @@ export function normalizeCatalogManifestBase(
   input: Record<string, unknown>,
   fieldName: string,
 ): NormalizedCatalogManifestBase {
-  const catalogVersion = assertStrictSemVer(input.catalogVersion, `${fieldName}.catalogVersion`);
+  const catalogVersion = assertCatalogVersion(input.catalogVersion, `${fieldName}.catalogVersion`);
   const channel = assertCatalogChannel(input.channel, `${fieldName}.channel`);
   assertCatalogChannelVersionContract({
     channel,
@@ -3597,4 +3643,149 @@ export function createPlatformManifestBase(plugin: PluginMeta): PlatformPluginMa
     }),
     interface: plugin.manifest.interface,
   };
+}
+
+function platformBundlePath(value: string, platform: PlatformName): string {
+  return `./${platform}/${stripDotSlash(value)}`;
+}
+
+function generatedPlatformEntryName(pluginName: string, itemName: string): string {
+  const slugify = (value: string): string => value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+  return `aw-${slugify(pluginName)}-${slugify(itemName)}`;
+}
+
+function renderExpectedPlatformHooks(
+  plugin: PluginMeta,
+  platform: PlatformName,
+): PlatformPluginManifest['hooks'] {
+  const groups = resolvePlatformHookDefinitions(plugin.manifest, platform)
+    .map((definition) => renderHookDefinitionGroup(definition, platform))
+    .sort((left, right) => JSON.stringify(normalizeRenderedHookGroupIdentity({
+      platform,
+      event: left.event,
+      matcher: left.matcher,
+      command: left.hooks[0]!.command,
+    })).localeCompare(JSON.stringify(normalizeRenderedHookGroupIdentity({
+      platform,
+      event: right.event,
+      matcher: right.matcher,
+      command: right.hooks[0]!.command,
+    }))));
+  if (groups.length === 0) return undefined;
+  if (platform === 'claude') return './claude/hooks/hooks.json';
+  const hooks: NonNullable<Extract<PlatformPluginManifest['hooks'], object>>['hooks'] = {};
+  for (const group of groups) {
+    hooks[group.event] ??= [];
+    hooks[group.event]!.push({
+      ...(group.matcher === undefined ? {} : { matcher: group.matcher }),
+      hooks: group.hooks,
+    });
+  }
+  return { hooks };
+}
+
+async function isProjectedDirectory(plugin: PluginMeta, relativePath: string): Promise<boolean> {
+  const stats = await fs.lstat(path.join(plugin.rootDir, stripDotSlash(relativePath))).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    },
+  );
+  if (!stats) return false;
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error(`Invalid platform manifest projection path: expected a regular directory at ${relativePath}.`);
+  }
+  return true;
+}
+
+async function assertPlatformProjectionPath(plugin: PluginMeta, relativePath: string): Promise<void> {
+  if (!relativePath.startsWith('./')) {
+    throw new Error(`Invalid platform manifest projection path ${JSON.stringify(relativePath)}.`);
+  }
+  const normalized = path.posix.normalize(relativePath);
+  if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
+    throw new Error(`Invalid platform manifest projection path ${JSON.stringify(relativePath)}.`);
+  }
+  let current = plugin.rootDir;
+  for (const segment of stripDotSlash(normalized).split('/')) {
+    current = path.join(current, segment);
+    const stats = await fs.lstat(current).catch(() => undefined);
+    if (!stats) throw new Error(`Invalid platform manifest projection: missing ${relativePath}.`);
+    if (stats.isSymbolicLink()) {
+      throw new Error(`Invalid platform manifest projection: symbolic links are not supported (${relativePath}).`);
+    }
+  }
+}
+
+export async function validatePlatformManifestProjection(
+  plugin: PluginMeta,
+  platform: PlatformName,
+  rawManifest: unknown,
+): Promise<PlatformPluginManifest> {
+  const expected: PlatformPluginManifest = createPlatformManifestBase(plugin);
+  const projectedPaths: string[] = [];
+  if (plugin.manifest.skills) {
+    const projected = platformBundlePath(plugin.manifest.skills, platform);
+    if (await isProjectedDirectory(plugin, projected)) {
+      expected.skills = projected;
+      projectedPaths.push(projected);
+    }
+  }
+  if (plugin.manifest.mcpServers) {
+    expected.mcpServers = platformBundlePath(plugin.manifest.mcpServers, platform);
+    projectedPaths.push(expected.mcpServers);
+  }
+  if (platform === 'codex' && plugin.manifest.apps) {
+    expected.apps = platformBundlePath(plugin.manifest.apps, platform);
+    projectedPaths.push(expected.apps);
+  }
+  expected.hooks = renderExpectedPlatformHooks(plugin, platform);
+  if (typeof expected.hooks === 'string') projectedPaths.push(expected.hooks);
+
+  if (platform === 'claude') {
+    const overrides = plugin.manifest.buildConfig?.manifestOverrides?.claude;
+    if (overrides?.outputStyles) {
+      expected.outputStyles = platformBundlePath(overrides.outputStyles, platform);
+      projectedPaths.push(expected.outputStyles);
+    }
+    if (overrides?.lspServers !== undefined) {
+      const projectLspPath = (value: string): string => {
+        const projected = platformBundlePath(value, platform);
+        projectedPaths.push(projected);
+        return projected;
+      };
+      expected.lspServers = typeof overrides.lspServers === 'string'
+        ? projectLspPath(overrides.lspServers)
+        : Array.isArray(overrides.lspServers)
+          ? overrides.lspServers.map((entry) => typeof entry === 'string' ? projectLspPath(entry) : entry)
+          : overrides.lspServers;
+    }
+    expected.userConfig = overrides?.userConfig;
+    expected.channels = overrides?.channels;
+    const agents = resolvePlatformEntries(plugin.manifest.extensions?.agents, 'claude');
+    if (agents.length > 0) {
+      expected.agents = agents.map((agent) =>
+        `./claude/agents/${generatedPlatformEntryName(plugin.manifest.name, agent.name)}.md`);
+      projectedPaths.push(...expected.agents);
+    }
+    if (plugin.manifest.slashCommands) {
+      expected.commands = './claude/commands';
+      projectedPaths.push(expected.commands);
+    }
+  } else if (plugin.manifest.slashCommands) {
+    expected.skills ??= './codex/skills';
+    if (!projectedPaths.includes(expected.skills)) projectedPaths.push(expected.skills);
+  }
+
+  const canonicalExpected = JSON.parse(JSON.stringify(expected)) as PlatformPluginManifest;
+  if (!isDeepStrictEqual(rawManifest, canonicalExpected)) {
+    throw new Error(`Invalid ${platform} platform manifest projection.`);
+  }
+  await Promise.all([...new Set(projectedPaths)].map((relativePath) =>
+    assertPlatformProjectionPath(plugin, relativePath)));
+  return canonicalExpected;
 }

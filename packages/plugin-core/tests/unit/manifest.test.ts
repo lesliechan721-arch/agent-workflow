@@ -71,4 +71,38 @@ describe('plugin manifest v1 structure', () => {
       env: 'AW_PLUGIN_IMPORT_REGISTRY',
     }])
   })
+
+  it.each([
+    ['MCP file', { mcpServers: './nested/.git/mcp.json' }],
+    ['App file', {
+      apps: './nested/node_modules/app.json',
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+          products: ['CODEX'],
+        },
+      },
+    }],
+    ['portable Skill collection', {
+      mcpServers: './mcp.json',
+      compatibility: { aw: { minVersion: '0.1.0' } },
+      distributions: { agentSkills: { skills: './portable/.git/skills' } },
+    }],
+    ['plugin script', {
+      scripts: { node: { build: { runner: 'node', path: './tools/node_modules/build.mjs' } } },
+    }],
+    ['runtime export', {
+      buildConfig: {
+        runtimeExports: [{ name: 'shared-runtime', source: './runtime/.git/shared.mjs' }],
+      },
+    }],
+  ])('rejects ignored source segments in a %s declaration', (_label, override) => {
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 1,
+      ...override,
+    }))).toThrow(/source paths must not enter (?:\.git|node_modules)/u)
+  })
 })

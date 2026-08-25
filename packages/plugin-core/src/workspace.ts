@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import fs from 'fs-extra';
 
 import {
+  assertCatalogVersion,
   assertStrictSemVer,
   compareStrictSemVer,
   MARKETPLACE_SOURCE_PATH,
@@ -12,10 +13,12 @@ import {
   createMarketplaceManifest,
   createMarketplaceManifestEntry,
   normalizeCatalogManifestBase,
+  normalizeCatalogMarketplaceIdentity,
   normalizeCatalogManifestEntries,
   normalizeManifestDigestInput,
   readMarketplaceSourceMeta,
   readPluginManifest,
+  validatePlatformManifestProjection,
 } from './manifest-contract.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
 import {
@@ -156,7 +159,7 @@ function workspaceMetadata(options: WorkspaceCatalogInitOptions, workspaceRoot: 
       displayName: options.displayName?.trim() || workspaceName,
     },
     catalog: {
-      version: assertStrictSemVer(
+      version: assertCatalogVersion(
         options.catalogVersion ?? DEFAULT_WORKSPACE_CATALOG_VERSION,
         'catalog version',
       ),
@@ -190,13 +193,47 @@ function workspaceIdentity(workspaceRoot: string): string {
   return sha256(`aw-plugin-workspace-v1\0${path.resolve(workspaceRoot)}`);
 }
 
-function workspaceScaffoldMarker(workspaceRoot: string, metadata: MarketplaceSourceMeta) {
+function workspaceScaffoldMarker(metadata: MarketplaceSourceMeta) {
   return {
     schemaVersion: 1,
     kind: 'aw-plugin-workspace',
-    workspaceIdentity: workspaceIdentity(workspaceRoot),
+    workspaceIdentity: sha256(crypto.randomUUID()),
     sourceIdentity: sha256(stableStringify(metadata)),
   };
+}
+
+function validateWorkspaceScaffoldMarker(
+  value: unknown,
+): { workspaceIdentity: string } {
+  const marker = value as Record<string, unknown>;
+  const digestPattern = /^sha256:[0-9a-f]{64}$/u;
+  if (
+    !marker
+    || typeof marker !== 'object'
+    || Array.isArray(marker)
+    || !isDeepStrictEqual(Object.keys(marker).sort(), [
+      'kind', 'schemaVersion', 'sourceIdentity', 'workspaceIdentity',
+    ])
+    || marker.schemaVersion !== 1
+    || marker.kind !== 'aw-plugin-workspace'
+    || typeof marker.workspaceIdentity !== 'string'
+    || !digestPattern.test(marker.workspaceIdentity)
+    || typeof marker.sourceIdentity !== 'string'
+    || !digestPattern.test(marker.sourceIdentity)
+  ) {
+    throw new Error('Invalid workspace scaffold marker.');
+  }
+  return { workspaceIdentity: marker.workspaceIdentity };
+}
+
+async function readWorkspaceOwnershipIdentity(
+  workspaceRoot: string,
+): Promise<string> {
+  const markerPath = path.join(workspaceRoot, WORKSPACE_MARKER_FILENAME);
+  if (!await fs.pathExists(markerPath)) return workspaceIdentity(workspaceRoot);
+  return validateWorkspaceScaffoldMarker(
+    await readRegularJson(markerPath, 'Workspace marker'),
+  ).workspaceIdentity;
 }
 
 async function readRegularJson(filePath: string, label: string): Promise<unknown> {
@@ -239,10 +276,12 @@ export async function initializePluginWorkspace(
       throw new Error(`Refusing to replace different workspace catalog metadata: ${metadataPath}`);
     }
   }
-  const expectedMarker = workspaceScaffoldMarker(workspaceRoot, metadata);
+  const expectedMarker = workspaceScaffoldMarker(metadata);
   if (existingMarker) {
     const currentMarker = await readRegularJson(markerPath, 'Workspace marker');
-    if (!isDeepStrictEqual(currentMarker, expectedMarker)) {
+    try {
+      validateWorkspaceScaffoldMarker(currentMarker);
+    } catch {
       throw new Error(`Refusing to replace a workspace scaffold with a different identity: ${workspaceRoot}`);
     }
   }
@@ -321,14 +360,14 @@ export async function setWorkspaceCatalogVersion(
   const current = await readPluginWorkspace(workspaceRoot, options);
   const metadata = {
     ...current.metadata,
-    catalog: { version: assertStrictSemVer(version, 'catalog version') },
+    catalog: { version: assertCatalogVersion(version, 'catalog version') },
   };
   await writeJsonAtomic(current.metadataPath, metadata);
   return metadata;
 }
 
 export function deriveCatalogChannel(version: string): CatalogChannel {
-  const parsed = assertStrictSemVer(version, 'catalog version');
+  const parsed = assertCatalogVersion(version, 'catalog version');
   return parsed.includes('-') ? 'beta' : 'latest';
 }
 
@@ -410,15 +449,14 @@ function sha256(value: string | Buffer): string {
 }
 
 function publishedContentDigest(
-  manifest: Pick<CatalogManifestV4, 'schemaVersion' | 'compatibility' | 'entries'>,
-  marketplace: MarketplaceManifest,
+  manifest: Pick<CatalogManifestV4, 'schemaVersion' | 'compatibility' | 'marketplace' | 'entries'>,
 ): string {
   return sha256(stableStringify({
     schemaIdentity: { schemaVersion: manifest.schemaVersion },
     marketplaceMetadata: {
-      name: marketplace.name,
-      owner: marketplace.owner,
-      interface: marketplace.interface,
+      name: 'aw',
+      owner: manifest.marketplace.owner,
+      interface: manifest.marketplace.interface,
     },
     compatibility: manifest.compatibility,
     plugins: manifest.entries.map((entry) => ({
@@ -440,14 +478,14 @@ function sourceIdentity(metadata: MarketplaceSourceMeta, plugins: readonly Plugi
 
 function generatedOutputMarker(options: {
   kind: 'catalog' | 'plugin';
-  workspaceRoot: string;
+  workspaceIdentity: string;
   sourceIdentity: string;
   sourceName?: string;
 }) {
   return {
     schemaVersion: 1,
     kind: options.kind,
-    workspaceIdentity: workspaceIdentity(options.workspaceRoot),
+    workspaceIdentity: options.workspaceIdentity,
     sourceIdentity: options.sourceIdentity,
     ...(options.sourceName ? { sourceName: options.sourceName } : {}),
   };
@@ -560,7 +598,11 @@ export async function buildWorkspaceCatalog(options: {
   const channel = deriveCatalogChannel(catalogVersion);
   const pluginNames = plugins.map((plugin) => plugin.manifest.name).sort();
   const identity = sourceIdentity(workspace.metadata, plugins);
-  const marker = generatedOutputMarker({ kind: 'catalog', workspaceRoot: workspace.workspaceRoot, sourceIdentity: identity });
+  const marker = generatedOutputMarker({
+    kind: 'catalog',
+    workspaceIdentity: await readWorkspaceOwnershipIdentity(workspace.workspaceRoot),
+    sourceIdentity: identity,
+  });
   await replaceGeneratedOutput({
     outputRoot: resolved.outputRoot,
     force: options.force === true,
@@ -607,6 +649,10 @@ export async function buildWorkspaceCatalog(options: {
         catalogVersion,
         channel,
         compatibility: { aw: { minVersion } },
+        marketplace: {
+          owner: workspace.metadata.owner,
+          interface: workspace.metadata.interface,
+        },
         release: { state: 'development' },
         entries,
       };
@@ -651,12 +697,8 @@ export async function validatePublishedCatalogSnapshot(snapshotDirectory: string
   if (validation.manifest.release.state !== 'published') {
     throw new Error('Published Catalog snapshot must have release.state published.');
   }
-  const ledgerPath = path.join(validation.rootDir, PLUGIN_RELEASE_LEDGER_FILENAME);
-  const ledger = validatePluginReleaseLedgerAgainstManifest(
-    await readRegularJson(ledgerPath, 'Plugin release ledger'),
-    validation.manifest,
-  );
-  return { ...validation, ledger };
+  if (!validation.ledger) throw new Error('Published Catalog snapshot must include a plugin release ledger.');
+  return { ...validation, ledger: validation.ledger };
 }
 
 export async function preparePublishedWorkspaceCatalog(options: {
@@ -728,14 +770,11 @@ export async function preparePublishedWorkspaceCatalog(options: {
       bundledPlugins.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name))
         .map((plugin) => expectedCatalogEntry(plugin, plugin.rootDir)),
     );
-    const marketplace = await fs.readJson(
-      path.join(temporaryRoot, '.agents', 'plugins', 'marketplace.json'),
-    ) as MarketplaceManifest;
     const manifestWithoutRelease = {
       ...development.manifest,
       entries,
     };
-    const contentDigest = publishedContentDigest(manifestWithoutRelease, marketplace);
+    const contentDigest = publishedContentDigest(manifestWithoutRelease);
     const manifest: CatalogManifestV4 = {
       ...manifestWithoutRelease,
       release: {
@@ -814,7 +853,8 @@ export async function buildWorkspacePlugin(options: {
 }): Promise<{ outputRoot: string; pluginName: string; dependencies: string[]; digest: string }> {
   const workspace = await readPluginWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
   assertDependencyGraph(workspace.plugins);
-  const pluginRoot = path.resolve(workspace.workspaceRoot, options.pluginDirectory);
+  const requestedPluginRoot = path.resolve(workspace.workspaceRoot, options.pluginDirectory);
+  const pluginRoot = await fs.realpath(requestedPluginRoot);
   if (!isInside(workspace.workspaceRoot, pluginRoot)) throw new Error('Plugin directory must stay inside the workspace.');
   const plugin = workspace.plugins.find((entry) => entry.rootDir === pluginRoot);
   if (!plugin) {
@@ -824,7 +864,7 @@ export async function buildWorkspacePlugin(options: {
   const identity = sha256(normalizeManifestDigestInput(plugin.manifest));
   const marker = generatedOutputMarker({
     kind: 'plugin',
-    workspaceRoot: workspace.workspaceRoot,
+    workspaceIdentity: await readWorkspaceOwnershipIdentity(workspace.workspaceRoot),
     sourceIdentity: identity,
     sourceName: plugin.manifest.name,
   });
@@ -870,7 +910,22 @@ async function assertGeneratedOutput(root: string, expected: Record<string, unkn
     throw new Error(`Refusing to replace foreign plugin output: ${root}`);
   }
   const marker = await fs.readJson(markerPath) as Record<string, unknown>;
-  if (!isDeepStrictEqual(marker, expected)) {
+  const expectedKeys = expected.sourceName === undefined
+    ? ['kind', 'schemaVersion', 'sourceIdentity', 'workspaceIdentity']
+    : ['kind', 'schemaVersion', 'sourceIdentity', 'sourceName', 'workspaceIdentity'];
+  const digestPattern = /^sha256:[0-9a-f]{64}$/u;
+  if (
+    !isDeepStrictEqual(Object.keys(marker).sort(), expectedKeys)
+    || marker.schemaVersion !== 1
+    || typeof marker.workspaceIdentity !== 'string'
+    || !digestPattern.test(marker.workspaceIdentity)
+    || typeof marker.sourceIdentity !== 'string'
+    || !digestPattern.test(marker.sourceIdentity)
+  ) {
+    throw new Error(`Refusing to replace foreign plugin output: ${root}`);
+  }
+  const ownershipFields = ['schemaVersion', 'kind', 'workspaceIdentity', 'sourceName'] as const;
+  if (ownershipFields.some((field) => marker[field] !== expected[field])) {
     throw new Error(`Refusing to replace plugin output with a different identity: ${root}`);
   }
 }
@@ -881,6 +936,7 @@ async function digestDirectory(root: string): Promise<string> {
     for (const name of (await fs.readdir(directory)).sort()) {
       const filePath = path.join(directory, name);
       const relative = path.relative(root, filePath).split(path.sep).join('/');
+      if (relative === GENERATED_OUTPUT_MARKER_FILENAME) continue;
       const stat = await fs.lstat(filePath);
       if (stat.isSymbolicLink()) throw new Error(`Generated output contains a symbolic link: ${relative}`);
       if (stat.isDirectory()) await walk(filePath);
@@ -895,6 +951,7 @@ async function digestDirectory(root: string): Promise<string> {
 export async function validateCatalogSnapshot(snapshotDirectory: string): Promise<{
   rootDir: string;
   manifest: CatalogManifestV4;
+  ledger?: PluginReleaseLedger;
   snapshotDigest: string;
 }> {
   const rootDir = await assertDirectoryWithoutSymlinks(snapshotDirectory, 'Catalog snapshot');
@@ -949,10 +1006,13 @@ export async function validateCatalogSnapshot(snapshotDirectory: string): Promis
   await readRegularJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), 'Claude marketplace');
   const snapshotDigest = await digestDirectory(rootDir);
   const raw = await fs.readJson(path.join(rootDir, CATALOG_MANIFEST_FILENAME)) as Record<string, unknown>;
-  const allowedManifestKeys = new Set(['schemaVersion', 'catalogVersion', 'channel', 'compatibility', 'release', 'entries']);
+  const allowedManifestKeys = new Set([
+    'schemaVersion', 'catalogVersion', 'channel', 'compatibility', 'marketplace', 'release', 'entries',
+  ]);
   for (const key of Object.keys(raw)) if (!allowedManifestKeys.has(key)) throw new Error(`Invalid catalog manifest: unknown field ${JSON.stringify(key)}.`);
   if (raw.schemaVersion !== 4) throw new Error('Invalid catalog manifest schemaVersion: expected 4.');
   const base = normalizeCatalogManifestBase(raw, 'catalog manifest v4');
+  const marketplaceIdentity = normalizeCatalogMarketplaceIdentity(raw.marketplace);
   if (!Array.isArray(raw.entries)) throw new Error('Invalid catalog manifest entries: expected an array.');
   const rawEntries = raw.entries as Array<Record<string, unknown>>;
   const contentDigests = rawEntries.map((entry, index) => {
@@ -986,7 +1046,10 @@ export async function validateCatalogSnapshot(snapshotDirectory: string): Promis
       if (exists !== resolveSupportedPlatforms(plugin.manifest).has(platform)) {
         throw new Error(`Catalog plugin ${JSON.stringify(name)} has an inconsistent ${platform} bundle projection.`);
       }
-      if (exists) await readRegularJson(platformManifest, `${platform} plugin manifest`);
+      if (exists) {
+        const rawPlatformManifest = await readRegularJson(platformManifest, `${platform} plugin manifest`);
+        await validatePlatformManifestProjection(plugin, platform, rawPlatformManifest);
+      }
     }
     const expected = await expectedCatalogEntry(plugin, pluginRoot);
     for (const field of Object.keys(expected) as Array<keyof typeof expected>) {
@@ -1004,8 +1067,8 @@ export async function validateCatalogSnapshot(snapshotDirectory: string): Promis
     path.join(rootDir, '.claude-plugin', 'marketplace.json'),
   ) as MarketplaceManifest;
   const marketplaceMetadata = {
-    owner: agentsMarketplace.owner,
-    interface: agentsMarketplace.interface,
+    owner: marketplaceIdentity.owner,
+    interface: marketplaceIdentity.interface,
     catalog: { version: base.catalogVersion },
   };
   const expectedAgents = createMarketplaceManifest(
@@ -1037,28 +1100,31 @@ export async function validateCatalogSnapshot(snapshotDirectory: string): Promis
     catalogVersion: base.catalogVersion,
     channel: base.channel,
     compatibility: base.compatibility,
+    marketplace: marketplaceIdentity,
     release,
     entries: normalizedEntries,
   };
   if (release.state === 'published') {
-    const marketplace = agentsMarketplace as unknown as Record<string, unknown>;
-    const contentDigest = sha256(stableStringify({
-      schemaIdentity: { schemaVersion: manifest.schemaVersion },
-      marketplaceMetadata: {
-        name: marketplace.name,
-        owner: marketplace.owner,
-        interface: marketplace.interface,
-      },
-      compatibility: manifest.compatibility,
-      plugins: manifest.entries.map((entry) => ({
-        name: entry.name,
-        targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
-        contentDigest: entry.contentDigest,
-      })).sort((left, right) => left.name.localeCompare(right.name)),
-    }));
+    const contentDigest = publishedContentDigest(manifest);
     if (release.contentDigest !== contentDigest) {
       throw new Error('Published catalog release contentDigest does not match the snapshot.');
     }
   }
-  return { rootDir, manifest, snapshotDigest };
+  const hasLedger = entries.includes(PLUGIN_RELEASE_LEDGER_FILENAME);
+  if (release.state === 'published' && !hasLedger) {
+    throw new Error('Published Catalog snapshot must include plugin-release-ledger.json.');
+  }
+  if (release.state === 'development' && hasLedger) {
+    throw new Error('Development Catalog snapshot must not include plugin-release-ledger.json.');
+  }
+  const ledger = hasLedger
+    ? validatePluginReleaseLedgerAgainstManifest(
+        await readRegularJson(
+          path.join(rootDir, PLUGIN_RELEASE_LEDGER_FILENAME),
+          'Plugin release ledger',
+        ),
+        manifest,
+      )
+    : undefined;
+  return { rootDir, manifest, ...(ledger ? { ledger } : {}), snapshotDigest };
 }

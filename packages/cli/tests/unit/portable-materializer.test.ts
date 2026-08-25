@@ -85,6 +85,10 @@ describe('portable materializer', () => {
     const { createCatalogManifestV4, createCatalogManifestV4Entry } = await import('../../src/utils/catalog-manifest-v4.js');
     await fs.writeJson(path.join(snapshotRoot, 'catalog-manifest.json'), createCatalogManifestV4({
       catalogVersion: '1.0.0', channel: 'latest', compatibility: { aw: { minVersion: '0.1.0' } },
+      marketplace: {
+        owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+        interface: { displayName: 'Fixture Marketplace' },
+      },
       release: { state: 'development' },
       entries: [await createCatalogManifestV4Entry(plugin, plugin.rootDir)],
     }));

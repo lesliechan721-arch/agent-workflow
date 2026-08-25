@@ -80,6 +80,26 @@ test('AW author references keep public commands aligned to workspace-root author
   assert.doesNotMatch(reference, /--repo-root|pnpm plugin:test|pnpm build/u);
 });
 
+test('AW author manifest reference exposes the Core installation policy', async () => {
+  // Static contract exception: an installed author agent can otherwise generate a manifest value that Core rejects; behavior test is not suitable because this plugin publishes guidance and Core owns runtime validation.
+  const reference = await readFile(
+    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'plugin-manifest-spec.md'),
+    'utf8',
+  );
+  assert.match(reference, /`policy\.installation`[^\n]+只允许 `"AVAILABLE"`/u);
+  assert.doesNotMatch(reference, /NOT_AVAILABLE|INSTALLED_BY_DEFAULT/u);
+});
+
+test('AW author final references use public Eval and Catalog version contracts', async () => {
+  // Static contract exception: these strings are the final installed agent instructions on both platform bundles.
+  const root = path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references');
+  const manifestReference = await readFile(path.join(root, 'plugin-manifest-spec.md'), 'utf8');
+  const validationReference = await readFile(path.join(root, 'aw-validation-and-version.md'), 'utf8');
+  assert.doesNotMatch(manifestReference, /pnpm plugin:eval/u);
+  assert.match(manifestReference, /只允许稳定 `x\.y\.z` 或精确 `x\.y\.z-beta\.N`/u);
+  assert.match(validationReference, /只允许稳定 `x\.y\.z` 或精确 `x\.y\.z-beta\.N`/u);
+});
+
 test('AW config reference keeps private values out of presets', async () => {
   // Static contract exception: installed author instructions must retain the no-secret preset rule; behavior test is not suitable because this plugin supplies author guidance and does not execute config writes itself.
   const reference = await readFile(
@@ -87,4 +107,32 @@ test('AW config reference keeps private values out of presets', async () => {
     'utf8',
   );
   assert.match(reference, /preset 不得包含 sensitive、`file` 或 `directory` 字段/u);
+});
+
+test('AW reviewer final references contain no monorepo publication flow', async () => {
+  const root = path.join(runtimeRoot, 'skills', 'review-aw-plugin');
+  const contents = await Promise.all([
+    readFile(path.join(root, 'SKILL.md'), 'utf8'),
+    readFile(path.join(root, 'references', 'aw-report-publication.md'), 'utf8'),
+    readFile(path.join(root, 'references', 'aw-review-bundle.md'), 'utf8'),
+  ]);
+  for (const content of contents) {
+    assert.doesNotMatch(content, /pnpm review:publish|--repo-root|packages\/cli\/dist/u);
+  }
+  assert.match(contents[0], /--workspace-root <workspace-root>/u);
+  assert.match(contents.join('\n'), /PATH` 上已安装的 `aw`|上层兼容 Runner/u);
+  assert.match(contents[0], /失败时停止，不读取 manifest 派生的 collection/u);
+  assert.match(contents[0], /leaf inventory 为空/u);
+
+  const releaseChecker = await readFile(
+    path.join(root, 'scripts', 'check-aw-plugin-release.mjs'),
+    'utf8',
+  );
+  for (const override of [
+    'AW_PLUGIN_VALIDATOR_BIN',
+    'AW_SKILL_CHECK_BIN',
+    'AW_REVIEW_LITE_VALIDATOR',
+    'AW_EVAL_AUDIT_VALIDATOR',
+    'AW_EVAL_BUNDLE_VALIDATOR',
+  ]) assert.doesNotMatch(releaseChecker, new RegExp(`process\\.env\\.${override}`, 'u'));
 });

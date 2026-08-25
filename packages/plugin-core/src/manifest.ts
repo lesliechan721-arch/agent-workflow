@@ -6,7 +6,7 @@ import type { PluginManifestSourceV1 } from './generated/plugin-manifest-v1.js'
 export type { PluginManifestSourceV1 } from './generated/plugin-manifest-v1.js'
 
 export const PLUGIN_MANIFEST_SCHEMA_VERSION = 1 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 6
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 7
 
 const ajv = new Ajv2020({
   allErrors: true,

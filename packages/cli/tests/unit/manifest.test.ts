@@ -1282,7 +1282,7 @@ describe('manifest utils', () => {
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'expected a directory at "./skills/codex-explore/source-link"',
+      'Invalid plugin input tree: symbolic links are not supported (skills/codex-explore/source-link).',
     );
   });
 

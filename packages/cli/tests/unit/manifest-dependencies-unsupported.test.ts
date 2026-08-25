@@ -75,6 +75,10 @@ describe('plugin manifest dependencies contract', () => {
       catalogVersion: '1.0.0',
       channel: 'latest',
       compatibility: { aw: { minVersion: '1.0.0' } },
+      marketplace: {
+        owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+        interface: { displayName: 'Fixture Marketplace' },
+      },
       release: { state: 'development' },
       entries: [{
         name: 'parent',

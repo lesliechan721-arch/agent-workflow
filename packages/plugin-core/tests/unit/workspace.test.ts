@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,6 +19,20 @@ import {
 import { validateMarketplaceSourceMeta } from '../../src/manifest-contract.js'
 
 const temporaryRoots: string[] = []
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function sha256(value: unknown): string {
+  return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`
+}
 
 async function createWorkspace(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-core-workspace-'))
@@ -55,9 +70,9 @@ async function writeBundle(outputRoot: string, manifest: Record<string, unknown>
     await fs.writeJson(path.join(outputRoot, platform, '.mcp.json'), { mcpServers: {} })
     await fs.writeJson(path.join(outputRoot, `.${platform}-plugin`, 'plugin.json'), {
       name: manifest.name,
-      version: '0.1.0',
-      description: 'Atomic plugin.',
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      version: manifest.version,
+      description: manifest.description,
+      compatibility: manifest.compatibility,
       mcpServers: `./${platform}/.mcp.json`,
     })
   }
@@ -94,6 +109,26 @@ describe('AW plugin workspace v1', () => {
       metadata: { catalog: { version: '1.2.3-beta.1' } },
     })
   })
+
+  it.each(['1.2.3-rc.1', '1.2.3+build.1'])(
+    'rejects non-publishable Catalog version %s during init and version updates',
+    async (version) => {
+      const initRoot = await createWorkspace()
+      await expect(initializePluginWorkspace({ workspaceRoot: initRoot, catalogVersion: version }))
+        .rejects.toThrow(/stable SemVer or an exact x\.y\.z-beta\.N/u)
+      await expect(fs.pathExists(path.join(initRoot, 'plugins', 'marketplace-source.json')))
+        .resolves.toBe(false)
+
+      const versionRoot = await createWorkspace()
+      await initializePluginWorkspace({ workspaceRoot: versionRoot })
+      await expect(setWorkspaceCatalogVersion(versionRoot, version)).rejects.toThrow(
+        /stable SemVer or an exact x\.y\.z-beta\.N/u,
+      )
+      await expect(readPluginWorkspace(versionRoot)).resolves.toMatchObject({
+        metadata: { catalog: { version: '0.1.0' } },
+      })
+    },
+  )
 
   it('defaults legacy metadata but rejects invalid and unknown public fields', () => {
     const legacy = {
@@ -154,6 +189,64 @@ describe('AW plugin workspace v1', () => {
     await expect(fs.pathExists(path.join(first.outputRoot, 'partial.txt'))).resolves.toBe(false)
   })
 
+  it('force-rebuilds owned plugin and Catalog outputs after source and Catalog version changes', async () => {
+    const root = await createWorkspace()
+    await initializePluginWorkspace({ workspaceRoot: root })
+    const sourceManifest = await writeSourcePlugin(root)
+    const adapter = { build: ({ outputRoot }: { outputRoot: string }) => writeBundle(outputRoot, sourceManifest) }
+    const firstPlugin = await buildWorkspacePlugin({
+      workspaceRoot: root,
+      pluginDirectory: 'plugins/atomic-plugin',
+      adapter,
+    })
+    await buildWorkspaceCatalog({ workspaceRoot: root, adapter })
+
+    sourceManifest.description = 'Changed source plugin.'
+    await fs.writeJson(
+      path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
+      sourceManifest,
+    )
+    await setWorkspaceCatalogVersion(root, '0.2.0')
+    const rebuiltPlugin = await buildWorkspacePlugin({
+      workspaceRoot: root,
+      pluginDirectory: 'plugins/atomic-plugin',
+      force: true,
+      adapter,
+    })
+    const rebuiltCatalog = await buildWorkspaceCatalog({ workspaceRoot: root, force: true, adapter })
+
+    expect(rebuiltPlugin.outputRoot).toBe(firstPlugin.outputRoot)
+    await expect(fs.readJson(path.join(rebuiltPlugin.outputRoot, '.agents-plugin', 'plugin.json')))
+      .resolves.toMatchObject({ description: 'Changed source plugin.' })
+    await expect(validateCatalogSnapshot(rebuiltCatalog.outputRoot)).resolves.toMatchObject({
+      manifest: { catalogVersion: '0.2.0' },
+    })
+  })
+
+  it('keeps snapshot digests equal for identical workspaces at different roots', async () => {
+    const roots = [await createWorkspace(), await createWorkspace()]
+    const validations = []
+    for (const root of roots) {
+      await initializePluginWorkspace({
+        workspaceRoot: root,
+        ownerName: 'Same Owner',
+        ownerUrl: 'https://example.invalid/same-owner',
+        displayName: 'Same Catalog',
+      })
+      const manifest = await writeSourcePlugin(root)
+      const built = await buildWorkspaceCatalog({
+        workspaceRoot: root,
+        adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+      })
+      validations.push(await validateCatalogSnapshot(built.outputRoot))
+    }
+
+    expect(validations[0]!.snapshotDigest).toBe(validations[1]!.snapshotDigest)
+    const markers = await Promise.all(roots.map((root) =>
+      fs.readJson(path.join(root, '.aw', 'catalog', '.aw-generated.json'))))
+    expect(markers[0].workspaceIdentity).not.toBe(markers[1].workspaceIdentity)
+  })
+
   it('rejects an out-of-workspace linked plugin before an adapter can run', async () => {
     const root = await createWorkspace()
     const outside = await createWorkspace()
@@ -194,6 +287,47 @@ describe('AW plugin workspace v1', () => {
       .rejects.toThrow(/Claude marketplace metadata or plugin inventory/u)
   })
 
+  it('rejects a tampered platform projection after rebuilding its Catalog digests', async () => {
+    const root = await createWorkspace()
+    await initializePluginWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+
+    await expect(buildWorkspaceCatalog({
+      workspaceRoot: root,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          const platformManifestPath = path.join(outputRoot, '.codex-plugin', 'plugin.json')
+          const platformManifest = await fs.readJson(platformManifestPath)
+          platformManifest.skills = '../outside'
+          await fs.writeJson(platformManifestPath, platformManifest)
+        },
+      },
+    })).rejects.toThrow(/codex platform manifest projection/u)
+  })
+
+  it.each([
+    ['1.0.0-rc.1', 'beta'],
+    ['1.0.0+build.1', 'latest'],
+  ])('rejects non-publishable Catalog version %s during snapshot validation', async (version, channel) => {
+    const root = await createWorkspace()
+    await initializePluginWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const built = await buildWorkspaceCatalog({
+      workspaceRoot: root,
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    const catalogManifestPath = path.join(built.outputRoot, 'catalog-manifest.json')
+    const catalogManifest = await fs.readJson(catalogManifestPath)
+    catalogManifest.catalogVersion = version
+    catalogManifest.channel = channel
+    await fs.writeJson(catalogManifestPath, catalogManifest)
+
+    await expect(validateCatalogSnapshot(built.outputRoot)).rejects.toThrow(
+      /stable SemVer or an exact x\.y\.z-beta\.N/u,
+    )
+  })
+
   it('prepares first and subsequent published snapshots with immutable ledger history', async () => {
     const root = await createWorkspace()
     await initializePluginWorkspace({ workspaceRoot: root })
@@ -211,6 +345,14 @@ describe('AW plugin workspace v1', () => {
       sourceHead: '1'.repeat(40),
     })
     expect(firstValidation.ledger.records).toHaveLength(1)
+    const firstLedgerPath = path.join(first.outputRoot, 'plugin-release-ledger.json')
+    const firstLedger = await fs.readFile(firstLedgerPath)
+    await fs.remove(firstLedgerPath)
+    await expect(validateCatalogSnapshot(first.outputRoot)).rejects.toThrow(/must include plugin-release-ledger/u)
+    await fs.writeFile(firstLedgerPath, firstLedger)
+    await fs.writeJson(firstLedgerPath, { schemaVersion: 2, records: [] })
+    await expect(validateCatalogSnapshot(first.outputRoot)).rejects.toThrow(/does not match catalog entry/u)
+    await fs.writeFile(firstLedgerPath, firstLedger)
 
     await setWorkspaceCatalogVersion(root, '0.2.0')
     const second = await preparePublishedWorkspaceCatalog({
@@ -234,6 +376,38 @@ describe('AW plugin workspace v1', () => {
       previousSnapshotRoot: second.outputRoot,
       adapter,
     })).rejects.toThrow(/must be higher/u)
+
+    for (const marketplacePath of [
+      path.join(second.outputRoot, '.agents', 'plugins', 'marketplace.json'),
+      path.join(second.outputRoot, '.claude-plugin', 'marketplace.json'),
+    ]) {
+      const marketplace = await fs.readJson(marketplacePath)
+      marketplace.owner = { name: 'Tampered Owner', url: 'https://example.invalid/tampered' }
+      marketplace.interface = { displayName: 'Tampered Catalog' }
+      await fs.writeJson(marketplacePath, marketplace)
+    }
+    const manifestPath = path.join(second.outputRoot, 'catalog-manifest.json')
+    const publishedManifest = await fs.readJson(manifestPath)
+    const changedContentDigest = sha256({
+      schemaIdentity: { schemaVersion: publishedManifest.schemaVersion },
+      marketplaceMetadata: {
+        name: 'aw',
+        owner: { name: 'Tampered Owner', url: 'https://example.invalid/tampered' },
+        interface: { displayName: 'Tampered Catalog' },
+      },
+      compatibility: publishedManifest.compatibility,
+      plugins: publishedManifest.entries.map((entry: Record<string, string>) => ({
+        name: entry.name,
+        targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+        contentDigest: entry.contentDigest,
+      })),
+    })
+    publishedManifest.release.contentDigest = changedContentDigest
+    publishedManifest.release.planId = changedContentDigest
+    await fs.writeJson(manifestPath, publishedManifest)
+    await expect(validateCatalogSnapshot(second.outputRoot)).rejects.toThrow(
+      /marketplace metadata or plugin inventory/u,
+    )
   })
 
   it('rejects reuse of a published plugin version for different content', async () => {

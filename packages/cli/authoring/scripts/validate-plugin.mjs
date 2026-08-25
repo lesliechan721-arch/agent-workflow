@@ -10,7 +10,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
 import { scanJavaScriptImportSpecifiers } from './lib/javascript-import-scanner.mjs';
-import { assertAuthoringPluginPathFence } from './lib/plugin-root.mjs';
+import {
+  assertAuthoringPluginPathFence,
+  assertCanonicalAuthoringPluginRoot,
+} from './lib/plugin-root.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,7 +24,7 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 6;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 7;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -421,6 +424,7 @@ async function tryLoadCliManifestTools() {
       return null;
     }
     return {
+      assertPluginInputTree: manifestModule.assertPluginInputTree ?? null,
       validateSourcePluginManifest: manifestModule.validateSourcePluginManifest ?? null,
       readPluginManifest: manifestModule.readPluginManifest ?? null,
       discoverPlugins: manifestModule.discoverPlugins ?? null,
@@ -1812,6 +1816,13 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
       }
     }
   });
+  if (
+    skill
+    && collectDeclaredSkillNames(pluginDir, pluginManifest).dynamic.has(skill)
+    && !manifest.suites.some((suite) => isRecord(suite) && suite.requiredForRelease === true)
+  ) {
+    error(`${manifestField}.suites must include at least one release-required suite for dynamic Skill ${JSON.stringify(skill)}`);
+  }
 }
 
 function validatePluginEvalManifest(pluginDir, pluginManifest) {
@@ -4688,6 +4699,24 @@ function exitCliError(message, json) {
 async function validatePluginDir(pluginDir, options) {
   const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
 
+  const cliManifestTools = await tryLoadCliManifestTools();
+  if (
+    !cliManifestTools
+    || typeof cliManifestTools.assertPluginInputTree !== 'function'
+    || typeof cliManifestTools.validateSourcePluginManifest !== 'function'
+  ) {
+    error(
+      `Plugin manifest contract v${SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION} is unavailable; install a complete current aw CLI and retry.`,
+    );
+    return;
+  }
+  try {
+    await cliManifestTools.assertPluginInputTree(pluginDir);
+  } catch (e) {
+    error(e.message);
+    return;
+  }
+
   if (!fs.existsSync(manifestPath)) {
     error('.agents-plugin/plugin.json not found');
     return;
@@ -4700,23 +4729,31 @@ async function validatePluginDir(pluginDir, options) {
     error(`.agents-plugin/plugin.json is not valid JSON: ${e.message}`);
     return;
   }
-
-  const [cliManifestTools, skillValidationTools] = await Promise.all([
-    tryLoadCliManifestTools(),
-    tryLoadCliSkillValidationTools(),
-  ]);
-  if (cliManifestTools?.validateSourcePluginManifest) {
+  if (
+    options.enforceCanonicalRoot
+    && typeof manifest?.name === 'string'
+    && manifest.name !== ''
+  ) {
     try {
-      await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
-    } catch (e) {
-      error(e.message);
+      assertCanonicalAuthoringPluginRoot({
+        workspaceRoot: options.repoRoot,
+        pluginRoot: pluginDir,
+        pluginName: manifest.name,
+        requireManifest: true,
+      });
+    } catch (cause) {
+      error(cause.message);
+      return;
     }
-    validatePlatformFieldSupport(manifest);
-  } else {
-    error(
-      `Plugin manifest contract v${SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION} is unavailable; install a complete current aw CLI and retry.`,
-    );
   }
+
+  const skillValidationTools = await tryLoadCliSkillValidationTools();
+  try {
+    await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+  } catch (e) {
+    error(e.message);
+  }
+  validatePlatformFieldSupport(manifest);
   validatePortableNativeArtifactCapabilityLightweight(manifest);
 
   validateNameMatchesDirectory(pluginDir, manifest);
@@ -4904,6 +4941,7 @@ async function main() {
     versionBase: args.versionBase,
     repoRoot,
     gitRoot,
+    enforceCanonicalRoot: requestedWorkspaceRoot !== null,
   });
 
   if (args.json) {

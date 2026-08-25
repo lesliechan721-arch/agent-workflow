@@ -47,7 +47,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
    - 完成条件：能力选择已与任务范围对齐；涉及创建或重大重写 Skill 时，baseline gap、invocation、Skill-specific description、信息层级和 eval strategy 均已确定，且不能证明 Skill 增量时使用更简单能力或不创建
 3. **创建骨架**
    - 先运行 `aw --version`，确认已安装可执行的公开 CLI；不要使用 `npx` 或其它隐式安装入口
-   - 新插件可运行 `aw plugin init <plugin-name>`；非默认布局增加 `--repo-root <workspace-root> --plugin-root <plugin-root>`
+   - 新插件运行 `aw plugin init <plugin-name> --workspace-root <workspace-root>`；公开作者合同固定写入 `<workspace-root>/plugins/<plugin-name>`
    - 向现有插件新增一个静态 Skill 时运行 `aw plugin add-skill <plugin-name>`；非默认布局传同一显式根，不要用它修改其它能力
    - MCP、Apps、config、lifecycle、slashCommands、extensions 和 dynamic artifacts 直接按对应 reference 修改源码，不先转换成通用更新计划
    - 创建 Skill 时显式传 `--skill-invocation`；省略时采用 `model`
@@ -100,7 +100,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 
 ## 脚手架
 
-新插件使用 `aw plugin init <plugin-name>`；向已有插件新增静态 Skill 使用 `aw plugin add-skill <plugin-name>`；目标不在默认 `plugins/<plugin-name>` 时传 `--repo-root <workspace-root> --plugin-root <plugin-root>`。其它 production 变化直接修改目标源码。先运行对应命令的 `--help`，只传本次任务需要的能力和显式 `--skill-invocation`。
+新插件使用 `aw plugin init <plugin-name>`；向已有插件新增静态 Skill 使用 `aw plugin add-skill <plugin-name>`。公开 Workspace v1 作者合同只识别 canonical `plugins/<plugin-name>`。其它 production 变化直接修改目标源码。先运行对应命令的 `--help`，只传本次任务需要的能力和显式 `--skill-invocation`。
 
 源码稳定版本和版本门禁见 `references/plugin-manifest-spec.md` 的 version / compatibility block。
 

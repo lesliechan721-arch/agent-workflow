@@ -237,6 +237,10 @@ export interface CatalogManifestV4Entry extends CatalogManifestEntry {
   name: PluginId;
   contentDigest: string;
 }
+export interface CatalogMarketplaceIdentity {
+  owner: MarketplaceOwner;
+  interface: MarketplaceInterfaceMeta;
+}
 export type CatalogManifestV4Release =
   | { state: 'development' }
   | {
@@ -251,6 +255,7 @@ export interface CatalogManifestV4 {
   catalogVersion: string;
   channel: CatalogChannel;
   compatibility: PluginCompatibility;
+  marketplace: CatalogMarketplaceIdentity;
   release: CatalogManifestV4Release;
   entries: CatalogManifestV4Entry[];
 }

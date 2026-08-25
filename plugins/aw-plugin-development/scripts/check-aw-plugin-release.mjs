@@ -2,20 +2,33 @@
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
+import { reviewSkillLeafPlan, supportedProfiles } from './review-skill-leaf-plan.mjs';
+
 const execFileAsync = promisify(execFile);
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const PROFILES = new Set(['codex-user', 'codex-project', 'claude-user', 'claude-project']);
 const IGNORED = new Set(['.git', 'node_modules', '.DS_Store']);
+const EXECUTABLE_OVERRIDE_ENV = [
+  'AW_PLUGIN_VALIDATOR_BIN',
+  'AW_SKILL_VALIDATOR_BIN',
+  'AW_SKILL_CHECK_BIN',
+  'AW_REVIEW_LITE_VALIDATOR',
+  'AW_EVAL_AUDIT_VALIDATOR',
+  'AW_EVAL_BUNDLE_VALIDATOR',
+];
 
 function usage() {
-  return 'Usage: check-aw-plugin-release.mjs <plugin-root> --review <review.json>... --final <profile=path>... [--preflight-audit path]... [--run-bundle path]... [--triage-audit path]... [--profile name] [--output file] [--format json|text]';
+  return [
+    'Usage: check-aw-plugin-release.mjs <plugin-root> --workspace-root <dir> [--review <review.json>]... --final <profile=path>... [--preflight-audit path]... [--run-bundle path]... [--triage-audit path]... [--profile name] [--output file] [--format json|text]',
+    'Dynamic codex.skill and claude.skill targets require matching materialized final leaves for their declared profiles and scopes.',
+  ].join('\n');
 }
 
 function parseNamedPath(value, flag) {
@@ -42,10 +55,14 @@ function parseArgs(argv) {
   const runBundles = [];
   const triageAudits = [];
   let output = null;
+  let workspaceRoot = null;
   let format = 'json';
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
-    if (value === '--review') {
+    if (value === '--workspace-root') {
+      workspaceRoot = path.resolve(valueAfter(argv, index, value));
+      index += 1;
+    } else if (value === '--review') {
       reviews.push(path.resolve(valueAfter(argv, index, value)));
       index += 1;
     } else if (value === '--final') {
@@ -74,10 +91,11 @@ function parseArgs(argv) {
     } else if (value.startsWith('-')) throw new Error('Unknown option: ' + value);
     else positional.push(path.resolve(value));
   }
-  if (positional.length !== 1 || reviews.length === 0) throw new Error(usage());
+  if (positional.length !== 1 || workspaceRoot === null) throw new Error(usage());
   if (!['json', 'text'].includes(format)) throw new Error('--format must be json or text.');
   return {
     pluginRoot: positional[0],
+    workspaceRoot,
     reviews,
     finals,
     profiles: [...new Set(profiles)],
@@ -90,10 +108,18 @@ function parseArgs(argv) {
 }
 
 async function skillRoots(root) {
+  const rootStats = await lstat(root).catch(() => null);
+  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error('Skill collection root must be a regular directory: ' + root);
+  }
   const roots = [];
   async function visit(directory) {
     const skillFile = path.join(directory, 'SKILL.md');
-    if ((await stat(skillFile).catch(() => null))?.isFile()) {
+    const skillStats = await lstat(skillFile).catch(() => null);
+    if (skillStats && (!skillStats.isFile() || skillStats.isSymbolicLink())) {
+      throw new Error('SKILL.md must be a non-symlink regular file: ' + skillFile);
+    }
+    if (skillStats) {
       roots.push(directory);
       return;
     }
@@ -101,28 +127,48 @@ async function skillRoots(root) {
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       if (IGNORED.has(entry.name)) continue;
-      if (entry.isSymbolicLink()) throw new Error('Skill discovery cannot follow symlink: ' + entry.name);
-      if (entry.isDirectory()) await visit(path.join(directory, entry.name));
+      const entryPath = path.join(directory, entry.name);
+      const stats = await lstat(entryPath);
+      if (stats.isSymbolicLink()) throw new Error('Skill discovery cannot follow symlink: ' + entryPath);
+      if (stats.isDirectory()) await visit(entryPath);
+      else if (!stats.isFile()) throw new Error('Skill collection contains a non-regular node: ' + entryPath);
     }
   }
   await visit(root);
   return roots;
 }
 
-function supportedProfiles(manifest) {
-  const products = Array.isArray(manifest.marketplace?.policy?.products) && manifest.marketplace.policy.products.length > 0
-    ? manifest.marketplace.policy.products.map((value) => String(value).toUpperCase())
-    : ['CODEX', 'CLAUDE'];
-  return [...new Set(products.flatMap((product) => {
-    if (product === 'CODEX') return ['codex-user', 'codex-project'];
-    if (product === 'CLAUDE') return ['claude-user', 'claude-project'];
-    return [];
-  }))];
+async function assertEvidenceFiles(options) {
+  for (const [label, paths] of [
+    ['Review', options.reviews],
+    ['preflight audit', options.preflightAudits],
+    ['run bundle', options.runBundles],
+    ['triage audit', options.triageAudits],
+  ]) {
+    for (const filePath of paths) {
+      const stats = await lstat(filePath).catch(() => null);
+      if (!stats?.isFile() || stats.isSymbolicLink()) {
+        throw new Error(`${label} evidence must be a non-symlink regular file: ${filePath}`);
+      }
+    }
+  }
+}
+
+function pluginCollectionRoot(pluginRoot, relativePath) {
+  const root = path.resolve(pluginRoot, relativePath);
+  const relative = path.relative(pluginRoot, root);
+  if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error('Skill collection root must stay inside the plugin root: ' + root);
+  }
+  return root;
 }
 
 async function runJson(file, args, allowFailure = false) {
   try {
-    const { stdout } = await execFileAsync(process.execPath, [file, ...args], { encoding: 'utf8' });
+    const { stdout } = await execFileAsync(process.execPath, [file, ...args], {
+      encoding: 'utf8',
+      env: executionEnv(),
+    });
     return JSON.parse(stdout);
   } catch (error) {
     if (!allowFailure || typeof error?.stdout !== 'string' || !error.stdout.trim()) throw error;
@@ -130,32 +176,23 @@ async function runJson(file, args, allowFailure = false) {
   }
 }
 
-async function localCliEntry() {
-  let current = scriptRoot;
-  for (let depth = 0; depth < 8; depth += 1) {
-    const candidate = path.join(current, 'packages', 'cli', 'dist', 'index.js');
-    if ((await stat(candidate).catch(() => null))?.isFile()) return candidate;
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return null;
+function executionEnv() {
+  const env = { ...process.env };
+  for (const name of EXECUTABLE_OVERRIDE_ENV) delete env[name];
+  return env;
 }
 
-async function validatePluginSource(pluginRoot) {
-  const configured = process.env.AW_PLUGIN_VALIDATOR_BIN
-    ? path.resolve(process.env.AW_PLUGIN_VALIDATOR_BIN)
-    : await localCliEntry();
-  const command = configured ? process.execPath : 'aw';
+async function validatePluginSource(pluginRoot, workspaceRoot) {
   const args = [
-    ...(configured ? [configured] : []),
     'plugin',
     'validate',
     pluginRoot,
+    '--workspace-root',
+    workspaceRoot,
     '--json',
   ];
   try {
-    const { stdout } = await execFileAsync(command, args, { encoding: 'utf8' });
+    const { stdout } = await execFileAsync('aw', args, { encoding: 'utf8', env: executionEnv() });
     return JSON.parse(stdout);
   } catch (error) {
     if (typeof error?.stdout === 'string' && error.stdout.trim()) {
@@ -167,6 +204,16 @@ async function validatePluginSource(pluginRoot) {
       errors: [`Cannot run aw plugin validate: ${error instanceof Error ? error.message : String(error)}`],
     };
   }
+}
+
+async function bundledScript(name) {
+  const candidate = path.join(scriptRoot, name);
+  if (path.dirname(candidate) !== scriptRoot) throw new Error('Bundled script path escaped the plugin bundle.');
+  const stats = await lstat(candidate).catch(() => null);
+  if (!stats?.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Bundled ${name} must be a regular file.`);
+  }
+  return candidate;
 }
 
 async function digestFile(filePath) {
@@ -232,11 +279,18 @@ async function loadRunBundles(paths, validator) {
   return { entries, byTarget, duplicates };
 }
 
-async function evalRequirement(skillRoot) {
+async function evalRequirement(skillRoot, requiresEval = false) {
   const manifestPath = path.join(skillRoot, 'evals', 'manifest.json');
   const content = await readFile(manifestPath, 'utf8').catch(() => null);
   if (content === null) {
-    return { required: false, corpusDigest: null, releaseCases: [], unsupportedSuites: [] };
+    return {
+      required: requiresEval,
+      missingManifest: requiresEval,
+      corpusDigest: null,
+      releaseCases: [],
+      releaseSuiteCount: 0,
+      unsupportedSuites: [],
+    };
   }
   const manifest = JSON.parse(content);
   const requiredSuites = Array.isArray(manifest.suites)
@@ -277,7 +331,14 @@ async function evalRequirement(skillRoot) {
   const releaseCases = [...releaseCaseRuns]
     .map(([caseId, minimumRuns]) => ({ caseId, minimumRuns }))
     .sort((left, right) => left.caseId.localeCompare(right.caseId));
-  return { required, corpusDigest, releaseCases, unsupportedSuites };
+  return {
+    required: requiresEval || required,
+    missingManifest: false,
+    corpusDigest,
+    releaseCases,
+    releaseSuiteCount: requiredSuites.length,
+    unsupportedSuites,
+  };
 }
 
 function renderText(result) {
@@ -296,12 +357,87 @@ async function main() {
     process.stdout.write(usage() + '\n');
     return;
   }
-  const manifest = JSON.parse(await readFile(path.join(options.pluginRoot, '.agents-plugin', 'plugin.json'), 'utf8'));
-  const profiles = options.profiles.length > 0 ? options.profiles : supportedProfiles(manifest);
+  const pluginStats = await lstat(options.pluginRoot).catch(() => null);
+  const manifestDirectory = path.join(options.pluginRoot, '.agents-plugin');
+  const manifestPath = path.join(manifestDirectory, 'plugin.json');
+  const manifestDirectoryStats = await lstat(manifestDirectory).catch(() => null);
+  const manifestStats = await lstat(manifestPath).catch(() => null);
+  if (!pluginStats?.isDirectory() || pluginStats.isSymbolicLink()) {
+    throw new Error('Plugin root must be a regular directory.');
+  }
+  if (!manifestDirectoryStats?.isDirectory() || manifestDirectoryStats.isSymbolicLink()) {
+    throw new Error('.agents-plugin must be a regular directory.');
+  }
+  if (!manifestStats?.isFile() || manifestStats.isSymbolicLink()) {
+    throw new Error('Plugin manifest must be a regular file.');
+  }
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  const allSupportedProfiles = supportedProfiles(manifest);
+  const profiles = options.profiles.length > 0 ? options.profiles : allSupportedProfiles;
+  for (const profile of profiles) {
+    if (!allSupportedProfiles.includes(profile)) {
+      throw new Error('Profile is not supported by the plugin: ' + profile);
+    }
+  }
+  const pluginValidation = await validatePluginSource(options.pluginRoot, options.workspaceRoot);
+  if (pluginValidation.ok !== true) {
+    const result = {
+      schemaVersion: 2,
+      producer: 'check-aw-plugin-release',
+      plugin: manifest.name,
+      ready: false,
+      pluginMachineCheck: 'fail',
+      profiles,
+      targets: [],
+      reasons: [`plugin source validation failed: ${(pluginValidation.errors ?? []).join('; ')}`],
+    };
+    const json = JSON.stringify(result, null, 2) + '\n';
+    if (options.output) await writeFile(options.output, json, 'utf8');
+    process.stdout.write(options.format === 'json' ? json : renderText(result));
+    process.exitCode = 1;
+    return;
+  }
   const finalRoots = new Map();
+  const finalRootInventories = new Map();
   for (const entry of options.finals) {
+    if (!allSupportedProfiles.includes(entry.profile)) {
+      throw new Error('Final profile is not supported by the plugin: ' + entry.profile);
+    }
+    if (!profiles.includes(entry.profile)) {
+      throw new Error('Final profile is outside the selected release scope: ' + entry.profile);
+    }
     if (finalRoots.has(entry.profile)) throw new Error('Duplicate final profile: ' + entry.profile);
     finalRoots.set(entry.profile, entry.root);
+    finalRootInventories.set(entry.profile, await skillRoots(entry.root));
+  }
+  const skillsRoot = typeof manifest.skills === 'string'
+    ? pluginCollectionRoot(options.pluginRoot, manifest.skills)
+    : null;
+  const discoveredSourceRoots = skillsRoot === null ? [] : await skillRoots(skillsRoot);
+  const sourceRootByName = new Map();
+  for (const root of discoveredSourceRoots) {
+    const name = path.basename(root);
+    if (sourceRootByName.has(name)) throw new Error('Duplicate source Skill leaf name: ' + name);
+    sourceRootByName.set(name, root);
+  }
+  const leafPlan = reviewSkillLeafPlan(manifest, sourceRootByName.keys(), profiles);
+  const sourceRoots = leafPlan.staticLeaves.map((leaf) => sourceRootByName.get(leaf.name));
+  const dynamicLeaves = leafPlan.dynamicLeaves.map((leaf) => ({
+    ...leaf,
+    sourceRoot: pluginCollectionRoot(options.pluginRoot, `./skills/${leaf.skillKey}`),
+  }));
+  await assertEvidenceFiles(options);
+  const hasLeafInventory = sourceRoots.length > 0 || dynamicLeaves.length > 0
+    || [...finalRootInventories.values()].some((roots) => roots.length > 0);
+  const evidenceCount = options.reviews.length
+    + options.preflightAudits.length
+    + options.runBundles.length
+    + options.triageAudits.length;
+  if (!hasLeafInventory && evidenceCount > 0) {
+    throw new Error('A plugin with an empty leaf inventory must not receive Review or Eval evidence.');
+  }
+  if (hasLeafInventory && options.reviews.length === 0) {
+    throw new Error('A non-empty leaf inventory requires Review evidence.');
   }
   const reviews = [];
   for (const reviewPath of options.reviews) reviews.push({ path: reviewPath, value: JSON.parse(await readFile(reviewPath, 'utf8')) });
@@ -312,26 +448,16 @@ async function main() {
     reviewByDigest.set(digest, review);
   }
 
-  const checker = process.env.AW_SKILL_CHECK_BIN
-    ? path.resolve(process.env.AW_SKILL_CHECK_BIN)
-    : path.join(scriptRoot, 'check-agent-skill.mjs');
-  const validator = process.env.AW_REVIEW_LITE_VALIDATOR
-    ? path.resolve(process.env.AW_REVIEW_LITE_VALIDATOR)
-    : path.join(scriptRoot, 'validate-review-result-lite.mjs');
-  const evalAuditValidator = process.env.AW_EVAL_AUDIT_VALIDATOR
-    ? path.resolve(process.env.AW_EVAL_AUDIT_VALIDATOR)
-    : path.join(scriptRoot, 'validate-eval-audit-result.mjs');
-  const evalBundleValidator = process.env.AW_EVAL_BUNDLE_VALIDATOR
-    ? path.resolve(process.env.AW_EVAL_BUNDLE_VALIDATOR)
-    : path.join(scriptRoot, 'validate-eval-run-bundle.mjs');
+  const checker = await bundledScript('check-agent-skill.mjs');
+  const validator = await bundledScript('validate-review-result-lite.mjs');
+  const evalAuditValidator = await bundledScript('validate-eval-audit-result.mjs');
+  const evalBundleValidator = await bundledScript('validate-eval-run-bundle.mjs');
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'aw-release-check-'));
   const reasons = [];
   const targets = [];
+  const consumedReviewPaths = new Set();
+  const evalRequiredDigests = new Set();
   try {
-    const pluginValidation = await validatePluginSource(options.pluginRoot);
-    if (pluginValidation.ok !== true) {
-      reasons.push(`plugin source validation failed: ${(pluginValidation.errors ?? []).join('; ')}`);
-    }
     const runBundleEvidence = await loadRunBundles(options.runBundles, evalBundleValidator);
     const preflightEvidence = await loadEvidence(
       options.preflightAudits,
@@ -356,10 +482,6 @@ async function main() {
         }
       }
     }
-    const skillsRoot = typeof manifest.skills === 'string'
-      ? path.resolve(options.pluginRoot, manifest.skills)
-      : path.join(options.pluginRoot, 'skills');
-    const sourceRoots = await skillRoots(skillsRoot);
     const sourceByName = new Map();
     for (const root of sourceRoots) {
       const name = path.basename(root);
@@ -374,8 +496,11 @@ async function main() {
       const root = finalRoots.get(profile);
       const byName = new Map();
       if (root) {
-        for (const skillRoot of await skillRoots(root)) {
+        for (const skillRoot of finalRootInventories.get(profile)) {
           const check = await runJson(checker, [skillRoot, '--root-kind', 'materialized', '--profile', profile, '--format', 'json'], true);
+          if (byName.has(check.target.name)) {
+            throw new Error(`Duplicate materialized Skill ${check.target.name} for ${profile}`);
+          }
           byName.set(check.target.name, { root: skillRoot, check });
         }
       }
@@ -384,6 +509,9 @@ async function main() {
 
     async function evaluateTarget(kind, name, profile, root, check, evalRequirementValue) {
       const evalRequired = evalRequirementValue.required;
+      if (evalRequirementValue.missingManifest) {
+        reasons.push(`${kind}:${name}:${profile ?? 'source'} requires evals/manifest.json bound by skillKey`);
+      }
       const checkPath = path.join(temporary, `${kind}-${name}-${profile ?? 'source'}-check.json`);
       await writeFile(checkPath, JSON.stringify(check, null, 2) + '\n');
       const review = reviewByDigest.get(check.target.digest);
@@ -395,6 +523,7 @@ async function main() {
       if (!review) {
         reasons.push(`${kind}:${name}:${profile ?? 'source'} has no review for digest ${check.target.digest}`);
       } else {
+        consumedReviewPaths.add(review.path);
         const validation = await runJson(validator, [review.path, '--check', checkPath, '--format', 'json'], true);
         validReview = validation.valid === true;
         reviewDesign = review.value.design ?? null;
@@ -414,6 +543,16 @@ async function main() {
 
       let evalEvidence = null;
       if (evalRequired) {
+        evalRequiredDigests.add(check.target.digest);
+        if (evalRequirementValue.releaseSuiteCount === 0) {
+          reasons.push(`${kind}:${name}:${profile ?? 'source'} requires at least one release-required Eval suite`);
+        }
+        if (evalRequirementValue.corpusDigest === null) {
+          reasons.push(`${kind}:${name}:${profile ?? 'source'} requires a non-empty release Eval corpus digest`);
+        }
+        if (evalRequirementValue.releaseCases.length === 0) {
+          reasons.push(`${kind}:${name}:${profile ?? 'source'} requires non-empty release Eval cases`);
+        }
         if (evalRequirementValue.unsupportedSuites.length > 0) {
           reasons.push(
             `${kind}:${name}:${profile ?? 'source'} has required Eval suites without bindable case corpora: ${evalRequirementValue.unsupportedSuites.join(', ')}`,
@@ -513,11 +652,12 @@ async function main() {
     }
 
     for (const [name, source] of sourceByName) {
+      const staticLeaf = leafPlan.staticLeaves.find((leaf) => leaf.name === name);
       const requirement = await evalRequirement(source.root);
       if (source.check !== null) {
         await evaluateTarget('source', name, null, source.root, source.check, requirement);
       }
-      for (const profile of profiles) {
+      for (const profile of staticLeaf.profiles) {
         const final = finalByProfile.get(profile).get(name);
         if (!final) {
           reasons.push(`materialized:${name}:${profile} is missing`);
@@ -539,8 +679,55 @@ async function main() {
         }
       }
     }
+    for (const leaf of dynamicLeaves) {
+      const final = finalByProfile.get(leaf.profile).get(leaf.name);
+      const requirement = await evalRequirement(leaf.sourceRoot, leaf.requiresEval);
+      if (!final) {
+        reasons.push(`dynamic:${leaf.id}:${leaf.name}:${leaf.profile} is missing`);
+        targets.push({
+          kind: 'materialized',
+          name: leaf.name,
+          profile: leaf.profile,
+          dynamicTargetId: leaf.id,
+          digest: null,
+          machineCheck: 'missing',
+          reviewDesign: null,
+          reviewMode: null,
+          reviewScoring: null,
+          validReview: false,
+          evalRequired: requirement.required,
+          evalEvidence: null,
+        });
+      } else {
+        await evaluateTarget('materialized', leaf.name, leaf.profile, final.root, final.check, requirement);
+        targets[targets.length - 1].dynamicTargetId = leaf.id;
+      }
+    }
+    const expectedFinalNames = new Map(profiles.map((profile) => [profile, new Set()]));
+    for (const leaf of leafPlan.finalLeaves) expectedFinalNames.get(leaf.profile).add(leaf.name);
     for (const [profile, byName] of finalByProfile) {
-      for (const name of byName.keys()) if (!sourceByName.has(name)) reasons.push(`materialized:${name}:${profile} has no source Skill`);
+      for (const name of byName.keys()) {
+        if (!expectedFinalNames.get(profile).has(name)) {
+          reasons.push(`materialized:${name}:${profile} is not consumed by the release plan`);
+        }
+      }
+    }
+    for (const review of reviews) {
+      if (!consumedReviewPaths.has(review.path)) {
+        reasons.push(`Review evidence ${review.path} does not match any leaf target digest`);
+      }
+    }
+    for (const [label, evidence] of [
+      ['preflight audit', preflightEvidence],
+      ['run bundle', runBundleEvidence],
+      ['triage audit', triageEvidence],
+    ]) {
+      for (const entry of evidence.entries) {
+        const digest = entry.value?.targetSkillDigest;
+        if (!evalRequiredDigests.has(digest)) {
+          reasons.push(`${label} ${entry.path} is not consumed by a release-required leaf target`);
+        }
+      }
     }
 
     const result = {
@@ -552,6 +739,7 @@ async function main() {
       profiles,
       targets,
       reasons,
+      notes: targets.length === 0 ? ['empty leaf inventory: plugin declares no Skills'] : [],
     };
     const json = JSON.stringify(result, null, 2) + '\n';
     if (options.output) await writeFile(options.output, json, 'utf8');

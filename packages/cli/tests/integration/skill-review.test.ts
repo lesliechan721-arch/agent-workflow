@@ -16,6 +16,7 @@ import {
   buildStructuredReviewPublication,
   resolveReviewDraftPath,
   resolveReviewSourceRoots,
+  validateAwReviewSummary,
 } from '../../scripts/publish-skill-review.js';
 import {
   registerCurrentTestReadonlyFixtureRoot,
@@ -122,6 +123,27 @@ describe('skill-review author tools', () => {
       `aw-skill-eval-runner=${path.join(root, 'plugins', 'aw-skill-eval-runner')}`,
     ], { cwd: root, encoding: 'utf8' });
     expect(JSON.parse(stdout).target.sourceDigest).toBe(expectedDigest);
+  });
+
+  it('uses the source AWReviewSummary validator for structured plugin publication', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-publish-summary-'));
+    tempDirs.push(root);
+    const summaryPath = path.join(root, 'summary.json');
+    const planPath = path.join(root, 'plan.json');
+    await fs.writeJson(summaryPath, {});
+    await fs.writeJson(planPath, {});
+
+    await expect(validateAwReviewSummary(
+      repoRoot(),
+      path.join(repoRoot(), 'plugins', 'aw-plugin-development'),
+      summaryPath,
+      planPath,
+      [{
+        id: 'invalid-evidence',
+        resultPath: path.join(root, 'missing-result.json'),
+        bundlePath: path.join(root, 'missing-bundle.json'),
+      }],
+    )).rejects.toThrow(/AWReviewSummary validation failed[\s\S]*schemaVersion/u);
   });
 
   it('changes publication source identity for executable mode changes', async () => {

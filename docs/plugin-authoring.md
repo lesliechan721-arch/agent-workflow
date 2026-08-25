@@ -31,7 +31,9 @@ Workspace v1 的固定根布局如下：
       .agents-plugin/plugin.json
 ```
 
-先用 `aw catalog init --workspace-root <workspace>` 创建 workspace。它写入 `plugins/marketplace-source.json`，其中必须有 `owner`、`interface.displayName` 和严格 SemVer 的 `catalog.version`。插件 source 只放在 `plugins/<name>/`。
+先用 `aw catalog init --workspace-root <workspace>` 创建 workspace。它写入 `plugins/marketplace-source.json`，其中必须有 `owner`、`interface.displayName` 和 `catalog.version`。该版本只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。插件 source 只放在 `plugins/<name>/`。
+
+Manifest 中所有 source path 必须留在插件根内，并且任何路径 segment 都不能是 `.git` 或 `node_modules`。这包括 Skill、MCP、App、脚本、package root、runtime export 和 artifact source。
 
 每个插件的 `.agents-plugin/plugin.json` 使用 `schemaVersion: 1`。缺失 `schemaVersion` 的历史 manifest 按 legacy v1 读取；其它 schema 版本会被拒绝。不要混淆三个版本：
 
@@ -99,7 +101,7 @@ aw catalog publish \
   --json
 ```
 
-Publication requires a clean source Git worktree, an existing Git commit, a configured remote, and a valid branch. In non-TTY or JSON use, `--yes` is required. The CLI builds the published snapshot, creates an immutable annotated `catalog-v<version>` tag, and atomically pushes the dedicated branch and tag. It does not use the official `catalog/latest` or `catalog/beta` release train.
+Publication requires a clean source Git worktree, an existing Git commit, a configured remote, and a valid branch. In non-TTY or JSON use, `--yes` is required. The CLI archives the resolved source HEAD into an isolated workspace, runs the public source validator for every plugin there, and builds only from those committed bytes. Ignored or untracked working-tree bytes are never publication inputs. It then creates an immutable annotated `catalog-v<version>` tag and atomically pushes the dedicated branch and tag. It does not use the official `catalog/latest` or `catalog/beta` release train.
 
 Before the first remote write, the CLI records a version-specific publish attempt. A failed or uncertain push permanently blocks that Catalog version. Do not retry it and do not delete the attempt file: increase `catalog.version` with `aw catalog version <higher>`, then publish the new Catalog candidate. This recovery does not change a plugin artifact identity. If an already-ledgered stable plugin `version` would publish different production content, first increase that plugin `version` under the author release policy; only increasing `catalog.version` is not valid recovery for same-version different-content. A consumer can add the published source with:
 

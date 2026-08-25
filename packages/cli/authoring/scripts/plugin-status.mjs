@@ -28,8 +28,6 @@ Options:
   --base <git-ref>    Compare against an explicit Git base.
   --json              Emit one schema v3 JSON document.
   --workspace-root <path>  Workspace root. Default: current directory.
-  --plugin-root <path>
-                      Single plugin root, relative to --workspace-root by default.
   -h, --help          Show this help message.
 `);
 }
@@ -69,17 +67,10 @@ function parseArgs(argv) {
     index = nextIndex;
     if (flag === '--base') options.base = value;
     else if (flag === '--workspace-root') options.repoRoot = value;
-    else if (flag === '--plugin-root') options.pluginRoot = value;
     else fail(`Unknown option: ${flag}`);
   }
   if (options.all && options.pluginNames.length > 0) {
     fail('--all cannot be combined with explicit plugin names.');
-  }
-  if (options.all && options.pluginRoot !== undefined) {
-    fail('--plugin-root cannot be combined with --all.');
-  }
-  if (options.pluginRoot !== undefined && options.pluginNames.length !== 1) {
-    fail('--plugin-root requires exactly one plugin name.');
   }
   if (!options.all && options.pluginNames.length === 0) {
     fail('Provide a plugin name or use --all.');

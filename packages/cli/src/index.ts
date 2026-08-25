@@ -1146,8 +1146,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'In this repository, run `pnpm release -- beta|release --catalog|--all --plugin <name>=patch`; the bump can also be major or minor.',
-      'In another workspace, use its release workflow to set the target.',
+      'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
+      'Publish only as an explicit later step; inspect `aw catalog publish --help` first.',
       '',
     ].join('\n'))
     .argument('<plugin-name>', 'lowercase hyphen-case plugin name')
@@ -1162,7 +1162,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--min-version <semver>', 'compatibility.aw.minVersion')
     .option('--catalog-min-version <semver>', 'target catalog compatibility minimum')
     .option('--workspace-root <path>', 'workspace root (default: current directory)')
-    .option('--plugin-root <path>', 'plugin root, relative to --workspace-root by default')
     .option('--no-skills', 'create the plugin without a skills directory')
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
@@ -1175,8 +1174,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'In this repository, run `pnpm release -- beta|release --catalog|--all --plugin <name>=patch`; the bump can also be major or minor.',
-      'In another workspace, use its release workflow to set the target.',
+      'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
+      'Publish only as an explicit later step; inspect `aw catalog publish --help` first.',
       '',
     ].join('\n'))
     .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
@@ -1184,8 +1183,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill-description <text>', 'Skill goal and discovery description (required)')
     .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
-    .option('--plugin-root <path>', 'plugin root, relative to --workspace-root by default');
+    .option('--workspace-root <path>', 'workspace root (default: current directory)');
 
   plugin
     .command('validate')
@@ -1261,8 +1259,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--all', 'check every current workspace plugin', false)
     .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
-    .option('--plugin-root <path>', 'single plugin root, relative to --workspace-root by default');
+    .option('--workspace-root <path>', 'workspace root (default: current directory)');
 
   plugin
     .command('check-versions')
@@ -1271,8 +1268,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--all', 'check every plugin changed relative to the Git base', false)
     .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
-    .option('--plugin-root <path>', 'single plugin root, relative to --workspace-root by default');
+    .option('--workspace-root <path>', 'workspace root (default: current directory)');
 
   skill
     .command('validate')
@@ -1296,7 +1292,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--owner-name <name>', 'catalog owner name')
     .option('--owner-url <url>', 'catalog owner URL')
     .option('--display-name <name>', 'catalog display name')
-    .option('--catalog-version <semver>', 'initial catalog version (default: 0.1.0)')
+    .option('--catalog-version <version>', 'initial stable or x.y.z-beta.N catalog version (default: 0.1.0)')
     .option('--force', 'repair a matching managed workspace scaffold', false)
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (rawOptions: {
@@ -1325,7 +1321,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalog
     .command('version')
     .description('Read or set the workspace catalog version')
-    .argument('[version]', 'strict SemVer catalog version')
+    .argument('[version]', 'stable or x.y.z-beta.N catalog version')
     .option('--workspace-root <path>', 'workspace root (default: current directory)')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (version: string | undefined, rawOptions: { workspaceRoot?: string; json?: boolean }) => {
@@ -2610,7 +2606,6 @@ export async function runCli(
       if (
         argv[0] === 'plugin'
         && argv[1] === 'validate'
-        && !path.isAbsolute(authoringArgs[0] ?? '')
         && !authoringArgs.some((token) => token === '--workspace-root' || token.startsWith('--workspace-root='))
       ) {
         authoringArgs.push('--workspace-root', options.cwd ?? process.cwd());

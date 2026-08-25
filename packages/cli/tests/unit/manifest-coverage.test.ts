@@ -61,6 +61,10 @@ function createCatalogManifestFixture() {
         minVersion: '0.1.0',
       },
     },
+    marketplace: {
+      owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture Marketplace' },
+    },
     release: { state: 'development' as const },
     entries: [
       {

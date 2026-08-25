@@ -119,3 +119,17 @@ export function resolveAuthoringPluginRoot(options) {
     relativePluginRoot: path.relative(repoRoot, pluginRoot).split(path.sep).join('/'),
   };
 }
+
+export function assertCanonicalAuthoringPluginRoot(options) {
+  const fenced = assertAuthoringPluginPathFence({
+    repoRoot: options.workspaceRoot,
+    pluginRoot: options.pluginRoot,
+    requirePluginRoot: options.requirePluginRoot ?? true,
+    requireManifest: options.requireManifest ?? false,
+  });
+  const expected = path.join(fenced.repoRoot, 'plugins', options.pluginName);
+  if (path.resolve(fenced.pluginRoot) !== path.resolve(expected)) {
+    throw new Error(`Plugin root must use the canonical workspace path: ${expected}`);
+  }
+  return { ...fenced, expectedPluginRoot: expected };
+}

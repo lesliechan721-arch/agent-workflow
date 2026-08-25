@@ -613,6 +613,18 @@ describe('build smoke', () => {
     ).resolves.toMatchObject({
       stdout: expect.stringContaining('Usage: aw'),
     });
+
+    for (const command of ['init', 'add-skill']) {
+      const help = await execFileAsync('node', [cliEntry, 'plugin', command, '--help'], {
+        cwd: root,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      expect(help.stdout).toContain('aw plugin validate');
+      expect(help.stdout).toContain('aw catalog build');
+      expect(help.stdout).toContain('aw catalog publish --help');
+      expect(help.stdout).not.toContain('pnpm release');
+    }
   });
 
   it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {

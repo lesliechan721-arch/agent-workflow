@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -20,15 +20,6 @@ const releaseChecker = path.join(scriptRoot, 'check-aw-plugin-release.mjs');
 const skillChecker = context
   ? path.join(scriptRoot, 'check-agent-skill.mjs')
   : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'check-agent-skill.mjs');
-const reviewValidator = context
-  ? path.join(scriptRoot, 'validate-review-result-lite.mjs')
-  : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-review-result-lite.mjs');
-const auditValidator = context
-  ? path.join(scriptRoot, 'validate-eval-audit-result.mjs')
-  : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-eval-audit-result.mjs');
-const bundleValidator = context
-  ? path.join(scriptRoot, 'validate-eval-run-bundle.mjs')
-  : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-eval-run-bundle.mjs');
 const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const dimensions = [
   'specification', 'problem_value', 'triggering', 'scope_composition',
@@ -65,6 +56,17 @@ async function runJson(file, args, env) {
 
 const temp = await mkdtemp(path.join(os.tmpdir(), 'aw-release-eval-chain-'));
 try {
+  const publicBin = path.join(temp, 'public-bin');
+  const publicAw = path.join(publicBin, 'aw');
+  await mkdir(publicBin, { recursive: true });
+  await writeFile(publicAw, `#!/bin/sh
+if [ "$1" = "plugin" ]; then
+  printf '%s\\n' '{"ok":true,"errors":[]}'
+  exit 0
+fi
+exec "${process.execPath}" "${skillValidatorBin}" "$@"
+`);
+  await chmod(publicAw, 0o755);
   const plugin = path.join(temp, 'demo-plugin');
   const sourceSkill = path.join(plugin, 'skills', 'demo');
   const finalRoot = path.join(temp, 'final');
@@ -88,11 +90,16 @@ try {
     version: '1.0.0',
     description: 'Demo plugin.',
     compatibility: { aw: { minVersion: '0.1.0' } },
-    skills: './skills',
+    artifacts: {
+      targets: [
+        { id: 'demo-codex', target: 'codex.skill', skillKey: 'demo', scopes: ['project'], sourceDirs: ['./skills/demo'] },
+        { id: 'demo-claude', target: 'claude.skill', skillKey: 'demo', scopes: ['project'], sourceDirs: ['./skills/demo'] },
+      ],
+    },
     marketplace: {
       category: 'workflow',
       strict: true,
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX', 'CLAUDE'] },
     },
   }));
   await mkdir(path.join(sourceSkill, 'evals'), { recursive: true });
@@ -139,12 +146,7 @@ try {
 
   const env = {
     ...process.env,
-    AW_SKILL_VALIDATOR_BIN: skillValidatorBin,
-    AW_PLUGIN_VALIDATOR_BIN: skillValidatorBin,
-    AW_SKILL_CHECK_BIN: skillChecker,
-    AW_REVIEW_LITE_VALIDATOR: reviewValidator,
-    AW_EVAL_AUDIT_VALIDATOR: auditValidator,
-    AW_EVAL_BUNDLE_VALIDATOR: bundleValidator,
+    PATH: `${publicBin}${path.delimiter}${process.env.PATH ?? ''}`,
   };
   const check = await runJson(skillChecker, [
     finalSkill,
@@ -260,6 +262,7 @@ try {
 
   const args = [
     plugin,
+    '--workspace-root', temp,
     '--review', reviewPath,
     '--profile', 'codex-project',
     '--final', `codex-project=${finalRoot}`,
@@ -272,6 +275,49 @@ try {
   assert.equal(ready.ready, true, JSON.stringify(ready.reasons));
   assert.equal(ready.schemaVersion, 2);
   assert.equal(ready.targets[0].evalEvidence.evidenceLevel, 'executed');
+  assert.equal(ready.targets[0].dynamicTargetId, 'demo-codex');
+
+  const claudeReady = await runJson(releaseChecker, [
+    ...args.map((entry) => entry === 'codex-project'
+      ? 'claude-project'
+      : entry.replace(/^codex-project=/u, 'claude-project=')),
+  ], env);
+  assert.equal(claudeReady.ready, true, JSON.stringify(claudeReady.reasons));
+  assert.equal(claudeReady.targets[0].dynamicTargetId, 'demo-claude');
+
+  const missingEvidence = await runJson(releaseChecker, [
+    plugin,
+    '--workspace-root', temp,
+    '--review', reviewPath,
+    '--profile', 'codex-project',
+    '--final', `codex-project=${finalRoot}`,
+    '--format', 'json',
+  ], env);
+  assert.equal(missingEvidence.ready, false);
+  assert.ok(missingEvidence.reasons.some((reason) => reason.includes('complete preflight/run/triage')));
+
+  await rm(evalManifestPath);
+  const missingManifest = await runJson(releaseChecker, args, env);
+  assert.equal(missingManifest.ready, false);
+  assert.ok(missingManifest.reasons.some((reason) => reason.includes('requires evals/manifest.json bound by skillKey')));
+  await writeFile(evalManifestPath, JSON.stringify(evalManifest));
+
+  await writeFile(evalManifestPath, JSON.stringify({
+    ...evalManifest,
+    profiles: evalManifest.profiles.map((profile) => ({
+      ...profile,
+      requiredForRelease: false,
+    })),
+    suites: evalManifest.suites.map((suite) => ({
+      ...suite,
+      requiredForRelease: false,
+    })),
+  }));
+  const noReleaseSuite = await runJson(releaseChecker, args, env);
+  assert.equal(noReleaseSuite.ready, false);
+  assert.ok(noReleaseSuite.reasons.some((reason) =>
+    reason.includes('at least one release-required Eval suite')));
+  await writeFile(evalManifestPath, JSON.stringify(evalManifest));
 
   await writeFile(casesPath, JSON.stringify({
     ...evalCases,

@@ -49,6 +49,11 @@
       },
       {
         "skill": "review-aw-plugin",
+        "target": "scripts/review-skill-leaf-plan.mjs",
+        "source": "./scripts/review-skill-leaf-plan.mjs"
+      },
+      {
+        "skill": "review-aw-plugin",
         "target": "scripts/check-agent-skill.mjs",
         "import": {
           "plugin": "agent-skill-toolkit",

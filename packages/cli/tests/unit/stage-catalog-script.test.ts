@@ -9,7 +9,10 @@ import { calculateCatalogContentDigest } from '../../../../scripts/release/relea
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  createDependencyCatalogSnapshotFixture,
+} from '../helpers/catalog-source-fixture.js';
 
 const tempDirs: string[] = [];
 
@@ -71,10 +74,6 @@ describe('stage-catalog script', () => {
     const snapshot = createSnapshot(root);
     const outputRoot = createInternalOutputRoot(root);
     await createCatalogSnapshotFixture(snapshot.catalogOutputRoot);
-    await fs.symlink(
-      '../.claude-plugin',
-      path.join(snapshot.catalogOutputRoot, '.agents', 'shared-marketplace'),
-    );
 
     const staged = await stageCatalogRelease(
       ['--catalog-version', '9.0.0-beta.4'],
@@ -118,8 +117,6 @@ describe('stage-catalog script', () => {
     await expect(catalogSnapshot.validateCatalogSnapshot(outputRoot)).resolves.toMatchObject({
       manifest: { catalogVersion: '9.0.0-beta.4' },
     });
-    await expect(fs.readlink(path.join(outputRoot, '.agents', 'shared-marketplace')))
-      .resolves.toBe('../.claude-plugin');
     await expect(fs.pathExists(path.join(outputRoot, '.catalog'))).resolves.toBe(false);
   });
 
@@ -283,38 +280,16 @@ describe('stage-catalog script', () => {
   it('raises the catalog floor to AW 0.1.0 for a dependency source graph', async () => {
     const root = await createFixtureRoot('aw-stage-catalog-dependency-floor-');
     const snapshotRoot = path.join(root, 'catalog');
-    await Promise.all([
-      fs.outputJson(path.join(snapshotRoot, '.agents', 'plugins', 'marketplace.json'), {}),
-      fs.outputJson(path.join(snapshotRoot, '.claude-plugin', 'marketplace.json'), {}),
-    ]);
-    const marketplace = {
-      category: 'workflow',
-      strict: true,
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-    };
-    for (const manifest of [
+    await createDependencyCatalogSnapshotFixture(snapshotRoot, [
       {
         name: 'parent',
-        version: '1.0.0',
-        description: 'parent',
-        compatibility: { aw: { minVersion: '0.1.0' } },
         dependencies: ['shared'],
-        marketplace,
+        configureManifest: (manifest) => {
+          manifest.compatibility = { aw: { minVersion: '0.1.0' } };
+        },
       },
-      {
-        name: 'shared',
-        version: '1.0.0',
-        description: 'shared',
-        compatibility: { aw: { minVersion: '0.0.0' } },
-        marketplace,
-      },
-    ]) {
-      const pluginRoot = path.join(snapshotRoot, 'plugins', manifest.name);
-      await Promise.all([
-        fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest),
-        fs.outputFile(path.join(pluginRoot, 'README.md'), `${manifest.name}\n`),
-      ]);
-    }
+      { name: 'shared' },
+    ]);
 
     const staged = await pluginStaging.stageCatalogArtifacts({
       repoRoot: root,

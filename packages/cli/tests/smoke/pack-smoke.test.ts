@@ -600,8 +600,6 @@ describe('pack smoke', () => {
       'Create a packed CLI authoring fixture.',
       '--workspace-root',
       authorRepo,
-      '--plugin-root',
-      'tools/author-smoke',
     ], { cwd: authorRepo, env: process.env });
     await execFileAsync(awBin, [
       'plugin',
@@ -615,12 +613,10 @@ describe('pack smoke', () => {
       'Add a second packed CLI Skill fixture.',
       '--workspace-root',
       authorRepo,
-      '--plugin-root',
-      'tools/author-smoke',
     ], { cwd: authorRepo, env: process.env });
     await expect(fs.pathExists(path.join(
       authorRepo,
-      'tools',
+      'plugins',
       'author-smoke',
       'skills',
       'second-skill',

@@ -65,7 +65,7 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
   const catalogModules = { pluginStaging, catalogSnapshot };
   const sourceRoot = path.join(temporaryRoot, 'source');
   const sourceCatalogRoot = path.join(sourceRoot, 'packages', 'cli', 'plugins-dist');
-  const linkTarget = 'targets/runtime.js';
+  const runtimeSource = 'export {}\n';
   await Promise.all([
     fs.outputJson(path.join(sourceRoot, 'package.json'), {
       version: '1.0.0',
@@ -114,8 +114,7 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       createCatalogSnapshotFixture(sourceCatalogRoot),
     ]);
     const pluginRuntimeRoot = path.join(sourceCatalogRoot, 'plugins', 'demo', 'runtime');
-    await fs.outputFile(path.join(pluginRuntimeRoot, linkTarget), 'export {};\n');
-    await fs.symlink(linkTarget, path.join(pluginRuntimeRoot, 'current.js'));
+    await fs.outputFile(path.join(pluginRuntimeRoot, 'current.js'), runtimeSource);
     await pluginStaging.stageCatalogArtifacts({
       repoRoot: sourceRoot,
       outputRoot: sourceCatalogRoot,
@@ -184,15 +183,15 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
   expect(resolved.resolvedCommit).toBe(published.commit);
   expect(resolved.manifest.catalogVersion).toBe('91.0.0');
   expect(resolved.manifest.channel).toBe('latest');
-  const resolvedLinkPath = path.join(
+  const resolvedRuntimePath = path.join(
     resolved.rootDir,
     'plugins',
     'demo',
     'runtime',
     'current.js',
   );
-  expect((await fs.lstat(resolvedLinkPath)).isSymbolicLink()).toBe(true);
-  expect(await fs.readlink(resolvedLinkPath)).toBe(linkTarget);
+  expect((await fs.lstat(resolvedRuntimePath)).isFile()).toBe(true);
+  expect(await fs.readFile(resolvedRuntimePath, 'utf8')).toBe(runtimeSource);
   await expect(catalogSnapshot.validateCatalogSnapshot(resolved.rootDir))
     .resolves.toMatchObject({ manifest: { catalogVersion: '91.0.0' } });
 });

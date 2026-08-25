@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -50,6 +51,224 @@ async function createPublishWorkspace(root: string, pluginName: string): Promise
 }
 
 describe('public workspace authoring commands', () => {
+  it('creates context for an absent canonical root before public plugin init', async () => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    const pluginRoot = path.join(root, 'plugins', 'context-create');
+    const componentsPath = path.join(root, 'components.json');
+    await fs.writeJson(componentsPath, [{
+      id: 'manifest',
+      type: 'manifest',
+      operation: 'create',
+      paths: ['.agents-plugin/plugin.json'],
+      profiles: ['CODEX', 'CLAUDE'],
+    }]);
+    const prepare = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../../../../plugins/aw-plugin-development/skills/author-aw-plugin/scripts/prepare-aw-authoring-context.mjs',
+    );
+    await expect(fs.pathExists(pluginRoot)).resolves.toBe(false);
+    const context = JSON.parse((await execFileAsync(process.execPath, [
+      prepare,
+      pluginRoot,
+      '--mode', 'create',
+      '--plugin', 'context-create',
+      '--workspace-root', root,
+      '--components', componentsPath,
+    ], { cwd: os.tmpdir(), encoding: 'utf8' })).stdout);
+    expect(context).toMatchObject({
+      plugin: 'context-create',
+      pluginRoot,
+      changeMode: 'create',
+    });
+    await expect(fs.pathExists(pluginRoot)).resolves.toBe(false);
+
+    expect(await runCli([
+      'plugin', 'init', 'context-create', '--description', 'Context create fixture.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: os.tmpdir(), io: capture().io })).toBe(0);
+    await expect(fs.pathExists(path.join(pluginRoot, '.agents-plugin', 'plugin.json')))
+      .resolves.toBe(true);
+  });
+
+  it('validates a canonical plugin with positional-first and options-first arguments', async () => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'plugin', 'init', 'argument-order', '--description', 'Argument order fixture.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: root, io: capture().io });
+    const pluginRoot = path.join(root, 'plugins', 'argument-order');
+
+    const positionalFirst = capture();
+    expect(await runCli([
+      'plugin', 'validate', pluginRoot, '--workspace-root', root,
+      '--strict-agent-skills', '--json',
+    ], { cwd: root, io: positionalFirst.io })).toBe(0);
+    expect(JSON.parse(positionalFirst.stdout())).toMatchObject({ ok: true });
+
+    const optionsFirst = capture();
+    expect(await runCli([
+      'plugin', 'validate', '--json', '--workspace-root', root,
+      '--strict-agent-skills', '--claude-skill-profile', 'minimum', pluginRoot,
+    ], { cwd: root, io: optionsFirst.io })).toBe(0);
+    expect(JSON.parse(optionsFirst.stdout())).toMatchObject({ ok: true });
+
+    const unknown = capture();
+    expect(await runCli([
+      'plugin', 'validate', '--json', '--unknown-option', pluginRoot,
+      '--workspace-root', root,
+    ], { cwd: root, io: unknown.io })).toBe(1);
+    expect(JSON.parse(unknown.stdout())).toMatchObject({
+      ok: false,
+      errors: [expect.stringContaining('Unknown option: --unknown-option')],
+    });
+
+    const nonCanonical = path.join(root, 'packages', 'argument-order');
+    await fs.copy(pluginRoot, nonCanonical);
+    const versionLikeOption = capture();
+    expect(await runCli([
+      'plugin', 'validate', '--version-base', '-x', '--json',
+      '--workspace-root', root, nonCanonical,
+    ], { cwd: root, io: versionLikeOption.io })).toBe(1);
+    expect(JSON.parse(versionLikeOption.stdout())).toMatchObject({
+      ok: false,
+      errors: [expect.stringContaining(path.join(root, 'plugins', 'argument-order'))],
+    });
+  });
+
+  it.each([
+    ['plugin validate', ['plugin', 'validate', 'plugins/source-link']],
+    ['plugin test', ['plugin', 'test', 'plugins/source-link']],
+    ['plugin build', ['plugin', 'build', 'plugins/source-link']],
+    ['catalog build', ['catalog', 'build']],
+  ])('rejects an external authoring source symlink before %s reads it', async (_label, command) => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'plugin', 'init', 'source-link', '--description', 'Source symlink fence fixture.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: root, io: capture().io });
+    const pluginRoot = path.join(root, 'plugins', 'source-link');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.mcpServers = './.mcp.json';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const outside = path.join(root, 'outside-invalid.json');
+    await fs.writeFile(outside, 'not JSON\n');
+    await fs.symlink(outside, path.join(pluginRoot, '.mcp.json'));
+    const output = capture();
+
+    expect(await runCli([...command, '--workspace-root', root], {
+      cwd: root,
+      io: output.io,
+    })).toBe(1);
+    const failureOutput = `${output.stdout()}\n${output.stderr()}`;
+    expect(failureOutput).toMatch(/symbolic link/u);
+    expect(failureOutput).not.toContain('source JSON is invalid');
+  });
+
+  it('ignores nested Git and dependency directories without copying their external links', async () => {
+    const root = await createRoot();
+    const outsideRoot = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'plugin', 'init', 'ignored-inputs', '--description', 'Ignored authoring inputs fixture.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: root, io: capture().io });
+    const pluginRoot = path.join(root, 'plugins', 'ignored-inputs');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.scripts = { node: { build: { runner: 'node', path: './build.mjs' } } };
+    manifest.buildConfig = {
+      fileRules: {
+        claude: { include: ['nested/**'], exclude: [] },
+        codex: { include: ['nested/**'], exclude: [] },
+      },
+    };
+    const ignoredDirectories = [
+      path.join(pluginRoot, 'nested', '.git'),
+      path.join(pluginRoot, 'nested', 'node_modules'),
+    ];
+    const outsideFile = path.join(outsideRoot, 'private.txt');
+    await Promise.all([
+      fs.writeJson(manifestPath, manifest, { spaces: 2 }),
+      fs.outputFile(path.join(pluginRoot, 'nested', 'visible.txt'), 'public fixture\n'),
+      fs.writeFile(outsideFile, 'external private bytes\n'),
+      ...ignoredDirectories.map((directory) => fs.ensureDir(directory)),
+    ]);
+    await Promise.all(ignoredDirectories.map((directory) =>
+      fs.symlink(outsideFile, path.join(directory, 'external-link.txt'))));
+    await fs.writeFile(path.join(pluginRoot, 'build.mjs'), `
+import { existsSync } from 'node:fs';
+for (const relativePath of ['nested/.git', 'nested/node_modules']) {
+  if (existsSync(new URL(relativePath, import.meta.url))) {
+    throw new Error(\`ignored authoring input reached staging: \${relativePath}\`);
+  }
+}
+`);
+
+    for (const command of [
+      ['plugin', 'validate', 'plugins/ignored-inputs'],
+      ['plugin', 'test', 'plugins/ignored-inputs'],
+      ['plugin', 'build', 'plugins/ignored-inputs'],
+      ['catalog', 'build'],
+    ]) {
+      expect(await runCli([...command, '--workspace-root', root], {
+        cwd: root,
+        io: capture().io,
+      })).toBe(0);
+    }
+
+    for (const outputRoot of [
+      path.join(root, '.aw', 'plugins', 'ignored-inputs'),
+      path.join(root, '.aw', 'catalog', 'plugins', 'ignored-inputs'),
+    ]) {
+      for (const platform of ['claude', 'codex']) {
+        await expect(fs.readFile(
+          path.join(outputRoot, platform, 'nested', 'visible.txt'),
+          'utf8',
+        )).resolves.toBe('public fixture\n');
+        for (const ignoredDirectory of ['.git', 'node_modules']) {
+          await expect(fs.pathExists(
+            path.join(outputRoot, platform, 'nested', ignoredDirectory),
+          )).resolves.toBe(false);
+        }
+      }
+    }
+  });
+
+  it('rejects ignored manifest source paths consistently before validate or build', async () => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'plugin', 'init', 'ignored-source', '--description', 'Ignored source path fixture.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: root, io: capture().io });
+    const pluginRoot = path.join(root, 'plugins', 'ignored-source');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.mcpServers = './nested/node_modules/.mcp.json';
+    await Promise.all([
+      fs.writeJson(manifestPath, manifest, { spaces: 2 }),
+      fs.outputJson(path.join(pluginRoot, 'nested', 'node_modules', '.mcp.json'), { mcpServers: {} }),
+    ]);
+
+    for (const command of [
+      ['plugin', 'validate', 'plugins/ignored-source'],
+      ['plugin', 'build', 'plugins/ignored-source'],
+    ]) {
+      const output = capture();
+      expect(await runCli([...command, '--workspace-root', root], {
+        cwd: root,
+        io: output.io,
+      })).toBe(1);
+      expect(`${output.stdout()}\n${output.stderr()}`).toContain(
+        'source paths must not enter node_modules',
+      );
+    }
+  });
+
   it('initializes and versions a non-Git workspace with one JSON stdout object', async () => {
     const root = await createRoot();
     const initOutput = capture();
@@ -74,6 +293,75 @@ describe('public workspace authoring commands', () => {
       ok: true,
       catalogVersion: '1.0.0-beta.1',
     });
+
+    for (const version of ['1.0.0-rc.1', '1.0.0+build.1']) {
+      const invalidOutput = capture();
+      expect(await runCli(['catalog', 'version', version, '--workspace-root', root, '--json'], {
+        cwd: root,
+        io: invalidOutput.io,
+      })).toBe(1);
+      expect(JSON.parse(invalidOutput.stdout())).toMatchObject({
+        command: 'catalog:version',
+        ok: false,
+      });
+      expect(invalidOutput.stderr()).toContain('stable SemVer or an exact x.y.z-beta.N');
+    }
+  });
+
+  it('reads and writes Catalog versions in a workspace with the reserved CLI import', async () => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'plugin', 'init', 'reserved-import', '--description', 'Reserved import fixture.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: root, io: capture().io });
+    const pluginRoot = path.join(root, 'plugins', 'reserved-import');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.scripts = { node: { build: { runner: 'node', path: './build.mjs' } } };
+    manifest.buildConfig = {
+      cacheable: true,
+      buildImports: [{
+        plugin: '@aw/cli',
+        export: 'skill-frontmatter-capabilities',
+        env: 'AW_PLUGIN_IMPORT_FRONTMATTER',
+      }],
+    };
+    await Promise.all([
+      fs.writeJson(manifestPath, manifest, { spaces: 2 }),
+      fs.writeFile(path.join(pluginRoot, 'build.mjs'), 'export {};\n'),
+    ]);
+
+    const readOutput = capture();
+    expect(await runCli(['catalog', 'version', '--workspace-root', root, '--json'], {
+      cwd: root,
+      io: readOutput.io,
+    })).toBe(0);
+    expect(JSON.parse(readOutput.stdout())).toMatchObject({ catalogVersion: '0.1.0' });
+    const writeOutput = capture();
+    expect(await runCli(['catalog', 'version', '0.2.0', '--workspace-root', root, '--json'], {
+      cwd: root,
+      io: writeOutput.io,
+    })).toBe(0);
+    expect(JSON.parse(writeOutput.stdout())).toMatchObject({ catalogVersion: '0.2.0' });
+  });
+
+  it('prints only public authoring commands after third-party plugin init', async () => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    const output = capture();
+    expect(await runCli([
+      'plugin', 'init', 'next-steps', '--description', 'Next-step output fixture.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: root, io: output.io })).toBe(0);
+
+    expect(output.stdout()).toContain('aw plugin validate');
+    expect(output.stdout()).toContain('aw plugin test');
+    expect(output.stdout()).toContain('aw plugin build');
+    expect(output.stdout()).toContain('aw catalog build');
+    expect(output.stdout()).toContain('Publish only when explicitly requested: aw catalog publish');
+    expect(output.stdout()).not.toContain('pnpm build');
+    expect(output.stdout()).not.toContain('pnpm release');
   });
 
   it('rejects removed --repo-root and reports JSON failures safely', async () => {
@@ -206,6 +494,23 @@ describe('public workspace authoring commands', () => {
     expect((await execFileAsync('git', ['--git-dir', remote, 'rev-parse', 'refs/tags/catalog-v0.1.0^{}'])).stdout.trim())
       .toBe(first.commit);
 
+    const publishedRoot = await createRoot();
+    await execFileAsync('git', [
+      '--git-dir', remote,
+      '--work-tree', publishedRoot,
+      'checkout', '--quiet', first.commit, '--', '.',
+    ]);
+    const ledgerPath = path.join(publishedRoot, 'plugin-release-ledger.json');
+    const ledger = await fs.readFile(ledgerPath);
+    await fs.remove(ledgerPath);
+    const missingLedgerOutput = capture();
+    expect(await runCli(['catalog', 'validate', publishedRoot, '--json'], {
+      cwd: root,
+      io: missingLedgerOutput.io,
+    })).toBe(1);
+    expect(missingLedgerOutput.stderr()).toContain('must include plugin-release-ledger.json');
+    await fs.writeFile(ledgerPath, ledger);
+
     expect(await runCli(['catalog', 'version', '0.2.0', '--workspace-root', root], { cwd: root, io: capture().io })).toBe(0);
     await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], { cwd: root });
     await execFileAsync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'next'], { cwd: root });
@@ -258,6 +563,109 @@ describe('public workspace authoring commands', () => {
     expect(JSON.parse(output.stdout())).toMatchObject({ command: 'catalog:publish', ok: false });
     expect(output.stdout().trim().split('\n').filter(Boolean).join('\n')).not.toBe('');
     expect(output.stderr()).toContain('requires --yes');
+  });
+
+  it('builds publication bytes only from sourceHead when ignored production files exist', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createPublishWorkspace(root, 'source-head-demo');
+    const pluginRoot = path.join(root, 'plugins', 'source-head-demo');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.buildConfig = {
+      fileRules: {
+        codex: { include: ['nested/**'], exclude: [] },
+        claude: { include: ['nested/**'], exclude: [] },
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.outputFile(path.join(pluginRoot, 'nested', 'committed.md'), 'committed production bytes\n');
+    await fs.appendFile(path.join(root, '.gitignore'), '\nplugins/source-head-demo/nested/custom-secret.md\n');
+    await execFileAsync('git', ['add', '.'], { cwd: root });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-m', 'add committed production input',
+    ], { cwd: root });
+    const sourceHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
+    await fs.outputFile(path.join(pluginRoot, 'nested', '.aw', 'secret.md'), 'ignored nested secret\n');
+    await fs.writeFile(path.join(pluginRoot, 'nested', 'custom-secret.md'), 'custom ignored secret\n');
+    expect((await execFileAsync('git', [
+      'status', '--porcelain=v1', '--untracked-files=all',
+    ], { cwd: root })).stdout).toBe('');
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+
+    const output = capture();
+    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+      cwd: root,
+      interactive: false,
+      io: output.io,
+    })).toBe(0);
+    const receipt = JSON.parse(output.stdout()) as { commit: string; sourceHead: string };
+    expect(receipt.sourceHead).toBe(sourceHead);
+    await expect(execFileAsync('git', [
+      '--git-dir', remote,
+      'grep', '-n', '-e', 'ignored nested secret', '-e', 'custom ignored secret', receipt.commit,
+    ])).rejects.toBeDefined();
+    await expect(fs.readFile(path.join(pluginRoot, 'nested', '.aw', 'secret.md'), 'utf8'))
+      .resolves.toBe('ignored nested secret\n');
+    await expect(fs.readFile(path.join(pluginRoot, 'nested', 'custom-secret.md'), 'utf8'))
+      .resolves.toBe('custom ignored secret\n');
+  });
+
+  it('requires every sourceHead plugin to pass public validation before an attempt or remote write', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await execFileAsync('git', ['init'], { cwd: root });
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'plugin', 'init', 'invalid-publish',
+      '--description', 'Invalid publication fixture.',
+      '--skill-description', 'Perform the publication fixture task.',
+      '--workspace-root', root,
+    ], { cwd: root, io: capture().io });
+    await execFileAsync('git', ['add', '.'], { cwd: root });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-m', 'invalid plugin source',
+    ], { cwd: root });
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+
+    const invalidValidation = capture();
+    expect(await runCli([
+      'plugin', 'validate', path.join(root, 'plugins', 'invalid-publish'),
+      '--workspace-root', root, '--json',
+    ], { cwd: root, io: invalidValidation.io })).toBe(1);
+    expect(invalidValidation.stdout()).toContain('TODO placeholders');
+    const failed = capture();
+    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+      cwd: root,
+      interactive: false,
+      io: failed.io,
+    })).toBe(1);
+    expect(failed.stderr()).toContain('failed public source validation');
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json'))).resolves.toBe(false);
+    expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
+
+    const skillPath = path.join(root, 'plugins', 'invalid-publish', 'skills', 'invalid-publish', 'SKILL.md');
+    const skill = await fs.readFile(skillPath, 'utf8');
+    await fs.writeFile(skillPath, skill.replace(/\[TODO:[^\]]+\]/gu, 'Complete the requested task and verify the result.'));
+    await execFileAsync('git', ['add', skillPath], { cwd: root });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-m', 'fix plugin source',
+    ], { cwd: root });
+    const validValidation = capture();
+    expect(await runCli([
+      'plugin', 'validate', path.join(root, 'plugins', 'invalid-publish'),
+      '--workspace-root', root, '--json',
+    ], { cwd: root, io: validValidation.io })).toBe(0);
+    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+      cwd: root,
+      interactive: false,
+      io: capture().io,
+    })).toBe(0);
   });
 
   it('retains an attempted marker after atomic push failure and recovers only after a version bump', async () => {
