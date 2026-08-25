@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  computeReviewComponentDigest,
   listReviewRecords,
   parseReviewAttachment,
   publishReviewRecord,
@@ -31,12 +32,12 @@ function scope(kind: 'workflow' | 'aw-workflow', id: string): Record<string, unk
     kind,
     id,
     userOutcome: 'Publish one immutable review.',
-    entry: 'skills/reviewer/SKILL.md',
+    entry: '.agents/skills/static-skill/SKILL.md',
     components: [{
       kind: 'skill',
       id: 'reviewer',
-      path: 'skills/reviewer',
-      digest: `sha256:${'1'.repeat(64)}`,
+      path: '.agents/skills/static-skill',
+      digest: 'sha256:4cb2b5f110f3deefe6f3f79187b22029a2b1f521322312f74dc9e0c93677812b',
     }],
     representativePaths: ['machine check -> static review -> optional audited Eval -> report'],
     externalDependencies: [],
@@ -144,6 +145,44 @@ function base(repoRoot: string, overrides: Partial<PublishReviewRecordInput> = {
   };
 }
 
+async function configureDirectProviderConsumer(repoRoot: string): Promise<string> {
+  const consumerRoot = path.join(repoRoot, 'extensions', 'demo-plugin');
+  await fs.move(path.join(repoRoot, 'plugins', 'demo-plugin'), consumerRoot);
+  const manifestPath = path.join(consumerRoot, '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  manifest.buildConfig = {
+    skillRuntimeFiles: [{
+      skill: 'plugin-skill',
+      target: 'references/provider.txt',
+      import: { plugin: 'runtime-provider', export: 'standard' },
+    }],
+  };
+  await writeJson(manifestPath, manifest);
+  return consumerRoot;
+}
+
+async function writeDirectProvider(root: string): Promise<void> {
+  await writeJson(path.join(root, '.agents-plugin', 'plugin.json'), {
+    name: 'runtime-provider',
+    version: '0.1.0',
+    description: 'Runtime provider.',
+    compatibility: { aw: { minVersion: '0.0.0' } },
+    skills: './skills',
+    marketplace: {
+      category: 'workflow',
+      strict: true,
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+    },
+    buildConfig: { runtimeExports: [{ name: 'standard', source: './standard.txt' }] },
+  });
+  await fs.outputFile(path.join(root, 'standard.txt'), 'provider bytes\n');
+  await fs.outputFile(
+    path.join(root, 'skills', 'provider-skill', 'SKILL.md'),
+    '---\nname: provider-skill\ndescription: Provide runtime bytes.\n---\n# Provider\n',
+  );
+  await fs.outputFile(path.join(root, 'skills', 'provider-skill', 'README.md'), '# Provider\n');
+}
+
 describe('review publication', () => {
   it('publishes and verifies all four target kinds with canonical binding', async () => {
     const repoRoot = await fixture();
@@ -222,6 +261,128 @@ describe('review publication', () => {
     const generatedOne = await publishReviewRecord(base(generatedOneRepo, { kind: 'aw-plugin', target: 'demo-plugin' }));
     const generatedTwo = await publishReviewRecord(base(generatedTwoRepo, { kind: 'aw-plugin', target: 'demo-plugin' }));
     expect(generatedTwo.manifest.target.digest).not.toBe(generatedOne.manifest.target.digest);
+  });
+
+  it('accepts a repository-local custom AW plugin root and rejects an incorrect target id', async () => {
+    const repoRoot = await fixture();
+    const customRoot = await configureDirectProviderConsumer(repoRoot);
+    await fs.outputFile(
+      path.join(repoRoot, 'plugins', 'unrelated-broken', '.agents-plugin', 'plugin.json'),
+      '{ broken default plugin',
+    );
+    await fs.outputFile(
+      path.join(repoRoot, 'extensions', 'unrelated-broken', '.agents-plugin', 'plugin.json'),
+      '{ broken sibling plugin',
+    );
+    const targetManifestPath = path.join(customRoot, '.agents-plugin', 'plugin.json');
+    const providerRoot = path.join(repoRoot, 'extensions', 'runtime-provider');
+    await writeDirectProvider(providerRoot);
+    const original = await publishReviewRecord(base(repoRoot, {
+      kind: 'aw-plugin',
+      target: 'extensions/demo-plugin',
+    }));
+    expect(original.manifest.target.id).toBe('demo-plugin');
+
+    await fs.outputFile(path.join(providerRoot, 'standard.txt'), 'changed provider bytes\n');
+    const changed = await publishReviewRecord(base(repoRoot, {
+      kind: 'aw-plugin',
+      target: 'extensions/demo-plugin',
+      report: 'report-2.md',
+    }));
+    expect(changed.manifest.target.digest).not.toBe(original.manifest.target.digest);
+
+    const brokenProviderManifest = await fs.readJson(
+      path.join(providerRoot, '.agents-plugin', 'plugin.json'),
+    ) as Record<string, unknown>;
+    brokenProviderManifest.version = 'broken';
+    await writeJson(path.join(providerRoot, '.agents-plugin', 'plugin.json'), brokenProviderManifest);
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'aw-plugin',
+      target: 'extensions/demo-plugin',
+    }))).rejects.toThrow('strict SemVer');
+
+    await fs.remove(providerRoot);
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'aw-plugin',
+      target: 'extensions/demo-plugin',
+    }))).rejects.toThrow('provider plugin "runtime-provider" is unavailable');
+
+    const manifestPath = targetManifestPath;
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    manifest.name = 'wrong-plugin';
+    await writeJson(manifestPath, manifest);
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'aw-plugin',
+      target: 'extensions/demo-plugin',
+      report: 'report-2.md',
+    }))).rejects.toThrow('match target id');
+  });
+
+  it('rejects unsafe direct provider paths without scanning unrelated symlink plugins', async () => {
+    const unsafeCases: Array<{
+      name: string;
+      arrange: (repoRoot: string, providerRoot: string) => Promise<void>;
+    }> = [
+      {
+        name: 'default plugins ancestor',
+        arrange: async (repoRoot, providerRoot) => {
+          const externalPlugins = path.dirname(providerRoot);
+          await fs.remove(path.join(repoRoot, 'plugins'));
+          await fs.symlink(externalPlugins, path.join(repoRoot, 'plugins'));
+        },
+      },
+      {
+        name: 'sibling provider root',
+        arrange: async (repoRoot, providerRoot) => {
+          await fs.symlink(providerRoot, path.join(repoRoot, 'extensions', 'runtime-provider'));
+        },
+      },
+      {
+        name: 'sibling provider metadata directory',
+        arrange: async (repoRoot, providerRoot) => {
+          const siblingRoot = path.join(repoRoot, 'extensions', 'runtime-provider');
+          await fs.move(providerRoot, siblingRoot);
+          const externalMetadata = path.join(path.dirname(providerRoot), 'provider-metadata');
+          await fs.move(path.join(siblingRoot, '.agents-plugin'), externalMetadata);
+          await fs.symlink(externalMetadata, path.join(siblingRoot, '.agents-plugin'));
+        },
+      },
+      {
+        name: 'sibling provider manifest',
+        arrange: async (repoRoot, providerRoot) => {
+          const siblingRoot = path.join(repoRoot, 'extensions', 'runtime-provider');
+          await fs.move(providerRoot, siblingRoot);
+          const externalManifest = path.join(path.dirname(providerRoot), 'provider-manifest.json');
+          await fs.move(path.join(siblingRoot, '.agents-plugin', 'plugin.json'), externalManifest);
+          await fs.symlink(externalManifest, path.join(siblingRoot, '.agents-plugin', 'plugin.json'));
+        },
+      },
+    ];
+
+    for (const unsafeCase of unsafeCases) {
+      const repoRoot = await fixture();
+      await configureDirectProviderConsumer(repoRoot);
+      const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-provider-'));
+      roots.push(externalRoot);
+      const providerRoot = path.join(externalRoot, 'runtime-provider');
+      await writeDirectProvider(providerRoot);
+      await unsafeCase.arrange(repoRoot, providerRoot);
+      await expect(publishReviewRecord(base(repoRoot, {
+        kind: 'aw-plugin',
+        target: 'extensions/demo-plugin',
+      })), unsafeCase.name).rejects.toThrow('symlink');
+    }
+
+    const repoRoot = await fixture();
+    await configureDirectProviderConsumer(repoRoot);
+    await writeDirectProvider(path.join(repoRoot, 'extensions', 'runtime-provider'));
+    const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-unrelated-'));
+    roots.push(externalRoot);
+    await fs.symlink(externalRoot, path.join(repoRoot, 'plugins', 'unrelated-provider'));
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'aw-plugin',
+      target: 'extensions/demo-plugin',
+    }))).resolves.toMatchObject({ manifest: { target: { id: 'demo-plugin' } } });
   });
 
   it('is idempotent only when every publication input is unchanged', async () => {
@@ -382,6 +543,102 @@ describe('review publication', () => {
     await expect(publishReviewRecord(base(repoRoot, {
       kind: 'workflow', target: 'escaped', scope: 'escaped-scope.json',
     }))).rejects.toThrow('escape');
+  });
+
+  it('binds workflow scope components to existing non-symlink repository content', async () => {
+    const repoRoot = await fixture();
+    const record = await publishReviewRecord(base(repoRoot, {
+      kind: 'workflow', target: 'review-flow', scope: 'workflow-scope.json',
+    }));
+    await expect(verifyReviewRecord({ repoRoot, reportDir: record.root }))
+      .resolves.toMatchObject({ manifest: record.manifest });
+
+    const fileComponent = scope('workflow', 'file-flow');
+    const component = (fileComponent.components as Array<Record<string, unknown>>)[0]!;
+    component.path = '.agents/skills/static-skill/SKILL.md';
+    component.digest = 'sha256:c795433b52117e631aab3560e920bf55b0be0b49de62f6ad240ea1edd789c3d5';
+    await writeJson(path.join(repoRoot, 'file-scope.json'), fileComponent);
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'workflow', target: 'file-flow', scope: 'file-scope.json',
+    }))).resolves.toMatchObject({ manifest: { target: { id: 'file-flow' } } });
+
+    const missing = scope('workflow', 'missing-flow');
+    (missing.components as Array<Record<string, unknown>>)[0]!.path = 'missing-component';
+    await writeJson(path.join(repoRoot, 'missing-scope.json'), missing);
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'workflow', target: 'missing-flow', scope: 'missing-scope.json',
+    }))).rejects.toThrow('does not exist');
+
+    const forged = scope('workflow', 'forged-flow');
+    (forged.components as Array<Record<string, unknown>>)[0]!.digest = `sha256:${'f'.repeat(64)}`;
+    await writeJson(path.join(repoRoot, 'forged-scope.json'), forged);
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'workflow', target: 'forged-flow', scope: 'forged-scope.json',
+    }))).rejects.toThrow('does not match repository content');
+
+    await fs.appendFile(path.join(repoRoot, '.agents', 'skills', 'static-skill', 'SKILL.md'), 'stale\n');
+    await expect(verifyReviewRecord({ repoRoot, reportDir: record.root }))
+      .resolves.toMatchObject({ manifest: record.manifest });
+
+    const linkedRoot = path.join(repoRoot, 'linked-component');
+    await fs.symlink(path.join(repoRoot, '.agents', 'skills', 'static-skill'), linkedRoot);
+    const linked = scope('workflow', 'linked-flow');
+    (linked.components as Array<Record<string, unknown>>)[0]!.path = 'linked-component';
+    await writeJson(path.join(repoRoot, 'linked-scope.json'), linked);
+    await expect(publishReviewRecord(base(repoRoot, {
+      kind: 'workflow', target: 'linked-flow', scope: 'linked-scope.json',
+    }))).rejects.toThrow('symlink');
+  });
+
+  it('computes canonical file and directory digests and rejects unsafe component nodes', async () => {
+    const repoRoot = await fixture();
+    const directory = await computeReviewComponentDigest({
+      repoRoot,
+      path: '.agents/skills/static-skill',
+    });
+    const repeated = await computeReviewComponentDigest({
+      repoRoot,
+      path: path.join('.agents', 'skills', 'static-skill'),
+    });
+    const file = await computeReviewComponentDigest({
+      repoRoot,
+      path: '.agents/skills/static-skill/SKILL.md',
+    });
+    expect(repeated).toEqual(directory);
+    expect(directory).toEqual({
+      path: '.agents/skills/static-skill',
+      digest: 'sha256:4cb2b5f110f3deefe6f3f79187b22029a2b1f521322312f74dc9e0c93677812b',
+    });
+    expect(file).toEqual({
+      path: '.agents/skills/static-skill/SKILL.md',
+      digest: 'sha256:c795433b52117e631aab3560e920bf55b0be0b49de62f6ad240ea1edd789c3d5',
+    });
+
+    await expect(computeReviewComponentDigest({ repoRoot, path: 'missing' }))
+      .rejects.toThrow('does not exist');
+    await expect(computeReviewComponentDigest({ repoRoot, path: path.dirname(repoRoot) }))
+      .rejects.toThrow('escapes');
+
+    const linkedRoot = path.join(repoRoot, 'linked-root');
+    await fs.symlink(path.join(repoRoot, '.agents', 'skills', 'static-skill'), linkedRoot);
+    await expect(computeReviewComponentDigest({ repoRoot, path: 'linked-root' }))
+      .rejects.toThrow('symlink');
+    await expect(computeReviewComponentDigest({ repoRoot, path: 'linked-root/SKILL.md' }))
+      .rejects.toThrow('symlink');
+
+    const treeRoot = path.join(repoRoot, 'component-tree');
+    await fs.ensureDir(treeRoot);
+    await fs.writeFile(path.join(treeRoot, 'ordinary.txt'), 'ordinary\n');
+    await fs.symlink(path.join(repoRoot, 'report.md'), path.join(treeRoot, 'linked.txt'));
+    await expect(computeReviewComponentDigest({ repoRoot, path: 'component-tree' }))
+      .rejects.toThrow('symlink');
+
+    if (process.platform !== 'win32') {
+      const fifo = path.join(repoRoot, 'unsafe-node');
+      await execFileAsync('mkfifo', [fifo]);
+      await expect(computeReviewComponentDigest({ repoRoot, path: 'unsafe-node' }))
+        .rejects.toThrow('regular file or directory');
+    }
   });
 
   it('treats a workflow target equal to scope id as an id before a repository path', async () => {

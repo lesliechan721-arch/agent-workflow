@@ -3256,8 +3256,17 @@ export async function validateSourcePluginManifest(
   pluginRoot: string,
   rawManifest: unknown,
 ): Promise<PluginManifestSource> {
+  const distributionsInput = rawManifest !== null
+    && typeof rawManifest === 'object'
+    && !Array.isArray(rawManifest)
+    ? (rawManifest as Record<string, unknown>).distributions
+    : undefined;
+  const requiresExplicitMinVersion = distributionsInput !== null
+    && typeof distributionsInput === 'object'
+    && !Array.isArray(distributionsInput)
+    && Object.hasOwn(distributionsInput, 'agentSkills');
   const manifest = validatePluginManifest(pluginRoot, rawManifest, {
-    compatibilityMode: 'defaulted',
+    compatibilityMode: requiresExplicitMinVersion ? 'required' : 'defaulted',
     defaultMinVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
   });
   const parsedVersion = parseStrictSemVer(manifest.version, 'plugin manifest.version');

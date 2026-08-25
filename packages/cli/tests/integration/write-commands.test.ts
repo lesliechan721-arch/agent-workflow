@@ -1191,10 +1191,12 @@ describe('five namespaced write commands', () => {
           const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} })) as {
             plugins?: Record<string, unknown>;
           };
+          const plugins = { ...(installed.plugins ?? {}) };
+          delete plugins[pluginName];
           await fs.outputJson(installedPath, { plugins: {
-            ...(installed.plugins ?? {}),
+            ...plugins,
             [pluginId]: [{
-              name: pluginName, marketplace: marketplaceName, scope,
+              name: pluginName, scope,
               ...(scope === 'project' ? { projectPath } : {}), version: '1.0.0',
             }],
           } });
@@ -2856,7 +2858,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(false);
   });
 
-  it('treats platform both as every platform supported by each selected plugin', async () => {
+  it('blocks same-name unbound Claude records and preserves different-name records', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const codexRoot = path.join(isolation.layout.fixtureCwd, 'codex-source');
     const claudeRoot = path.join(isolation.layout.fixtureCwd, 'claude-source');
@@ -2948,6 +2950,18 @@ describe('five namespaced write commands', () => {
           };
           await fs.outputJson(knownPath, known);
         }
+        if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'remove') {
+          const marketplaceName = invocation.args[3]!;
+          const settings = await fs.readJson(settingsPath).catch(() => ({})) as Record<string, unknown>;
+          const extraKnownMarketplaces = {
+            ...((settings.extraKnownMarketplaces ?? {}) as Record<string, unknown>),
+          };
+          delete extraKnownMarketplaces[marketplaceName];
+          await fs.outputJson(settingsPath, { ...settings, extraKnownMarketplaces });
+          const known = await fs.readJson(knownPath).catch(() => ({})) as Record<string, unknown>;
+          delete known[marketplaceName];
+          await fs.outputJson(knownPath, known);
+        }
         if (invocation.args[1] === 'install') {
           const pluginId = invocation.args[2]!;
           const separator = pluginId.lastIndexOf('@');
@@ -2960,12 +2974,13 @@ describe('five namespaced write commands', () => {
           const installed = await fs.readJson(installedPath).catch(() => ({ plugins: {} })) as {
             plugins?: Record<string, unknown>;
           };
+          const plugins = { ...(installed.plugins ?? {}) };
+          delete plugins[pluginName];
           await fs.outputJson(installedPath, {
             plugins: {
-              ...(installed.plugins ?? {}),
+              ...plugins,
               [pluginId]: [{
                 name: pluginName,
-                marketplace: marketplaceName,
                 scope,
                 ...(scope === 'project' ? { projectPath } : {}),
                 version: '1.0.0',
@@ -2991,6 +3006,26 @@ describe('five namespaced write commands', () => {
       return { exitCode: 0, stdout: 'agent-cli 99.0.0', stderr: '' };
     });
     const runtime = { env: isolation.env, nativeCliRunner };
+    const installedPath = path.join(
+      isolation.env.AW_CLAUDE_HOME!,
+      'plugins',
+      'installed_plugins.json',
+    );
+    const sameNameUnboundRecord = {
+      name: 'claude-only',
+      scope: 'user',
+      version: '1.0.0',
+      installPath: path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'cache', 'claude-only'),
+    };
+    const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    const settingsBytes = Buffer.from('{ "sentinel": true }\n');
+    const installedBytes = Buffer.from(`${JSON.stringify({
+      plugins: { 'claude-only': [sameNameUnboundRecord] },
+    }, null, 4)}\n`);
+    await Promise.all([
+      fs.outputFile(settingsPath, settingsBytes),
+      fs.outputFile(installedPath, installedBytes),
+    ]);
     const options = {
       cwd: isolation.layout.fixtureCwd,
       platform: 'both',
@@ -2998,6 +3033,34 @@ describe('five namespaced write commands', () => {
     } as const;
     const selectors = ['codex/codex-only', 'claude/claude-only'];
 
+    for (const [command, commandSelectors] of [
+      [installWriteCommand, selectors],
+      [upgradeWriteCommand, selectors],
+      [reinstallWriteCommand, ['claude/claude-only']],
+    ] as const) {
+      nativeCliRunner.mockClear();
+      const result = await command([...commandSelectors], options, runtime);
+      expect(result).toMatchObject({
+        overallState: 'failed',
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({ errorCode: 'externalOwnershipPresent' }),
+        ]),
+      });
+      expect(nativeCliRunner).not.toHaveBeenCalled();
+      await expect(fs.readFile(settingsPath)).resolves.toEqual(settingsBytes);
+      await expect(fs.readFile(installedPath)).resolves.toEqual(installedBytes);
+    }
+
+    const unboundInstalledRecord = {
+      name: 'default-plugin',
+      scope: 'project',
+      projectPath: await fs.realpath(isolation.layout.fixtureCwd),
+      version: '1.0.0',
+      installPath: path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'cache', 'default-plugin'),
+    };
+    await fs.outputJson(installedPath, {
+      plugins: { 'default-plugin': [unboundInstalledRecord] },
+    });
     for (const command of [installWriteCommand, upgradeWriteCommand]) {
       const result = await command(selectors, options, runtime);
       expect(result).toMatchObject({
@@ -3008,6 +3071,9 @@ describe('five namespaced write commands', () => {
         ]),
       });
       expect(result.receiptTargets).toHaveLength(2);
+      await expect(fs.readJson(installedPath)).resolves.toMatchObject({
+        plugins: { 'default-plugin': [unboundInstalledRecord] },
+      });
     }
 
     for (const [selector, platform] of [
@@ -3019,7 +3085,18 @@ describe('five namespaced write commands', () => {
         overallState: 'succeeded',
         receiptTargets: [expect.objectContaining({ pluginId: selector, platform })],
       });
+      await expect(fs.readJson(installedPath)).resolves.toMatchObject({
+        plugins: { 'default-plugin': [unboundInstalledRecord] },
+      });
     }
+
+    const uninstalled = await uninstallWriteCommand(['claude/claude-only'], options, runtime);
+    expect(uninstalled.overallState, JSON.stringify(uninstalled.rebuildResults)).toBe('succeeded');
+    const cleaned = await cleanupWriteCommand(['claude/claude-only'], options, runtime);
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    await expect(fs.readJson(installedPath)).resolves.toMatchObject({
+      plugins: { 'default-plugin': [unboundInstalledRecord] },
+    });
 
     const unsupported = await installWriteCommand(['codex/codex-only'], {
       ...options,
@@ -3095,6 +3172,103 @@ describe('five namespaced write commands', () => {
     })).values).toEqual({ mode: 'fast' });
     expect(await fs.readFile(codexRuntime, 'utf8')).toBe('mode=fast\n');
     expect(await fs.readFile(claudeRuntime, 'utf8')).toBe('mode=safe\n');
+  });
+
+  it('blocks a config reapply that would overwrite a same-name unbound Claude record', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'claude-config-collision-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'config-native', '0.0.0', 'config\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CLAUDE'];
+      manifest.config = {
+        schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
+      };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    const sourceIdentity = await calculateCatalogSourceIdentity({
+      id: 'team', type: 'path', primary: true, path: sourceRoot,
+    });
+    await fs.copy(sourceRoot, marketplaceRoot);
+    await fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      marketplaceName: 'aw',
+    });
+    for (const manifestPath of [
+      path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    ]) {
+      const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+      await fs.writeJson(manifestPath, { ...manifest, name: 'aw' });
+    }
+    const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
+    const installedPath = path.join(
+      isolation.env.AW_CLAUDE_HOME!,
+      'plugins',
+      'installed_plugins.json',
+    );
+    const knownPath = path.join(
+      isolation.env.AW_CLAUDE_HOME!,
+      'plugins',
+      'known_marketplaces.json',
+    );
+    const settingsBytes = Buffer.from(`${JSON.stringify({
+      extraKnownMarketplaces: {
+        aw: { source: { source: 'directory', path: marketplaceRoot } },
+      },
+      enabledPlugins: { 'config-native@aw': true },
+    }, null, 2)}\n`);
+    const installedBytes = Buffer.from(`${JSON.stringify({
+      plugins: {
+        'config-native@aw': [{ name: 'config-native', scope: 'user', version: '1.0.0' }],
+        'config-native': [{ name: 'config-native', scope: 'project', version: '9.9.9' }],
+      },
+    }, null, 2)}\n`);
+    await Promise.all([
+      fs.outputFile(settingsPath, settingsBytes),
+      fs.outputFile(installedPath, installedBytes),
+      fs.outputJson(knownPath, {
+        aw: {
+          source: { source: 'directory', path: marketplaceRoot },
+          installLocation: marketplaceRoot,
+        },
+      }),
+    ]);
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: 'claude-cli 99.0.0',
+      stderr: '',
+    }));
+    const captured = createCapturedCliIo();
+
+    expect(await runCli([
+      'config', 'set', 'team/config-native', 'mode', 'fast', '--scope', 'user', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: false,
+      nativeCliRunner,
+    })).toBe(1);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'failed',
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({ errorCode: 'externalOwnershipPresent' }),
+      ]),
+    });
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    await expect(fs.readFile(settingsPath)).resolves.toEqual(settingsBytes);
+    await expect(fs.readFile(installedPath)).resolves.toEqual(installedBytes);
   });
 
   it('deduplicates bare, qualified, and repeated selectors by canonical target identity', async () => {

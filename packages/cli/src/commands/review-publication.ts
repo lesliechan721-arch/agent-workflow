@@ -12,7 +12,8 @@ import {
   prepareLocalPluginBundleSource,
 } from '../generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../utils/catalog-runtime-projection.js';
-import { discoverPlugins, readPluginManifest } from '../utils/manifest.js';
+import { readPluginManifest } from '../utils/manifest.js';
+import type { PluginManifestSource, PluginMeta } from '../types.js';
 
 const execFileAsync = promisify(execFile);
 const digestPattern = /^sha256:[0-9a-f]{64}$/u;
@@ -101,6 +102,16 @@ export interface ListReviewRecordsInput {
 export interface ShowReviewRecordInput {
   repoRoot: string;
   reviewId: string;
+}
+
+export interface ReviewComponentDigestInput {
+  repoRoot: string;
+  path: string;
+}
+
+export interface ReviewComponentDigest {
+  path: string;
+  digest: string;
 }
 
 interface ResolvedTarget {
@@ -264,16 +275,25 @@ async function canonicalRepoRoot(repoRoot: string): Promise<string> {
   return fs.realpath(resolved);
 }
 
-async function assertNoSymlinkChain(root: string, candidate: string, label: string): Promise<void> {
+async function assertNoSymlinkChain(
+  root: string,
+  candidate: string,
+  label: string,
+  allowMissing = false,
+): Promise<boolean> {
   assertWithin(root, candidate, label);
   const relative = path.relative(root, candidate);
   let current = root;
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, segment);
     const stat = await fs.lstat(current).catch(() => null);
-    if (!stat) throw new Error(`${label} does not exist: ${candidate}.`);
+    if (!stat) {
+      if (allowMissing) return false;
+      throw new Error(`${label} does not exist: ${candidate}.`);
+    }
     if (stat.isSymbolicLink()) throw new Error(`${label} cannot use symlinks: ${candidate}.`);
   }
+  return true;
 }
 
 async function assertNoSymlinkAncestors(root: string, candidate: string, label: string): Promise<void> {
@@ -365,6 +385,45 @@ async function listStrictRegularFiles(root: string, label: string): Promise<Arra
   return files;
 }
 
+async function reviewComponentDigestAtRoot(repoRoot: string, relativePath: string, label: string): Promise<string> {
+  const candidate = path.resolve(repoRoot, relativePath);
+  await assertNoSymlinkChain(repoRoot, candidate, label);
+  const stat = await fs.lstat(candidate);
+  if (stat.isFile()) {
+    return productionTreeDigest([{
+      path: '.',
+      mode: process.platform !== 'win32' && (stat.mode & 0o111) !== 0 ? '100755' : '100644',
+      bytes: await fs.readFile(candidate),
+    }]);
+  }
+  if (stat.isDirectory()) {
+    return productionTreeDigest(await listStrictRegularFiles(candidate, label));
+  }
+  throw new Error(`${label} must be a regular file or directory.`);
+}
+
+export async function computeReviewComponentDigest(
+  input: ReviewComponentDigestInput,
+): Promise<ReviewComponentDigest> {
+  const repoRoot = await canonicalRepoRoot(input.repoRoot);
+  const candidate = path.resolve(repoRoot, input.path);
+  const digest = await reviewComponentDigestAtRoot(repoRoot, input.path, 'Review component');
+  return {
+    path: path.relative(repoRoot, candidate).split(path.sep).join('/') || '.',
+    digest,
+  };
+}
+
+async function assertScopeComponentBindings(repoRoot: string, scope: ReviewScope): Promise<void> {
+  for (const [index, component] of scope.components.entries()) {
+    const label = `Scope component ${index + 1}`;
+    const actual = await reviewComponentDigestAtRoot(repoRoot, component.path, label);
+    if (actual !== component.digest) {
+      throw new Error(`${label} digest does not match repository content: ${component.path}.`);
+    }
+  }
+}
+
 async function assertPluginSourceNodes(root: string): Promise<void> {
   async function walk(current: string, relative = ''): Promise<void> {
     const entries = await fs.readdir(current, { withFileTypes: true });
@@ -402,14 +461,62 @@ function productionTreeDigest(files: Array<{ path: string; mode: string; bytes: 
   return `sha256:${hash.digest('hex')}`;
 }
 
+function productionProviderNames(manifest: PluginManifestSource): string[] {
+  const names = [
+    ...(manifest.buildConfig?.buildImports ?? []).map((entry) => entry.plugin),
+    ...(manifest.buildConfig?.skillRuntimeFiles ?? [])
+      .flatMap((entry) => entry.import ? [entry.import.plugin] : []),
+    ...(manifest.artifacts?.targets ?? [])
+      .flatMap((target) => (target.runtimeImports ?? []).map((entry) => entry.plugin)),
+  ];
+  return [...new Set(names.filter((name) => !name.startsWith('@aw/')))].sort(compareCodepoint);
+}
+
+async function resolveProductionProviderSourceSet(
+  repoRoot: string,
+  plugin: PluginMeta,
+): Promise<PluginMeta[]> {
+  const plugins = [plugin];
+  for (const providerName of productionProviderNames(plugin.manifest)) {
+    const roots = [...new Set([
+      path.join(repoRoot, 'plugins', providerName),
+      path.join(path.dirname(plugin.rootDir), providerName),
+    ].map((candidate) => path.resolve(candidate)))];
+    for (const root of roots) {
+      if (root === plugin.rootDir) continue;
+      const rootLabel = `Provider plugin "${providerName}" root`;
+      if (!await assertNoSymlinkChain(repoRoot, root, rootLabel, true)) continue;
+      const providerRoot = await resolveRepoDirectory(
+        repoRoot,
+        root,
+        rootLabel,
+      );
+      const metadataPath = path.join(providerRoot, '.agents-plugin');
+      const metadataLabel = `Provider plugin "${providerName}" metadata`;
+      if (!await assertNoSymlinkChain(repoRoot, metadataPath, metadataLabel, true)) continue;
+      await resolveRepoDirectory(
+        repoRoot,
+        metadataPath,
+        metadataLabel,
+      );
+      const manifestPath = path.join(metadataPath, 'plugin.json');
+      const manifestLabel = `Provider plugin "${providerName}" manifest`;
+      if (!await assertNoSymlinkChain(repoRoot, manifestPath, manifestLabel, true)) continue;
+      await resolveRepoFile(
+        repoRoot,
+        manifestPath,
+        manifestLabel,
+      );
+      plugins.push(await readPluginManifest(providerRoot));
+    }
+  }
+  return plugins;
+}
+
 async function pluginProductionDigest(repoRoot: string, pluginRoot: string): Promise<string> {
   await assertPluginSourceNodes(pluginRoot);
-  const plugins = await discoverPlugins(repoRoot);
   const plugin = await readPluginManifest(pluginRoot);
-  const matches = plugins.filter((entry) => entry.manifest.name === plugin.manifest.name);
-  if (matches.length !== 1 || matches[0]!.rootDir !== plugin.rootDir) {
-    throw new Error(`Plugin target must resolve uniquely in this repository: ${plugin.manifest.name}.`);
-  }
+  const plugins = await resolveProductionProviderSourceSet(repoRoot, plugin);
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-plugin-bundle-'));
   let prepared: Awaited<ReturnType<typeof prepareLocalPluginBundleSource>> | undefined;
   try {
@@ -432,21 +539,22 @@ async function pluginProductionDigest(repoRoot: string, pluginRoot: string): Pro
 }
 
 async function resolvePluginTarget(repoRoot: string, target: string): Promise<ResolvedTarget> {
-  const idTarget = kebabPattern.test(target);
+  const defaultRoot = path.join(repoRoot, 'plugins', target);
+  const pathTarget = path.resolve(repoRoot, target);
+  const idTarget = kebabPattern.test(target)
+    && (await fs.pathExists(defaultRoot) || !await fs.pathExists(pathTarget));
   let root: string;
   if (!idTarget) {
-    root = await resolveRepoDirectory(repoRoot, path.resolve(repoRoot, target), 'Plugin target');
-    const relative = path.relative(repoRoot, root).split(path.sep).join('/');
-    if (!/^plugins\/[^/]+$/u.test(relative)) throw new Error('Plugin target path must be plugins/<id>.');
+    root = await resolveRepoDirectory(repoRoot, pathTarget, 'Plugin target');
   } else {
     assertKebab(target, 'Plugin id');
-    root = await resolveRepoDirectory(repoRoot, path.join(repoRoot, 'plugins', target), 'Plugin target');
+    root = await resolveRepoDirectory(repoRoot, defaultRoot, 'Plugin target');
   }
   const manifestPath = await resolveRepoFile(repoRoot, path.join(root, '.agents-plugin', 'plugin.json'), 'Plugin manifest');
   const manifest = await fs.readJson(manifestPath) as unknown;
   if (!isRecord(manifest)) throw new Error('Plugin manifest must be a JSON object.');
   assertKebab(manifest.name, 'Plugin manifest name');
-  if (path.basename(root) !== manifest.name) throw new Error('Plugin manifest name must match its root directory.');
+  if (path.basename(root) !== manifest.name) throw new Error('Plugin manifest name must match target id.');
   if (idTarget && target !== manifest.name) throw new Error('Plugin target id does not match manifest name.');
   return {
     kind: 'aw-plugin',
@@ -465,6 +573,7 @@ async function resolveWorkflowTarget(
   if (!scopePath) throw new Error(`${kind} publication requires scope.`);
   const resolvedScopePath = await resolveRepoFile(repoRoot, scopePath, 'Scope');
   const scope = parseScope(await fs.readJson(resolvedScopePath), kind);
+  await assertScopeComponentBindings(repoRoot, scope);
   if (target === scope.id) {
     return { kind, id: scope.id, digest: scopeDigest(scope), scope };
   }

@@ -32,6 +32,14 @@ test('workflow Reviewer requires an admitted user-result boundary', async () => 
   assert.match(skill, /不能给整个仓库或系统 `pass`/u);
 });
 
+test('workflow Reviewer binds archive components with the public digest command', async () => {
+  // Static contract exception: installed publication instructions must require the public canonical digest producer; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  const skill = await readSkill('review-agent-workflow');
+  assert.match(skill, /aw review digest <component-path> --json/u);
+  assert.match(skill, /返回的 `path` 和 `digest` 原样写入/u);
+  assert.match(skill, /不得自行计算或猜测 digest/u);
+});
+
 test('workflow Reviewer owns Leaf Fix Admission and parent synthesis', async () => {
   // Static contract exception: installed workflow review instructions must preserve the leaf-fix ownership boundary; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
   const skill = await readSkill('review-agent-workflow');

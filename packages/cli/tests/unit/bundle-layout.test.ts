@@ -418,6 +418,20 @@ describe('bundle layout validation', () => {
     });
   });
 
+  it('rejects portable source manifests without an explicit AW minimum before catalog output', async () => {
+    const repoRoot = await makeTempRepo();
+    const outputRoot = path.join(repoRoot, 'embedded');
+    await updateFixturePluginManifest(repoRoot, (manifest) => {
+      delete manifest.compatibility;
+      manifest.distributions = { agentSkills: {} };
+    });
+
+    await expect(bundlePlugins({ repoRoot, outputRoot })).rejects.toThrow(
+      'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
+    );
+    await expect(fs.pathExists(path.join(outputRoot, 'catalog-manifest.json'))).resolves.toBe(false);
+  });
+
   it.each([
     'package.json',
     'release/version-targets.json',

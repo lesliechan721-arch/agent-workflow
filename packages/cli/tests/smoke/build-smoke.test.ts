@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import { compareReleaseSemVer } from '../../../../scripts/release/common.mjs';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
@@ -345,7 +346,17 @@ describe('build smoke', () => {
       fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
       fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
     ]);
-    const catalogManifest = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json'));
+    const catalogManifest = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json')) as {
+      compatibility: { aw: { minVersion: string } };
+      entries: Array<{
+        name: string;
+        source: string;
+        artifactDigest: string;
+        manifestDigest: string;
+        contentDigest: string;
+        compatibility: { aw: { minVersion: string } };
+      }>;
+    };
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
       'agent-skill-toolkit',
@@ -538,7 +549,6 @@ describe('build smoke', () => {
       schemaVersion: 4,
       catalogVersion: cliPackageJson.version,
       channel: String(cliPackageJson.version).includes('-') ? 'beta' : 'latest',
-      compatibility: { aw: { minVersion: '0.0.0' } },
       release: { state: 'development' },
       entries: expect.arrayContaining(Object.keys(EXPECTED_PLUGIN_PLATFORMS).map((pluginName) =>
         expect.objectContaining({
@@ -549,6 +559,12 @@ describe('build smoke', () => {
           contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }))),
     });
+    const entryMinVersions = catalogManifest.entries.map((entry) => entry.compatibility.aw.minVersion);
+    expect(entryMinVersions).not.toHaveLength(0);
+    const derivedFloor = entryMinVersions.reduce((floor, version) => (
+      compareReleaseSemVer(version, floor) > 0 ? version : floor
+    ));
+    expect(catalogManifest.compatibility.aw.minVersion).toBe(derivedFloor);
     expect(catalogManifest).not.toHaveProperty('history');
     expect(catalogManifest).not.toHaveProperty('packages');
     expect((await fs.readdir(outputRoot)).sort()).toEqual([

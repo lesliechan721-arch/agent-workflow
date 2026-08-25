@@ -81,7 +81,31 @@ test('generated authoring views are fresh projections of the CLI canonical regis
     for (const entry of registry.surfaces[surface].entries) {
       const field = entry.field.replaceAll('|', '\\|');
       assert.ok(content.includes(`| \`${field}\` |`), `${fileName} must include ${entry.field}`);
+      assert.ok(
+        content.includes((entry.verifiedSource ?? registry.verifiedSource).replaceAll('|', '\\|')),
+        `${fileName} must trace ${entry.field} to its verified source`,
+      );
     }
+  }
+});
+
+test('artifact renderer reference exposes the portable distribution input contract', async () => {
+  // Static contract exception: installed authors consume this reference to select only bundle-local portable runtime imports; behavior test is not suitable because this plugin publishes guidance instead of running consumer renderers.
+  const reference = await readFile(
+    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-artifact-renderer.md'),
+    'utf8',
+  );
+  for (const fragment of [
+    'AW_PLUGIN_DISTRIBUTION=agent-skills',
+    'AW_PLUGIN_PLATFORM',
+    '`distribution` 是 `"agent-skills"`',
+    '`runtimeImports` 的每项是 `{ artifactId, name, providerPluginId, exportName, path, digest }`',
+    'typed build-time reuse edge，不声明、也不推断 manifest `dependencies`',
+    'target 的 `id` 和其 runtime import 的 `name`',
+    'bundle-local `path`',
+    'target 为 disabled 时也返回 disabled artifact',
+  ]) {
+    assert.ok(reference.includes(fragment), `missing portable renderer contract: ${fragment}`);
   }
 });
 

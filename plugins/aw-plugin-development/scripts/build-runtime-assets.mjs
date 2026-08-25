@@ -88,15 +88,15 @@ function renderAuthoringReference(registry, surfaceKey, digest) {
     `Generated from \`@aw/cli/plugin-authoring-capabilities\` (${digest}).`,
     `Verified source: \`${registry.verifiedSource}\`.`,
     '',
-    '| Field | Type | Required | Product/profile | Accepted values | Requires | Conflicts |',
-    '| --- | --- | --- | --- | --- | --- | --- |',
+    '| Field | Type | Required | Product/profile | Accepted values | Requires | Conflicts | Verified source |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
   ];
   for (const entry of surface.entries) {
     const profile = entry.products ?? entry.profiles ?? 'all supported';
     const accepted = Array.isArray(entry.acceptedValues)
       ? entry.acceptedValues.join(', ')
       : entry.acceptedValues ?? '—';
-    lines.push(`| \`${markdownCell(entry.field)}\` | ${markdownCell(entry.type)} | ${markdownCell(entry.required)} | ${markdownCell(profile)} | ${markdownCell(accepted)} | ${markdownCell(entry.requires ?? '—')} | ${markdownCell(entry.conflicts ?? '—')} |`);
+    lines.push(`| \`${markdownCell(entry.field)}\` | ${markdownCell(entry.type)} | ${markdownCell(entry.required)} | ${markdownCell(profile)} | ${markdownCell(accepted)} | ${markdownCell(entry.requires ?? '—')} | ${markdownCell(entry.conflicts ?? '—')} | ${markdownCell(entry.verifiedSource ?? registry.verifiedSource)} |`);
   }
   return `${lines.join('\n')}\n`;
 }

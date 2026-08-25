@@ -19,6 +19,7 @@ import type {
   CatalogResolution,
   CodexSharedHookGroup,
   GeneratedArtifact,
+  MarketplaceManifest,
   PlatformName,
   PluginMeta,
   Scope,
@@ -99,7 +100,11 @@ import {
   withActiveMarketplaceRuntimeLease,
 } from '../utils/active-marketplace-runtime-lock.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
-import { replayNamespacedCodexSkillOverlays } from '../utils/local-marketplace.js';
+import {
+  getNamespacedMarketplaceName,
+  projectMarketplaceManifestForPlatform,
+  replayNamespacedCodexSkillOverlays,
+} from '../utils/local-marketplace.js';
 import {
   cleanupOrphanNamespacedMarketplaceRoot,
   commitMarketplaceGenerationBackup,
@@ -2567,7 +2572,7 @@ type ClaudeNativeScope = Scope | 'local';
 
 interface ClaudeNativeRecord {
   name: string;
-  marketplace: string;
+  marketplace?: string;
   scope: ClaudeNativeScope;
   projectPath?: string;
   version: string;
@@ -2665,6 +2670,8 @@ async function readClaudeNativeState(options: {
   pluginEnabled: boolean;
   records: ClaudeNativeRecord[];
   marketplaceConsumers: ClaudeMarketplaceConsumer[];
+  marketplaceConsumerEvidence: boolean;
+  unboundPluginNames: string[];
   pluginVersions: string[];
 }> {
   const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
@@ -2743,6 +2750,7 @@ async function readClaudeNativeState(options: {
   const pluginEnabled = rawEnabled === true || Array.isArray(rawEnabled);
   const enabledPluginEvidence = rawEnabled !== undefined;
   const records: ClaudeNativeRecord[] = [];
+  const unboundPluginNames = new Set<string>();
   for (const [pluginKey, raw] of Object.entries(
     (installed.plugins as Record<string, unknown> | undefined) ?? {},
   )) {
@@ -2764,13 +2772,20 @@ async function readClaudeNativeState(options: {
       if (record.projectPath !== undefined && typeof record.projectPath !== 'string') {
         throw new Error(`Claude installed_plugins 记录 ${pluginKey} 的 projectPath 无效。`);
       }
+      const marketplaceSeparator = pluginKey.lastIndexOf('@');
+      const keyedMarketplace = marketplaceSeparator > 0 && marketplaceSeparator < pluginKey.length - 1
+        ? pluginKey.slice(marketplaceSeparator + 1)
+        : undefined;
+      if (!pluginKey.includes('@') && record.marketplace === undefined) {
+        unboundPluginNames.add(pluginKey);
+      }
       records.push({
         name: typeof record.name === 'string'
           ? record.name
-          : pluginKey.includes('@') ? pluginKey.slice(0, pluginKey.indexOf('@')) : pluginKey,
+          : keyedMarketplace ? pluginKey.slice(0, marketplaceSeparator) : pluginKey,
         marketplace: typeof record.marketplace === 'string'
           ? record.marketplace
-          : pluginKey.includes('@') ? pluginKey.slice(pluginKey.indexOf('@') + 1) : marketplaceName,
+          : keyedMarketplace,
         scope: record.scope === 'project' || record.scope === 'local' ? record.scope : 'user',
         ...(typeof record.projectPath === 'string' ? { projectPath: record.projectPath } : {}),
         version,
@@ -2815,6 +2830,19 @@ async function readClaudeNativeState(options: {
   const foreign = canonicalEvidence && marketplaceState === 'foreign';
   const canonicalRecords = matchingRecords;
   const canonicalSettingsRecord = settingsMatchesScope;
+  const marketplaceConsumerSuffix = `@${marketplaceName}`;
+  const hasMarketplaceConsumerKey = (pluginKey: string): boolean =>
+    pluginKey.length > marketplaceConsumerSuffix.length
+    && pluginKey.endsWith(marketplaceConsumerSuffix);
+  const marketplaceConsumerEvidence = records.some((record) =>
+    record.marketplace === marketplaceName)
+    || Object.keys(enabledPlugins ?? {}).some(hasMarketplaceConsumerKey)
+    || Object.entries(settingsInstalled ?? {}).some(([pluginKey, raw]) =>
+      hasMarketplaceConsumerKey(pluginKey)
+      || (raw !== null
+        && typeof raw === 'object'
+        && !Array.isArray(raw)
+        && (raw as Record<string, unknown>).marketplace === marketplaceName));
   const marketplaceConsumers: ClaudeMarketplaceConsumer[] = records
     .filter((record) => record.marketplace === marketplaceName)
     .map((record) => ({
@@ -2865,8 +2893,66 @@ async function readClaudeNativeState(options: {
     pluginEnabled,
     records,
     marketplaceConsumers,
+    marketplaceConsumerEvidence,
+    unboundPluginNames: [...unboundPluginNames],
     pluginVersions,
   };
+}
+
+export async function assertNoClaudeUnboundNativeNameCollision(options: {
+  pluginName: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const state = await readClaudeNativeState({
+    pluginName: options.pluginName,
+    scope: 'user',
+    cwd: options.cwd,
+    env: options.env,
+  });
+  if (state.unboundPluginNames.includes(options.pluginName)) {
+    throw new Error(
+      `externalOwnershipPresent: Claude has an unbound installed plugin named ${options.pluginName}; native install would overwrite it.`,
+    );
+  }
+}
+
+export async function inspectNativeMarketplaceRegistrations(options: {
+  marketplaceName: string;
+  marketplaceRoot: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<Record<PlatformName, 'absent' | 'canonical' | 'foreign'>> {
+  const codexConfig = await readCodexConfigFile(
+    resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
+  );
+  const codexMarketplace = codexConfig.snapshot.marketplaces[options.marketplaceName];
+  const codexRegistration = codexMarketplace === undefined
+    ? 'absent'
+    : codexMarketplace.sourceType === 'local'
+      && !codexMarketplace.sourcePointsToManifest
+      && path.normalize(codexMarketplace.source ?? '') === path.normalize(options.marketplaceRoot)
+      ? 'canonical'
+      : 'foreign';
+  const codexConsumerSuffix = `@${options.marketplaceName}`;
+  const codex = codexRegistration === 'absent'
+    && Object.keys(codexConfig.snapshot.plugins).some((pluginId) =>
+      pluginId.length > codexConsumerSuffix.length && pluginId.endsWith(codexConsumerSuffix))
+    ? 'foreign'
+    : codexRegistration;
+  const claudeState = await readClaudeNativeState({
+    pluginName: '__marketplace_preflight__',
+    scope: 'user',
+    cwd: options.cwd,
+    env: options.env,
+    marketplaceName: options.marketplaceName,
+    marketplaceRoot: options.marketplaceRoot,
+  });
+  const claude = claudeState.marketplaceState === 'absent'
+    && claudeState.marketplaceConsumerEvidence
+    ? 'foreign'
+    : claudeState.marketplaceState;
+  return { codex, claude };
 }
 
 function createClaudeMarketplaceComponent(options: {
@@ -3025,13 +3111,16 @@ async function mirrorCatalog(
     for (const entry of ['.agents', '.claude-plugin', 'plugins']) {
       await fs.copy(path.join(catalog.rootDir, entry), path.join(staging, entry));
     }
-    const marketplaceName = target.marketplaceName ?? `aw-${target.sourceId}`;
-    for (const manifestPath of [
-      path.join(staging, '.agents', 'plugins', 'marketplace.json'),
-      path.join(staging, '.claude-plugin', 'marketplace.json'),
-    ]) {
-      const manifest = await fs.readJson(manifestPath).catch(() => null) as Record<string, unknown> | null;
-      if (manifest) await fs.writeJson(manifestPath, { ...manifest, name: marketplaceName }, { spaces: 2 });
+    const marketplaceName = target.marketplaceName ?? getNamespacedMarketplaceName(target.sourceId);
+    for (const [platform, manifestPath] of [
+      ['codex', path.join(staging, '.agents', 'plugins', 'marketplace.json')],
+      ['claude', path.join(staging, '.claude-plugin', 'marketplace.json')],
+    ] as const) {
+      const manifest = await fs.readJson(manifestPath) as MarketplaceManifest;
+      await fs.writeJson(manifestPath, {
+        ...projectMarketplaceManifestForPlatform(manifest, platform),
+        name: marketplaceName,
+      }, { spaces: 2 });
     }
     await fs.writeJson(path.join(staging, 'config.json'), {
       schemaVersion: 2,
@@ -3176,7 +3265,14 @@ function createNativeDriver(options: {
       });
     },
     preflightMaterialize: async (target) => {
-      if (target.identity.platform !== 'codex') return;
+      if (target.identity.platform === 'claude') {
+        await assertNoClaudeUnboundNativeNameCollision({
+          pluginName: target.identity.pluginName,
+          cwd: target.identity.cwd,
+          env: options.context.env,
+        });
+        return;
+      }
       const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
       const marketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
       const config = await readCodexConfigFile(

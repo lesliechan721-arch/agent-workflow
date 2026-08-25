@@ -122,6 +122,7 @@ import {
 } from './portable/commands.js';
 import { SkillsCliError } from './portable/skills-cli.js';
 import {
+  computeReviewComponentDigest,
   listReviewRecords,
   parseReviewAttachment,
   publishReviewRecord,
@@ -1003,6 +1004,26 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     recordDir: reviewRecordDir(repoRoot, record),
     manifest: record.manifest,
   });
+
+  review
+    .command('digest')
+    .description('Compute one canonical workflow component digest')
+    .argument('<path>', 'repository file or directory')
+    .option('--json', 'emit one component digest JSON object', false)
+    .action(async (componentPath: string, rawOptions: { json?: boolean }) => {
+      const repoRoot = await resolveRepoRoot(cwd);
+      const result = await computeReviewComponentDigest({ repoRoot, path: componentPath });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'review:digest',
+          ok: true,
+          ...result,
+        });
+        return;
+      }
+      writeLine(io.stdout, `${result.path}: ${result.digest}`);
+    });
 
   review
     .command('publish')

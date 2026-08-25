@@ -16,6 +16,7 @@ import {
   readPluginManifest,
   STRICT_SEMVER_VALIDATION_CODE,
   validatePluginManifest,
+  validateSourcePluginManifest,
 } from '../../src/utils/manifest.js';
 import {
   resolveLifecycleScriptForOs,
@@ -185,6 +186,11 @@ describe('manifest utils', () => {
     expect(() => validatePluginManifest('/tmp/plugin', manifestWithoutCompatibility, {
       compatibilityMode: 'required',
     })).toThrow(
+      'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
+    );
+
+    manifestWithoutCompatibility.distributions = { agentSkills: {} };
+    await expect(validateSourcePluginManifest(pluginRoot, manifestWithoutCompatibility)).rejects.toThrow(
       'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
     );
   });

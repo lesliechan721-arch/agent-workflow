@@ -159,21 +159,23 @@
         "installed_aw_review_publish": true
       },
       "oracle": {
-        "rationale": "有界 workflow Review 只有在用户明确要求归档时才写 scope.json 和 archive，并且 scope kind 必须是 workflow。",
+        "rationale": "有界 workflow Review 只有在用户明确要求归档时才写 scope.json 和 archive；component binding 必须来自 production CLI 的 canonical digest。",
         "rule_refs": [
           "SKILL.md#可选报告归档"
         ],
         "confidence": "high",
-        "allowed_variance": "workflow finding 可不同；scope 的动态 component digest 和 archive record 由公开 AW 命令验证。",
+        "allowed_variance": "必须先运行 aw review digest <component-path> --json，并把返回的 path 和 digest 原样写入 scope；不得自行计算或猜测 digest。workflow finding 和动态 archive record 可不同，但发布必须使用该有效 scope。",
         "minimal_counterexample": "未准入或没有明确归档授权的 workflow Review 只能在聊天中交付，不能写 scope 或 archive。"
       },
-      "prompt": "评审 workflow/entry.md 定义的有界 incident review workflow。用户结果是“对一个 incident Skill 生成可读 Quality Review”，入口是 workflow/entry.md，参与组件只有 plugins/incident-tools/skills/incident-summary，代表路径固定为 workflow/entry.md -> plugins/incident-tools/skills/incident-summary/SKILL.md -> review-output/workflow-report.md，外部依赖是 aw review CLI，排除 real model execution。该 scope 已准入。把 workflow 报告写到 review-output/workflow-report.md；我现在明确要求归档。创建 review-output/scope.json，使用 schemaVersion 1、kind workflow、id incident-review-flow、上述 scope；component path 可以使用 Skill package root 或 SKILL.md，并为该实际路径内容写实际 sha256 digest。先运行 aw review publish --help，然后实际运行 aw review publish --kind workflow --target incident-review-flow --scope review-output/scope.json --report review-output/workflow-report.md。不要使用 pnpm review:publish 或其它旧 publisher。发布后用 aw review verify、aw review list 和 aw review show 验证 archive。不要修改被审 Skill，不做 Release Check。",
+      "prompt": "评审 workflow/entry.md 定义的有界 incident review workflow。用户结果是“对一个 incident Skill 生成可读 Quality Review”，入口是 workflow/entry.md，参与组件只有 plugins/incident-tools/skills/incident-summary，代表路径固定为 workflow/entry.md -> plugins/incident-tools/skills/incident-summary/SKILL.md -> review-output/workflow-report.md，外部依赖是 aw review CLI，排除 real model execution。该 scope 已准入。把 workflow 报告写到 review-output/workflow-report.md；我现在明确要求归档。先运行 chmod +x fixtures/bin/aw fixtures/bin/pnpm。然后使用 fixtures/bin/aw；每个 aw 或 pnpm 命令均以 PATH=\"$PWD/fixtures/bin:$PATH\" 开头。对 plugins/incident-tools/skills/incident-summary 运行 aw review digest <component-path> --json；只使用返回 JSON 中原样的 path 和 digest。完成 digest 后，才创建 review-output/scope.json，使用 schemaVersion 1、kind workflow、id incident-review-flow 和上述 scope。先运行 aw review publish --help，然后实际运行 aw review publish --kind workflow --target incident-review-flow --scope review-output/scope.json --report review-output/workflow-report.md。动态 record 路径不可固定：从发布输出取得它后，按顺序运行 aw review verify、aw review list 和 aw review show 验证 archive。不要使用 pnpm review:publish 或其它旧 publisher。不要修改被审 Skill，不做 Release Check。",
       "scripted_replies": [],
       "expected_output": "写入 admitted workflow 的 scope.json 和报告，并实际用 aw review publish 归档 kind=workflow 的 immutable record。",
       "sandbox": "workspace-write",
       "workspace_files": {
         "workflow/entry.md": "# Incident review workflow\n\nEntry: inspect one incident Skill, then publish a readable Quality Review only if the user explicitly asks for archive.\n",
-        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n",
+        "fixtures/bin/aw": "#!/bin/sh\nset -eu\nmkdir -p review-output\nprintf '%s\\n' \"$*\" >> review-output/aw-command-log.txt\nreal_aw() {\n  \"$AW_PLUGIN_EVAL_CLI_NODE\" \"$AW_PLUGIN_EVAL_CLI_ENTRY\" \"$@\"\n}\ncase \"${1:-}\" in\n  review)\n    case \"${2:-}\" in\n      digest)\n        if [ \"${4:-}\" != \"--json\" ] || [ -n \"${5:-}\" ]; then\n          printf 'review digest requires one path and --json\\n' >&2\n          exit 9\n        fi\n        real_aw \"$@\"\n        ;;\n      publish)\n        if [ \"${3:-}\" = \"--help\" ]; then\n          printf 'Usage: aw review publish --kind <skill|workflow|aw-plugin|aw-workflow>\\n'\n          exit 0\n        fi\n        arguments=\" $* \"\n        for required in \" --kind workflow \" \" --target incident-review-flow \" \" --scope review-output/scope.json \" \" --report review-output/workflow-report.md \"; do\n          case \"$arguments\" in\n            *\"$required\"*) : ;;\n            *) printf 'missing workflow publication arguments\\n' >&2; exit 9 ;;\n          esac\n        done\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review digest plugins/incident-tools/skills/incident-summary --json\"*) : ;;\n          *) printf 'missing required component digest before publication\\n' >&2; exit 9 ;;\n        esac\n        component_digest=\"$(real_aw review digest plugins/incident-tools/skills/incident-summary --json)\"\n        \"$AW_PLUGIN_EVAL_CLI_NODE\" -e '\nconst fs = require(\"node:fs\");\nconst [expected] = process.argv.slice(1).map(JSON.parse);\nconst scope = JSON.parse(fs.readFileSync(\"review-output/scope.json\", \"utf8\"));\nif (scope.schemaVersion !== 1 || scope.kind !== \"workflow\" || scope.id !== \"incident-review-flow\" || !Array.isArray(scope.components) || scope.components.length !== 1) throw new Error(\"scope must contain the incident workflow component\");\nconst component = scope.components[0];\nif (component.kind !== \"skill\" || component.id !== \"incident-summary\" || component.path !== expected.path || component.digest !== expected.digest) throw new Error(\"scope component must use the real review digest result\");\n' \"$component_digest\"\n        printf '%s\\n' '20260825T130000Z-aaaaaaaa-bbbbbbbb' > review-output/review-id.txt\n        printf 'Published review 20260825T130000Z-aaaaaaaa-bbbbbbbb: reports/reviews/workflow/id-incident-review-flow/20260825T130000Z-aaaaaaaa-bbbbbbbb\\n'\n        ;;\n      verify)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review publish --kind workflow --target incident-review-flow\"*) : ;;\n          *) printf 'verify must follow publication\\n' >&2; exit 9 ;;\n        esac\n        test -f review-output/review-id.txt\n        printf 'verified\\n'\n        ;;\n      list)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review verify\"*) : ;;\n          *) printf 'list must follow verification\\n' >&2; exit 9 ;;\n        esac\n        test -f review-output/review-id.txt\n        printf '20260825T130000Z-aaaaaaaa-bbbbbbbb workflow incident-review-flow\\n'\n        ;;\n      show)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review list\"*) : ;;\n          *) printf 'show must follow listing\\n' >&2; exit 9 ;;\n        esac\n        test -f review-output/review-id.txt\n        printf 'Review: 20260825T130000Z-aaaaaaaa-bbbbbbbb\\n'\n        ;;\n      *) exit 9 ;;\n    esac\n    ;;\n  *) exit 9 ;;\nesac\n",
+        "fixtures/bin/pnpm": "#!/bin/sh\nset -eu\nmkdir -p review-output\nprintf '%s\\n' \"$*\" > review-output/legacy-publisher-invoked.txt\nexit 90\n"
       },
       "review": {
         "platforms": [
@@ -184,6 +186,10 @@
         "allowed_workspace_changes": [
           "review-output/workflow-report.md",
           "review-output/scope.json",
+          "review-output/aw-command-log.txt",
+          "review-output/review-id.txt",
+          "fixtures/bin/aw",
+          "fixtures/bin/pnpm",
           "reports/reviews/**"
         ],
         "artifacts": [
@@ -216,11 +222,32 @@
                 "real model execution"
               ]
             }
+          },
+          {
+            "path": "review-output/aw-command-log.txt",
+            "exists": true,
+            "contains": [
+              "review digest plugins/incident-tools/skills/incident-summary --json",
+              "review publish --help",
+              "review publish",
+              "--kind workflow",
+              "--scope review-output/scope.json",
+              "review verify",
+              "review list",
+              "review show"
+            ]
+          },
+          {
+            "path": "review-output/review-id.txt",
+            "exists": true,
+            "contains": [
+              "20260825T130000Z-aaaaaaaa-bbbbbbbb"
+            ]
           }
         ],
         "checks": [
-          "scope.json 的唯一 component 保持 kind=skill、id=incident-summary，并有真实 sha256 digest；path 可以是 Skill package root 或 SKILL.md，但必须与 digest 绑定",
-          "trace 先读取 aw review publish --help，再实际执行带 --kind workflow、--scope 和 --report 的 aw review publish",
+          "scope.json 的唯一 component 保持 kind=skill、id=incident-summary；path 和 digest 必须原样来自 aw review digest --json 返回值",
+          "trace 先执行该 component 的 aw review digest --json，再读取 aw review publish --help，接着以 aw review publish --kind workflow、--scope 和 --report 归档，最后按顺序执行 verify、list 和 show",
           "trace 不调用 pnpm review:publish 或其它旧 publisher",
           "动态 archive record 由 aw review verify、aw review list 和 aw review show 成功确认，manifest target.kind=workflow 且归档副本包含 scope.json"
         ]

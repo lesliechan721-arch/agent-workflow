@@ -3,16 +3,42 @@ import type { Dirent } from 'node:fs';
 
 import fs from 'fs-extra';
 
+import type { MarketplaceManifest, PlatformName } from '../types.js';
 import { SKILL_OWNER_MARKER, readSkillOwnerMarker } from './ownership.js';
 import { readJsonFile } from './json.js';
 import { assertStrictSemVer } from './manifest.js';
 import { resolveCliPackageRoot } from './paths.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
+import { normalizeMarketplaceProductToken } from './platform-support.js';
 
 const SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
+export function getNamespacedMarketplaceName(sourceId: string): string {
+  return `aw-${sourceId}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function projectMarketplaceManifestForPlatform(
+  manifest: MarketplaceManifest,
+  platform: PlatformName,
+): MarketplaceManifest {
+  const product = platform === 'codex' ? 'CODEX' : 'CLAUDE';
+  return {
+    ...manifest,
+    plugins: manifest.plugins.flatMap((plugin) => {
+      const products = plugin.policy.products;
+      const supported = products === undefined
+        || products.length === 0
+        || products.some((entry) => normalizeMarketplaceProductToken(entry) === product);
+      return supported ? [{
+        ...plugin,
+        policy: { ...plugin.policy, products: [product] },
+      }] : [];
+    }),
+  };
 }
 
 export function getLocalMarketplacePluginRoot(rootDir: string, pluginName: string): string {

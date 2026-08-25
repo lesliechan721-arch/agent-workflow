@@ -1218,6 +1218,52 @@ describe('rebuild adapter integration', () => {
     expect(skillPaths.every((entry) => entry.startsWith(`${marketplaceRoot}${path.sep}`))).toBe(true);
   });
 
+  it('writes platform-specific product enums to namespaced marketplace manifests', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+    });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+    await fs.ensureDir(isolation.layout.awHomeDir);
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      expect(invocation).toMatchObject({
+        command: 'codex',
+        args: ['plugin', 'marketplace', 'add', marketplaceRoot],
+      });
+      const codexManifest = await fs.readJson(
+        path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+      ) as { plugins: Array<{ policy: { products?: string[] } }> };
+      const claudeManifest = await fs.readJson(
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      ) as { plugins: Array<{ policy: { products?: string[] } }> };
+      expect(codexManifest.plugins.map((entry) => entry.policy.products)).toEqual([['CODEX']]);
+      expect(claudeManifest.plugins.map((entry) => entry.policy.products)).toEqual([['CLAUDE']]);
+      throw new Error('projection observed');
+    };
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
+    });
+    const target = await integration.buildTarget({
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'1'.repeat(64)}`,
+      pluginId: 'team/ask-me',
+      marketplaceName: 'aw-team',
+      marketplaceRoot,
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: catalogRoot, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+
+    await expect(integration.driver.writeNative(target)).rejects.toThrow('projection observed');
+    await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
+  });
+
   it.each(['EACCES', 'EIO'] as const)(
     'fails a namespaced marketplace mirror on destination %s before replacing the old root',
     async (errorCode) => {
@@ -4435,7 +4481,7 @@ describe('rebuild adapter integration', () => {
       .toEqual(expect.arrayContaining([expect.objectContaining({ scope: remainingScope })]));
   });
 
-  it('re-reads global Claude consumers after native uninstall', async () => {
+  it('recognizes an explicit Claude marketplace key and re-reads consumers after uninstall', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const pluginName = 'removed-claude';
@@ -4446,7 +4492,7 @@ describe('rebuild adapter integration', () => {
       env: isolation.env,
       plugins: {
         [`${pluginName}@aw`]: [{
-          name: pluginName, marketplace: 'aw', scope: 'user', version: '1.0.0',
+          name: pluginName, scope: 'user', version: '1.0.0',
         }],
       },
     });

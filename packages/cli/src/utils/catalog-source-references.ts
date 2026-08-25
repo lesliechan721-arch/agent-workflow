@@ -146,10 +146,8 @@ function claudeConsumersFromInstalled(
       }
       const itemMarketplace = typeof item.marketplace === 'string'
         ? item.marketplace
-        : key.includes('@') ? key.slice(key.indexOf('@') + 1) : undefined;
-      if (!itemMarketplace) {
-        throw new Error(`Claude installed_plugins record ${key} has no marketplace identity.`);
-      }
+        : pluginNameFromMarketplaceId(key, marketplaceName) ? marketplaceName : undefined;
+      if (!itemMarketplace) continue;
       if (itemMarketplace !== marketplaceName) continue;
       const scope = item.scope === 'project' || item.scope === 'local' ? 'project' : 'user';
       const projectKey = scope === 'project'

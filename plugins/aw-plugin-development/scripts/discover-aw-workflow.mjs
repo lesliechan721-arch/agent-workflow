@@ -74,6 +74,53 @@ async function listSkills(root) {
   return skills.sort((left, right) => left.name.localeCompare(right.name));
 }
 
+async function resolvePluginDirectory(pluginRoot, relativePath, field) {
+  if (typeof relativePath !== 'string'
+    || !relativePath.startsWith('./')
+    || relativePath.includes('\\')) {
+    throw new Error(`Invalid ${field}: expected a ./ plugin-relative directory.`);
+  }
+  const segments = relativePath.slice(2).split('/');
+  if (segments.length === 0 || segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw new Error(`Invalid ${field}: expected a ./ plugin-relative directory.`);
+  }
+  let current = pluginRoot;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const info = await lstat(current).catch(() => null);
+    if (!info?.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`${field} must be a regular directory: ${current}`);
+    }
+  }
+  return current;
+}
+
+async function listPortableSkills(pluginRoot, relativeRoot) {
+  const root = await resolvePluginDirectory(
+    pluginRoot,
+    relativeRoot,
+    'distributions.agentSkills.skills',
+  );
+  const entries = await readdir(root, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  const skills = [];
+  for (const entry of entries) {
+    const absolute = path.join(root, entry.name);
+    const info = await lstat(absolute);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error(
+        `distributions.agentSkills.skills direct child must be a regular directory: ${absolute}`,
+      );
+    }
+    const discovered = await listSkills(absolute);
+    if (discovered.length !== 1 || discovered[0].path !== 'SKILL.md') {
+      throw new Error(`Portable Skill root must contain SKILL.md directly: ${absolute}`);
+    }
+    skills.push({ ...discovered[0], path: path.posix.join(entry.name, 'SKILL.md') });
+  }
+  return skills.sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function normalizeProductToken(value) {
   return value.trim().toUpperCase().replace(/[\s-]+/gu, '_');
 }
@@ -90,6 +137,16 @@ function supportedPlatforms(manifest) {
   }
   return [...platforms].sort();
 }
+
+const RESERVED_RUNTIME_IMPORTS = new Map([
+  ['@aw/cli', new Map([
+    ['skill-frontmatter-capabilities', new Set(['buildImportEdges'])],
+    ['plugin-authoring-capabilities', new Set(['buildImportEdges'])],
+  ])],
+  ['@aw/agent-skill-eval', new Map([
+    ['case-corpus-digest', new Set(['buildImportEdges', 'skillRuntimeFileImportEdges'])],
+  ])],
+]);
 
 function importEdge(from, reference, source, extra = {}) {
   if (typeof reference?.plugin !== 'string' || typeof reference?.export !== 'string') return null;
@@ -113,7 +170,12 @@ function edgesFrom(manifest) {
       manifest.name,
       entry?.import,
       `buildConfig.skillRuntimeFiles[${index}].import`,
-      { skill: entry?.skill ?? null, target: entry?.target ?? null },
+      {
+        skill: entry?.skill ?? null,
+        target: entry?.target ?? null,
+        platforms: Array.isArray(entry?.platforms) ? entry.platforms : null,
+        distributions: Array.isArray(entry?.distributions) ? entry.distributions : null,
+      },
     ) ?? []);
   const artifactRuntimeImportEdges = (manifest.artifacts?.targets ?? [])
     .flatMap((target, targetIndex) => (target?.runtimeImports ?? [])
@@ -149,10 +211,13 @@ async function readPluginManifest(pluginRoot) {
   return { manifestPath, manifest: JSON.parse(await readFile(manifestPath, 'utf8')) };
 }
 
-function isResolvedVirtualImport(edge, edgeType) {
-  return edge.to === '@aw/cli'
-    && edgeType === 'buildImportEdges'
-    && edge.export === 'skill-frontmatter-capabilities';
+function reservedImportReason(edge, edgeType) {
+  if (!edge.to.startsWith('@aw/')) return null;
+  const provider = RESERVED_RUNTIME_IMPORTS.get(edge.to);
+  if (!provider) return 'missing-provider';
+  const purposes = provider.get(edge.export);
+  if (!purposes) return 'missing-export';
+  return purposes.has(edgeType) ? null : 'unsupported-virtual-import-kind';
 }
 
 function findCycles(names, edges) {
@@ -190,6 +255,20 @@ function findCycles(names, edges) {
   });
 }
 
+function skillCandidateFor(skillOwners, name, plugin, surface) {
+  const owners = skillOwners.get(name) ?? new Map();
+  const key = `${plugin}\u0000${surface}`;
+  const candidate = owners.get(key) ?? {
+    plugin,
+    surface,
+    declarations: [],
+    materializations: [],
+  };
+  owners.set(key, candidate);
+  skillOwners.set(name, owners);
+  return candidate;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -210,10 +289,37 @@ async function main() {
       throw new Error(`Invalid plugin skills path: ${manifestPath}`);
     }
     const skillsRoot = path.join(pluginRoot, 'skills');
+    const portableSkillsRoot = manifest.distributions?.agentSkills?.skills;
+    const dynamicPortableSkills = manifest.distributions?.agentSkills
+      ? (manifest.artifacts?.targets ?? []).flatMap((target, index) => (
+        target?.target === 'agent-skills.skill'
+          && target?.distribution === 'agent-skills'
+          && (target?.kind === undefined || target?.kind === 'skill')
+          && typeof target?.id === 'string'
+          && target.id.trim().length > 0
+          && typeof target?.skillKey === 'string'
+          && target.skillKey.trim().length > 0
+          && Array.isArray(target?.scopes)
+          && target.scopes.length > 0
+          && Array.isArray(target?.states)
+          && target.states.length > 0
+          && Array.isArray(target?.refreshKeys)
+          ? [{
+              name: target.skillKey.trim(),
+              targetId: target.id.trim(),
+              source: `artifacts.targets[${index}]`,
+            }]
+          : []
+      )).sort((left, right) => left.name.localeCompare(right.name))
+      : [];
     plugins.push({
       name: manifest.name,
       root: pluginRoot,
-      skills: await listSkills(skillsRoot),
+      skills: manifest.skills === './skills' ? await listSkills(skillsRoot) : [],
+      portableSkills: typeof portableSkillsRoot === 'string'
+        ? await listPortableSkills(pluginRoot, portableSkillsRoot)
+        : [],
+      dynamicPortableSkills,
       products: [...new Set(manifest.marketplace?.policy?.products ?? [])].sort(),
       supportedPlatforms: supportedPlatforms(manifest),
       dependencies: [...new Set(manifest.dependencies ?? [])].sort(),
@@ -249,8 +355,6 @@ async function main() {
     artifactRuntimeImportEdges,
   };
   const unresolved = Object.fromEntries(Object.keys(edgeGroups).map((key) => [key, []]));
-  const dependencyNamesByPlugin = new Map(plugins.map((plugin) => [plugin.name, new Set(plugin.dependencies)]));
-
   for (const edge of dependencyEdges) {
     if (!providedNames.has(edge.to)) {
       unresolved.dependencyEdges.push({ ...edge, reason: 'missing-provider' });
@@ -276,20 +380,33 @@ async function main() {
     artifactRuntimeImportEdges,
   })) {
     for (const edge of edges) {
-      if (isResolvedVirtualImport(edge, edgeType)) continue;
-      if (edge.to === '@aw/cli') {
-        unresolved[edgeType].push({
-          ...edge,
-          reason: edgeType === 'buildImportEdges'
-            ? 'missing-export'
-            : 'unsupported-virtual-import-kind',
-        });
-      } else if (!providedNames.has(edge.to)) {
+      const reservedReason = reservedImportReason(edge, edgeType);
+      if (reservedReason) {
+        unresolved[edgeType].push({ ...edge, reason: reservedReason });
+        continue;
+      }
+      if (edge.to.startsWith('@aw/')) continue;
+      if (!providedNames.has(edge.to)) {
         unresolved[edgeType].push({ ...edge, reason: 'missing-provider' });
       } else if (!exportsByPlugin.get(edge.to)?.has(edge.export)) {
         unresolved[edgeType].push({ ...edge, reason: 'missing-export' });
-      } else if (!dependencyNamesByPlugin.get(edge.from)?.has(edge.to)) {
-        unresolved[edgeType].push({ ...edge, reason: 'missing-manifest-dependency' });
+      } else if (edgeType !== 'artifactRuntimeImportEdges') {
+        const requiredPlatforms = edgeType === 'skillRuntimeFileImportEdges'
+          ? edge.platforms ?? (edge.distributions === null
+            ? [...(platformsByPlugin.get(edge.from) ?? [])]
+            : [])
+          : [...(platformsByPlugin.get(edge.from) ?? [])];
+        const providerPlatforms = platformsByPlugin.get(edge.to) ?? new Set();
+        const missingPlatforms = requiredPlatforms
+          .filter((platform) => !providerPlatforms.has(platform))
+          .sort();
+        if (missingPlatforms.length > 0) {
+          unresolved[edgeType].push({
+            ...edge,
+            reason: 'incomplete-product-coverage',
+            missingPlatforms,
+          });
+        }
       }
     }
   }
@@ -301,15 +418,57 @@ async function main() {
   const skillOwners = new Map();
   for (const plugin of plugins) {
     for (const skill of plugin.skills) {
-      const owners = skillOwners.get(skill.name) ?? [];
-      owners.push(plugin.name);
-      skillOwners.set(skill.name, owners);
+      skillCandidateFor(skillOwners, skill.name, plugin.name, 'native')
+        .declarations.push({ kind: 'static', path: skill.path });
+    }
+    for (const skill of plugin.portableSkills) {
+      skillCandidateFor(skillOwners, skill.name, plugin.name, 'agent-skills')
+        .declarations.push({ kind: 'static', path: skill.path });
+    }
+    for (const skill of plugin.dynamicPortableSkills) {
+      skillCandidateFor(skillOwners, skill.name, plugin.name, 'agent-skills')
+        .declarations.push({
+          kind: 'dynamic',
+          targetId: skill.targetId,
+          source: skill.source,
+        });
+    }
+  }
+  for (const plugin of plugins) {
+    for (const target of plugin.materializedTargets) {
+      for (const skill of target.skills) {
+        const owners = skillOwners.get(skill.name) ?? new Map();
+        const declared = [...owners.values()].filter((candidate) => candidate.plugin === plugin.name);
+        const surface = declared.length === 1 ? declared[0].surface : 'materialized';
+        skillCandidateFor(skillOwners, skill.name, plugin.name, surface)
+          .materializations.push({ profile: target.profile, root: target.root, path: skill.path });
+      }
     }
   }
   const entryPlugins = plugins.filter((plugin) => plugin.name === options.entry).map((plugin) => plugin.name);
   const entrySkills = [...skillOwners.entries()]
     .filter(([name]) => name === options.entry)
-    .map(([name, owners]) => ({ name, owners }));
+    .map(([name, owners]) => {
+      const candidates = [...owners.values()]
+        .map((candidate) => ({
+          ...candidate,
+          declarations: candidate.declarations.sort((left, right) =>
+            JSON.stringify(left).localeCompare(JSON.stringify(right))),
+          materializations: candidate.materializations.sort((left, right) =>
+            JSON.stringify(left).localeCompare(JSON.stringify(right))),
+          profiles: [...new Set(candidate.materializations.map((entry) => entry.profile))].sort(),
+        }))
+        .sort((left, right) => `${left.plugin}\u0000${left.surface}`.localeCompare(
+          `${right.plugin}\u0000${right.surface}`,
+        ));
+      return {
+        name,
+        owners: [...new Set(candidates.map((candidate) => candidate.plugin))].sort(),
+        candidates,
+      };
+    });
+  const skillCandidateCount = entrySkills.reduce((total, skill) => total + skill.candidates.length, 0);
+  const resolutionCount = entryPlugins.length + skillCandidateCount;
 
   const result = {
     schemaVersion: 2,
@@ -317,7 +476,8 @@ async function main() {
     entryResolution: {
       plugins: entryPlugins,
       skills: entrySkills,
-      resolved: entryPlugins.length + entrySkills.length > 0,
+      resolved: resolutionCount === 1,
+      ambiguous: resolutionCount > 1,
     },
     plugins,
     ...edgeGroups,

@@ -9,6 +9,7 @@ export interface PluginAuthoringCapabilityEntry {
   acceptedValues?: string | string[];
   requires?: string;
   conflicts?: string;
+  verifiedSource?: string;
 }
 
 export interface PluginAuthoringCapabilitySurface {
@@ -22,7 +23,41 @@ export interface PluginAuthoringCapabilityRegistry {
   surfaces: Record<string, PluginAuthoringCapabilitySurface>;
 }
 
-export const PLUGIN_AUTHORING_CAPABILITIES = registryDocument as PluginAuthoringCapabilityRegistry;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function parsePluginAuthoringCapabilityRegistry(
+  document: unknown,
+): PluginAuthoringCapabilityRegistry {
+  if (!isRecord(document) || document.schemaVersion !== 1) {
+    throw new Error('Invalid plugin authoring capability registry: expected schemaVersion 1.');
+  }
+  if (typeof document.verifiedSource !== 'string' || !isRecord(document.surfaces)) {
+    throw new Error('Invalid plugin authoring capability registry: missing verifiedSource or surfaces.');
+  }
+  for (const [surfaceKey, surfaceValue] of Object.entries(document.surfaces)) {
+    if (!isRecord(surfaceValue) || typeof surfaceValue.title !== 'string' || !Array.isArray(surfaceValue.entries)) {
+      throw new Error(`Invalid plugin authoring capability registry surface ${JSON.stringify(surfaceKey)}.`);
+    }
+    for (const [index, entryValue] of surfaceValue.entries.entries()) {
+      if (
+        !isRecord(entryValue)
+        || typeof entryValue.field !== 'string'
+        || typeof entryValue.type !== 'string'
+        || (typeof entryValue.required !== 'boolean' && typeof entryValue.required !== 'string')
+        || (entryValue.verifiedSource !== undefined && typeof entryValue.verifiedSource !== 'string')
+      ) {
+        throw new Error(
+          `Invalid plugin authoring capability registry entry ${JSON.stringify(surfaceKey)}[${index}].`,
+        );
+      }
+    }
+  }
+  return document as unknown as PluginAuthoringCapabilityRegistry;
+}
+
+export const PLUGIN_AUTHORING_CAPABILITIES = parsePluginAuthoringCapabilityRegistry(registryDocument);
 
 export function getPluginAuthoringAcceptedValues(
   surface: string,
