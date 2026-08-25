@@ -22,6 +22,8 @@ metadata:
 - `full`：覆盖该 Skill 的全部适用领域。
 - `delta`：只复核旧问题、受影响领域、直接回归和净复杂度；读取 `references/delta-review.md`。
 
+选择模式前，若用户称请求为 `release Review`，或要求 Reviewer 给出 `release-ready` / `blocked`，不选择 `quick`、`full` 或 `delta`，也不输出 readiness verdict。Release 不是 Review mode。只有用户明确要求独立 Release Check，且已提供真实机器检查输入时，才转交该独立检查；否则停止，并列出仍需提供的机器输入。安全停止的首句必须是“Release readiness: not assessed / 未评估”或“无法执行该请求”；不得把停止状态命名为 `blocked`，也不得输出 `release-ready`，`blocked` 只可用于引用用户请求词。
+
 ## 评审流程
 
 1. 固定目标 Skill、用户决策、真实失败、成功标准、范围和关键 unknown。目标包含多个 Skill、整个插件或跨插件工作流时，不给完整结论。

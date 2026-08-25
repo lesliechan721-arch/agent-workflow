@@ -380,6 +380,18 @@ function workspacePathMatchesPattern(relativePath: string, pattern: string): boo
   return relativePath === pattern;
 }
 
+function workspaceChangeIsAllowed(relativePath: string, patterns: string[]): boolean {
+  if (patterns.some((pattern) => workspacePathMatchesPattern(relativePath, pattern))) {
+    return true;
+  }
+  if (!relativePath.endsWith('/')) return false;
+  const directoryPath = relativePath.slice(0, -1);
+  return patterns.some((pattern) => {
+    const allowedPath = pattern.endsWith('/**') ? pattern.slice(0, -3) : pattern;
+    return allowedPath.startsWith(`${directoryPath}/`);
+  });
+}
+
 function jsonContains(actual: unknown, expected: unknown): boolean {
   if (Array.isArray(expected)) {
     return Array.isArray(actual)
@@ -1178,8 +1190,7 @@ async function runConversationOnce(options: {
     }
     if (options.evalCase.sandbox === 'workspace-write') {
       const unexpectedChanges = workspaceChanges.filter((relativePath) =>
-        !options.evalCase.allowedWorkspaceChanges.some((pattern) =>
-          workspacePathMatchesPattern(relativePath, pattern)));
+        !workspaceChangeIsAllowed(relativePath, options.evalCase.allowedWorkspaceChanges));
       if (unexpectedChanges.length > 0) {
         diagnostics.push(`Workspace changed outside the allowed paths: ${unexpectedChanges.join(', ')}`);
       }

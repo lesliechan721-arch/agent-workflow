@@ -804,7 +804,7 @@ describe('skill-review author tools', () => {
         name: skillName,
       });
       expect(report.skill.frontmatter.name).toBe(skillName);
-      expect(report.skill.codex_metadata.allow_implicit_invocation).toBe(true);
+      expect(report.skill.codex_metadata.allow_implicit_invocation).toBe(false);
       expect(report.evals.parse_errors).toEqual([]);
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {

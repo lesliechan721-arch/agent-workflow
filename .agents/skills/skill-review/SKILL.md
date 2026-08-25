@@ -7,6 +7,8 @@ description: >-
   另行明确要求质量评审时例外。创建或修改 trigger/behavior eval、测试或验证器
   也属于实现，不加载。
 compatibility: Requires the agent-workflows repository, Node.js 20+, installed workspace dependencies, and current Agent Skills documentation access for release reviews.
+user-invocable: true
+disable-model-invocation: true
 metadata:
   short-description: 多维度、证据化、可计算的 Agent Skill 评审
 ---

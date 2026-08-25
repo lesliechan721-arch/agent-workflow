@@ -8,4 +8,4 @@
 pnpm plugin:eval agent-skill-toolkit --skill review-agent-skill --batch-name reviewer-structural --materialize-only
 ```
 
-行为 suite 不参与 release gate（`requiredForRelease: false`、`releaseSplits: []`、`defaultRuns: 1`）。
+行为 suite 是 manifest 声明的 release-required 证据（`requiredForRelease: true`、`releaseSplits: []`、`defaultRuns: 1`）。conversation driver 不支持 split 过滤，因此 `releaseSplits` 保持空数组。

@@ -19,16 +19,16 @@
 
 新的 `aw review` 是独立的不可变归档入口：只把已有 `report.md`、可选 Quality Review result、checks/evidence、独立 `release-check.json` 和 workflow scope 写入 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`。Quality Review 只拥有设计、复杂度和 findings；Release Check 只拥有机器 readiness；Publication 只拥有 target/digest 绑定和 archive。新入口不得导入旧 `ReviewInputBundle`、AW summary、target plan、batch 或 seal，也不得重评、封存 Eval、更新 README 或可变 index。
 
-依赖方向只能从旧 owner 指向仍为 canonical 的新合同，例如 Review 维度、Eval audit 和 run bundle。新插件的 production source、manifest、staging 和 runtime bundle 不得导入旧 owner，也不得重新包装旧版合同。迁移阶段继续使用旧默认路由；本边界不切换入口。
+依赖方向只能从旧 owner 指向仍为 canonical 的新合同，例如 Review 维度、Eval audit 和 run bundle。新插件的 production source、manifest、staging 和 runtime bundle 不得导入旧 owner，也不得重新包装旧版合同。Stage 6 默认路由不再经过旧 owner。
 
 ## 维护入口
 
-- 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
+- 通过公开 `aw` CLI 安装相应插件后，`author-agent-skill`、`review-agent-skill`、`review-agent-workflow`、`author-aw-plugin`、`review-aw-plugin` 和 `review-aw-workflow` 成为默认工作流入口。前 3 个处理通用 Agent Skill 与工作流；后 3 个处理 AW 插件与跨插件工作流。仓库不把插件源码投影为 `.claude/skills`。
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
 - `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，并依赖 `agent-content-toolkit`。
-- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，并依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`；使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`，也可以安装其它输出 `EvalRunBundle v3` 的兼容 runner。
+- `aw-plugin-development` 提供默认的 AW Author/Reviewer，并依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`；使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`，也可以安装其它输出 `EvalRunBundle v3` 的兼容 runner。
 - AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
-- 迁移期间新工作流不得静默替代旧入口。旧 `pnpm review:publish`、旧 `.agents` Skills 和依赖保持可用；只有新开发和模型 Eval 均完成，并经过观察窗口后，才切换默认路由或删除旧内容。
+- 旧 `pnpm review:publish`、旧 `.agents` Skills 和依赖保持可用，但只有用户手动显式指定 `create-aw-plugin` 或 `skill-review` 时才调用。它们是兼容入口，不是默认路由。
 - 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin`、`aw-plugin-development` Author 和 Skill Reviewer 只编排这些命令，不保存第二份核心 frontmatter 或 Codex metadata 实现。
 - 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `status` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `status` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。

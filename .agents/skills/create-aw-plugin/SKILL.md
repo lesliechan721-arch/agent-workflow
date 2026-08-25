@@ -2,6 +2,8 @@
 name: create-aw-plugin
 description: 仅当用户明确要求在 `agent-workflows` 仓库创建或维护 `plugins/<name>/` 插件时使用；用于设计插件能力、向现有插件新增静态 Skill、管理插件版本、运行作者校验并修复 bundle 问题。不用于安装或使用插件、仓库外的通用 Skill 编写，或单纯解释 CLI。
 compatibility: Requires the agent-workflows repository, Node.js 22+, and installed workspace dependencies.
+user-invocable: true
+disable-model-invocation: true
 ---
 
 # Create AW Plugin

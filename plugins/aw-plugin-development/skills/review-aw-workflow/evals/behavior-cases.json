@@ -122,6 +122,97 @@
           "不输出全仓 pass"
         ]
       }
+    },
+    {
+      "id": "delta-archive-writes-aw-workflow-scope-and-supersedes",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "aw-workflow-review-publication",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "scope_admitted": true,
+        "quality_review_report_exists": true,
+        "existing_same_target_review_id": true,
+        "delta_archive_explicitly_requested": true,
+        "new_review_cli_available": true
+      },
+      "oracle": {
+        "rationale": "AW workflow delta 归档必须先写入 aw-workflow scope，再用新的不可变发布入口创建新 record 并指向同 target 的旧 record。",
+        "rule_refs": [
+          "SKILL.md#Scope-Admission",
+          "SKILL.md#可选报告归档"
+        ],
+        "confidence": "high",
+        "allowed_variance": "scope component digest 可由 Reviewer 计算；scope 必须为 aw-workflow 并包含给定两个组件和代表路径，发布必须带 --kind aw-workflow、--scope 和 --supersedes。",
+        "minimal_counterexample": "没有明确归档请求时，Reviewer 默认只在聊天中交付；若归档不是 delta，则不应要求 --supersedes。"
+      },
+      "prompt": "使用 $review-aw-workflow 处理已准入的 author-review-flow。用户结果、入口、组件、代表路径、外部依赖和排除项都已在 outputs/report.md 中明确。用户明确要求把它作为 delta 归档，并用 outputs/previous-review-id.txt 中同一 target 的 review id supersede 旧 record。先在 outputs/scope.json 写 schemaVersion 1、kind aw-workflow、id author-review-flow、给定用户结果和入口、两个组件、非空 representativePaths、externalDependencies 和 excluded。先运行 chmod +x fixtures/bin/aw fixtures/bin/pnpm。然后使用 fixtures/bin/aw；每个 aw 或 pnpm 命令均以 PATH=\"$PWD/fixtures/bin:$PATH\" 开头。先运行 aw review publish --help，再以 --kind aw-workflow、--target author-review-flow、--scope outputs/scope.json、--report outputs/report.md 和 --supersedes 归档。动态 record 路径不可固定：从发布输出取得它后，运行 aw review verify、aw review list 和 aw review show。不要调用 pnpm review:publish、旧 publisher 或 Release Check；不要修改任一 plugins/** 文件、outputs/report.md 或 outputs/previous-review-id.txt。",
+      "scripted_replies": [],
+      "expected_output": "生成有效 aw-workflow scope，并以 delta 的 --supersedes 用新 aw review publish 归档；复核动态 record，且不使用旧 publisher。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/author-side/.agents-plugin/plugin.json": "{\"name\":\"author-side\",\"version\":\"0.1.0\",\"description\":\"Author side fixture.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
+        "plugins/author-side/skills/author/SKILL.md": "---\nname: author-side\ndescription: Produce the reviewed handoff.\n---\n\nProduce the handoff.\n",
+        "plugins/reviewer-side/.agents-plugin/plugin.json": "{\"name\":\"reviewer-side\",\"version\":\"0.1.0\",\"description\":\"Reviewer side fixture.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
+        "plugins/reviewer-side/skills/review/SKILL.md": "---\nname: reviewer-side\ndescription: Review the author handoff.\n---\n\nReview the handoff.\n",
+        "outputs/report.md": "# AW Workflow Quality Review\n\n- User outcome: author-side produces one handoff and reviewer-side reviews it.\n- Entry: plugins/author-side/skills/author/SKILL.md\n- Components: author-side and reviewer-side.\n- Representative path: author-side -> reviewer-side.\n- External dependencies: none.\n- Excluded: real model execution and release check.\n",
+        "outputs/previous-review-id.txt": "20260824T120000Z-cccccccc-dddddddd\n",
+        "fixtures/bin/aw": "#!/bin/sh\nset -eu\nmkdir -p outputs\nprintf '%s\\n' \"$*\" >> outputs/aw-command-log.txt\ncase \"${1:-}\" in\n  review)\n    case \"${2:-}\" in\n      publish)\n        if [ \"${3:-}\" = \"--help\" ]; then\n          printf 'Usage: aw review publish --kind <skill|workflow|aw-plugin|aw-workflow>\\n'\n          exit 0\n        fi\n        arguments=\" $* \"\n        for required in \" --kind aw-workflow \" \" --target author-review-flow \" \" --scope outputs/scope.json \" \" --report outputs/report.md \" \" --supersedes 20260824T120000Z-cccccccc-dddddddd \"; do\n          case \"$arguments\" in\n            *\"$required\"*) : ;;\n            *) printf 'missing delta workflow publication arguments\\n' >&2; exit 9 ;;\n          esac\n        done\n        printf '%s\\n' '20260825T130000Z-aaaaaaaa-bbbbbbbb' > outputs/review-id.txt\n        printf 'Published review 20260825T130000Z-aaaaaaaa-bbbbbbbb: reports/reviews/aw-workflow/id-author-review-flow/20260825T130000Z-aaaaaaaa-bbbbbbbb\\n'\n        ;;\n      verify)\n        test -f outputs/review-id.txt\n        printf 'verified\\n'\n        ;;\n      list)\n        test -f outputs/review-id.txt\n        printf '20260825T130000Z-aaaaaaaa-bbbbbbbb aw-workflow author-review-flow\\n'\n        ;;\n      show)\n        test -f outputs/review-id.txt\n        printf 'Review: 20260825T130000Z-aaaaaaaa-bbbbbbbb\\n'\n        ;;\n      *) exit 9 ;;\n    esac\n    ;;\n  *) exit 9 ;;\nesac\n",
+        "fixtures/bin/pnpm": "#!/bin/sh\nset -eu\nmkdir -p outputs\nprintf '%s\\n' \"$*\" > outputs/legacy-publisher-invoked.txt\nexit 90\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "outputs/scope.json",
+          "outputs/aw-command-log.txt",
+          "outputs/review-id.txt",
+          "fixtures/bin/aw",
+          "fixtures/bin/pnpm"
+        ],
+        "artifacts": [
+          {
+            "path": "outputs/scope.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 1,
+              "kind": "aw-workflow",
+              "id": "author-review-flow"
+            }
+          },
+          {
+            "path": "outputs/aw-command-log.txt",
+            "exists": true,
+            "contains": [
+              "review publish --help",
+              "review publish",
+              "--kind aw-workflow",
+              "--scope outputs/scope.json",
+              "--supersedes 20260824T120000Z-cccccccc-dddddddd",
+              "review verify",
+              "review list",
+              "review show"
+            ]
+          },
+          {
+            "path": "outputs/review-id.txt",
+            "exists": true,
+            "contains": [
+              "20260825T130000Z-aaaaaaaa-bbbbbbbb"
+            ]
+          }
+        ],
+        "checks": [
+          "scope.json 具有 schemaVersion 1、kind aw-workflow、正确 id、两个带 kind/id/path/digest 的组件、非空 representativePaths、externalDependencies 和 excluded",
+          "trace 先执行 aw review publish --help，再以 aw review publish --kind aw-workflow 和 --supersedes 归档",
+          "trace 对动态 record 执行 verify、list 和 show；不把动态 record 路径作为固定 artifact 断言",
+          "trace 没有 pnpm review:publish、旧 publisher 或 Release Check 调用，并且没有修改 plugins/** 或既有 report"
+        ]
+      }
     }
   ]
 }

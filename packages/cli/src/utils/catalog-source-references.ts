@@ -786,6 +786,16 @@ async function findDirectSkillOwnerMarkers(
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const skillRoot = path.join(root, entry.name);
     const markerPath = path.join(root, entry.name, SKILL_OWNER_MARKER);
+    const markerStats = await inventoryRead({
+      operation: () => fs.lstat(markerPath),
+      absent: null,
+      errors,
+      location: markerPath,
+      kind: 'ownerMarkerRead',
+      env,
+      cwd,
+    });
+    if (!markerStats) continue;
     let marker: Awaited<ReturnType<typeof readSkillOwnerMarker>>;
     try {
       marker = await readSkillOwnerMarker({ skillRoot, allowedRoot: root });

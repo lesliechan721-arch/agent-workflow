@@ -415,6 +415,12 @@ describe('review publication', () => {
     }))).resolves.toMatchObject({ manifest: { target: { id: 'demo-plugin' } } });
   });
 
+  it('accepts a direct ordinary static Skill path as a compatible review target', async () => {
+    const repoRoot = await fixture();
+    await expect(publishReviewRecord(base(repoRoot, { target: '.agents/skills/static-skill' })))
+      .resolves.toMatchObject({ manifest: { target: { id: 'static-skill', kind: 'skill' } } });
+  });
+
   it('accepts supersedes only for a verified record with the same target', async () => {
     const repoRoot = await fixture();
     const previous = await publishReviewRecord(base(repoRoot));

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -16,9 +16,60 @@ const context = process.env.AW_PLUGIN_CONTEXT
 const sourceRoot = context?.sourceRoot ?? localRoot;
 const bundleRoot = context?.plugin?.rootDir ?? localRoot;
 const runtimeRoot = context ? path.join(bundleRoot, context.platform) : localRoot;
+const legacyReviewRuntimeFragments = [
+  '.agents/legacy/plugin-development-review',
+  'legacy-review/',
+  'ReviewInputBundle',
+  'AWReviewSummary',
+  'AWReviewTargetPlan',
+  'review-input-bundle',
+  'aw-review-summary',
+  'aw-review-target-plan',
+  'skill-inspection-result',
+  'inspect-agent-skill',
+  'inspect-aw-target',
+  'prepare-aw-review-',
+  'review-artifact-policy',
+  'validate-aw-review-summary',
+  'validate-review-input-bundle',
+  'validate-review-result',
+  'publish-skill-review',
+  'pnpm review:publish',
+  '--batch-id',
+  'batchId',
+  'sealSkillReportBatch',
+];
 
 async function exists(root, relative) {
   return access(path.join(root, relative)).then(() => true, () => false);
+}
+
+async function productionNodeFiles(root, relative = '') {
+  const files = [];
+  const entries = await readdir(path.join(root, relative), { withFileTypes: true });
+  for (const entry of entries) {
+    if (['.git', 'evals', 'node_modules', 'reports'].includes(entry.name)) continue;
+    const child = relative ? path.posix.join(relative, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      files.push(...await productionNodeFiles(root, child));
+    } else if (entry.isFile() && /\.[cm]?js$/u.test(entry.name) && !entry.name.endsWith('.test.mjs')) {
+      files.push(child);
+    }
+  }
+  return files;
+}
+
+function assertNoLegacyReviewRuntimeReference(value, label) {
+  for (const fragment of legacyReviewRuntimeFragments) {
+    assert.equal(value.includes(fragment), false, `${label} references legacy review runtime fragment ${fragment}`);
+  }
+}
+
+async function assertNoLegacyReviewRuntimeImports(root, label) {
+  for (const relative of await productionNodeFiles(root)) {
+    const source = await readFile(path.join(root, relative), 'utf8');
+    assertNoLegacyReviewRuntimeReference(source, `${label}/${relative}`);
+  }
 }
 
 async function runtimeExportSource(plugin, exportName) {
@@ -45,6 +96,22 @@ test('reviewer manifest and runtime expose only the current quality contract', a
       'validate-eval-run-bundle',
       'validate-json-contract',
       'validate-quality-review-result',
+    ],
+  );
+  assert.deepEqual(
+    manifest.buildConfig.runtimeExports.map((entry) => `${entry.name}:${entry.source}`).sort(),
+    [
+      'check-agent-skill:./scripts/check-agent-skill.mjs',
+      'eval-audit-result-schema:./schemas/eval-audit-result.schema.json',
+      'eval-run-bundle-schema:./schemas/eval-run-bundle.schema.json',
+      'quality-review-result-schema:./schemas/quality-review-result.schema.json',
+      'review-dimensions:./standards/review-dimensions.json',
+      'skill-design-brief-schema:./schemas/skill-design-brief.schema.json',
+      'skill-rules:./standards/skill-rules.json',
+      'validate-eval-audit-result:./scripts/validate-eval-audit-result.mjs',
+      'validate-eval-run-bundle:./scripts/validate-eval-run-bundle.mjs',
+      'validate-json-contract:./scripts/validate-json-contract.mjs',
+      'validate-quality-review-result:./scripts/validate-quality-review-result.mjs',
     ],
   );
   // Static contract exception: legacy schema and producer ownership in current plugin source would re-enter its published closure; behavior test is not suitable because ownership is the absence of these exact source files.
@@ -81,6 +148,34 @@ test('reviewer manifest and runtime expose only the current quality contract', a
   ]) {
     await assert.rejects(readFile(path.join(reviewRoot, relative), 'utf8'), relative);
   }
+});
+
+test('reviewer production and materialized closures exclude the legacy review owner', async () => {
+  const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
+  // Static contract exception: a legacy review import, projection, fallback, or publisher would put obsolete owner code in the published runtime closure; behavior test is not suitable because this is an absence boundary for the public bundle.
+  assert.deepEqual(
+    manifest.buildConfig.buildImports.map((entry) => `${entry.plugin}:${entry.export}`).sort(),
+    [
+      '@aw/agent-skill-eval:case-corpus-digest',
+      'agent-content-toolkit:content-rules',
+    ],
+  );
+  assert.deepEqual(
+    manifest.buildConfig.skillRuntimeFiles
+      .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
+      .sort(),
+    [],
+  );
+  assertNoLegacyReviewRuntimeReference(
+    JSON.stringify({
+      runtimeExports: manifest.buildConfig.runtimeExports,
+      buildImports: manifest.buildConfig.buildImports,
+      skillRuntimeFiles: manifest.buildConfig.skillRuntimeFiles,
+    }),
+    'manifest build contract',
+  );
+  await assertNoLegacyReviewRuntimeImports(sourceRoot, 'production source');
+  if (context) await assertNoLegacyReviewRuntimeImports(runtimeRoot, 'materialized runtime');
 });
 
 test('projected runtime files match canonical sources', async () => {
@@ -153,7 +248,7 @@ test('materialized audit validator matches the canonical digest for a formerly d
   ], { cwd: auditRoot, encoding: 'utf8' });
   assert.equal(
     stdout.trim(),
-    'sha256:02dff039738578a52da17e2d4f41400af2c50b941059e649d110981f5ec1b252',
+    'sha256:f4867d1b714687cfb02179d1f311269b97bc115b20259484b3b5faa199b43de3',
   );
 });
 

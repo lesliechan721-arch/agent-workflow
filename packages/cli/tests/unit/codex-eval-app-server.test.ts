@@ -477,8 +477,13 @@ describe('Codex app-server eval driver', () => {
         "  } else if (frame.method === 'turn/start') {",
         "    fs.mkdirSync('outputs', { recursive: true });",
         "    fs.writeFileSync('outputs/result.json', JSON.stringify({ status: 'ok', evidence: 'written' }));",
+        "    fs.mkdirSync('reports/reviews/record', { recursive: true });",
+        "    fs.writeFileSync('reports/reviews/record/manifest.json', JSON.stringify({ status: 'ok' }));",
+        "    fs.mkdirSync('review-output', { recursive: true });",
+        "    fs.writeFileSync('review-output/full-report.md', 'Review evidence written.');",
         "    const prompt = frame.params.input?.[0]?.text ?? '';",
         "    if (prompt.includes('control directory')) fs.writeFileSync('.git/marker', 'forbidden');",
+        "    if (prompt.includes('foreign file')) fs.writeFileSync('review-output/foreign.md', 'forbidden');",
         "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
         "    const text = `thread=${threadSandbox} turn=${frame.params.sandboxPolicy.type}`;",
         "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text } } });",
@@ -499,7 +504,11 @@ describe('Codex app-server eval driver', () => {
         sandbox: 'workspace-write',
         review: {
           workspace_unchanged: false,
-          allowed_workspace_changes: ['outputs/**'],
+          allowed_workspace_changes: [
+            'outputs/**',
+            'reports/reviews/**',
+            'review-output/full-report.md',
+          ],
           artifacts: [{
             path: 'outputs/result.json',
             exists: true,
@@ -534,7 +543,16 @@ describe('Codex app-server eval driver', () => {
     expect(run.with_skill.finalMessages).toEqual([
       'thread=workspace-write turn=workspaceWrite',
     ]);
-    expect(run.with_skill.workspaceChanges).toEqual(['outputs/', 'outputs/result.json']);
+    expect(run.with_skill.workspaceChanges).toEqual([
+      'outputs/',
+      'outputs/result.json',
+      'reports/',
+      'reports/reviews/',
+      'reports/reviews/record/',
+      'reports/reviews/record/manifest.json',
+      'review-output/',
+      'review-output/full-report.md',
+    ]);
     expect(run.with_skill.workspaceArtifacts).toEqual([
       expect.objectContaining({
         path: 'outputs/result.json',
@@ -545,10 +563,11 @@ describe('Codex app-server eval driver', () => {
         text: '{"status":"ok","evidence":"written"}',
       }),
     ]);
-    expect(run.without_skill.workspaceChanges).toEqual(['outputs/', 'outputs/result.json']);
+    expect(run.without_skill.workspaceChanges).toEqual(run.with_skill.workspaceChanges);
 
     const controlDirectoryCases = await fs.readJson(casesPath);
-    controlDirectoryCases.evals[0].prompt = 'Write the result and modify the control directory.';
+    controlDirectoryCases.evals[0].prompt =
+      'Write the result, modify the control directory, and add a foreign file.';
     await fs.writeJson(casesPath, controlDirectoryCases, { spaces: 2 });
     const blockedReportPath = path.join(outputRoot, 'blocked.json');
     await expect(runCodexConversationSuite({
@@ -568,6 +587,7 @@ describe('Codex app-server eval driver', () => {
       mechanicalPassed: false,
       diagnostics: expect.arrayContaining([
         expect.stringContaining('.git/marker'),
+        expect.stringContaining('review-output/foreign.md'),
       ]),
     });
   });

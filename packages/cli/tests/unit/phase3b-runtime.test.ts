@@ -1140,6 +1140,66 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(JSON.stringify(inventory.errors)).not.toContain(isolation.layout.fixtureCwd);
   });
 
+  it('ignores marker-free system Skill directories but validates owner markers in them', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const skillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
+    const systemRoot = path.join(skillsRoot, '.system');
+    const validRoot = path.join(skillsRoot, 'valid');
+    await Promise.all([fs.ensureDir(systemRoot), fs.ensureDir(validRoot)]);
+    await writeSkillOwnerMarker({
+      skillRoot: validRoot,
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'team',
+        sourceIdentity: SOURCE_IDENTITY,
+        pluginId: 'team/demo',
+        plugin: 'demo',
+        artifactKey: 'valid',
+        platform: 'codex',
+        scope: 'user',
+      },
+    });
+
+    const foreignInventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(foreignInventory.errors).toEqual([]);
+    expect(foreignInventory.references).toContainEqual(expect.objectContaining({
+      kind: 'namespacedOwner',
+      sourceId: 'team',
+      pluginName: 'demo',
+      location: path.join(validRoot, '.agent-workflows-owner.json'),
+    }));
+
+    await fs.outputJson(path.join(systemRoot, '.agent-workflows-owner.json'), {
+      schemaVersion: 2,
+      owner: 'agent-workflows',
+      sourceId: 'team',
+      sourceIdentity: SOURCE_IDENTITY,
+      pluginId: 'team/demo',
+      plugin: 'demo',
+      artifactKey: 'system',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const ownedInventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(ownedInventory.errors).toContainEqual(expect.objectContaining({
+      code: 'stateInventoryFailed',
+      kind: 'ownerMarkerValidation',
+    }));
+    expect(ownedInventory.references).toContainEqual(expect.objectContaining({
+      kind: 'namespacedOwner',
+      sourceId: 'team',
+      pluginName: 'demo',
+      location: path.join(validRoot, '.agent-workflows-owner.json'),
+    }));
+  });
+
   it('projects later valid upgrade --all targets before identity conflict validation', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
