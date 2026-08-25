@@ -3,6 +3,11 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import YAML from 'yaml';
+import {
+  validatePortableSkillDirectoriesRoot as validateCorePortableSkillDirectoriesRoot,
+  validatePortableSkillDirectory as validateCorePortableSkillDirectory,
+  validatePortableSkillName as validateCorePortableSkillName,
+} from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   ClaudeSkillArtifact,
@@ -27,9 +32,7 @@ export interface DynamicSkillTree {
 }
 
 export function validatePortableSkillName(value: string, fieldName = 'portable Skill name'): void {
-  if (value.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)) {
-    throw new Error(`Invalid ${fieldName}: expected at most 64 ASCII lowercase hyphen-case characters.`);
-  }
+  validateCorePortableSkillName(value, fieldName);
 }
 
 function compareSkillPaths(left: string, right: string): number {
@@ -171,42 +174,11 @@ export function parsePortableSkillFrontmatter(rawContent: string): Record<string
 }
 
 export async function validatePortableSkillDirectory(rootDir: string): Promise<DynamicSkillTree> {
-  const rootStats = await fs.lstat(rootDir).catch(() => null);
-  if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
-    throw new Error(`Skill 根路径必须是真实目录：${rootDir}`);
-  }
-  const tree = {
-    skillKey: path.basename(rootDir),
-    files: await collectDirectoryFiles(rootDir, 'reject'),
-  };
-  validatePortableSkillName(tree.skillKey, 'portable Skill directory name');
-  assertNoFileDirectoryConflicts(tree.files);
-  const skillFile = tree.files[SKILL_FILE_PATH];
-  if (!skillFile || skillFile.toString('utf8').trim() === '') {
-    throw new Error(`agent-skills.skill "${tree.skillKey}" 缺少 SKILL.md 内容。`);
-  }
-  validatePortableSkillFrontmatter(skillFile.toString('utf8'), tree.skillKey);
-  const readme = tree.files['README.md'];
-  if (!readme || readme.toString('utf8').trim() === '') {
-    throw new Error(`agent-skills.skill "${tree.skillKey}" 缺少非空 README.md。`);
-  }
-  return tree;
+  return validateCorePortableSkillDirectory(rootDir);
 }
 
 export async function validatePortableSkillDirectoriesRoot(rootDir: string): Promise<DynamicSkillTree[]> {
-  const rootStats = await fs.lstat(rootDir).catch(() => null);
-  if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
-    throw new Error(`Skills 根路径必须是真实目录：${rootDir}`);
-  }
-  const entries = await fs.readdir(rootDir, { withFileTypes: true });
-  const trees: DynamicSkillTree[] = [];
-  for (const entry of entries.sort((left, right) => compareSkillPaths(left.name, right.name))) {
-    if (entry.isSymbolicLink() || !entry.isDirectory()) {
-      throw new Error(`Skills 根目录的直接子节点必须是普通目录：${entry.name}`);
-    }
-    trees.push(await validatePortableSkillDirectory(path.join(rootDir, entry.name)));
-  }
-  return trees;
+  return validateCorePortableSkillDirectoriesRoot(rootDir);
 }
 
 function assertNoFileDirectoryConflicts(files: Record<string, Buffer>): void {

@@ -74,7 +74,7 @@ aw status
 | --- | --- | --- |
 | [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写或评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
 | [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审 Agent Skill，设计或审核 Skill Eval；人工依赖 `agent-content-toolkit` | Codex / Claude Code |
-| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在本仓库创建或评审 AW 插件；人工依赖前两个通用工具插件 | Codex / Claude Code |
+| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在任意 Workspace v1 创建或评审 AW 插件；人工依赖前两个通用工具插件 | Codex / Claude Code |
 
 ## 使用示例
 
@@ -199,21 +199,36 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 
 ## 本地开发与发版流程
 
-插件作者先确认已安装的 CLI，再使用稳定、非交互的公开入口：
+### 第三方插件作者快速闭环
+
+第三方作者只需要 Node.js 22+ 和已安装的 `aw` CLI，不需要 clone 本仓库、`pnpm` monorepo 或官方 release 脚本。先运行各命令的 `--help`，并使用 Workspace v1：
 
 ```bash
+workspace=/absolute/path/to/workspace
+
 aw --version
-aw plugin init <plugin-name> --description "..." --skill-description "..."
-aw plugin add-skill <plugin-name> --skill-name <skill-name> --skill-description "..."
-aw plugin validate plugins/<plugin-name>
-aw plugin status --all --base HEAD
-aw skill validate <skill-directory> --frontmatter-profile portable-agent-skills
+aw catalog init --workspace-root "$workspace"
+aw plugin init example-plugin \
+  --description "Example plugin." \
+  --skill-description "Create an example plugin Skill." \
+  --workspace-root "$workspace"
+aw plugin validate plugins/example-plugin --workspace-root "$workspace" --json
+aw plugin test plugins/example-plugin --workspace-root "$workspace" --json
+aw plugin build plugins/example-plugin --workspace-root "$workspace" --json
+aw catalog build --workspace-root "$workspace" --json
+aw catalog validate "$workspace/.aw/catalog" --json
+
+AW_HOME=/tmp/aw-home \
+  aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json
+AW_HOME=/tmp/aw-home \
+  aw install local-example/example-plugin -p both --json
 ```
 
-这些命令可用 `--help` 查看完整参数。`plugin validate --json` 和 `skill validate --json` 各输出一个机器结果对象；`status --json` 输出 schema 3 development 结果。deprecated `check-versions` 返回相同对象，并向 stderr 输出迁移提示。不要用 `npx` 隐式安装作者工具。
-目标插件不在默认 `plugins/<plugin-name>` 时，`init`、`add-skill` 和单插件
-`status` 传 `--plugin-root <path>`；相对路径按 `--repo-root` 解析，且目标必须位于该 Git 工作区内。
-`validate` 和 `status` 会拒绝 repo/plugin root、`.agents-plugin` 或 manifest 路径链中的符号链接和错误节点类型；不要用链接重定向作者根或 manifest。
+`aw plugin status <plugin> --workspace-root "$workspace"` 不要求 Git；只有明确传入 `--base <git-ref>` 时才要求 Git。生成的 snapshot、digest 和 platform marketplace 都不能手改。完整 layout、Git 发布、依赖选择器、信任边界和恢复规则见[第三方插件作者指南](docs/plugin-authoring.md)。
+
+### 本仓库维护与官方发版
+
+以下命令只面向本仓库维护者，不是第三方插件作者的常规路径：
 
 ```bash
 make install
@@ -228,7 +243,7 @@ tarball；本地安装必须同时提供它们，不能从 registry 补齐依赖
 pnpm release:pack:cli
 pnpm release:install:local
 # 或安装已经生成的两个文件：
-pnpm release:install:local -- <cli.tgz> <eval.tgz>
+pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz>
 ```
 
 `pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
@@ -250,9 +265,9 @@ pnpm release -- beta --catalog --catalog-bump patch --plugin <plugin-name>=patch
 pnpm release -- beta --all --cli-bump patch --catalog-bump patch --plugin <plugin-name>=patch
 ```
 
-产品源码必须先提交，且工作树必须干净。命令只在指定 bump 时原子更新并提交白名单发布元数据，然后运行所选轴的完整验证。它在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，再按 `Eval → CLI → cli-v<version> tag → Catalog` 发布启用的轴。CLI tag 只推送到 `origin`；当前分支不自动推送。
+产品源码必须先提交，且工作树必须干净。命令只在指定 bump 时原子更新并提交白名单发布元数据，然后运行所选轴的完整验证。它在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，再按 `Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。CLI tag 只推送到 `origin`；当前分支不自动推送。
 
-远端包或 Catalog 发布失败或结果不确定后，不要重试同一候选。提升受影响 target，再运行一键发布。`attempted.json` 是本地安全门禁，不要手动删除。若两个 npm 包已发布但 CLI tag 缺失，保留 prepared state 并运行 `pnpm release -- --repair-cli-tag`；命令会核验 artifact 和源码提交，只补 tag。
+远端包或 Catalog 发布失败或结果不确定后，不要重试同一候选。提升受影响 target，再运行一键发布。`attempted.json` 是本地安全门禁，不要手动删除。若三个 npm 包已发布但 CLI tag 缺失，保留 prepared state 并运行 `pnpm release -- --repair-cli-tag`；命令会核验 artifact 和源码提交，只补 tag。
 
 CLI 读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。
 

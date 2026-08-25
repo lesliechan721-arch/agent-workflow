@@ -33,7 +33,7 @@ metadata:
      --output <check.json>
    ```
 
-   机器错误直接阻断，不复制成多重 gate。
+   checker 只调用 PATH 上的 `aw skill validate`；不接受 validator 路径环境覆盖，也不搜索仓库私有 CLI。Skill 树中的符号链接或 FIFO、socket、device 等非普通节点在读取前直接形成机器错误。机器错误直接阻断，不复制成多重 gate。
 3. 检查没有该 Skill 时的具体失败、description 与 near-miss、一个 Skill 内部是否混入多个独立职责、强制规则是否最小充分、reference/script/asset 是否必要且可达，以及已有 Eval 是否能支持当前结论。
 4. `full` 时读取 `references/review-rubric.md`、`references/review-dimensions.md`、`references/scoring-model.md` 和 `references/composition-fitness.md`。先完成 finding 和 unknown，再按固定顺序填写全部 12 个维度。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
 5. 被审材料很多且能按 package、reference、scripts 或 Eval 独立划分时，可以使用独立上下文子代理分别审核；每个子代理只返回结论、证据位置和关键 unknown，最终 finding 由当前 Reviewer 判断。

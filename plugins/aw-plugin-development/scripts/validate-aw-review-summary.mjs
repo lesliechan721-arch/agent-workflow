@@ -2,7 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
@@ -10,6 +10,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
+
+async function firstRegularFile(candidates) {
+  for (const candidate of candidates) {
+    const stats = await lstat(candidate).catch(() => null);
+    if (stats?.isFile() && !stats.isSymbolicLink()) return candidate;
+  }
+  return null;
+}
 
 function parseArgs(argv) {
   const positional = [];
@@ -48,19 +56,13 @@ async function schemaErrors(valuePath, schemaName) {
     path.join(scriptRoot, '..', 'schemas', schemaName),
     path.join(scriptRoot, '..', 'assets', schemaName),
   ];
-  let schemaPath;
-  for (const candidate of schemaCandidates) {
-    try { await readFile(candidate); schemaPath = candidate; break; } catch {}
-  }
+  const schemaPath = await firstRegularFile(schemaCandidates);
   if (!schemaPath) throw new Error('Cannot locate AWReviewSummary schema.');
   const validatorCandidates = [
     path.join(scriptRoot, 'validate-json-contract.mjs'),
-    path.join(scriptRoot, '..', 'skills', 'review-aw-plugin', 'scripts', 'validate-json-contract.mjs'),
+    path.join(scriptRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-json-contract.mjs'),
   ];
-  let validator;
-  for (const candidate of validatorCandidates) {
-    try { await readFile(candidate); validator = candidate; break; } catch {}
-  }
+  const validator = await firstRegularFile(validatorCandidates);
   if (!validator) throw new Error('Cannot locate JSON contract validator.');
   try {
     const { stdout } = await execFileAsync(process.execPath, [validator, schemaPath, valuePath, '--format', 'json'], { encoding: 'utf8' });
@@ -77,24 +79,10 @@ function reviewTargetKey(target) {
 
 async function canonicalPlanErrors(plan, pluginRoot) {
   const errors = [];
-  let planTool = null;
-  for (const candidate of [
+  const planTool = await firstRegularFile([
     path.join(scriptRoot, 'prepare-aw-review-target-plan.mjs'),
-    path.join(
-      scriptRoot,
-      '..',
-      'skills',
-      'review-aw-plugin',
-      'scripts',
-      'prepare-aw-review-target-plan.mjs',
-    ),
-  ]) {
-    try {
-      await readFile(candidate);
-      planTool = candidate;
-      break;
-    } catch {}
-  }
+    path.join(scriptRoot, 'legacy-review', 'prepare-aw-review-target-plan.mjs'),
+  ]);
   if (!planTool) return ['Cannot locate AWReviewTargetPlan source inspector.'];
   let source;
   try {
@@ -126,6 +114,16 @@ async function canonicalPlanErrors(plan, pluginRoot) {
   }
 
   const expected = new Map();
+  const leafPlanPath = await firstRegularFile([
+    path.join(scriptRoot, 'review-skill-leaf-plan.mjs'),
+  ]);
+  if (!leafPlanPath) return ['Cannot locate shared Skill leaf planner.'];
+  const { reviewSkillLeafPlan } = await import(pathToFileURL(leafPlanPath).href);
+  const leafPlan = reviewSkillLeafPlan(
+    source.manifest,
+    source.sources.map((entry) => entry.name),
+    profiles,
+  );
   for (const skill of source.sources) {
     expected.set(reviewTargetKey({
       kind: 'aw-plugin-skill',
@@ -136,7 +134,8 @@ async function canonicalPlanErrors(plan, pluginRoot) {
       digest: skill.digest,
       status: 'present',
     });
-    for (const profile of profiles) {
+    for (const profile of leafPlan.staticLeaves
+      .find((leaf) => leaf.name === skill.name)?.profiles ?? []) {
       expected.set(reviewTargetKey({
         kind: 'materialized-skill',
         targetName: skill.name,
@@ -147,6 +146,17 @@ async function canonicalPlanErrors(plan, pluginRoot) {
         status: null,
       });
     }
+  }
+  for (const leaf of leafPlan.dynamicLeaves) {
+    expected.set(reviewTargetKey({
+      kind: 'materialized-skill',
+      targetName: leaf.name,
+      profile: leaf.profile,
+    }), {
+      id: `materialized-skill:${leaf.id}:${leaf.name}:${leaf.profile}`,
+      digest: null,
+      status: null,
+    });
   }
   const actual = new Map();
   for (const target of plan.expectedTargets) {
@@ -241,17 +251,10 @@ function planErrors(summary, plan, planContent, evidenceById) {
 async function validatedEvidence(entries) {
   const errors = [];
   const evidenceById = new Map();
-  let validator = null;
-  for (const candidate of [
+  const validator = await firstRegularFile([
     path.join(scriptRoot, 'validate-review-result.mjs'),
     path.join(scriptRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'validate-review-result.mjs'),
-  ]) {
-    try {
-      await readFile(candidate);
-      validator = candidate;
-      break;
-    } catch {}
-  }
+  ]);
   if (!validator) return { errors: ['Cannot locate ReviewResult validator.'], evidenceById };
   for (const entry of entries) {
     if (evidenceById.has(entry.id)) {

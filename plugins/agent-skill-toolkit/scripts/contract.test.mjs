@@ -54,6 +54,9 @@ test('reviewer runtime exposes only the lightweight machine contract', async () 
   ]) {
     await assert.rejects(readFile(path.join(reviewRoot, relative), 'utf8'), relative);
   }
+  const checker = await readFile(path.join(reviewRoot, 'scripts/check-agent-skill.mjs'), 'utf8');
+  assert.doesNotMatch(checker, /AW_SKILL_VALIDATOR_BIN|packages\/cli\/dist/u);
+  assert.match(checker, /execFileAsync\('aw'/u);
 });
 
 test('projected runtime files match canonical sources', async () => {

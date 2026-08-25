@@ -44,8 +44,10 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
   const artifacts = path.join(root, 'artifacts');
   await fs.mkdir(path.join(artifacts, 'catalog'), { recursive: true });
   const evalBytes = Buffer.from('eval-tarball');
+  const coreBytes = Buffer.from('core-tarball');
   const cliBytes = Buffer.from('cli-tarball');
   await fs.writeFile(path.join(artifacts, 'eval.tgz'), evalBytes);
+  await fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes);
   await fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes);
   await fs.writeFile(path.join(artifacts, 'catalog', 'catalog-manifest.json'), '{}');
   await fs.writeFile(path.join(artifacts, 'catalog', 'plugin-release-ledger.json'), '{}');
@@ -62,10 +64,12 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
         version: '1.2.0',
         packages: [
           { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz', contentDigest: sha256(evalBytes) },
+          { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz', contentDigest: sha256(coreBytes) },
           { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz', contentDigest: sha256(cliBytes) },
         ],
         treeDigests: {
           '@lesliechan721/agent-skill-eval': 'eval-tree',
+          '@lesliechan721/aw-plugin-core': 'core-tree',
           '@lesliechan721/aw': 'cli-tree',
         },
       } : null,
@@ -93,7 +97,7 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
     readPublishedCliVersion: async () => '1.2.0',
     computeTarballTreeDigest: async (file: string) => file.endsWith('eval.tgz')
       ? 'eval-tree'
-      : 'cli-tree',
+      : file.endsWith('core.tgz') ? 'core-tree' : 'cli-tree',
     catalogModules: {
       catalogSnapshot: {
         validateCatalogSnapshot: async () => ({ snapshotDigest: 'catalog-digest', manifest: {} }),
@@ -135,22 +139,29 @@ describe('local prepared release', () => {
     await expect(assertTrackedHeadClean(root)).rejects.toThrow('skip-worktree');
   });
 
-  it('keeps both public package versions and the exact workspace dependency synchronized', async () => {
+  it('keeps all public package versions and exact workspace dependencies synchronized', async () => {
     const root = await temporaryRoot();
     await Promise.all([
       fs.mkdir(path.join(root, 'release'), { recursive: true }),
       fs.mkdir(path.join(root, 'packages', 'cli'), { recursive: true }),
       fs.mkdir(path.join(root, 'packages', 'agent-skill-eval'), { recursive: true }),
+      fs.mkdir(path.join(root, 'packages', 'plugin-core'), { recursive: true }),
     ]);
     await fs.writeFile(path.join(root, 'release', 'version-targets.json'), `${JSON.stringify({
       schemaVersion: 1, cli: '1.2.0', catalog: '2.3.0',
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'cli', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/aw', version: '1.2.0',
-      dependencies: { '@lesliechan721/agent-skill-eval': 'workspace:1.2.0' },
+      dependencies: {
+        '@lesliechan721/agent-skill-eval': 'workspace:1.2.0',
+        '@lesliechan721/aw-plugin-core': 'workspace:1.2.0',
+      },
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/agent-skill-eval', version: '1.2.0',
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(root, 'packages', 'plugin-core', 'package.json'), `${JSON.stringify({
+      name: '@lesliechan721/aw-plugin-core', version: '1.2.0',
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'pnpm-lock.yaml'), [
       'lockfileVersion: 9.0',
@@ -160,6 +171,9 @@ describe('local prepared release', () => {
       "      '@lesliechan721/agent-skill-eval':",
       '        specifier: workspace:1.2.0',
       '        version: link:../agent-skill-eval',
+      "      '@lesliechan721/aw-plugin-core':",
+      '        specifier: workspace:1.2.0',
+      '        version: link:../plugin-core',
       '',
     ].join('\n'));
 
@@ -168,9 +182,14 @@ describe('local prepared release', () => {
     const evalPackage = JSON.parse(await fs.readFile(
       path.join(root, 'packages', 'agent-skill-eval', 'package.json'), 'utf8',
     ));
+    const corePackage = JSON.parse(await fs.readFile(
+      path.join(root, 'packages', 'plugin-core', 'package.json'), 'utf8',
+    ));
     expect(cli.version).toBe('1.2.1');
     expect(evalPackage.version).toBe('1.2.1');
+    expect(corePackage.version).toBe('1.2.1');
     expect(cli.dependencies['@lesliechan721/agent-skill-eval']).toBe('workspace:1.2.1');
+    expect(cli.dependencies['@lesliechan721/aw-plugin-core']).toBe('workspace:1.2.1');
     expect(await fs.readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8'))
       .toContain('specifier: workspace:1.2.1');
   });
@@ -203,7 +222,7 @@ describe('local prepared release', () => {
       readCatalogVersions,
       readCatalogChannelState,
     })).resolves.toEqual({ cli: '1.2.0-beta.1', catalog: null });
-    expect(readPackageVersions).toHaveBeenCalledTimes(2);
+    expect(readPackageVersions).toHaveBeenCalledTimes(3);
     expect(readCatalogVersions).not.toHaveBeenCalled();
     expect(readCatalogChannelState).not.toHaveBeenCalled();
 
@@ -313,20 +332,32 @@ describe('local prepared release', () => {
     })).rejects.toThrow('CLI train stable target 1.2.0 is only partially published');
   });
 
-  it('writes an overwriteable ignored descriptor and stages both tarballs from one snapshot', async () => {
+  it('writes an overwriteable ignored descriptor and stages all tarballs from one snapshot', async () => {
     const root = await temporaryRoot();
     const releaseRoot = path.join(root, '.release');
     const evalRoot = path.join(root, 'eval');
+    const coreRoot = path.join(root, 'core');
     const cliRoot = path.join(root, 'cli');
-    await Promise.all([fs.mkdir(evalRoot), fs.mkdir(cliRoot)]);
+    await Promise.all([fs.mkdir(evalRoot), fs.mkdir(coreRoot), fs.mkdir(cliRoot)]);
     await fs.writeFile(path.join(evalRoot, 'package.json'), JSON.stringify({
       name: '@lesliechan721/agent-skill-eval', version: '1.2.0',
     }));
+    await fs.writeFile(path.join(coreRoot, 'package.json'), JSON.stringify({
+      name: '@lesliechan721/aw-plugin-core', version: '1.2.0',
+    }));
     await fs.writeFile(path.join(cliRoot, 'package.json'), JSON.stringify({
       name: '@lesliechan721/aw', version: '1.2.0',
-      dependencies: { '@lesliechan721/agent-skill-eval': 'workspace:1.2.0' },
+      dependencies: {
+        '@lesliechan721/agent-skill-eval': 'workspace:1.2.0',
+        '@lesliechan721/aw-plugin-core': 'workspace:1.2.0',
+      },
     }));
-    const snapshot = { ...build, evalPackageRoot: evalRoot, cliPackageRoot: cliRoot };
+    const snapshot = {
+      ...build,
+      evalPackageRoot: evalRoot,
+      corePackageRoot: coreRoot,
+      cliPackageRoot: cliRoot,
+    };
     const pack = (name: string, packageRoot: string) => async ({
       destination,
       snapshot: receivedSnapshot,
@@ -350,6 +381,7 @@ describe('local prepared release', () => {
       withSnapshot: async (callback: (value: typeof snapshot) => unknown) => callback(snapshot),
       readContent: async () => ({ catalog: { contentDigest: sha256('catalog') } }),
       packEval: pack('eval', evalRoot),
+      packCore: pack('core', coreRoot),
       packCli: pack('cli', cliRoot),
       computeTarballTreeDigest: async (file: string) => sha256(await fs.readFile(file)),
       readCatalogChannelLedger: async () => undefined,
@@ -380,16 +412,18 @@ describe('local prepared release', () => {
   });
 
   it.each([
-    [{ cli: true, catalog: false }, ['eval', 'cli']],
+    [{ cli: true, catalog: false }, ['eval', 'core', 'cli']],
     [{ cli: false, catalog: true }, ['catalog']],
-    [{ cli: true, catalog: true }, ['eval', 'cli', 'catalog']],
+    [{ cli: true, catalog: true }, ['eval', 'core', 'cli', 'catalog']],
   ] as const)('publishes enabled axes in eval, CLI, Catalog order: %j', async (axes, expected) => {
     const fixture = await publicationFixture(axes);
     const events: string[] = [];
     await publishPreparedRelease({
       ...publishOptions(fixture),
       runCommand: async (_command: string, args: string[]) => {
-        events.push(args[1].includes('eval.tgz') ? 'eval' : 'cli');
+        events.push(args[1].includes('eval.tgz')
+          ? 'eval'
+          : args[1].includes('core.tgz') ? 'core' : 'cli');
       },
       publishCatalog: async () => { events.push('catalog'); },
     });
@@ -470,7 +504,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates });
   });
@@ -496,7 +530,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(failed.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: '1.2.1', catalog: '2.3.0' } });
   });

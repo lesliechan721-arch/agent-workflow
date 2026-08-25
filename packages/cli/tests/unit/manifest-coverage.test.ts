@@ -61,6 +61,10 @@ function createCatalogManifestFixture() {
         minVersion: '0.1.0',
       },
     },
+    marketplace: {
+      owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture Marketplace' },
+    },
     release: { state: 'development' as const },
     entries: [
       {
@@ -156,7 +160,7 @@ describe('manifest coverage', () => {
           },
         },
       }),
-    ).toThrow('absolute paths are not allowed');
+    ).toThrow('/apps must match pattern');
   });
 
   it('discovers, resolves, and selects plugins from repo and catalog directories', async () => {

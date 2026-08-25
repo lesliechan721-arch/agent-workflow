@@ -44,6 +44,7 @@ describe('one-command release entry', () => {
             'release/version-targets.json',
             'packages/cli/package.json',
             'packages/agent-skill-eval/package.json',
+            'packages/plugin-core/package.json',
             'pnpm-lock.yaml',
             'plugins/git/.agents-plugin/plugin.json',
             '',
@@ -63,6 +64,7 @@ describe('one-command release entry', () => {
       'release/version-targets.json',
       'packages/cli/package.json',
       'packages/agent-skill-eval/package.json',
+      'packages/plugin-core/package.json',
       'pnpm-lock.yaml',
       'plugins/git/.agents-plugin/plugin.json',
     ], expect.any(Object));

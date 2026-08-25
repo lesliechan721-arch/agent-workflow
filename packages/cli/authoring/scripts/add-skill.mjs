@@ -71,14 +71,13 @@ Options:
   --skill-short-description <text>
                                 Skill UI summary (25-64 characters). Default: description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
-  --repo-root <path>            Repository root. Default: current directory.
-  --plugin-root <path>          Plugin root, relative to --repo-root by default.
+  --workspace-root <path>            Workspace root. Default: current directory.
   -h, --help                    Show this help message.
 
 The command only adds one static Skill. It does not edit the plugin README.
 During development, keep the current stable target when production content changes.
-In this repository, run pnpm release -- beta|release --catalog|--all --plugin <name>=patch.
-The bump can also be major or minor. Other workspaces use their release workflow to set the target.
+Next, run aw plugin validate, aw plugin test, aw plugin build, and aw catalog build.
+Publish only as an explicit later step; inspect aw catalog publish --help first.
 `);
 }
 
@@ -122,11 +121,8 @@ function parseArgs(argv) {
         }
         options.skillInvocation = value;
         break;
-      case '--repo-root':
+      case '--workspace-root':
         options.repoRoot = value;
-        break;
-      case '--plugin-root':
-        options.pluginRoot = value;
         break;
       default:
         fail(`Unknown option: ${flag}`);
@@ -314,9 +310,8 @@ function main() {
     MIN_CODEX_SHORT_DESCRIPTION_LEN,
     MAX_CODEX_SHORT_DESCRIPTION_LEN,
   );
-  const { pluginRoot } = resolveAuthoringPluginRoot({
+  const { pluginRoot, repoRoot } = resolveAuthoringPluginRoot({
     repoRoot: args.repoRoot,
-    pluginRoot: args.pluginRoot,
     pluginName,
   });
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -408,7 +403,13 @@ function main() {
       console.log('[WARN] Codex has no hidden-user-entry equivalent; Codex remains model-invocable and explicitly invocable.');
     }
     console.log('[OK] Keep the current stable target during development.');
-    console.log(`[OK] In this repository, run \`pnpm release -- beta|release --catalog|--all --plugin ${pluginName}=patch\`; the bump can also be major or minor.`);
+    const printablePluginRoot = JSON.stringify(pluginRoot);
+    const printableRepoRoot = JSON.stringify(repoRoot);
+    console.log(`[NEXT] aw plugin validate ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+    console.log(`[NEXT] aw plugin test ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+    console.log(`[NEXT] aw plugin build ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
+    console.log(`[NEXT] aw catalog build --workspace-root ${printableRepoRoot}`);
+    console.log(`[LATER] Publish only when explicitly requested: aw catalog publish --workspace-root ${printableRepoRoot}`);
     console.log(`[WARN] Plugin README was not changed: ${path.join(pluginRoot, 'README.md')}`);
   } catch (error) {
     if (installedSkill && lstatOrNull(finalSkillRoot)) {

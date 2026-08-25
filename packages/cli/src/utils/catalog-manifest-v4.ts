@@ -13,6 +13,7 @@ import {
   createMarketplaceManifestEntry,
   normalizeCatalogManifestBase,
   normalizeCatalogManifestEntries,
+  normalizeCatalogMarketplaceIdentity,
   compareStrictSemVer,
 } from './manifest.js';
 
@@ -70,7 +71,7 @@ function normalizeRelease(raw: unknown): CatalogManifestV4Release {
 export function validateCatalogManifestV4(rawManifest: unknown): CatalogManifestV4 {
   const input = assertObject(rawManifest, 'catalog manifest v4');
   assertAllowedKeys(input, 'catalog manifest v4', [
-    'schemaVersion', 'catalogVersion', 'channel', 'compatibility', 'release', 'entries',
+    'schemaVersion', 'catalogVersion', 'channel', 'compatibility', 'marketplace', 'release', 'entries',
   ]);
   if (input.schemaVersion !== 4) {
     throw new Error('Invalid catalog manifest v4.schemaVersion: expected 4.');
@@ -87,6 +88,7 @@ export function validateCatalogManifestV4(rawManifest: unknown): CatalogManifest
     return entryInput;
   });
   const base = normalizeCatalogManifestBase(input, 'catalog manifest v4');
+  const marketplace = normalizeCatalogMarketplaceIdentity(input.marketplace);
   if (compareStrictSemVer(base.compatibility.aw.minVersion, CATALOG_SCHEMA_4_CLI_FLOOR) < 0) {
     throw new Error(`Invalid catalog manifest v4.compatibility.aw.minVersion: schema 4 requires ${CATALOG_SCHEMA_4_CLI_FLOOR} or newer.`);
   }
@@ -103,6 +105,7 @@ export function validateCatalogManifestV4(rawManifest: unknown): CatalogManifest
     catalogVersion: base.catalogVersion,
     channel: base.channel,
     compatibility: base.compatibility,
+    marketplace,
     release,
     entries: entries.map((entry, index) => ({ ...entry, contentDigest: contentDigests[index]! })),
   };

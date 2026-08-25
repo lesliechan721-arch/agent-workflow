@@ -214,8 +214,8 @@ describe('plugin release workflow', () => {
         contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       }),
     ]);
-    await expect(fs.readJson(path.join(outputRoot, 'plugin-release-ledger.json')))
-      .resolves.toEqual(staged.releaseLedger);
+    await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json')))
+      .resolves.toBe(false);
     await expect(fs.readJson(sourceManifestPath)).resolves.toMatchObject({ version: '0.2.0' });
 
     await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });

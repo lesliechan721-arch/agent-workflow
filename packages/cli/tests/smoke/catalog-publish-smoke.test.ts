@@ -29,11 +29,12 @@ afterEach(async () => {
   temporaryRoot = null;
 });
 
-async function writeSyntheticEvalBuildOutputs(sourceRoot: string): Promise<void> {
-  const evalOutputs = buildCacheContract.requiredOutputs.filter((relativePath: string) =>
+async function writeSyntheticPackageBuildOutputs(sourceRoot: string): Promise<void> {
+  const packageOutputs = buildCacheContract.requiredOutputs.filter((relativePath: string) =>
     relativePath.startsWith('packages/agent-skill-eval/dist/')
+    || relativePath.startsWith('packages/plugin-core/dist/')
   );
-  await Promise.all(evalOutputs.map(async (relativePath: string) => {
+  await Promise.all(packageOutputs.map(async (relativePath: string) => {
     const outputPath = path.join(sourceRoot, relativePath);
     if (await fs.pathExists(outputPath)) return;
     await fs.outputFile(
@@ -64,7 +65,7 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
   const catalogModules = { pluginStaging, catalogSnapshot };
   const sourceRoot = path.join(temporaryRoot, 'source');
   const sourceCatalogRoot = path.join(sourceRoot, 'packages', 'cli', 'plugins-dist');
-  const linkTarget = 'targets/runtime.js';
+  const runtimeSource = 'export {}\n';
   await Promise.all([
     fs.outputJson(path.join(sourceRoot, 'package.json'), {
       version: '1.0.0',
@@ -86,8 +87,17 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
         'aw-skill-eval': './dist/bin.js',
       },
     }),
+    fs.outputJson(path.join(sourceRoot, 'packages', 'plugin-core', 'package.json'), {
+      name: '@lesliechan721/aw-plugin-core',
+      version: '1.0.0',
+      type: 'module',
+      files: ['dist/', 'schemas/'],
+      exports: './dist/index.js',
+    }),
     fs.ensureDir(path.join(sourceRoot, 'packages', 'cli', 'node_modules')),
     fs.ensureDir(path.join(sourceRoot, 'packages', 'agent-skill-eval', 'node_modules')),
+    fs.ensureDir(path.join(sourceRoot, 'packages', 'plugin-core', 'node_modules')),
+    fs.ensureDir(path.join(sourceRoot, 'packages', 'plugin-core', 'schemas')),
   ]);
   const build = async () => {
     await fs.remove(path.join(sourceRoot, 'packages', 'cli', 'dist'));
@@ -104,15 +114,14 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       createCatalogSnapshotFixture(sourceCatalogRoot),
     ]);
     const pluginRuntimeRoot = path.join(sourceCatalogRoot, 'plugins', 'demo', 'runtime');
-    await fs.outputFile(path.join(pluginRuntimeRoot, linkTarget), 'export {};\n');
-    await fs.symlink(linkTarget, path.join(pluginRuntimeRoot, 'current.js'));
+    await fs.outputFile(path.join(pluginRuntimeRoot, 'current.js'), runtimeSource);
     await pluginStaging.stageCatalogArtifacts({
       repoRoot: sourceRoot,
       outputRoot: sourceCatalogRoot,
       phase: 'development',
       catalogVersion: '1.0.0',
     });
-    await writeSyntheticEvalBuildOutputs(sourceRoot);
+    await writeSyntheticPackageBuildOutputs(sourceRoot);
   };
   const snapshot = await createBuildSnapshot(sourceRoot, { build });
   const sourceValidation = await catalogSnapshot.validateCatalogSnapshot(snapshot.catalogOutputRoot);
@@ -174,15 +183,15 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
   expect(resolved.resolvedCommit).toBe(published.commit);
   expect(resolved.manifest.catalogVersion).toBe('91.0.0');
   expect(resolved.manifest.channel).toBe('latest');
-  const resolvedLinkPath = path.join(
+  const resolvedRuntimePath = path.join(
     resolved.rootDir,
     'plugins',
     'demo',
     'runtime',
     'current.js',
   );
-  expect((await fs.lstat(resolvedLinkPath)).isSymbolicLink()).toBe(true);
-  expect(await fs.readlink(resolvedLinkPath)).toBe(linkTarget);
+  expect((await fs.lstat(resolvedRuntimePath)).isFile()).toBe(true);
+  expect(await fs.readFile(resolvedRuntimePath, 'utf8')).toBe(runtimeSource);
   await expect(catalogSnapshot.validateCatalogSnapshot(resolved.rootDir))
     .resolves.toMatchObject({ manifest: { catalogVersion: '91.0.0' } });
 });

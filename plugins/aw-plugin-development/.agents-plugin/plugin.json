@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "name": "aw-plugin-development",
   "version": "0.1.0",
   "description": "创建或维护 AW 插件，评审单个 AW 插件，并评审有界的跨 AW 插件工作流。",
@@ -45,6 +46,11 @@
         "skill": "review-aw-plugin",
         "target": "scripts/check-aw-plugin-release.mjs",
         "source": "./scripts/check-aw-plugin-release.mjs"
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "scripts/review-skill-leaf-plan.mjs",
+        "source": "./scripts/review-skill-leaf-plan.mjs"
       },
       {
         "skill": "review-aw-plugin",

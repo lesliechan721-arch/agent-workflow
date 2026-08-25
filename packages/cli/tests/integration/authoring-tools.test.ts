@@ -82,11 +82,11 @@ async function writeManifestOnlyPlugin(
 function validatePluginScriptPath(): string {
   return path.join(
     repoRoot(),
-    '.agents',
-    'skills',
-    'create-aw-plugin',
+    'packages',
+    'cli',
+    'authoring',
     'scripts',
-    'validate_plugin.mjs',
+    'validate-plugin.mjs',
   );
 }
 
@@ -457,7 +457,7 @@ describe('authoring tools', () => {
           '--no-skills',
           '--version',
           version,
-          '--repo-root',
+          '--workspace-root',
           tempRepo,
         ],
         { cwd: repoRoot(), env: process.env },
@@ -483,7 +483,7 @@ describe('authoring tools', () => {
           '检查仓库状态、配置、依赖与风险并输出可执行的诊断结论',
           '--skill-short-description',
           '仓库诊断',
-          '--repo-root',
+          '--workspace-root',
           tempRepo,
         ],
         {
@@ -515,7 +515,7 @@ describe('authoring tools', () => {
         '--skill-description',
         '检查仓库状态、执行风险核验并生成结构化诊断报告工作流',
         '--with-apps',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ],
       {
@@ -529,6 +529,7 @@ describe('authoring tools', () => {
       path.join(tempRepo, 'plugins', 'repo-check', '.agents-plugin', 'plugin.json'),
     );
     expect(scaffoldManifest).toMatchObject({
+      schemaVersion: 1,
       name: 'repo-check',
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
@@ -774,7 +775,7 @@ describe('authoring tools', () => {
       'missing-skill-description',
       '--description',
       'Plugin-level description must not become a Skill discovery description.',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
       stderr: expect.stringContaining('--skill-description is required'),
@@ -791,7 +792,7 @@ describe('authoring tools', () => {
       'Run a controlled release workflow after explicit user approval.',
       '--skill-invocation',
       'manual',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     const manualRoot = path.join(tempRepo, 'plugins', 'manual-workflow', 'skills', 'manual-workflow');
@@ -834,7 +835,7 @@ describe('authoring tools', () => {
       'Provide model-only background knowledge for repository tasks.',
       '--skill-invocation',
       'claude-model-only',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     const claudeModelRoot = path.join(
@@ -862,7 +863,7 @@ describe('authoring tools', () => {
       'Validate an unsupported invocation mode for this initial Skill.',
       '--skill-invocation',
       'sometimes',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
       stderr: expect.stringContaining('--skill-invocation must be one of'),
@@ -889,7 +890,7 @@ describe('authoring tools', () => {
       '根据当前分支变更生成结构化发布说明并核对风险与遗漏',
       '--skill-invocation',
       'manual',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
 
@@ -900,9 +901,14 @@ describe('authoring tools', () => {
     expect(dualManifest.skills).toBe('./skills');
     expect(dualManifest.interface.capabilities).toContain('Skills');
     expect(dualAdded.stdout).toContain('Keep the current stable target during development');
-    expect(dualAdded.stdout).toContain(
-      'pnpm release -- beta|release --catalog|--all --plugin git-commit=patch',
-    );
+    for (const command of [
+      'aw plugin validate',
+      'aw plugin test',
+      'aw plugin build',
+      'aw catalog build',
+      'aw catalog publish',
+    ]) expect(dualAdded.stdout).toContain(command);
+    expect(dualAdded.stdout).not.toContain('pnpm release');
     await expect(fs.pathExists(path.join(tempRepo, '.changes'))).resolves.toBe(false);
     const dualSkillRoot = path.join(dualPluginRoot, 'skills', 'release-notes');
     await expect(fs.readFile(path.join(dualSkillRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
@@ -943,7 +949,7 @@ describe('authoring tools', () => {
       'commit',
       '--skill-description',
       '验证已有 Skill 名称冲突不会产生任何部分写入或版本变化',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
       stderr: expect.stringContaining('Skill already exists'),
@@ -985,7 +991,7 @@ describe('authoring tools', () => {
         '检查仓库状态、核对配置和风险并生成可执行的结构化诊断报告',
         '--skill-invocation',
         platform === 'claude' ? 'claude-model-only' : 'manual',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], { cwd: repoRoot(), env: process.env });
 
@@ -1030,7 +1036,7 @@ describe('authoring tools', () => {
       'repo-report',
       '--skill-description',
       '验证动态 Skill 所有权冲突会在写入前失败且不会产生部分源码',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
       stderr: expect.stringContaining('conflicts with dynamic artifact'),
@@ -1051,7 +1057,7 @@ describe('authoring tools', () => {
       'repo-report',
       '--skill-description',
       '验证公共命令名称冲突会在写入前失败且不会产生部分源码',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
       stderr: expect.stringContaining('conflicts with slash command'),
@@ -1063,12 +1069,17 @@ describe('authoring tools', () => {
   const externalPluginRootTest = fs.existsSync(
     path.join(repoRoot(), 'packages', 'cli', 'dist'),
   ) ? it : it.skip;
-  externalPluginRootTest('uses one explicit plugin root through the public authoring workflow', async () => {
+  externalPluginRootTest('uses the canonical plugin root through the public authoring workflow', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-external-plugin-root-'));
     tempDirs.push(tempRoot);
     const workspaceRoot = path.join(tempRoot, 'workspace');
-    const pluginRoot = path.join(workspaceRoot, 'tools', 'demo');
-    await fs.ensureDir(path.join(workspaceRoot, 'tools'));
+    const pluginRoot = path.join(workspaceRoot, 'plugins', 'demo');
+    await fs.ensureDir(path.join(workspaceRoot, 'plugins'));
+    await fs.writeJson(path.join(workspaceRoot, 'plugins', 'marketplace-source.json'), {
+      owner: { name: 'Fixture', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture' },
+      catalog: { version: '1.0.0' },
+    });
     await runGit(workspaceRoot, ['init']);
 
     await execFileAsync('node', [
@@ -1080,12 +1091,9 @@ describe('authoring tools', () => {
       'Create and maintain a deterministic explicit-root plugin workflow.',
       '--skill-short-description',
       'Maintain an explicit-root plugin workflow.',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
-      '--plugin-root',
-      'tools/demo',
     ], { cwd: workspaceRoot, env: process.env });
-    await expect(fs.pathExists(path.join(workspaceRoot, 'plugins'))).resolves.toBe(false);
 
     await execFileAsync('node', [
       createAwPluginScriptPath('add_skill.mjs'),
@@ -1096,10 +1104,8 @@ describe('authoring tools', () => {
       'Add a second deterministic workflow inside the explicit plugin root.',
       '--skill-short-description',
       'Add an explicit-root workflow Skill.',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
-      '--plugin-root',
-      'tools/demo',
     ], { cwd: workspaceRoot, env: process.env });
 
     for (const skillName of ['demo', 'second-workflow']) {
@@ -1112,14 +1118,7 @@ describe('authoring tools', () => {
       );
     }
 
-    const validation = await execFileAsync('node', [
-      validatePluginScriptPath(),
-      pluginRoot,
-      '--json',
-    ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(validation.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
-
-    await runGit(workspaceRoot, ['add', 'tools/demo']);
+    await runGit(workspaceRoot, ['add', 'plugins']);
     await runGit(workspaceRoot, [
       '-c',
       'user.name=AW Test',
@@ -1129,6 +1128,29 @@ describe('authoring tools', () => {
       '-m',
       'baseline',
     ]);
+
+    const validation = await execFileAsync('node', [
+      path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js'),
+      'plugin',
+      'validate',
+      pluginRoot,
+      '--workspace-root',
+      workspaceRoot,
+      '--json',
+    ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(validation.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
+    const cliEntry = path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js');
+    for (const args of [
+      ['plugin', 'test', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
+      ['plugin', 'build', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
+      ['catalog', 'build', '--workspace-root', workspaceRoot, '--json'],
+    ]) {
+      const completed = await execFileAsync('node', [cliEntry, ...args], {
+        cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024,
+      });
+      expect(JSON.parse(completed.stdout)).toMatchObject({ ok: true });
+    }
+
     await fs.appendFile(
       path.join(pluginRoot, 'skills', 'second-workflow', 'SKILL.md'),
       '\nChanged production behavior.\n',
@@ -1141,12 +1163,12 @@ describe('authoring tools', () => {
 
     const versionCheck = await execFileAsync('node', [
       createAwPluginScriptPath('check_plugin_versions.mjs'),
+      '--base',
+      'HEAD',
       'demo',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
-      '--plugin-root',
-      'tools/demo',
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(versionCheck.stdout).checks[0]).toMatchObject({
       plugin: 'demo',
@@ -1172,7 +1194,7 @@ describe('authoring tools', () => {
       const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-add-skill-${pathCase}-`));
       tempDirs.push(tempRoot);
       const workspaceRoot = path.join(tempRoot, 'workspace');
-      const toolsRoot = path.join(workspaceRoot, 'tools');
+      const toolsRoot = path.join(workspaceRoot, 'plugins');
       const victimRoot = path.join(tempRoot, 'victim');
       const victimManifestPath = path.join(victimRoot, 'plugin.json');
       const victimMarkerPath = path.join(victimRoot, 'marker.txt');
@@ -1237,10 +1259,8 @@ describe('authoring tools', () => {
         'Reject redirected authoring paths without changing external victim bytes.',
         '--skill-short-description',
         'Reject redirected authoring paths safely.',
-        '--repo-root',
+        '--workspace-root',
         workspaceRoot,
-        '--plugin-root',
-        'tools/demo',
       ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
         code: 1,
         stderr: expect.stringContaining(expectedDiagnostic),
@@ -1255,7 +1275,7 @@ describe('authoring tools', () => {
     }
   });
 
-  externalPluginRootTest('rejects explicit plugin roots that escape the repository', async () => {
+  externalPluginRootTest('rejects the removed plugin-root option', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-root-escape-'));
     tempDirs.push(tempRoot);
     const workspaceRoot = path.join(tempRoot, 'workspace');
@@ -1266,12 +1286,13 @@ describe('authoring tools', () => {
       '--description',
       'Reject an escaped plugin root.',
       '--no-skills',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
       '--plugin-root',
       '../demo',
+      '--json',
     ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
-      stderr: expect.stringContaining('inside the repository root'),
+      stderr: expect.stringContaining('Unknown option: --plugin-root'),
     });
     await expect(fs.pathExists(path.join(tempRoot, 'demo'))).resolves.toBe(false);
   });
@@ -1323,7 +1344,7 @@ describe('authoring tools', () => {
     const defaultCheck = execFileAsync('node', [
       checkerPath,
       'default-demo',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
     ], { cwd: workspaceRoot, env: process.env });
     await expect(defaultCheck).rejects.toMatchObject({
@@ -1337,14 +1358,14 @@ describe('authoring tools', () => {
     const explicitCheck = execFileAsync('node', [
       checkerPath,
       'explicit-demo',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
       '--plugin-root',
       'tools/explicit-demo',
     ], { cwd: workspaceRoot, env: process.env });
     await expect(explicitCheck).rejects.toMatchObject({
       code: 1,
-      stderr: expect.stringContaining(explicitManifestPath),
+      stderr: expect.stringContaining('Unknown option: --plugin-root'),
     });
     await expect(explicitCheck).rejects.not.toMatchObject({
       stderr: expect.stringContaining(victimManifestPath),
@@ -1370,7 +1391,7 @@ describe('authoring tools', () => {
     const allCheck = execFileAsync('node', [
       checkerPath,
       '--all',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
     ], { cwd: workspaceRoot, env: process.env });
     await expect(allCheck).rejects.toMatchObject({
@@ -1439,10 +1460,12 @@ describe('authoring tools', () => {
     const skillMdPath = path.join(pluginDir, 'skills', 'versioned-skill', 'SKILL.md');
     await expect(execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'versioned-plugin',
       '--mode',
       'author',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
       stderr: expect.stringContaining('Unknown option: --mode'),
@@ -1451,9 +1474,11 @@ describe('authoring tools', () => {
 
     const developmentStatus = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'versioned-plugin',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     const developmentReport = JSON.parse(developmentStatus.stdout);
@@ -1485,9 +1510,11 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, changedManifest, { spaces: 2 });
     const bumped = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'versioned-plugin',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
@@ -1513,9 +1540,11 @@ describe('authoring tools', () => {
     await fs.outputFile(path.join(pluginDir, 'reports', 'run', 'summary.json'), '{}\n');
     const authorOnly = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'versioned-plugin',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(authorOnly.stdout).checks[0]).toMatchObject({
@@ -1527,8 +1556,10 @@ describe('authoring tools', () => {
     await fs.appendFile(skillReadmePath, '\nPublished documentation change.\n', 'utf8');
     const readmeChange = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'versioned-plugin',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     expect(readmeChange.stdout).toContain('unreleasedChanges');
@@ -1540,8 +1571,10 @@ describe('authoring tools', () => {
       await fs.writeJson(manifestPath, invalidManifest, { spaces: 2 });
       await expect(execFileAsync('node', [
         checkerPath,
+        '--base',
+        'HEAD',
         'versioned-plugin',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
         stdout: expect.stringContaining('stable SemVer'),
@@ -1553,9 +1586,11 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, versionOnlyManifest, { spaces: 2 });
     const versionOnly = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'versioned-plugin',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(versionOnly.stdout).checks[0]).toMatchObject({
@@ -1571,9 +1606,11 @@ describe('authoring tools', () => {
     );
     const newPlugin = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'new-plugin',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     const newPluginReport = JSON.parse(newPlugin.stdout);
@@ -1592,10 +1629,12 @@ describe('authoring tools', () => {
     );
     const allChanged = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       '--all',
       '--',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     expect(JSON.parse(allChanged.stdout).checks.map((check: { plugin: string }) => check.plugin))
@@ -1604,10 +1643,12 @@ describe('authoring tools', () => {
     await fs.remove(path.join(tempRepo, 'packages', 'cli', 'dist'));
     const publishedRuntimeResult = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       '--all',
       '--',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     expect(JSON.parse(publishedRuntimeResult.stdout)).toMatchObject({
@@ -1633,9 +1674,11 @@ describe('authoring tools', () => {
     await fs.remove(path.join(tempRepo, 'plugins', 'deleted-plugin'));
     const deletedPluginResult = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       '--all',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     expect(JSON.parse(deletedPluginResult.stdout).checks).toContainEqual(
@@ -1767,9 +1810,11 @@ describe('authoring tools', () => {
     const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
     const allConsumers = await execFileAsync('node', [
         checkerPath,
+        '--base',
+        'HEAD',
         '--all',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], {
         cwd: repoRoot(),
@@ -1796,9 +1841,11 @@ describe('authoring tools', () => {
 
     const isolated = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'runtime-consumer',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], {
       cwd: repoRoot(),
@@ -1819,9 +1866,11 @@ describe('authoring tools', () => {
     try {
       await execFileAsync('node', [
         checkerPath,
+        '--base',
+        'HEAD',
         'runtime-consumer',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], {
         cwd: repoRoot(),
@@ -1859,9 +1908,11 @@ describe('authoring tools', () => {
     try {
       await execFileAsync('node', [
         checkerPath,
+        '--base',
+        'HEAD',
         'runtime-consumer',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], {
         cwd: repoRoot(),
@@ -1933,9 +1984,11 @@ describe('authoring tools', () => {
 
     const checker = execFileAsync('node', [
       createAwPluginScriptPath('plugin_status.mjs'),
+      '--base',
+      'HEAD',
       'new-import-consumer',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     await expect(checker).rejects.toMatchObject({ code: 1 });
@@ -2019,9 +2072,11 @@ describe('authoring tools', () => {
 
     const developmentStatus = await execFileAsync('node', [
         checkerPath,
+        '--base',
+        'HEAD',
         'historical-closure',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(developmentStatus.stdout).checks[0]).toMatchObject({
@@ -2034,9 +2089,11 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const downgrade = execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'historical-closure',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     await expect(downgrade).rejects.toMatchObject({ code: 1 });
@@ -2051,9 +2108,11 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const bumped = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'historical-closure',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
@@ -2064,9 +2123,11 @@ describe('authoring tools', () => {
     await fs.remove(policyPath);
     const invalidCurrent = execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'historical-closure',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
     await expect(invalidCurrent).rejects.toMatchObject({ code: 1 });
@@ -2174,9 +2235,11 @@ describe('authoring tools', () => {
     const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
     const allDevelopmentStatus = await execFileAsync('node', [
         checkerPath,
+        '--base',
+        'HEAD',
         '--all',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], {
         cwd: repoRoot(),
@@ -2194,9 +2257,11 @@ describe('authoring tools', () => {
 
     const developmentStatus = await execFileAsync('node', [
         checkerPath,
+        '--base',
+        'HEAD',
         'virtual-import-consumer',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], {
         cwd: repoRoot(),
@@ -2216,9 +2281,11 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const bumped = await execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'virtual-import-consumer',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], {
       cwd: repoRoot(),
@@ -2275,8 +2342,10 @@ describe('authoring tools', () => {
     await fs.remove(path.join(workspaceRoot, 'packages', 'cli'));
     await expect(execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'ownership-demo',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
     ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
       code: 1,
@@ -2290,8 +2359,10 @@ describe('authoring tools', () => {
     }, { spaces: 2 });
     await expect(execFileAsync('node', [
       checkerPath,
+      '--base',
+      'HEAD',
       'ownership-demo',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
     ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
       code: 1,
@@ -2324,9 +2395,11 @@ describe('authoring tools', () => {
 
     const result = await execFileAsync('node', [
       createAwPluginScriptPath('plugin_status.mjs'),
+      '--base',
+      'HEAD',
       'external-cli-demo',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       workspaceRoot,
     ], {
       cwd: workspaceRoot,
@@ -2370,7 +2443,7 @@ describe('authoring tools', () => {
         '--no-skills',
         '--catalog-min-version',
         '0.8.0',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ],
       {
@@ -2403,7 +2476,7 @@ describe('authoring tools', () => {
           '0.9.0',
           '--catalog-min-version',
           '0.8.0',
-          '--repo-root',
+          '--workspace-root',
           tempRepo,
         ],
         {
@@ -2467,7 +2540,7 @@ describe('authoring tools', () => {
       version: 'v0.1.0',
     });
     await expect(runValidatePlugin(invalidPluginVersionDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('strict SemVer 2.0.0'),
+      stdout: expect.stringContaining('/version must match pattern'),
     });
 
     const invalidAuthenticationDir = path.join(pluginsRoot, 'invalid-authentication');
@@ -2484,7 +2557,7 @@ describe('authoring tools', () => {
     });
     await expect(runValidatePlugin(invalidAuthenticationDir)).rejects.toMatchObject({
       stdout: expect.stringContaining(
-        'Invalid marketplace.policy.authentication: expected "ON_INSTALL" or "ON_USE".',
+        '/marketplace/policy/authentication must be equal to one of the allowed values',
       ),
     });
 
@@ -2520,7 +2593,7 @@ describe('authoring tools', () => {
       { preserveCompatibility: true },
     );
     await expect(runValidatePlugin(perAgentVersionDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('compatibility has unknown field "codex"'),
+      stdout: expect.stringContaining('/compatibility must NOT have additional properties'),
     });
   });
 
@@ -2557,7 +2630,7 @@ describe('authoring tools', () => {
         '检查仓库状态并输出诊断结论',
         '--skill-short-description',
         '检查仓库状态、配置、依赖与风险并输出可执行的诊断结论',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ],
       {
@@ -3021,7 +3094,7 @@ describe('authoring tools', () => {
         '--no-skills',
         '--with-config-api',
         '--with-lifecycle',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ],
       {
@@ -3112,7 +3185,7 @@ describe('authoring tools', () => {
         'Check "repo" state: produce report',
         '--skill-short-description',
         'Summarize "repo" state: quick view',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ],
       {
@@ -3432,7 +3505,7 @@ describe('authoring tools', () => {
       await fs.remove(casesPath);
       await fs.symlink(outsideCasesPath, casesPath);
       await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-        stdout: expect.stringContaining('must stay inside the Skill eval directory'),
+        stdout: expect.stringContaining('Invalid plugin input tree: symbolic links are not supported'),
       });
       await fs.remove(casesPath);
       await fs.copyFile(outsideCasesPath, casesPath);
@@ -3955,40 +4028,6 @@ describe('authoring tools', () => {
     expect(invalidStdout).toContain('duplicate preset id "bad"');
   });
 
-  it.each([
-    ['sensitive', { type: 'string', sensitive: true }, 'private'],
-    ['file', { type: 'file' }, '/private/rules'],
-    ['directory', { type: 'directory' }, '/private/workspace'],
-  ] as const)('the lightweight author validator rejects %s preset values', async (_label, field, value) => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-lightweight-'));
-    tempDirs.push(tempRoot);
-    const sourceScripts = path.join(repoRoot(), 'packages', 'cli', 'authoring', 'scripts');
-    const copiedScripts = path.join(tempRoot, 'packages', 'cli', 'authoring', 'scripts');
-    await fs.ensureDir(copiedScripts);
-    await fs.copy(path.join(sourceScripts, 'validate-plugin.mjs'), path.join(copiedScripts, 'validate-plugin.mjs'));
-    await fs.copy(path.join(sourceScripts, 'lib'), path.join(copiedScripts, 'lib'));
-    const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'private-preset', {});
-    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      config: {
-        schema: { privateValue: field },
-        presentation: {
-          presets: [{ id: 'private', title: 'Private', values: { privateValue: value } }],
-        },
-      },
-    }, { spaces: 2 });
-
-    await expect(execFileAsync(process.execPath, [path.join(copiedScripts, 'validate-plugin.mjs'), pluginDir], {
-      cwd: tempRoot,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    })).rejects.toMatchObject({
-      stdout: expect.stringContaining('cannot contain sensitive, file, or directory config values'),
-    });
-  });
-
   it('validate_plugin.mjs scans real Node imports without comment, string, regex, or template-text ghosts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-import-scan-'));
     tempDirs.push(tempRoot);
@@ -4447,7 +4486,7 @@ describe('authoring tools', () => {
       },
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('expected agent-skills'),
+      stdout: expect.stringContaining('/buildConfig/skillRuntimeFiles/0/distributions/0'),
     });
 
     const uppercaseDynamicKey = structuredClone(manifest);
@@ -4668,6 +4707,50 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(dynamicCodex.pluginDir)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
+    const dynamicEvalDir = path.join(dynamicCodex.pluginDir, 'skills', 'codex-dynamic', 'evals');
+    await fs.ensureDir(dynamicEvalDir);
+    await fs.writeJson(path.join(dynamicEvalDir, 'trigger-cases.json'), {
+      schemaVersion: 1,
+      skill: 'codex-dynamic',
+      cases: [{
+        id: 'dynamic_release',
+        split: 'validation',
+        query: 'Run the dynamic Skill.',
+        should_load_skill: true,
+      }],
+    });
+    await fs.writeJson(path.join(dynamicEvalDir, 'manifest.json'), {
+      schemaVersion: 2,
+      plugin: 'codex-dynamic',
+      skill: 'codex-dynamic',
+      profiles: [{
+        id: 'project-default',
+        scope: 'project',
+        plugins: [{ name: 'codex-dynamic', config: {} }],
+        runModel: true,
+        requiredForRelease: false,
+      }],
+      suites: [{
+        id: 'trigger',
+        kind: 'trigger',
+        skills: ['codex-dynamic'],
+        cases: './trigger-cases.json',
+        observeSpawnAgent: false,
+        isolation: 'strict',
+        strictNegativeSplits: [],
+        profiles: ['project-default'],
+        defaultRuns: 1,
+        releaseSplits: ['validation'],
+        requiredForRelease: false,
+        perRunTimeoutMs: 10_000,
+      }],
+    });
+    await expect(runValidatePlugin(dynamicCodex.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'must include at least one release-required suite for dynamic Skill "codex-dynamic"',
+      ),
+    });
+    await fs.remove(dynamicEvalDir);
     await fs.writeFile(
       path.join(dynamicCodex.pluginDir, 'skills', 'codex-dynamic', 'SKILL.md'),
       '---\nname: codex-dynamic\ndescription: Dynamic Codex skill.\nuser-invocable: true\n---\n\n# Dynamic Codex\n',
@@ -4845,8 +4928,9 @@ describe('authoring tools', () => {
       },
     }, { spaces: 2 });
     await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('sourceDirs[0] must point to an existing directory'),
+      stdout: expect.stringContaining('Invalid plugin input tree: symbolic links are not supported'),
     });
+    await fs.remove(sourceLink);
 
     await fs.writeJson(dynamicClaude.manifestPath, {
       ...dynamicClaudeManifest,
@@ -6544,7 +6628,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('accepts dependencies at the default AW floor in the authoring fallback validator', async () => {
+  it('fails closed without the installed manifest contract even at the default AW floor', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-dependency-floor-'));
     tempDirs.push(tempRoot);
     const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
@@ -6584,12 +6668,12 @@ describe('authoring tools', () => {
       cwd: tempRoot,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
-    })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('Plugin manifest contract v7 is unavailable'),
     });
   });
 
-  it('fails closed for Portable manifests when only a stale v4 runtime validator is available', async () => {
+  it('fails closed for all manifests when only a stale runtime validator is available', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-v4-'));
     tempDirs.push(tempRoot);
     const authoringRoot = path.join(tempRoot, 'packages', 'cli', 'authoring');
@@ -6634,7 +6718,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('requires manifest contract v5'),
+      stdout: expect.stringContaining('Plugin manifest contract v7 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6646,8 +6730,8 @@ describe('authoring tools', () => {
       cwd: tempRoot,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
-    })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('Plugin manifest contract v7 is unavailable'),
     });
   });
 

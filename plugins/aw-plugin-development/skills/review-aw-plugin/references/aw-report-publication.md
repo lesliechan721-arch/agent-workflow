@@ -7,13 +7,7 @@
 - 设计 pass 与 release evidence provisional 分开表达。
 - Review publication 不修改 Skill README、plugin README 或源码 manifest。
 
-```bash
-pnpm review:publish -- --plugin <name> --skill <owner-skill> \
-  --batch-id <batch-id> --report <report.md> \
-  --review-result <review-result.json> --review-bundle <target-bundle.json> \
-  --aw-summary <aw-review-summary.json> --target-plan <target-plan.json> \
-  --review-evidence <other-id> <other-result.json> <other-bundle.json>
-```
+正式发布必须由上层兼容 Runner 或项目自己的公开发布入口执行。Reviewer 只返回已验证的报告、Review evidence 和 registration request；它不发现或调用仓库内的 `pnpm` 脚本，也不自行发布。
 
 结构化模式先验证主 ReviewInputBundle、每个附加 review evidence 和 AWReviewTargetPlan，再保存通用 `ReviewResult`、AW summary 与 target plan。内部 `scorecard.json` 是兼容投影，不声明与旧 scorecard 合同完全等价。
 

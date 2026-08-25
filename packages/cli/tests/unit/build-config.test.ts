@@ -152,6 +152,19 @@ describe('buildConfig validation', () => {
     });
   });
 
+  it('rejects CLI reserved imports that are not in the injected registry', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      buildConfig: {
+        buildImports: [{
+          plugin: '@aw/cli',
+          export: 'unknown-export',
+          env: 'AW_PLUGIN_IMPORT_UNKNOWN',
+        }],
+      },
+    })).toThrow('unknown reserved export "unknown-export"');
+  });
+
   it('keeps native runtime file defaults and accepts explicit portable distribution projection', () => {
     const native = validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
@@ -228,7 +241,7 @@ describe('buildConfig validation', () => {
       ...baseManifest,
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       distributions: { agentSkills: { skills: '../portable-skills' } },
-    })).toThrow('must start with "./"');
+    })).toThrow('/distributions/agentSkills/skills must match pattern');
   });
 
   it('accepts only an explicit deterministic build cache declaration with a Node build', () => {
@@ -244,7 +257,7 @@ describe('buildConfig validation', () => {
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
       buildConfig: { cacheable: false },
-    })).toThrow('buildConfig.cacheable: expected true');
+    })).toThrow('/buildConfig/cacheable must be equal to constant');
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
       buildConfig: { cacheable: true },
@@ -279,7 +292,7 @@ describe('buildConfig validation', () => {
     },
     {
       buildConfig: { runtimeExports: [{ name: 'registry', source: './registry.json', extra: true }] },
-      error: 'unknown field "extra"',
+      error: '/buildConfig/runtimeExports/0 must NOT have additional properties',
     },
   ])('rejects an unsafe catalog runtime projection manifest', ({ buildConfig, error }) => {
     expect(() => validatePluginManifest('/tmp/plugin', {

@@ -82,7 +82,7 @@ node <plugin-root>/scripts/aw-config.mjs json --scope project-local
 
 helper 的读取路径分两种：
 
-- 有 `AW_PLUGIN_CONTEXT` 时，优先读取 context 里的 `config.values`、`config.sources`、`config.schema` 和 `paths.configStores`。lifecycle、`pnpm plugin:test` 和受 AW 管理的脚本都走这条路径。
+- 有 `AW_PLUGIN_CONTEXT` 时，优先读取 context 里的 `config.values`、`config.sources`、`config.schema` 和 `paths.configStores`。lifecycle、`aw plugin test` 和受 AW 管理的脚本都走这条路径。
 - 没有 `AW_PLUGIN_CONTEXT` 时，从当前 helper 文件定位 bundle manifest，并要求它位于 `<AW_HOME>/marketplaces/<sourceId>/plugins/<pluginName>`。helper 验证 marketplace `config.json` 的 schema 2 source identity，再读取同 source 的 namespaced schema 2 config envelope。
 
 无 context fallback 使用的是“当前 namespaced marketplace bundle 视图”，而 `aw config get/list` 使用的是当前 multi-source resolution。helper 找不到 bundle manifest、不能验证 source identity、发现旧裸名 store、envelope identity 不匹配或 schema 校验失败时必须 fail closed，不能回退到其它 source 或 schema-less raw store。

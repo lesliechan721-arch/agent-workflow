@@ -15,7 +15,7 @@ import type {
   ConfigFieldEntry,
   PluginConfigSchema,
   PluginConfigSchemaField,
-  PluginManifestSource,
+  NormalizedPluginManifest,
   PluginMeta,
   Scope,
 } from '../types.js';
@@ -179,7 +179,7 @@ export interface RequiredPluginConfigPreflightTarget {
   sourceId?: string;
   sourceIdentity?: string;
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   schemaSourceIdentity?: string;
 }
 
@@ -1463,7 +1463,7 @@ export async function resolveEffectivePluginConfig(options: {
   sourceId?: string;
   sourceIdentity?: string;
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedEffectivePluginConfig> {
@@ -1704,7 +1704,7 @@ export async function resolveProjectArtifactRenderConfig(options: {
   sourceId?: string;
   sourceIdentity?: string;
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   refreshKeys?: readonly string[];
@@ -1864,7 +1864,7 @@ export async function resolveProjectArtifactRenderConfig(options: {
 
 export async function resolveProjectLocalPluginConfigView(options: {
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<{
@@ -1965,7 +1965,7 @@ async function resolveRedactedLayerValue(options: {
 
 export async function resolveProjectScopedPluginConfigView(options: {
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedProjectScopedPluginConfigView> {
@@ -2435,7 +2435,7 @@ export function summarizeEffectivePluginConfig(
 }
 
 export function createPluginConfigSchemaIdentity(
-  manifest: PluginManifestSource,
+  manifest: NormalizedPluginManifest,
 ): string {
   const hash = crypto
     .createHash('sha256')
@@ -2468,7 +2468,7 @@ export function toCliConfigPromptSchema(schema: PluginConfigSchema['schema']): C
 
 export function createPluginConfigFormModel(options: {
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   effective: ResolvedEffectivePluginConfig;
   initialScope: Scope;
   allowedScopes?: Scope[];

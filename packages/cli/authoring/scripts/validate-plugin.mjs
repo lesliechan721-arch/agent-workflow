@@ -10,15 +10,21 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
 import { scanJavaScriptImportSpecifiers } from './lib/javascript-import-scanner.mjs';
-import { assertAuthoringPluginPathFence } from './lib/plugin-root.mjs';
+import {
+  assertAuthoringPluginPathFence,
+  assertCanonicalAuthoringPluginRoot,
+} from './lib/plugin-root.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLI_PACKAGE_ROOT = path.resolve(__dirname, '..', '..', '..');
+const authoringRuntimeRoot = path.resolve(__dirname, '..', '..');
+const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
+  ? path.dirname(authoringRuntimeRoot)
+  : authoringRuntimeRoot;
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 5;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 7;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -418,6 +424,7 @@ async function tryLoadCliManifestTools() {
       return null;
     }
     return {
+      assertPluginInputTree: manifestModule.assertPluginInputTree ?? null,
       validateSourcePluginManifest: manifestModule.validateSourcePluginManifest ?? null,
       readPluginManifest: manifestModule.readPluginManifest ?? null,
       discoverPlugins: manifestModule.discoverPlugins ?? null,
@@ -1809,6 +1816,13 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
       }
     }
   });
+  if (
+    skill
+    && collectDeclaredSkillNames(pluginDir, pluginManifest).dynamic.has(skill)
+    && !manifest.suites.some((suite) => isRecord(suite) && suite.requiredForRelease === true)
+  ) {
+    error(`${manifestField}.suites must include at least one release-required suite for dynamic Skill ${JSON.stringify(skill)}`);
+  }
 }
 
 function validatePluginEvalManifest(pluginDir, pluginManifest) {
@@ -4662,6 +4676,7 @@ Options:
   --claude-skill-profile <minimum|current>
                                Validate Claude fields at AW minimum 2.1.88 (default) or current docs.
   --version-base <git-ref>     Compare the production bundle against this Git base. Default: HEAD.
+  --workspace-root <path>      Workspace root. Default: current directory.
   --json                       Emit one machine-readable JSON result to stdout.
   -h, --help                   Show this help message.
 `);
@@ -4684,6 +4699,24 @@ function exitCliError(message, json) {
 async function validatePluginDir(pluginDir, options) {
   const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
 
+  const cliManifestTools = await tryLoadCliManifestTools();
+  if (
+    !cliManifestTools
+    || typeof cliManifestTools.assertPluginInputTree !== 'function'
+    || typeof cliManifestTools.validateSourcePluginManifest !== 'function'
+  ) {
+    error(
+      `Plugin manifest contract v${SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION} is unavailable; install a complete current aw CLI and retry.`,
+    );
+    return;
+  }
+  try {
+    await cliManifestTools.assertPluginInputTree(pluginDir);
+  } catch (e) {
+    error(e.message);
+    return;
+  }
+
   if (!fs.existsSync(manifestPath)) {
     error('.agents-plugin/plugin.json not found');
     return;
@@ -4696,30 +4729,31 @@ async function validatePluginDir(pluginDir, options) {
     error(`.agents-plugin/plugin.json is not valid JSON: ${e.message}`);
     return;
   }
-
-  const [cliManifestTools, skillValidationTools] = await Promise.all([
-    tryLoadCliManifestTools(),
-    tryLoadCliSkillValidationTools(),
-  ]);
-  if (cliManifestTools?.validateSourcePluginManifest) {
+  if (
+    options.enforceCanonicalRoot
+    && typeof manifest?.name === 'string'
+    && manifest.name !== ''
+  ) {
     try {
-      await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
-    } catch (e) {
-      error(e.message);
-    }
-    validatePlatformFieldSupport(manifest);
-  } else {
-    warn(
-      'CLI authoring manifest contract 不完整，仅执行轻量预检；预检通过不代表完整 contract 通过，请安装完整的 aw CLI 后重试',
-    );
-    validateManifestLightweight(manifest);
-    validateDeclaredPathsExist(pluginDir, manifest);
-    if (manifest.distributions?.agentSkills !== undefined) {
-      error(
-        `Portable Agent Skills authoring requires manifest contract v${SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION}; install a complete current aw CLI and retry.`,
-      );
+      assertCanonicalAuthoringPluginRoot({
+        workspaceRoot: options.repoRoot,
+        pluginRoot: pluginDir,
+        pluginName: manifest.name,
+        requireManifest: true,
+      });
+    } catch (cause) {
+      error(cause.message);
+      return;
     }
   }
+
+  const skillValidationTools = await tryLoadCliSkillValidationTools();
+  try {
+    await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+  } catch (e) {
+    error(e.message);
+  }
+  validatePlatformFieldSupport(manifest);
   validatePortableNativeArtifactCapabilityLightweight(manifest);
 
   validateNameMatchesDirectory(pluginDir, manifest);
@@ -4754,7 +4788,7 @@ async function validatePluginDir(pluginDir, options) {
     const repoRoot = resolveCanonicalRepoRoot(
       pluginDir,
       manifest.name ?? '',
-      options.repoRoot,
+      options.gitRoot,
     );
     if (repoRoot) {
       try {
@@ -4793,6 +4827,7 @@ function parseArgs(argv) {
     strictAgentSkills: false,
     claudeSkillProfile: 'minimum',
     versionBase: 'HEAD',
+    workspaceRoot: null,
     json: args.includes('--json'),
   };
 
@@ -4833,6 +4868,15 @@ function parseArgs(argv) {
       options.versionBase = value;
       continue;
     }
+    if (arg === '--workspace-root') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        exitCliError('--workspace-root requires a value.', options.json);
+      }
+      index += 1;
+      options.workspaceRoot = value;
+      continue;
+    }
     if (!arg.startsWith('--')) {
       if (!options.pluginDir) {
         options.pluginDir = arg;
@@ -4869,11 +4913,14 @@ async function main() {
     exitCliError('plugin-directory is required; run with --help for usage.', args.json);
   }
 
-  const resolved = path.resolve(args.pluginDir);
+  const requestedWorkspaceRoot = args.workspaceRoot === null
+    ? null
+    : path.resolve(args.workspaceRoot);
+  const resolved = path.resolve(requestedWorkspaceRoot ?? '.', args.pluginDir);
   if (!fs.existsSync(resolved)) {
     exitCliError(`[ERROR] Directory not found: ${resolved}`, args.json);
   }
-  const repoRootCandidate = findRepoRootCandidate(resolved);
+  const repoRootCandidate = requestedWorkspaceRoot ?? findRepoRootCandidate(resolved);
   try {
     assertAuthoringPluginPathFence({
       repoRoot: repoRootCandidate ?? undefined,
@@ -4884,7 +4931,8 @@ async function main() {
   } catch (pathError) {
     exitCliError(`[ERROR] ${pathError.message}`, args.json);
   }
-  const repoRoot = discoverCanonicalRepoRoot(repoRootCandidate);
+  const repoRoot = requestedWorkspaceRoot ?? discoverCanonicalRepoRoot(repoRootCandidate);
+  const gitRoot = discoverCanonicalRepoRoot(findRepoRootCandidate(resolved));
 
   await validatePluginDir(resolved, {
     catalogMinVersion: args.catalogMinVersion,
@@ -4892,6 +4940,8 @@ async function main() {
     claudeSkillProfile: args.claudeSkillProfile,
     versionBase: args.versionBase,
     repoRoot,
+    gitRoot,
+    enforceCanonicalRoot: requestedWorkspaceRoot !== null,
   });
 
   if (args.json) {

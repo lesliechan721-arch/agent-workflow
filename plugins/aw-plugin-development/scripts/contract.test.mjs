@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -17,6 +17,16 @@ const runtimeRoot = context?.platform ? path.join(localRoot, context.platform) :
 const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const temps = [];
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
+const testBinRoot = await mkdtemp(path.join(tmpdir(), 'aw-review-contract-bin-'));
+temps.push(testBinRoot);
+await writeFile(path.join(testBinRoot, 'aw'), `#!/bin/sh
+if [ "$1" = "plugin" ]; then
+  printf '%s\\n' '{"ok":true,"errors":[]}'
+  exit 0
+fi
+exec "${process.execPath}" "${skillValidatorBin}" "$@"
+`);
+await chmod(path.join(testBinRoot, 'aw'), 0o755);
 
 async function runJson(file, args = []) {
   try {
@@ -24,7 +34,10 @@ async function runJson(file, args = []) {
       cwd: runtimeRoot,
       encoding: 'utf8',
       maxBuffer: 20 * 1024 * 1024,
-      env: { ...process.env, AW_SKILL_VALIDATOR_BIN: skillValidatorBin },
+      env: {
+        ...process.env,
+        PATH: `${testBinRoot}${path.delimiter}${process.env.PATH ?? ''}`,
+      },
     })).stdout);
   } catch (error) {
     if (typeof error?.stdout === 'string' && error.stdout.trim()) return JSON.parse(error.stdout);
@@ -45,6 +58,7 @@ test('review adapter runtime contains only lightweight review and release tools'
     'assets/review-result-lite.schema.json',
     'scripts/check-agent-skill.mjs',
     'scripts/check-aw-plugin-release.mjs',
+    'scripts/review-skill-leaf-plan.mjs',
     'scripts/validate-eval-audit-result.mjs',
     'scripts/validate-eval-run-bundle.mjs',
     'scripts/validate-json-contract.mjs',
@@ -72,13 +86,19 @@ test('review adapter runtime contains only lightweight review and release tools'
   assert.ok((await readFile(path.join(skillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
 });
 
-test('author adapter still delegates deterministic work to stable AW CLI commands', async () => {
+test('author adapter uses public workspace-root CLI commands and never auto-publishes', async () => {
   const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
-  // Static contract exception: installed agents must discover every public authoring command and must not execute an undeclared fallback; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
-  for (const command of ['init', 'add-skill', 'validate', 'status']) {
+  // Static contract exception: installed agents must discover every public authoring command and preserve the no-auto-publish boundary; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  for (const command of ['init', 'add-skill', 'validate', 'test', 'build', 'status']) {
     assert.match(skill, new RegExp(`aw plugin ${command} --help`, 'u'));
-    assert.match(skill, new RegExp(`aw plugin ${command}(?: <| --)`, 'u'));
+    assert.match(skill, new RegExp(`aw plugin ${command}[\\s\\S]*--workspace-root`, 'u'));
   }
+  for (const command of ['init', 'build', 'validate']) {
+    assert.match(skill, new RegExp(`aw catalog ${command} --help`, 'u'));
+  }
+  assert.match(skill, /aw catalog publish --help/u);
+  assert.match(skill, /绝不自动 publish/u);
+  assert.doesNotMatch(skill, /--repo-root|pnpm plugin:test|pnpm build/u);
   assert.match(skill, /不得回退到本 Skill 的本地工具副本/u);
 });
 
@@ -89,6 +109,34 @@ test('author adapter exposes structured context tools from the final Skill entry
   assert.match(skill, /scripts\/validate-json-contract\.mjs/u);
   assert.match(skill, /assets\/aw-authoring-context\.schema\.json/u);
   assert.match(skill, /assets\/aw-authoring-context\.json/u);
+});
+
+test('source AWReviewSummary validator resolves canonical source dependencies', async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), 'aw-summary-source-'));
+  temps.push(temp);
+  const summaryPath = path.join(temp, 'summary.json');
+  const planPath = path.join(temp, 'plan.json');
+  await writeFile(summaryPath, '{}');
+  await writeFile(planPath, '{}');
+  const result = await runJson(
+    path.join(sourceRoot, 'scripts', 'validate-aw-review-summary.mjs'),
+    [
+      summaryPath,
+      '--plan',
+      planPath,
+      '--plugin-root',
+      sourceRoot,
+      '--evidence',
+      'invalid-evidence',
+      path.join(temp, 'missing-result.json'),
+      path.join(temp, 'missing-bundle.json'),
+      '--format',
+      'json',
+    ],
+  );
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.length > 0);
+  assert.doesNotMatch(result.errors.join('\n'), /Cannot locate (?:JSON contract|shared Skill leaf) /u);
 });
 
 test('target discovery groups identical content by digest and preserves real differences', async () => {
@@ -107,13 +155,13 @@ test('target discovery groups identical content by digest and preserves real dif
     await writeFile(path.join(root, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
   }
   const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
-  const first = await runJson(discover, [plugin, '--final', `codex-project=${path.dirname(codexSkill)}`, '--final', `claude-project=${path.dirname(claudeSkill)}`, '--format', 'json']);
+  const first = await runJson(discover, [plugin, '--workspace-root', temp, '--final', `codex-project=${path.dirname(codexSkill)}`, '--final', `claude-project=${path.dirname(claudeSkill)}`, '--format', 'json']);
   assert.equal(first.targets.length, 3);
   assert.equal(first.uniqueReviews.length, 1);
   assert.equal(first.uniqueReviews[0].targetIds.length, 3);
 
   await writeFile(path.join(claudeSkill, 'SKILL.md'), skillText.replace('one approved notice', 'approved single or batch notices'));
-  const second = await runJson(discover, [plugin, '--final', `codex-project=${path.dirname(codexSkill)}`, '--final', `claude-project=${path.dirname(claudeSkill)}`, '--format', 'json']);
+  const second = await runJson(discover, [plugin, '--workspace-root', temp, '--final', `codex-project=${path.dirname(codexSkill)}`, '--final', `claude-project=${path.dirname(claudeSkill)}`, '--format', 'json']);
   assert.equal(second.uniqueReviews.length, 2);
 });
 
@@ -140,8 +188,8 @@ test('target discovery requires real materialized content for build-generated Sk
   await writeFile(path.join(finalSkill, 'references', 'generated.md'), '# Generated\n\nRuntime content.\n');
   await writeFile(path.join(finalSkill, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
   const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
-  await assert.rejects(runJson(discover, [plugin, '--format', 'json']), /materialized --final collection/u);
-  const result = await runJson(discover, [plugin, '--final', `codex-project=${finalRoot}`, '--format', 'json']);
+  await assert.rejects(runJson(discover, [plugin, '--workspace-root', temp, '--format', 'json']), /materialized --final collection/u);
+  const result = await runJson(discover, [plugin, '--workspace-root', temp, '--final', `codex-project=${finalRoot}`, '--format', 'json']);
   assert.equal(result.targets.length, 1);
   assert.equal(result.targets[0].kind, 'materialized-skill');
   assert.equal(result.targets[0].machineCheck.ok, true);
@@ -158,7 +206,7 @@ test('target discovery surfaces machine errors without review workflow state', a
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({ name: 'broken-plugin', version: '1.0.0', skills: './skills' }));
   await writeFile(path.join(skill, 'SKILL.md'), '---\nname: broken\ndescription: Broken fixture.\n---\n\nRun `node scripts/missing.mjs`.\n');
   const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
-  const result = await runJson(discover, [plugin, '--format', 'json']);
+  const result = await runJson(discover, [plugin, '--workspace-root', temp, '--format', 'json']);
   assert.equal(result.targets[0].machineCheck.ok, false);
   assert.ok(result.targets[0].machineCheck.errors.some((entry) => entry.code === 'missing-runtime-resource'));
   assert.equal('providedStages' in result, false);

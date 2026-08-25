@@ -10,6 +10,7 @@ import {
   createCatalogManifestV4Entry,
 } from '../../src/utils/catalog-manifest-v4.js';
 import { compareStrictSemVer, readPluginManifest } from '../../src/utils/manifest.js';
+import { resolvePlatformEntries } from '../../src/utils/platform-entries.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -24,10 +25,6 @@ export async function createCatalogSnapshotFixture(
     fs.ensureDir(path.join(rootDir, '.agents')),
     fs.ensureDir(path.join(rootDir, '.claude-plugin')),
     fs.ensureDir(path.join(rootDir, 'plugins')),
-  ]);
-  await Promise.all([
-    fs.outputFile(path.join(rootDir, '.agents', '.keep'), ''),
-    fs.outputFile(path.join(rootDir, '.claude-plugin', '.keep'), ''),
   ]);
   const pluginRoot = path.join(rootDir, 'plugins', pluginName);
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -56,14 +53,51 @@ export async function createCatalogSnapshotFixture(
     policy: manifest.marketplace.policy,
   };
   const products = manifest.marketplace.policy.products;
+  const supportedPlatforms = (['claude', 'codex'] as const).filter((platform) =>
+    products === undefined || products.includes(platform === 'claude' ? 'CLAUDE' : 'CODEX'));
+  await Promise.all((['claude', 'codex'] as const).map((platform) =>
+    fs.remove(path.join(pluginRoot, `.${platform}-plugin`))));
   const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
     name: 'aw',
-    owner: { name: 'Fixture Owner' },
+    owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
     plugins: products === undefined || products.includes(platform) ? [marketplaceEntry] : [],
   });
+  const platformManifest = (platform: 'claude' | 'codex') => {
+    const projected = {
+      name: manifest.name,
+      version: manifest.version,
+      description: manifest.description,
+      compatibility: manifest.compatibility,
+      ...(manifest.interface ? { interface: manifest.interface } : {}),
+    } as Record<string, unknown>;
+    if (platform === 'claude') {
+      const agents = resolvePlatformEntries(manifest.extensions?.agents, platform);
+      if (agents.length > 0) {
+        projected.agents = agents.map((agent) => {
+          const slug = (value: string) => value.trim().toLowerCase()
+            .replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '');
+          return `./claude/agents/aw-${slug(manifest.name)}-${slug(agent.name)}.md`;
+        });
+      }
+    }
+    return projected;
+  };
+  const projectedAgentPaths = resolvePlatformEntries(manifest.extensions?.agents, 'claude').map((agent) => {
+    const slug = (value: string) => value.trim().toLowerCase()
+      .replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '');
+    return path.join(pluginRoot, 'claude', 'agents', `aw-${slug(manifest.name)}-${slug(agent.name)}.md`);
+  });
   await Promise.all([
     fs.outputJson(manifestPath, manifest, { spaces: 2 }),
+    ...supportedPlatforms.map((platform) => fs.outputJson(
+      path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'),
+      platformManifest(platform),
+      { spaces: 2 },
+    )),
+    ...(supportedPlatforms.includes('claude')
+      ? projectedAgentPaths.map((agentPath) => fs.outputFile(agentPath, '# Agent\n'))
+      : []),
     fs.outputJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
     fs.outputJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), marketplace('CLAUDE'), { spaces: 2 }),
   ]);
@@ -76,6 +110,10 @@ export async function createCatalogSnapshotFixture(
   await fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV4({
     catalogVersion: '1.0.0',
     channel: 'latest',
+    marketplace: {
+      owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture Marketplace' },
+    },
     compatibility: { aw: { minVersion: catalogMinAwVersion } },
     release: { state: 'development' },
     entries: [entry],
@@ -109,30 +147,38 @@ export async function createDependencyCatalogSnapshotFixture(
       },
     );
   }
-  const metas = await Promise.all(plugins.map((plugin) =>
-    readPluginManifest(path.join(rootDir, 'plugins', plugin.name), { mode: 'bundle' })));
+  const metas = (await Promise.all(plugins.map((plugin) =>
+    readPluginManifest(path.join(rootDir, 'plugins', plugin.name), { mode: 'bundle' }))))
+    .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   const entries = await Promise.all(metas.map((meta) =>
     createCatalogManifestV4Entry(meta, meta.rootDir)));
-  const marketplaceEntries = metas.map((meta) => ({
+  const marketplaceEntry = (meta: PluginMeta) => ({
     name: meta.manifest.name,
     source: `./plugins/${meta.manifest.name}`,
     description: meta.manifest.description,
     category: meta.manifest.marketplace.category,
     strict: meta.manifest.marketplace.strict,
     policy: meta.manifest.marketplace.policy,
-  }));
-  const marketplace = {
+  });
+  const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
     name: 'aw',
-    owner: { name: 'Fixture Owner' },
+    owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
-    plugins: marketplaceEntries,
-  };
+    plugins: metas
+      .filter((meta) => meta.manifest.marketplace.policy.products === undefined
+        || meta.manifest.marketplace.policy.products.includes(platform))
+      .map(marketplaceEntry),
+  });
   await Promise.all([
-    fs.writeJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace, { spaces: 2 }),
-    fs.writeJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), marketplace, { spaces: 2 }),
+    fs.writeJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
+    fs.writeJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), marketplace('CLAUDE'), { spaces: 2 }),
     fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV4({
       catalogVersion: '1.0.0',
       channel: 'latest',
+      marketplace: {
+        owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+        interface: { displayName: 'Fixture Marketplace' },
+      },
       compatibility: { aw: { minVersion: '0.1.0' } },
       release: { state: 'development' },
       entries,

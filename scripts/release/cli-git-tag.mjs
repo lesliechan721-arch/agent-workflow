@@ -4,6 +4,7 @@ import {
   assertPublishedPackageTarballMatchesCandidate,
   assertValidVersion,
   cliPackageJsonPath,
+  corePackageJsonPath,
   evalPackageJsonPath,
   repoRoot as defaultRepoRoot,
   runReleaseGit,
@@ -11,6 +12,7 @@ import {
 
 const CLI_PACKAGES = new Map([
   ['@lesliechan721/agent-skill-eval', evalPackageJsonPath],
+  ['@lesliechan721/aw-plugin-core', corePackageJsonPath],
   ['@lesliechan721/aw', cliPackageJsonPath],
 ]);
 

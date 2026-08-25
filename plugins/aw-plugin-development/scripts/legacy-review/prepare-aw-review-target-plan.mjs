@@ -5,6 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { isSkillAuthorArtifact } from './review-artifact-policy.mjs';
+import { reviewSkillLeafPlan, supportedProfiles } from '../review-skill-leaf-plan.mjs';
 
 const PRODUCTION_DIGEST_DOMAIN = 'aw-production-records-v1';
 const PROFILES = new Set(['codex-user', 'codex-project', 'claude-user', 'claude-project']);
@@ -153,18 +154,6 @@ export async function skillName(root) {
   return match?.[1]?.trim().replace(/^['"]|['"]$/gu, '') || path.basename(root);
 }
 
-export function supportedProfiles(manifest) {
-  const products = manifest.marketplace?.policy?.products;
-  const normalized = !Array.isArray(products) || products.length === 0
-    ? ['CODEX', 'CLAUDE']
-    : products.map((product) => String(product).toUpperCase());
-  return normalized.flatMap((product) => {
-    if (product === 'CODEX') return ['codex-user', 'codex-project'];
-    if (product === 'CLAUDE') return ['claude-user', 'claude-project'];
-    return [];
-  });
-}
-
 export async function describeReviewPlanSource(pluginRoot) {
   const manifest = JSON.parse(await readFile(
     path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
@@ -172,12 +161,21 @@ export async function describeReviewPlanSource(pluginRoot) {
   ));
   const skillsPath = typeof manifest.skills === 'string'
     ? path.resolve(pluginRoot, manifest.skills)
-    : path.join(pluginRoot, 'skills');
+    : null;
   const sources = [];
-  for (const root of await skillRoots(skillsPath)) {
-    sources.push({ name: await skillName(root), digest: await digestSkill(root) });
+  if (skillsPath !== null) {
+    for (const root of await skillRoots(skillsPath)) {
+      sources.push({ name: await skillName(root), digest: await digestSkill(root) });
+    }
   }
-  return { manifest, sources, supportedProfiles: supportedProfiles(manifest) };
+  const leafPlan = reviewSkillLeafPlan(manifest, sources.map((entry) => entry.name));
+  return {
+    manifest,
+    sources: leafPlan.staticLeaves.map((leaf) =>
+      sources.find((source) => source.name === leaf.name)),
+    leafPlan,
+    supportedProfiles: supportedProfiles(manifest),
+  };
 }
 
 async function main() {
@@ -200,6 +198,7 @@ async function main() {
   for (const profile of profiles) {
     if (!allSupported.includes(profile)) fail('Profile is not supported by the plugin: ' + profile);
   }
+  const leafPlan = reviewSkillLeafPlan(manifest, sources.map((entry) => entry.name), profiles);
   const finalRoots = new Map();
   for (const entry of options.finals) {
     if (finalRoots.has(entry.profile)) fail('Duplicate --final profile: ' + entry.profile);
@@ -221,7 +220,10 @@ async function main() {
       }
     }
     for (const name of byName.keys()) {
-      if (!sources.some((source) => source.name === name)) {
+      if (
+        !sources.some((source) => source.name === name)
+        && !leafPlan.dynamicLeaves.some((leaf) => leaf.profile === profile && leaf.name === name)
+      ) {
         fail('Materialized profile contains an unexpected Skill: ' + profile + ':' + name);
       }
     }
@@ -238,7 +240,8 @@ async function main() {
   }));
   for (const profile of profiles) {
     const byName = finalByProfile.get(profile);
-    for (const source of sources) {
+    for (const source of sources.filter((entry) =>
+      leafPlan.staticLeaves.find((leaf) => leaf.name === entry.name)?.profiles.includes(profile))) {
       const digest = byName.get(source.name) ?? null;
       expectedTargets.push({
         id: `materialized-skill:${source.name}:${profile}`,
@@ -249,6 +252,17 @@ async function main() {
         status: digest === null ? 'missing' : 'present',
       });
     }
+  }
+  for (const leaf of leafPlan.dynamicLeaves) {
+    const digest = finalByProfile.get(leaf.profile).get(leaf.name) ?? null;
+    expectedTargets.push({
+      id: `materialized-skill:${leaf.id}:${leaf.name}:${leaf.profile}`,
+      targetName: leaf.name,
+      kind: 'materialized-skill',
+      profile: leaf.profile,
+      digest,
+      status: digest === null ? 'missing' : 'present',
+    });
   }
   const plan = {
     schemaVersion: 1,

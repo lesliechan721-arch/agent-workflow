@@ -1,6 +1,6 @@
 # BuildConfig 规范
 
-`buildConfig` 是 `.agents-plugin/plugin.json` 中的构建阶段配置，控制 `pnpm build` 时如何生成平台 bundle。它包含模板、平台文件规则、平台 manifest 覆盖、runtime export、build import 和 Skill runtime 文件投影。
+`buildConfig` 是 `.agents-plugin/plugin.json` 中的构建阶段配置，控制 `aw plugin build` 与 `aw catalog build` 如何生成平台 bundle。它包含模板、平台文件规则、平台 manifest 覆盖、runtime export、build import 和 Skill runtime 文件投影。
 
 `buildConfig` 只描述构建阶段行为，不是给平台私有字段开的通用出口。`marketplace.policy.products` 会先解析出插件最终支持平台；`fileRules.<platform>` 和 `manifestOverrides.<platform>` 只能用于支持的平台。比如 `products=["CODEX"]` 的插件不能声明 `buildConfig.fileRules.claude` 或 `buildConfig.manifestOverrides.claude`，即使对应内容看起来只是额外文件或空覆盖也会 fail fast。
 
@@ -32,7 +32,7 @@ CLI 自有的 Skill frontmatter registry 只允许通过 reserved build import `
 - **配置文件**（`.json`、`.yaml`、`.toml`）：按平台生成不同的默认配置
 - **Rules 文件**（`.rules`）：按平台生成不同的权限规则
 
-模板渲染发生在 `pnpm build` 阶段，只影响 bundle 产物，不修改源码文件。通过 `templates.include` glob 指定哪些文件参与渲染，未匹配的文件直接复制。
+模板渲染发生在公开 build 命令的 staging 阶段，只影响 bundle 产物，不修改源码文件。通过 `templates.include` glob 指定哪些文件参与渲染，未匹配的文件直接复制。
 
 ### 字段
 
