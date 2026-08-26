@@ -119,6 +119,7 @@ function releaseMetadataPaths(parsed) {
   if (parsed.cliBump) {
     paths.add('packages/cli/package.json');
     paths.add('packages/agent-skill-eval/package.json');
+    paths.add('packages/plugin-core/package.json');
     paths.add('pnpm-lock.yaml');
   }
   for (const name of parsed.plugins.keys()) paths.add(`plugins/${name}/.agents-plugin/plugin.json`);

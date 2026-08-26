@@ -72,6 +72,7 @@ import type {
   CatalogChannel,
   CatalogManifestV4,
   CatalogManifestV4Release,
+  MarketplaceManifest,
   PluginMeta,
 } from '../src/types.js';
 import {
@@ -298,9 +299,16 @@ export async function stageCatalogArtifacts(
       plugin,
       path.join(options.outputRoot, 'plugins', plugin.manifest.name),
     )));
+  const marketplace = await readJsonFile<MarketplaceManifest>(
+    path.join(options.outputRoot, '.agents', 'plugins', 'marketplace.json'),
+  );
   const manifest = createCatalogManifestV4({
     catalogVersion,
     channel,
+    marketplace: {
+      owner: marketplace.owner,
+      interface: marketplace.interface,
+    },
     compatibility: {
       aw: {
         minVersion: minAwVersion,
@@ -324,7 +332,7 @@ export async function stageCatalogArtifacts(
     canonicalManifestPath,
     manifest,
   );
-  if (phase === 'release') {
+  if (manifest.release.state === 'published') {
     await writeCanonicalJsonFile(releaseLedgerPath, releaseLedger);
     validatePluginReleaseLedgerAgainstManifest(releaseLedger, manifest);
   }

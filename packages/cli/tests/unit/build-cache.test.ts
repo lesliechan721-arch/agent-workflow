@@ -28,11 +28,21 @@ async function createRepo(): Promise<string> {
   await fs.mkdir(path.join(repoRoot, 'plugins', 'demo'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'tools'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'packages', 'plugin-core', 'node_modules'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'packages', 'plugin-core', 'schemas'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'cli'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'cli', 'node_modules'), { recursive: true });
   await fs.writeFile(
     path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json'),
     JSON.stringify({ name: '@lesliechan721/agent-skill-eval', type: 'module', files: ['dist/'] }),
+  );
+  await fs.writeFile(
+    path.join(repoRoot, 'packages', 'plugin-core', 'package.json'),
+    JSON.stringify({ name: '@lesliechan721/aw-plugin-core', type: 'module', files: ['dist/', 'schemas/'] }),
+  );
+  await fs.writeFile(
+    path.join(repoRoot, 'packages', 'plugin-core', 'schemas', 'plugin-manifest-v1.json'),
+    '{}\n',
   );
   await fs.writeFile(
     path.join(repoRoot, 'package.json'),
@@ -222,6 +232,8 @@ describe('build cache input and environment identity', () => {
         '--filter',
         '@lesliechan721/agent-skill-eval',
         '--filter',
+        '@lesliechan721/aw-plugin-core',
+        '--filter',
         '@lesliechan721/aw',
         'build',
       ],
@@ -238,7 +250,7 @@ describe('build cache input and environment identity', () => {
     ));
 
     expect(stamp).toMatchObject({
-      schemaVersion: 8,
+      schemaVersion: 9,
       nodeVersion: process.version,
       nodeExecPath: path.resolve(process.execPath),
       nodeExecRealPath: await fs.realpath(process.execPath),
@@ -324,6 +336,8 @@ describe('build cache input and environment identity', () => {
       "fs.writeFileSync('packages/agent-skill-eval/dist/index.js', 'export {};\\n');",
       "fs.writeFileSync('packages/agent-skill-eval/dist/bin.js', 'export {};\\n');",
       "fs.writeFileSync('packages/agent-skill-eval/dist/schemas/digests.json', '{}\\n');",
+      "fs.mkdirSync('packages/plugin-core/dist', { recursive: true });",
+      "fs.writeFileSync('packages/plugin-core/dist/index.js', 'export {};\\n');",
       "fs.mkdirSync('packages/cli/dist/scripts', { recursive: true });",
       "fs.writeFileSync('packages/cli/dist/index.js', 'export {};\\n');",
       "fs.writeFileSync('packages/cli/dist/scripts/bundle-plugins.js', 'export {};\\n');",
@@ -1295,6 +1309,11 @@ describe('build snapshots', () => {
       {
         source: path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules'),
         target: path.join(snapshot.evalPackageRoot, 'node_modules'),
+        type: 'junction',
+      },
+      {
+        source: path.join(repoRoot, 'packages', 'plugin-core', 'node_modules'),
+        target: path.join(snapshot.corePackageRoot, 'node_modules'),
         type: 'junction',
       },
     ]);

@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "name": "aw-skill-eval-runner",
   "version": "0.1.0",
   "description": "通过共享 aw-skill-eval CLI 执行 Agent Skill Eval plan，并生成中立的运行证据。",
@@ -27,5 +28,12 @@
         "CLAUDE"
       ]
     }
+  },
+  "interface": {
+    "displayName": "AW Skill Eval Runner",
+    "shortDescription": "执行 Agent Skill Eval plan，并生成中立的 EvalRunBundle 证据",
+    "capabilities": [
+      "Skills"
+    ]
   }
 }

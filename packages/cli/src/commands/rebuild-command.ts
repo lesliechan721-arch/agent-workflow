@@ -221,6 +221,7 @@ function createSyntheticPlugin(pluginName: string, env: NodeJS.ProcessEnv): Plug
     rootDir,
     manifestPath: path.join(rootDir, '.agents-plugin', 'plugin.json'),
     manifest: {
+      schemaVersion: 1,
       name: pluginName,
       version: '0.0.0',
       description: 'Cleanup-only target for a plugin missing from the current catalog.',

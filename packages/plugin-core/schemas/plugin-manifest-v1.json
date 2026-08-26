@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.agent-workflows.dev/plugin-manifest-v1.json",
+  "title": "PluginManifestSourceV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "description", "marketplace"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "version": { "$ref": "#/$defs/semver" },
+    "description": { "type": "string", "minLength": 1 },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      }
+    },
+    "compatibility": { "$ref": "#/$defs/compatibility" },
+    "skills": { "$ref": "#/$defs/pluginPath" },
+    "slashCommands": { "$ref": "#/$defs/pluginPath" },
+    "mcpServers": { "$ref": "#/$defs/pluginPath" },
+    "apps": { "$ref": "#/$defs/pluginPath" },
+    "distributions": { "$ref": "#/$defs/distributions" },
+    "marketplace": { "$ref": "#/$defs/marketplace" },
+    "interface": { "$ref": "#/$defs/interface" },
+    "extensions": { "$ref": "#/$defs/extensions" },
+    "artifacts": { "$ref": "#/$defs/artifacts" },
+    "buildConfig": { "$ref": "#/$defs/buildConfig" },
+    "scripts": { "$ref": "#/$defs/scripts" },
+    "config": { "$ref": "#/$defs/config" }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\\.(?:0|[1-9][0-9]*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "pluginPath": {
+      "type": "string",
+      "pattern": "^\\./"
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["aw"],
+      "properties": {
+        "aw": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minVersion"],
+          "properties": {
+            "minVersion": { "$ref": "#/$defs/semver" }
+          }
+        }
+      }
+    },
+    "distributions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentSkills": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "skills": { "$ref": "#/$defs/pluginPath" }
+          }
+        }
+      }
+    },
+    "marketplace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "strict", "policy"],
+      "properties": {
+        "category": { "type": "string", "minLength": 1 },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "strict": { "type": "boolean" },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["installation", "authentication"],
+          "properties": {
+            "installation": { "enum": ["AVAILABLE", "NOT_AVAILABLE", "INSTALLED_BY_DEFAULT"] },
+            "authentication": { "enum": ["ON_INSTALL", "ON_USE"] },
+            "products": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "stringArray": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "platformOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "claude": { "type": ["object", "null"] }, "codex": { "type": ["object", "null"] } }
+    },
+    "instruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "title", "content"],
+      "properties": {
+        "name": { "type": "string" }, "title": { "type": "string" }, "content": { "type": "string" },
+        "paths": { "$ref": "#/$defs/stringArray" }, "agentOverrides": { "$ref": "#/$defs/platformOverrides" }
+      }
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" }, "allow": { "$ref": "#/$defs/stringArray" },
+        "ask": { "$ref": "#/$defs/stringArray" }, "deny": { "$ref": "#/$defs/stringArray" },
+        "agentOverrides": { "$ref": "#/$defs/platformOverrides" }
+      }
+    },
+    "hook": {
+      "type": "object", "additionalProperties": false, "required": ["event", "command"],
+      "properties": {
+        "event": { "type": "string" }, "matcher": { "type": "string" }, "command": { "type": "string" },
+        "agentOverrides": { "$ref": "#/$defs/platformOverrides" }
+      }
+    },
+    "nativeHook": {
+      "type": "object", "additionalProperties": false, "required": ["event", "command"],
+      "properties": { "event": { "type": "string" }, "matcher": { "type": "string" }, "command": { "type": "string" } }
+    },
+    "agent": {
+      "type": "object", "additionalProperties": false, "required": ["name", "description", "prompt"],
+      "properties": {
+        "name": { "type": "string" }, "description": { "type": "string" }, "prompt": { "type": "string" },
+        "tools": { "$ref": "#/$defs/stringArray" }, "agentOverrides": { "$ref": "#/$defs/platformOverrides" }
+      }
+    },
+    "extensions": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "instructions": { "type": "array", "items": { "$ref": "#/$defs/instruction" } },
+        "permissions": { "type": "array", "items": { "$ref": "#/$defs/permission" } },
+        "hooks": { "type": "array", "items": { "$ref": "#/$defs/hook" } },
+        "nativeHooks": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "claude": { "type": "array", "items": { "$ref": "#/$defs/nativeHook" } },
+            "codex": { "type": "array", "items": { "$ref": "#/$defs/nativeHook" } }
+          }
+        },
+        "agents": { "type": "array", "items": { "$ref": "#/$defs/agent" } }
+      }
+    },
+    "importReference": {
+      "type": "object", "additionalProperties": false, "required": ["plugin", "export"],
+      "properties": { "plugin": { "type": "string" }, "export": { "type": "string" } }
+    },
+    "artifactTarget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "scopes", "target", "states", "refreshKeys"],
+      "properties": {
+        "id": { "type": "string" }, "platform": { "enum": ["codex", "claude"] },
+        "distribution": { "const": "agent-skills" }, "scopes": { "type": "array", "items": { "enum": ["user", "project"] } },
+        "target": { "enum": ["codex.developerInstructionsBlock", "codex.agentRole", "codex.skill", "claude.skill", "agent-skills.skill"] },
+        "kind": { "enum": ["instruction", "codexRole", "skill"] },
+        "projectManagedKind": { "enum": ["skill", "mcpServer", "instruction", "permission", "hook", "agent"] },
+        "states": { "type": "array", "items": { "enum": ["present", "disabled"] } },
+        "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
+        "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
+        "runtimeImports": {
+          "type": "array", "items": {
+            "type": "object", "additionalProperties": false, "required": ["name", "plugin", "export"],
+            "properties": {
+              "name": { "type": "string" }, "plugin": { "type": "string" }, "export": { "type": "string" },
+              "resolved": {
+                "type": "object", "additionalProperties": false,
+                "required": ["path", "digest", "providerPluginId", "providerVersion", "source"],
+                "properties": {
+                  "path": { "type": "string" }, "digest": { "type": "string" }, "providerPluginId": { "type": "string" },
+                  "providerVersion": { "$ref": "#/$defs/semver" }, "source": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "targets": { "type": "array", "items": { "$ref": "#/$defs/artifactTarget" } } }
+    },
+    "fileRules": {
+      "type": "object", "additionalProperties": false,
+      "required": ["include", "exclude"],
+      "properties": { "include": { "$ref": "#/$defs/stringArray" }, "exclude": { "$ref": "#/$defs/stringArray" } }
+    },
+    "buildConfig": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "cacheable": { "const": true },
+        "templates": {
+          "type": "object", "additionalProperties": false, "required": ["vars", "include"],
+          "properties": {
+            "vars": { "type": "object", "additionalProperties": { "$ref": "#/$defs/platformTemplateValue" } },
+            "include": { "$ref": "#/$defs/stringArray" }
+          }
+        },
+        "fileRules": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "claude": { "$ref": "#/$defs/fileRules" }, "codex": { "$ref": "#/$defs/fileRules" } }
+        },
+        "manifestOverrides": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "claude": {
+              "type": "object", "additionalProperties": false,
+              "properties": { "commands": { "type": "string" }, "outputStyles": { "type": "string" }, "lspServers": {}, "userConfig": {}, "channels": {} }
+            },
+            "codex": { "type": "object", "maxProperties": 0 }
+          }
+        },
+        "runtimeExports": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name", "source"], "properties": { "name": { "type": "string" }, "source": { "type": "string" } } } },
+        "buildImports": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["plugin", "export", "env"], "properties": { "plugin": { "type": "string" }, "export": { "type": "string" }, "env": { "type": "string" } } } },
+        "skillRuntimeFiles": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["skill", "target"], "properties": { "skill": { "type": "string" }, "target": { "type": "string" }, "platforms": { "type": "array", "items": { "enum": ["codex", "claude"] } }, "distributions": { "type": "array", "items": { "const": "agent-skills" } }, "source": { "type": "string" }, "import": { "$ref": "#/$defs/importReference" } } } },
+        "generatedSkillRuntimeFiles": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["skill", "target"], "properties": { "skill": { "type": "string" }, "target": { "type": "string" }, "distributions": { "type": "array", "items": { "const": "agent-skills" } } } } }
+      }
+    },
+    "platformTemplateValue": {
+      "type": "object", "additionalProperties": false, "required": ["claude", "codex"],
+      "properties": {
+        "claude": { "anyOf": [{ "type": "string" }, { "type": "boolean" }] },
+        "codex": { "anyOf": [{ "type": "string" }, { "type": "boolean" }] }
+      }
+    },
+    "scriptEntry": {
+      "type": "object", "additionalProperties": false, "required": ["runner", "path"],
+      "properties": { "runner": { "enum": ["node", "sh", "bash", "pwsh", "powershell", "cmd", "auto"] }, "path": { "type": "string" }, "args": { "$ref": "#/$defs/stringArray" } }
+    },
+    "lifecycleDefinition": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object", "additionalProperties": false, "properties": { "default": { "$ref": "#/$defs/scriptEntry" }, "unix": { "$ref": "#/$defs/scriptEntry" }, "windows": { "$ref": "#/$defs/scriptEntry" }, "linux": { "$ref": "#/$defs/scriptEntry" }, "darwin": { "$ref": "#/$defs/scriptEntry" }, "win32": { "$ref": "#/$defs/scriptEntry" } } }
+      ]
+    },
+    "scripts": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "timeoutMs": { "type": "integer" },
+        "lifecycle": { "type": "object", "additionalProperties": false, "properties": { "install": { "$ref": "#/$defs/lifecycleDefinition" }, "upgrade": { "$ref": "#/$defs/lifecycleDefinition" }, "uninstall": { "$ref": "#/$defs/lifecycleDefinition" } } },
+        "helpers": { "type": "object", "additionalProperties": false, "required": ["config"], "properties": { "config": { "type": "string" } } },
+        "node": { "type": "object", "additionalProperties": false, "properties": { "packageRoot": { "type": "string" }, "build": { "$ref": "#/$defs/scriptEntry" } } },
+        "artifacts": { "type": "object", "additionalProperties": false, "properties": { "render": { "$ref": "#/$defs/scriptEntry" } } },
+        "tests": { "type": "object", "additionalProperties": false, "properties": { "node": { "$ref": "#/$defs/stringArray" } } }
+      }
+    },
+    "configField": {
+      "type": "object", "additionalProperties": false, "required": ["type"],
+      "properties": {
+        "type": { "enum": ["string", "number", "boolean", "enum", "file", "directory"] },
+        "title": { "type": "string" }, "description": { "type": "string" },
+        "default": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] },
+        "required": { "type": "boolean" }, "sensitive": { "type": "boolean" }, "values": { "$ref": "#/$defs/stringArray" },
+        "min": { "type": "number" }, "max": { "type": "number" }
+      }
+    },
+    "config": {
+      "type": "object", "additionalProperties": false, "required": ["schema"],
+      "properties": {
+        "schema": { "type": "object", "additionalProperties": { "$ref": "#/$defs/configField" } },
+        "presentation": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "groups": {
+              "type": "array", "items": {
+                "type": "object", "additionalProperties": false, "required": ["id", "title", "fields"],
+                "properties": {
+                  "id": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
+                  "fields": { "$ref": "#/$defs/stringArray" }, "advanced": { "type": "boolean" }
+                }
+              }
+            },
+            "fields": {
+              "type": "object", "additionalProperties": {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                  "valueLabels": { "type": "object", "additionalProperties": { "type": "string" } },
+                  "recommendedValue": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] },
+                  "placeholder": { "type": "string" }, "unit": { "type": "string" }, "advanced": { "type": "boolean" }
+                }
+              }
+            },
+            "presets": {
+              "type": "array", "items": {
+                "type": "object", "additionalProperties": false, "required": ["id", "title", "values"],
+                "properties": {
+                  "id": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
+                  "values": { "type": "object", "additionalProperties": { "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "displayName": { "type": "string", "minLength": 1 },
+        "shortDescription": { "type": "string", "minLength": 1 },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

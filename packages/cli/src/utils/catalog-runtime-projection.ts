@@ -1,6 +1,11 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import {
+  resolveCanonicalRuntimeSourceIdentity as resolveCoreRuntimeSourceIdentity,
+  validateRuntimeExportSource,
+  type CanonicalRuntimeSourceIdentity,
+} from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   BuildConfigImportReference,
@@ -8,29 +13,16 @@ import type {
   PluginMeta,
 } from '../types.js';
 import { calculateFileDigest } from './bundle-integrity.js';
+import { CLI_RESERVED_IMPORTS } from './manifest.js';
 import { resolveCliPackageRoot } from './paths.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
 
-const FORBIDDEN_EXPORT_ROOTS = new Set([
-  '.release',
-  '.tmp',
-  'build',
-  'dist',
-  'evals',
-  'node_modules',
-  'reports',
-  'skills',
-  'tmp',
-]);
+export {
+  resolveCanonicalRuntimeSourceIdentity,
+} from '@lesliechan721/aw-plugin-core/manifest';
+export type { CanonicalRuntimeSourceIdentity } from '@lesliechan721/aw-plugin-core/manifest';
 
 export type CatalogRuntimeImportPurpose = 'build' | 'skill-runtime-file' | 'artifact-runtime';
-
-export interface CanonicalRuntimeSourceIdentity {
-  rootPath: string;
-  rootRealPath: string;
-  relativePath: string;
-  sourceRealPath: string;
-}
 
 export interface CatalogRuntimeExportResolution {
   provider: string;
@@ -60,61 +52,16 @@ export interface CatalogRuntimeImportResolverOptions {
   cliProviderVersion?: string;
 }
 
-export async function resolveCanonicalRuntimeSourceIdentity(
-  rootDir: string,
-  relativePath: string,
-  fieldName: string,
-): Promise<CanonicalRuntimeSourceIdentity> {
-  const rootPath = path.resolve(rootDir);
-  const rootStats = await fs.lstat(rootPath);
-  if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
-    throw new Error(`Invalid ${fieldName}: source root must be a regular directory.`);
-  }
-  const rootRealPath = await fs.realpath(rootPath);
-  const segments = relativePath.replace(/^\.\//u, '').split('/');
-  let current = rootRealPath;
-  for (const [index, segment] of segments.entries()) {
-    current = path.join(current, segment);
-    const stats = await fs.lstat(current).catch(() => undefined);
-    if (!stats) {
-      throw new Error(`Invalid ${fieldName}: missing file "${relativePath}".`);
-    }
-    if (stats.isSymbolicLink()) {
-      throw new Error(`Invalid ${fieldName}: symbolic links are not supported (${relativePath}).`);
-    }
-    if (index < segments.length - 1 && !stats.isDirectory()) {
-      throw new Error(`Invalid ${fieldName}: path parent is not a directory (${relativePath}).`);
-    }
-    if (index === segments.length - 1 && !stats.isFile()) {
-      throw new Error(`Invalid ${fieldName}: expected a regular file (${relativePath}).`);
-    }
-  }
-  return {
-    rootPath,
-    rootRealPath,
-    relativePath,
-    sourceRealPath: await fs.realpath(current),
-  };
-}
-
 export async function resolveRuntimeExportSource(options: {
   plugin: PluginMeta;
   name: string;
   source: string;
 }): Promise<CatalogRuntimeExportResolution> {
-  const normalizedSource = options.source.replace(/^\.\//u, '');
-  const forbiddenSegment = normalizedSource.split('/').find((segment) =>
-    FORBIDDEN_EXPORT_ROOTS.has(segment));
-  if (forbiddenSegment) {
-    throw new Error(
-      `Invalid buildConfig.runtimeExports export "${options.name}": source must not be below ${forbiddenSegment}/.`,
-    );
-  }
-  const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
-    options.plugin.rootDir,
-    options.source,
-    `buildConfig.runtimeExports export "${options.name}"`,
-  );
+  const canonicalSource = await validateRuntimeExportSource({
+    pluginRoot: options.plugin.rootDir,
+    name: options.name,
+    source: options.source,
+  });
   return {
     provider: options.plugin.manifest.name,
     providerVersion: options.plugin.manifest.version,
@@ -141,7 +88,12 @@ async function resolveCliVirtualExport(
     'plugin-authoring-capabilities': 'plugin-authoring-capabilities.json',
   } as const;
   const sourceFile = virtualExports[reference.export as keyof typeof virtualExports];
-  if (!sourceFile) {
+  if (
+    !sourceFile
+    || !CLI_RESERVED_IMPORTS['@aw/cli'].includes(
+      reference.export as (typeof CLI_RESERVED_IMPORTS)['@aw/cli'][number],
+    )
+  ) {
     throw new Error(`Invalid catalog runtime import: unknown @aw/cli export "${reference.export}".`);
   }
   const packageRoot = options.cliVirtualExportRoot ?? resolveCliPackageRoot();
@@ -160,7 +112,7 @@ async function resolveCliVirtualExport(
       `Invalid @aw/cli runtime export: canonical ${registryName} registry is missing from ${packageRoot}.`,
     );
   }
-  const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
+  const canonicalSource = await resolveCoreRuntimeSourceIdentity(
     packageRoot,
     `./${path.relative(packageRoot, sourceCandidate).split(path.sep).join('/')}`,
     `@aw/cli runtime export "${reference.export}"`,
@@ -209,7 +161,7 @@ async function resolveEvalVirtualExport(
   if (typeof packageJson.version !== 'string' || packageJson.version.trim() === '') {
     throw new Error('Invalid @aw/agent-skill-eval runtime export: package version is missing.');
   }
-  const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
+  const canonicalSource = await resolveCoreRuntimeSourceIdentity(
     packageRoot,
     './dist/corpus-digest.js',
     '@aw/agent-skill-eval runtime export "case-corpus-digest"',
@@ -253,7 +205,7 @@ export function createCatalogRuntimeImportResolver(
         if (reference.plugin === '@aw/agent-skill-eval') {
           return resolveEvalVirtualExport(reference, purpose);
         }
-        if (reference.plugin !== '@aw/cli') {
+        if (!Object.hasOwn(CLI_RESERVED_IMPORTS, reference.plugin)) {
           throw new Error(`Invalid catalog runtime import: unknown reserved provider "${reference.plugin}".`);
         }
         return resolveCliVirtualExport(reference, purpose, resolverOptions);

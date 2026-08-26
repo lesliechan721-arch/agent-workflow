@@ -47,6 +47,10 @@ async function configurePortableCatalog(): Promise<{
   await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV4({
     catalogVersion: '1.0.0',
     channel: 'latest',
+    marketplace: {
+      owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture Marketplace' },
+    },
     compatibility: { aw: { minVersion: '0.1.0' } },
     release: { state: 'development' },
     entries: [await createCatalogManifestV4Entry(plugin, pluginRoot)],
@@ -150,6 +154,8 @@ describe('portable skill public commands', () => {
         '---\nname: leaked-skill\ndescription: must stay private\n---\nprivate-catalog-sentinel\n',
       );
       await fs.outputFile(path.join(externalRoot, 'leaked-skill', 'README.md'), '# Private\n');
+      const plugin = await readPluginManifest(fixture.pluginRoot, { mode: 'bundle' });
+      const entry = await createCatalogManifestV4Entry(plugin, fixture.pluginRoot);
       if (malformedNode === 'root symlink') {
         await fs.remove(skillsRoot);
         await fs.symlink(externalRoot, skillsRoot, 'dir');
@@ -162,13 +168,16 @@ describe('portable skill public commands', () => {
           'dir',
         );
       }
-      const plugin = await readPluginManifest(fixture.pluginRoot, { mode: 'bundle' });
       await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV4({
         catalogVersion: '1.0.0',
         channel: 'latest',
+        marketplace: {
+          owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+          interface: { displayName: 'Fixture Marketplace' },
+        },
         compatibility: { aw: { minVersion: '0.1.0' } },
         release: { state: 'development' },
-        entries: [await createCatalogManifestV4Entry(plugin, fixture.pluginRoot)],
+        entries: [entry],
       }));
       const fake = await installFakeSkills(fixture.env, fixture.cwd);
       const installIo = createCapturedCliIo();

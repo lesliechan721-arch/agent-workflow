@@ -48,7 +48,7 @@ Quality Review 只评估设计、复杂度和 findings，不判断发布资格�
      --output <check.json>
    ```
 
-   机器错误直接阻断，不复制成多重 gate。
+   checker 只调用 PATH 上的 `aw skill validate`；不接受 validator 路径环境覆盖，也不搜索仓库私有 CLI。Skill 树中的符号链接或 FIFO、socket、device 等非普通节点在读取前直接形成机器错误。机器错误直接阻断，不复制成多重 gate。
 3. 按当前模式，从以下检查项选择适用范围：没有该 Skill 时的具体失败、description 与 near-miss、一个 Skill 内部是否混入多个独立职责、强制规则是否最小充分、reference/script/asset 是否必要且可达，以及已有 Eval 是否能支持当前结论。`quick` 不扩张到用户问题以外的完整 package 审计。
 4. `full` 先完成 finding 和 unknown。任何必要 evidence 缺失时，整个 Review 立即进入优先于普通 full 报告的 `not-assessed` 分支，输出字段仅为：机器检查、findings（如有）、evidence gap、unknown、`Score: not-assessed`、`coverage: not-calculated`、`design: not-assessed` 和 complexity；不得评分、加权或计算 coverage，不得输出数值总分、百分比或维度名、状态、分数列表，finding severity 不得改变 design。用户要求估计、假设分、非正式分或分数区间时也不例外。需要结构化 result 时，未评估维度仍写 `score=null`、`confidence=unknown`。否则按固定顺序填写全部 12 个维度。
 5. 被审材料很多且能按 package、reference、scripts 或 Eval 独立划分时，可以使用独立上下文子代理分别审核；每个子代理只返回结论、证据位置和关键 unknown，最终 finding 由当前 Reviewer 判断。

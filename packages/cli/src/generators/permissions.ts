@@ -1,34 +1,14 @@
 import type { PermissionDefinition } from '../types.js';
 import { buildGeneratedName, dedupe } from './shared.js';
 import type { GeneratedTextArtifact } from './instructions.js';
+import { parsePermissionCommand } from '@lesliechan721/aw-plugin-core/manifest';
+
+export { parsePermissionCommand } from '@lesliechan721/aw-plugin-core/manifest';
 
 export interface ClaudePermissions {
   allow: string[];
   ask: string[];
   deny: string[];
-}
-
-export interface ParsedPermissionCommand {
-  tokens: string[];
-}
-
-export function parsePermissionCommand(value: string, fieldName = 'permission'): ParsedPermissionCommand {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    throw new Error(`Invalid ${fieldName}: expected a non-empty command prefix.`);
-  }
-  if (/["'\\*;&|<>`$()]/.test(trimmed)) {
-    throw new Error(
-      `Invalid ${fieldName}: only plain token prefixes are supported; quotes, escapes, shell control characters and "*" are not allowed.`,
-    );
-  }
-
-  const tokens = trimmed.split(/\s+/);
-  if (tokens.some((token) => token.length === 0)) {
-    throw new Error(`Invalid ${fieldName}: expected plain command tokens.`);
-  }
-
-  return { tokens };
 }
 
 function renderClaudeBashRule(value: string): string {

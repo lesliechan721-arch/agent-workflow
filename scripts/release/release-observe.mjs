@@ -6,6 +6,7 @@ import {
   computeReleasePackageContentDigest,
   loadCatalogModules,
   withPrivateCliTarball,
+  withPrivateCoreTarball,
   withPrivateEvalTarball,
 } from './common.mjs';
 import {
@@ -14,6 +15,7 @@ import {
 } from './release-model.mjs';
 const CLI_PACKAGES = [
   '@lesliechan721/agent-skill-eval',
+  '@lesliechan721/aw-plugin-core',
   '@lesliechan721/aw',
 ];
 
@@ -28,7 +30,8 @@ export function projectBuildDigest(value, field) {
 
 export async function readCliReleaseContent(snapshot, options = {}) {
   const packageDigests = await withPrivateCliTarball(snapshot, (cliTarball) =>
-    withPrivateEvalTarball(snapshot, async (evalTarball) => ({
+    withPrivateEvalTarball(snapshot, (evalTarball) =>
+      withPrivateCoreTarball(snapshot, async (coreTarball) => ({
         '@lesliechan721/aw': {
           contentDigest: await computeReleasePackageContentDigest(cliTarball),
           tarballDigest: await computePackageTarballTreeDigest(cliTarball),
@@ -37,7 +40,12 @@ export async function readCliReleaseContent(snapshot, options = {}) {
           contentDigest: await computeReleasePackageContentDigest(evalTarball),
           tarballDigest: await computePackageTarballTreeDigest(evalTarball),
         },
-      }), { quiet: true, ...options.packOptions }), { quiet: true, ...options.packOptions });
+        '@lesliechan721/aw-plugin-core': {
+          contentDigest: await computeReleasePackageContentDigest(coreTarball),
+          tarballDigest: await computePackageTarballTreeDigest(coreTarball),
+        },
+      }), { quiet: true, ...options.packOptions }),
+    { quiet: true, ...options.packOptions }), { quiet: true, ...options.packOptions });
   const packages = CLI_PACKAGES.map((name) => ({ name, ...packageDigests[name] }));
   return {
     packages,

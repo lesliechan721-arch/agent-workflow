@@ -12,7 +12,7 @@ import type {
   PluginLifecycleEvent,
   PluginLifecycleRuntimeOs,
   PluginLifecycleScriptEntry,
-  PluginManifestSource,
+  NormalizedPluginManifest,
   PluginMeta,
   Scope,
 } from '../types.js';
@@ -48,7 +48,7 @@ export interface LifecycleScriptTarget {
   entry?: PluginLifecycleScriptEntry;
   entryPath?: string;
   bundleRoot?: string;
-  sourceManifest?: PluginManifestSource;
+  sourceManifest?: NormalizedPluginManifest;
   manifestPath?: string;
   manifestDigest?: string;
   warnings: string[];
@@ -89,7 +89,7 @@ export interface LifecycleScriptContext {
     };
   };
   config: {
-    schema?: NonNullable<PluginManifestSource['config']>['schema'];
+    schema?: NonNullable<NormalizedPluginManifest['config']>['schema'];
     values: Record<string, string | number | boolean>;
     sources: Record<string, string>;
     issues: unknown[];
@@ -379,7 +379,7 @@ function validateTimeoutMs(value: number, source: string): number {
 
 export function resolveLifecycleScriptTimeoutMs(options: {
   cliTimeoutMs?: number;
-  manifest?: PluginManifestSource;
+  manifest?: NormalizedPluginManifest;
 }): number {
   if (options.cliTimeoutMs !== undefined) {
     return validateTimeoutMs(options.cliTimeoutMs, 'CLI');
@@ -458,7 +458,7 @@ export function buildLifecycleSpawnEnv(options: {
 }
 
 export function collectSensitivePluginConfigValues(
-  manifest: PluginManifestSource,
+  manifest: NormalizedPluginManifest,
   values: Record<string, string | number | boolean>,
 ): string[] {
   const schema = manifest.config?.schema ?? {};

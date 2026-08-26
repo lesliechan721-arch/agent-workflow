@@ -40,7 +40,6 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import { createCatalogManifestV3Entry } from '../../src/utils/catalog-manifest-v3.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import {
   resetPluginConfigWithHelper,
@@ -771,22 +770,10 @@ describe('phase 3B namespaced runtime stores', () => {
         scope: 'project',
       },
     });
-    const catalogManifest = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
     const removedPluginRoot = path.join(sourceRoot, 'plugins', 'demo');
     const retainedPluginRoot = path.join(sourceRoot, 'plugins', 'other');
     await fs.move(removedPluginRoot, retainedPluginRoot);
-    const retainedManifestPath = path.join(retainedPluginRoot, '.agents-plugin', 'plugin.json');
-    const retainedManifest = await fs.readJson(retainedManifestPath);
-    retainedManifest.name = 'other';
-    retainedManifest.description = 'other plugin';
-    await fs.writeJson(retainedManifestPath, retainedManifest, { spaces: 2 });
-    const retainedPlugin = await readPluginManifest(retainedPluginRoot, { mode: 'bundle' });
-    const retainedEntry = await createCatalogManifestV3Entry(retainedPlugin, retainedPluginRoot);
-    await fs.writeJson(
-      path.join(sourceRoot, 'catalog-manifest.json'),
-      { ...catalogManifest, entries: [retainedEntry] },
-      { spaces: 2 },
-    );
+    await createCatalogSnapshotFixture(sourceRoot, 'other');
 
     const statusOutput = createCapturedCliIo();
     expect(await runCli(['status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--json'], {

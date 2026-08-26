@@ -28,6 +28,9 @@ export interface BundlePluginsOptions {
   outputRoot?: string;
   buildMode?: PluginBundleBuildMode;
   stagingRunner?: PluginStagingRunner;
+  catalogVersion?: string;
+  channel?: import('../src/types.js').CatalogChannel;
+  assertPackageVersions?: boolean;
 }
 
 function resolveDefaultPaths(): { repoRoot: string; outputRoot: string } {
@@ -107,7 +110,7 @@ export async function bundlePlugins(
   const outputRoot = options.outputRoot ?? defaults.outputRoot;
   const buildMode = options.buildMode ?? 'build-free';
 
-  await assertPackageVersions(repoRoot);
+  if (options.assertPackageVersions !== false) await assertPackageVersions(repoRoot);
   const [sourceMeta, discoveredPlugins] = await Promise.all([
     readMarketplaceSourceMeta(repoRoot),
     discoverPlugins(repoRoot),
@@ -160,6 +163,8 @@ export async function bundlePlugins(
   await stageCatalogArtifacts({
     repoRoot,
     outputRoot,
+    catalogVersion: options.catalogVersion ?? sourceMeta.catalog.version,
+    ...(options.channel ? { channel: options.channel } : {}),
   });
 
   return {

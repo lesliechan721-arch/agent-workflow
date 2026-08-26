@@ -44,6 +44,30 @@ describe('CLI entry v4', () => {
     expect(output.stdout()).toContain('--codex-metadata');
   });
 
+  it.each(['init', 'add-skill'])('keeps plugin %s help on public authoring commands', async (command) => {
+    const output = capture();
+    expect(await runCli(['plugin', command, '--help'], { io: output.io })).toBe(0);
+    for (const nextCommand of [
+      'aw plugin validate',
+      'aw plugin test',
+      'aw plugin build',
+      'aw catalog build',
+      'aw catalog publish --help',
+    ]) expect(output.stdout()).toContain(nextCommand);
+    expect(output.stdout()).not.toContain('pnpm release');
+    expect(output.stdout()).not.toContain('--plugin-root');
+  });
+
+  it('rejects the removed public plugin-root option', async () => {
+    const initOutput = capture();
+    expect(await runCli([
+      'plugin', 'init', 'demo', '--description', 'Demo.', '--no-skills',
+      '--plugin-root', 'tools/demo', '--json',
+    ], { io: initOutput.io })).toBe(1);
+    expect(initOutput.stderr()).toContain('Unknown option: --plugin-root');
+
+  });
+
   it('treats diagnose as an unknown command', async () => {
     const output = capture();
     expect(await runCli(['diagnose'], { io: output.io })).toBe(1);

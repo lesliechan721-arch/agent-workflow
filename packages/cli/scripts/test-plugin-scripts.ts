@@ -32,10 +32,10 @@ import type {
   PlatformName,
   PluginConfigSchemaField,
   PluginConfigValue,
-  PluginManifestSource,
   PluginMeta,
   Scope,
 } from './plugin-staging.js';
+import type { NormalizedPluginManifest } from '../src/types.js';
 
 type PluginTestPlatformSelection = PlatformName | 'both';
 
@@ -59,7 +59,7 @@ interface PreparedPluginTestBundle {
   sourceRoot: string;
   baselineRoot: string;
   bundleRoot: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   runtimeContext: Awaited<ReturnType<typeof prepareLocalPluginBundleSource>>['runtimeContext'];
   cleanup(): Promise<void>;
 }
@@ -70,7 +70,7 @@ interface StagedPluginTestBundleSource {
   baselineRoot: string;
   bundleRoot: string;
   stagedPlugin: PluginMeta;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   runtimeContext: Awaited<ReturnType<typeof prepareLocalPluginBundleSource>>['runtimeContext'];
   cleanup(): Promise<void>;
 }
@@ -288,7 +288,7 @@ async function buildPreparedPluginTestBundle(
 function platformSelectionError(options: {
   pluginName: string;
   selection: PluginTestPlatformSelection;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
 }): Error {
   const supportedPlatforms = resolveSupportedPlatforms(options.manifest);
   return new Error(
@@ -297,7 +297,7 @@ function platformSelectionError(options: {
 }
 
 function resolveSelectedPlatforms(
-  manifest: PluginManifestSource,
+  manifest: NormalizedPluginManifest,
   selection: PluginTestPlatformSelection,
   pluginName: string,
 ): PlatformName[] {
@@ -326,7 +326,7 @@ async function copyTestsIntoBundle(options: {
   baselineRoot: string;
   bundleRoot: string;
   entries: string[];
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
 }): Promise<string[]> {
   const entries = options.entries.map((entry) => normalizeRelativePath(entry));
   const baselineFiles = await listFiles(options.baselineRoot);
@@ -382,7 +382,7 @@ async function copyTestsIntoBundle(options: {
 
 async function readPackageDependencyNames(
   bundleRoot: string,
-  manifest: PluginManifestSource,
+  manifest: NormalizedPluginManifest,
 ): Promise<{ dependencies: string[]; devDependencies: string[] }> {
   const packageRoot = manifest.scripts?.node?.packageRoot;
   if (!packageRoot) {
@@ -401,7 +401,7 @@ async function readPackageDependencyNames(
 async function copyTestPackageNodeModules(options: {
   baselineRoot: string;
   bundleRoot: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
 }): Promise<void> {
   const packageRoot = options.manifest.scripts?.node?.packageRoot;
   if (!packageRoot) {
@@ -420,7 +420,7 @@ async function copyTestPackageNodeModules(options: {
 }
 
 async function resolveConfigDefaults(options: {
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   cwd: string;
 }): Promise<Record<string, string | number | boolean>> {
   const values: Record<string, string | number | boolean> = {};
@@ -443,7 +443,7 @@ async function resolveConfigDefaults(options: {
 async function writeTestContext(options: {
   bundleRoot: string;
   sourceRoot: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   platform: PlatformName;
   scope: Scope;
   projectRoot: string;

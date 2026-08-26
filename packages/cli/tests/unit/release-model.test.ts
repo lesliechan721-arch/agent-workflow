@@ -19,21 +19,23 @@ describe('release digests and metadata', () => {
     expect(() => canonicalJson({ value: Number.NaN })).toThrow('must be finite');
   });
 
-  it('normalizes the two-package CLI train independently of package order', () => {
+  it('normalizes the three-package CLI train independently of package order', () => {
     const packages = [
       { name: '@lesliechan721/aw', contentDigest: digest('a') },
       { name: '@lesliechan721/agent-skill-eval', contentDigest: digest('b') },
+      { name: '@lesliechan721/aw-plugin-core', contentDigest: digest('c') },
     ];
     expect(calculateCliTrainContentDigest(packages))
       .toBe(calculateCliTrainContentDigest(packages.toReversed()));
     expect(() => calculateCliTrainContentDigest(packages.slice(0, 1)))
-      .toThrow('expected @lesliechan721/agent-skill-eval and @lesliechan721/aw');
+      .toThrow('expected @lesliechan721/agent-skill-eval and @lesliechan721/aw-plugin-core and @lesliechan721/aw');
   });
 
-  it.each([0, 1])('binds CLI train content to package %s', (packageIndex) => {
+  it.each([0, 1, 2])('binds CLI train content to package %s', (packageIndex) => {
     const packages = [
       { name: '@lesliechan721/aw', contentDigest: digest('a') },
       { name: '@lesliechan721/agent-skill-eval', contentDigest: digest('b') },
+      { name: '@lesliechan721/aw-plugin-core', contentDigest: digest('d') },
     ];
     const changed = packages.map((packageEntry, index) => index === packageIndex
       ? { ...packageEntry, contentDigest: digest('c') }

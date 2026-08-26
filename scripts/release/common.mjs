@@ -22,6 +22,7 @@ const gunzipAsync = promisify(gunzip);
 const MAX_PACKAGE_TREE_BYTES = 128 * 1024 * 1024;
 const CLI_PACKAGE_NAME = '@lesliechan721/aw';
 const EVAL_PACKAGE_NAME = '@lesliechan721/agent-skill-eval';
+const CORE_PACKAGE_NAME = '@lesliechan721/aw-plugin-core';
 const RELEASE_VERSION_SENTINEL = '0.0.0';
 
 export const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -29,6 +30,8 @@ export const releaseRoot = path.join(repoRoot, '.release');
 export const tarballDir = path.join(releaseRoot, 'tarballs');
 export const evalPackageJsonPath = path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json');
 export const evalPackageRoot = path.join(repoRoot, 'packages', 'agent-skill-eval');
+export const corePackageJsonPath = path.join(repoRoot, 'packages', 'plugin-core', 'package.json');
+export const corePackageRoot = path.join(repoRoot, 'packages', 'plugin-core');
 export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
 export const cliPackageRoot = path.join(repoRoot, 'packages', 'cli');
 export const cliDistRoot = path.join(cliPackageRoot, 'dist');
@@ -514,7 +517,7 @@ export async function computePackageTarballTreeDigest(tarballPath, options = {})
       } catch (error) {
         throw new Error('Package tarball package.json is invalid JSON.', { cause: error });
       }
-      if (packageJson.name !== CLI_PACKAGE_NAME && packageJson.name !== EVAL_PACKAGE_NAME) {
+      if (![CLI_PACKAGE_NAME, EVAL_PACKAGE_NAME, CORE_PACKAGE_NAME].includes(packageJson.name)) {
         throw new Error(`Unsupported release package ${JSON.stringify(packageJson.name)}.`);
       }
       assertValidVersion(packageJson.version);
@@ -527,6 +530,7 @@ export async function computePackageTarballTreeDigest(tarballPath, options = {})
         );
       }
       const trainDependency = packageJson.dependencies?.[EVAL_PACKAGE_NAME];
+      const coreDependency = packageJson.dependencies?.[CORE_PACKAGE_NAME];
       if (packageJson.name === CLI_PACKAGE_NAME) {
         if (trainDependency !== packageJson.version) {
           throw new Error(
@@ -534,8 +538,16 @@ export async function computePackageTarballTreeDigest(tarballPath, options = {})
           );
         }
         packageJson.dependencies[EVAL_PACKAGE_NAME] = RELEASE_VERSION_SENTINEL;
+        if (coreDependency !== packageJson.version) {
+          throw new Error(
+            `Packed ${CLI_PACKAGE_NAME} must depend on ${CORE_PACKAGE_NAME}@${packageJson.version}.`,
+          );
+        }
+        packageJson.dependencies[CORE_PACKAGE_NAME] = RELEASE_VERSION_SENTINEL;
       } else if (trainDependency !== undefined) {
-        throw new Error(`Packed ${EVAL_PACKAGE_NAME} must not depend on itself.`);
+        throw new Error(`Packed ${packageJson.name} must not depend on ${EVAL_PACKAGE_NAME}.`);
+      } else if (coreDependency !== undefined) {
+        throw new Error(`Packed ${packageJson.name} must not depend on ${CORE_PACKAGE_NAME}.`);
       }
       packageJson.version = RELEASE_VERSION_SENTINEL;
       delete packageJson.awRelease;
@@ -684,6 +696,12 @@ const RELEASE_INPUT_PATHS = [
   'packages/agent-skill-eval/vitest.config.ts',
   'packages/agent-skill-eval/src',
   'packages/agent-skill-eval/scripts',
+  'packages/plugin-core/package.json',
+  'packages/plugin-core/tsconfig.json',
+  'packages/plugin-core/vitest.config.ts',
+  'packages/plugin-core/src',
+  'packages/plugin-core/schemas',
+  'packages/plugin-core/scripts',
   'packages/cli/package.json',
   'packages/cli/tsconfig.json',
   'packages/cli/index.ts',
@@ -700,6 +718,7 @@ function isAllowedIgnoredReleaseInput(relativePath) {
   return (
     /^packages\/cli\/(?:dist|plugins-dist)(?:\/|$)/.test(relativePath)
     || /^packages\/agent-skill-eval\/dist(?:\/|$)/.test(relativePath)
+    || /^packages\/plugin-core\/dist(?:\/|$)/.test(relativePath)
     || /^plugins\/[^/]+\/(?:evals|reports)(?:\/|$)/.test(relativePath)
     || /^plugins\/[^/]+\/skills\/[^/]+\/(?:[^/]+\/)*(?:evals|reports)(?:\/|$)/.test(
       relativePath,
@@ -978,10 +997,11 @@ export async function findLatestTarball(directoryPath = tarballDir) {
 }
 
 export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
-  const [rootPackageJson, targets, evalPackageJson, cliPackageJson] = await Promise.all([
+  const [rootPackageJson, targets, evalPackageJson, corePackageJson, cliPackageJson] = await Promise.all([
     readPackageJson(path.join(repoRootPath, 'package.json')),
     readPackageJson(path.join(repoRootPath, 'release', 'version-targets.json')),
     readPackageJson(path.join(repoRootPath, 'packages', 'agent-skill-eval', 'package.json')),
+    readPackageJson(path.join(repoRootPath, 'packages', 'plugin-core', 'package.json')),
     readPackageJson(path.join(repoRootPath, 'packages', 'cli', 'package.json')),
   ]);
   if (Object.hasOwn(rootPackageJson, 'version')) {
@@ -993,11 +1013,13 @@ export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
   const targetVersion = assertValidVersion(targets.cli);
   assertVersionKind(targetVersion, 'stable');
   const evalVersion = assertValidVersion(evalPackageJson.version);
+  const coreVersion = assertValidVersion(corePackageJson.version);
   const cliVersion = assertValidVersion(cliPackageJson.version);
-  if (targetVersion !== cliVersion || targetVersion !== evalVersion) {
+  if (targetVersion !== cliVersion || targetVersion !== evalVersion || targetVersion !== coreVersion) {
     throw new Error(
       `Version mismatch: release/version-targets.json cli "${targetVersion}" must match ` +
-      `packages/agent-skill-eval/package.json version "${evalVersion}" and ` +
+      `packages/agent-skill-eval/package.json version "${evalVersion}", ` +
+      `packages/plugin-core/package.json version "${coreVersion}", and ` +
       `packages/cli/package.json version "${cliVersion}".`,
     );
   }
@@ -1006,9 +1028,15 @@ export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
       `${CLI_PACKAGE_NAME} must exactly depend on ${EVAL_PACKAGE_NAME}@workspace:${targetVersion}.`,
     );
   }
+  if (cliPackageJson.dependencies?.[CORE_PACKAGE_NAME] !== `workspace:${targetVersion}`) {
+    throw new Error(
+      `${CLI_PACKAGE_NAME} must exactly depend on ${CORE_PACKAGE_NAME}@workspace:${targetVersion}.`,
+    );
+  }
   return {
     targetVersion,
     evalVersion,
+    coreVersion,
     cliVersion,
   };
 }
@@ -1134,6 +1162,66 @@ export async function packEval({
   await assertPublicPackageVersions();
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
     packEvalFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
+  );
+}
+
+async function packCoreFromSnapshot(snapshot, destination, options = {}) {
+  const targetDir = path.resolve(repoRoot, destination);
+  await ensureDirectory(targetDir);
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-plugin-core-pack-'),
+    async (packDirectory) => {
+      await (options.runPackCommand ?? runCommand)('pnpm', [
+        '--config.ignore-scripts=true',
+        'pack',
+        '--pack-destination',
+        packDirectory,
+      ], {
+        cwd: snapshot.corePackageRoot,
+        ...(options.quiet ? { stdio: 'ignore' } : {}),
+      });
+      const tarballs = await listTarballs(packDirectory);
+      if (tarballs.length !== 1) {
+        throw new Error(`Expected plugin core pack to produce exactly one tarball, found ${tarballs.length}.`);
+      }
+      const targetPath = path.join(targetDir, path.basename(tarballs[0]));
+      await fs.rename(tarballs[0], targetPath).catch(async (error) => {
+        if (error?.code !== 'EXDEV') throw error;
+        await fs.copyFile(tarballs[0], targetPath);
+      });
+      return targetPath;
+    },
+    'Plugin core tarball pack staging cleanup also failed',
+  );
+}
+
+export async function packCore({
+  destination = tarballDir,
+  snapshot,
+  quiet = false,
+  runPackCommand,
+} = {}) {
+  if (snapshot) return packCoreFromSnapshot(snapshot, destination, { quiet, runPackCommand });
+  await assertPublicPackageVersions();
+  return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
+    packCoreFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
+  );
+}
+
+export async function withPrivateCoreTarball(snapshot, callback, options = {}) {
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-plugin-core-publish-'),
+    async (privateRoot) => {
+      await fs.chmod(privateRoot, 0o700);
+      const tarballPath = await packCore({
+        destination: privateRoot,
+        snapshot,
+        quiet: options.quiet ?? false,
+        runPackCommand: options.runPackCommand,
+      });
+      return callback(tarballPath);
+    },
+    'Private plugin core tarball cleanup also failed',
   );
 }
 

@@ -1,6 +1,8 @@
 # AW Authoring Profile
 
-先确认插件根、工作区根、支持产品、允许修改文件、现有能力和调用策略。`.agents-plugin/plugin.json` 是插件源码真值；generated runtime、Catalog 和 cache 不由作者手改。
+先确认工作区根、支持产品、允许修改文件、现有能力和调用策略。Workspace v1 的 canonical 插件根固定为 `<workspace-root>/plugins/<name>`，`.agents-plugin/plugin.json` 是插件源码真值；generated runtime、Catalog 和 cache 不由作者手改。
+
+AW CLI/Core 拥有 Workspace metadata、bundle 和 Catalog snapshot 的机器合同。作者只使用已安装 CLI 的 `--workspace-root` 入口，不依赖宿主仓库私有脚本或任意 `--plugin-root` 布局。
 
 按用户目标选择最小能力：模型判断和多步骤流程用 Skill；常驻静态规则用 extensions；显式快捷入口用 slash command；外部工具连接用 MCP/App；配置驱动的平台输出用 dynamic artifact。不要预建未请求能力。
 

@@ -144,7 +144,10 @@ async function materializeEvalCliLauncher(
 async function pruneEvalCliDeployment(root: string): Promise<void> {
   await Promise.all([
     fs.remove(path.join(root, 'plugins')),
-    fs.remove(path.join(root, 'dist', 'scripts')),
+    fs.remove(path.join(root, 'pnpm-lock.yaml')),
+    fs.remove(path.join(root, 'node_modules', '.modules.yaml')),
+    fs.remove(path.join(root, 'node_modules', '.pnpm-workspace-state-v1.json')),
+    fs.remove(path.join(root, 'node_modules', '.pnpm', 'lock.yaml')),
     fs.remove(path.join(
       root,
       'node_modules',
@@ -267,7 +270,7 @@ async function materializeEvalCliDeployment(options: {
       '@lesliechan721/aw',
       'deploy',
       '--prod',
-      '--legacy',
+      '--config.inject-workspace-packages=true',
       '--config.package-import-method=copy',
       target,
     ], {
@@ -275,6 +278,10 @@ async function materializeEvalCliDeployment(options: {
       env: options.sourceEnv,
       maxBuffer: 20 * 1024 * 1024,
     });
+    await fs.copyFile(
+      path.join(options.cliPackageRoot, 'package.json'),
+      path.join(target, 'package.json'),
+    );
   }
   await pruneEvalCliDeployment(target);
   const repoRoot = path.resolve(options.cliPackageRoot, '..', '..');

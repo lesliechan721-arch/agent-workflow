@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   packCli,
+  packCore,
   packEval,
   relativeToRepo,
   withReleaseBuildSnapshot,
@@ -37,12 +38,14 @@ export async function packCliBundle(options = {}) {
   const destination = options.destination;
   const snapshotRunner = options.withBuildSnapshot ?? withReleaseBuildSnapshot;
   const packEvalTarball = options.packEval ?? packEval;
+  const packCoreTarball = options.packCore ?? packCore;
   const packCliTarball = options.packCli ?? packCli;
 
   return snapshotRunner(async (snapshot) => {
     const evalTarballPath = await packEvalTarball({ destination, snapshot });
+    const coreTarballPath = await packCoreTarball({ destination, snapshot });
     const cliTarballPath = await packCliTarball({ destination, snapshot });
-    return { evalTarballPath, cliTarballPath };
+    return { evalTarballPath, coreTarballPath, cliTarballPath };
   });
 }
 
@@ -51,6 +54,7 @@ export async function main(argv = process.argv.slice(2)) {
     const { destination } = parseArgs(argv);
     const bundle = await packCliBundle({ destination });
     console.log(`Packed shared Eval tarball: ${relativeToRepo(bundle.evalTarballPath)}`);
+    console.log(`Packed plugin core tarball: ${relativeToRepo(bundle.coreTarballPath)}`);
     console.log(`Packed CLI tarball: ${relativeToRepo(bundle.cliTarballPath)}`);
     return bundle;
   } catch (error) {

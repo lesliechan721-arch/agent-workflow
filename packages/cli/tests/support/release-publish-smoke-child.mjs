@@ -32,9 +32,13 @@ try {
     readPackageVersions: async () => [],
     assertCliTagAvailable: async () => undefined,
     readPublishedCliVersion: async () => config.publishedCliVersion,
-    computeTarballTreeDigest: async (file) => file.includes('eval') ? 'eval-tree' : 'cli-tree',
+    computeTarballTreeDigest: async (file) => file.includes('eval')
+      ? 'eval-tree'
+      : file.includes('core') ? 'core-tree' : 'cli-tree',
     runNpmCommand: async (_command, args) => {
-      const event = args[1].includes('eval') ? 'eval' : 'cli';
+      const event = args[1].includes('eval')
+        ? 'eval'
+        : args[1].includes('core') ? 'core' : 'cli';
       events.push(event);
       if (config.fail === event) throw new Error('fake npm failure');
     },

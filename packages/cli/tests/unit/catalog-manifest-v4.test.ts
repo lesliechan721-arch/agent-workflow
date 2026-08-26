@@ -27,6 +27,10 @@ function createManifestFixture() {
     catalogVersion: '1.2.3',
     channel: 'latest',
     compatibility: { aw: { minVersion: '0.0.0' } },
+    marketplace: {
+      owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture Marketplace' },
+    },
     release: { state: 'development' as const },
     entries: [{
       name: 'demo',
@@ -62,6 +66,17 @@ describe('catalog manifest schema 4', () => {
       contentDigest: sha256('c'),
     });
     expect(manifest).not.toHaveProperty('packages');
+  });
+
+  it('requires one explicit canonical marketplace root identity', () => {
+    const missing = createManifestFixture();
+    delete (missing as Partial<typeof missing>).marketplace;
+    expect(() => validateCatalogManifestV4(missing)).toThrow(/marketplace/u);
+    const ambiguous = createManifestFixture() as ReturnType<typeof createManifestFixture> & {
+      marketplace: ReturnType<typeof createManifestFixture>['marketplace'] & { catalog: object };
+    };
+    ambiguous.marketplace.catalog = { version: '1.2.3' };
+    expect(() => validateCatalogManifestV4(ambiguous)).toThrow(/unknown field/u);
   });
 
   it('rejects schema 3 and requires the complete published release identity', () => {
@@ -122,6 +137,7 @@ describe('catalog manifest schema 4', () => {
       catalogVersion: fixture.catalogVersion,
       channel: fixture.channel as 'latest',
       compatibility: fixture.compatibility,
+      marketplace: fixture.marketplace,
       release: fixture.release,
       entries: fixture.entries,
     });

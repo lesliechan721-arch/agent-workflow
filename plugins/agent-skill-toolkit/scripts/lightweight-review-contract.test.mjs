@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -20,6 +20,19 @@ const root = context
 const checker = path.join(root, 'check-agent-skill.mjs');
 const validator = path.join(root, 'validate-quality-review-result.mjs');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'lightweight-review-'));
+const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
+const publicBin = path.join(temp, 'public-bin');
+const publicAw = path.join(publicBin, 'aw');
+const overrideSentinel = path.join(temp, 'validator-override-ran');
+const overrideValidator = path.join(temp, 'validator-override.mjs');
+await mkdir(publicBin, { recursive: true });
+await writeFile(publicAw, `#!/bin/sh\nexec "${process.execPath}" "${skillValidatorBin}" "$@"\n`);
+await chmod(publicAw, 0o755);
+await writeFile(overrideValidator, `
+import { writeFile } from 'node:fs/promises';
+await writeFile(${JSON.stringify(overrideSentinel)}, 'executed');
+process.stdout.write('{}');
+`);
 const dimensionIds = [
   'specification',
   'problem_value',
@@ -68,7 +81,8 @@ async function run(file, args, expectFailure = false) {
       encoding: 'utf8',
       env: {
         ...process.env,
-        AW_SKILL_VALIDATOR_BIN: path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js'),
+        PATH: `${publicBin}${path.delimiter}${process.env.PATH ?? ''}`,
+        AW_SKILL_VALIDATOR_BIN: overrideValidator,
       },
     });
   } catch (error) {
@@ -78,6 +92,53 @@ async function run(file, args, expectFailure = false) {
 }
 
 try {
+  const help = await run(checker, ['--help']);
+  assert.match(help.stdout, /invokes aw skill validate from PATH/u);
+  const outsideRoot = path.join(temp, 'outside-skill');
+  const linkedRoot = path.join(temp, 'linked-skill');
+  const validatorCalled = path.join(temp, 'symlink-validator-ran');
+  const symlinkBin = path.join(temp, 'symlink-bin');
+  await mkdir(outsideRoot, { recursive: true });
+  await mkdir(symlinkBin, { recursive: true });
+  await writeFile(path.join(outsideRoot, 'SKILL.md'), 'private-skill-root-sentinel\n');
+  await symlink(outsideRoot, linkedRoot);
+  await writeFile(path.join(symlinkBin, 'aw'), `#!/bin/sh\ntouch "${validatorCalled}"\nprintf '%s\\n' '{"schemaVersion":1,"command":"skill:validate","ok":true,"warnings":[],"errors":[]}'\n`);
+  await chmod(path.join(symlinkBin, 'aw'), 0o755);
+  for (const rootKind of ['source', 'materialized']) {
+    await assert.rejects(execFileAsync(process.execPath, [
+      checker, linkedRoot, '--root-kind', rootKind, '--format', 'json',
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${symlinkBin}${path.delimiter}${process.env.PATH ?? ''}` },
+    }), /Skill root must be a regular directory/u);
+    await assert.rejects(readFile(validatorCalled), /ENOENT/u);
+  }
+  if (process.platform !== 'win32') {
+    const specialRoot = path.join(temp, 'special-skill');
+    await mkdir(specialRoot, { recursive: true });
+    await writeFile(
+      path.join(specialRoot, 'SKILL.md'),
+      '---\nname: special-skill\ndescription: Check special runtime inputs.\n---\n',
+    );
+    await execFileAsync('mkfifo', [path.join(specialRoot, 'blocking.pipe')]);
+    for (const rootKind of ['source', 'materialized']) {
+      let specialFailure;
+      try {
+        await execFileAsync(process.execPath, [
+          checker, specialRoot, '--root-kind', rootKind, '--format', 'json',
+        ], {
+          encoding: 'utf8',
+          env: { ...process.env, PATH: `${symlinkBin}${path.delimiter}${process.env.PATH ?? ''}` },
+        });
+      } catch (error) {
+        specialFailure = JSON.parse(error.stdout);
+      }
+      assert.equal(specialFailure.ok, false);
+      assert.ok(specialFailure.errors.some((entry) =>
+        entry.code === 'special-runtime-path' && entry.path === 'blocking.pipe'));
+      await assert.rejects(readFile(validatorCalled), /ENOENT/u);
+    }
+  }
   const good = path.join(temp, 'good-skill');
   await mkdir(path.join(good, 'references'), { recursive: true });
   await writeFile(path.join(good, 'SKILL.md'), '---\nname: good-skill\ndescription: Review supplied facts.\n---\n\nRead [the guide](references/guide.md).\n');
@@ -86,6 +147,7 @@ try {
   const goodRun = await run(checker, [good, '--output', goodCheckPath]);
   const goodCheck = JSON.parse(goodRun.stdout);
   assert.equal(goodCheck.ok, true);
+  await assert.rejects(readFile(overrideSentinel), /ENOENT/u);
 
   const projectedPlugin = path.join(temp, 'projected-plugin');
   const projected = path.join(projectedPlugin, 'skills', 'projected-skill');

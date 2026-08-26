@@ -19,11 +19,12 @@ metadata:
 
 ## 普通 Review
 
-1. 定位插件根和实际 Skill 根，运行 `aw plugin validate <plugin-root>`。
-2. 发现 source 和调用方提供的 materialized targets：
+1. 由调用方显式给出非 Git workspace 根。不得从 cwd 或 Git 推断 workspace。
+2. 发现 source 和调用方提供的 materialized targets。发现器先固定运行 PATH 上的 `aw plugin validate <plugin-root> --workspace-root <workspace-root> --json`；失败时停止，不读取 manifest 派生的 collection：
 
    ```bash
    node scripts/discover-aw-review-targets.mjs <plugin-root> \
+     --workspace-root <workspace-root> \
      [--final <profile=path>]... \
      [--output-root <handoff-root>] \
      --format json
@@ -34,7 +35,7 @@ metadata:
 5. 大型 reference 可按需使用 `review-agent-content`。
 6. 输出 AW 机器错误、插件级 design/complexity、必要 leaf findings、真实 source/final 差异、最多 3 个高价值改进和关键 unknown。
 
-没有 materialized final 时，只评价当前可见 source 和插件组合质量；不声明 release readiness。跨多个插件共同完成一个用户结果时，不给完整结论。
+leaf inventory 为空的条件是：合法 manifest 未声明 `skills`，且 `artifacts.targets` 也没有 `codex.skill` 或 `claude.skill`。此时仍评审插件级 composition target。动态 Skill 按 manifest 的 `skillKey`、platform 和 scopes 绑定对应 materialized final，不虚构 source Skill leaf。没有 materialized final 时，只评价当前可见 source 和插件组合质量；不声明 release readiness。跨多个插件共同完成一个用户结果时，不给完整结论。
 
 ## 独立 Release Check
 
@@ -42,7 +43,8 @@ metadata:
 
 ```bash
 node scripts/check-aw-plugin-release.mjs <plugin-root> \
-  --review <review.json> \
+  --workspace-root <workspace-root> \
+  [--review <review.json>]... \
   --final <profile=path> \
   [--preflight-audit <audit.json>] \
   [--run-bundle <bundle.json>] \
@@ -50,6 +52,8 @@ node scripts/check-aw-plugin-release.mjs <plugin-root> \
 ```
 
 输出为独立 `release-check.json`。它拥有机器 readiness，不能写回 Quality Review；QualityReviewResult 不声明 Eval 证据等级。相同 production digest 可以共享一条证据链。Release Check 不进入普通 Review common path，也不是 Review mode。
+
+release checker 只调用 `PATH` 上已安装的 `aw`，并只执行自身 bundle 内固定的普通文件脚本；不得使用环境变量替换 checker/validator，也不得从被评审项目发现或执行 CLI JavaScript。
 
 ## 可选报告归档
 

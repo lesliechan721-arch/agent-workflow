@@ -1,6 +1,6 @@
 # 插件维护指南
 
-本文件面向人类维护者，负责插件源码边界、维护入口和仓库级验证。它不保存完整 Agent 工作流、字段规范或模型 Eval 运行手册。
+本文件面向本仓库人类维护者，负责插件源码边界、维护入口和仓库级验证。它不保存完整 Agent 工作流、字段规范或模型 Eval 运行手册。第三方作者先读[插件作者指南](plugin-authoring.md)；它使用公开 CLI，不需要 clone 本仓库。
 
 ## 源码与生成物
 
@@ -25,9 +25,10 @@ Review 维度、Eval Audit、Eval run bundle 和 Quality Review schema 由 `agen
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
 - `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，并依赖 `agent-content-toolkit`。
 - `aw-plugin-development` 提供默认的 AW Author/Reviewer，并依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`；使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`，也可以安装其它输出 `EvalRunBundle v3` 的兼容 runner。
-- AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- AW Author/Reviewer 适用于任意兼容 workspace root；Workspace v1 中的目标根固定为 `<workspace-root>/plugins/<name>`，并由 `.agents-plugin/plugin.json` 标识。不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- `aw-plugin-development` 是 Agent-facing Developer Assistant，不是 SDK 或规范真值。它只能编排已安装 `aw` CLI 的公开作者命令；第三方 workspace 不要求有本仓库的 `packages/cli`、`node_modules` 或 release 脚本。
 - 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。`author-agent-skill`、`author-aw-plugin` 和 Reviewer 只编排这些命令，不保存第二份核心 frontmatter 或 Codex metadata 实现。
-- 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `status` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `status` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`status --all` 保留 `plugins/` 扫描语义。
+- Workspace v1 插件根固定为 `<workspace-root>/plugins/<plugin-name>`。所有作者命令使用 `--workspace-root`，不接受任意 `--plugin-root`。`validate`、`test` 和 `build` 仍接受 plugin directory 参数，但该目录必须是 workspace inventory 中的 canonical plugin。作者命令拒绝 workspace/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型。只有使用 `status --base` 等差异功能时要求 Git；`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
 - Reviewer 默认只在聊天中交付 Quality Review。用户明确要求归档时，只有本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。修订已有记录时创建新 record 并使用 `--supersedes`。Quality Review 不拥有 readiness；独立生成的 `release-check.json` 只能作为可选附件。
 

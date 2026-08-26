@@ -20,8 +20,10 @@ import { getArtifactSourceBundleRelativePath } from '../utils/artifact-sources.j
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
   assertManifestPlatformSupport,
+  assertPluginInputTree,
   createBundleSourceManifest,
   createPlatformManifestBase,
+  isIgnoredPluginInputDirectory,
   normalizePluginRelativePath,
   readPluginManifest,
 } from '../utils/manifest.js';
@@ -281,6 +283,7 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
 
   for (const entry of entries) {
     if (isMacOsMetadataName(entry.name)) continue;
+    if (isIgnoredPluginInputDirectory(entry.name)) continue;
     if (entry.name === '.agents-plugin' || entry.name === '.claude-plugin' || entry.name === '.codex-plugin') {
       continue;
     }
@@ -305,7 +308,7 @@ async function listFilesRecursivelyIncludingManaged(rootDir: string): Promise<st
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry.name === 'node_modules' || entry.name === '.git' || isMacOsMetadataName(entry.name)) {
+    if (isIgnoredPluginInputDirectory(entry.name) || isMacOsMetadataName(entry.name)) {
       continue;
     }
 
@@ -1413,7 +1416,7 @@ async function createStagedPlugin(
   try {
     await fs.copy(plugin.rootDir, stagingPluginRoot, {
       filter(source) {
-        return path.basename(source) !== 'node_modules'
+        return !isIgnoredPluginInputDirectory(path.basename(source))
           && !isMacOsMetadataName(path.basename(source));
       },
     });
@@ -1564,6 +1567,7 @@ export async function prepareLocalPluginBundleSource(
   runtimeContext: PreparedPluginRuntimeContext;
   cleanup(): Promise<void>;
 }> {
+  await assertPluginInputTree(plugin.rootDir);
   const buildOptions = {
     buildMode: options.buildMode ?? 'staging',
     stagingRunner: options.stagingRunner ?? defaultStagingRunner,
@@ -1594,6 +1598,7 @@ export async function bundleLocalPlugin(
     runtimeResolver: options.runtimeResolver,
     preparedRuntimeContext: options.preparedRuntimeContext,
   };
+  await assertPluginInputTree(plugin.rootDir);
   await fs.remove(outputRoot);
   const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
 

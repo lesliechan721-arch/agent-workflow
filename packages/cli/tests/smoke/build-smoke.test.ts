@@ -35,7 +35,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'aw-plugin-development': ['claude', 'codex'],
   'codex-enhance': ['codex'],
   'dev-workflow': ['claude', 'codex'],
-  'git': ['claude', 'codex'],
+  'git-toolkit': ['claude', 'codex'],
 } as const;
 
 function repoRoot(): string {
@@ -145,9 +145,11 @@ describe('build smoke', () => {
         checkerPath,
         'plugin',
         'status',
+        '--base',
+        'HEAD',
         'version-gate-smoke',
         '--json',
-        '--repo-root',
+        '--workspace-root',
         tempRepo,
       ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(development.stdout)).toMatchObject({
@@ -166,9 +168,11 @@ describe('build smoke', () => {
       checkerPath,
       'plugin',
       'status',
+      '--base',
+      'HEAD',
       'version-gate-smoke',
       '--json',
-      '--repo-root',
+      '--workspace-root',
       tempRepo,
     ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(bumped.stdout)).toMatchObject({
@@ -197,15 +201,15 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
     ).resolves.toBe(true);
     await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'git', '.codex-plugin', 'plugin.json')),
+      fs.pathExists(path.join(outputRoot, 'plugins', 'git-toolkit', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(true);
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'ask-me', '.claude-plugin', 'plugin.json')),
     ).resolves.toBe(true);
     await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'git', '.agents-plugin', 'plugin.json')),
+      fs.readJson(path.join(outputRoot, 'plugins', 'git-toolkit', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
-      name: 'git',
+      name: 'git-toolkit',
     });
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'ask-me', '.agents-plugin', 'plugin.json')),
@@ -224,7 +228,7 @@ describe('build smoke', () => {
     }
     for (const [pluginName, skillName] of [
       ['ask-me', 'decision-grill'],
-      ['git', 'git-commit'],
+      ['git-toolkit', 'git-commit'],
     ]) {
       for (const platform of ['claude', 'codex']) {
         for (const authorDirectory of ['evals', 'reports']) {
@@ -291,7 +295,7 @@ describe('build smoke', () => {
       'aw-plugin-development',
       'aw-skill-eval-runner',
       'dev-workflow',
-      'git',
+      'git-toolkit',
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
@@ -301,7 +305,7 @@ describe('build smoke', () => {
       'aw-skill-eval-runner',
       'codex-enhance',
       'dev-workflow',
-      'git',
+      'git-toolkit',
     ]);
     for (const [pluginName, platforms] of Object.entries(EXPECTED_PLUGIN_PLATFORMS)) {
       for (const platform of ['claude', 'codex'] as const) {
@@ -443,7 +447,7 @@ describe('build smoke', () => {
     ).resolves.toMatchObject({
       name: 'codex-enhance',
       interface: {
-        capabilities: ['Skills', 'Instructions', 'Agents'],
+        capabilities: ['Skills', 'Agents'],
       },
       scripts: {
         artifacts: {
@@ -552,6 +556,18 @@ describe('build smoke', () => {
     ).resolves.toMatchObject({
       stdout: expect.stringContaining('Usage: aw'),
     });
+
+    for (const command of ['init', 'add-skill']) {
+      const help = await execFileAsync('node', [cliEntry, 'plugin', command, '--help'], {
+        cwd: root,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      expect(help.stdout).toContain('aw plugin validate');
+      expect(help.stdout).toContain('aw catalog build');
+      expect(help.stdout).toContain('aw catalog publish --help');
+      expect(help.stdout).not.toContain('pnpm release');
+    }
   });
 
   it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {

@@ -1,14 +1,14 @@
 {
   "schemaVersion": 2,
-  "plugin": "git",
-  "skill": "git-commit",
+  "plugin": "git-toolkit",
+  "skill": "isolating-work-with-git-worktrees",
   "profiles": [
     {
       "id": "project-default",
       "scope": "project",
       "plugins": [
         {
-          "name": "git",
+          "name": "git-toolkit",
           "config": {}
         }
       ],
@@ -20,7 +20,7 @@
       "scope": "user",
       "plugins": [
         {
-          "name": "git",
+          "name": "git-toolkit",
           "config": {}
         }
       ],
@@ -30,9 +30,11 @@
   ],
   "suites": [
     {
-      "id": "trigger",
+      "id": "router",
       "kind": "trigger",
       "skills": [
+        "isolating-work-with-git-worktrees",
+        "reconciling-git-merges",
         "git-commit"
       ],
       "cases": "./trigger-cases.json",
@@ -40,26 +42,55 @@
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": [
-        "validation"
+        "validation",
+        "sanity"
       ],
+      "minimumPassRate": 0.8,
+      "forbidMultipleSkillLoads": true,
       "profiles": [
         "project-default"
       ],
       "defaultRuns": 3,
       "releaseSplits": [
-        "validation"
+        "validation",
+        "sanity"
       ],
       "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "router-diagnostic",
+      "kind": "trigger",
+      "skills": [
+        "isolating-work-with-git-worktrees",
+        "reconciling-git-merges",
+        "git-commit"
+      ],
+      "cases": "./trigger-diagnostic-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "minimumPassRate": 0.8,
+      "forbidMultipleSkillLoads": true,
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 3,
+      "releaseSplits": [],
+      "requiredForRelease": false,
       "perRunTimeoutMs": 180000
     },
     {
       "id": "behavior",
       "kind": "command",
       "skills": [
+        "isolating-work-with-git-worktrees",
+        "reconciling-git-merges",
         "git-commit"
       ],
-      "entry": "./run-commit-evals.mjs",
-      "cases": "./behavior-cases.json",
+      "entry": "./run-worktree-evals.mjs",
+      "cases": "./evals.json",
       "profiles": [
         "project-default"
       ],
@@ -67,7 +98,7 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000,
-      "suiteTimeoutMs": 16200000,
+      "suiteTimeoutMs": 10800000,
       "supports": [
         "runs",
         "case",

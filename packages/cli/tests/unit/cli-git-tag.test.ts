@@ -38,7 +38,7 @@ describe('CLI Git tag publisher', () => {
     })).rejects.toThrow('pnpm release -- --repair-cli-tag');
   });
 
-  it('matches both published packages against the prepared artifacts before repair', async () => {
+  it('matches all published packages against the prepared artifacts before repair', async () => {
     const assertPublishedPackageMatches = vi.fn(async () => undefined);
     const descriptor = {
       axes: { cli: true, catalog: false },
@@ -46,6 +46,7 @@ describe('CLI Git tag publisher', () => {
       npm: {
         packages: [
           { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz' },
+          { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz' },
           { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz' },
         ],
       },
@@ -55,7 +56,7 @@ describe('CLI Git tag publisher', () => {
       assertPublishedPackageMatches,
     });
 
-    expect(assertPublishedPackageMatches).toHaveBeenCalledTimes(2);
+    expect(assertPublishedPackageMatches).toHaveBeenCalledTimes(3);
     expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
       1,
       '@lesliechan721/agent-skill-eval',
@@ -66,6 +67,14 @@ describe('CLI Git tag publisher', () => {
     );
     expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
       2,
+      '@lesliechan721/aw-plugin-core',
+      version,
+      expect.stringContaining('packages/plugin-core/package.json'),
+      '/prepared/artifacts/core.tgz',
+      expect.any(Object),
+    );
+    expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
+      3,
       '@lesliechan721/aw',
       version,
       expect.stringContaining('packages/cli/package.json'),

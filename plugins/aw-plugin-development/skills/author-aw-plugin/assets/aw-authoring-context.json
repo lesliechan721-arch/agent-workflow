@@ -2,7 +2,7 @@
   "schemaVersion": 3,
   "repository": "example-aw-workspace",
   "plugin": "target-plugin",
-  "pluginRoot": "packages/target-plugin",
+  "pluginRoot": "plugins/target-plugin",
   "changeMode": "create",
   "products": [
     "CODEX",

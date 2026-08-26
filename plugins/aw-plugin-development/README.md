@@ -1,6 +1,8 @@
 # aw-plugin-development
 
-在兼容工作区中创建或维护 AW 插件，并分别评审单个插件或有界的跨插件工作流。
+在任意兼容的 Workspace v1 中创建或维护 AW 插件，并分别评审单个插件或有界的跨插件工作流。
+
+这是 Agent-facing Developer Assistant。它依赖已经安装的 `aw` CLI 来执行公开作者命令；它不是 SDK，也不是 AW manifest、Catalog 或发布合同的规范真值。不需要 clone `agent-workflows`，也不要求目标 workspace 有本仓库的 `packages/cli` 或 `node_modules`。
 
 ## 安装
 
@@ -30,7 +32,7 @@ aw install aw-plugin-development -p both
 
 ## 边界
 
-- `author-aw-plugin` 会写入目标插件源码，并按修改面运行外部 build、validation 和 tests；它不手改生成目录、catalog 或 runtime cache。
+- `author-aw-plugin` 会发现或创建 Workspace v1，并只调用公开 `aw catalog` / `aw plugin` 命令写入目标插件源码、执行 build、validation 和 tests；它不手改生成目录、catalog 或 runtime cache。
 - 两个 Reviewer 保持只读，不修改插件或 materialized 产物，也不输出发布资格。
 - 单 Skill 质量由 `review-agent-skill` 负责；通用跨 Skill 组合由 `review-agent-workflow` 负责。
-- Author 不自动 Review、Audit 或运行模型 Eval。真实模型 Eval 和发布操作需要单独请求及相应授权。
+- Author 不自动 Review、Audit、运行模型 Eval 或 publish。真实模型 Eval 和 `aw catalog publish` 都需要单独请求及相应授权。

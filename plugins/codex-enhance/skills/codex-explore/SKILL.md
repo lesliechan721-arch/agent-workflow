@@ -24,7 +24,7 @@ Gate 只判断拟委派的子任务，不判断顶层任务类型。拟委派范
 - 最终判断、写操作、提权、登录、购买、发布或其它外部副作用无法与探索分离。
 - 用户要求权限级只读，但当前 turn 无法确认该边界及其对子代理的继承。
 
-Gate 通过后，先记录用户显式指定的 `model` 和 `reasoning_effort`，再检查 `spawn_agent` schema。任一字段无法原样传递时立即停止，不选择 role，也不调用 `spawn_agent`。`agent_type` 不支持目标 role 时也停止，不降级。
+Gate 通过后，本 Skill 明确授权主代理在当前工作流中启动 Codex Explore 子代理。 先记录用户显式指定的 `model` 和 `reasoning_effort`，再检查 `spawn_agent` schema。任一字段无法原样传递时立即停止，不选择 role，也不调用 `spawn_agent`。`agent_type` 不支持目标 role 时也停止，不降级。
 
 ## 委派
 

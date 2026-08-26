@@ -2,11 +2,10 @@
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
 
 const IGNORED = new Set(['.git', 'node_modules', '.DS_Store']);
 const AUTHOR_ONLY = new Set(['evals', 'reports']);
@@ -17,10 +16,12 @@ const MARKDOWN_LINK_PATTERN = /!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|((?:\\.|[^\s)\n
 const MARKDOWN_DEFINITION_PATTERN = /^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]+)>|(\S+))/gmu;
 const URI_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/u;
 const execFileAsync = promisify(execFile);
-const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 
 function usage() {
-  return 'Usage: check-agent-skill.mjs <skill-root> [--root-kind source|materialized] [--profile name] [--output file] [--format json|text]';
+  return [
+    'Usage: check-agent-skill.mjs <skill-root> [--root-kind source|materialized] [--profile name] [--output file] [--format json|text]',
+    'Validation: invokes aw skill validate from PATH.',
+  ].join('\n');
 }
 
 function parseArgs(argv) {
@@ -61,6 +62,7 @@ function posix(value) {
 async function collectFiles(root) {
   const files = [];
   const symlinks = [];
+  const specialFiles = [];
   async function walk(directory, relative = '') {
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -72,10 +74,11 @@ async function collectFiles(root) {
       if (info.isSymbolicLink()) symlinks.push(next);
       else if (info.isDirectory()) await walk(absolute, next);
       else if (info.isFile()) files.push({ path: next, absolute, mode: info.mode });
+      else specialFiles.push(next);
     }
   }
   await walk(root);
-  return { files, symlinks };
+  return { files, symlinks, specialFiles };
 }
 
 function productionFiles(files) {
@@ -234,18 +237,6 @@ async function runtimeClosure(files, skillText, options = {}) {
   return { errors, warnings };
 }
 
-async function localCliEntry() {
-  let current = scriptRoot;
-  for (let depth = 0; depth < 7; depth += 1) {
-    const candidate = path.join(current, 'packages', 'cli', 'dist', 'index.js');
-    if ((await stat(candidate).catch(() => null))?.isFile()) return candidate;
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return null;
-}
-
 function skillValidationProfile(options) {
   if (options.profile === 'aw-source') {
     return { frontmatterProfile: 'claude-2.1.88', codexMetadata: 'optional' };
@@ -261,12 +252,7 @@ function skillValidationProfile(options) {
 
 async function runSkillValidator(root, options) {
   const profile = skillValidationProfile(options);
-  const configured = process.env.AW_SKILL_VALIDATOR_BIN
-    ? path.resolve(process.env.AW_SKILL_VALIDATOR_BIN)
-    : await localCliEntry();
-  const command = configured ? process.execPath : 'aw';
   const args = [
-    ...(configured ? [configured] : []),
     'skill',
     'validate',
     root,
@@ -277,7 +263,7 @@ async function runSkillValidator(root, options) {
     '--json',
   ];
   try {
-    const { stdout } = await execFileAsync(command, args, { encoding: 'utf8' });
+    const { stdout } = await execFileAsync('aw', args, { encoding: 'utf8' });
     return JSON.parse(stdout);
   } catch (error) {
     if (typeof error?.stdout === 'string' && error.stdout.trim()) {
@@ -314,30 +300,39 @@ async function main() {
     process.stdout.write(usage() + '\n');
     return;
   }
-  const rootInfo = await stat(options.root).catch(() => null);
-  if (!rootInfo?.isDirectory()) throw new Error('Skill root is not a directory: ' + options.root);
-  const { files, symlinks } = await collectFiles(options.root);
+  const rootInfo = await lstat(options.root).catch(() => null);
+  if (!rootInfo?.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error('Skill root must be a regular directory: ' + options.root);
+  }
+  const { files, symlinks, specialFiles } = await collectFiles(options.root);
   const byPath = new Map(files.map((file) => [file.path, file]));
   const errors = symlinks.map((entry) => ({ code: 'symlink-runtime-path', path: entry, message: 'Skill runtime paths must not contain symbolic links.' }));
+  errors.push(...specialFiles.map((entry) => ({
+    code: 'special-runtime-path',
+    path: entry,
+    message: 'Skill runtime paths must contain only regular files and directories.',
+  })));
   const warnings = [];
   const skillFile = byPath.get('SKILL.md');
   if (!skillFile) throw new Error('Missing SKILL.md: ' + options.root);
   const skillText = await readFile(skillFile.absolute, 'utf8');
   const directoryName = path.basename(options.root);
-  const skillValidation = await runSkillValidator(options.root, options);
-  if (skillValidation?.schemaVersion !== 1 || skillValidation?.command !== 'skill:validate') {
-    errors.push({ code: 'skill-validator-contract', message: 'aw skill validate returned an incompatible result.' });
-  } else {
-    errors.push(...skillValidation.errors.map((entry) => ({
-      code: entry.code,
-      path: entry.path,
-      message: entry.message,
-    })));
-    warnings.push(...skillValidation.warnings.map((entry) => ({
-      code: entry.code,
-      path: entry.path,
-      message: entry.message,
-    })));
+  if (errors.length === 0) {
+    const skillValidation = await runSkillValidator(options.root, options);
+    if (skillValidation?.schemaVersion !== 1 || skillValidation?.command !== 'skill:validate') {
+      errors.push({ code: 'skill-validator-contract', message: 'aw skill validate returned an incompatible result.' });
+    } else {
+      errors.push(...skillValidation.errors.map((entry) => ({
+        code: entry.code,
+        path: entry.path,
+        message: entry.message,
+      })));
+      warnings.push(...skillValidation.warnings.map((entry) => ({
+        code: entry.code,
+        path: entry.path,
+        message: entry.message,
+      })));
+    }
   }
   const declaredTargets = await declaredRuntimeTargets(options.root, directoryName);
   const closure = await runtimeClosure(files, skillText, { rootKind: options.rootKind, declaredTargets });

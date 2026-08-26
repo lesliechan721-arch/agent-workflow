@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "name": "codex-enhance",
   "version": "0.1.0",
   "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
@@ -31,17 +32,7 @@
     "shortDescription": "Codex 只读探索与通用子代理编排增强",
     "capabilities": [
       "Skills",
-      "Instructions",
       "Agents"
-    ]
-  },
-  "extensions": {
-    "instructions": [
-      {
-        "name": "delegation-authorization",
-        "title": "Codex Explore 子代理授权",
-        "content": "调用 `codex-explore` 技能且 Gate 通过时，视为用户同意在该工作流中启用子代理；Gate 未通过时不得启动子代理。"
-      }
     ]
   },
   "scripts": {
@@ -149,7 +140,7 @@
       "generalTaskModel": {
         "type": "string",
         "title": "通用任务模型",
-        "default": "gpt-5.6-sol",
+        "default": "gpt-5.6-terra",
         "description": "通用任务 agent type 使用的模型，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。"
       },
       "generalTaskReasoningEffort": {
@@ -162,7 +153,7 @@
           "xhigh",
           "max"
         ],
-        "default": "medium",
+        "default": "xhigh",
         "description": "通用任务 agent type 使用的 model_reasoning_effort。"
       },
       "complexTaskModel": {
@@ -181,7 +172,7 @@
           "xhigh",
           "max"
         ],
-        "default": "high",
+        "default": "medium",
         "description": "复杂任务 agent type 使用的 model_reasoning_effort。"
       },
       "advancedTaskModel": {

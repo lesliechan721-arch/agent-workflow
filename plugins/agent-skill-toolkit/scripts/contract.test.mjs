@@ -92,6 +92,22 @@ test('reviewer production and materialized closures use registered current depen
       .sort(),
     [],
   );
+  const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill');
+  for (const relative of [
+    'assets/review-input-bundle.schema.json',
+    'assets/review-result.schema.json',
+    'assets/skill-inspection-result.schema.json',
+    'assets/eval-execution-plan.schema.json',
+    'assets/eval-run-bundle.schema.json',
+    'scripts/validate-review-input-bundle.mjs',
+    'scripts/validate-review-result.mjs',
+    'scripts/inspect-agent-skill.mjs',
+  ]) {
+    await assert.rejects(readFile(path.join(reviewRoot, relative), 'utf8'), relative);
+  }
+  const checker = await readFile(path.join(reviewRoot, 'scripts/check-agent-skill.mjs'), 'utf8');
+  assert.doesNotMatch(checker, /AW_SKILL_VALIDATOR_BIN|packages\/cli\/dist/u);
+  assert.match(checker, /execFileAsync\('aw'/u);
 });
 
 test('projected runtime files match canonical sources', async () => {

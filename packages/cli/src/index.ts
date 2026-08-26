@@ -133,6 +133,15 @@ import {
   type ReviewRecord,
 } from './commands/review-publication.js';
 import { resolveRepoRoot } from './utils/state-paths.js';
+import {
+  runCatalogBuildCommand,
+  runCatalogInitCommand,
+  runCatalogValidateCommand,
+  runCatalogVersionCommand,
+  runPluginBuildCommand,
+  runPluginTestCommand,
+} from './authoring/workspace-commands.js';
+import { runCatalogPublishCommand } from './commands/catalog-publish.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -1337,8 +1346,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'In this repository, run `pnpm release -- beta|release --catalog|--all --plugin <name>=patch`; the bump can also be major or minor.',
-      'In another workspace, use its release workflow to set the target.',
+      'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
+      'Publish only as an explicit later step; inspect `aw catalog publish --help` first.',
       '',
     ].join('\n'))
     .argument('<plugin-name>', 'lowercase hyphen-case plugin name')
@@ -1352,8 +1361,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--version <semver>', 'initial stable plugin version (default: 0.1.0)')
     .option('--min-version <semver>', 'compatibility.aw.minVersion')
     .option('--catalog-min-version <semver>', 'target catalog compatibility minimum')
-    .option('--repo-root <path>', 'repository root (default: current directory)')
-    .option('--plugin-root <path>', 'plugin root, relative to --repo-root by default')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
     .option('--no-skills', 'create the plugin without a skills directory')
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
@@ -1366,8 +1374,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'In this repository, run `pnpm release -- beta|release --catalog|--all --plugin <name>=patch`; the bump can also be major or minor.',
-      'In another workspace, use its release workflow to set the target.',
+      'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
+      'Publish only as an explicit later step; inspect `aw catalog publish --help` first.',
       '',
     ].join('\n'))
     .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
@@ -1375,8 +1383,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill-description <text>', 'Skill goal and discovery description (required)')
     .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
-    .option('--repo-root <path>', 'repository root (default: current directory)')
-    .option('--plugin-root <path>', 'plugin root, relative to --repo-root by default');
+    .option('--workspace-root <path>', 'workspace root (default: current directory)');
 
   plugin
     .command('validate')
@@ -1386,27 +1393,82 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--strict-agent-skills', 'allow only Agent Skills portable core frontmatter', false)
     .option('--claude-skill-profile <profile>', 'minimum | current (default: minimum)')
     .option('--version-base <git-ref>', 'production bundle comparison base (default: HEAD)')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
     .option('--json', 'emit one machine-readable JSON result', false);
 
   plugin
+    .command('test')
+    .description('Run deterministic Node tests declared by one source plugin')
+    .argument('<plugin-directory>', 'source plugin directory')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (pluginDirectory: string, rawOptions: {
+      workspaceRoot?: string;
+      json?: boolean;
+    }) => {
+      try {
+        commandExitState.exitCode = await runPluginTestCommand({
+          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          pluginDirectory,
+          json: rawOptions.json,
+          io,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'plugin:test', ok: false, errors: [{ message }] });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  plugin
+    .command('build')
+    .description('Build and inspect one source plugin bundle')
+    .argument('<plugin-directory>', 'source plugin directory')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--out <path>', 'output path inside the workspace')
+    .option('--force', 'replace an existing generated output', false)
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (pluginDirectory: string, rawOptions: {
+      workspaceRoot?: string;
+      out?: string;
+      force?: boolean;
+      json?: boolean;
+    }) => {
+      try {
+        await runPluginBuildCommand({
+          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          pluginDirectory,
+          out: rawOptions.out,
+          force: rawOptions.force,
+          json: rawOptions.json,
+          io,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'plugin:build', ok: false, errors: [{ message }] });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  plugin
     .command('status')
-    .description('Show plugin development status against a Git base')
+    .description('Show current plugin status or compare against an explicit Git base')
     .argument('[plugin-name]', 'one explicit plugin name')
-    .option('--all', 'check every plugin relative to the Git base', false)
-    .option('--base <git-ref>', 'Git comparison base (default: HEAD)')
+    .option('--all', 'check every current workspace plugin', false)
+    .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--repo-root <path>', 'repository root (default: current directory)')
-    .option('--plugin-root <path>', 'single plugin root, relative to --repo-root by default');
+    .option('--workspace-root <path>', 'workspace root (default: current directory)');
 
   plugin
     .command('check-versions')
     .description('Deprecated alias for plugin status')
     .argument('[plugin-name]', 'one explicit plugin name')
     .option('--all', 'check every plugin changed relative to the Git base', false)
-    .option('--base <git-ref>', 'Git comparison base (default: HEAD)')
+    .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--repo-root <path>', 'repository root (default: current directory)')
-    .option('--plugin-root <path>', 'single plugin root, relative to --repo-root by default');
+    .option('--workspace-root <path>', 'workspace root (default: current directory)');
 
   skill
     .command('validate')
@@ -1419,9 +1481,164 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--codex-metadata <policy>', 'required | optional | ignore (default: optional)')
     .option('--json', 'emit one machine-readable JSON result', false);
 
-  const catalogSource = program
+  const catalog = program
     .command('catalog')
-    .description('Manage catalog sources')
+    .description('Build and manage catalogs');
+
+  catalog
+    .command('init')
+    .description('Initialize a local AW plugin workspace')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--owner-name <name>', 'catalog owner name')
+    .option('--owner-url <url>', 'catalog owner URL')
+    .option('--display-name <name>', 'catalog display name')
+    .option('--catalog-version <version>', 'initial stable or x.y.z-beta.N catalog version (default: 0.1.0)')
+    .option('--force', 'repair a matching managed workspace scaffold', false)
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (rawOptions: {
+      workspaceRoot?: string;
+      ownerName?: string;
+      ownerUrl?: string;
+      displayName?: string;
+      catalogVersion?: string;
+      force?: boolean;
+      json?: boolean;
+    }) => {
+      try {
+        await runCatalogInitCommand({
+          ...rawOptions,
+          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          io,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'catalog:init', ok: false, errors: [{ message }] });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalog
+    .command('version')
+    .description('Read or set the workspace catalog version')
+    .argument('[version]', 'stable or x.y.z-beta.N catalog version')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (version: string | undefined, rawOptions: { workspaceRoot?: string; json?: boolean }) => {
+      try {
+        await runCatalogVersionCommand({
+          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          version,
+          json: rawOptions.json,
+          io,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'catalog:version', ok: false, errors: [{ message }] });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalog
+    .command('build')
+    .description('Build a deterministic development Catalog snapshot')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--out <path>', 'output path inside the workspace')
+    .option('--force', 'replace an existing generated output', false)
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (rawOptions: { workspaceRoot?: string; out?: string; force?: boolean; json?: boolean }) => {
+      try {
+        await runCatalogBuildCommand({
+          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          out: rawOptions.out,
+          force: rawOptions.force,
+          json: rawOptions.json,
+          io,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'catalog:build', ok: false, errors: [{ message }] });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalog
+    .command('validate')
+    .description('Validate a schema 4 Catalog snapshot')
+    .argument('<snapshot-directory>', 'Catalog snapshot directory')
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (snapshotDirectory: string, rawOptions: { json?: boolean }) => {
+      try {
+        await runCatalogValidateCommand({
+          snapshotDirectory: path.resolve(cwd, snapshotDirectory),
+          json: rawOptions.json,
+          io,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, { command: 'catalog:validate', ok: false, errors: [{ message }] });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalog
+    .command('publish')
+    .description('Publish a versioned Catalog snapshot to a configured Git remote')
+    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--remote <name>', 'configured Git remote name (default: origin)')
+    .option('--branch <name>', 'dedicated Catalog branch (default: catalog)')
+    .option('-y, --yes', 'confirm publication without a prompt', false)
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (rawOptions: {
+      workspaceRoot?: string;
+      remote?: string;
+      branch?: string;
+      yes?: boolean;
+      json?: boolean;
+    }) => {
+      try {
+        const context = createActionContext('catalog:publish', {});
+        const result = await runCatalogPublishCommand({
+          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          remote: rawOptions.remote,
+          branch: rawOptions.branch,
+          yes: rawOptions.yes,
+          json: rawOptions.json,
+          env,
+          interactive: context.interactive,
+          ...(context.prompt.confirm ? {
+            confirm: async (message: string) => {
+              const response = await context.prompt.confirm!({ message, defaultValue: false });
+              return !response.cancelled && response.value === true;
+            },
+          } : {}),
+          io,
+        });
+        if (!result) return;
+        if (rawOptions.json) writeJsonReceipt(io.stdout, result);
+        else {
+          writeLine(io.stdout, `Published Catalog ${result.catalogVersion} to ${result.remote} (${result.pushUrl}).`);
+          writeLine(io.stdout, `Branch: refs/heads/${result.branch}`);
+          writeLine(io.stdout, `Tag: refs/tags/${result.tag}`);
+          writeLine(io.stdout, `Commit: ${result.commit}`);
+          writeLine(io.stdout, `Add it as a source: aw catalog source add <id> --git ${result.fetchUrl} --ref refs/heads/${result.branch}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, {
+          command: 'catalog:publish',
+          ok: false,
+          errors: [{ message }],
+        });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  const catalogSource = catalog
     .command('source')
     .description('Manage catalog sources');
 
@@ -2563,6 +2780,13 @@ export async function runCli(
     ...createDefaultIo(),
     ...options.io,
   };
+  const jsonAuthoringCommand = argv.includes('--json')
+    && (
+      (argv[0] === 'catalog' && ['init', 'version', 'build', 'validate', 'publish'].includes(argv[1] ?? ''))
+      || (argv[0] === 'plugin' && ['build', 'test'].includes(argv[1] ?? ''))
+    )
+    ? `${argv[0]}:${argv[1]}`
+    : null;
 
   try {
     const authoringScriptByCommand: Record<string, string> = {
@@ -2578,9 +2802,17 @@ export async function runCli(
         ? 'validate-skill.mjs'
         : undefined;
     if (authoringScript && !argv.includes('--help') && !argv.includes('-h')) {
+      const authoringArgs = argv.slice(2);
+      if (
+        argv[0] === 'plugin'
+        && argv[1] === 'validate'
+        && !authoringArgs.some((token) => token === '--workspace-root' || token.startsWith('--workspace-root='))
+      ) {
+        authoringArgs.push('--workspace-root', options.cwd ?? process.cwd());
+      }
       return runAuthoringScript({
         scriptName: authoringScript,
-        args: argv.slice(2),
+        args: authoringArgs,
         cwd: options.cwd ?? process.cwd(),
         env: options.env ?? process.env,
         io,
@@ -2639,6 +2871,13 @@ export async function runCli(
       __awCommandExitState?: { exitCode: number };
     }).__awCommandExitState?.exitCode ?? 0;
   } catch (error) {
+    if (jsonAuthoringCommand && error instanceof CommanderError) {
+      writeJsonReceipt(io.stdout, {
+        command: jsonAuthoringCommand,
+        ok: false,
+        errors: [{ code: 'invalidArguments', message: error.message }],
+      });
+    }
     return handleCliError(error, io.stderr);
   }
 }
