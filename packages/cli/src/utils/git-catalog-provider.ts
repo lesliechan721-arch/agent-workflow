@@ -22,7 +22,7 @@ import { compareStrictSemVer } from './manifest.js';
 import { NativeCliError, runNativeCli } from './native-cli.js';
 
 const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const DEFAULT_REMOTE_TIMEOUT_MS = 5_000;
+const DEFAULT_REMOTE_TIMEOUT_MS = 180_000;
 const {
   ensureCatalogSourceCacheLocation,
   publishCatalogSourceCacheEntry,

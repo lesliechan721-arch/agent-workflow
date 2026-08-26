@@ -87,7 +87,7 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 
 每个 source 在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 有独立身份、当前快照和最近一次可用快照。resolver 先使用有效的 `current`，需要时可回退同一 source 的 `last-good`。cache 只是可删除的性能和离线状态；它不决定安装、配置或删除权限。
 
-Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，禁止 URL 内嵌凭据、SSH local command 和 proxy command；AW 不保存 Catalog 授权信息。
+Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，默认远端解析超时为 180 秒，并可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整；它禁止 URL 内嵌凭据、SSH local command 和 proxy command，且 AW 不保存 Catalog 授权信息。
 
 `aw catalog source add` 和 `update` 先原子提交 source config，再尽力刷新该 source。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`list`、`set-primary` 和 `remove` 只修改 source config。
 
