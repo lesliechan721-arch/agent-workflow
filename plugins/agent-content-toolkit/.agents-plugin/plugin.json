@@ -59,5 +59,12 @@
         "CLAUDE"
       ]
     }
+  },
+  "interface": {
+    "displayName": "Agent Content Toolkit",
+    "shortDescription": "创建和评审 Agent-facing 文档，控制上下文负担、指针与完成边界",
+    "capabilities": [
+      "Skills"
+    ]
   }
 }

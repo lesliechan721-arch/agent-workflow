@@ -28,5 +28,12 @@
         "CLAUDE"
       ]
     }
+  },
+  "interface": {
+    "displayName": "AW Skill Eval Runner",
+    "shortDescription": "执行 Agent Skill Eval plan，并生成中立的 EvalRunBundle 证据",
+    "capabilities": [
+      "Skills"
+    ]
   }
 }

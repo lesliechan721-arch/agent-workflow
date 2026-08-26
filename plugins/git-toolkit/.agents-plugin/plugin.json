@@ -25,7 +25,7 @@
     }
   },
   "interface": {
-    "displayName": "Git Workflows",
+    "displayName": "Git Toolkit",
     "shortDescription": "精确创建本地提交、安全隔离 Git worktree，或协调 Git merge 双方意图",
     "capabilities": [
       "Skills"
