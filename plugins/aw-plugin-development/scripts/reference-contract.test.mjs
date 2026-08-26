@@ -233,3 +233,17 @@ test('AW reviewer final references contain no monorepo publication flow', async 
     'AW_EVAL_BUNDLE_VALIDATOR',
   ]) assert.doesNotMatch(releaseChecker, new RegExp(`process\\.env\\.${override}`, 'u'));
 });
+
+test('AW reviewer prepares every strict Release Check input before running the checker', async () => {
+  // Static contract exception: this is the installed orchestration contract for inputs enforced by the deterministic checker.
+  const skill = await readFile(
+    path.join(runtimeRoot, 'skills', 'review-aw-plugin', 'SKILL.md'),
+    'utf8',
+  );
+  assert.match(skill, /每个唯一 production digest[^\n]+`full`[^\n]+`QualityReviewResult v1`/u);
+  assert.match(skill, /coverage 必须为 100%[^\n]+confidence 必须为 medium 或 high/u);
+  assert.match(skill, /`effectiveDecision` 必须为 `pass`/u);
+  assert.match(skill, /preflight audit、run bundle 和 triage audit/u);
+  assert.match(skill, /当前 corpus digest、case IDs 和 minimum runs/u);
+  assert.match(skill, /缺少任一 required input 时停止/u);
+});

@@ -39,7 +39,11 @@ leaf inventory 为空的条件是：合法 manifest 未声明 `skills`，且 `ar
 
 ## 独立 Release Check
 
-用户明确要求 Release Check 时，才运行确定性 checker：
+用户明确要求 Release Check 时，先准备 checker 的完整输入。对 leaf inventory 的每个唯一 production digest，使用 `review-agent-skill` 的 `full` 模式生成 `QualityReviewResult v1`；机器检查和 Quality Review validator 必须通过，validator 的 `effectiveDecision` 必须为 `pass`，coverage 必须为 100%，总体 confidence 必须为 medium 或 high。Review 必须精确覆盖这些 digest；重复、未匹配或未消费的 Review 都是输入错误。
+
+动态 Skill 还必须提供对应 platform×scope 的 materialized final，并为当前 required Eval corpus 准备 preflight audit、run bundle 和 triage audit。三段证据必须绑定当前 corpus digest、case IDs 和 minimum runs；静态 Skill 只在 Eval manifest 声明 required 时需要该证据链。缺少任一 required input 时停止并列出缺口；不要先运行 checker，也不要把 Quality Review 内的 Eval 描述当作发布证据。
+
+输入完整后运行确定性 checker：
 
 ```bash
 node scripts/check-aw-plugin-release.mjs <plugin-root> \
