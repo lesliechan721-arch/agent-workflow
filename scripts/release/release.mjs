@@ -19,6 +19,7 @@ import {
   prepareLocalRelease,
   publishPreparedRelease,
   readPreparedDescriptor,
+  repairPreparedCliRelease,
   resolvePreparedCandidates,
 } from './prepared-release.mjs';
 import {
@@ -33,6 +34,7 @@ const usage = [
   'pnpm release -- beta|release --cli|--catalog|--all',
   '[--cli-bump major|minor|patch] [--catalog-bump major|minor|patch]',
   '[--plugin <name>=major|minor|patch]',
+  'or: pnpm release -- --repair-cli',
   'or: pnpm release -- --repair-cli-tag',
 ].join(' ');
 
@@ -45,6 +47,11 @@ function takeBump(args, option) {
 export function parseReleaseArgs(argv) {
   const args = [...argv];
   while (args[0] === '--') args.shift();
+  if (args[0] === '--repair-cli') {
+    args.shift();
+    if (args.length > 0) throw new Error(`--repair-cli cannot be combined with other arguments. Usage: ${usage}`);
+    return { repairCli: true };
+  }
   if (args[0] === '--repair-cli-tag') {
     args.shift();
     if (args.length > 0) throw new Error(`--repair-cli-tag cannot be combined with other arguments. Usage: ${usage}`);
@@ -180,6 +187,9 @@ async function repairCliTag(options = {}) {
 
 export async function runRelease(argv = process.argv.slice(2), options = {}) {
   const parsed = parseReleaseArgs(argv);
+  if (parsed.repairCli) {
+    return (options.repairCli ?? repairPreparedCliRelease)(options);
+  }
   if (parsed.repairCliTag) return repairCliTag(options);
 
   const repoRoot = options.repoRoot ?? defaultRepoRoot;

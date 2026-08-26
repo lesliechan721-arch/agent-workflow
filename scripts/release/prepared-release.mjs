@@ -3,12 +3,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  assertPublishedPackageTarballMatchesCandidate,
   assertPublicPackageVersions,
   assertReleaseWorktreeClean,
   captureCommand,
   cliPackageJsonPath,
   compareReleaseSemVer,
   computePackageTarballTreeDigest,
+  corePackageJsonPath,
+  evalPackageJsonPath,
   loadCatalogModules,
   packCli,
   packCore,
@@ -44,6 +47,11 @@ const CLI_PACKAGES = [
   '@lesliechan721/agent-skill-eval',
   '@lesliechan721/aw-plugin-core',
   '@lesliechan721/aw',
+];
+const CLI_PACKAGE_JSON_PATHS = [
+  evalPackageJsonPath,
+  corePackageJsonPath,
+  cliPackageJsonPath,
 ];
 
 function digest(value) {
@@ -185,7 +193,14 @@ function assertCandidateAbovePublished(candidate, versionSets, currentVersions, 
   }
 }
 
-function nextCandidate(targetVersion, channel, versionSets, currentVersions, label) {
+function nextCandidate(
+  targetVersion,
+  channel,
+  versionSets,
+  currentVersions,
+  label,
+  attemptedVersion = null,
+) {
   if (channel === 'stable') {
     const present = versionSets.map((versions) => versions.includes(targetVersion));
     if (present.some(Boolean) && !present.every(Boolean)) {
@@ -207,13 +222,12 @@ function nextCandidate(targetVersion, channel, versionSets, currentVersions, lab
     .map((version) => pattern.exec(version))
     .filter(Boolean)
     .map((match) => BigInt(match[1])));
-  if (normalized.length > 1) {
-    const histories = normalized.map((entries) => entries.map(String).sort().join(','));
-    if (new Set(histories).size !== 1) {
-      throw new Error(`${label} beta history is partial; bump the stable target before preparing again.`);
-    }
-  }
-  const highest = normalized.flat().reduce((value, entry) => entry > value ? entry : value, 0n);
+  const attemptedMatch = pattern.exec(attemptedVersion ?? '');
+  const attempted = attemptedMatch ? BigInt(attemptedMatch[1]) : 0n;
+  const highest = normalized.flat().reduce(
+    (value, entry) => entry > value ? entry : value,
+    attempted,
+  );
   const candidate = `${targetVersion}-beta.${highest + 1n}`;
   assertCandidateAbovePublished(candidate, versionSets, currentVersions, label);
   return candidate;
@@ -237,6 +251,9 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
         (options.readCatalogChannelState ?? readCatalogChannelState)(mode, options),
       ])
     : null;
+  const attempt = channel === 'beta' && axes.cli
+    ? await (options.readAttempt ?? readAttempt)(options)
+    : null;
   return {
     cli: cliState
       ? nextCandidate(
@@ -245,6 +262,7 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
           cliState.versions,
           cliState.channels,
           'CLI train',
+          attempt?.candidates?.cli ?? null,
         )
       : null,
     catalog: catalogState
@@ -636,9 +654,14 @@ async function publishNpm(packageName, tarballPath, version, channel, options = 
       },
     });
   } catch (error) {
+    const recovery = channel === 'beta'
+      ? 'Run pnpm release -- --repair-cli with the unchanged prepared release, or run pnpm release again '
+        + 'with the intended CLI axis to publish the next beta version.'
+      : 'Run pnpm release -- --repair-cli with the unchanged prepared release, or run pnpm release again '
+        + 'with --cli-bump and the intended CLI axis.';
     throw new Error(
       `${packageName}@${version} publish failed or its result is uncertain. ` +
-      'Do not retry this version; run pnpm release again with --cli-bump and the intended CLI axis.',
+      `Do not retry this package directly. ${recovery}`,
       { cause: error },
     );
   }
@@ -658,11 +681,7 @@ async function assertLiveSourceBinding(descriptor, repoRoot, options = {}) {
   if (versions.targetVersion !== targets.cli) throw new Error('CLI package versions changed after prepare; prepare again.');
 }
 
-export async function publishPreparedRelease(options = {}) {
-  const repoRoot = options.repoRoot ?? defaultRepoRoot;
-  const { root, descriptor } = await (options.readDescriptor ?? readPreparedDescriptor)(options);
-  assertPreparedChannelCandidates(descriptor);
-  await assertLiveSourceBinding(descriptor, repoRoot, options);
+async function assertPreparedBuildBinding(descriptor, repoRoot, options = {}) {
   await (options.withSnapshot ?? withReleaseBuildSnapshot)(async (snapshot) => {
     for (const field of ['generationId', 'inputDigest', 'outputDigest', 'cliPackageDigest']) {
       if (snapshot[field] !== descriptor.build[field]) {
@@ -670,6 +689,81 @@ export async function publishPreparedRelease(options = {}) {
       }
     }
   }, { repoRoot });
+}
+
+async function assertPublishedCliArtifact(root, descriptor, artifact, index, options = {}) {
+  await (options.assertPublishedPackageMatches
+    ?? assertPublishedPackageTarballMatchesCandidate)(
+    artifact.name,
+    descriptor.candidates.cli,
+    CLI_PACKAGE_JSON_PATHS[index],
+    resolvePreparedPath(root, artifact.path),
+    options,
+  );
+}
+
+export async function repairPreparedCliRelease(options = {}) {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const { root, descriptor } = await (options.readDescriptor ?? readPreparedDescriptor)(options);
+  assertPreparedChannelCandidates(descriptor);
+  if (!descriptor.axes.cli || !descriptor.npm) {
+    throw new Error('The prepared release does not contain a CLI candidate to repair.');
+  }
+  await (options.assertPreparedCliAttempt ?? assertPreparedCliAttempt)(descriptor, options);
+  await assertLiveSourceBinding(descriptor, repoRoot, options);
+  await assertPreparedBuildBinding(descriptor, repoRoot, options);
+  await assertPreparedCliArtifacts(root, descriptor, options);
+
+  const publicationOptions = {
+    ...options,
+    beforeRemoteWrite: async (target) => {
+      await assertLiveSourceBinding(descriptor, repoRoot, options);
+      await options.beforeRemoteWrite?.(target);
+    },
+  };
+  const readVersions = options.readPackageVersions ?? readPackageVersions;
+  for (const [index, artifact] of descriptor.npm.packages.entries()) {
+    const versions = await readVersions(artifact.name, options);
+    if (!versions.includes(descriptor.candidates.cli)) {
+      try {
+        await publishNpm(
+          artifact.name,
+          resolvePreparedPath(root, artifact.path),
+          descriptor.candidates.cli,
+          descriptor.channel,
+          publicationOptions,
+        );
+      } catch (error) {
+        try {
+          await assertPublishedCliArtifact(root, descriptor, artifact, index, options);
+        } catch {
+          throw new Error(
+            `${artifact.name}@${descriptor.candidates.cli} repair publish failed or remains uncertain. ` +
+            'Run pnpm release -- --repair-cli again with the unchanged prepared release, ' +
+            'or publish a new version.',
+            { cause: error },
+          );
+        }
+        continue;
+      }
+    }
+    await assertPublishedCliArtifact(root, descriptor, artifact, index, options);
+  }
+
+  await assertLiveSourceBinding(descriptor, repoRoot, options);
+  return (options.publishCliTag ?? ensureCliTag)(
+    descriptor.candidates.cli,
+    descriptor.source.head,
+    { ...publicationOptions, repoRoot },
+  );
+}
+
+export async function publishPreparedRelease(options = {}) {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const { root, descriptor } = await (options.readDescriptor ?? readPreparedDescriptor)(options);
+  assertPreparedChannelCandidates(descriptor);
+  await assertLiveSourceBinding(descriptor, repoRoot, options);
+  await assertPreparedBuildBinding(descriptor, repoRoot, options);
   await assertPreparedArtifacts(root, descriptor, options);
   const targets = await (options.readTargets ?? readVersionTargets)(repoRoot);
   await assertRemoteCandidateGate(descriptor, targets, { ...options, repoRoot });

@@ -9,6 +9,7 @@ import {
   assertTrackedHeadClean,
   prepareLocalRelease,
   publishPreparedRelease,
+  repairPreparedCliRelease,
   resolvePreparedCandidates,
 } from '../../../../scripts/release/prepared-release.mjs';
 import { captureCommand, compareReleaseSemVer } from '../../../../scripts/release/common.mjs';
@@ -342,6 +343,23 @@ describe('local prepared release', () => {
     })).rejects.toThrow('must be higher');
   });
 
+  it('advances a beta CLI candidate after an uncertain local attempt with no registry result', async () => {
+    const root = await temporaryRoot();
+    const attemptPath = path.join(root, 'attempted.json');
+    await fs.writeFile(attemptPath, JSON.stringify({
+      schemaVersion: 1,
+      targetsDigest: calculateCanonicalDigest(targets),
+      candidates: { cli: '1.2.0-beta.1' },
+    }));
+
+    await expect(resolvePreparedCandidates('beta', targets, {
+      axes: { cli: true, catalog: false },
+      attemptPath,
+      readPackageVersions: async () => [],
+      readPackageChannelVersion: async () => null,
+    })).resolves.toEqual({ cli: '1.2.0-beta.2', catalog: null });
+  });
+
   it('selects a higher stable train after an older partial publication split the npm channel tags', async () => {
     const nextTargets = { ...targets, cli: '1.2.1' };
     await expect(resolvePreparedCandidates('stable', nextTargets, {
@@ -377,7 +395,7 @@ describe('local prepared release', () => {
     })).rejects.toThrow('CLI train 1.2.0 is only partially published');
   });
 
-  it('rejects an unbumped beta base with a candidate published by only one npm package', async () => {
+  it('advances the whole beta CLI train after partial npm publication', async () => {
     await expect(resolvePreparedCandidates('beta', targets, {
       readPackageVersions: async (name: string) => name.endsWith('/aw')
         ? ['1.2.0-beta.1']
@@ -387,7 +405,7 @@ describe('local prepared release', () => {
         : '1.2.0-beta.2',
       readCatalogVersions: async () => ['2.3.0'],
       readCatalogChannelState: async () => null,
-    })).rejects.toThrow('CLI train beta history is partial');
+    })).resolves.toEqual({ cli: '1.2.0-beta.3', catalog: null });
   });
 
   it('requires a new train to be higher than both channel tags and published package versions', async () => {
@@ -563,6 +581,75 @@ describe('local prepared release', () => {
     await expect(publishPreparedRelease({ ...publishOptions(fixture), runCommand })).rejects.toThrow('Do not retry');
     await expect(publishPreparedRelease({ ...publishOptions(fixture), runCommand })).rejects.toThrow('already attempted');
     expect(runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('repairs only missing CLI packages after verifying existing artifacts', async () => {
+    const fixture = await publicationFixture({ cli: true, catalog: false });
+    await fs.writeFile(path.join(fixture.root, 'attempted.json'), JSON.stringify({
+      schemaVersion: 1,
+      targetsDigest: fixture.descriptor.source.targetsDigest,
+      candidates: { cli: fixture.descriptor.candidates.cli },
+      descriptorDigest: calculateCanonicalDigest(fixture.descriptor),
+    }));
+    const published = new Set([
+      '@lesliechan721/agent-skill-eval',
+      '@lesliechan721/aw-plugin-core',
+    ]);
+    const verified: string[] = [];
+    const runNpmCommand = vi.fn(async (_command: string, args: string[]) => {
+      expect(args[1]).toContain('cli.tgz');
+      published.add('@lesliechan721/aw');
+    });
+    const publishCliTag = vi.fn(async () => ({
+      version: fixture.descriptor.candidates.cli,
+      sourceHead: fixture.descriptor.source.head,
+      status: 'published',
+    }));
+
+    await expect(repairPreparedCliRelease({
+      ...publishOptions(fixture),
+      readPackageVersions: async (name: string) => published.has(name)
+        ? [fixture.descriptor.candidates.cli]
+        : [],
+      assertPublishedPackageMatches: async (name: string) => {
+        expect(published.has(name)).toBe(true);
+        verified.push(name);
+      },
+      runNpmCommand,
+      publishCliTag,
+    })).resolves.toMatchObject({
+      version: fixture.descriptor.candidates.cli,
+      status: 'published',
+    });
+
+    expect(runNpmCommand).toHaveBeenCalledTimes(1);
+    expect(verified).toEqual([
+      '@lesliechan721/agent-skill-eval',
+      '@lesliechan721/aw-plugin-core',
+      '@lesliechan721/aw',
+    ]);
+    expect(publishCliTag).toHaveBeenCalledOnce();
+  });
+
+  it('stops CLI repair when an existing package differs from the prepared artifact', async () => {
+    const fixture = await publicationFixture({ cli: true, catalog: false });
+    await fs.writeFile(path.join(fixture.root, 'attempted.json'), JSON.stringify({
+      schemaVersion: 1,
+      targetsDigest: fixture.descriptor.source.targetsDigest,
+      candidates: { cli: fixture.descriptor.candidates.cli },
+      descriptorDigest: calculateCanonicalDigest(fixture.descriptor),
+    }));
+    const runNpmCommand = vi.fn();
+
+    await expect(repairPreparedCliRelease({
+      ...publishOptions(fixture),
+      readPackageVersions: async () => [fixture.descriptor.candidates.cli],
+      assertPublishedPackageMatches: async () => {
+        throw new Error('different package files');
+      },
+      runNpmCommand,
+    })).rejects.toThrow('different package files');
+    expect(runNpmCommand).not.toHaveBeenCalled();
   });
 
   it.each([

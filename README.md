@@ -272,7 +272,7 @@ pnpm release -- beta --all --cli-bump patch --catalog-bump patch --plugin <plugi
 
 产品源码必须先提交，且工作树必须干净。命令只在指定 bump 时原子更新并提交白名单发布元数据，然后运行所选轴的完整验证。它在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，再按 `Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。CLI tag 只推送到 `origin`；当前分支不自动推送。
 
-远端包或 Catalog 发布失败或结果不确定后，不要重试同一候选。提升受影响 target，再运行一键发布。`attempted.json` 是本地安全门禁，不要手动删除。若三个 npm 包已发布但 CLI tag 缺失，保留 prepared state 并运行 `pnpm release -- --repair-cli-tag`；命令会核验 artifact 和源码提交，只补 tag。
+远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布三个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若三个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 失败仍需提升 Catalog target 后重发。
 
 CLI 读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。
 
