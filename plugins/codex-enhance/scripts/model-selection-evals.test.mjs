@@ -14,6 +14,8 @@ import {
 import {
   readRolloutEvidenceFromRollouts,
   readSpawnCallsFromRollouts,
+  recoverV1SpawnCallsFromExecEvents,
+  shouldStopEarly,
 } from '../skills/codex-explore/evals/eval-harness.mjs';
 
 function testArguments() {
@@ -48,7 +50,7 @@ async function testEvalSpec() {
   assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
   for (const entry of spec.evals) {
     assert.equal(entry.assertions.length > 0, true);
-    assert.equal(entry.eval_type, 'routing');
+    assert.equal(['routing', 'gate'].includes(entry.eval_type), true);
     assert.equal(typeof entry.scenario_family, 'string');
     assert.equal(typeof entry.preconditions, 'object');
     assert.equal(typeof entry.oracle?.rationale, 'string');
@@ -72,15 +74,25 @@ async function testEvalSpec() {
     }),
     {
       query: 'inspect',
-      explicit_skill: true,
+      explicit_skill: false,
       should_load_skill: true,
       should_spawn_agent: true,
       wait_for_completion: true,
+      stop_after_nested_evidence: false,
+      expected: { spawn_calls: { min: 1 } },
       parent_model: 'parent-model',
       enable_features: undefined,
       disable_features: undefined,
       codex_config: { feature: true },
     },
+  );
+
+  assert.equal(
+    modelEvalRunCase({
+      prompt: '$codex-explore inspect',
+      expected: { spawn_calls: { min: 1 } },
+    }).explicit_skill,
+    true,
   );
 }
 
@@ -117,7 +129,8 @@ async function testRolloutArgumentEvidence() {
           subagent: {
             thread_spawn: {
               parent_thread_id: 'parent-thread',
-              agent_path: '/root/trace_evidence',
+            agent_path: '/root/trace_evidence',
+            agent_role: 'codex-explore-standard',
             },
           },
         },
@@ -145,6 +158,25 @@ async function testRolloutArgumentEvidence() {
             status: 'completed',
             exit_code: 0,
           },
+        },
+      })}\n${JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: '<environment_context>\n  <cwd>/tmp/eval</cwd>\n</environment_context>',
+          }],
+        },
+      })}\n${JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          content: [
+            { type: 'input_text', text: 'Message Type: NEW_TASK\nTask name: /root/trace\nSender: /root\nPayload:\n' },
+            { type: 'encrypted_content', encrypted_content: 'enc-task' },
+          ],
         },
       })}\n${JSON.stringify({
         type: 'response_item',
@@ -208,7 +240,45 @@ async function testRolloutArgumentEvidence() {
       thread_id: 'child-thread',
       parent_thread_id: 'parent-thread',
       agent_path: '/root/trace_evidence',
+      agent_role: 'codex-explore-standard',
+      initial_user_message: null,
+      initial_encrypted_message: 'enc-task',
+      developer_context: {
+        developer_message_count: 0,
+        has_multi_agent_mode_gate: false,
+        has_nested_agent_capability: false,
+        has_codex_explore_developer_authorization: false,
+      },
     }]);
+    assert.deepEqual(
+      recoverV1SpawnCallsFromExecEvents([
+        {
+          type: 'item.completed',
+          item: {
+            id: 'item-v1-spawn',
+            type: 'collab_tool_call',
+            tool: 'spawn_agent',
+            prompt: 'trace the evidence',
+            receiver_thread_ids: ['child-thread'],
+            status: 'completed',
+          },
+        },
+      ], evidence.thread_identities),
+      [{
+        call_id: 'item-v1-spawn',
+        namespace: 'multi_agent_v1',
+        tool: 'spawn_agent',
+        arguments: {
+          agent_type: 'codex-explore-standard',
+          fork_context: false,
+          message: 'trace the evidence',
+        },
+        output: { agent_id: 'child-thread' },
+        rollout_file: path.join('sessions', '2026', '08', '03', 'rollout-leaf.jsonl'),
+        line_number: null,
+        evidence_source: 'exec_collab_tool_call+child_session_meta',
+      }],
+    );
     assert.equal(evidence.parent_calls.length, 1);
     assert.equal(evidence.leaf_calls.length, 2);
     const commandCall = evidence.leaf_calls.find((call) => call.tool === 'exec_command');
@@ -220,6 +290,166 @@ async function testRolloutArgumentEvidence() {
       input: 'const result = await tools.exec_command({cmd:"node docs/liveness/verify-records.mjs"}); text(result.output);',
     });
     assert.equal(codeCall.output, 'Script completed');
+  } finally {
+    await rm(codexHome, { recursive: true, force: true });
+  }
+}
+
+async function testV1RolloutLineageEvidence() {
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), 'codex-v1-lineage-eval-'));
+  try {
+    const sessionDir = path.join(codexHome, 'sessions', '2026', '08', '26');
+    await mkdir(sessionDir, { recursive: true });
+    const commandEvent = (id, command) => ({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        item: {
+          type: 'CommandExecution',
+          id,
+          command: ['/bin/zsh', '-lc', command],
+          status: 'completed',
+          exit_code: 0,
+        },
+      },
+    });
+    await writeFile(
+      path.join(sessionDir, 'rollout-root.jsonl'),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: { id: 'v1-root', source: 'cli' },
+      })}\n${JSON.stringify(commandEvent(
+        'root-skill',
+        'sed -n 1,240p .agents/skills/codex-subagent-guide/SKILL.md',
+      ))}\n`,
+      'utf8',
+    );
+    await writeFile(
+      path.join(sessionDir, 'rollout-plan.jsonl'),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: 'v1-plan',
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: 'v1-root',
+                agent_path: '/root/plan',
+                agent_role: 'codex-subagent-advanced',
+              },
+            },
+          },
+        },
+      })}\n${JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: '<environment_context>\n  <cwd>/tmp/v1-eval</cwd>\n</environment_context>',
+          }],
+        },
+      })}\n${JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'plan' }],
+        },
+      })}\n${JSON.stringify(commandEvent(
+        'child-skill',
+        'sed -n 1,240p .agents/skills/codex-explore/SKILL.md',
+      ))}\n`,
+      'utf8',
+    );
+    await writeFile(
+      path.join(sessionDir, 'rollout-grandchild.jsonl'),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: 'v1-grandchild',
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: 'v1-plan',
+                agent_path: '/root/plan/trace',
+                agent_role: 'codex-explore-deep',
+              },
+            },
+          },
+        },
+      })}\n`,
+      'utf8',
+    );
+
+    const evidence = await readRolloutEvidenceFromRollouts(codexHome);
+    assert.equal(evidence.leaf_trace_available, true);
+    assert.deepEqual(evidence.leaf_trace.parent_thread_ids, ['v1-root']);
+    assert.equal(
+      evidence.leaf_trace.child_threads.some((thread) => (
+        thread.thread_id === 'v1-plan' && thread.parent_thread_id === 'v1-root'
+      )),
+      true,
+    );
+    const nestedSpawn = evidence.leaf_calls.find((call) => (
+      call.tool === 'spawn_agent' && call.thread_id === 'v1-plan'
+    ));
+    assert.deepEqual(nestedSpawn, {
+      call_id: 'lineage-spawn:v1-grandchild',
+      namespace: 'multi_agent_v1',
+      tool: 'spawn_agent',
+      arguments: { agent_type: 'codex-explore-deep' },
+      output: { agent_id: 'v1-grandchild' },
+      rollout_file: path.join('sessions', '2026', '08', '26', 'rollout-grandchild.jsonl'),
+      line_number: null,
+      thread_id: 'v1-plan',
+      parent_thread_id: 'v1-root',
+      evidence_source: 'child_session_meta_lineage',
+    });
+    assert.equal(
+      evidence.parent_calls.some((call) => call.tool === 'spawn_agent'),
+      false,
+    );
+    const evaluation = evaluateModelSelectionRun({
+      execution_error: false,
+      termination: 'expected_nested_outcome_observed',
+      exit_code: 0,
+      descendant_cleanup_confirmed: true,
+      spawn_calls: [{
+        arguments: {
+          agent_type: 'codex-subagent-advanced',
+          message: 'plan',
+          fork_context: false,
+        },
+      }],
+      collaboration_timeline: evidence.parent_calls,
+      leaf_tool_calls: evidence.leaf_calls,
+      leaf_trace: evidence.leaf_trace,
+    }, {
+      spawn_calls: { min: 1, max: 1 },
+      arguments: {
+        agent_type: 'codex-subagent-advanced',
+        model: null,
+        reasoning_effort: null,
+        fork_context: false,
+        fork_turns: null,
+      },
+      present_arguments: ['message'],
+      nested_delegation: {
+        root_skill: 'codex-subagent-guide',
+        root_skill_explicitly_invoked: true,
+        child_skill: 'codex-explore',
+        child_agent_type: 'codex-explore-deep',
+        child_initial_message: 'plan',
+        expect_early_termination: true,
+        forbid_root_child_followup: true,
+        grandchild_spawn_calls: { min: 1, max: 4 },
+        expect_child_multi_agent_gate: false,
+        expect_child_developer_authorization: false,
+      },
+    });
+    assert.equal(evaluation.passed, true);
   } finally {
     await rm(codexHome, { recursive: true, force: true });
   }
@@ -252,6 +482,191 @@ function testMechanicalAssertions() {
     },
   );
   assert.equal(preset.passed, true);
+
+  const nestedRun = {
+      execution_error: false,
+      termination: 'expected_nested_outcome_observed',
+      exit_code: 0,
+      descendant_cleanup_confirmed: true,
+      spawn_calls: [{
+        arguments: {
+          agent_type: 'codex-subagent-advanced',
+          message: 'plan with nested delegation authorized',
+          task_name: 'plan',
+          fork_turns: 'none',
+        },
+      }],
+      collaboration_timeline: [{
+        tool: 'exec',
+        arguments: { input: 'await tools.exec_command({cmd:"sed -n 1,200p .agents/skills/codex-subagent-guide/SKILL.md"})' },
+      }],
+      leaf_tool_calls: [
+        {
+          thread_id: 'plan-thread',
+          tool: 'exec_command',
+          arguments: { cmd: 'sed -n 1,240p .agents/skills/codex-explore/SKILL.md' },
+        },
+        {
+          thread_id: 'plan-thread',
+          tool: 'spawn_agent',
+          arguments: { agent_type: 'codex-explore-deep' },
+          output: { task_name: '/root/plan/trace' },
+        },
+        {
+          thread_id: 'plan-thread',
+          tool: 'spawn_agent',
+          arguments: { agent_type: 'codex-explore-deep' },
+          output: 'collab spawn failed: agent thread limit reached',
+        },
+      ],
+      leaf_trace: {
+        parent_thread_ids: ['root-thread'],
+        child_threads: [{
+          thread_id: 'plan-thread',
+          parent_thread_id: 'root-thread',
+          agent_role: 'codex-subagent-advanced',
+          initial_user_message: 'plan',
+          developer_context: {
+            has_multi_agent_mode_gate: true,
+            has_codex_explore_developer_authorization: false,
+          },
+        }, {
+          thread_id: 'grandchild-thread',
+          parent_thread_id: 'plan-thread',
+          agent_role: 'codex-explore-deep',
+        }],
+      },
+    };
+  const nestedExpected = {
+      spawn_calls: { min: 1, max: 1 },
+      arguments: {
+        agent_type: 'codex-subagent-advanced',
+        model: null,
+        reasoning_effort: null,
+        fork_turns: 'none',
+      },
+      present_arguments: ['message', 'task_name'],
+      nested_delegation: {
+        root_skill: 'codex-subagent-guide',
+        root_skill_explicitly_invoked: true,
+        child_skill: 'codex-explore',
+        child_agent_type: 'codex-explore-deep',
+        child_initial_message: 'plan',
+        expect_early_termination: true,
+        forbid_root_child_followup: true,
+        grandchild_spawn_calls: { min: 1, max: 4 },
+        expect_child_multi_agent_gate: true,
+        expect_child_developer_authorization: false,
+      },
+    };
+  const nested = evaluateModelSelectionRun(nestedRun, nestedExpected);
+  assert.equal(nested.passed, true);
+
+  const encryptedNestedRun = structuredClone(nestedRun);
+  encryptedNestedRun.spawn_calls[0].arguments.message = 'enc-plan';
+  encryptedNestedRun.leaf_trace.child_threads[0].initial_user_message = null;
+  encryptedNestedRun.leaf_trace.child_threads[0].initial_encrypted_message = 'enc-plan';
+  const encryptedNestedExpected = structuredClone(nestedExpected);
+  delete encryptedNestedExpected.nested_delegation.child_initial_message;
+  encryptedNestedExpected.nested_delegation.child_initial_encrypted_link = true;
+  assert.equal(
+    evaluateModelSelectionRun(encryptedNestedRun, encryptedNestedExpected).passed,
+    true,
+  );
+  assert.equal(shouldStopEarly({
+    wait_for_completion: false,
+    stop_after_nested_evidence: true,
+    expected: encryptedNestedExpected,
+  }, {
+    spawnCalls: encryptedNestedRun.spawn_calls,
+    collaborationTimeline: encryptedNestedRun.collaboration_timeline,
+    leafToolCalls: encryptedNestedRun.leaf_tool_calls,
+    leafTrace: encryptedNestedRun.leaf_trace,
+  }), 'expected_nested_outcome_observed');
+
+  const pollutedAuthorizationRun = structuredClone(nestedRun);
+  pollutedAuthorizationRun.leaf_trace.child_threads[0].initial_user_message =
+    'plan with nested delegation authorized';
+  const pollutedAuthorization = evaluateModelSelectionRun(
+    pollutedAuthorizationRun,
+    nestedExpected,
+  );
+  assert.equal(pollutedAuthorization.passed, false);
+  assert.equal(
+    pollutedAuthorization.assertions.find(
+      (entry) => entry.name === 'nested.child_initial_message',
+    )?.passed,
+    false,
+  );
+
+  assert.equal(shouldStopEarly({
+    wait_for_completion: false,
+    stop_after_nested_evidence: true,
+    expected: nestedExpected,
+  }, {
+    spawnCalls: nestedRun.spawn_calls,
+    leafToolCalls: nestedRun.leaf_tool_calls,
+    leafTrace: nestedRun.leaf_trace,
+  }), 'expected_nested_outcome_observed');
+
+  const followupPollutionRun = structuredClone(nestedRun);
+  followupPollutionRun.collaboration_timeline.push({
+    tool: 'send_message',
+    arguments: { target: '/root/plan', message: 'nested delegation authorized' },
+  });
+  const followupPollution = evaluateModelSelectionRun(
+    followupPollutionRun,
+    nestedExpected,
+  );
+  assert.equal(followupPollution.passed, false);
+  assert.equal(shouldStopEarly({
+    wait_for_completion: false,
+    stop_after_nested_evidence: true,
+    expected: nestedExpected,
+  }, {
+    spawnCalls: followupPollutionRun.spawn_calls,
+    collaborationTimeline: followupPollutionRun.collaboration_timeline,
+    leafToolCalls: followupPollutionRun.leaf_tool_calls,
+    leafTrace: followupPollutionRun.leaf_trace,
+  }), null);
+
+  const explicitRootSkillRun = structuredClone(nestedRun);
+  explicitRootSkillRun.collaboration_timeline = [];
+  assert.equal(
+    evaluateModelSelectionRun(explicitRootSkillRun, nestedExpected).passed,
+    true,
+  );
+
+  const wrongLayerRun = structuredClone(nestedRun);
+  wrongLayerRun.leaf_tool_calls = wrongLayerRun.leaf_tool_calls.filter(
+    (call) => call.tool !== 'spawn_agent',
+  );
+  wrongLayerRun.leaf_tool_calls.push({
+    thread_id: 'grandchild-thread',
+    tool: 'spawn_agent',
+    arguments: { agent_type: 'codex-explore-deep' },
+    output: { task_name: '/root/plan/trace/deeper' },
+  });
+  const wrongLayer = evaluateModelSelectionRun(wrongLayerRun, nestedExpected);
+  assert.equal(wrongLayer.passed, false);
+  assert.equal(
+    wrongLayer.assertions.find((entry) => entry.name === 'nested.grandchild_spawn_count')?.passed,
+    false,
+  );
+
+  const wrongRoleRun = structuredClone(nestedRun);
+  wrongRoleRun.leaf_tool_calls.push({
+    thread_id: 'plan-thread',
+    tool: 'spawn_agent',
+    arguments: { agent_type: 'codex-explore-quick' },
+    output: { task_name: '/root/plan/quick' },
+  });
+  const wrongRole = evaluateModelSelectionRun(wrongRoleRun, nestedExpected);
+  assert.equal(wrongRole.passed, false);
+  assert.equal(
+    wrongRole.assertions.find((entry) => entry.name === 'nested.grandchild_agent_type')?.passed,
+    false,
+  );
 
   const v1Preset = evaluateModelSelectionRun(
     {
@@ -482,9 +897,10 @@ function testCriticalPolicyRequiresEveryRunnablePass() {
 
 async function main() {
   testArguments();
-  await testEvalSpec();
-  await testRolloutArgumentEvidence();
-  testMechanicalAssertions();
+await testEvalSpec();
+await testRolloutArgumentEvidence();
+await testV1RolloutLineageEvidence();
+testMechanicalAssertions();
   testEnvironmentSkipReportStatus();
   testCriticalPolicyRequiresEveryRunnablePass();
   console.log('model selection eval tests passed');

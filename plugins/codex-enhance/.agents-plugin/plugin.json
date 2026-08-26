@@ -31,17 +31,7 @@
     "shortDescription": "Codex 只读探索与通用子代理编排增强",
     "capabilities": [
       "Skills",
-      "Instructions",
       "Agents"
-    ]
-  },
-  "extensions": {
-    "instructions": [
-      {
-        "name": "delegation-authorization",
-        "title": "Codex Explore 子代理授权",
-        "content": "调用 `codex-explore` 技能且 Gate 通过时，视为用户同意在该工作流中启用子代理；Gate 未通过时不得启动子代理。"
-      }
     ]
   },
   "scripts": {

@@ -112,7 +112,8 @@
       "id": "model-selection",
       "kind": "command",
       "skills": [
-        "codex-explore"
+        "codex-explore",
+        "codex-subagent-guide"
       ],
       "entry": "./run-model-selection-evals.mjs",
       "cases": "./evals.json",
@@ -122,7 +123,7 @@
       "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
-      "perRunTimeoutMs": 180000,
+      "perRunTimeoutMs": 900000,
       "suiteTimeoutMs": 7200000,
       "supports": [
         "runs",
