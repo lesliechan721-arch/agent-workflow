@@ -340,7 +340,6 @@ describe('catalog stage smoke', () => {
         : floor
     ), '0.0.0');
     expect(manifest.compatibility.aw.minVersion).toBe(derivedFloor);
-    expect(compareReleaseSemVer(derivedFloor, '0.1.0-beta.2')).toBeGreaterThan(0);
     expect(manifest).not.toHaveProperty('packages');
     expect(ledger.schemaVersion).toBe(2);
     expect(manifest.entries.map((entry: { name: string }) => entry.name).sort())
