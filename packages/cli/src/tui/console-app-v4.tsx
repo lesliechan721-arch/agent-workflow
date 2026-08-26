@@ -451,14 +451,13 @@ function dependencyStatus(item: PluginDependencyItemViewModel): {
 }
 
 function dependencyPlacementLabel(item: PluginDependencyItemViewModel): string {
-  const placement = item.placements.find((entry) => entry.state === 'installed');
-  if (placement?.state === 'installed') {
-    const state = placement.health === 'ready' ? '可用'
-      : placement.health === 'incomplete' ? '需要处理' : '不可用';
-    return `${scopeLabel(placement.scope)} · ${state}`;
-  }
-  if (item.placements.some((entry) => entry.state === 'scopeConflict')) return '位置冲突';
-  return dependencyStatus(item).value;
+  const aggregate = dependencyStatus(item);
+  if (item.aggregateStatus !== 'ready') return aggregate.value;
+  const ready = item.placements.filter((entry) => entry.state === 'installed' && entry.health === 'ready');
+  const scopes = new Set(ready.map((entry) => entry.state === 'installed' ? entry.scope : undefined));
+  return scopes.size === 1 && ready[0]?.state === 'installed'
+    ? `${scopeLabel(ready[0].scope)} · ${aggregate.value}`
+    : aggregate.value;
 }
 
 function dependentTargetLabel(item: PluginDependencyItemViewModel): string {
@@ -1365,24 +1364,36 @@ export function ConsoleAppV4(props: {
         ];
     const summaryRows = (relation: 'direct' | 'transitive'): React.ReactNode[] => {
       const dependencies = overview?.dependencies.filter((entry) => entry.relation === relation) ?? [];
-      const visible = dependencies.slice(0, 3);
+      const visible = dependencies.slice(0, policy.mode === 'compact' ? 1 : 2);
       return [
-        ...visible.map((entry) => <Text key={entry.pluginId}>
-          <Text color={relation === 'direct' ? tuiTheme.colors.text : tuiTheme.colors.muted}>• {entry.displayName}</Text>
-          <Text color={tuiTheme.colors.muted}>  {relation === 'direct' ? '直接依赖' : '间接依赖'}</Text>
-        </Text>),
+        ...visible.map((entry) => {
+          const state = dependencyStatus(entry);
+          return <StaticRow
+            key={entry.pluginId}
+            title={entry.displayName}
+            description={dependencyRelationDescription(entry)}
+            meta={state.value}
+            status={state.status}
+            compact={policy.mode === 'compact'}
+          />;
+        }),
         ...(dependencies.length > visible.length
-          ? [<Text key={`${relation}:more`} color={tuiTheme.colors.muted}>  另有 {dependencies.length - visible.length} 个{relation === 'direct' ? '直接' : '间接'}依赖</Text>]
+          ? [<StaticRow key={`${relation}:more`} title={`另有 ${dependencies.length - visible.length} 个${relation === 'direct' ? '直接' : '间接'}依赖`} status="muted" compact />]
           : []),
       ];
     };
+    const compactDependencyRows = overview?.dependencies.slice(0, 2) ?? [];
     content = hasDependencies
       ? <Box flexDirection="column">
-          {plugin.portableSkills ? <SectionCard title="可用方式"><StaticRow title="通用 Skills" meta="提供通用 Skills" /></SectionCard> : null}
+          {plugin.portableSkills && policy.mode !== 'compact' ? <SectionCard title="可用方式"><StaticRow title="通用 Skills" meta="提供通用 Skills" /></SectionCard> : null}
           <SectionCard title="安装内容">
             <StaticRow title={plugin.displayName} description="你选择的插件" status="info" />
-            {summaryRows('direct')}
-            {summaryRows('transitive')}
+            {plugin.portableSkills && policy.mode === 'compact' ? <StaticRow title="通用 Skills" meta="可用方式" /> : null}
+            {policy.mode === 'compact' ? compactDependencyRows.map((entry) => {
+              const state = dependencyStatus(entry);
+              return <StaticRow key={entry.pluginId} title={entry.displayName} meta={`${entry.relation === 'direct' ? '直接' : '间接'} · ${state.value}`} status={state.status} compact />;
+            }) : <>{summaryRows('direct')}{summaryRows('transitive')}</>}
+            {policy.mode === 'compact' && (overview?.dependencies.length ?? 0) > compactDependencyRows.length ? <StaticRow title={`另有 ${(overview?.dependencies.length ?? 0) - compactDependencyRows.length} 个依赖`} status="muted" compact /> : null}
             <StaticRow title={`${plugin.dependencySummary!.totalCount + 1} 个插件将作为一个安装计划检查`} description="依赖从同一个来源快照解析。" compact={policy.mode === 'compact'} />
           </SectionCard>
           <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
@@ -1497,37 +1508,35 @@ export function ConsoleAppV4(props: {
     const visibleDependents = route.view === 'removeBlocked' && route.platform && route.scope
       ? props.controller.getBlockingDependents(plugin.pluginId, route.platform, route.scope)
       : overview?.dependents ?? [];
-    const relationActions = [
-      ...(overview?.dependencies ?? []).map((entry) => {
-        const state = dependencyStatus(entry);
-        return {
-          label: entry.displayName,
-          description: dependencyRelationDescription(entry),
-          meta: dependencyPlacementLabel(entry),
-          status: state.status,
-          run: () => go({ name: 'pluginDetail', pluginId: entry.pluginId }),
-        };
-      }),
-      ...visibleDependents.map((entry) => {
-        const state = dependencyStatus(entry);
-        return {
-          label: entry.displayName,
-          description: dependencyRelationDescription(entry),
-          meta: route.view === 'removeBlocked' ? dependentTargetLabel(entry) : dependencyPlacementLabel(entry),
-          status: state.status,
-          run: () => go({ name: 'pluginDetail', pluginId: entry.pluginId }),
-        };
-      }),
-    ];
     const dependencyCount = overview?.dependencies.length ?? 0;
     const dependentCount = visibleDependents.length;
+    const dependencyLimit = policy.mode === 'compact'
+      ? dependentCount > 0 ? 1 : 2
+      : dependentCount > 0 ? 3 : 5;
+    const dependentLimit = policy.mode === 'compact' ? 2 : 4;
+    const dependencyRows = (entries: PluginDependencyItemViewModel[], limit: number, dependent = false): React.ReactNode => {
+      const visible = entries.slice(0, limit);
+      return <>
+        {visible.map((entry) => {
+          const state = dependencyStatus(entry);
+          return <StaticRow
+            key={entry.pluginId}
+            title={entry.displayName}
+            description={dependencyRelationDescription(entry)}
+            meta={dependent && route.view === 'removeBlocked' ? dependentTargetLabel(entry) : dependencyPlacementLabel(entry)}
+            status={state.status}
+            compact={policy.mode === 'compact'}
+          />;
+        })}
+        {entries.length > visible.length ? <StaticRow title={`另有 ${entries.length - visible.length} 项`} status="muted" compact /> : null}
+      </>;
+    };
     if (route.view === 'removeBlocked') {
       breadcrumb = `${plugin.displayName} / 移除`;
       context = '已阻止';
       title = `无法移除 ${plugin.displayName}`;
       description = '仍有插件依赖它。请先处理依赖者，再重新尝试。';
       actions = [
-        ...relationActions.slice(dependencyCount),
         ...(route.platform && route.scope ? [{
           label: '强制清理…',
           description: '依赖者会变为不完整；下一页仍需明确确认',
@@ -1548,12 +1557,12 @@ export function ConsoleAppV4(props: {
         } },
         { label: '返回插件详情', run: back },
       ];
-      const consumerActions = actions.slice(0, dependentCount);
-      const blockedViewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
       content = <Box flexDirection="column">
-        <Bordered><Text color={tuiTheme.statusColors.error}>× {dependentCount} 个已安装插件仍在使用</Text><Text color={tuiTheme.colors.muted}>没有修改任何安装。</Text></Bordered>
-        <Bordered title="使用这个依赖的插件"><ActionRows actions={consumerActions} focus={focus} offset={blockedViewport.offset} limit={blockedViewport.limit} /></Bordered>
-        <ActionRows actions={actions.slice(dependentCount)} focus={focus - dependentCount} />
+        <Callout status="error" title={`${dependentCount} 个已安装插件仍在使用`} description="没有修改任何安装。" />
+        <SectionCard title="使用这个依赖的插件" meta="反向引用">
+          {dependencyRows(visibleDependents, dependentLimit, true)}
+        </SectionCard>
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
       </Box>;
     } else {
       breadcrumb = `${plugin.displayName} / 依赖关系`;
@@ -1561,26 +1570,31 @@ export function ConsoleAppV4(props: {
       title = hasInstalledPlacement(plugin) ? '依赖与被使用情况' : '安装所需插件';
       description = '依赖从同一个来源快照解析；关系页不会修改安装。';
       actions = [
-        ...relationActions,
         { label: '技术详情', description: '显示 canonical pluginId 和安全错误代码', run: () => setShowTechnical((value) => !value) },
       ];
-      const viewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
-      const visibleRows = (start: number, end: number): React.ReactNode[] => relationActions
-        .map((_, index) => index)
-        .filter((index) => index >= start && index < end
-          && index >= viewport.offset
-          && (viewport.limit === undefined || index < viewport.offset + viewport.limit))
-        .map((index) => <ActionRows key={index} actions={actions} focus={focus} offset={index} limit={1} />);
+      const rootStatus = plugin.aggregateStatus === 'installed' ? 'success' as const
+        : plugin.aggregateStatus === 'needsAttention' ? 'warning' as const
+          : plugin.aggregateStatus === 'unavailable' ? 'error' as const : 'muted' as const;
+      const compactDependencies = overview?.dependencies.slice(0, dependentCount > 0 ? 1 : 2) ?? [];
+      const compactDependents = visibleDependents.slice(0, 1);
       content = <Box flexDirection="column">
-        <Bordered title="你选择的插件"><Text>{plugin.displayName}  <Text color={tuiTheme.colors.muted}>{statusText(plugin)}</Text></Text></Bordered>
-        {dependencyCount > 0 ? <Bordered title="必需依赖">{visibleRows(0, dependencyCount)}</Bordered> : null}
-        {dependentCount > 0 ? <Bordered title="使用它的插件">{visibleRows(dependencyCount, dependencyCount + dependentCount)}</Bordered> : null}
-        {overview?.blockers.map((blocker) => <Bordered key={blocker.code}><Text color={tuiTheme.statusColors.error}>× {blocker.title}</Text><Text color={tuiTheme.colors.muted}>{blocker.explanation}</Text></Bordered>)}
-        {relationActions.length === 0 ? <Text color={tuiTheme.colors.muted}>没有可显示的依赖关系。</Text> : null}
-        {viewport.limit !== undefined && viewport.offset + viewport.limit > relationActions.length
-          ? <ActionRows actions={actions} focus={focus} offset={relationActions.length} limit={1} />
-          : null}
-        {showTechnical ? <Bordered title="技术详情"><Text color={tuiTheme.colors.muted}>canonical pluginId  {plugin.pluginId}</Text>{overview?.dependencies.map((entry) => <Text key={entry.pluginId} color={tuiTheme.colors.muted}>{entry.pluginId} · {dependencyRelationDescription(entry)}</Text>)}</Bordered> : null}
+        {policy.mode === 'compact' ? <SectionCard title="依赖关系">
+          <StaticRow title={`根插件 · ${plugin.displayName}`} meta={statusText(plugin)} status={rootStatus} compact />
+          {compactDependencies.map((entry) => { const state = dependencyStatus(entry); return <StaticRow key={entry.pluginId} title={`必需依赖 · ${entry.displayName}`} meta={dependencyPlacementLabel(entry)} status={state.status} compact />; })}
+          {dependencyCount > compactDependencies.length ? <StaticRow title={`必需依赖 · 另有 ${dependencyCount - compactDependencies.length} 项`} status="muted" compact /> : null}
+          {compactDependents.map((entry) => { const state = dependencyStatus(entry); return <StaticRow key={entry.pluginId} title={`被依赖 · ${entry.displayName}`} meta={dependentTargetLabel(entry)} status={state.status} compact />; })}
+          {dependentCount > compactDependents.length ? <StaticRow title={`被依赖 · 另有 ${dependentCount - compactDependents.length} 项`} status="muted" compact /> : null}
+          {overview?.blockers.map((blocker) => <StaticRow key={blocker.code} title={`阻塞 · ${blocker.title}`} description={blocker.explanation} status="error" compact />)}
+          {dependencyCount + dependentCount === 0 ? <StaticRow title="没有可显示的依赖关系" status="muted" compact /> : null}
+        </SectionCard> : <>
+          <SectionCard title="你选择的插件" meta="根节点"><StaticRow title={plugin.displayName} meta={statusText(plugin)} status={rootStatus} /></SectionCard>
+          {dependencyCount > 0 ? <SectionCard title="必需依赖" meta="依赖优先">{dependencyRows(overview?.dependencies ?? [], dependencyLimit)}</SectionCard> : null}
+          {dependentCount > 0 ? <SectionCard title="使用它的插件" meta="反向引用">{dependencyRows(visibleDependents, dependentLimit, true)}</SectionCard> : null}
+          {overview?.blockers.map((blocker) => <Callout key={blocker.code} status="error" title={blocker.title} description={blocker.explanation} />)}
+          {dependencyCount + dependentCount === 0 ? <Callout status="muted" title="没有可显示的依赖关系" /> : null}
+        </>}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+        {showTechnical ? <TechnicalDetails><StaticRow title="canonical pluginId" meta={plugin.pluginId} />{overview?.dependencies.slice(0, policy.mode === 'compact' ? 2 : 5).map((entry) => <StaticRow key={entry.pluginId} title={entry.pluginId} description={dependencyRelationDescription(entry)} compact={policy.mode === 'compact'} />)}</TechnicalDetails> : null}
       </Box>;
     }
   } else if (route.name === 'installPlacement' && plugin) {
@@ -2098,6 +2112,22 @@ export function ConsoleAppV4(props: {
         { label: '返回插件详情', run: () => go({ name: 'pluginDetail', pluginId: issuePlugin.pluginId }) },
       ];
       content = <Box flexDirection="column"><Callout status="error" title={`${blockingDependents.length} 个已安装插件仍在使用`} /><SectionCard title="使用这个依赖的插件">{blockingDependents.map((dependent) => <StaticRow key={dependent.pluginId} title={dependent.displayName} meta={dependentTargetLabel(dependent)} />)}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    } else if ((issue.category === 'dependencyMissing' || issue.category === 'dependencyNotReady') && issuePlugin) {
+      const dependencyName = issue.dependencyPluginId
+        ? props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId
+        : '必需依赖';
+      const dependencyTarget = [
+        issue.dependencyPlatform ? platformLabel(issue.dependencyPlatform) : undefined,
+        issue.dependencyScope ? scopeLabel(issue.dependencyScope) : undefined,
+      ].filter((entry): entry is string => Boolean(entry)).join(' · ');
+      content = <Box flexDirection="column">
+        <StatusCard status="warning" title={dependencyName} description={issue.explanation}>
+          <StaticRow title={issuePlugin.displayName} description="受影响的根插件" meta={issue.platform && issue.scope ? `${platformLabel(issue.platform)} · ${scopeLabel(issue.scope)}` : undefined} />
+          {dependencyTarget ? <StaticRow title="依赖目标" meta={dependencyTarget} status="warning" /> : null}
+        </StatusCard>
+        <SectionCard title="影响范围">{issue.impact.map((line) => <StaticRow key={line} title={line} compact={policy.mode === 'compact'} />)}</SectionCard>
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+      </Box>;
     } else if (issue.category === 'dependencyTargetUnsupported' && issuePlugin) {
       const compatible = selectedPlatforms(issuePlugin, issue.scope ?? scope).filter((entry) => !entry.disabled);
       title = `无法添加到 ${issue.platform ? platformLabel(issue.platform) : '所选工具'}`;
@@ -2194,9 +2224,13 @@ export function ConsoleAppV4(props: {
       return <Box key={group.key} flexDirection="column">
         {policy.mode !== 'compact' && group.label ? <Text bold color={tuiTheme.colors.muted}>{group.label}</Text> : null}
         {group.changes.slice(0, visibleCount).map((change, index) => {
-          const retainDescription = change.kind === 'warning' || group.key === 'portableTarget';
+          const retainDescription = change.kind === 'warning' || group.key === 'portableTarget'
+            || group.key === 'requested' || group.key === 'dependencies';
           const description = retainDescription ? change.description : undefined;
-          const category = policy.mode === 'compact' && index === 0 && group.label ? `${group.label} · ` : '';
+          const compactGroupLabel = group.key === 'requested' ? '根插件'
+            : group.key === 'dependencies' ? '依赖'
+              : group.key === 'preserved' ? '保持' : group.label;
+          const category = policy.mode === 'compact' && index === 0 && compactGroupLabel ? `${compactGroupLabel} · ` : '';
           const count = index === visibleCount - 1 && (hiddenCount > 0 || group.protectedCount)
             ? hiddenCount > 0 ? `另有 ${hiddenCount} 项` : `共 ${group.changes.length} 项`
             : undefined;
@@ -2229,8 +2263,12 @@ export function ConsoleAppV4(props: {
     const dependencyProgress = snapshot.progressTargets.length > 0;
     const currentPhase = progress.current?.phase ?? '';
     const failedProgress = snapshot.progressTargets.some((entry) => entry.state === 'failed');
-    const preflightActive = currentPhase.includes('检查') || currentPhase.includes('验证设置值');
-    const validationActive = currentPhase.includes('验证') && !preflightActive;
+    const validationActive = currentPhase.includes('检查写入结果')
+      || currentPhase.includes('读取最终状态')
+      || (currentPhase.includes('验证') && currentPhase !== '验证当前状态'
+        && !currentPhase.includes('验证设置值'));
+    const preflightActive = !validationActive && (currentPhase.includes('检查')
+      || currentPhase === '验证当前状态' || currentPhase.includes('验证设置值'));
     const executionActive = Boolean(currentPhase) && !preflightActive && !validationActive && !failedProgress;
     const progressLabel = (entry: typeof snapshot.progressTargets[number]): { label: string; status: ActionItem['status'] } => {
       if (entry.state === 'kept') return { label: '已保留', status: 'success' };
@@ -2240,6 +2278,27 @@ export function ConsoleAppV4(props: {
       if (entry.state === 'skipped') return { label: '未执行 · 依赖未完成', status: 'warning' };
       return { label: entry.relation === 'requested' ? '等待依赖' : '未开始', status: 'muted' };
     };
+    const prioritizedProgressTargets = [...snapshot.progressTargets].sort((left, right) => {
+      const priority = (entry: typeof left): number => entry.state === 'failed' ? 0
+        : entry.state === 'running' ? 1
+          : entry.relation === 'requested' ? 2
+            : entry.state === 'skipped' ? 3 : 4;
+      return priority(left) - priority(right);
+    });
+    const visibleProgressTargets = prioritizedProgressTargets.slice(0, policy.mode === 'compact' ? 2 : 5);
+    const hiddenProgressTargets = snapshot.progressTargets.length - visibleProgressTargets.length;
+    const targetStates = snapshot.progressTargets.map((entry) => entry.state);
+    const executionComplete = targetStates.length > 0
+      && targetStates.every((state) => state === 'completed' || state === 'kept');
+    const executionStarted = targetStates.some((state) => state === 'running' || state === 'completed'
+      || state === 'failed' || state === 'skipped');
+    const relationStep = currentPhase === '验证当前状态' || preflightActive ? 'active' as const : 'complete' as const;
+    const planStep = relationStep === 'active' ? 'pending' as const : 'complete' as const;
+    const closureStep = failedProgress ? 'error' as const
+      : executionComplete ? 'complete' as const
+        : executionStarted || executionActive ? 'active' as const : 'pending' as const;
+    const verificationStep = failedProgress && validationActive ? 'error' as const
+      : validationActive ? 'active' as const : 'pending' as const;
     content = portableOperation ? <StatusCard status="info" title="Skills CLI">
       <ProgressRow title="检查插件依赖" state={!currentPhase ? 'pending' : currentPhase.includes('检查') ? 'active' : 'complete'} />
       <ProgressRow title="生成候选 Skills" state={!currentPhase || currentPhase.includes('检查') ? 'pending' : currentPhase.includes('生成') ? 'active' : 'complete'} />
@@ -2247,16 +2306,23 @@ export function ConsoleAppV4(props: {
       <ProgressRow title="验证" state={failedProgress ? 'error' : validationActive ? 'active' : 'pending'} />
       {showTechnical ? technicalMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={message} compact />) : null}
     </StatusCard> : <StatusCard status="info">
-      <ProgressRow title={sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : dependencyProgress ? '检查依赖关系' : '检查兼容性'} state={!currentPhase ? 'pending' : preflightActive ? 'active' : 'complete'} />
-      <ProgressRow title={progress.current?.phase || (sourceOperation ? '保存来源配置并刷新' : configOperation ? '保存设置层并重新应用' : dependencyProgress ? '添加必需依赖' : '连接到所选工具')} description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={failedProgress ? 'error' : executionActive ? 'active' : validationActive ? 'complete' : 'pending'} compact={policy.mode === 'compact'} />
-      <ProgressRow title={dependencyProgress ? '验证完整结果' : '验证结果'} state={failedProgress ? 'error' : validationActive ? 'active' : 'pending'} />
-      {dependencyProgress ? <SectionCard title="执行目标">{snapshot.progressTargets.map((entry) => {
+      {dependencyProgress ? <>
+        <ProgressRow title="检查依赖关系" state={relationStep} />
+        <ProgressRow title="生成执行计划" state={planStep} />
+        <ProgressRow title="执行依赖闭包" description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={closureStep} compact={policy.mode === 'compact'} />
+        <ProgressRow title="验证完整结果" state={verificationStep} />
+      </> : <>
+        <ProgressRow title={sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : '检查兼容性'} state={!currentPhase ? 'pending' : preflightActive ? 'active' : 'complete'} />
+        <ProgressRow title={progress.current?.phase || (sourceOperation ? '保存来源配置并刷新' : configOperation ? '保存设置层并重新应用' : '连接到所选工具')} description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={failedProgress ? 'error' : executionActive ? 'active' : validationActive ? 'complete' : 'pending'} compact={policy.mode === 'compact'} />
+        <ProgressRow title="验证结果" state={failedProgress ? 'error' : validationActive ? 'active' : 'pending'} />
+      </>}
+      {dependencyProgress ? <SectionCard title="执行目标" meta={`${snapshot.progressTargets.length} 个目标`}>{visibleProgressTargets.map((entry) => {
         const state = progressLabel(entry);
         const relation = entry.relation === 'requested' ? '你选择的插件' : entry.relation === 'direct' ? '直接依赖' : '间接依赖';
         const title = props.controller.getPluginOverview(entry.pluginId)?.displayName
           ?? entry.pluginId.split('/').at(-1);
         return <ResultRow key={`${entry.pluginId}:${entry.platform}:${entry.scope}`} title={title} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />;
-      })}</SectionCard> : null}
+      })}{hiddenProgressTargets > 0 ? <StaticRow title={`另有 ${hiddenProgressTargets} 个目标`} status="muted" compact /> : null}</SectionCard> : null}
       {!showTechnical && latestMessage ? <StaticRow title={latestMessage} status="muted" compact /> : null}
       {showTechnical ? technicalMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={message} compact />) : null}
       {exitAfterBusy ? <Callout status="warning" title="操作完成后退出" /> : null}
@@ -2489,7 +2555,7 @@ export function ConsoleAppV4(props: {
     title = '此业务页将在后续阶段接入';
     description = '当前阶段只实现插件发现、安装和维护页面。';
     actions = [{ label: '返回上一页', run: back }];
-    content = <ActionRows actions={actions} focus={focus} />;
+    content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />;
   }
 
   const runAction = (action: ActionItem | undefined): void => {

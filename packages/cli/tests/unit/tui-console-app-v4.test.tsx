@@ -1167,7 +1167,8 @@ describe('ConsoleAppV4', () => {
       kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
     });
     const running = value.executeOperation(review.reviewToken);
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(2);
     progress.addEvent({
       type: 'rebuild:action',
@@ -1175,8 +1176,13 @@ describe('ConsoleAppV4', () => {
       data: { name: 'postcheck.inspect', phase: 'failure', message: 'safe failure' },
     });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('× 检查写入结果失败');
-    expect(instance.lastFrame()).not.toContain('● 检查写入结果失败');
+    expect(screens).toContain('D06');
+    expect(instance.lastFrame()).toContain('× 执行依赖闭包');
+    expect(instance.lastFrame()).toContain('× 验证完整结果');
+    expect(instance.lastFrame()).not.toContain('● 验证完整结果');
+    expect(instance.lastFrame()).toContain('× Agent Lab');
+    expect(instance.lastFrame()).toContain('另有 1 个目标');
+    expect(instance.lastFrame()).toContain('d 技术进度');
     execution.resolve({ overallState: 'partial', targetResults: [
       { target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project' }, state: 'failed' },
     ] });
@@ -2361,12 +2367,21 @@ describe('ConsoleAppV4', () => {
     const screens = new Set<ConsoleV4ScreenId>();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
+    expect(screens).toContain('D01');
     expect(instance.lastFrame()).toContain('安装内容');
     expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
+    expect(instance.lastFrame()).toContain('直接依赖');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    expect(instance.lastFrame()).not.toContain('› Agent Skill Toolkit');
     expect(instance.lastFrame()).not.toContain('planDigest');
     await input(instance, '\u001B[B', '\r');
     expect(screens).toContain('D02');
     expect(instance.lastFrame()).toContain('安装所需插件');
+    expect(instance.lastFrame()).toContain('你选择的插件');
+    expect(instance.lastFrame()).toContain('必需依赖');
+    expect(instance.lastFrame()).toContain('依赖优先');
+    expect(instance.lastFrame()).toContain('› 技术详情');
+    expect(instance.lastFrame()).not.toContain('› Agent Skill Toolkit');
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
 
@@ -2377,6 +2392,68 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(plainInstance.lastFrame()).not.toContain('安装内容');
     expect(resolveConsoleV4ScreenId(plain.snapshot, plain)).toBe('P04');
+  });
+
+  it('keeps Portable capability, dependency summary, primary action, and HelpBar visible on D01 at 60x18', async () => {
+    const loaded = dependencyLoadResult();
+    loaded.portablePluginIds = ['official/agent-lab'];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    const frame = instance.lastFrame() ?? '';
+    expect(screens).toContain('D01');
+    expect(frame).toContain('通用 Skills');
+    expect(frame).toContain('Agent Skill Toolkit');
+    expect(frame).toContain('Agent Content Toolkit');
+    expect(frame).toContain('› 添加插件');
+    expect(frame).toContain('↑↓ 移动');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('mounts dependency placement, tools, installed detail, and installed relation templates', async () => {
+    const available = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()) });
+    await available.load();
+    const availableScreens = new Set<ConsoleV4ScreenId>();
+    available.push({ name: 'installPlacement', pluginId: 'official/agent-lab' });
+    const placement = render(<ConsoleAppV4 controller={available} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => availableScreens.add(screen)} />);
+    await nextTurn(2);
+    expect(availableScreens).toContain('D03');
+    expect(placement.lastFrame()).toContain('依赖处理');
+    expect(placement.lastFrame()).toContain('依赖会复用现有安装');
+    expect(placement.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    placement.unmount();
+
+    available.replace({ name: 'installTools', pluginId: 'official/agent-lab' });
+    const toolsPage = render(<ConsoleAppV4 controller={available} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => availableScreens.add(screen)} />);
+    await nextTurn(2);
+    expect(availableScreens).toContain('D04');
+    expect(toolsPage.lastFrame()).toContain('工具兼容性');
+    expect(toolsPage.lastFrame()).toContain('至少选择一个工具');
+    expect(toolsPage.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    toolsPage.unmount();
+
+    const installed = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })) });
+    await installed.load();
+    const installedScreens = new Set<ConsoleV4ScreenId>();
+    installed.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const detail = render(<ConsoleAppV4 controller={installed} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => installedScreens.add(screen)} />);
+    await nextTurn(2);
+    expect(installedScreens).toContain('D09');
+    expect(detail.lastFrame()).toContain('查看直接、间接依赖和被使用情况');
+    expect(detail.lastFrame()).toContain('1 个直接 · 2 个总计');
+    detail.unmount();
+
+    installed.replace({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
+    const relations = render(<ConsoleAppV4 controller={installed} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => installedScreens.add(screen)} />);
+    await nextTurn(2);
+    expect(installedScreens).toContain('D10');
+    expect(relations.lastFrame()).toContain('依赖与被使用情况');
+    expect(relations.lastFrame()).toContain('根节点');
+    expect(relations.lastFrame()).not.toContain('› Agent Skill Toolkit');
   });
 
   it('groups a dependency Review without giving its headings a separate focus and keeps the primary action reachable', async () => {
@@ -2392,14 +2469,18 @@ describe('ConsoleAppV4', () => {
       kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
     });
     const screens = new Set<ConsoleV4ScreenId>();
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
     expect(screens).toContain('D05');
-    expect(instance.lastFrame()).toContain('你选择的插件');
-    expect(instance.lastFrame()).toContain('必需依赖');
-    expect(instance.lastFrame()).toContain('保持不变');
+    expect(instance.lastFrame()).toContain('根插件');
+    expect(instance.lastFrame()).toContain('依赖');
+    expect(instance.lastFrame()).toContain('保持');
+    expect(instance.lastFrame()).toContain('Codex · 当前项目');
+    expect(instance.lastFrame()).toContain('所有项目 · 已可用');
     expect(instance.lastFrame()).toContain('› 添加插件 3 个插件');
+    expect(instance.lastFrame()).toContain('↑↓ 移动');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     await input(instance, '\r');
     expect(executeIntent).toHaveBeenCalledOnce();
   });
@@ -2440,14 +2521,51 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('根插件没有留下部分安装');
   });
 
+  it('renders a successful dependency result with bounded target rows and visible actions at 60x18', async () => {
+    const plan = dependencyPlan();
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+      captureEvidence: vi.fn().mockResolvedValue({ ...evidence, dependencyPlan: plan }),
+      executeIntent: vi.fn().mockResolvedValue({
+        dependencyPlan: plan,
+        overallState: 'succeeded',
+        targetResults: [
+          { target: { pluginId: 'official/content-toolkit', platform: 'codex', scope: 'user' }, state: 'completed', action: 'keep' },
+          { target: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'project' }, state: 'completed', action: 'install' },
+          { target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project' }, state: 'completed', action: 'install' },
+        ],
+      }),
+    });
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    const frame = instance.lastFrame() ?? '';
+    expect(screens).toContain('D07');
+    expect(frame).toContain('操作已完成');
+    expect(frame).toContain('Agent Lab');
+    expect(frame).toContain('Agent Content Toolkit');
+    expect(frame).toContain('另有 1 个目标');
+    expect(frame).toContain('› 查看插件');
+    expect(frame).toContain('↑↓ 移动');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
   it.each([
-    ['dependencyMissing', 'installDependency', 'install', 'absent'],
-    ['dependencyNotReady', 'reinstallDependency', 'reinstall', 'partial'],
+    ['dependencyMissing', 'installDependency', 'install', 'absent', 'D14'],
+    ['dependencyNotReady', 'reinstallDependency', 'reinstall', 'partial', 'D15'],
   ] as const)('uses the contract dependency placement for a project consumer %s action', async (
     category,
     actionId,
     writeAction,
     dependencyState,
+    expectedScreen,
   ) => {
     const loaded = dependencyLoadResult({
       rootState: 'error',
@@ -2465,8 +2583,13 @@ describe('ConsoleAppV4', () => {
     const issue = value.listUserIssues().find((candidate) =>
       candidate.category === category && candidate.platform === 'codex' && candidate.scope === 'project')!;
     value.push({ name: 'issueDetail', issueId: issue.issueId });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
+    expect(screens).toContain(expectedScreen);
+    expect(instance.lastFrame()).toContain('受影响的根插件');
+    expect(instance.lastFrame()).toContain('依赖目标');
+    expect(instance.lastFrame()).not.toContain('› Agent Skill Toolkit');
 
     await input(instance, ...(actionId === 'reinstallDependency' ? ['\u001B[B'] : []), '\r');
 
@@ -2617,13 +2740,17 @@ describe('ConsoleAppV4', () => {
       platform: 'codex', scope: 'user',
     });
     const screens = new Set<ConsoleV4ScreenId>();
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
     expect(screens).toContain('D12');
     expect(instance.lastFrame()).toContain('Agent Lab');
     expect(instance.lastFrame()).toContain('强制清理');
+    expect(instance.lastFrame()).not.toContain('› Agent Lab');
+    expect(instance.lastFrame()).toContain('› 强制清理');
+    expect(instance.lastFrame()).toContain('↑↓ 移动');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
 
-    await input(instance, '\u001B[B', '\r');
+    await input(instance, '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('review');
     expect(instance.lastFrame()).toContain('强制清理插件');
@@ -2663,7 +2790,81 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'installPlacement', pluginId: 'official/agent-lab' });
   });
 
-  it('keeps dependency focus visible while the 60x18 relation content scrolls', async () => {
+  it('budgets D10 with dependency and dependent rows and projects mixed placement status consistently', async () => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/agent-lab')!;
+    const mixedDependency = overview.dependencies.find((entry) => entry.pluginId === 'official/skill-toolkit')!;
+    mixedDependency.aggregateStatus = 'needsAttention';
+    mixedDependency.placements = [
+      { platform: 'codex', state: 'installed', scope: 'user', health: 'ready' },
+      { platform: 'claude', state: 'installed', scope: 'user', health: 'incomplete' },
+    ];
+    overview.dependents.push({
+      pluginId: 'official/content-toolkit',
+      displayName: 'Agent Content Toolkit',
+      relation: 'dependent',
+      depth: 1,
+      requiredBy: [],
+      placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+      aggregateStatus: 'ready',
+      placementReferences: [{
+        consumer: { pluginId: 'official/content-toolkit', platform: 'codex', scope: 'user', project: null },
+        dependency: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'user', project: null },
+      }],
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    const frame = instance.lastFrame() ?? '';
+    expect(screens).toContain('D10');
+    expect(frame).toContain('根插件 · Agent Lab');
+    expect(frame).toContain('需要处理');
+    expect(frame).toContain('必需依赖 · Agent Skill Toolkit');
+    expect(frame).toContain('被依赖 · Agent Content Toolkit');
+    expect(frame).not.toContain('Agent Skill Toolkit             所有项目 · 已可用');
+    expect(frame).toContain('› 技术详情');
+    expect(frame).toContain('↑↓ 移动');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('mounts the dependency issue list and invalid graph recovery page as D13 and D17', async () => {
+    const loaded = dependencyLoadResult({
+      rootState: 'error',
+      rootErrorCode: 'dependencyGraphInvalid',
+      rootErrorMessage: 'dependencyGraphInvalid: cycle in public dependency graph.',
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const graphIssue = value.listUserIssues().find((entry) => entry.category === 'dependencyGraphInvalid');
+    expect(graphIssue).toBeDefined();
+    const screens = new Set<ConsoleV4ScreenId>();
+    value.push({ name: 'issueList' });
+    const list = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    expect(screens).toContain('D13');
+    expect(list.lastFrame()).toContain('4 项');
+    expect(list.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    expect(list.lastFrame()).toContain('↑↓ 移动');
+    list.unmount();
+
+    value.push({ name: 'issueDetail', issueId: graphIssue!.issueId });
+    const detail = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    const frame = detail.lastFrame() ?? '';
+    expect(screens).toContain('D17');
+    expect(frame).toContain('来源中的依赖关系无效');
+    expect(frame).toContain('没有修改任何安');
+    expect(frame).toContain('dependencyGraphInvalid');
+    expect(frame).toContain('›');
+    expect(frame).toContain('d 查看安全错误代码');
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('summarizes dependency relations as static rows and keeps the only action visible at 60x18', async () => {
     const loaded = dependencyLoadResult();
     const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/agent-lab')!;
     overview.dependencies.push(...Array.from({ length: 6 }, (_, index) => ({
@@ -2683,9 +2884,16 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(3);
-    expect(instance.lastFrame()).toContain('› Agent Skill Toolkit');
-    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'));
-    expect(instance.lastFrame()).toContain('› 额外依赖 4');
-    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('Agent Skill Toolkit');
+    expect(frame).toContain('Agent Content Toolkit');
+    expect(frame).toContain('另有 6 项');
+    expect(frame).toContain('› 技术详情');
+    expect(frame).not.toContain('› Agent Skill Toolkit');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame).toContain('↑↓ 移动');
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 技术详情');
   });
 });
