@@ -1,2 +1,0 @@
-[permissions.workspace.filesystem.":workspace_roots"]
-".agents" = "write"
