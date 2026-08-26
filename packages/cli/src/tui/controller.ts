@@ -223,6 +223,7 @@ export interface OperationResultSummary {
     requestedAgents: string[];
     scope: Scope;
     materializationDigest: string;
+    skillsCliVersion: string;
     missing: Array<{ skill: string; agent?: string }>;
     verificationUnknown: boolean;
     recovery?: string;
@@ -2135,6 +2136,7 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         requestedAgents: receipt.requestedAgents,
         scope: receipt.scope,
         materializationDigest: receipt.materializationDigest,
+        skillsCliVersion: receipt.skillsCliVersion,
         missing: receipt.verification.missing,
         verificationUnknown,
         ...(receipt.failures[0]?.recovery ? { recovery: receipt.failures[0].recovery } : {}),

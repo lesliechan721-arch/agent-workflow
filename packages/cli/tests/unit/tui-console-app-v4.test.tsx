@@ -2414,6 +2414,36 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
   });
 
+  it('renders P04 and P13 Portable capability cards without materializing candidates', async () => {
+    const loaded = loadResult();
+    loaded.portablePluginIds = ['official/review-gate', 'team-tools/review-gate'];
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    const screens = new Set<ConsoleV4ScreenId>();
+    value.push({ name: 'pluginPreview', pluginId: 'official/review-gate' });
+    const preview = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    expect(screens).toContain('P04');
+    expect(preview.lastFrame()).toContain('通用 Skills');
+    expect(preview.lastFrame()).toContain('可安装');
+    expect(preview.lastFrame()).not.toContain('候选');
+    expect(captureEvidence).not.toHaveBeenCalled();
+    preview.unmount();
+
+    value.replace({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    const detail = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    const frame = detail.lastFrame() ?? '';
+    expect(screens).toContain('P13');
+    expect(frame).toContain('通用 Skills');
+    expect(frame).toContain('可安装');
+    expect(frame).toContain('选择 Skill 和 Agent 后交给 Skills CLI 安装');
+    expect(frame).not.toContain('安装状态未知');
+    expect(frame).not.toContain('候选');
+    expect(captureEvidence).not.toHaveBeenCalled();
+  });
+
   it('mounts dependency placement, tools, installed detail, and installed relation templates', async () => {
     const available = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()) });
     await available.load();
