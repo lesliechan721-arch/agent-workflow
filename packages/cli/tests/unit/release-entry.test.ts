@@ -14,7 +14,7 @@ describe('one-command release entry', () => {
   it('parses channels, explicit axes, bumps, and tag repair as separate contracts', () => {
     expect(parseReleaseArgs([
       'beta', '--all', '--cli-bump', 'patch', '--catalog-bump', 'minor',
-      '--plugin', 'git=patch',
+      '--plugin', 'git-toolkit=patch',
     ])).toMatchObject({
       channel: 'beta',
       axes: { cli: true, catalog: true },
@@ -36,7 +36,7 @@ describe('one-command release entry', () => {
   it('commits only generated release metadata paths when bumps are requested', async () => {
     const parsed = parseReleaseArgs([
       'beta', '--all', '--cli-bump', 'patch', '--catalog-bump', 'minor',
-      '--plugin', 'git=patch',
+      '--plugin', 'git-toolkit=patch',
     ]);
     const runGit = vi.fn(async (args: string[]) => ({
       stdout: args[0] === 'diff'
@@ -46,7 +46,7 @@ describe('one-command release entry', () => {
             'packages/agent-skill-eval/package.json',
             'packages/plugin-core/package.json',
             'pnpm-lock.yaml',
-            'plugins/git/.agents-plugin/plugin.json',
+            'plugins/git-toolkit/.agents-plugin/plugin.json',
             '',
           ].join('\0')
         : '',
@@ -57,7 +57,7 @@ describe('one-command release entry', () => {
     await commitReleaseMetadata(parsed, { repoRoot: '/repo', runGit, updateTargets });
 
     expect(updateTargets).toHaveBeenCalledWith([
-      '--cli', 'patch', '--catalog', 'minor', '--plugin', 'git=patch',
+      '--cli', 'patch', '--catalog', 'minor', '--plugin', 'git-toolkit=patch',
     ], expect.objectContaining({ repoRoot: '/repo' }));
     expect(runGit).toHaveBeenCalledWith([
       'add', '--',
@@ -66,7 +66,7 @@ describe('one-command release entry', () => {
       'packages/agent-skill-eval/package.json',
       'packages/plugin-core/package.json',
       'pnpm-lock.yaml',
-      'plugins/git/.agents-plugin/plugin.json',
+      'plugins/git-toolkit/.agents-plugin/plugin.json',
     ], expect.any(Object));
     expect(runGit).toHaveBeenCalledWith([
       'diff', '--cached', '--name-only', '-z',

@@ -48,7 +48,7 @@ aw
 ```bash
 aw install ask-me -p both
 aw install dev-workflow -p both
-aw install git -p both
+aw install git-toolkit -p both
 aw status
 ```
 
@@ -65,7 +65,7 @@ aw status
 | --- | --- | --- |
 | [`ask-me`](plugins/ask-me/) | 澄清关键歧义、逐轮推演重要决定，或用可体验原型帮助用户作出决定 | Codex / Claude Code |
 | [`dev-workflow`](plugins/dev-workflow/) | 用 Spec、实现切片和双轴 Review 组织中大型开发任务，并按需组合 `ask-me` | Codex / Claude Code |
-| [`git`](plugins/git/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
+| [`git-toolkit`](plugins/git-toolkit/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
 
 ### Agent 内容、Skill 与插件作者工具
@@ -143,9 +143,9 @@ AW 在安装时保留 Codex 和 Claude Code 的原生调用元数据，不使用
 aw init
 
 # 安装、升级或移除
-aw install git -p both
-aw upgrade git -p both
-aw uninstall git -p both
+aw install git-toolkit -p both
+aw upgrade git-toolkit -p both
+aw uninstall git-toolkit -p both
 
 # 查看现场状态
 aw status

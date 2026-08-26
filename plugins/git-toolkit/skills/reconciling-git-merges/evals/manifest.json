@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "plugin": "git",
+  "plugin": "git-toolkit",
   "skill": "reconciling-git-merges",
   "profiles": [
     {
@@ -8,7 +8,7 @@
       "scope": "project",
       "plugins": [
         {
-          "name": "git",
+          "name": "git-toolkit",
           "config": {}
         }
       ],
@@ -20,7 +20,7 @@
       "scope": "user",
       "plugins": [
         {
-          "name": "git",
+          "name": "git-toolkit",
           "config": {}
         }
       ],

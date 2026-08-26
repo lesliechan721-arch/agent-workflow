@@ -7,7 +7,7 @@
 ## 安装
 
 ```bash
-aw install git -p both
+aw install git-toolkit -p both
 ```
 
 ## 包含的 Skill
