@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "name": "dev-workflow",
+  "version": "0.1.0-beta.1",
+  "description": "按风险和当前阶段组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "tags": [
+      "development",
+      "spec",
+      "implementation",
+      "review"
+    ],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Dev Workflow",
+    "shortDescription": "按风险和阶段组织决策、规格、实现、修复与独立审查",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "scripts": {
+    "timeoutMs": 30000
+  }
+}

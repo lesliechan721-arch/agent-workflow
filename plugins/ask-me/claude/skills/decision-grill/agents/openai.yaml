@@ -1,0 +1,6 @@
+interface:
+  display_name: "Decision Grill"
+  short_description: "通过逐轮访谈，把计划、决策或想法想透并形成共享理解"
+  default_prompt: "使用 $decision-grill 围绕当前计划、决策或想法逐轮访谈我，直到我们形成共享理解。"
+policy:
+  allow_implicit_invocation: true

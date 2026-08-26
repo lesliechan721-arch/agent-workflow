@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "name": "agent-skill-toolkit",
+  "version": "0.1.0-beta.1",
+  "description": "使用共享标准创建或评审单个 Agent Skill，设计或审核 Skill Eval，并评审有界的跨 Skill 工作流。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": [
+        "CODEX",
+        "CLAUDE"
+      ]
+    }
+  },
+  "dependencies": [
+    "agent-content-toolkit"
+  ],
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Agent Skill Toolkit",
+    "shortDescription": "创建和评审 Agent Skill，设计和审核 Eval 与跨 Skill 工作流",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "scripts": {
+    "timeoutMs": 30000,
+    "node": {}
+  }
+}

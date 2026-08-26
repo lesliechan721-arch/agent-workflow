@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 4,
+  "catalogVersion": "0.1.0-beta.1",
+  "channel": "beta",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "marketplace": {
+    "owner": {
+      "name": "Leslie Chan",
+      "url": "https://github.com/lesliechan721-arch/agent-workflow"
+    },
+    "interface": {
+      "displayName": "Agent Workflows"
+    }
+  },
+  "release": {
+    "state": "published",
+    "targetVersion": "0.1.0",
+    "planId": "sha256:0f29ec7a8b7e59f08bd302a7334a855abd7322fb039baddb681056019782100a",
+    "sourceHead": "fdff45f44a3891297014470551df92be3a04317a",
+    "contentDigest": "sha256:0f29ec7a8b7e59f08bd302a7334a855abd7322fb039baddb681056019782100a"
+  },
+  "entries": [
+    {
+      "name": "agent-content-toolkit",
+      "version": "0.1.0-beta.1",
+      "description": "创建和评审 Agent-facing 文档，并保持最小上下文负担、清楚指针和适度控制。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX",
+          "CLAUDE"
+        ]
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/agent-content-toolkit",
+      "artifactDigest": "sha256:e9c6cc2dba1c26508d0ac2675b331af066cd4da7604d2023e7cfdc942ad0dace",
+      "manifestDigest": "sha256:8a701d9793431e7ea9c437fd1fcf3611d03897cc96deb5395b4ba9d27d7cbda4",
+      "interface": {
+        "displayName": "Agent Content Toolkit",
+        "shortDescription": "创建和评审 Agent-facing 文档，控制上下文负担、指针与完成边界",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "contentDigest": "sha256:dd5f6f523758c98d04ebc32c259b9192319ea4e6e5f3ca01d5bb1897118409d7"
+    },
+    {
+      "name": "agent-skill-toolkit",
+      "version": "0.1.0-beta.1",
+      "description": "使用共享标准创建或评审单个 Agent Skill，设计或审核 Skill Eval，并评审有界的跨 Skill 工作流。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX",
+          "CLAUDE"
+        ]
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/agent-skill-toolkit",
+      "artifactDigest": "sha256:c5e3624ea0898c6c23009c0a55fc8503ac3e85ab7e39ddca1d73a6b4a64bbe92",
+      "manifestDigest": "sha256:65fe79930f5a37845415dde256c3b65ea490a88507d1757c8df44ed2e6e75702",
+      "interface": {
+        "displayName": "Agent Skill Toolkit",
+        "shortDescription": "创建和评审 Agent Skill，设计和审核 Eval 与跨 Skill 工作流",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "contentDigest": "sha256:abeae8b59eb7cba24e65fed95e0d86392955f47876de19a29c9ed3837aacc5fd"
+    },
+    {
+      "name": "ask-me",
+      "version": "0.1.0-beta.1",
+      "description": "通过独立的逐轮决策访谈或可体验原型形成共享理解。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/ask-me",
+      "artifactDigest": "sha256:b99edd83c772a43e20056b3b6feaf5d91363d8cab28c03709399c50661353bb2",
+      "manifestDigest": "sha256:e865a114b85fc1186174910133c1c06553406a451708e9324ddcbb06db4974b4",
+      "interface": {
+        "displayName": "Ask Me",
+        "shortDescription": "逐轮推演重要决定，或用可体验原型为一个决定建立证据",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "contentDigest": "sha256:2bf8ffcaa1de57127b4528f4a8c41c7d609589f9d4d9b7bbf983fd82ef4ae60d"
+    },
+    {
+      "name": "aw-plugin-development",
+      "version": "0.1.0-beta.1",
+      "description": "创建或维护 AW 插件，评审单个 AW 插件，并评审有界的跨 AW 插件工作流。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX",
+          "CLAUDE"
+        ]
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/aw-plugin-development",
+      "artifactDigest": "sha256:f5eb54d1226977a9036276a3d2a895b8388e599ae34e28d7bdaefe2d2c7faea3",
+      "manifestDigest": "sha256:1d20c9908b54335837c3688b27fec8ac8045b489ed80cd991c6c305752aca7cb",
+      "interface": {
+        "displayName": "AW Plugin Development",
+        "shortDescription": "创建、维护和评审 AW 插件及跨插件工作流",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "contentDigest": "sha256:16151b45c189b9f463f4dda7f2420f249aa3000eaee0e84d3e7a82374469305a"
+    },
+    {
+      "name": "aw-skill-eval-runner",
+      "version": "0.1.0-beta.1",
+      "description": "通过共享 aw-skill-eval CLI 执行 Agent Skill Eval plan，并生成中立的运行证据。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX",
+          "CLAUDE"
+        ]
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/aw-skill-eval-runner",
+      "artifactDigest": "sha256:f83722c735104f2dfe9b219f190cea6bbd93626aa5bd2f1870eef0c77ab4a715",
+      "manifestDigest": "sha256:9d45bca307dd0305924f37aa78dca45d005a48916a1ac240c759a67e40838552",
+      "interface": {
+        "displayName": "AW Skill Eval Runner",
+        "shortDescription": "执行 Agent Skill Eval plan，并生成中立的 EvalRunBundle 证据",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "contentDigest": "sha256:5d7f713098037cf5335d2fdf8d4b49c0c41e033bfc3975da6b96c04395f42cab"
+    },
+    {
+      "name": "codex-enhance",
+      "version": "0.1.0-beta.1",
+      "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": [
+          "CODEX"
+        ]
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/codex-enhance",
+      "artifactDigest": "sha256:96e144409a82f7fa27aeb42d09072380ef5f323ac4512aac3c470a3e6e3211cc",
+      "manifestDigest": "sha256:e6f0c4e0664e101581c720253c30c77b417ab211274e8e761b95599014291b07",
+      "tags": [
+        "codex",
+        "subagent",
+        "explorer",
+        "research",
+        "reasoning",
+        "wait"
+      ],
+      "interface": {
+        "displayName": "Codex Enhance",
+        "shortDescription": "Codex 只读探索与通用子代理编排增强",
+        "capabilities": [
+          "Skills",
+          "Agents"
+        ]
+      },
+      "contentDigest": "sha256:4ab35d6cfbc2d653563c81220b9fcac42f15b15b09eb3a33568bd26ebd102bb1"
+    },
+    {
+      "name": "dev-workflow",
+      "version": "0.1.0-beta.1",
+      "description": "按风险和当前阶段组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/dev-workflow",
+      "artifactDigest": "sha256:63b9149d2dc7712b06ec56879d7f22cfab0c092ad51f5bb9ced9bcad314ad84b",
+      "manifestDigest": "sha256:5bad5375acfb89aaf5e2c621b4bffc71512392a08340663a1cbd6e94038f017d",
+      "tags": [
+        "development",
+        "spec",
+        "implementation",
+        "review"
+      ],
+      "interface": {
+        "displayName": "Dev Workflow",
+        "shortDescription": "按风险和阶段组织决策、规格、实现、修复与独立审查",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "contentDigest": "sha256:74328424bc05afdbe606582c223af2096d4bd7e76411ebde25afa12b2cc4af0f"
+    },
+    {
+      "name": "git-toolkit",
+      "version": "0.1.0-beta.1",
+      "description": "提供本地 Git 提交、worktree 隔离，以及需要协调双方意图的 Git merge 工作流。",
+      "category": "workflow",
+      "strict": true,
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "compatibility": {
+        "aw": {
+          "minVersion": "0.0.0"
+        }
+      },
+      "source": "./plugins/git-toolkit",
+      "artifactDigest": "sha256:2bf91bc2075ce56e117f46118186298d24cda99efac5b2c77c89633f9a864c54",
+      "manifestDigest": "sha256:c8575019b6628a41225d1a42de30146f5a553a7da4c7f282d49f8bc050d5b338",
+      "tags": [
+        "git",
+        "commit",
+        "worktree",
+        "merge",
+        "conflicts"
+      ],
+      "interface": {
+        "displayName": "Git Toolkit",
+        "shortDescription": "精确创建本地提交、安全隔离 Git worktree，或协调 Git merge 双方意图",
+        "capabilities": [
+          "Skills"
+        ]
+      },
+      "contentDigest": "sha256:8d6118dfa740a6ea9e015192ac103a684008b6a0575ac00d53c48b35fe451c42"
+    }
+  ]
+}

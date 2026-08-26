@@ -1,0 +1,21 @@
+# Config, Lifecycle, and Artifact Capabilities
+
+Generated from `@aw/cli/plugin-authoring-capabilities` (sha256:9bca86f3e18dc8d3a3524f3966cb51b8e3623e68819259a5ff0b1440a4759035).
+Verified source: `packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs`.
+
+| Field | Type | Required | Product/profile | Accepted values | Requires | Conflicts | Verified source |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `config.schema.<key>.type` | enum | true | all supported | string, number, boolean, enum, file, directory | — | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `config.schema.<key>` | field policy | false | all supported | title, description, default, required, sensitive, values, min, max | — | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `config.presentation` | groups/fields/presets | false | all supported | — | — | schema mutation or sensitive/path preset values | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `scripts.lifecycle` | event selectors | false | all supported | install, upgrade, uninstall | in-root executable entry | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `scripts.timeoutMs` | integer milliseconds | false | all supported | 1000..300000 | — | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `scripts.helpers.config` | Node path | false | all supported | — | — | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `scripts.artifacts.render` | Node entry | with artifacts.targets | all supported | — | — | — | packages/cli/authoring/scripts/validate-plugin.mjs validateDynamicArtifactsLightweight |
+| `artifacts.targets[].target` | enum | true | all supported | codex.skill, claude.skill, codex.developerInstructionsBlock, codex.agentRole, agent-skills.skill | — | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `artifacts.targets[]` | static capability | true | all supported | — | id, platform/distribution, scopes, states, refreshKeys and target-specific key; scripts.artifacts.render | — | packages/cli/authoring/scripts/validate-plugin.mjs validateDynamicArtifactsLightweight |
+| `artifacts.targets[agent-skills.skill]` | {id,distribution,scopes,target,kind?,states,refreshKeys,skillKey,sourceDirs?,runtimeImports?} | false | agent-skills dynamic | — | distributions.agentSkills, scripts.artifacts.render, distribution=agent-skills, target=agent-skills.skill, skillKey, non-empty scopes and states | platform, projectManagedKind, roleKey, requiresCodexProjectConfig | packages/cli/src/utils/manifest.ts validateSourcePluginManifest; packages/cli/authoring/scripts/validate-plugin.mjs validateDynamicArtifactsLightweight |
+| `artifacts.targets[agent-skills.skill].runtimeImports` | unique {name,plugin,export}[] | false | agent-skills dynamic | — | provider buildConfig.runtimeExports; a typed build-time reuse edge that does not declare or infer manifest dependencies; resolver copies resolved bytes into the consumer bundle and renderer reads only its bundle-local import | native artifact targets or author-supplied resolved provenance | packages/cli/src/utils/manifest.ts validateSourcePluginManifest; packages/cli/src/generators/local-plugin.ts resolveArtifactRuntimeImports |
+| `ArtifactPlan.version` | literal 2 | true | all supported | — | — | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `ArtifactPlan.artifacts[].state` | enum | true | all supported | present, disabled | — | — | packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs |
+| `ArtifactPlan.artifacts[agent-skills.skill]` | {id,distribution,target,kind,state,skillKey,refreshKeys,content?} | for every declared target in the current agent-skills distribution and scope, including disabled | agent-skills dynamic | — | distribution=agent-skills, target=agent-skills.skill, kind=skill and identity matching the declared target | platform identity or files outside a valid portable Skill tree | packages/cli/src/utils/artifact-plan.ts validateArtifactPlan |
