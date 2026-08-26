@@ -37,15 +37,15 @@ const ROLE_EXPECTATIONS = [
     artifactId: 'codex-subagent-general-role',
     roleKey: 'codex-subagent-general',
     refreshKeys: ['generalTaskModel', 'generalTaskReasoningEffort'],
-    model: 'gpt-5.6-sol',
-    reasoningEffort: 'medium',
+    model: 'gpt-5.6-terra',
+    reasoningEffort: 'xhigh',
   },
   {
     artifactId: 'codex-subagent-complex-role',
     roleKey: 'codex-subagent-complex',
     refreshKeys: ['complexTaskModel', 'complexTaskReasoningEffort'],
     model: 'gpt-5.6-sol',
-    reasoningEffort: 'high',
+    reasoningEffort: 'medium',
   },
   {
     artifactId: 'codex-subagent-advanced-role',
@@ -205,7 +205,7 @@ test('renders a configured role without changing the others', async () => {
 
   const complex = roles.get('codex-subagent-complex');
   assert.equal(complex.content.roleFile.model, 'gpt-5.6-sol');
-  assert.equal(complex.content.roleFile.model_reasoning_effort, 'high');
+  assert.equal(complex.content.roleFile.model_reasoning_effort, 'medium');
 });
 
 test('treats blank configured values as their task defaults', async () => {
