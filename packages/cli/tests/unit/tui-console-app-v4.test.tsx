@@ -321,10 +321,9 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
 
 async function confirmReview(
   instance: ReturnType<typeof render>,
-  value: TuiController,
+  _value: TuiController,
 ): Promise<void> {
-  const changes = value.snapshot.activeReview?.changes.length ?? 0;
-  await input(instance, ...Array.from({ length: changes }, () => '\u001B[B'), '\r');
+  await input(instance, '\r');
 }
 
 describe('ConsoleAppV4', () => {
@@ -686,6 +685,18 @@ describe('ConsoleAppV4', () => {
     expect(screens).not.toContain('G04');
   });
 
+  it('keeps unfinished loading work active or pending without claiming completion', async () => {
+    const pendingLoad = deferred<TuiStatusLoadResult>();
+    const value = controller({ loadStatus: vi.fn(() => pendingLoad.promise) });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('● 读取插件来源');
+    expect(instance.lastFrame()).toContain('○ 检查当前项目');
+    expect(instance.lastFrame()).not.toContain('✓ 读取插件来源');
+    pendingLoad.resolve(loadResult());
+    await nextTurn(3);
+  });
+
   it('shows cached and unavailable source counts independently on the mounted home page', async () => {
     for (const size of [{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }]) {
       const instance = render(<ConsoleAppV4 controller={controller({
@@ -693,8 +704,8 @@ describe('ConsoleAppV4', () => {
       })} size={size} />);
       await nextTurn(3);
       const frame = instance.lastFrame() ?? '';
-      expect(frame).toContain('◐ 1 个来源使用缓存');
-      expect(frame).toContain('× 1 个来源不可用');
+      expect(frame).toContain('1 个来源使用缓存');
+      expect(frame).toContain('1 个来源不可用');
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
       instance.unmount();
       instance.cleanup();
@@ -751,15 +762,38 @@ describe('ConsoleAppV4', () => {
 
   it('uses Space only to toggle tools and Enter only to finish a legal selection', async () => {
     const value = controller();
-    value.push({ name: 'installPlacement', pluginId: 'official/agent-lab' });
-    value.push({ name: 'installTools', pluginId: 'official/agent-lab' });
+    value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
+    await input(instance, '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
 
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    expect(instance.lastFrame()).toContain('◆ Claude Code');
+    expect(instance.lastFrame()).not.toContain('● Codex');
+
+    await input(instance, ' ');
+    expect(instance.lastFrame()).toContain('◇ Codex');
     await input(instance, '\r');
-    expect(value.snapshot.router.current.route.name).toBe('installTools');
-    await input(instance, ' ', '\r');
     expect(value.snapshot.router.current.route.name).toBe('installPlacement');
+  });
+
+  it('renders shared choice cards with one visible focus at 80x24 and 60x18', async () => {
+    for (const size of [{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }]) {
+      const value = controller();
+      value.push({ name: 'installPlacement', pluginId: 'official/agent-lab' });
+      const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+      await nextTurn(3);
+      const frame = instance.lastFrame() ?? '';
+      expect(frame).toMatch(/› ● (所有项目|当前项目)/u);
+      expect(frame).toContain('╭');
+      expect(frame).toContain('可用工具');
+      expect(frame.match(/›/gu)).toHaveLength(1);
+      expect(frame).toContain('↑↓ 移动');
+      expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+      if (size.columns === 80) expect(frame).toContain('适合个人常用能力');
+      instance.unmount();
+      instance.cleanup();
+    }
   });
 
   it('does not dispose an externally owned controller and exits initial load failure nonzero', async () => {
@@ -876,7 +910,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('Catalog Only');
     await input(instance, '\r', '\r');
     expect(screens).toContain('P17');
-    expect(instance.lastFrame()).toContain('× 来源不可用');
+    expect(instance.lastFrame()).toContain('来源不可用');
   });
 
   it('counts source tabs from the active browse or installed list mode', async () => {
@@ -1118,6 +1152,37 @@ describe('ConsoleAppV4', () => {
     await running;
   });
 
+  it('marks a failed target and current operation step as error instead of active', async () => {
+    const execution = deferred<unknown>();
+    const progress = createRebuildProgressFeed();
+    const plan = dependencyPlan();
+    const value = new TuiController({
+      ...controller().dependencies,
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+      captureEvidence: vi.fn().mockResolvedValue({ ...evidence, dependencyPlan: plan }),
+      executeIntent: vi.fn(() => execution.promise),
+    }, progress);
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    });
+    const running = value.executeOperation(review.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    progress.addEvent({
+      type: 'rebuild:action',
+      source: { plugin: 'agent-lab', platform: 'codex', scope: 'project', action: 'install' },
+      data: { name: 'postcheck.inspect', phase: 'failure', message: 'safe failure' },
+    });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('× 检查写入结果失败');
+    expect(instance.lastFrame()).not.toContain('● 检查写入结果失败');
+    execution.resolve({ overallState: 'partial', targetResults: [
+      { target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project' }, state: 'failed' },
+    ] });
+    await running;
+  });
+
   it('renders multiple saved result messages with standard and compact viewport budgets', async () => {
     const progress = createRebuildProgressFeed();
     const value = new TuiController({
@@ -1150,6 +1215,42 @@ describe('ConsoleAppV4', () => {
     expect(compactFrame.split('\n').length).toBeLessThanOrEqual(18);
   });
 
+  it('bounds many Result targets and keeps the last action with HelpBar at 60x18', async () => {
+    const value = controller({
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'succeeded',
+        targetResults: Array.from({ length: 12 }, (_, index) => ({
+          target: { pluginId: `official/target-${index}`, platform: 'codex' as const, scope: 'user' as const },
+          state: 'completed' as const,
+        })),
+      }),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    });
+    await value.executeOperation(review.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('另有 10 个目标');
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 返回首页');
+    expect(instance.lastFrame()).toContain('↑↓ 移动');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+  });
+
+  it('keeps the last source action visible with HelpBar at 60x18', async () => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    await input(instance, ...Array.from({ length: 4 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› 技术详情');
+    expect(instance.lastFrame()).toContain('↑↓ 移动');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+  });
+
   it('ignores a second Enter after the Review primary action becomes busy', async () => {
     const validation = deferred<void>();
     const capture = deferred<OperationEvidence>();
@@ -1171,8 +1272,6 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
-    await input(instance, ...Array.from({ length: review.changes.length }, () => '\u001B[B'));
-
     instance.stdin.write('\r');
     instance.stdin.write('\r');
     await nextTurn(2);
@@ -1544,7 +1643,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(reached).toContain('C12');
     const reviewFrame = instance.lastFrame() ?? '';
-    expect(reviewFrame).not.toContain('保存并应用');
+    expect(reviewFrame).toContain('› 保存并应用');
     expect(reviewFrame).not.toContain('sk-private-value');
     expect(reviewFrame).not.toContain('./rules.json');
 
@@ -1630,7 +1729,7 @@ describe('ConsoleAppV4', () => {
     ]));
     await input(
       partialInstance,
-      ...Array.from({ length: (partial.snapshot.activeReview?.changes.length ?? 0) + 1 }, () => '\u001B[B'),
+      '\u001B[B',
       '\r',
     );
     expect(partial.snapshot.router.current.route).toEqual({
@@ -1697,7 +1796,8 @@ describe('ConsoleAppV4', () => {
     const effectiveInstance = render(<ConsoleAppV4 controller={effective} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(4);
     await input(effectiveInstance, ...Array.from({ length: 8 }, () => '\u001B[B'));
-    expect(effectiveInstance.lastFrame()).toContain('› 字段 9');
+    expect(effectiveInstance.lastFrame()).toContain('字段 9');
+    expect(effectiveInstance.lastFrame()).not.toContain('› 字段 9');
     expect((effectiveInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
@@ -1920,17 +2020,39 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(3);
-    expect(instance.lastFrame()).toContain('› ~ 变更 1');
-    expect(instance.lastFrame()).not.toContain('保存并应用');
-    await input(instance, '\r');
-    expect(executeIntent).not.toHaveBeenCalled();
-
-    const changeCount = value.snapshot.activeReview!.changes.length;
-    await input(instance, ...Array.from({ length: changeCount }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('~ 变更 1');
+    expect(instance.lastFrame()).not.toContain('› ~ 变更 1');
+    expect(instance.lastFrame()).toMatch(/另有 \d+ 项/u);
     expect(instance.lastFrame()).toContain('› 保存并应用');
-    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     await input(instance, '\r');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     expect(executeIntent).toHaveBeenCalledOnce();
+  });
+
+  it('summarizes many kept and warning Review rows without clipping actions or HelpBar', async () => {
+    const value = controller();
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'cleanup', pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'user', force: true,
+    });
+    const snapshot = structuredClone(value.snapshot);
+    if (!snapshot.activeReview) throw new Error('expected active review');
+    snapshot.activeReview.changes = [
+      { kind: 'remove', group: 'requested', title: 'Codex · 所有项目', description: '目标安装' },
+      ...Array.from({ length: 18 }, (_, index) => ({ kind: 'keep' as const, group: 'preserved' as const, title: `保留项 ${index + 1}`, description: '保持安装' })),
+      ...Array.from({ length: 12 }, (_, index) => ({ kind: 'warning' as const, group: 'portableWarnings' as const, title: `风险 ${index + 1}`, description: '共同风险原因' })),
+    ];
+    Object.defineProperty(value, 'snapshot', { configurable: true, get: () => snapshot });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('共同风险原因');
+    expect(frame).toContain('保持不变');
+    expect(frame).toContain('另有 17 项');
+    expect(frame).toContain(`› ${review.primaryLabel}`);
+    expect(frame).toContain('↑↓ 移动');
+    expect(frame.match(/›/gu)).toHaveLength(1);
   });
 
   it('reaches S01-S13 through the real Git wizard and treats b as input text', async () => {
@@ -2276,10 +2398,10 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('你选择的插件');
     expect(instance.lastFrame()).toContain('必需依赖');
     expect(instance.lastFrame()).toContain('保持不变');
-    await input(instance, '\r');
-    expect(executeIntent).not.toHaveBeenCalled();
-    await input(instance, ...Array.from({ length: value.snapshot.activeReview!.changes.length }, () => '\u001B[B'));
     expect(instance.lastFrame()).toContain('› 添加插件 3 个插件');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    await input(instance, '\r');
+    expect(executeIntent).toHaveBeenCalledOnce();
   });
 
   it('renders kept, failed, and skipped dependency targets as target-level results', async () => {

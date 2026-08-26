@@ -369,8 +369,10 @@ describe('Portable Skills TUI V1', () => {
     expect(value.snapshot.activeReview?.changes.find((change) => change.title === 'author-skill')?.description).toContain('Toolkit');
     expect(value.snapshot.activeReview?.changes.some((change) => change.title === '同名覆盖')).toBe(true);
 
-    const changeCount = value.snapshot.activeReview!.changes.length;
-    await send(instance, ...Array.from({ length: changeCount }, () => '\u001B[B'), '\r');
+    expect(instance.lastFrame()).toContain('自动选择检测到的 Agent');
+    expect(instance.lastFrame()).toContain('当前项目');
+    expect(instance.lastFrame()).toContain(`› ${value.snapshot.activeReview!.primaryLabel}`);
+    await send(instance, '\r');
     await tick(3);
     expect(value.snapshot.result?.state).toBe('succeeded');
     expect(instance.lastFrame()).toContain('通用 Skills 已安装');
@@ -593,6 +595,7 @@ describe('Portable Skills TUI V1', () => {
       { name: 'user-only', availableScopes: ['user'] },
     ]);
     await expect(value.buildPortableInstallReview()).rejects.toMatchObject({ code: 'portableScopeUnavailable' });
+    value.setPortableAgentMode('explicit', ['codex', 'cursor']);
     value.setPortableScope('user');
     await expect(value.buildPortableInstallReview()).resolves.toMatchObject({ operationKind: 'portableInstall' });
     expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
@@ -631,6 +634,10 @@ describe('Portable Skills TUI V1', () => {
       pluginId: 'official/content',
       description: 'User description. · Content · 按设置生成',
     });
+    const reviewInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await tick();
+    expect(reviewInstance.lastFrame()).toContain('所有项目');
+    expect(reviewInstance.lastFrame()).toContain('自动选择检测到的 Agent');
   });
 
   it('refreshes both scope variants after stale evidence and preserves only existing selections', async () => {
@@ -679,7 +686,7 @@ describe('Portable Skills TUI V1', () => {
     await tick();
     await send(
       instance,
-      ...Array.from({ length: value.snapshot.activeReview!.changes.length + 1 }, () => '\u001B[B'),
+      '\u001B[B',
       '\r',
     );
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
@@ -744,9 +751,8 @@ describe('Portable Skills TUI V1', () => {
     await value.buildPortableInstallReview();
     const reviewInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await tick();
-    const changes = value.snapshot.activeReview!.changes.length;
-    await send(reviewInstance, ...Array.from({ length: changes }, () => '\u001B[B'));
     expect(reviewInstance.lastFrame()).toContain(`› ${value.snapshot.activeReview!.primaryLabel}`);
+    expect(reviewInstance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     expect(reviewInstance.lastFrame()).toContain('覆盖冲突');
   });
 
@@ -807,6 +813,11 @@ describe('Portable Skills TUI V1', () => {
     await send(inputInstance, 'cursor codex cursor', '\r');
     expect(value.snapshot.portableDraft?.requestedAgents).toEqual(['cursor', 'codex']);
     expect(value.snapshot.router.current.route.name).toBe('portableScope');
+    await send(inputInstance, '\r');
+    await tick();
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(inputInstance.lastFrame()).toContain('cursor、codex');
+    expect(inputInstance.lastFrame()).toContain('当前项目');
 
     cleanup();
     value.replace({ name: 'portableSkillSelect', pluginId: 'official/toolkit' });

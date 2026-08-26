@@ -164,7 +164,8 @@ describe('real ConsoleAppV4 progress chain', () => {
     }, async () => {
       const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 60, rows: 18 }} />);
       await nextTurn();
-      await input(instance, ...Array.from({ length: review.changes.length }, () => '\u001B[B'), '\r');
+      expect(instance.lastFrame()).toContain(`› ${review.primaryLabel}`);
+      await input(instance, '\r');
       await vi.waitUntil(() => controller.snapshot.result?.state === 'succeeded', { timeout: 1_000 });
       await nextTurn();
       frames = instance.frames.join('\n');
