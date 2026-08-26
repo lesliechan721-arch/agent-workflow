@@ -424,9 +424,115 @@ function rolloutIdentity(lines) {
       agentPath: typeof threadSpawn?.agent_path === 'string'
         ? threadSpawn.agent_path
         : null,
+      agentRole: typeof threadSpawn?.agent_role === 'string'
+        ? threadSpawn.agent_role
+        : null,
     };
   }
-  return { threadId: null, parentThreadId: null, agentPath: null };
+  return {
+    threadId: null,
+    parentThreadId: null,
+    agentPath: null,
+    agentRole: null,
+  };
+}
+
+function developerContextMarkers(lines) {
+  const developerText = lines.flatMap((line) => {
+    const event = parseExecEventLine(line);
+    const payload = event?.type === 'response_item' ? event.payload : null;
+    if (payload?.type !== 'message' || payload.role !== 'developer') {
+      return [];
+    }
+    return (payload.content ?? [])
+      .filter((item) => item?.type === 'input_text' && typeof item.text === 'string')
+      .map((item) => item.text);
+  }).join('\n');
+  return {
+    developer_message_count: lines.filter((line) => {
+      const event = parseExecEventLine(line);
+      const payload = event?.type === 'response_item' ? event.payload : null;
+      return payload?.type === 'message' && payload.role === 'developer';
+    }).length,
+    has_multi_agent_mode_gate: developerText.includes('<multi_agent_mode>'),
+    has_nested_agent_capability: developerText.includes('Child agents can also spawn their own sub-agents'),
+    has_codex_explore_developer_authorization:
+      developerText.includes('### Codex Explore 子代理授权'),
+  };
+}
+
+function initialUserMessage(lines) {
+  for (const line of lines) {
+    const event = parseExecEventLine(line);
+    const payload = event?.type === 'response_item' ? event.payload : null;
+    if (payload?.type !== 'message' || payload.role !== 'user') continue;
+    const text = (payload.content ?? [])
+      .filter((item) => item?.type === 'input_text' && typeof item.text === 'string')
+      .map((item) => item.text)
+      .join('\n');
+    if (text && !/^<environment_context>[\s\S]*<\/environment_context>$/u.test(text.trim())) {
+      return text;
+    }
+  }
+  return null;
+}
+
+function initialEncryptedAgentTask(lines) {
+  for (const line of lines) {
+    const event = parseExecEventLine(line);
+    const payload = event?.type === 'response_item' ? event.payload : null;
+    if (payload?.type !== 'agent_message' || !Array.isArray(payload.content)) continue;
+    const envelope = payload.content.find(
+      (item) => item?.type === 'input_text' && typeof item.text === 'string',
+    )?.text;
+    const encrypted = payload.content.find(
+      (item) => item?.type === 'encrypted_content' &&
+        typeof item.encrypted_content === 'string',
+    )?.encrypted_content;
+    if (envelope?.includes('Message Type: NEW_TASK') && encrypted) return encrypted;
+  }
+  return null;
+}
+
+export function recoverV1SpawnCallsFromExecEvents(events, threadIdentities) {
+  const identitiesByThreadId = new Map(
+    threadIdentities
+      .filter((identity) => identity.threadId)
+      .map((identity) => [identity.threadId, identity]),
+  );
+  const calls = [];
+  for (const event of events ?? []) {
+    const item = eventItem(event);
+    if (
+      item?.type !== 'collab_tool_call' ||
+      item.tool !== 'spawn_agent' ||
+      item.status !== 'completed' ||
+      !Array.isArray(item.receiver_thread_ids)
+    ) {
+      continue;
+    }
+    for (const threadId of item.receiver_thread_ids) {
+      const identity = identitiesByThreadId.get(threadId);
+      if (!identity?.agentRole || typeof item.prompt !== 'string') {
+        continue;
+      }
+      calls.push({
+        call_id: typeof item.id === 'string' ? item.id : `v1-spawn:${threadId}`,
+        namespace: 'multi_agent_v1',
+        tool: 'spawn_agent',
+        arguments: {
+          agent_type: identity.agentRole,
+          fork_context: false,
+          message: item.prompt,
+        },
+        output: { agent_id: threadId },
+        rollout_file: identity.rolloutFile ?? null,
+        line_number: null,
+        evidence_source: 'exec_collab_tool_call+child_session_meta',
+      });
+    }
+  }
+  return calls;
 }
 
 export async function readRolloutEvidenceFromRollouts(codexHome) {
@@ -443,13 +549,30 @@ export async function readRolloutEvidenceFromRollouts(codexHome) {
       thread_id: identity.threadId,
       parent_thread_id: identity.parentThreadId,
     }));
-    rollouts.push({ file, calls, ...identity });
+    rollouts.push({
+      file,
+      calls,
+      ...identity,
+      context: developerContextMarkers(lines),
+      initialUserMessage: initialUserMessage(lines),
+      initialEncryptedAgentTask: initialEncryptedAgentTask(lines),
+    });
   }
 
+  const childThreadsByParent = new Map();
+  for (const rollout of rollouts) {
+    if (!rollout.parentThreadId) continue;
+    const children = childThreadsByParent.get(rollout.parentThreadId) ?? [];
+    children.push(rollout);
+    childThreadsByParent.set(rollout.parentThreadId, children);
+  }
   const rootParents = rollouts.filter(
     (rollout) =>
       rollout.parentThreadId === null &&
-      rollout.calls.some((call) => call.tool === 'spawn_agent'),
+      (
+        rollout.calls.some((call) => call.tool === 'spawn_agent') ||
+        childThreadsByParent.has(rollout.threadId)
+      ),
   );
   const fallbackParents = rootParents.length > 0
     ? rootParents
@@ -475,6 +598,23 @@ export async function readRolloutEvidenceFromRollouts(codexHome) {
       changed = true;
     }
   }
+  for (const rollout of descendants) {
+    if (rollout.calls.some((call) => call.tool === 'spawn_agent')) continue;
+    for (const child of childThreadsByParent.get(rollout.threadId) ?? []) {
+      rollout.calls.push({
+        call_id: `lineage-spawn:${child.threadId}`,
+        namespace: 'multi_agent_v1',
+        tool: 'spawn_agent',
+        arguments: { agent_type: child.agentRole },
+        output: { agent_id: child.threadId },
+        rollout_file: path.relative(codexHome, child.file),
+        line_number: null,
+        thread_id: rollout.threadId,
+        parent_thread_id: rollout.parentThreadId,
+        evidence_source: 'child_session_meta_lineage',
+      });
+    }
+  }
   return {
     parent_calls: fallbackParents.flatMap((rollout) => rollout.calls),
     leaf_calls: descendants.flatMap((rollout) => rollout.calls),
@@ -485,8 +625,19 @@ export async function readRolloutEvidenceFromRollouts(codexHome) {
         thread_id: rollout.threadId,
         parent_thread_id: rollout.parentThreadId,
         agent_path: rollout.agentPath,
+        agent_role: rollout.agentRole,
+        initial_user_message: rollout.initialUserMessage,
+        initial_encrypted_message: rollout.initialEncryptedAgentTask,
+        developer_context: rollout.context,
       })),
     },
+    thread_identities: rollouts.map((rollout) => ({
+      threadId: rollout.threadId,
+      parentThreadId: rollout.parentThreadId,
+      agentPath: rollout.agentPath,
+      agentRole: rollout.agentRole,
+      rolloutFile: path.relative(codexHome, rollout.file),
+    })),
   };
 }
 
@@ -555,6 +706,67 @@ export function shouldStopEarly(evalCase, observed) {
   if (!evalCase.should_spawn_agent && observed.spawned) {
     return 'unexpected_spawn';
   }
+  if (evalCase.stop_after_nested_evidence) {
+    const expected = evalCase.expected;
+    const nested = expected?.nested_delegation;
+    const rootCalls = observed.spawnCalls ?? [];
+    const rootThreadIds = new Set(observed.leafTrace?.parent_thread_ids ?? []);
+    const directChildren = (observed.leafTrace?.child_threads ?? []).filter((thread) =>
+      thread.agent_role === expected?.arguments?.agent_type &&
+      rootThreadIds.has(thread.parent_thread_id));
+    const directChild = directChildren.length === 1 ? directChildren[0] : null;
+    const childCalls = directChild
+      ? (observed.leafToolCalls ?? []).filter((call) => call.thread_id === directChild.thread_id)
+      : [];
+    const childLoaded = childCalls.some((call) => {
+      const command = call?.tool === 'exec_command'
+        ? call.arguments?.cmd
+        : call?.tool === 'exec'
+          ? call.arguments?.input
+          : null;
+      return typeof command === 'string' &&
+        command.replaceAll('\\', '/').includes(`.agents/skills/${nested?.child_skill}/SKILL.md`);
+    });
+    const grandchildSpawns = childCalls.filter((call) =>
+      call.tool === 'spawn_agent' &&
+      call.arguments?.agent_type === nested?.child_agent_type &&
+      call.output &&
+      typeof call.output === 'object' &&
+      !Array.isArray(call.output) &&
+      (
+        (typeof call.output.task_name === 'string' && call.output.task_name.trim() !== '') ||
+        (typeof call.output.agent_id === 'string' && call.output.agent_id.trim() !== '')
+      ));
+    const rootArgumentsMatch = rootCalls.length >= expected.spawn_calls.min &&
+      rootCalls.length <= expected.spawn_calls.max &&
+      Object.entries(expected.arguments ?? {}).every(([key, value]) =>
+        value === null
+          ? !Object.hasOwn(rootCalls[0]?.arguments ?? {}, key)
+          : rootCalls[0]?.arguments?.[key] === value);
+    const rootChildFollowups = (observed.collaborationTimeline ?? []).filter((call) =>
+      ['send_input', 'send_message', 'followup_task'].includes(call?.tool));
+    if (
+      rootArgumentsMatch &&
+      directChild &&
+      childLoaded &&
+      grandchildSpawns.length >= nested.grandchild_spawn_calls.min &&
+      grandchildSpawns.length <= nested.grandchild_spawn_calls.max &&
+      (
+        nested.child_initial_message !== undefined
+          ? directChild.initial_user_message === nested.child_initial_message
+          : nested.child_initial_encrypted_link === true &&
+            directChild.initial_encrypted_message === rootCalls[0]?.arguments?.message
+      ) &&
+      (!nested.forbid_root_child_followup || rootChildFollowups.length === 0) &&
+      directChild.developer_context?.has_multi_agent_mode_gate ===
+        nested.expect_child_multi_agent_gate &&
+      directChild.developer_context?.has_codex_explore_developer_authorization ===
+        nested.expect_child_developer_authorization
+    ) {
+      return 'expected_nested_outcome_observed';
+    }
+    return null;
+  }
   if (
     evalCase.should_load_skill &&
     evalCase.should_spawn_agent &&
@@ -600,6 +812,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
         cwd: workspace.root,
         env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
       });
       const observed = {
         loaded: evalCase.explicit_skill,
@@ -619,6 +832,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
       let interruptedSignal = null;
       let settled = false;
       let forceKillTimer;
+      let descendantCleanupConfirmed = null;
       let rolloutPollPending = false;
       const eventTrace = [];
 
@@ -627,8 +841,26 @@ export async function runCodexOnce(workspace, evalCase, options) {
           return;
         }
         stopReason = reason;
-        child.kill('SIGTERM');
-        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+        if (process.platform === 'win32') {
+          child.kill('SIGTERM');
+        } else {
+          try {
+            process.kill(-child.pid, 'SIGTERM');
+          } catch (error) {
+            if (error?.code !== 'ESRCH') {
+              stderr = `${stderr}\nFailed to terminate eval process group: ${error.message}`.trim();
+            }
+          }
+        }
+        forceKillTimer = setTimeout(() => {
+          if (process.platform === 'win32') {
+            child.kill('SIGKILL');
+            return;
+          }
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {}
+        }, 2_000);
         forceKillTimer.unref();
       };
       const handleInterrupt = (signal) => {
@@ -653,16 +885,28 @@ export async function runCodexOnce(workspace, evalCase, options) {
         }
         rolloutPollPending = true;
         try {
-          const calls = await readSpawnCallsFromRollouts(codexHome);
+          const rolloutEvidence = await readRolloutEvidenceFromRollouts(codexHome);
+          let calls = spawnCalls(rolloutEvidence.parent_calls);
+          if (
+            calls.length === 0 &&
+            evalCase.codex_config?.['features.multi_agent_v2.enabled'] === false
+          ) {
+            calls = recoverV1SpawnCallsFromExecEvents(
+              eventTrace,
+              rolloutEvidence.thread_identities,
+            );
+          }
           if (calls.length > 0) {
             observed.spawned = true;
             observed.spawnCalls = calls;
             observed.spawnEvidence ??= `rollout:${calls[0].call_id ?? 'spawn_agent'}`;
-            const earlyReason = shouldStopEarly(evalCase, observed);
-            if (earlyReason) {
-              stop(earlyReason);
-            }
           }
+          observed.collaborationTimeline = rolloutEvidence.parent_calls;
+          observed.leafToolCalls = rolloutEvidence.leaf_calls;
+          observed.leafTraceAvailable = rolloutEvidence.leaf_trace_available;
+          observed.leafTrace = rolloutEvidence.leaf_trace;
+          const earlyReason = shouldStopEarly(evalCase, observed);
+          if (earlyReason) stop(earlyReason);
         } catch (error) {
           if (error?.code !== 'ENOENT') {
             stderr = `${stderr}\nFailed to poll rollout evidence: ${
@@ -730,10 +974,34 @@ export async function runCodexOnce(workspace, evalCase, options) {
         }
         settled = true;
         clearTimeout(timeout);
-        clearTimeout(forceKillTimer);
         clearInterval(rolloutPollTimer);
         removeInterruptHandlers();
         lines.close();
+        if (stopReason) {
+          if (process.platform === 'win32') {
+            descendantCleanupConfirmed = false;
+          } else {
+            const processGroupExists = () => {
+              try {
+                process.kill(-child.pid, 0);
+                return true;
+              } catch (error) {
+                return error?.code !== 'ESRCH';
+              }
+            };
+            if (processGroupExists()) {
+              try {
+                process.kill(-child.pid, 'SIGKILL');
+              } catch {}
+            }
+            const cleanupDeadline = Date.now() + 2_000;
+            while (processGroupExists() && Date.now() < cleanupDeadline) {
+              await new Promise((done) => setTimeout(done, 25));
+            }
+            descendantCleanupConfirmed = !processGroupExists();
+          }
+        }
+        clearTimeout(forceKillTimer);
         try {
           const rolloutEvidence = await readRolloutEvidenceFromRollouts(codexHome);
           observed.collaborationTimeline = rolloutEvidence.parent_calls;
@@ -741,6 +1009,16 @@ export async function runCodexOnce(workspace, evalCase, options) {
           observed.leafTraceAvailable = rolloutEvidence.leaf_trace_available;
           observed.leafTrace = rolloutEvidence.leaf_trace;
           observed.spawnCalls = spawnCalls(observed.collaborationTimeline);
+          if (
+            observed.spawnCalls.length === 0 &&
+            evalCase.codex_config?.['features.multi_agent_v2.enabled'] === false
+          ) {
+            observed.spawnCalls = recoverV1SpawnCallsFromExecEvents(
+              eventTrace,
+              rolloutEvidence.thread_identities,
+            );
+            observed.collaborationTimeline.push(...observed.spawnCalls);
+          }
         } catch (error) {
           stderr = `${stderr}\nFailed to read rollout evidence: ${
             error instanceof Error ? error.message : String(error)
@@ -773,6 +1051,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
           exit_code: exitCode,
           signal,
           execution_error: executionError,
+          descendant_cleanup_confirmed: descendantCleanupConfirmed,
           stderr: stderr.trim() || undefined,
           final_message: finalMessage,
           parent_model_override: parentModelOverride,

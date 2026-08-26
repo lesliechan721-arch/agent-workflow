@@ -95,7 +95,7 @@
         "confidence": "high",
         "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
       },
-      "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
+      "prompt": "请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
       "expected_output": "自动选择默认 standard role，只传 agent_type。",
       "files": [],
       "config_values": {},
@@ -144,7 +144,7 @@
       "unit_under_test": "instructions",
       "preconditions": {
         "spawn_schema": "V1 公开 agent_type 和 fork_context，但不公开 fork_turns",
-        "parent_model": "gpt-5.5"
+        "parent_model": "gpt-5.6-luna"
       },
       "oracle": {
         "rationale": "相同 standard 任务在 V1 必须用 fork_context=false 精确表达干净上下文，不得发送 V2 字段。",
@@ -155,10 +155,10 @@
         "allowed_variance": "message 可变化；agent_type、fork_context 和 fork_turns 缺省状态不得变化。",
         "minimal_counterexample": "切换到 V2 schema 后，干净上下文参数应翻转为 fork_turns=none，并省略 fork_context。"
       },
-      "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
+      "prompt": "请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
       "expected_output": "V1 自动选择默认 standard role，使用 fork_context: false 启动干净上下文。",
       "files": [],
-      "parent_model": "gpt-5.5",
+      "parent_model": "gpt-5.6-luna",
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": false
@@ -618,6 +618,260 @@
           "grader": "script",
           "criticality": "major",
           "allowed_variance": "允许 reasoning_effort 或推理强度等同表述。"
+        }
+      ]
+    },
+    {
+      "id": "nested_skill_authorization_v1",
+      "eval_type": "gate",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "nested-delegation-authorization",
+      "unit_under_test": "composed-workflow",
+      "preconditions": {
+        "multi_agent_profile": "V1",
+        "parent_model": "gpt-5.6-luna",
+        "v1_max_depth": 2,
+        "participants": [
+          "codex-subagent-guide",
+          "codex-explore"
+        ],
+        "authorization_scope": "用户授权根代理启动计划子代理，未在计划子代理 message 中声明第二层授权",
+        "skill_authorization": "Gate 通过时，codex-explore 明确授权当前工作流启动 Codex Explore 子代理",
+        "plugin_developer_authorization": false
+      },
+      "oracle": {
+        "rationale": "V1 干净上下文的计划子代理不会继承根 turn 的用户授权，且其初始 message 未声明第二层授权。显式把 V1 最大深度设为 2 后，它可获得 V1 spawn_agent；它按任务加载 codex-explore 后，Skill 本身提供当前工作流授权，因此应通过工具描述中的授权门禁并启动 deep 孙代理。",
+        "rule_refs": [
+          "../../codex-subagent-guide/SKILL.md#上下文",
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
+        "confidence": "high",
+        "allowed_variance": "计划和证据文案可以变化；根代理必须通过 V1 启动一个 advanced 计划子代理，子代理必须读取 codex-explore，并可把互不重叠的探索拆成 1 到 4 个 deep 孙代理。",
+        "minimal_counterexample": "切换到 V2 后，根代理的干净上下文字段应从 fork_context=false 改为 fork_turns=none；两种工具版本都必须依赖 Skill 授权启动孙代理。"
+      },
+      "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
+      "parent_model": "gpt-5.6-luna",
+      "expected_output": "根代理通过 V1 启动 advanced 计划子代理；计划子代理加载 codex-explore，并只依据 Skill 授权启动 deep 孙代理。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": false,
+        "agents.max_depth": 2
+      },
+      "wait_for_completion": false,
+      "expected": {
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
+        "arguments": {
+          "agent_type": "codex-subagent-advanced",
+          "model": null,
+          "reasoning_effort": null,
+          "fork_context": false,
+          "fork_turns": null
+        },
+        "present_arguments": [
+          "message"
+        ],
+        "nested_delegation": {
+          "root_skill": "codex-subagent-guide",
+          "root_skill_explicitly_invoked": true,
+          "child_skill": "codex-explore",
+          "child_agent_type": "codex-explore-deep",
+          "child_initial_message": "为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。",
+          "expect_early_termination": true,
+          "forbid_root_child_followup": true,
+          "grandchild_spawn_calls": {
+            "min": 1,
+            "max": 4
+          },
+          "expect_child_multi_agent_gate": false,
+          "expect_child_developer_authorization": false
+        }
+      },
+      "assertions": [
+        {
+          "text": "根代理读取 codex-subagent-guide，并通过 V1 使用干净上下文启动一个 advanced 子代理",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "message 可变化；role 和 fork_context 必须精确匹配。"
+        },
+        {
+          "text": "计划子代理读取 codex-explore，并在 V1 工具描述门禁、无插件 developer 授权时依据 Skill 授权启动 deep 孙代理",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
+        }
+      ]
+    },
+    {
+      "id": "nested_skill_authorization",
+      "eval_type": "gate",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "nested-delegation-authorization",
+      "unit_under_test": "composed-workflow",
+      "preconditions": {
+        "multi_agent_profile": "V2",
+        "parent_model": "gpt-5.6-sol",
+        "participants": [
+          "codex-subagent-guide",
+          "codex-explore"
+        ],
+        "authorization_scope": "用户授权根代理启动计划子代理，未在计划子代理 message 中声明第二层授权",
+        "skill_authorization": "Gate 通过时，codex-explore 明确授权当前工作流启动 Codex Explore 子代理",
+        "plugin_developer_authorization": false
+      },
+      "oracle": {
+        "rationale": "V2 会加密 spawn_agent.message，本地只能确认根调用与计划子代理 NEW_TASK 使用同一密文，不能审计初始明文语义。根提示要求固定的无第二层授权 message，且 grader 排除后续消息授权；计划子代理加载 codex-explore 后若满足 multi_agent_mode 门禁并启动 deep 孙代理，可确认该工作流在无插件 developer 授权时可运行。Skill-only 授权的完整因果隔离由同场景 V1 case 提供。",
+        "rule_refs": [
+          "../../codex-subagent-guide/SKILL.md#上下文",
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
+        "confidence": "medium",
+        "allowed_variance": "计划和证据文案可以变化；根代理必须启动一个 advanced 计划子代理，根 spawn 密文必须与计划子代理 NEW_TASK 密文一致，不得追加消息；子代理必须读取 codex-explore，并可把互不重叠的探索拆成 1 到 4 个 deep 孙代理。V2 本地证据不声明已审计初始 message 的明文语义。",
+        "minimal_counterexample": "根 spawn 密文与计划子代理 NEW_TASK 密文不一致，或子代理上下文重新出现插件 developer 授权时，本 V2 case 不得通过；Skill-only 授权的反事实由 V1 case 验证。"
+      },
+      "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
+      "parent_model": "gpt-5.6-sol",
+      "expected_output": "根代理启动 advanced 计划子代理；在根任务密文链路一致、无后续消息和无插件 developer 授权时，计划子代理加载 codex-explore 并启动 deep 孙代理。V2 不归因不可见的初始明文授权来源。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "wait_for_completion": false,
+      "expected": {
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
+        "arguments": {
+          "agent_type": "codex-subagent-advanced",
+          "model": null,
+          "reasoning_effort": null,
+          "fork_turns": "none"
+        },
+        "present_arguments": [
+          "message",
+          "task_name"
+        ],
+        "nested_delegation": {
+          "root_skill": "codex-subagent-guide",
+          "root_skill_explicitly_invoked": true,
+          "child_skill": "codex-explore",
+          "child_agent_type": "codex-explore-deep",
+          "child_initial_encrypted_link": true,
+          "expect_early_termination": true,
+          "forbid_root_child_followup": true,
+          "grandchild_spawn_calls": {
+            "min": 1,
+            "max": 4
+          },
+          "expect_child_multi_agent_gate": true,
+          "expect_child_developer_authorization": false
+        }
+      },
+      "assertions": [
+        {
+          "text": "根代理读取 codex-subagent-guide，并使用干净上下文启动一个 advanced 子代理",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "message 和 task_name 可变化；role 和 fork_turns 必须精确匹配。"
+        },
+        {
+          "text": "计划子代理读取 codex-explore，并在根任务密文链路一致、无后续消息、有 multi_agent_mode 门禁且无插件 developer 授权时启动 deep 孙代理；不归因不可见的初始明文授权来源",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
+        }
+      ]
+    },
+    {
+      "id": "nested_explicit_child_authorization",
+      "eval_type": "gate",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "nested-delegation-authorization",
+      "unit_under_test": "composed-workflow",
+      "preconditions": {
+        "multi_agent_profile": "V2",
+        "parent_model": "gpt-5.6-sol",
+        "participants": [
+          "codex-subagent-guide",
+          "codex-explore"
+        ],
+        "authorization_scope": "用户明确授权两层委派，并要求根代理把第二层授权写入计划子代理初始 message",
+        "plugin_developer_authorization": false
+      },
+      "oracle": {
+        "rationale": "计划子代理的初始 message 已自包含用户对第二层委派的明确授权。即使没有插件 developer authorization，它也满足 multi_agent_mode 门禁；任务明确为系统级、高歧义，因此应由 codex-explore 启动 deep 孙代理。",
+        "rule_refs": [
+          "../../codex-subagent-guide/SKILL.md#上下文",
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
+        "confidence": "high",
+        "allowed_variance": "计划和证据文案可以变化；两层 role、两次 Skill 读取、第二层 spawn 和子代理 developer 上下文中的门禁/无插件授权状态必须可机械确认。",
+        "minimal_counterexample": "去掉写入计划子代理初始 message 的第二层授权后，计划子代理仍应加载 codex-explore，但不得启动孙代理。"
+      },
+      "prompt": "$codex-subagent-guide 我明确授权两层委派：你可以启动一个高难计划子代理；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
+      "parent_model": "gpt-5.6-sol",
+      "expected_output": "根代理启动 advanced 计划子代理；计划子代理加载 codex-explore，并在没有插件 developer authorization 的情况下依据自包含用户授权启动 deep 孙代理。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      },
+      "wait_for_completion": true,
+      "expected": {
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
+        "arguments": {
+          "agent_type": "codex-subagent-advanced",
+          "model": null,
+          "reasoning_effort": null,
+          "fork_turns": "none"
+        },
+        "present_arguments": [
+          "message",
+          "task_name"
+        ],
+        "nested_delegation": {
+          "root_skill": "codex-subagent-guide",
+          "root_skill_explicitly_invoked": true,
+          "child_skill": "codex-explore",
+          "child_agent_type": "codex-explore-deep",
+          "grandchild_spawn_calls": {
+            "min": 1,
+            "max": 4
+          },
+          "expect_child_multi_agent_gate": true,
+          "expect_child_developer_authorization": false
+        }
+      },
+      "assertions": [
+        {
+          "text": "根代理读取 codex-subagent-guide，并使用干净上下文启动一个 advanced 子代理",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "message 和 task_name 可变化；role 和 fork_turns 必须精确匹配。"
+        },
+        {
+          "text": "计划子代理读取 codex-explore，并在有 multi_agent_mode 门禁、无插件授权但有自包含用户授权时启动 deep 孙代理",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
         }
       ]
     },
