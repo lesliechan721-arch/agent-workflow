@@ -7,7 +7,6 @@ import fs from 'fs-extra';
 import { acquireProcessLock } from '../src/utils/process-lock.js';
 
 const BATCH_SCHEMA_VERSION = 1 as const;
-const PUBLISHED_SUMMARY_SCHEMA_VERSION = 2 as const;
 const BATCH_ID_PATTERN = /^\d{8}T\d{6}Z-[a-z0-9](?:[a-z0-9-]{0,47})-[0-9a-f]{8}$/u;
 const RUN_ID_PATTERN = /^\d{8}T\d{6}Z-[0-9a-f]{8}$/u;
 
@@ -27,10 +26,8 @@ interface SkillReportBatch {
   batchId: string;
   name: string;
   owner: SkillReportOwner;
-  status: 'open' | 'sealed';
   createdAt: string;
   updatedAt: string;
-  sealedAt?: string;
   source: SkillReportSourceIdentity;
   environmentDigest: string;
   modelEnvironmentDigest?: string | null;
@@ -130,18 +127,6 @@ export interface SkillEvalTargetPlan {
   reusable: SkillEvalTargetSummary[];
 }
 
-interface ReviewSummary {
-  mode: string;
-  reviewId: string;
-  completedAt: string;
-  reportPath: string;
-  scorecardPath: string;
-  weightedScore: number | null;
-  coverage: number | null;
-  confidence: string | null;
-  release: string | null;
-}
-
 interface RunSummary {
   runId: string;
   status: 'running' | 'completed' | 'failed';
@@ -157,7 +142,6 @@ interface BatchSummary {
   batchId: string;
   name: string;
   owner: SkillReportOwner;
-  status: 'open' | 'sealed';
   createdAt: string;
   updatedAt: string;
   latestCompletedAt: string | null;
@@ -177,102 +161,7 @@ interface BatchSummary {
     targets: TargetSummary[];
     targetAttempts: TargetSummary[];
   };
-  review: ReviewSummary | null;
   diagnostics: string[];
-}
-
-interface SkillReviewCalculation {
-  mode: string;
-  weightedScore: number | null;
-  coverage: number | null;
-  confidence: string | null;
-  release: string | null;
-}
-
-export interface PublishedSkillReportSummary {
-  schemaVersion: typeof PUBLISHED_SUMMARY_SCHEMA_VERSION;
-  batchId: string;
-  name: string;
-  owner: SkillReportOwner;
-  publishedAt: string;
-  source: {
-    commits: string[];
-    inScopeDirty: boolean;
-  };
-  eval: {
-    releaseOutcome: BatchSummary['eval']['releaseOutcome'];
-    covered: number;
-    required: number;
-  };
-  review: {
-    reviewId: string;
-    mode: string;
-    verdict: string | null;
-    weightedScore: number | null;
-    coveragePercent: number | null;
-    confidence: string | null;
-    findings: {
-      p0: number;
-      p1: number;
-      p2: number;
-      advisory: number;
-    };
-  };
-  reportPath: 'report.md';
-}
-
-function publishedSummaryFromReview(options: {
-  batchSummary: BatchSummary;
-  reviewId: string;
-  publishedAt: string;
-  scorecard: unknown;
-  calculated: SkillReviewCalculation;
-}): PublishedSkillReportSummary {
-  const counts = { p0: 0, p1: 0, p2: 0, advisory: 0 };
-  if (options.scorecard && typeof options.scorecard === 'object') {
-    const findings = (options.scorecard as { findings?: unknown }).findings;
-    if (Array.isArray(findings)) {
-      for (const finding of findings) {
-        const severity = finding && typeof finding === 'object'
-          ? (finding as { severity?: unknown }).severity
-          : null;
-        if (severity === 'P0') counts.p0 += 1;
-        else if (severity === 'P1') counts.p1 += 1;
-        else if (severity === 'P2') counts.p2 += 1;
-        else if (severity === 'Advisory') counts.advisory += 1;
-      }
-    }
-  }
-  const commits = [...new Set([
-    ...(options.batchSummary.source.gitHeads ?? []),
-    ...(options.batchSummary.source.gitHead ? [options.batchSummary.source.gitHead] : []),
-  ])];
-  return {
-    schemaVersion: PUBLISHED_SUMMARY_SCHEMA_VERSION,
-    batchId: options.batchSummary.batchId,
-    name: options.batchSummary.name,
-    owner: options.batchSummary.owner,
-    publishedAt: options.publishedAt,
-    source: {
-      commits,
-      inScopeDirty: options.batchSummary.source.inScopeDirty,
-    },
-    eval: {
-      releaseOutcome: options.batchSummary.eval.releaseOutcome,
-      covered: options.batchSummary.eval.releaseCovered,
-      required: options.batchSummary.eval.releaseRequired,
-    },
-    review: {
-      reviewId: options.reviewId,
-      mode: options.calculated.mode,
-      verdict: options.calculated.release,
-      weightedScore: options.calculated.weightedScore,
-      coveragePercent: options.calculated.coverage,
-      confidence: options.calculated.confidence,
-      findings: counts,
-    },
-    reportPath: 'report.md',
-  };
 }
 
 function timestampId(date = new Date()): string {
@@ -309,12 +198,6 @@ function validateRunId(value: string, label = '--run-id'): string {
     throw new Error(`${label} must use YYYYMMDDTHHMMSSZ-xxxxxxxx.`);
   }
   return value;
-}
-
-export function resolveSkillReportRoot(repoRoot: string, owner: SkillReportOwner): string {
-  return owner.kind === 'plugin-skill'
-    ? path.join(repoRoot, 'plugins', owner.plugin, 'reports', owner.skill)
-    : path.join(repoRoot, '.agents', 'reports', owner.skill);
 }
 
 export function resolveSkillEvalRoot(repoRoot: string, owner: SkillReportOwner): string {
@@ -446,14 +329,7 @@ export async function createSkillEvalRunLayout(options: {
   const runId = validateRunId(options.runId ?? createRunId());
   const reportRootBase = resolveSkillEvalRoot(options.repoRoot, options.owner);
   const batchRoot = path.join(reportRootBase, batchId);
-  const publishedBatchRoot = path.join(
-    resolveSkillReportRoot(options.repoRoot, options.owner),
-    batchId,
-  );
   await assertSafeSkillReportPath(options.repoRoot, batchRoot);
-  if (await fs.pathExists(publishedBatchRoot)) {
-    throw new Error(`Report batch ${batchId} is already published.`);
-  }
   const now = new Date().toISOString();
   if (options.batchName) {
     await fs.ensureDir(reportRootBase);
@@ -465,7 +341,6 @@ export async function createSkillEvalRunLayout(options: {
       batchId,
       name: options.batchName,
       owner: options.owner,
-      status: 'open',
       createdAt: now,
       updatedAt: now,
       source: options.source,
@@ -493,9 +368,6 @@ export async function createSkillEvalRunLayout(options: {
     await recoverInterruptedRunsUnlocked(batchRoot);
     if (!sameOwner(batch.owner, options.owner)) {
       throw new Error(`Report batch ${batchId} belongs to another Skill.`);
-    }
-    if (batch.status === 'sealed') {
-      throw new Error(`Report batch ${batchId} is sealed.`);
     }
     if (batch.source.digest !== options.source.digest) {
       throw new Error(`Report batch ${batchId} uses a different source digest.`);
@@ -1037,43 +909,6 @@ async function readRunSummaries(batchRoot: string): Promise<RunSummary[]> {
   return values.sort((left, right) => left.runId.localeCompare(right.runId));
 }
 
-async function readReview(batchRoot: string): Promise<ReviewSummary | null> {
-  const reviewsRoot = path.join(batchRoot, 'reviews');
-  if (!(await fs.pathExists(reviewsRoot))) return null;
-  const reports: ReviewSummary[] = [];
-  for (const mode of await fs.readdir(reviewsRoot)) {
-    const modeRoot = path.join(reviewsRoot, mode);
-    for (const reviewId of await fs.readdir(modeRoot)) {
-      const root = path.join(modeRoot, reviewId);
-      const scorecardPath = path.join(root, 'scorecard.json');
-      const reportPath = path.join(root, 'report.md');
-      if (!(await fs.pathExists(scorecardPath)) || !(await fs.pathExists(reportPath))) continue;
-      const reviewSummaryPath = path.join(root, 'review-summary.json');
-      const calculated = await fs.pathExists(reviewSummaryPath)
-        ? await fs.readJson(reviewSummaryPath) as Record<string, unknown>
-        : {};
-      const stats = await fs.stat(reportPath);
-      const completedAt = typeof calculated.completedAt === 'string'
-        ? calculated.completedAt
-        : stats.mtime.toISOString();
-      reports.push({
-        mode,
-        reviewId,
-        completedAt,
-        reportPath: path.relative(batchRoot, reportPath).split(path.sep).join('/'),
-        scorecardPath: path.relative(batchRoot, scorecardPath).split(path.sep).join('/'),
-        weightedScore: typeof calculated.weightedScore === 'number'
-          ? calculated.weightedScore
-          : null,
-        coverage: typeof calculated.coverage === 'number' ? calculated.coverage : null,
-        confidence: typeof calculated.confidence === 'string' ? calculated.confidence : null,
-        release: typeof calculated.release === 'string' ? calculated.release : null,
-      });
-    }
-  }
-  return reports.sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0] ?? null;
-}
-
 async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
   const batch = await readBatch(batchRoot);
   const targetAttempts = await collectTargetSummaries(batchRoot);
@@ -1090,15 +925,13 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
   const completedRuns = runs.filter((run) => run.completedAt !== null);
   const completionTimes = completedRuns.map((run) => run.completedAt!);
   const failedRuns = completedRuns.filter((run) => run.status === 'failed');
-  const review = await readReview(batchRoot);
-  const latestCompletedAt = [...completionTimes, ...(review ? [review.completedAt] : [])]
+  const latestCompletedAt = completionTimes
     .sort((left, right) => right.localeCompare(left))[0] ?? null;
   const summary: BatchSummary = {
     schemaVersion: 1,
     batchId: batch.batchId,
     name: batch.name,
     owner: batch.owner,
-    status: batch.status,
     createdAt: batch.createdAt,
     updatedAt: new Date().toISOString(),
     latestCompletedAt,
@@ -1125,7 +958,6 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
       targets,
       targetAttempts,
     },
-    review,
     diagnostics: failedRuns.map((run) => `Eval run ${run.runId} failed before publication.`),
   };
   await writeJsonAtomic(path.join(batchRoot, 'summary.json'), summary);
@@ -1161,7 +993,6 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
     `- Batch: \`${summary.batchId}\``,
     `- Name: \`${summary.name}\``,
     `- Owner: \`${ownerKey(summary.owner)}\``,
-    `- Status: \`${summary.status}\``,
     `- Eval outcome: \`${summary.eval.outcome}\``,
     `- Release outcome: \`${summary.eval.releaseOutcome}\``,
     `- Release coverage: \`${summary.eval.releaseCovered}/${summary.eval.releaseRequired}\``,
@@ -1175,10 +1006,6 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
     '| Target | Run | Outcome | Complete |',
     '| --- | --- | --- | --- |',
     ...targetRows,
-    '',
-    summary.review
-      ? `Review: \`${summary.review.mode}\`, release \`${summary.review.release ?? 'unknown'}\`.`
-      : 'Review: 尚未发布。',
     '',
   ].join('\n'));
   batch.updatedAt = summary.updatedAt;
@@ -1317,7 +1144,6 @@ export async function resolveSkillEvalTargetPlan(options: {
   await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
   return withBatchLock(options.layout.batchRoot, async () => {
     const batch = await readBatch(options.layout.batchRoot);
-    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
     await readRunningEvalRun(options.layout);
     const requested = [...new Set(options.targets.map((target, index) =>
       validateTarget(target, `Requested eval target ${index + 1}`)))];
@@ -1348,7 +1174,6 @@ export async function publishEvalRunCheckpoint(options: {
   await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
   return withBatchLock(options.layout.batchRoot, async () => {
     const batch = await readBatch(options.layout.batchRoot);
-    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
     await readRunningEvalRun(options.layout);
     await publishEvaluationTargetsUnlocked({ ...options, batch });
     return refreshBatchSummary(options.layout.batchRoot);
@@ -1361,8 +1186,7 @@ export async function completeSkillEvalRun(options: {
 }): Promise<BatchSummary> {
   await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
   return withBatchLock(options.layout.batchRoot, async () => {
-    const batch = await readBatch(options.layout.batchRoot);
-    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+    await readBatch(options.layout.batchRoot);
     const { runPath, run } = await readRunningEvalRun(options.layout);
     await writeJsonAtomic(runPath, {
       ...run,
@@ -1385,7 +1209,6 @@ export async function publishEvalRunToBatch(options: {
   await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
   return withBatchLock(options.layout.batchRoot, async () => {
     const batch = await readBatch(options.layout.batchRoot);
-    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
     const { runPath, run } = await readRunningEvalRun(options.layout);
     await publishEvaluationTargetsUnlocked({ ...options, batch });
     await writeJsonAtomic(runPath, {
@@ -1404,8 +1227,7 @@ export async function failSkillEvalRun(options: {
 }): Promise<BatchSummary> {
   await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
   return withBatchLock(options.layout.batchRoot, async () => {
-    const batch = await readBatch(options.layout.batchRoot);
-    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+    await readBatch(options.layout.batchRoot);
     const runPath = path.join(options.layout.reportRoot, 'run.json');
     const run = await fs.readJson(runPath) as Record<string, unknown>;
     await writeJsonAtomic(runPath, {
@@ -1436,201 +1258,6 @@ export async function refreshSkillReportBatch(options: {
     return refreshBatchSummary(batchRoot);
   });
   return summary;
-}
-
-async function sealBatchUnlocked(
-  batchRoot: string,
-  owner: SkillReportOwner,
-): Promise<BatchSummary> {
-  const batch = await readBatch(batchRoot);
-  if (!sameOwner(batch.owner, owner)) throw new Error('Review batch owner mismatch.');
-  if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
-  await recoverInterruptedRunsUnlocked(batchRoot);
-  const runs = await readRunSummaries(batchRoot);
-  if (runs.some((run) => run.status === 'running')) {
-    throw new Error(`Report batch ${batch.batchId} still has a running eval.`);
-  }
-  batch.status = 'sealed';
-  batch.sealedAt = new Date().toISOString();
-  batch.updatedAt = batch.sealedAt;
-  await writeJsonAtomic(path.join(batchRoot, 'batch.json'), batch);
-  return refreshBatchSummary(batchRoot);
-}
-
-export async function sealSkillReportBatch(options: {
-  repoRoot: string;
-  owner: SkillReportOwner;
-  batchId: string;
-}): Promise<BatchSummary> {
-  const batchRoot = path.join(
-    resolveSkillEvalRoot(options.repoRoot, options.owner),
-    validateBatchId(options.batchId),
-  );
-  await assertSafeSkillReportPath(options.repoRoot, batchRoot);
-  const summary = await withBatchLock(
-    batchRoot,
-    () => sealBatchUnlocked(batchRoot, options.owner),
-  );
-  return summary;
-}
-
-export async function publishSkillReviewToBatch(options: {
-  repoRoot: string;
-  owner: SkillReportOwner;
-  batchName?: string;
-  batchId?: string;
-  source: SkillReportSourceIdentity;
-  report: string;
-  scorecard: unknown;
-  reviewResult?: unknown;
-  awReviewSummary?: unknown;
-  awReviewTargetPlan?: unknown;
-  calculated: SkillReviewCalculation;
-  reviewId?: string;
-}): Promise<PublishedSkillReportSummary> {
-  if ((options.batchName ? 1 : 0) + (options.batchId ? 1 : 0) !== 1) {
-    throw new Error('Provide exactly one of --batch-name or --batch-id.');
-  }
-  assertSegment(options.owner.skill, 'Skill name');
-  if (options.owner.kind === 'plugin-skill') assertSegment(options.owner.plugin, 'Plugin name');
-  if (options.report.trim() === '') throw new Error('Review report must not be empty.');
-  const evalRoot = resolveSkillEvalRoot(options.repoRoot, options.owner);
-  const reportRoot = resolveSkillReportRoot(options.repoRoot, options.owner);
-  const batchId = options.batchId
-    ? validateBatchId(options.batchId)
-    : createSkillReportBatchId(options.batchName!);
-  const reviewId = validateRunId(options.reviewId ?? createRunId(), '--review-id');
-  const batchRoot = path.join(evalRoot, batchId);
-  const publishedBatchRoot = path.join(reportRoot, batchId);
-  await assertSafeSkillReportPath(options.repoRoot, batchRoot);
-  await assertSafeSkillReportPath(options.repoRoot, publishedBatchRoot);
-  const now = new Date().toISOString();
-  if (options.batchName) {
-    await fs.ensureDir(evalRoot);
-    await assertSafeSkillReportPath(options.repoRoot, evalRoot);
-    await fs.mkdir(batchRoot);
-    await assertSafeSkillReportPath(options.repoRoot, batchRoot);
-    await writeJsonAtomic(path.join(batchRoot, 'batch.json'), {
-      schemaVersion: BATCH_SCHEMA_VERSION,
-      batchId,
-      name: options.batchName,
-      owner: options.owner,
-      status: 'open',
-      createdAt: now,
-      updatedAt: now,
-      source: options.source,
-      environmentDigest: createEnvironmentDigest({ reviewOnly: true }),
-      requiredTargets: [],
-    } satisfies SkillReportBatch);
-  } else if (!(await fs.pathExists(batchRoot))) {
-    throw new Error(`Report batch does not exist: ${batchId}.`);
-  }
-  return withBatchLock(batchRoot, async () => {
-    const batch = await readBatch(batchRoot);
-    if (!sameOwner(batch.owner, options.owner)) throw new Error('Review batch owner mismatch.');
-    if (batch.status === 'sealed') throw new Error(`Report batch ${batchId} is sealed.`);
-    if (batch.source.digest !== options.source.digest) {
-      throw new Error(`Report batch ${batchId} uses a different source digest.`);
-    }
-    await recoverInterruptedRunsUnlocked(batchRoot);
-    const runs = await readRunSummaries(batchRoot);
-    if (runs.some((run) => run.status === 'running')) {
-      throw new Error(`Report batch ${batch.batchId} still has a running eval.`);
-    }
-    if (await fs.pathExists(publishedBatchRoot)) {
-      throw new Error(`Report batch ${batchId} is already published.`);
-    }
-    const reviewRoot = path.join(batchRoot, 'reviews', options.calculated.mode, reviewId);
-    const stagingRoot = path.join(
-      reportRoot,
-      `.${batchId}.${process.pid}.${randomUUID()}.tmp`,
-    );
-    if (await fs.pathExists(reviewRoot)) {
-      throw new Error(`Review ${reviewId} already exists in report batch ${batchId}.`);
-    }
-    let reviewCreated = false;
-    let sealed = false;
-    try {
-      const batchSummary = await refreshBatchSummary(batchRoot);
-      const publishedSummary = publishedSummaryFromReview({
-        batchSummary,
-        reviewId,
-        publishedAt: now,
-        scorecard: options.scorecard,
-        calculated: options.calculated,
-      });
-      await assertSafeSkillReportPath(options.repoRoot, reportRoot);
-      await fs.ensureDir(reportRoot);
-      await assertSafeSkillReportPath(options.repoRoot, reportRoot);
-      await fs.mkdir(stagingRoot);
-      await writeTextAtomic(path.join(stagingRoot, 'report.md'), options.report);
-      await writeJsonAtomic(path.join(stagingRoot, 'summary.json'), publishedSummary);
-      if (options.reviewResult !== undefined) {
-        await writeJsonAtomic(path.join(stagingRoot, 'review-result.json'), options.reviewResult);
-      }
-      if (options.awReviewSummary !== undefined) {
-        await writeJsonAtomic(
-          path.join(stagingRoot, 'aw-review-summary.json'),
-          options.awReviewSummary,
-        );
-      }
-      if (options.awReviewTargetPlan !== undefined) {
-        await writeJsonAtomic(
-          path.join(stagingRoot, 'aw-review-target-plan.json'),
-          options.awReviewTargetPlan,
-        );
-      }
-      await fs.ensureDir(path.dirname(reviewRoot));
-      await fs.mkdir(reviewRoot, { recursive: false });
-      reviewCreated = true;
-      await writeTextAtomic(path.join(reviewRoot, 'report.md'), options.report);
-      await writeJsonAtomic(path.join(reviewRoot, 'scorecard.json'), options.scorecard);
-      if (options.reviewResult !== undefined) {
-        await writeJsonAtomic(path.join(reviewRoot, 'review-result.json'), options.reviewResult);
-      }
-      if (options.awReviewSummary !== undefined) {
-        await writeJsonAtomic(
-          path.join(reviewRoot, 'aw-review-summary.json'),
-          options.awReviewSummary,
-        );
-      }
-      if (options.awReviewTargetPlan !== undefined) {
-        await writeJsonAtomic(
-          path.join(reviewRoot, 'aw-review-target-plan.json'),
-          options.awReviewTargetPlan,
-        );
-      }
-      await writeJsonAtomic(path.join(reviewRoot, 'review-summary.json'), {
-        schemaVersion: 1,
-        completedAt: now,
-        ...options.calculated,
-      });
-      await refreshBatchSummary(batchRoot);
-      sealed = true;
-      await sealBatchUnlocked(batchRoot, options.owner);
-      await fs.rename(stagingRoot, publishedBatchRoot);
-      return publishedSummary;
-    } catch (error) {
-      try {
-        await fs.remove(stagingRoot);
-        if (reviewCreated) await fs.remove(reviewRoot);
-        if (sealed) {
-          const current = await readBatch(batchRoot);
-          current.status = 'open';
-          delete current.sealedAt;
-          current.updatedAt = new Date().toISOString();
-          await writeJsonAtomic(path.join(batchRoot, 'batch.json'), current);
-        }
-        if (reviewCreated) await refreshBatchSummary(batchRoot);
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          `Review publication failed and rollback did not complete for batch ${batchId}.`,
-        );
-      }
-      throw error;
-    }
-  });
 }
 
 export function reportBatchName(batchId: string): string {

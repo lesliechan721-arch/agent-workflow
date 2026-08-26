@@ -149,7 +149,7 @@
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "skill-review",
+      "scenario_family": "review-routing-boundary",
       "unit_under_test": "description",
       "preconditions": {
         "target_available": true
@@ -172,7 +172,7 @@
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "skill-review",
+      "scenario_family": "review-routing-boundary",
       "unit_under_test": "description",
       "preconditions": {
         "target_available": true

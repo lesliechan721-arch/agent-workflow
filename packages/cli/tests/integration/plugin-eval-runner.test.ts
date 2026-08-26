@@ -813,9 +813,9 @@ describe('plugin eval runner', () => {
   it('rejects plugin path traversal before resolving a manifest', async () => {
     let stderr = '';
     const exitCode = await runPluginEvals([
-      '../skill-review',
+      '../outside-plugin',
       '--skill',
-      'skill-review',
+      'outside-skill',
       '--materialize-only',
       '--batch-name',
       'test-batch',

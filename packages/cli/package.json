@@ -34,7 +34,6 @@
     "test:smoke:fetch": "pnpm run test:smoke:publish:catalog",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
     "plugin:eval": "tsc -p tsconfig.json && node dist/scripts/eval-plugin-skills-audited.js",
-    "review:publish": "tsc -p tsconfig.json && node dist/scripts/publish-skill-review.js",
     "test:smoke:plugin-scripts": "vitest run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
     "prepack": "pnpm --dir ../.. build:ensure",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
-import { readPluginManifest, validatePluginManifest } from '../../src/utils/manifest.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
 import { getPluginAuthoringAcceptedValues } from '../../src/utils/plugin-authoring-capabilities.js';
 
 const execFileAsync = promisify(execFile);
@@ -27,17 +27,6 @@ function fixturePath(...segments: string[]): string {
     'fixtures',
     ...segments,
   );
-}
-
-function extractJsonFenceAfter(document: string, heading: string): unknown {
-  const headingIndex = document.indexOf(heading);
-  expect(headingIndex).toBeGreaterThanOrEqual(0);
-  const fenceStart = document.indexOf('```json', headingIndex);
-  expect(fenceStart).toBeGreaterThanOrEqual(0);
-  const jsonStart = document.indexOf('\n', fenceStart) + 1;
-  const fenceEnd = document.indexOf('```', jsonStart);
-  expect(fenceEnd).toBeGreaterThanOrEqual(0);
-  return JSON.parse(document.slice(jsonStart, fenceEnd));
 }
 
 function withDefaultCompatibility<T extends Record<string, unknown>>(manifest: T): T {
@@ -83,20 +72,22 @@ async function writeManifestOnlyPlugin(
 function validatePluginScriptPath(): string {
   return path.join(
     repoRoot(),
-    '.agents',
-    'skills',
-    'create-aw-plugin',
+    'packages',
+    'cli',
+    'dist',
+    'authoring',
     'scripts',
-    'validate_plugin.mjs',
+    'validate-plugin.mjs',
   );
 }
 
-function createAwPluginScriptPath(scriptName: string): string {
+function authoringScriptPath(scriptName: string): string {
   return path.join(
     repoRoot(),
-    '.agents',
-    'skills',
-    'create-aw-plugin',
+    'packages',
+    'cli',
+    'dist',
+    'authoring',
     'scripts',
     scriptName,
   );
@@ -428,14 +419,7 @@ describe('authoring tools', () => {
 
     const marketplaceSourcePath = path.join(tempRepo, 'plugins', 'marketplace-source.json');
     const beforeMarketplaceSource = await fs.readFile(marketplaceSourcePath, 'utf8');
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'init_plugin.mjs',
-    );
+    const scriptPath = authoringScriptPath('init-plugin.mjs');
     const initHelp = await execFileAsync('node', [scriptPath, '--help'], {
       cwd: repoRoot(),
       env: process.env,
@@ -717,11 +701,12 @@ describe('authoring tools', () => {
     });
     const evalCaseValidatorPath = path.join(
       repoRoot(),
-      '.agents',
+      'plugins',
+      'agent-skill-toolkit',
       'skills',
-      'skill-review',
+      'audit-agent-skill-evals',
       'scripts',
-      'validate_eval_cases.mjs',
+      'validate-eval-cases.mjs',
     );
     for (const evalCasesPath of [modelTriggerCasesPath, modelBehaviorCasesPath]) {
       const validation = await execFileAsync(
@@ -761,14 +746,7 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const tempRepo = path.join(tempRoot, 'repo');
     await fs.copy(fixturePath('repo-template'), tempRepo);
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'init_plugin.mjs',
-    );
+    const scriptPath = authoringScriptPath('init-plugin.mjs');
 
     await expect(execFileAsync('node', [
       scriptPath,
@@ -875,7 +853,7 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const tempRepo = path.join(tempRoot, 'repo');
     await fs.copy(fixturePath('repo-template'), tempRepo);
-    const scriptPath = createAwPluginScriptPath('add_skill.mjs');
+    const scriptPath = authoringScriptPath('add-skill.mjs');
 
     const dualPluginRoot = path.join(tempRepo, 'plugins', 'git-commit');
     const dualReadmePath = path.join(dualPluginRoot, 'README.md');
@@ -1073,7 +1051,7 @@ describe('authoring tools', () => {
     await runGit(workspaceRoot, ['init']);
 
     await execFileAsync('node', [
-      createAwPluginScriptPath('init_plugin.mjs'),
+      authoringScriptPath('init-plugin.mjs'),
       'demo',
       '--description',
       'Create a plugin in an explicit compatible workspace root.',
@@ -1089,7 +1067,7 @@ describe('authoring tools', () => {
     await expect(fs.pathExists(path.join(workspaceRoot, 'plugins'))).resolves.toBe(false);
 
     await execFileAsync('node', [
-      createAwPluginScriptPath('add_skill.mjs'),
+      authoringScriptPath('add-skill.mjs'),
       'demo',
       '--skill-name',
       'second-workflow',
@@ -1141,7 +1119,7 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     const versionCheck = await execFileAsync('node', [
-      createAwPluginScriptPath('check_plugin_versions.mjs'),
+      authoringScriptPath('check-plugin-versions.mjs'),
       'demo',
       '--json',
       '--repo-root',
@@ -1230,7 +1208,7 @@ describe('authoring tools', () => {
         'skill-target-directory': 'Skill already exists',
       }[pathCase];
       await expect(execFileAsync('node', [
-        createAwPluginScriptPath('add_skill.mjs'),
+        authoringScriptPath('add-skill.mjs'),
         'demo',
         '--skill-name',
         'redirected-skill',
@@ -1262,7 +1240,7 @@ describe('authoring tools', () => {
     const workspaceRoot = path.join(tempRoot, 'workspace');
     await fs.ensureDir(workspaceRoot);
     await expect(execFileAsync('node', [
-      createAwPluginScriptPath('init_plugin.mjs'),
+      authoringScriptPath('init-plugin.mjs'),
       'demo',
       '--description',
       'Reject an escaped plugin root.',
@@ -1282,7 +1260,7 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const workspaceRoot = path.join(tempRoot, 'workspace');
     const victimRoot = path.join(tempRoot, 'victim');
-    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const checkerPath = authoringScriptPath('plugin-status.mjs');
     const defaultPluginRoot = path.join(workspaceRoot, 'plugins', 'default-demo');
     const explicitPluginRoot = path.join(workspaceRoot, 'tools', 'explicit-demo');
     const victimDefaultRoot = path.join(victimRoot, 'default-demo');
@@ -1436,7 +1414,7 @@ describe('authoring tools', () => {
       'baseline',
     ]);
 
-    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const checkerPath = authoringScriptPath('plugin-status.mjs');
     const skillMdPath = path.join(pluginDir, 'skills', 'versioned-skill', 'SKILL.md');
     await expect(execFileAsync('node', [
       checkerPath,
@@ -1765,7 +1743,7 @@ describe('authoring tools', () => {
       `${'current-provider-bytes-'.repeat(512 * 1024)}\n`,
       'utf8',
     );
-    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const checkerPath = authoringScriptPath('plugin-status.mjs');
     const allConsumers = await execFileAsync('node', [
         checkerPath,
         '--all',
@@ -1933,7 +1911,7 @@ describe('authoring tools', () => {
     ]);
 
     const checker = execFileAsync('node', [
-      createAwPluginScriptPath('plugin_status.mjs'),
+      authoringScriptPath('plugin-status.mjs'),
       'new-import-consumer',
       '--json',
       '--repo-root',
@@ -2016,7 +1994,7 @@ describe('authoring tools', () => {
 
     const policyPath = path.join(pluginDir, 'skills', 'historical', 'POLICY.md');
     await fs.writeFile(policyPath, 'current policy\n', 'utf8');
-    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const checkerPath = authoringScriptPath('plugin-status.mjs');
 
     const developmentStatus = await execFileAsync('node', [
         checkerPath,
@@ -2172,7 +2150,7 @@ describe('authoring tools', () => {
       version: '2.0.0',
       type: 'module',
     }, { spaces: 2 });
-    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const checkerPath = authoringScriptPath('plugin-status.mjs');
     const allDevelopmentStatus = await execFileAsync('node', [
         checkerPath,
         '--all',
@@ -2248,7 +2226,7 @@ describe('authoring tools', () => {
       'utils',
       'skill-frontmatter-capabilities.json',
     );
-    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const checkerPath = authoringScriptPath('plugin-status.mjs');
 
     await writeSourcePlugin(
       path.join(workspaceRoot, 'plugins'),
@@ -2324,7 +2302,7 @@ describe('authoring tools', () => {
     ]);
 
     const result = await execFileAsync('node', [
-      createAwPluginScriptPath('plugin_status.mjs'),
+      authoringScriptPath('plugin-status.mjs'),
       'external-cli-demo',
       '--json',
       '--repo-root',
@@ -2352,14 +2330,7 @@ describe('authoring tools', () => {
     const tempRepo = path.join(tempRoot, 'repo');
     await fs.copy(fixturePath('repo-template'), tempRepo);
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'init_plugin.mjs',
-    );
+    const scriptPath = authoringScriptPath('init-plugin.mjs');
 
     await execFileAsync(
       'node',
@@ -2532,14 +2503,7 @@ describe('authoring tools', () => {
     const tempRepo = path.join(tempRoot, 'repo');
     await fs.copy(fixturePath('repo-template'), tempRepo);
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'init_plugin.mjs',
-    );
+    const scriptPath = authoringScriptPath('init-plugin.mjs');
 
     await execFileAsync(
       'node',
@@ -2995,22 +2959,8 @@ describe('authoring tools', () => {
     const tempRepo = path.join(tempRoot, 'repo');
     await fs.copy(fixturePath('repo-template'), tempRepo);
 
-    const initScriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'init_plugin.mjs',
-    );
-    const validateScriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const initScriptPath = authoringScriptPath('init-plugin.mjs');
+    const validateScriptPath = validatePluginScriptPath();
 
     await execFileAsync(
       'node',
@@ -3081,22 +3031,8 @@ describe('authoring tools', () => {
     const tempRepo = path.join(tempRoot, 'repo');
     await fs.copy(fixturePath('repo-template'), tempRepo);
 
-    const initScriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'init_plugin.mjs',
-    );
-    const validateScriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const initScriptPath = authoringScriptPath('init-plugin.mjs');
+    const validateScriptPath = validatePluginScriptPath();
 
     await execFileAsync(
       'node',
@@ -3179,122 +3115,6 @@ describe('authoring tools', () => {
     ).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
-  });
-
-  it('validates the documented minimum plugin manifest example', async () => {
-    const root = repoRoot();
-    const manifestSpecDoc = await fs.readFile(
-      path.join(
-        root,
-        '.agents',
-        'skills',
-        'create-aw-plugin',
-        'references',
-        'plugin-manifest-spec.md',
-      ),
-      'utf8',
-    );
-
-    expect(() =>
-      validatePluginManifest(
-        path.join(os.tmpdir(), 'documented-plugin'),
-        extractJsonFenceAfter(manifestSpecDoc, '## 最小 manifest 示例'),
-      ),
-    ).not.toThrow();
-  });
-
-  it('keeps the generated Skill frontmatter reference current', async () => {
-    await execFileAsync(
-      'node',
-      [
-        createAwPluginScriptPath('generate_skill_frontmatter_reference.mjs'),
-        '--check',
-      ],
-      { cwd: repoRoot(), env: process.env },
-    );
-  });
-
-  it('validates the create-aw-plugin static eval contract', async () => {
-    const root = repoRoot();
-    const result = await execFileAsync(
-      'node',
-      [
-        path.join(
-          root,
-          '.agents',
-          'skills',
-          'skill-review',
-          'scripts',
-          'run_static_skill_evals.mjs',
-        ),
-        'create-aw-plugin',
-        '--validate-only',
-      ],
-      { cwd: root, env: process.env },
-    );
-
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      ok: true,
-      skill: 'create-aw-plugin',
-      suites: ['trigger', 'behavior'],
-    });
-  });
-
-  it('validates the checked-in authoring eval corpora with the shared validator', async () => {
-    const root = repoRoot();
-    const creatorSkillRoot = path.join(
-      root,
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-    );
-    const validatorPath = path.join(
-      root,
-      '.agents',
-      'skills',
-      'skill-review',
-      'scripts',
-      'validate_eval_cases.mjs',
-    );
-    const cases = [
-      {
-        path: path.join(creatorSkillRoot, 'evals', 'trigger-cases.json'),
-        strict: false,
-      },
-      {
-        path: path.join(creatorSkillRoot, 'evals', 'evals.json'),
-        strict: false,
-      },
-      {
-        path: path.join(
-          creatorSkillRoot,
-          'references',
-          '.examples',
-          'code-review',
-          'skills',
-          'review-workflow',
-          'evals',
-          'evals.json',
-        ),
-        strict: true,
-      },
-    ];
-
-    for (const evalCase of cases) {
-      const result = await execFileAsync(
-        'node',
-        [
-          validatorPath,
-          evalCase.path,
-          ...(evalCase.strict ? ['--strict'] : []),
-          '--format',
-          'json',
-        ],
-        { cwd: root, env: process.env },
-      );
-
-      expect(JSON.parse(result.stdout), evalCase.path).toMatchObject({ valid: true });
-    }
   });
 
   it('validate_plugin.mjs validates optional plugin eval manifests', async () => {
@@ -3644,14 +3464,7 @@ describe('authoring tools', () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-scripts-authoring-'));
     tempDirs.push(tempRoot);
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'script-contract-demo', {});
     await fs.ensureDir(path.join(pluginDir, 'scripts', 'pkg'));
     await fs.writeFile(
@@ -4903,14 +4716,7 @@ describe('authoring tools', () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-hooks-authoring-'));
     tempDirs.push(tempRoot);
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'native-hook-demo', {
       hooks: [
         {
@@ -5181,42 +4987,8 @@ describe('authoring tools', () => {
     }
   });
 
-  it('validate_plugin.mjs passes on the reference code-review example', async () => {
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
-    const pluginDir = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'references',
-      '.examples',
-      'code-review',
-    );
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).resolves.toBeDefined();
-  });
-
   it('validate_plugin.mjs validates public slashCommands source contracts', async () => {
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-slash-commands-authoring-'));
     tempDirs.push(tempRoot);
     const validPluginDir = path.join(tempRoot, 'slash-commands-only');
@@ -5395,14 +5167,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -5587,14 +5352,7 @@ describe('authoring tools', () => {
       },
     }), { spaces: 2 });
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     await ensureFixtureReadmes(pluginDir);
 
     await expect(
@@ -5673,14 +5431,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
 
     await fs.writeFile(
       path.join(pluginDir, 'skills', 'policy-products-test', 'agents', 'openai.yaml'),
@@ -5789,14 +5540,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     await ensureFixtureReadmes(pluginDir);
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -5890,14 +5634,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     await ensureFixtureReadmes(pluginDir);
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -5947,14 +5684,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     await ensureFixtureReadmes(pluginDir);
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -6021,14 +5751,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     let invalidFrontmatterStdout = '';
     try {
       await execFileAsync('node', [scriptPath, pluginDir], {
@@ -6444,14 +6167,7 @@ describe('authoring tools', () => {
       interface: { displayName: 'Boundary Test', shortDescription: 'Test' },
     }), { spaces: 2 });
 
-    const scriptPath = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
+    const scriptPath = validatePluginScriptPath();
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -6459,111 +6175,6 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toBeDefined();
-  });
-
-  it.skip('legacy validator fallback is removed with the published CLI authoring runtime', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-dist-'));
-    tempDirs.push(tempRoot);
-
-    const scriptPath = path.join(
-      tempRoot,
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
-    await fs.ensureDir(path.dirname(scriptPath));
-    await fs.copy(validatePluginScriptPath(), scriptPath);
-    await fs.copy(
-      path.join(repoRoot(), '.agents', 'skills', 'create-aw-plugin', 'scripts', 'lib'),
-      path.join(path.dirname(scriptPath), 'lib'),
-    );
-    await fs.copy(
-      path.join(
-        repoRoot(),
-        'packages',
-        'cli',
-        'src',
-        'utils',
-        'skill-frontmatter-capabilities.json',
-      ),
-      path.join(
-        tempRoot,
-        'packages',
-        'cli',
-        'src',
-        'utils',
-        'skill-frontmatter-capabilities.json',
-      ),
-    );
-
-    const staleManifestModulePath = path.join(
-      tempRoot,
-      'packages',
-      'cli',
-      'dist',
-      'src',
-      'utils',
-      'manifest.js',
-    );
-    await fs.outputFile(
-      staleManifestModulePath,
-      [
-        'exports.validatePluginManifest = () => {};',
-        'exports.validateSourcePluginManifest = async (_pluginDir, manifest) => {',
-        '  if (!manifest.skillTriggers) throw new Error("stale validator requires skillTriggers");',
-        '};',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const { pluginDir, manifestPath } = await writeSourcePlugin(
-      path.join(tempRoot, 'plugins'),
-      'stale-dist-test',
-      createBaseManifest('stale-dist-test'),
-    );
-    const result = await execFileAsync('node', [scriptPath, pluginDir], {
-      cwd: tempRoot,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-
-    expect(result.stdout).toContain('仅执行轻量预检');
-    expect(result.stdout).toContain('[PASS] All checks passed.');
-
-    const manifest = await fs.readJson(manifestPath);
-    for (const invalidVersion of ['1.2.3-', '1.2.3-+meta']) {
-      manifest.version = invalidVersion;
-      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-      await expect(
-        execFileAsync('node', [scriptPath, pluginDir], {
-          cwd: tempRoot,
-          env: process.env,
-          maxBuffer: 10 * 1024 * 1024,
-        }),
-      ).rejects.toMatchObject({
-        stdout: expect.stringContaining(
-          'manifest.version must be a strict SemVer 2.0.0 string',
-        ),
-      });
-    }
-
-    manifest.version = '0.1.0';
-    manifest.marketplace.policy.authentication = 'NONE';
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: tempRoot,
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'marketplace.policy.authentication must be "ON_INSTALL" or "ON_USE"',
-      ),
-    });
   });
 
   it('accepts dependencies at the default AW floor in the authoring fallback validator', async () => {
@@ -6679,66 +6290,6 @@ describe('authoring tools', () => {
     })).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
-  });
-
-  it.skip('legacy lightweight validation is removed with the published CLI authoring runtime', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-fallback-'));
-    tempDirs.push(tempRoot);
-
-    const scriptSource = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
-    const scriptPath = path.join(
-      tempRoot,
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
-    await fs.ensureDir(path.dirname(scriptPath));
-    await fs.copy(scriptSource, scriptPath);
-    await fs.copy(
-      path.join(repoRoot(), '.agents', 'skills', 'create-aw-plugin', 'scripts', 'lib'),
-      path.join(path.dirname(scriptPath), 'lib'),
-    );
-
-    const pluginDir = path.join(tempRoot, 'plugins', 'fallback-test');
-    await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
-      name: 'fallback-test',
-      version: '0.1.0',
-      description: 'Test plugin for fallback validation.',
-      mcpServers: './.mcp.json',
-      apps: './.app.json',
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      },
-      buildConfig: {
-        templates: {
-          include: ['.mcp.json', '.app.json'],
-        },
-      },
-    }), { spaces: 2 });
-    await fs.writeJson(path.join(pluginDir, '.mcp.json'), { template: true }, { spaces: 2 });
-    await fs.writeJson(path.join(pluginDir, '.app.json'), { template: true }, { spaces: 2 });
-    await ensureFixtureReadmes(pluginDir);
-
-    const result = await execFileAsync('node', [scriptPath, pluginDir], {
-      cwd: tempRoot,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-
-    expect(result.stdout).toContain('仅执行轻量预检');
-    expect(result.stdout).toContain('[PASS] All checks passed.');
   });
 
 });

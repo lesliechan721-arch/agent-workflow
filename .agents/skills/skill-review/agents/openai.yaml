@@ -1,7 +1,0 @@
-interface:
-  display_name: "Skill Review"
-  short_description: "只读 Agent Skill 质量评审；不实现目标或编写 eval"
-  default_prompt: "使用 $skill-review 只读评审指定静态或 AW 插件 Skill，按请求选择评审模式，并给出证据化 finding、unknown 和最小改进集。"
-
-policy:
-  allow_implicit_invocation: false

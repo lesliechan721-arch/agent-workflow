@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -17,58 +17,6 @@ const runtimeRoot = context?.platform ? path.join(localRoot, context.platform) :
 const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const temps = [];
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
-const legacyReviewRuntimeFragments = [
-  '.agents/legacy/plugin-development-review',
-  'legacy-review/',
-  'ReviewInputBundle',
-  'AWReviewSummary',
-  'AWReviewTargetPlan',
-  'review-input-bundle',
-  'aw-review-summary',
-  'aw-review-target-plan',
-  'skill-inspection-result',
-  'inspect-agent-skill',
-  'inspect-aw-target',
-  'prepare-aw-review-',
-  'review-artifact-policy',
-  'validate-aw-review-summary',
-  'validate-review-input-bundle',
-  'validate-review-result',
-  'publish-skill-review',
-  'pnpm review:publish',
-  '--batch-id',
-  'batchId',
-  'sealSkillReportBatch',
-];
-
-async function productionNodeFiles(root, relative = '') {
-  const files = [];
-  const entries = await readdir(path.join(root, relative), { withFileTypes: true });
-  for (const entry of entries) {
-    if (['.git', 'evals', 'node_modules', 'reports'].includes(entry.name)) continue;
-    const child = relative ? path.posix.join(relative, entry.name) : entry.name;
-    if (entry.isDirectory()) {
-      files.push(...await productionNodeFiles(root, child));
-    } else if (entry.isFile() && /\.[cm]?js$/u.test(entry.name) && !entry.name.endsWith('.test.mjs')) {
-      files.push(child);
-    }
-  }
-  return files;
-}
-
-function assertNoLegacyReviewRuntimeReference(value, label) {
-  for (const fragment of legacyReviewRuntimeFragments) {
-    assert.equal(value.includes(fragment), false, `${label} references legacy review runtime fragment ${fragment}`);
-  }
-}
-
-async function assertNoLegacyReviewRuntimeImports(root, label) {
-  for (const relative of await productionNodeFiles(root)) {
-    const source = await readFile(path.join(root, relative), 'utf8');
-    assertNoLegacyReviewRuntimeReference(source, `${label}/${relative}`);
-  }
-}
-
 async function runJson(file, args = []) {
   try {
     return JSON.parse((await execFileAsync(process.execPath, [file, ...args], {
@@ -89,21 +37,6 @@ test('review adapter manifest and runtime contain only current quality and relea
     .filter((entry) => entry.skill === 'review-aw-plugin')
     .map((entry) => entry.target)
     .sort();
-  // Static contract exception: legacy AW review ownership in current adapter source would re-enter its published closure; behavior test is not suitable because ownership is the absence of these exact source files.
-  for (const relative of [
-    'schemas/aw-review-summary.schema.json',
-    'schemas/aw-review-target-plan.schema.json',
-    'scripts/legacy-review/inspect-aw-target.mjs',
-    'scripts/legacy-review/prepare-aw-review-bundle.mjs',
-    'scripts/legacy-review/prepare-aw-review-target-plan.mjs',
-    'scripts/legacy-review/prepare-aw-review-targets.mjs',
-    'scripts/legacy-review/review-artifact-policy.mjs',
-    'scripts/validate-aw-review-summary.mjs',
-    'skills/review-aw-plugin/references/aw-report-publication.md',
-    'skills/review-aw-plugin/references/aw-review-bundle.md',
-  ]) {
-    await assert.rejects(readFile(path.join(sourceRoot, relative), 'utf8'), relative);
-  }
   assert.deepEqual(targets, [
     'assets/eval-audit-result.schema.json',
     'assets/eval-run-bundle.schema.json',
@@ -119,31 +52,12 @@ test('review adapter manifest and runtime contain only current quality and relea
     'scripts/validate-quality-review-result.mjs',
   ]);
   const skillRoot = path.join(runtimeRoot, 'skills/review-aw-plugin');
-  for (const relative of [
-    'assets/aw-review-summary.json',
-    'assets/review-input-bundle.json',
-    'assets/aw-review-summary.schema.json',
-    'assets/aw-review-target-plan.schema.json',
-    'assets/review-input-bundle.schema.json',
-    'assets/review-result.schema.json',
-    'scripts/inspect-aw-target.mjs',
-    'scripts/prepare-aw-review-bundle.mjs',
-    'scripts/prepare-aw-review-target-plan.mjs',
-    'scripts/prepare-aw-review-targets.mjs',
-    'scripts/review-artifact-policy.mjs',
-    'scripts/validate-aw-review-summary.mjs',
-    'scripts/validate-review-input-bundle.mjs',
-    'scripts/validate-review-result.mjs',
-  ]) {
-    await assert.rejects(readFile(path.join(skillRoot, relative), 'utf8'), relative);
-  }
   assert.ok((await readFile(path.join(skillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
   assert.ok((await readFile(path.join(skillRoot, 'scripts/corpus-digest.mjs'), 'utf8')).length > 100);
 });
 
-test('AW reviewer production and materialized closures exclude the legacy review owner', async () => {
+test('AW reviewer production and materialized closures use registered current dependencies', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
-  // Static contract exception: a legacy review import, projection, fallback, or publisher would put obsolete owner code in the published runtime closure; behavior test is not suitable because this is an absence boundary for the public bundle.
   assert.deepEqual(manifest.buildConfig.runtimeExports ?? [], []);
   assert.deepEqual(
     manifest.buildConfig.buildImports.map((entry) => `${entry.plugin}:${entry.export}`).sort(),
@@ -173,16 +87,6 @@ test('AW reviewer production and materialized closures exclude the legacy review
       'agent-skill-toolkit:validate-quality-review-result',
     ],
   );
-  assertNoLegacyReviewRuntimeReference(
-    JSON.stringify({
-      runtimeExports: manifest.buildConfig.runtimeExports,
-      buildImports: manifest.buildConfig.buildImports,
-      skillRuntimeFiles: manifest.buildConfig.skillRuntimeFiles,
-    }),
-    'manifest build contract',
-  );
-  await assertNoLegacyReviewRuntimeImports(sourceRoot, 'production source');
-  if (context) await assertNoLegacyReviewRuntimeImports(runtimeRoot, 'materialized runtime');
 });
 
 test('author adapter still delegates deterministic work to stable AW CLI commands', async () => {

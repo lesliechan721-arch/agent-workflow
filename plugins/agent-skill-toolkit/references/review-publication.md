@@ -6,7 +6,7 @@
 
 - Publication 只归档已有材料，不改变 findings、design 或 complexity，不运行 Eval 或 Release Check，也不更新 README。
 - Quality Review 不拥有 readiness 或 Eval evidence level。已有的独立 `release-check.json` 只能作为附件。
-- 先运行 `aw review publish --help`，以当前公开 CLI 参数为准。不要调用旧 publisher。
+- 先运行 `aw review publish --help`，以当前公开 CLI 参数为准。
 - 修订已有记录时创建新的不可变记录，并用 `--supersedes <review-id>` 指向同 kind、同 target id 的旧记录。
 
 ## 目标映射

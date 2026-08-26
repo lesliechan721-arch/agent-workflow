@@ -1,6 +1,0 @@
-interface:
-  display_name: "AW Plugin Creator"
-  short_description: "创建、增量维护并验证 Agent Workflows 插件与版本合同"
-  default_prompt: "使用 $create-aw-plugin 创建、维护并验证 agent-workflows 插件。"
-policy:
-  allow_implicit_invocation: false

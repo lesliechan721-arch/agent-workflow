@@ -27,7 +27,6 @@
     "plugin:eval": "pnpm --filter @lesliechan721/aw plugin:eval --",
     "plugin:status": "node packages/cli/dist/index.js plugin status --all",
     "plugin:version:check": "node packages/cli/dist/index.js plugin check-versions --all",
-    "review:publish": "pnpm --filter @lesliechan721/aw review:publish --",
     "test:smoke:plugin-scripts": "pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts",
     "pack:cli": "node scripts/release/pack-cli.mjs",
     "eval:runtime-owner:verify": "node scripts/verify-eval-runtime-owner.mjs",

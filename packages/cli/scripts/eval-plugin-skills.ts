@@ -1589,8 +1589,6 @@ export async function readSourceRevision(options: {
         ...pluginPaths,
         'packages/cli/scripts',
         'packages/cli/src',
-        '.agents/skills/create-aw-plugin',
-        '.agents/skills/skill-review',
         ...reportExclusions,
       ], {
         cwd: options.repoRoot,
