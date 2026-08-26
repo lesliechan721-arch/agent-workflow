@@ -60,6 +60,11 @@ export interface BuildConfigSkillRuntimeFile {
   source?: string;
   import?: BuildConfigImportReference;
 }
+export interface BuildConfigGeneratedSkillRuntimeFile {
+  skill: string;
+  target: string;
+  distributions?: DistributionName[];
+}
 export interface BuildConfig {
   cacheable?: true;
   templates?: BuildConfigTemplates;
@@ -68,6 +73,7 @@ export interface BuildConfig {
   runtimeExports?: BuildConfigRuntimeExport[];
   buildImports?: BuildConfigBuildImport[];
   skillRuntimeFiles?: BuildConfigSkillRuntimeFile[];
+  generatedSkillRuntimeFiles?: BuildConfigGeneratedSkillRuntimeFile[];
 }
 
 export type PluginLifecycleEvent = 'install' | 'upgrade' | 'uninstall';

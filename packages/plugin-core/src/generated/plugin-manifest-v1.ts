@@ -78,7 +78,7 @@ category: string
 tags?: string[]
 strict: boolean
 policy: {
-installation: "AVAILABLE"
+installation: ("AVAILABLE" | "NOT_AVAILABLE" | "INSTALLED_BY_DEFAULT")
 authentication: ("ON_INSTALL" | "ON_USE")
 products?: string[]
 }
@@ -252,6 +252,11 @@ platforms?: ("codex" | "claude")[]
 distributions?: ("agent-skills")[]
 source?: string
 import?: ImportReference
+}[]
+generatedSkillRuntimeFiles?: {
+skill: string
+target: string
+distributions?: ("agent-skills")[]
 }[]
 }
 /**

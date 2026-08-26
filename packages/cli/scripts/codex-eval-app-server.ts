@@ -18,6 +18,8 @@ import {
 import {
   assertCodexEvalCanStartWork,
   applyCodexEvalProviderEnvironment,
+  CODEX_EVAL_CLI_ENTRY_ENV,
+  CODEX_EVAL_CLI_NODE_ENV,
   cleanCodexEvalRuntimeConfig,
   codexEvalRuntimeEvidence,
   createCodexEvalTemporaryRoot,
@@ -191,6 +193,8 @@ export async function settleAppServerProcessCleanup(options: {
 
 const PASSTHROUGH_ENV = new Set([
   'PATH',
+  CODEX_EVAL_CLI_ENTRY_ENV,
+  CODEX_EVAL_CLI_NODE_ENV,
   'LANG',
   'LC_ALL',
   'HTTP_PROXY',
@@ -227,6 +231,62 @@ function containsForbiddenHostRoot(value: unknown, forbiddenHostRoots: string[])
       containsForbiddenHostRoot(entry, forbiddenHostRoots));
   }
   return false;
+}
+
+function commandInputContainsForbiddenHostRoot(
+  value: Record<string, unknown>,
+  forbiddenHostRoots: string[],
+): boolean {
+  const commandActions = Array.isArray(value.commandActions)
+    ? value.commandActions.filter(isRecord).map((action) => ({
+        command: action.command,
+        path: action.path,
+      }))
+    : [];
+  return containsForbiddenHostRoot([
+    value.command,
+    value.cwd,
+    commandActions,
+  ], forbiddenHostRoots);
+}
+
+function eventContainsForbiddenHostSourceInput(
+  value: unknown,
+  forbiddenHostRoots: string[],
+): boolean {
+  if (!isRecord(value)) return false;
+  const params = isRecord(value.params) ? value.params : {};
+  if (value.method === 'item/commandExecution/requestApproval') {
+    return commandInputContainsForbiddenHostRoot(params, forbiddenHostRoots)
+      || containsForbiddenHostRoot(params.additionalPermissions, forbiddenHostRoots);
+  }
+  if (value.method === 'item/fileChange/requestApproval') {
+    return containsForbiddenHostRoot(params.grantRoot, forbiddenHostRoots);
+  }
+
+  const item = isRecord(params.item) ? params.item : null;
+  if (item?.type === 'commandExecution') {
+    return commandInputContainsForbiddenHostRoot(item, forbiddenHostRoots);
+  }
+  if (item?.type === 'fileChange' && Array.isArray(item.changes)) {
+    const paths = item.changes.filter(isRecord).map((change) => ({
+      path: change.path,
+      movePath: isRecord(change.kind) ? change.kind.move_path : undefined,
+    }));
+    return containsForbiddenHostRoot(paths, forbiddenHostRoots);
+  }
+  if (item?.type === 'imageView') {
+    return containsForbiddenHostRoot(item.path, forbiddenHostRoots);
+  }
+  return false;
+}
+
+function eventTraceContainsForbiddenHostSourceInput(
+  eventTrace: unknown[],
+  forbiddenHostRoots: string[],
+): boolean {
+  return eventTrace.some((event) =>
+    eventContainsForbiddenHostSourceInput(event, forbiddenHostRoots));
 }
 
 async function canonicalForbiddenHostRoots(roots: string[]): Promise<string[]> {
@@ -318,6 +378,18 @@ function workspacePathMatchesPattern(relativePath: string, pattern: string): boo
     return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
   }
   return relativePath === pattern;
+}
+
+function workspaceChangeIsAllowed(relativePath: string, patterns: string[]): boolean {
+  if (patterns.some((pattern) => workspacePathMatchesPattern(relativePath, pattern))) {
+    return true;
+  }
+  if (!relativePath.endsWith('/')) return false;
+  const directoryPath = relativePath.slice(0, -1);
+  return patterns.some((pattern) => {
+    const allowedPath = pattern.endsWith('/**') ? pattern.slice(0, -3) : pattern;
+    return allowedPath.startsWith(`${directoryPath}/`);
+  });
 }
 
 function jsonContains(actual: unknown, expected: unknown): boolean {
@@ -1103,7 +1175,7 @@ async function runConversationOnce(options: {
         readWorkspaceArtifactEvidence(workspaceRoot, expectation)),
     );
     const hostSourceAccessAbsent = options.forbiddenHostRoots.length > 0
-      ? !containsForbiddenHostRoot(eventTrace, options.forbiddenHostRoots)
+      ? !eventTraceContainsForbiddenHostSourceInput(eventTrace, options.forbiddenHostRoots)
       : null;
     if (hostSourceAccessAbsent === false) {
       diagnostics.push('Codex eval accessed a forbidden host source root.');
@@ -1118,8 +1190,7 @@ async function runConversationOnce(options: {
     }
     if (options.evalCase.sandbox === 'workspace-write') {
       const unexpectedChanges = workspaceChanges.filter((relativePath) =>
-        !options.evalCase.allowedWorkspaceChanges.some((pattern) =>
-          workspacePathMatchesPattern(relativePath, pattern)));
+        !workspaceChangeIsAllowed(relativePath, options.evalCase.allowedWorkspaceChanges));
       if (unexpectedChanges.length > 0) {
         diagnostics.push(`Workspace changed outside the allowed paths: ${unexpectedChanges.join(', ')}`);
       }
@@ -1149,7 +1220,7 @@ async function runConversationOnce(options: {
     });
   } catch (error) {
     const hostSourceAccessAbsent = options.forbiddenHostRoots.length > 0 &&
-      containsForbiddenHostRoot(eventTrace, options.forbiddenHostRoots)
+      eventTraceContainsForbiddenHostSourceInput(eventTrace, options.forbiddenHostRoots)
       ? false
       : null;
     const evidence: AppServerRunEvidence = {
@@ -1192,15 +1263,11 @@ export async function runCodexEvalIsolationProbe(options: {
   codexRuntime: CodexEvalRuntimeConfig;
   sourceEnv?: NodeJS.ProcessEnv;
   processManagement?: PluginEvalProcessManagementEvidence;
-  workRoot?: string;
 }): Promise<CodexEvalRpcIsolationEvidence> {
   assertCodexEvalCanStartWork();
   const sourceEnv = options.sourceEnv ?? process.env;
   const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
-  const temporaryRoot = await createEvalTemporaryRoot(
-    'isolation-probe-',
-    options.workRoot,
-  );
+  const temporaryRoot = await createEvalTemporaryRoot('isolation-probe-');
   const workspaceRoot = path.join(temporaryRoot.root, 'project');
   const codexHome = path.join(temporaryRoot.root, 'codex-home');
   let session: EvalAppServerSession | undefined;

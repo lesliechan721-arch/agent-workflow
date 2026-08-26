@@ -1,58 +1,11 @@
-# AW 作者 profile
+# AW Authoring Profile
 
-## 源码真值
+先确认工作区根、支持产品、允许修改文件、现有能力和调用策略。Workspace v1 的 canonical 插件根固定为 `<workspace-root>/plugins/<name>`，`.agents-plugin/plugin.json` 是插件源码真值；generated runtime、Catalog 和 cache 不由作者手改。
 
-- `<workspace-root>/plugins/<name>/.agents-plugin/plugin.json` 和该 canonical 插件根下源码是人工维护入口。工具按物理路径核对 `<plugin-root>`，不接受 workspace 中的其它布局。
-- `aw plugin build` 生成一个插件 bundle，`aw catalog build` 生成本地 schema 4 snapshot；published Catalog 由 `aw catalog publish` 生成。publisher 内部 staging、digest、marketplace 和历史恢复不是插件作者手改入口。
-- 插件名和 Skill 名使用小写短横线，并与各自目录一致。
-- 插件与 Skill README 按同目录的 `aw-readme-authoring.md` 维护，不读取宿主仓库的 README 规范作为运行时合同。
+AW CLI/Core 拥有 Workspace metadata、bundle 和 Catalog snapshot 的机器合同。作者只使用已安装 CLI 的 `--workspace-root` 入口，不依赖宿主仓库私有脚本或任意 `--plugin-root` 布局。
 
-## 组件选择
+按用户目标选择最小能力：模型判断和多步骤流程用 Skill；常驻静态规则用 extensions；显式快捷入口用 slash command；外部工具连接用 MCP/App；配置驱动的平台输出用 dynamic artifact。不要预建未请求能力。
 
-- Skills：模型判断和可独立调用工作流。
-- Extensions：常驻规则、权限、hooks、agents。
-- Public slash commands：显式快捷入口。
-- MCP / Apps：连接外部工具或应用。
-- Dynamic artifacts：配置驱动的 Codex/Claude 产物。
+多组件或 manifest 能力变化时，使用本 Skill 的结构化 context 工具。`components[]` 必须完整，且每个组件有 source path、产品/scope 和验证入口。轻量 Skill 正文修改不需要重新构造全插件计划。
 
-一个用户请求只创建必要能力，不预生成其它表面。
-
-## 复合作者上下文
-
-`AWAuthoringContext` v3 用非空 `components[]` 表示一次请求中的全部变更面。release target 不属于作者上下文字段；release 请求由目标 workspace 的 release workflow 设置 target，避免与 manifest 形成双真值。组件包含：
-
-Context 工具必须显式使用 `--mode create` 或 `--mode edit`。create 要求 `--plugin <name>`，canonical 目标目录必须尚不存在；edit 要求 canonical 目录和 manifest 已存在。create context 验证通过后才运行公开的 `aw plugin init <name> --workspace-root <workspace-root>`。
-
-- `id`：请求内唯一标识；
-- `type`：manifest、Skill、extension、slash command、MCP/App、dynamic artifact、config/helper、lifecycle、Node/build、README 或 Eval assets；
-- `operation`：`create`、`change` 或 `remove`；
-- `paths`：组件拥有的一个或多个源码路径；
-- `profiles`：该组件适用的 `CODEX`、`CLAUDE` profile；
-- `skillInvocation`：只用于 Skill，值为 `model`、`manual` 或 `claude-model-only`。
-
-`claude-model-only` Skill 的 `profiles` 必须只包含 `CLAUDE`。非 Skill 组件省略 `skillInvocation` 或设为 `null`。旧的单组件 `--component-type` 和 `--skill-invocation` 不再接受；先创建组件数组文件，再通过 `--components` 传入。
-
-## 脚本组件概览
-
-插件脚本通常位于：
-
-```text
-<plugin-root>/
-├── .agents-plugin/
-│   └── plugin.json
-└── scripts/
-    ├── aw-config.mjs
-    ├── render-artifacts.mjs
-    ├── lifecycle.mjs
-    └── *.test.mjs
-```
-
-文件名不会触发自动发现。使用的能力必须在 manifest 中显式声明：
-
-- config/helper：`config.schema` 与 `scripts.helpers.config`
-- dynamic artifacts：`scripts.artifacts.render` 与 `artifacts.targets`
-- lifecycle：`scripts.lifecycle`
-- Node package/build：`scripts.node.packageRoot` / `scripts.node.build`
-- tests：`scripts.tests.node`
-
-只读取当前组件对应的 branch reference；同一插件组合多个组件时可以读取多个 reference，但不要为单一 config 或 lifecycle 修改加载全部脚本协议。
+完成条件：源码声明与真实文件一致；能力没有重复 owner；README 描述用户可观察行为；运行目标工作区公开的 validate、status、build/test/materialization 入口；报告未验证项。独立 Review、模型 Eval 和发布不自动进入作者范围。

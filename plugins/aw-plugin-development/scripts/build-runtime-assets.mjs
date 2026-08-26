@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +70,37 @@ function renderFrontmatterReference(registry) {
   return lines.join('\n') + '\n';
 }
 
+const GENERATED_VIEWS = {
+  'plugin-manifest': 'plugin-manifest-capabilities.generated.md',
+  'build-config': 'build-config-capabilities.generated.md',
+  extensions: 'extensions-capabilities.generated.md',
+  'slash-command': 'slash-command-capabilities.generated.md',
+  'mcp-app': 'mcp-app-capabilities.generated.md',
+  'config-lifecycle-artifact': 'config-lifecycle-artifact-capabilities.generated.md',
+};
+
+function renderAuthoringReference(registry, surfaceKey, digest) {
+  const surface = registry.surfaces[surfaceKey];
+  if (!surface) throw new Error(`Missing authoring capability surface: ${surfaceKey}`);
+  const lines = [
+    `# ${surface.title}`,
+    '',
+    `Generated from \`@aw/cli/plugin-authoring-capabilities\` (${digest}).`,
+    `Verified source: \`${registry.verifiedSource}\`.`,
+    '',
+    '| Field | Type | Required | Product/profile | Accepted values | Requires | Conflicts | Verified source |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const entry of surface.entries) {
+    const profile = entry.products ?? entry.profiles ?? 'all supported';
+    const accepted = Array.isArray(entry.acceptedValues)
+      ? entry.acceptedValues.join(', ')
+      : entry.acceptedValues ?? '—';
+    lines.push(`| \`${markdownCell(entry.field)}\` | ${markdownCell(entry.type)} | ${markdownCell(entry.required)} | ${markdownCell(profile)} | ${markdownCell(accepted)} | ${markdownCell(entry.requires ?? '—')} | ${markdownCell(entry.conflicts ?? '—')} | ${markdownCell(entry.verifiedSource ?? registry.verifiedSource)} |`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
 const frontmatterRegistry = JSON.parse(await readFile(
   requiredImport('AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES'),
   'utf8',
@@ -82,15 +114,18 @@ await writeFile(
   'utf8',
 );
 
-// Transitional source-only tools are retained for old publication commands, but never enter the Agent-visible Skill bundle.
-for (const relative of [
-  'skills/review-aw-plugin/assets/aw-review-summary.json',
-  'skills/review-aw-plugin/assets/review-input-bundle.json',
-  'skills/review-aw-plugin/scripts/inspect-aw-target.mjs',
-  'skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs',
-  'skills/review-aw-plugin/scripts/prepare-aw-review-target-plan.mjs',
-  'skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs',
-  'skills/review-aw-plugin/scripts/review-artifact-policy.mjs',
-]) {
-  await rm(path.join(pluginRoot, relative), { force: true });
+const authoringRegistryBytes = await readFile(
+  requiredImport('AW_PLUGIN_IMPORT_PLUGIN_AUTHORING_CAPABILITIES'),
+);
+const authoringRegistry = JSON.parse(authoringRegistryBytes.toString('utf8'));
+if (authoringRegistry.schemaVersion !== 1 || !authoringRegistry.surfaces) {
+  throw new Error('Invalid plugin authoring capability registry build import.');
+}
+const authoringRegistryDigest = `sha256:${createHash('sha256').update(authoringRegistryBytes).digest('hex')}`;
+for (const [surface, fileName] of Object.entries(GENERATED_VIEWS)) {
+  await writeFile(
+    path.join(pluginRoot, 'skills/author-aw-plugin/references', fileName),
+    renderAuthoringReference(authoringRegistry, surface, authoringRegistryDigest),
+    'utf8',
+  );
 }

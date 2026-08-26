@@ -11,7 +11,7 @@ import {
   publishPreparedRelease,
   resolvePreparedCandidates,
 } from '../../../../scripts/release/prepared-release.mjs';
-import { captureCommand } from '../../../../scripts/release/common.mjs';
+import { captureCommand, compareReleaseSemVer } from '../../../../scripts/release/common.mjs';
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
 import { updateReleaseTargets } from '../../../../scripts/release/release-target.mjs';
 
@@ -192,6 +192,114 @@ describe('local prepared release', () => {
     expect(cli.dependencies['@lesliechan721/aw-plugin-core']).toBe('workspace:1.2.1');
     expect(await fs.readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8'))
       .toContain('specifier: workspace:1.2.1');
+  });
+
+  it('prepares an empty-remote beta on a bumped train above the staged Catalog floor', async () => {
+    const root = await temporaryRoot();
+    const releaseRoot = path.join(root, '.release');
+    await Promise.all([
+      fs.mkdir(path.join(root, 'release'), { recursive: true }),
+      fs.mkdir(path.join(root, 'packages', 'cli'), { recursive: true }),
+      fs.mkdir(path.join(root, 'packages', 'agent-skill-eval'), { recursive: true }),
+      fs.mkdir(path.join(root, 'packages', 'plugin-core'), { recursive: true }),
+    ]);
+    await fs.writeFile(path.join(root, 'release', 'version-targets.json'), `${JSON.stringify({
+      schemaVersion: 1, cli: '0.1.0', catalog: '0.1.0',
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(root, 'packages', 'cli', 'package.json'), `${JSON.stringify({
+      name: '@lesliechan721/aw', version: '0.1.0',
+      dependencies: {
+        '@lesliechan721/agent-skill-eval': 'workspace:0.1.0',
+        '@lesliechan721/aw-plugin-core': 'workspace:0.1.0',
+      },
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
+      name: '@lesliechan721/agent-skill-eval', version: '0.1.0',
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(root, 'packages', 'plugin-core', 'package.json'), `${JSON.stringify({
+      name: '@lesliechan721/aw-plugin-core', version: '0.1.0',
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(root, 'pnpm-lock.yaml'), [
+      'lockfileVersion: 9.0',
+      'importers:',
+      '  packages/cli:',
+      '    dependencies:',
+      "      '@lesliechan721/agent-skill-eval':",
+      '        specifier: workspace:0.1.0',
+      '        version: link:../agent-skill-eval',
+      "      '@lesliechan721/aw-plugin-core':",
+      '        specifier: workspace:0.1.0',
+      '        version: link:../plugin-core',
+      '',
+    ].join('\n'));
+
+    const bumped = await updateReleaseTargets([
+      '--cli', 'patch', '--catalog', 'patch',
+    ], { repoRoot: root });
+    expect(bumped.targets).toEqual({ schemaVersion: 1, cli: '0.1.1', catalog: '0.1.1' });
+
+    const emptyRemote = {
+      readPackageVersions: async () => [],
+      readPackageChannelVersion: async () => null,
+      readCatalogVersions: async () => [],
+      readCatalogChannelState: async () => null,
+    };
+    const candidates = await resolvePreparedCandidates('beta', bumped.targets, emptyRemote);
+    expect(candidates).toEqual({ cli: '0.1.1-beta.1', catalog: '0.1.1-beta.1' });
+
+    const floor = '0.1.0-beta.3';
+    expect(compareReleaseSemVer(candidates.cli!, floor)).toBeGreaterThan(0);
+    expect(compareReleaseSemVer('0.1.0-beta.2', floor)).toBeLessThan(0);
+    const descriptor = await prepareLocalRelease('beta', {
+      repoRoot: root,
+      releaseRoot,
+      axes: { cli: false, catalog: true },
+      assertClean: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => bumped.targets,
+      assertPackageVersions: async () => ({ targetVersion: bumped.targets.cli }),
+      resolveHead: async () => head,
+      ...emptyRemote,
+      withSnapshot: async (callback: (snapshot: typeof build) => unknown) => callback(build),
+      readContent: async () => ({
+        catalog: { contentDigest: sha256('catalog'), minCliVersion: floor },
+      }),
+      readCatalogChannelLedger: async () => undefined,
+      stageCatalog: async (argv: string[], stageOptions: { internalOutputRoot: string }) => {
+        expect(argv).toEqual(['--catalog-version', candidates.catalog]);
+        await fs.mkdir(stageOptions.internalOutputRoot, { recursive: true });
+        await fs.writeFile(path.join(stageOptions.internalOutputRoot, 'catalog-manifest.json'), '{}');
+        await fs.writeFile(path.join(stageOptions.internalOutputRoot, 'plugin-release-ledger.json'), '{}');
+        return { outputRoot: stageOptions.internalOutputRoot, snapshotDigest: 'catalog-digest' };
+      },
+    });
+    expect(descriptor).toMatchObject({
+      channel: 'beta',
+      candidates: { cli: null, catalog: '0.1.1-beta.1' },
+      catalog: { minCliVersion: floor },
+    });
+
+    const prepared = { root: path.join(releaseRoot, 'prepared'), descriptor };
+    const publishCatalog = vi.fn();
+    const gateOptions = {
+      ...publishOptions(prepared),
+      readTargets: async () => bumped.targets,
+      assertPackageVersions: async () => ({ targetVersion: bumped.targets.cli }),
+      resolveCandidates: async () => descriptor.candidates,
+      attemptPath: path.join(releaseRoot, 'attempted.json'),
+      publishCatalog,
+    };
+    await expect(publishPreparedRelease({
+      ...gateOptions,
+      readPublishedCliVersion: async () => '0.1.0-beta.2',
+    })).rejects.toThrow(`requires aw >= ${floor}`);
+    expect(publishCatalog).not.toHaveBeenCalled();
+
+    await expect(publishPreparedRelease({
+      ...gateOptions,
+      readPublishedCliVersion: async () => candidates.cli!,
+    })).resolves.toBe(descriptor);
+    expect(publishCatalog).toHaveBeenCalledTimes(1);
   });
 
   it('selects independent CLI and Catalog candidates for stable and beta channels', async () => {

@@ -203,11 +203,11 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 
 第三方作者只需要 Node.js 22+ 和已安装的 `aw` CLI，不需要 clone 本仓库、`pnpm` monorepo 或官方 release 脚本。先运行各命令的 `--help`，并使用 Workspace v1：
 
-```bash
-workspace=/absolute/path/to/workspace
+ ```bash
+ workspace=/absolute/path/to/workspace
 
-aw --version
-aw catalog init --workspace-root "$workspace"
+ aw --version
+ aw catalog init --workspace-root "$workspace"
 aw plugin init example-plugin \
   --description "Example plugin." \
   --skill-description "Create an example plugin Skill." \
@@ -220,8 +220,11 @@ aw catalog validate "$workspace/.aw/catalog" --json
 
 AW_HOME=/tmp/aw-home \
   aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json
-AW_HOME=/tmp/aw-home \
-  aw install local-example/example-plugin -p both --json
+ AW_HOME=/tmp/aw-home \
+   aw install local-example/example-plugin -p both --json
+ aw skill validate <skill-directory> --frontmatter-profile portable-agent-skills
+ # 在用户明确要求归档 Review 前，先确认当前公开参数
+ aw review publish --help
 ```
 
 `aw plugin status <plugin> --workspace-root "$workspace"` 不要求 Git；只有明确传入 `--base <git-ref>` 时才要求 Git。生成的 snapshot、digest 和 platform marketplace 都不能手改。完整 layout、Git 发布、依赖选择器、信任边界和恢复规则见[第三方插件作者指南](docs/plugin-authoring.md)。
@@ -229,6 +232,8 @@ AW_HOME=/tmp/aw-home \
 ### 本仓库维护与官方发版
 
 以下命令只面向本仓库维护者，不是第三方插件作者的常规路径：
+
+新 Review archive 只在用户明确要求时使用：本次请求的顶层 Reviewer 产出 `report.md` 并用 `aw review publish` 归档；下层 Reviewer 只返回材料。它只写不可变的 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`，不重新评审、不运行或封存 Eval、也不更新 README。完整参数以 `aw review publish --help` 为准；workflow publication 还必须传入其 `scope.json`。Quality Review 不计算发布准备度；独立的机器 `release-check.json` 只能作为可选附件。
 
 ```bash
 make install

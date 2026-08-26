@@ -16,6 +16,7 @@ import {
   readPluginManifest,
   STRICT_SEMVER_VALIDATION_CODE,
   validatePluginManifest,
+  validateSourcePluginManifest,
 } from '../../src/utils/manifest.js';
 import {
   resolveLifecycleScriptForOs,
@@ -26,6 +27,7 @@ import {
   CLAUDE_NATIVE_HOOK_EVENTS,
   NATIVE_HOOK_EVENT_CONTRACTS,
 } from '../../src/utils/hooks-contract.js';
+import { getPluginAuthoringAcceptedValues } from '../../src/utils/plugin-authoring-capabilities.js';
 
 const tempDirs: string[] = [];
 
@@ -107,6 +109,28 @@ afterEach(async () => {
 });
 
 describe('manifest utils', () => {
+  it('keeps the public manifest validator aligned with registry installation policies', async () => {
+    const repoRoot = await makeTempRepo();
+    const rawManifest = await readFixturePluginManifest(repoRoot);
+    const accepted = getPluginAuthoringAcceptedValues(
+      'plugin-manifest',
+      'marketplace.policy.installation',
+    );
+
+    for (const installation of accepted) {
+      const manifest = structuredClone(rawManifest);
+      manifest.marketplace.policy.installation = installation;
+      expect(validatePluginManifest('/tmp/plugin', manifest).marketplace.policy.installation)
+        .toBe(installation);
+    }
+
+    const invalid = structuredClone(rawManifest);
+    invalid.marketplace.policy.installation = 'UNKNOWN';
+    expect(() => validatePluginManifest('/tmp/plugin', invalid)).toThrow(
+      '/marketplace/policy/installation',
+    );
+  });
+
   it('reads marketplace source metadata and plugin source manifest', async () => {
     const repoRoot = await makeTempRepo();
     const [marketplace, plugin] = await Promise.all([
@@ -176,6 +200,11 @@ describe('manifest utils', () => {
     expect(() => validatePluginManifest('/tmp/plugin', manifestWithoutCompatibility, {
       compatibilityMode: 'required',
     })).toThrow(
+      'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
+    );
+
+    manifestWithoutCompatibility.distributions = { agentSkills: {} };
+    await expect(validateSourcePluginManifest(pluginRoot, manifestWithoutCompatibility)).rejects.toThrow(
       'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
     );
   });

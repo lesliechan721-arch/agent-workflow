@@ -22,6 +22,8 @@ async function createPlugin(options: {
   scripts?: Record<string, unknown>;
   distributions?: Record<string, unknown>;
   artifacts?: Record<string, unknown>;
+  extensions?: Record<string, unknown>;
+  omitNativeSkills?: boolean;
   files?: Record<string, string>;
 }): Promise<PluginMeta> {
   const pluginRoot = path.join(options.root, options.name);
@@ -31,7 +33,7 @@ async function createPlugin(options: {
     version: '0.1.0',
     description: options.name,
     compatibility: { aw: { minVersion: options.distributions ? '0.1.0' : '0.0.0' } },
-    skills: './skills',
+    ...(!options.omitNativeSkills ? { skills: './skills' } : {}),
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -45,9 +47,12 @@ async function createPlugin(options: {
     ...(options.scripts ? { scripts: options.scripts } : {}),
     ...(options.distributions ? { distributions: options.distributions } : {}),
     ...(options.artifacts ? { artifacts: options.artifacts } : {}),
+    ...(options.extensions ? { extensions: options.extensions } : {}),
   }, { spaces: 2 });
-  await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: demo\n---\n');
-  await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'agents', 'openai.yaml'), 'interface:\n  display_name: Demo\n');
+  if (!options.omitNativeSkills) {
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: demo\n---\n');
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'agents', 'openai.yaml'), 'interface:\n  display_name: Demo\n');
+  }
   for (const [relativePath, content] of Object.entries(options.files ?? {})) {
     await fs.outputFile(path.join(pluginRoot, relativePath), content);
   }
@@ -60,6 +65,88 @@ afterEach(async () => {
 });
 
 describe('catalog runtime projection', () => {
+  it('validates portable generated source and final closure without a native Skill root', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-generated-runtime-'));
+    tempRoots.push(root);
+    const plugin = await createPlugin({
+      root,
+      name: 'portable-generated-runtime',
+      omitNativeSkills: true,
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      buildConfig: {
+        generatedSkillRuntimeFiles: [{
+          skill: 'demo',
+          target: 'references/generated.md',
+          distributions: ['agent-skills'],
+        }],
+      },
+      scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
+      files: {
+        'build.mjs': 'export {};\n',
+        'portable-skills/demo/SKILL.md': '---\nname: demo\ndescription: demo\n---\n[generated](references/generated.md)\n',
+        'portable-skills/demo/README.md': '# Demo\n',
+      },
+    });
+    const runner: PluginStagingRunner = {
+      async installPackageRoot() {},
+      async runNodeBuild({ pluginRoot }) {
+        await fs.outputFile(
+          path.join(pluginRoot, 'portable-skills', 'demo', 'references', 'generated.md'),
+          '[nested](nested.md)\n',
+        );
+      },
+    };
+
+    await expect(bundleLocalPlugin(plugin, path.join(root, 'portable-final'), {
+      buildMode: 'staging',
+      stagingRunner: runner,
+    })).rejects.toThrow('markdown-link target "nested.md"');
+  });
+
+  it('requires every declared generated Skill file in the final bundle', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-generated-skill-runtime-'));
+    tempRoots.push(root);
+    const plugin = await createPlugin({
+      root,
+      name: 'generated-runtime',
+      buildConfig: {
+        generatedSkillRuntimeFiles: [{
+          skill: 'demo',
+          target: 'references/generated.md',
+        }],
+      },
+      scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
+      files: {
+        'build.mjs': 'export {};\n',
+        'skills/demo/SKILL.md': '---\nname: demo\ndescription: demo\n---\n[generated](references/generated.md)\n',
+      },
+    });
+    const noOutputRunner: PluginStagingRunner = {
+      async installPackageRoot() {},
+      async runNodeBuild() {},
+    };
+
+    await expect(bundleLocalPlugin(plugin, path.join(root, 'missing-output'), {
+      buildMode: 'staging',
+      stagingRunner: noOutputRunner,
+    })).rejects.toThrow('build did not create regular final target');
+
+    const outputRunner: PluginStagingRunner = {
+      async installPackageRoot() {},
+      async runNodeBuild({ pluginRoot }) {
+        await fs.outputFile(
+          path.join(pluginRoot, 'skills', 'demo', 'references', 'generated.md'),
+          '[nested](nested.md)\n',
+        );
+      },
+    };
+    await expect(bundleLocalPlugin(plugin, path.join(root, 'nested-missing'), {
+      buildMode: 'staging',
+      stagingRunner: outputRunner,
+    })).rejects.toThrow('markdown-link target "nested.md"');
+  });
+
   it('copies portable runtime projections and artifact imports into the consumer bundle', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-runtime-projection-'));
     tempRoots.push(root);
@@ -208,6 +295,40 @@ describe('catalog runtime projection', () => {
       reference: { plugin: '@aw/cli', export: 'skill-frontmatter-capabilities' },
       purpose: 'build',
     })).rejects.toThrow(`canonical skill frontmatter registry is missing from ${missingVirtualRoot}`);
+  });
+
+  it('exposes only the self-contained Eval corpus digest through its reserved provider', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-virtual-projection-'));
+    tempRoots.push(root);
+    const consumer = await createPlugin({ root, name: 'consumer' });
+    const resolver = createCatalogRuntimeImportResolver([consumer]);
+    const resolution = await resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
+      purpose: 'build',
+    });
+    expect(resolution).toMatchObject({
+      provider: '@aw/agent-skill-eval',
+      name: 'case-corpus-digest',
+      source: './dist/corpus-digest.js',
+      virtual: true,
+    });
+    await expect(fs.readFile(resolution.sourcePath, 'utf8')).resolves.toContain('computeCaseCorpusDigest');
+    await expect(resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
+      purpose: 'skill-runtime-file',
+    })).resolves.toMatchObject({ sourcePath: resolution.sourcePath });
+    await expect(resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'unknown' },
+      purpose: 'build',
+    })).rejects.toThrow('unknown @aw/agent-skill-eval export');
+    await expect(resolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
+      purpose: 'artifact-runtime',
+    })).rejects.toThrow('only available to buildImports and skillRuntimeFiles');
   });
 
   it('injects read-only catalog build imports and projects own and provider bytes with provenance', async () => {

@@ -4,9 +4,11 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  projectMarketplaceManifestForPlatform,
   readStrictNamespacedMarketplaceRoot,
   replayNamespacedCodexSkillOverlays,
 } from '../../src/utils/local-marketplace.js';
+import type { MarketplaceManifest } from '../../src/types.js';
 import {
   readSkillOwnerMarker,
   writeSkillOwnerMarker,
@@ -47,6 +49,48 @@ async function createMarketplaceRoot(rootDir: string): Promise<void> {
 }
 
 describe('namespaced marketplace root', () => {
+  it('projects marketplace entries and product enums to one native platform', () => {
+    const manifest: MarketplaceManifest = {
+      name: 'aw',
+      owner: { name: 'AW', url: 'https://example.com' },
+      interface: { displayName: 'AW' },
+      plugins: [
+        {
+          name: 'both', source: './plugins/both', description: 'Both.', category: 'test', strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX', 'CLAUDE'] },
+        },
+        {
+          name: 'implicit-both', source: './plugins/implicit-both', description: 'Both.', category: 'test', strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        },
+        {
+          name: 'codex-only', source: './plugins/codex-only', description: 'Codex.', category: 'test', strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+        },
+        {
+          name: 'claude-only', source: './plugins/claude-only', description: 'Claude.', category: 'test', strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CLAUDE'] },
+        },
+      ],
+    };
+
+    const codex = projectMarketplaceManifestForPlatform(manifest, 'codex');
+    expect(codex.plugins.map((plugin) => plugin.name)).toEqual([
+      'both', 'implicit-both', 'codex-only',
+    ]);
+    expect(codex.plugins.map((plugin) => plugin.policy.products)).toEqual([
+      ['CODEX'], ['CODEX'], ['CODEX'],
+    ]);
+
+    const claude = projectMarketplaceManifestForPlatform(manifest, 'claude');
+    expect(claude.plugins.map((plugin) => plugin.name)).toEqual([
+      'both', 'implicit-both', 'claude-only',
+    ]);
+    expect(claude.plugins.map((plugin) => plugin.policy.products)).toEqual([
+      ['CLAUDE'], ['CLAUDE'], ['CLAUDE'],
+    ]);
+  });
+
   it('treats an absent namespaced marketplace root as empty', async () => {
     const fixture = getCurrentSourceTestIsolation().layout.rootDir;
     await expect(replayNamespacedCodexSkillOverlays({
@@ -444,6 +488,60 @@ describe('namespaced marketplace root', () => {
       env: isolation.env,
     })).resolves.toBe(false);
     await expect(fs.pathExists(root)).resolves.toBe(true);
+  });
+
+  it('ignores an unbound Claude record and recognizes an explicit marketplace key', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const installedPath = path.join(
+      isolation.env.AW_CLAUDE_HOME!,
+      'plugins',
+      'installed_plugins.json',
+    );
+    const defaultRecord = {
+      name: 'default-plugin',
+      scope: 'user',
+      version: '1.0.0',
+      installPath: path.join(isolation.env.AW_CLAUDE_HOME!, 'plugins', 'cache', 'default-plugin'),
+    };
+    const keyedRecord = {
+      name: 'keyed-plugin',
+      scope: 'user',
+      version: '1.0.0',
+    };
+    await Promise.all([
+      createMarketplaceRoot(root),
+      fs.outputJson(installedPath, {
+        plugins: {
+          'default-plugin': [defaultRecord],
+          'keyed-plugin@aw': [keyedRecord],
+        },
+      }),
+    ]);
+
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      includeHistoricalProjects: true,
+    });
+
+    expect(inventory.errors).toEqual([]);
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      sourceId: 'official',
+      pluginName: 'default-plugin',
+    }));
+    expect(inventory.references).toContainEqual(expect.objectContaining({
+      sourceId: 'official',
+      pluginName: 'keyed-plugin',
+      platform: 'claude',
+      scope: 'user',
+    }));
+    await expect(fs.readJson(installedPath)).resolves.toEqual({
+      plugins: {
+        'default-plugin': [defaultRecord],
+        'keyed-plugin@aw': [keyedRecord],
+      },
+    });
   });
 
   it.each(['EACCES', 'EPERM'])('keeps the root when Codex inventory gets %s', async (code) => {

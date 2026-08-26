@@ -13,29 +13,37 @@
 
 ## 同步规则
 
-改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查旧的 `create-aw-plugin` 工作流和新的 `aw-plugin-development` 适配器。迁移期间两个入口都必须保持准确。
+改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查公开 CLI、canonical registry 和 `aw-plugin-development` 适配器。
+
+`aw review` 是独立的不可变归档入口：只把已有 `report.md`、可选 Quality Review result、checks/evidence、独立 `release-check.json` 和 workflow scope 写入 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`。Quality Review 只拥有设计、复杂度和 findings；Release Check 只拥有机器 readiness；Publication 只拥有 target/digest 绑定和 archive。该入口不得重评、封存 Eval、更新 README 或维护可变 index。
+
+Review 维度、Eval Audit、Eval run bundle 和 Quality Review schema 由 `agent-skill-toolkit` 提供。`aw-plugin-development` 只能通过 manifest 中声明的 build/runtime import 复用这些真值，不能复制第二份合同。
 
 ## 维护入口
 
-- 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
+- 通过公开 `aw` CLI 安装相应插件后，`author-agent-skill`、`review-agent-skill`、`review-agent-workflow`、`author-aw-plugin`、`review-aw-plugin` 和 `review-aw-workflow` 成为默认工作流入口。前 3 个处理通用 Agent Skill 与工作流；后 3 个处理 AW 插件与跨插件工作流。仓库不把插件源码投影为 `.claude/skills`。
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
 - `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，并依赖 `agent-content-toolkit`。
-- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，并依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`；使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`，也可以安装其它输出 `EvalRunBundle v3` 的兼容 runner。
-- AW Author/Reviewer 适用于任意兼容 workspace root；Workspace v1 中的目标根固定为 `<workspace-root>/plugins/<name>`，并由 `.agents-plugin/plugin.json` 标识。repo-local `create-aw-plugin` 只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- `aw-plugin-development` 提供默认的 AW Author/Reviewer，并依赖 `agent-content-toolkit` 和 `agent-skill-toolkit`；使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`，也可以安装其它输出 `EvalRunBundle v3` 的兼容 runner。
+- AW Author/Reviewer 适用于任意兼容 workspace root；Workspace v1 中的目标根固定为 `<workspace-root>/plugins/<name>`，并由 `.agents-plugin/plugin.json` 标识。不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - `aw-plugin-development` 是 Agent-facing Developer Assistant，不是 SDK 或规范真值。它只能编排已安装 `aw` CLI 的公开作者命令；第三方 workspace 不要求有本仓库的 `packages/cli`、`node_modules` 或 release 脚本。
-- 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
-- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin`、`aw-plugin-development` Author 和 Skill Reviewer 只编排这些命令，不保存第二份核心 frontmatter 或 Codex metadata 实现。
+- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。`author-agent-skill`、`author-aw-plugin` 和 Reviewer 只编排这些命令，不保存第二份核心 frontmatter 或 Codex metadata 实现。
 - Workspace v1 插件根固定为 `<workspace-root>/plugins/<plugin-name>`。所有作者命令使用 `--workspace-root`，不接受任意 `--plugin-root`。`validate`、`test` 和 `build` 仍接受 plugin directory 参数，但该目录必须是 workspace inventory 中的 canonical plugin。作者命令拒绝 workspace/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型。只有使用 `status --base` 等差异功能时要求 Git；`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
+- Reviewer 默认只在聊天中交付 Quality Review。用户明确要求归档时，只有本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。修订已有记录时创建新 record 并使用 `--supersedes`。Quality Review 不拥有 readiness；独立生成的 `release-check.json` 只能作为可选附件。
 
 ## Catalog build-time 文件复用
 
-manifest `dependencies` 声明安装或升级某插件时必须同时满足的同 source 插件。它只接受插件名，不接受 `source/plugin`。`buildConfig.buildImports` 和 `skillRuntimeFiles.import` 只复用构建期 canonical 文件，不声明安装依赖，也不能用于推断 `dependencies`。
+CLI 的 `plugin-authoring-capabilities` registry 是 AW 插件作者字段视图的 canonical 数据源。`aw-plugin-development` 在 staging build 中通过 reserved `@aw/cli` build import 读取它，并生成六个聚焦 reference；插件源码不保存 registry 副本。复杂校验仍由 registry 的 `verifiedSource` 指向 canonical validator。
+
+`buildConfig.generatedSkillRuntimeFiles` 只声明 `scripts.node.build` 必须创建的最终 Skill 文件。源码 closure 仅允许这些精确 target 尚未存在；build/materialization 后每个选中 surface 都必须存在 regular file，并通过完整 nested runtime closure。该字段不复制文件，也不形成安装依赖。
+
+manifest `dependencies` 声明安装或升级某插件时必须同时满足的同 source 插件。它只接受插件名，不接受 `source/plugin`。`buildConfig.buildImports`、`skillRuntimeFiles.import` 和 artifact `runtimeImports` 是独立的 typed build-time reuse edge；它们不声明安装依赖，也不能用于推断 `dependencies`。artifact runtime import 在 Catalog build 时复制到 consumer bundle，renderer 只读取 bundle-local 文件。
 
 - provider 用 `buildConfig.runtimeExports: [{ "name": "<stable-kebab-name>", "source": "./<file>" }]` 显式发布 canonical source file。source 必须是插件根内 regular non-symlink file，且不能位于 Skill、report、eval、dependency 或 build temporary tree。
 - consumer build 用 `buildConfig.buildImports: [{ "plugin": "<provider>", "export": "<name>", "env": "AW_PLUGIN_IMPORT_<NAME>" }]`。`scripts.node.build` 只读取该 env 指向的只读绝对文件，不使用 `../<sibling>`。Skill 文件投影用 `buildConfig.skillRuntimeFiles: [{ "skill": "<static-skill-key>", "target": "references/<file>", "import": { "plugin": "<provider>", "export": "<name>" } }]`；own staged source 把 `import` 换成 `source: "./<file>"`。
 - `skillRuntimeFiles.platforms` 可限制 `claude` 或 `codex`；缺省为 consumer 支持的全部平台。target 只允许 static Skill 内 `references/`、`assets/` 或 `scripts/` 文件，source tree 或 staging build 已有 target 时必须改用不同路径，不能覆盖。
-- CLI frontmatter registry 只用 reserved `{ "plugin": "@aw/cli", "export": "skill-frontmatter-capabilities" }` build import。它不能直接投影到 Skill，也不存在其它通用 CLI source export。版本比较工具只有在 base/current 都拥有完整 workspace CLI source 时才分别绑定对应 root/version；单侧 ownership 或 partial source 失败。两侧都不拥有时，从同一个经验证的 installed external provider 独立物化两个相同身份的 root；不得让 base 使用或复制 current registry root/bytes。
+- reserved `@aw/cli` build import 只发布两个 canonical registry export：`skill-frontmatter-capabilities` 和 `plugin-authoring-capabilities`。两者都不能直接投影到 Skill。Eval corpus digest 只用 reserved `{ "plugin": "@aw/agent-skill-eval", "export": "case-corpus-digest" }` build import 或 `skillRuntimeFiles.import`，投影公开 Eval 包中的自包含 canonical 实现。reserved provider 不支持 artifact runtime，也不存在其它通用 CLI source export。版本比较工具只有在 base/current 都拥有完整 workspace CLI source 时才分别绑定对应 root/version；单侧 ownership 或 partial source 失败。两侧都不拥有时，从同一个经验证的 installed external provider 独立物化两个相同身份的 root；不得让 base 使用或复制 current registry root/bytes。
 - 只有确定性、输出完全由 registered build input 决定的 `scripts.node.build` 才声明 `buildConfig.cacheable: true`。该字段不接受 `false`，也不能在没有 build script 时使用。
 - Portable Agent Skills 使用 `distributions.agentSkills.skills` 声明独立的 `./` plugin-relative Skill root。`buildConfig.skillRuntimeFiles.distributions: ["agent-skills"]` 只投影到 portable surface；字段缺失时保持既有 native 行为，同时声明 `platforms` 和 `distributions` 时投影到两组明确 surface。`agent-skills.skill` dynamic target 必须由 `distributions.agentSkills` 门禁，并可用 `runtimeImports` 引用 build-time runtime export；bundle 保存其 bytes、digest 和 provenance，renderer materialize 时只读 consumer bundle-local 文件。
 - 使用 Portable 字段的 source manifest 仍必须声明严格 SemVer 的 `compatibility.aw.minVersion`。V1 要求同一插件至少有一个非空 native capability；空 `extensions` 和空 native 数组不满足该门禁。static portable root 的每个直接子目录必须是有效 `portable-agent-skills` Skill，并包含 production `README.md`。

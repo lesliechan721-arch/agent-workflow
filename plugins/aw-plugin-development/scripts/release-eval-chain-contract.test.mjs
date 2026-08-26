@@ -158,15 +158,13 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
 
   const reviewPath = path.join(temp, 'review.json');
   await writeFile(reviewPath, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     target: { name: 'demo', digest: check.target.digest },
     mode: 'full',
     design: 'pass',
     complexity: 'proportionate',
-    summary: 'The evaluated Skill is focused and supported.',
     findings: [],
     unknowns: [],
-    evalEvidence: 'none',
     dimensions: dimensions.map((id) => ({
       id,
       score: 4,

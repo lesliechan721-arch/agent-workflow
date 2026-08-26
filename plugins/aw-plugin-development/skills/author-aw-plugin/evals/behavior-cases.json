@@ -256,10 +256,6 @@
           {
             "path": "plugins/incident-policy/.agents-plugin/plugin.json",
             "exists": true
-          },
-          {
-            "path": "plugins/incident-policy/scripts/render-artifacts.mjs",
-            "exists": true
           }
         ],
         "checks": [
@@ -402,6 +398,85 @@
           "AW adapter 保持 evalStageOwner=caller，不让通用 Skill 作者或 Designer 接管插件级 stage，也不省略独立 preflight",
           "运行稳定 aw plugin validate 和 eval case schema 校验；没有启动真实模型，证据等级明确为 structural",
           "不调用 review-aw-plugin 或 review-agent-skill，不宣称模型 Eval executed、release pass 或独立质量评分"
+        ]
+      }
+    },
+    {
+      "id": "portable-static-projection-and-dynamic-skill",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "portable-agent-skills-authoring",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "plugin_exists": true,
+        "native_capability_exists": true,
+        "portable_static_skill_requested": true,
+        "portable_only_projection_requested": true,
+        "portable_dynamic_skill_requested": true,
+        "review_not_requested": true
+      },
+      "oracle": {
+        "rationale": "Portable static Skill、portable-only runtime projection 与 dynamic agent-skills.skill 使用三个相连但不同的公开 manifest 合同。workspace 预置一个独立且只读的 status-registry-provider；Author 只修改 portable-observer，并从 canonical generated views 选择字段，由公开 validator 证明最小源码合同和跨插件 runtime import 有效。",
+        "rule_refs": [
+          "SKILL.md#Reference-路由",
+          "references/plugin-manifest-capabilities.generated.md",
+          "references/build-config-capabilities.generated.md",
+          "references/config-lifecycle-artifact-capabilities.generated.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "说明文字和 renderer 内部逻辑可不同；portable root 固定为 portable-skills，static Skill 路径固定为 portable-skills/observe-status，renderer 路径固定为 scripts/render-artifacts.mjs，均为交付合同。static distribution、agent-skills-only projection、dynamic distribution identity、指向只读 status-registry-provider 的 runtimeImports 和公开 validator 成功必须完整。provider fixture 保持不变。",
+        "minimal_counterexample": "若内容只需 native Skill，则不得添加 distributions.agentSkills、portable projection 或 agent-skills.skill target。"
+      },
+      "prompt": "维护 plugins/portable-observer：保留现有 native Skill；portable root 必须为 portable-skills，新增的 portable static observe-status Skill 必须位于 portable-skills/observe-status，并把 runtime/status-fields.json 只投影到该 portable Skill；build 再生成 observe-status/references/status-fields.generated.md，且只声明给 Portable surface；再新增 dynamic portable observe-project Skill，renderer 必须位于 scripts/render-artifacts.mjs，并使用 workspace 中预置且只读的 plugins/status-registry-provider runtime export status-registry。请读取安装后 Author 的 canonical generated reference，写最小公开合同，并运行 aw plugin validate。只修改 plugins/portable-observer；不要修改 provider，也不要做 Review、Audit、模型 Eval 或发布。",
+      "scripted_replies": [],
+      "expected_output": "交付能通过公开 validator 的最小 Portable Agent Skills manifest、static Skill、portable-only projection、对只读 status-registry-provider 的 runtime import 和 dynamic renderer；保持 native V1 门禁且不增加完成门禁。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/portable-observer/.agents-plugin/plugin.json": "{\"name\":\"portable-observer\",\"version\":\"0.3.0\",\"description\":\"Portable status observer\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.1.0\"}},\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_USE\",\"products\":[\"CODEX\"]}}}\n",
+        "plugins/portable-observer/skills/native-observer/SKILL.md": "---\nname: native-observer\ndescription: Observe status in the native host.\n---\n\n# Native Observer\n\nObserve native status.\n",
+        "plugins/portable-observer/skills/native-observer/README.md": "# Native Observer\n",
+        "plugins/portable-observer/runtime/status-fields.json": "{\"fields\":[\"state\"]}\n",
+        "plugins/status-registry-provider/.agents-plugin/plugin.json": "{\"name\":\"status-registry-provider\",\"version\":\"0.1.0\",\"description\":\"Read-only status registry provider\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.1.0\"}},\"extensions\":{\"instructions\":[{\"name\":\"native\",\"title\":\"Native status registry\",\"content\":\"Provides shared status registry bytes.\"}]},\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\"]}},\"buildConfig\":{\"runtimeExports\":[{\"name\":\"status-registry\",\"source\":\"./runtime/status-registry.json\"}]}}\n",
+        "plugins/status-registry-provider/README.md": "# Status Registry Provider\n",
+        "plugins/status-registry-provider/runtime/status-registry.json": "{\"states\":[\"ready\",\"stale\"]}\n",
+        "AGENTS.md": "# Workspace rules\nOnly change plugins/portable-observer. Treat plugins/status-registry-provider and all its files as pre-existing read-only fixture content. Use the installed aw CLI public help and validator. Do not run Review, Audit, model Eval, or release.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "plugins/portable-observer/**"
+        ],
+        "artifacts": [
+          {
+            "path": "plugins/portable-observer/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/portable-observer/portable-skills/observe-status/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "plugins/portable-observer/portable-skills/observe-status/README.md",
+            "exists": true
+          },
+          {
+            "path": "plugins/portable-observer/scripts/render-artifacts.mjs",
+            "exists": true
+          }
+        ],
+        "checks": [
+          "trace 读取 plugin-manifest、build-config 和 config-lifecycle-artifact 三个 canonical generated views，并据此选择 Portable 字段；不复制完整 schema 或 release 内核",
+          "manifest 保留非空 native Skill，并声明 distributions.agentSkills.skills 指向独立 portable root；observe-status 是含 production README.md 的有效 portable static Skill",
+          "buildConfig.skillRuntimeFiles 对 observe-status 使用 distributions=[agent-skills] 和 source runtime/status-fields.json；generatedSkillRuntimeFiles 对 observe-status/references/status-fields.generated.md 也使用 distributions=[agent-skills]；两者都不隐式投影到 native surface",
+          "manifest 的 dynamic agent-skills.skill target 通过 runtimeImports 指向只读 provider plugins/status-registry-provider 的 status-registry export；这是 typed build-time reuse edge，不声明或推断 manifest dependencies，portable-observer 不得添加 dependencies: [status-registry-provider]；consumer 不声明不可执行的 self-import，也不修改 provider fixture",
+          "manifest 声明 scripts.artifacts.render 与 agent-skills.skill target；target 显式包含 distribution=agent-skills、skillKey、scopes、states、refreshKeys 和 runtimeImports",
+          "renderer 输出匹配声明 identity 的 ArtifactPlan V2 dynamic portable Skill，且只从 context 的 bundle-local runtimeImports 读取 provider bytes",
+          "trace 先读取 aw plugin validate --help，再运行 aw plugin validate <plugin-root> 且成功；workspace changes 只在 plugins/portable-observer/**，provider 保持只读；不进入 Review、Audit、模型 Eval 或发布"
         ]
       }
     }

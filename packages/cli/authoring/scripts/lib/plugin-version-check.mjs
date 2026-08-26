@@ -16,7 +16,10 @@ const execFileAsync = promisify(execFile);
 const EXPECTED_MANIFEST_CONTRACT_VERSION = 7;
 const CLI_PACKAGE_NAME = '@lesliechan721/aw';
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const CLI_REGISTRY_RELATIVE_PATH = 'src/utils/skill-frontmatter-capabilities.json';
+const CLI_REGISTRY_RELATIVE_PATHS = [
+  'src/utils/skill-frontmatter-capabilities.json',
+  'src/utils/plugin-authoring-capabilities.json',
+];
 const CLI_PACKAGE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -178,6 +181,7 @@ async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoo
     'plugins',
     'packages/cli/package.json',
     'packages/cli/src/utils/skill-frontmatter-capabilities.json',
+    'packages/cli/src/utils/plugin-authoring-capabilities.json',
   ];
   if (pluginRootPath && !sourcePaths.includes(pluginRootPath)) sourcePaths.push(pluginRootPath);
   const output = await runGit(
@@ -266,50 +270,55 @@ async function assertDirectoryPathChain(boundaryRoot, targetRoot, label) {
   }
 }
 
-function calculateCliSourceSetDigest(packageBytes, registryBytes) {
-  return `sha256:${crypto.createHash('sha256')
-    .update('package.json\0')
-    .update(packageBytes)
-    .update(`\0${CLI_REGISTRY_RELATIVE_PATH}\0`)
-    .update(registryBytes)
-    .digest('hex')}`;
+function calculateCliSourceSetDigest(packageBytes, registryEntries) {
+  const hash = crypto.createHash('sha256').update('package.json\0').update(packageBytes);
+  for (const [relativePath, bytes] of registryEntries) {
+    hash.update(`\0${relativePath}\0`).update(bytes);
+  }
+  return `sha256:${hash.digest('hex')}`;
 }
 
 async function inspectWorkspaceCliSourceSet(cliRoot, label, boundaryRoot) {
   if (boundaryRoot) await assertDirectoryPathChain(boundaryRoot, cliRoot, label);
   const packagePath = path.join(cliRoot, 'package.json');
-  const registryPath = path.join(cliRoot, ...CLI_REGISTRY_RELATIVE_PATH.split('/'));
-  const [packageStat, registryStat] = await Promise.all([
+  const registryPaths = CLI_REGISTRY_RELATIVE_PATHS.map((relativePath) =>
+    path.join(cliRoot, ...relativePath.split('/')));
+  const [packageStat, ...registryStats] = await Promise.all([
     lstatOrNull(packagePath),
-    lstatOrNull(registryPath),
+    ...registryPaths.map((registryPath) => lstatOrNull(registryPath)),
   ]);
-  if (!packageStat && !registryStat) {
+  if (!packageStat && registryStats.every((stat) => !stat)) {
     const cliRootStat = await lstatOrNull(cliRoot);
     if (cliRootStat?.isSymbolicLink() || (cliRootStat && !cliRootStat.isDirectory())) {
       throw codedError('invalidPlugin', `${label} @aw/cli source root has an invalid node: ${cliRoot}`);
     }
     return { state: 'none', root: cliRoot };
   }
-  if (!packageStat || !registryStat) {
+  if (!packageStat || !registryStats[0]) {
     return { state: 'partial', root: cliRoot };
   }
 
+  const availableRegistryRelativePaths = CLI_REGISTRY_RELATIVE_PATHS
+    .filter((_relativePath, index) => registryStats[index]);
+
   await Promise.all([
     assertRegularFilePath(cliRoot, 'package.json', `${label} @aw/cli source set`),
-    assertRegularFilePath(
+    ...availableRegistryRelativePaths.map((relativePath) => assertRegularFilePath(
       cliRoot,
-      CLI_REGISTRY_RELATIVE_PATH,
+      relativePath,
       `${label} @aw/cli source set`,
-    ),
+    )),
   ]);
-  const [packageBytes, registryBytes] = await Promise.all([
+  const availableRegistryPaths = availableRegistryRelativePaths.map((relativePath) =>
+    path.join(cliRoot, ...relativePath.split('/')));
+  const [packageBytes, ...registryBytes] = await Promise.all([
     fs.readFile(packagePath),
-    fs.readFile(registryPath),
+    ...availableRegistryPaths.map((registryPath) => fs.readFile(registryPath)),
   ]);
   let packageDocument;
   try {
     packageDocument = JSON.parse(packageBytes.toString('utf8'));
-    JSON.parse(registryBytes.toString('utf8'));
+    for (const bytes of registryBytes) JSON.parse(bytes.toString('utf8'));
   } catch (error) {
     throw codedError('invalidPlugin', `${label} @aw/cli source set contains invalid JSON: ${error.message}`);
   }
@@ -322,7 +331,11 @@ async function inspectWorkspaceCliSourceSet(cliRoot, label, boundaryRoot) {
     root: cliRoot,
     packageName: packageDocument.name,
     providerVersion: packageDocument.version,
-    digest: calculateCliSourceSetDigest(packageBytes, registryBytes),
+    digest: calculateCliSourceSetDigest(
+      packageBytes,
+      availableRegistryRelativePaths.map((relativePath, index) => [relativePath, registryBytes[index]]),
+    ),
+    registryRelativePaths: availableRegistryRelativePaths,
   };
 }
 
@@ -330,10 +343,10 @@ async function materializeCliSourceSet(source, outputRoot, label) {
   await fs.mkdir(path.join(outputRoot, 'src', 'utils'), { recursive: true });
   await Promise.all([
     fs.copyFile(path.join(source.root, 'package.json'), path.join(outputRoot, 'package.json')),
-    fs.copyFile(
-      path.join(source.root, ...CLI_REGISTRY_RELATIVE_PATH.split('/')),
-      path.join(outputRoot, ...CLI_REGISTRY_RELATIVE_PATH.split('/')),
-    ),
+    ...source.registryRelativePaths.map((relativePath) => fs.copyFile(
+      path.join(source.root, ...relativePath.split('/')),
+      path.join(outputRoot, ...relativePath.split('/')),
+    )),
   ]);
   const materialized = await inspectWorkspaceCliSourceSet(outputRoot, label);
   if (
@@ -357,20 +370,20 @@ async function inspectExternalCliProvider(cliPackageRoot) {
     'package.json',
     'Installed CLI provider',
   );
-  const externalRegistryRelativePath = `dist/${CLI_REGISTRY_RELATIVE_PATH}`;
-  const registryPath = await assertRegularFilePath(
-    canonicalRoot,
-    externalRegistryRelativePath,
-    'Installed CLI provider',
-  );
-  const [packageBytes, registryBytes] = await Promise.all([
+  const registryPaths = await Promise.all(CLI_REGISTRY_RELATIVE_PATHS.map((relativePath) =>
+    assertRegularFilePath(
+      canonicalRoot,
+      `dist/${relativePath}`,
+      'Installed CLI provider',
+    )));
+  const [packageBytes, ...registryBytes] = await Promise.all([
     fs.readFile(packagePath),
-    fs.readFile(registryPath),
+    ...registryPaths.map((registryPath) => fs.readFile(registryPath)),
   ]);
   let packageDocument;
   try {
     packageDocument = JSON.parse(packageBytes.toString('utf8'));
-    JSON.parse(registryBytes.toString('utf8'));
+    for (const bytes of registryBytes) JSON.parse(bytes.toString('utf8'));
   } catch (error) {
     throw codedError('bundlerUnavailable', `Installed CLI provider contains invalid JSON: ${error.message}`);
   }
@@ -381,10 +394,13 @@ async function inspectExternalCliProvider(cliPackageRoot) {
   return {
     root: canonicalRoot,
     packagePath,
-    registryPath,
+    registryPaths,
     packageName: packageDocument.name,
     providerVersion: packageDocument.version,
-    digest: calculateCliSourceSetDigest(packageBytes, registryBytes),
+    digest: calculateCliSourceSetDigest(
+      packageBytes,
+      CLI_REGISTRY_RELATIVE_PATHS.map((relativePath, index) => [relativePath, registryBytes[index]]),
+    ),
   };
 }
 
@@ -392,10 +408,10 @@ async function materializeExternalCliProvider(provider, outputRoot, label) {
   await fs.mkdir(path.join(outputRoot, 'src', 'utils'), { recursive: true });
   await Promise.all([
     fs.copyFile(provider.packagePath, path.join(outputRoot, 'package.json')),
-    fs.copyFile(
-      provider.registryPath,
-      path.join(outputRoot, ...CLI_REGISTRY_RELATIVE_PATH.split('/')),
-    ),
+    ...CLI_REGISTRY_RELATIVE_PATHS.map((relativePath, index) => fs.copyFile(
+      provider.registryPaths[index],
+      path.join(outputRoot, ...relativePath.split('/')),
+    )),
   ]);
   return inspectWorkspaceCliSourceSet(outputRoot, label);
 }

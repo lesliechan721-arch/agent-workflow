@@ -23,6 +23,8 @@ import {
 import {
   assertCodexEvalCanStartWork,
   applyCodexEvalProviderEnvironment,
+  CODEX_EVAL_CLI_ENTRY_ENV,
+  CODEX_EVAL_CLI_NODE_ENV,
   cleanCodexEvalRuntimeConfig,
   codexEvalRuntimeEvidence,
   createCodexEvalTemporaryRoot,
@@ -52,8 +54,9 @@ const DEFAULT_OBSERVED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
 
 async function createTriggerTemporaryRoot(
   workRoot?: string,
+  strict = false,
 ): Promise<Awaited<ReturnType<typeof createCodexEvalTemporaryRoot>>> {
-  if (!workRoot) return createCodexEvalTemporaryRoot('aw-trigger-eval-');
+  if (strict || !workRoot) return createCodexEvalTemporaryRoot('aw-trigger-eval-');
   await fs.ensureDir(workRoot);
   return createCodexEvalTemporaryRoot('trigger-', {
     allocate: () => fs.mkdtemp(path.join(workRoot, 'trigger-')),
@@ -64,6 +67,8 @@ const execFileAsync = promisify(execFile);
 const PASS_THRESHOLD = 0.5;
 const PASSTHROUGH_ENV = new Set([
   'PATH',
+  CODEX_EVAL_CLI_ENTRY_ENV,
+  CODEX_EVAL_CLI_NODE_ENV,
   'LANG',
   'LC_ALL',
   'HTTP_PROXY',
@@ -85,6 +90,8 @@ const PROTECTED_ENV = new Set([
   'TEMP',
   'TMP',
   'PATH',
+  CODEX_EVAL_CLI_ENTRY_ENV,
+  CODEX_EVAL_CLI_NODE_ENV,
 ]);
 
 interface TriggerFixtureContext {
@@ -556,7 +563,10 @@ async function runTriggerOnce(options: {
   workRoot?: string;
 }): Promise<TriggerRunEvidence> {
   assertCodexEvalCanStartWork();
-  const temporaryRoot = await createTriggerTemporaryRoot(options.workRoot);
+  const temporaryRoot = await createTriggerTemporaryRoot(
+    options.workRoot,
+    options.suite.isolation === 'strict',
+  );
   const runRoot = temporaryRoot.root;
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
@@ -1054,7 +1064,6 @@ export async function runCodexTriggerSuite(options: {
         codexRuntime,
         sourceEnv,
         processManagement,
-        workRoot: options.workRoot,
       });
     }
     fixture = await loadFixtureModule(options.pluginRoot, options.suite);

@@ -12,5 +12,8 @@ export type PluginManifestSourceMatchesGeneratedSchema = Assert<
   Equal<PluginManifestSource, PluginManifestSourceV1>
 >;
 export type MarketplaceInstallationMatchesGeneratedSchema = Assert<
-  Equal<PluginManifestSource['marketplace']['policy']['installation'], 'AVAILABLE'>
+  Equal<
+    PluginManifestSource['marketplace']['policy']['installation'],
+    'AVAILABLE' | 'NOT_AVAILABLE' | 'INSTALLED_BY_DEFAULT'
+  >
 >;

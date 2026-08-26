@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { createRuntimeSkillSnapshot } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
@@ -19,6 +21,8 @@ import {
   type PluginEvalManifest,
   type PluginEvalProfile,
 } from './plugin-eval-contract.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface MaterializePluginEvalOptions {
   plugin: PluginMeta;
@@ -190,6 +194,72 @@ async function snapshotRuntimeSkills(sourceRoot: string, targetRoot: string): Pr
   }
 }
 
+async function initializeSubjectGitRepository(
+  subjectRoot: string,
+  baseEnv: NodeJS.ProcessEnv,
+  excludedRoots: string[],
+): Promise<void> {
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    GIT_CONFIG_GLOBAL: path.join(subjectRoot, '.gitconfig-disabled'),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 'AW Eval Fixture',
+    GIT_AUTHOR_EMAIL: 'aw-eval@example.invalid',
+    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+    GIT_COMMITTER_NAME: 'AW Eval Fixture',
+    GIT_COMMITTER_EMAIL: 'aw-eval@example.invalid',
+    GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+  };
+  for (const key of [
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_CONFIG',
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_PARAMETERS',
+    'GIT_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_NAMESPACE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_WORK_TREE',
+  ]) {
+    delete env[key];
+  }
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_CONFIG_KEY_') || key.startsWith('GIT_CONFIG_VALUE_')) {
+      delete env[key];
+    }
+  }
+
+  await execFileAsync('git', ['init', '-q', '--initial-branch=main', '--template='], {
+    cwd: subjectRoot,
+    env,
+  });
+  await fs.ensureDir(path.join(subjectRoot, '.git', 'info'));
+  await fs.writeFile(
+    path.join(subjectRoot, '.git', 'info', 'exclude'),
+    `${excludedRoots
+      .sort((left, right) => left.localeCompare(right))
+      .map((root) => `/${root.split(path.sep).join('/')}/`)
+      .join('\n')}\n`,
+    'utf8',
+  );
+  await execFileAsync('git', ['add', '--all'], { cwd: subjectRoot, env });
+  await execFileAsync('git', [
+    '-c',
+    'user.name=AW Eval Fixture',
+    '-c',
+    'user.email=aw-eval@example.invalid',
+    '-c',
+    'commit.gpgSign=false',
+    'commit',
+    '-q',
+    '--no-verify',
+    '--allow-empty',
+    '-m',
+    'Materialize eval subject',
+  ], { cwd: subjectRoot, env });
+}
+
 async function copyUserMaterializedArtifacts(options: {
   scopeRoot: string;
   env: NodeJS.ProcessEnv;
@@ -251,6 +321,7 @@ async function materializeProfile(options: {
   profile: PluginEvalProfile;
   outputRoot: string;
   baseEnv: NodeJS.ProcessEnv;
+  initializeGitRepository: boolean;
 }): Promise<MaterializedPluginEvalSubject> {
   const scopeRoot = path.join(options.outputRoot, 'subjects', options.profile.id);
   await fs.remove(scopeRoot);
@@ -333,6 +404,12 @@ async function materializeProfile(options: {
         `Profile "${options.profile.id}" did not materialize required Codex Skill "${skill}".`,
       );
     }
+  }
+  if (options.initializeGitRepository) {
+    await initializeSubjectGitRepository(subjectRoot, env, [
+      '.codex',
+      ...[...materializedSkills].map((skill) => path.join('.agents', 'skills', skill)),
+    ]);
   }
 
   const installedPlugins = installations.map(({ installation, prepared }) => ({
@@ -441,6 +518,8 @@ export async function materializePluginEvalSubjects(
         profile,
         outputRoot: options.outputRoot,
         baseEnv: options.env ?? process.env,
+        initializeGitRepository: options.manifest.suites.some((suite) =>
+          suite.kind === 'conversation'),
       }));
     }
     return subjects;

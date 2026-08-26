@@ -32,20 +32,37 @@ test('author Skill directly routes every maintained author reference', async () 
   }
 });
 
-test('single-Skill Reviewer directly exposes delta and conditional specialist references', async () => {
-  // Static contract exception: installed reviewers must retain direct routes to each conditional review contract; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+test('single-Skill Reviewer directly exposes mode-specific reference routing', async () => {
+  // Static contract exception: installed reviewers must retain each mode and branch route in the final Skill entrypoint; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
   const root = path.join(runtimeRoot, 'skills', 'review-agent-skill');
   const skill = await readFile(path.join(root, 'SKILL.md'), 'utf8');
+  const routingStart = skill.indexOf('## Reference 路由');
+  const routingEnd = skill.indexOf('\n## ', routingStart + 1);
+  const routing = skill.slice(routingStart, routingEnd);
+  const publication = skill.slice(skill.indexOf('## 可选报告归档'));
+  const quick = skill.split('\n').find((line) => line.startsWith('- `quick`:') || line.startsWith('- `quick`：'));
+  assert.match(quick, /不评维度/u);
+  assert.match(quick, /不计算 score、coverage 或总体 confidence/u);
+  for (const reference of ['review-rubric.md', 'review-dimensions.md', 'scoring-model.md']) {
+    const row = skill.split('\n').find((line) => line.includes(`references/${reference}`));
+    assert.match(row, /^\| 仅 `full` \|/u, reference);
+  }
   for (const reference of [
-    'delta-review.md',
-    'review-rubric.md',
     'composition-fitness.md',
     'architecture-boundaries.md',
     'scripts-and-resources.md',
     'evidence-and-severity.md',
   ]) {
-    assert.match(skill, new RegExp(`references/${reference.replaceAll('.', '\\.')}`, 'u'));
+    const row = skill.split('\n').find((line) => line.includes(`references/${reference}`));
+    assert.match(row, /^\| 任一模式；/u, reference);
   }
+  assert.match(
+    skill.split('\n').find((line) => line.includes('references/delta-review.md')),
+    /^\| `delta` \|/u,
+  );
+  assert.doesNotMatch(routing, /references\/review-publication\.md/u);
+  assert.match(publication, /用户明确要求归档/u);
+  assert.match(publication, /references\/review-publication\.md/u);
 });
 
 test('authoring and Eval design do not force Review, Audit, or model execution', async () => {

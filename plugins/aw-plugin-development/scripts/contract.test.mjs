@@ -27,7 +27,6 @@ fi
 exec "${process.execPath}" "${skillValidatorBin}" "$@"
 `);
 await chmod(path.join(testBinRoot, 'aw'), 0o755);
-
 async function runJson(file, args = []) {
   try {
     return JSON.parse((await execFileAsync(process.execPath, [file, ...args], {
@@ -45,7 +44,7 @@ async function runJson(file, args = []) {
   }
 }
 
-test('review adapter runtime contains only lightweight review and release tools', async () => {
+test('review adapter manifest and runtime contain only current quality and release tools', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
   const targets = manifest.buildConfig.skillRuntimeFiles
     .filter((entry) => entry.skill === 'review-aw-plugin')
@@ -54,36 +53,54 @@ test('review adapter runtime contains only lightweight review and release tools'
   assert.deepEqual(targets, [
     'assets/eval-audit-result.schema.json',
     'assets/eval-run-bundle.schema.json',
+    'assets/quality-review-result.schema.json',
     'assets/review-dimensions.json',
-    'assets/review-result-lite.schema.json',
+    'references/review-publication.md',
     'scripts/check-agent-skill.mjs',
     'scripts/check-aw-plugin-release.mjs',
+    'scripts/corpus-digest.mjs',
     'scripts/review-skill-leaf-plan.mjs',
     'scripts/validate-eval-audit-result.mjs',
     'scripts/validate-eval-run-bundle.mjs',
     'scripts/validate-json-contract.mjs',
-    'scripts/validate-review-result-lite.mjs',
+    'scripts/validate-quality-review-result.mjs',
   ]);
   const skillRoot = path.join(runtimeRoot, 'skills/review-aw-plugin');
-  for (const relative of [
-    'assets/aw-review-summary.json',
-    'assets/review-input-bundle.json',
-    'assets/aw-review-summary.schema.json',
-    'assets/aw-review-target-plan.schema.json',
-    'assets/review-input-bundle.schema.json',
-    'assets/review-result.schema.json',
-    'scripts/inspect-aw-target.mjs',
-    'scripts/prepare-aw-review-bundle.mjs',
-    'scripts/prepare-aw-review-target-plan.mjs',
-    'scripts/prepare-aw-review-targets.mjs',
-    'scripts/review-artifact-policy.mjs',
-    'scripts/validate-aw-review-summary.mjs',
-    'scripts/validate-review-input-bundle.mjs',
-    'scripts/validate-review-result.mjs',
-  ]) {
-    await assert.rejects(readFile(path.join(skillRoot, relative), 'utf8'), relative);
-  }
   assert.ok((await readFile(path.join(skillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
+  assert.ok((await readFile(path.join(skillRoot, 'scripts/corpus-digest.mjs'), 'utf8')).length > 100);
+});
+
+test('AW reviewer production and materialized closures use registered current dependencies', async () => {
+  const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
+  assert.deepEqual(manifest.buildConfig.runtimeExports ?? [], []);
+  assert.deepEqual(
+    manifest.buildConfig.buildImports.map((entry) => `${entry.plugin}:${entry.export}`).sort(),
+    [
+      '@aw/cli:plugin-authoring-capabilities',
+      '@aw/cli:skill-frontmatter-capabilities',
+    ],
+  );
+  assert.deepEqual(
+    manifest.buildConfig.skillRuntimeFiles
+      .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
+      .sort(),
+    [
+      '@aw/agent-skill-eval:case-corpus-digest',
+      'agent-skill-toolkit:check-agent-skill',
+      'agent-skill-toolkit:eval-audit-result-schema',
+      'agent-skill-toolkit:eval-run-bundle-schema',
+      'agent-skill-toolkit:quality-review-result-schema',
+      'agent-skill-toolkit:review-dimensions',
+      'agent-skill-toolkit:review-publication-reference',
+      'agent-skill-toolkit:review-publication-reference',
+      'agent-skill-toolkit:skill-design-brief-schema',
+      'agent-skill-toolkit:validate-eval-audit-result',
+      'agent-skill-toolkit:validate-eval-run-bundle',
+      'agent-skill-toolkit:validate-json-contract',
+      'agent-skill-toolkit:validate-json-contract',
+      'agent-skill-toolkit:validate-quality-review-result',
+    ],
+  );
 });
 
 test('author adapter uses public workspace-root CLI commands and never auto-publishes', async () => {
@@ -111,32 +128,34 @@ test('author adapter exposes structured context tools from the final Skill entry
   assert.match(skill, /assets\/aw-authoring-context\.json/u);
 });
 
-test('source AWReviewSummary validator resolves canonical source dependencies', async () => {
-  const temp = await mkdtemp(path.join(tmpdir(), 'aw-summary-source-'));
-  temps.push(temp);
-  const summaryPath = path.join(temp, 'summary.json');
-  const planPath = path.join(temp, 'plan.json');
-  await writeFile(summaryPath, '{}');
-  await writeFile(planPath, '{}');
-  const result = await runJson(
-    path.join(sourceRoot, 'scripts', 'validate-aw-review-summary.mjs'),
-    [
-      summaryPath,
-      '--plan',
-      planPath,
-      '--plugin-root',
-      sourceRoot,
-      '--evidence',
-      'invalid-evidence',
-      path.join(temp, 'missing-result.json'),
-      path.join(temp, 'missing-bundle.json'),
-      '--format',
-      'json',
-    ],
-  );
-  assert.equal(result.valid, false);
-  assert.ok(result.errors.length > 0);
-  assert.doesNotMatch(result.errors.join('\n'), /Cannot locate (?:JSON contract|shared Skill leaf) /u);
+test('config-driven artifact eval keeps renderer filename flexible', async () => {
+  const cases = JSON.parse(await readFile(
+    path.join(sourceRoot, 'skills/author-aw-plugin/evals/behavior-cases.json'),
+    'utf8',
+  ));
+  const evalCase = cases.evals.find((entry) => entry.id === 'config-driven-instructions-artifact');
+  assert.ok(evalCase, 'missing config-driven-instructions-artifact case');
+
+  assert.deepEqual(evalCase.review.artifacts, [
+    {
+      path: 'plugins/incident-policy/.agents-plugin/plugin.json',
+      exists: true,
+    },
+  ]);
+  assert.deepEqual(evalCase.review.allowed_workspace_changes, [
+    'plugins/incident-policy/.agents-plugin/plugin.json',
+    'plugins/incident-policy/scripts/**',
+  ]);
+
+  // Static contract exception: these reviewer-facing qualitative checks are the public Eval oracle; behavior test is not suitable because no deterministic runner can judge their semantic trace evidence.
+  assert.ok(evalCase.review.checks.some((check) => (
+    check.includes('manifest 声明 config.schema.severityPrefix、scripts.artifacts.render 和 codex.developerInstructionsBlock target')
+      && check.includes('refreshKeys 包含 severityPrefix')
+  )));
+  assert.ok(evalCase.review.checks.some((check) => (
+    check.includes('renderer 只输出 ArtifactPlan V2')
+      && check.includes('默认值和一个非默认 severityPrefix 产生不同的 instructions content')
+  )));
 });
 
 test('target discovery groups identical content by digest and preserves real differences', async () => {

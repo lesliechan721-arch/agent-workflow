@@ -11,6 +11,7 @@ import {
   computeBuildOutputDigest,
   inspectBuildCache,
 } from '../../../../scripts/build/build-cache.mjs';
+import { compareReleaseSemVer } from '../../../../scripts/release/common.mjs';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import {
   prepareSmokeSnapshotParent,
@@ -81,14 +82,28 @@ function isStageLedgerRecord(value: unknown): value is StageLedgerRecord {
 
 function isStageSmokeResult(value: unknown): value is {
   buildDigest: string;
-  manifest: Record<string, unknown> & { entries: Array<{ name: string; contentDigest: string }> };
+  manifest: Record<string, unknown> & {
+    compatibility: { aw: { minVersion: string } };
+    entries: Array<{
+      name: string;
+      contentDigest: string;
+      compatibility: { aw: { minVersion: string } };
+    }>;
+  };
   releaseLedger: { schemaVersion: number; records: StageLedgerRecord[] };
 } {
   if (!isRecord(value) || typeof value.buildDigest !== 'string') return false;
-  if (!isRecord(value.manifest) || !Array.isArray(value.manifest.entries)) return false;
+  if (!isRecord(value.manifest)
+    || !isRecord(value.manifest.compatibility)
+    || !isRecord(value.manifest.compatibility.aw)
+    || typeof value.manifest.compatibility.aw.minVersion !== 'string'
+    || !Array.isArray(value.manifest.entries)) return false;
   if (!value.manifest.entries.every((entry) => isRecord(entry)
     && typeof entry.name === 'string'
-    && typeof entry.contentDigest === 'string')) return false;
+    && typeof entry.contentDigest === 'string'
+    && isRecord(entry.compatibility)
+    && isRecord(entry.compatibility.aw)
+    && typeof entry.compatibility.aw.minVersion === 'string')) return false;
   return isRecord(value.releaseLedger)
     && typeof value.releaseLedger.schemaVersion === 'number'
     && Array.isArray(value.releaseLedger.records)
@@ -317,9 +332,15 @@ describe('catalog stage smoke', () => {
       schemaVersion: 4,
       catalogVersion,
       channel: 'beta',
-      compatibility: { aw: { minVersion: '0.0.0' } },
       release: { state: 'published', targetVersion: '99.0.0' },
     });
+    const derivedFloor = manifest.entries.reduce((floor, entry) => (
+      compareReleaseSemVer(entry.compatibility.aw.minVersion, floor) > 0
+        ? entry.compatibility.aw.minVersion
+        : floor
+    ), '0.0.0');
+    expect(manifest.compatibility.aw.minVersion).toBe(derivedFloor);
+    expect(compareReleaseSemVer(derivedFloor, '0.1.0-beta.2')).toBeGreaterThan(0);
     expect(manifest).not.toHaveProperty('packages');
     expect(ledger.schemaVersion).toBe(2);
     expect(manifest.entries.map((entry: { name: string }) => entry.name).sort())

@@ -18,7 +18,7 @@ const root = context
   ? path.join(context.plugin.rootDir, context.platform, 'skills/review-agent-skill/scripts')
   : localRoot;
 const checker = path.join(root, 'check-agent-skill.mjs');
-const validator = path.join(root, 'validate-review-result-lite.mjs');
+const validator = path.join(root, 'validate-quality-review-result.mjs');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'lightweight-review-'));
 const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const publicBin = path.join(temp, 'public-bin');
@@ -50,6 +50,29 @@ const dimensionIds = [
 
 function fullDimensions(score = 4, confidence = 'medium') {
   return dimensionIds.map((id) => ({ id, score, confidence, basis: `${id} is supported by the supplied package.` }));
+}
+
+function unassessedDimensions() {
+  return dimensionIds.map((id) => ({
+    id,
+    score: null,
+    confidence: 'unknown',
+    basis: `${id} cannot be assessed because required evidence is unavailable.`,
+  }));
+}
+
+function highSeverityFinding(severity) {
+  return {
+    severity,
+    area: 'reliability',
+    evidenceType: 'observed',
+    evidence: ['trace.json:1'],
+    issue: 'The core workflow corrupts the target artifact.',
+    affectedScenario: 'Every normal execution overwrites the target with invalid bytes.',
+    owner: 'script',
+    action: 'Stop the invalid write before release.',
+    validation: 'Run the observed reproduction and confirm the target remains valid.',
+  };
 }
 
 async function run(file, args, expectFailure = false) {
@@ -177,15 +200,13 @@ try {
 
   const reviewPath = path.join(temp, 'review.json');
   await writeFile(reviewPath, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     target: { name: goodCheck.target.name, digest: goodCheck.target.digest },
     mode: 'quick',
     design: 'pass',
     complexity: 'proportionate',
-    summary: 'The Skill is focused and proportionate.',
     findings: [],
     unknowns: [],
-    evalEvidence: 'structural',
     dimensions: []
   }, null, 2));
   const valid = JSON.parse((await run(validator, [reviewPath, '--check', goodCheckPath])).stdout);
@@ -193,24 +214,80 @@ try {
   assert.equal(valid.effectiveDecision, 'pass');
   assert.equal(valid.complexity, 'proportionate');
 
-  const legacy = JSON.parse(await readFile(reviewPath, 'utf8'));
-  legacy.schemaVersion = 1;
-  const legacyPath = path.join(temp, 'legacy-review.json');
-  await writeFile(legacyPath, JSON.stringify(legacy));
-  const legacyRun = await run(validator, [legacyPath, '--check', goodCheckPath], true);
-  assert.equal(JSON.parse(legacyRun.stdout).valid, false);
+  const invalidVersion = JSON.parse(await readFile(reviewPath, 'utf8'));
+  invalidVersion.schemaVersion = 2;
+  const invalidVersionPath = path.join(temp, 'invalid-version-review.json');
+  await writeFile(invalidVersionPath, JSON.stringify(invalidVersion));
+  const invalidVersionRun = await run(validator, [invalidVersionPath, '--check', goodCheckPath], true);
+  assert.equal(JSON.parse(invalidVersionRun.stdout).valid, false);
+
+  const declaredEvalEvidence = JSON.parse(await readFile(reviewPath, 'utf8'));
+  declaredEvalEvidence.evalEvidence = 'comparative';
+  const declaredEvalEvidencePath = path.join(temp, 'declared-eval-evidence.json');
+  await writeFile(declaredEvalEvidencePath, JSON.stringify(declaredEvalEvidence));
+  const declaredEvalEvidenceRun = await run(
+    validator,
+    [declaredEvalEvidencePath, '--check', goodCheckPath],
+    true,
+  );
+  assert.ok(JSON.parse(declaredEvalEvidenceRun.stdout).errors.includes('review.evalEvidence is not allowed'));
+
+  const declaredMachineTruth = JSON.parse(await readFile(reviewPath, 'utf8'));
+  Object.assign(declaredMachineTruth, {
+    weightedScore: 100,
+    coverage: 100,
+    confidence: 'high',
+    effectiveDecision: 'pass',
+  });
+  const declaredMachineTruthPath = path.join(temp, 'declared-machine-truth.json');
+  await writeFile(declaredMachineTruthPath, JSON.stringify(declaredMachineTruth));
+  const declaredMachineTruthRun = await run(
+    validator,
+    [declaredMachineTruthPath, '--check', goodCheckPath],
+    true,
+  );
+  const declaredMachineTruthErrors = JSON.parse(declaredMachineTruthRun.stdout).errors;
+  for (const field of ['weightedScore', 'coverage', 'confidence', 'effectiveDecision']) {
+    assert.ok(declaredMachineTruthErrors.includes(`review.${field} is not allowed`));
+  }
+
+  const emptyOptionalFindingFields = JSON.parse(await readFile(reviewPath, 'utf8'));
+  emptyOptionalFindingFields.design = 'needs-fixes';
+  emptyOptionalFindingFields.findings = [{
+    severity: 'minor',
+    area: 'maintainability',
+    evidenceType: 'structural',
+    evidence: ['SKILL.md:1'],
+    issue: 'The maintenance boundary is unclear.',
+    affectedScenario: '',
+    owner: 'skill',
+    action: 'Clarify the maintenance boundary.',
+    validation: '',
+  }];
+  const emptyOptionalFindingFieldsPath = path.join(temp, 'empty-optional-finding-fields.json');
+  await writeFile(emptyOptionalFindingFieldsPath, JSON.stringify(emptyOptionalFindingFields));
+  const emptyOptionalFindingFieldsRun = await run(
+    validator,
+    [emptyOptionalFindingFieldsPath, '--check', goodCheckPath],
+    true,
+  );
+  const emptyOptionalFindingFieldErrors = JSON.parse(emptyOptionalFindingFieldsRun.stdout).errors;
+  assert.ok(emptyOptionalFindingFieldErrors.includes(
+    'findings[0].affectedScenario must be a non-empty string',
+  ));
+  assert.ok(emptyOptionalFindingFieldErrors.includes(
+    'findings[0].validation must be a non-empty string',
+  ));
 
   const badReviewPath = path.join(temp, 'bad-review.json');
   await writeFile(badReviewPath, JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 1,
     target: { name: badCheck.target.name, digest: badCheck.target.digest },
     mode: 'full',
     design: 'pass',
     complexity: 'proportionate',
-    summary: 'Semantic design is otherwise focused.',
     findings: [],
     unknowns: [],
-    evalEvidence: 'none',
     dimensions: fullDimensions()
   }, null, 2));
   const combined = JSON.parse((await run(validator, [badReviewPath, '--check', badCheckPath])).stdout);
@@ -239,42 +316,59 @@ try {
   assert.equal(JSON.parse(overSpecifiedRun.stdout).valid, false);
 
   const incomplete = JSON.parse(await readFile(badReviewPath, 'utf8'));
+  incomplete.target = { name: goodCheck.target.name, digest: goodCheck.target.digest };
   incomplete.design = 'not-assessed';
-  incomplete.dimensions[0] = {
-    id: 'specification',
-    score: null,
-    confidence: 'unknown',
-    basis: 'The target client contract is unavailable.',
-  };
+  incomplete.dimensions = unassessedDimensions();
   const incompletePath = path.join(temp, 'incomplete.json');
   await writeFile(incompletePath, JSON.stringify(incomplete));
-  const incompleteResult = JSON.parse((await run(validator, [incompletePath, '--check', badCheckPath])).stdout);
+  const incompleteResult = JSON.parse((await run(validator, [incompletePath, '--check', goodCheckPath])).stdout);
   assert.equal(incompleteResult.valid, true);
-  assert.equal(incompleteResult.scoring.weightedScore, null);
-  assert.equal(incompleteResult.scoring.coveragePercent, 94);
-  assert.equal(incompleteResult.scoring.confidence, 'medium');
-
-  const incompleteCritical = JSON.parse(await readFile(incompletePath, 'utf8'));
-  incompleteCritical.design = 'fail';
-  incompleteCritical.findings = [{
-    severity: 'critical',
-    area: 'reliability',
-    evidenceType: 'observed',
-    evidence: ['trace.json:1'],
-    issue: 'The core workflow corrupts the target artifact.',
-    affectedScenario: 'Every normal execution overwrites the target with invalid bytes.',
-    owner: 'script',
-    action: 'Stop the invalid write before release.',
-    validation: 'Run the observed reproduction and confirm the target remains valid.',
-  }];
-  const incompleteCriticalPath = path.join(temp, 'incomplete-critical.json');
-  await writeFile(incompleteCriticalPath, JSON.stringify(incompleteCritical));
-  const incompleteCriticalResult = JSON.parse((await run(
+  assert.deepEqual(incompleteResult.scoring, {
+    weightedScore: null,
+    confidenceIndex: null,
+    confidence: 'unknown',
+  });
+  const incompleteText = (await run(
     validator,
-    [incompleteCriticalPath, '--check', badCheckPath],
+    [incompletePath, '--check', goodCheckPath, '--format', 'text'],
+  )).stdout;
+  assert.match(incompleteText, /coverage: not-calculated/u);
+  assert.doesNotMatch(incompleteText, /coverage: [0-9.]+%/u);
+
+  for (const severity of ['major', 'critical']) {
+    const unassessedWithFinding = JSON.parse(await readFile(incompletePath, 'utf8'));
+    unassessedWithFinding.findings = [highSeverityFinding(severity)];
+    const unassessedWithFindingPath = path.join(temp, `incomplete-${severity}.json`);
+    await writeFile(unassessedWithFindingPath, JSON.stringify(unassessedWithFinding));
+    const result = JSON.parse((await run(
+      validator,
+      [unassessedWithFindingPath, '--check', goodCheckPath],
+    )).stdout);
+    assert.equal(result.valid, true);
+    assert.equal(result.design, 'not-assessed');
+    assert.equal(Object.hasOwn(result.scoring, 'coveragePercent'), false);
+  }
+
+  const assessedCritical = JSON.parse(await readFile(badReviewPath, 'utf8'));
+  assessedCritical.target = { name: goodCheck.target.name, digest: goodCheck.target.digest };
+  assessedCritical.design = 'needs-fixes';
+  assessedCritical.findings = [highSeverityFinding('critical')];
+  const assessedCriticalPath = path.join(temp, 'assessed-critical.json');
+  await writeFile(assessedCriticalPath, JSON.stringify(assessedCritical));
+  const assessedCriticalResult = JSON.parse((await run(
+    validator,
+    [assessedCriticalPath, '--check', goodCheckPath],
+    true,
   )).stdout);
-  assert.equal(incompleteCriticalResult.valid, true);
-  assert.equal(incompleteCriticalResult.design, 'fail');
+  assert.ok(assessedCriticalResult.errors.includes('critical finding requires design=fail'));
+  assessedCritical.design = 'fail';
+  await writeFile(assessedCriticalPath, JSON.stringify(assessedCritical));
+  const assessedCriticalFail = JSON.parse((await run(
+    validator,
+    [assessedCriticalPath, '--check', goodCheckPath],
+  )).stdout);
+  assert.equal(assessedCriticalFail.valid, true);
+  assert.equal(assessedCriticalFail.scoring.coveragePercent, 100);
 
   const major = JSON.parse(await readFile(reviewPath, 'utf8'));
   major.design = 'needs-fixes';

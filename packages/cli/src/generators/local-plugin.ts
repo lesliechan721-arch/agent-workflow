@@ -1166,6 +1166,29 @@ async function assertSkillRuntimeProjectionTargets(plugin: PluginMeta): Promise<
   }
 }
 
+async function validateGeneratedSkillRuntimeFiles(
+  plugin: PluginMeta,
+  outputRoot: string,
+  supportedPlatforms: ReadonlySet<PlatformName>,
+): Promise<void> {
+  for (const [index, entry] of (plugin.manifest.buildConfig?.generatedSkillRuntimeFiles ?? []).entries()) {
+    const surfaces: string[] = [];
+    if (entry.distributions === undefined) {
+      surfaces.push(...supportedPlatforms);
+    }
+    surfaces.push(...(entry.distributions ?? []));
+    for (const surface of surfaces) {
+      const targetPath = path.join(outputRoot, surface, 'skills', entry.skill, ...entry.target.split('/'));
+      const stats = await fs.lstat(targetPath).catch(() => undefined);
+      if (!stats?.isFile() || stats.isSymbolicLink()) {
+        throw new Error(
+          `Invalid buildConfig.generatedSkillRuntimeFiles[${index}]: build did not create regular final target "${surface}:${entry.skill}/${entry.target}".`,
+        );
+      }
+    }
+  }
+}
+
 async function projectSkillRuntimeFiles(options: {
   plugin: PluginMeta;
   outputRoot: string;
@@ -1843,6 +1866,7 @@ export async function bundleLocalPlugin(
       skillRuntimeFiles.filter((entry): entry is SkillRuntimeFileProvenance & { platform: PlatformName } =>
         entry.platform !== undefined),
     );
+    await validateGeneratedSkillRuntimeFiles(plugin, outputRoot, supportedPlatforms);
     if ((options.runtimeSkillClosureValidation ?? 'current') === 'current') {
       for (const platform of PLATFORM_ORDER) {
         const skillsPath = platformManifests[platform]?.skills;

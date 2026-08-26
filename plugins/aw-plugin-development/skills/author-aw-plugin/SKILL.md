@@ -36,6 +36,7 @@ AW CLI/Core 是机器规范。本 Skill 是 Agent-facing Developer Assistant：�
 | --- | --- |
 | 新建插件、多组件、组件增删、manifest capability | `references/aw-authoring-profile.md` |
 | manifest、版本或兼容性 | `references/plugin-manifest-spec.md` |
+| Portable static Skill 或 portable-only runtime projection | `references/plugin-manifest-capabilities.generated.md` 与 `references/build-config-capabilities.generated.md`；保留 native capability 门禁，且只用 `distributions: ["agent-skills"]` 选择 portable-only projection |
 | 验证、版本、materialization、Eval 或 release | `references/aw-validation-and-version.md` |
 | Skill | `references/aw-skill-integration.md` 与 `references/skill-frontmatter-capabilities.md` |
 | Extension/hooks/permissions/agents | `references/extensions-spec.md` |
@@ -44,6 +45,6 @@ AW CLI/Core 是机器规范。本 Skill 是 Agent-facing Developer Assistant：�
 | Claude-only | `references/claude-only-capabilities.md` |
 | Node/build | `references/build-config-spec.md` 与 `references/aw-script-testing.md` |
 | config/helper | `references/aw-config-and-helper.md` |
-| dynamic artifact | `references/aw-artifact-renderer.md` |
+| dynamic artifact；含 `agent-skills.skill` 与 `runtimeImports` | `references/aw-artifact-renderer.md` 与 `references/config-lifecycle-artifact-capabilities.generated.md`；Portable target 使用 distribution identity，不把它推断成第三个平台 |
 | lifecycle | `references/aw-lifecycle.md` |
 | 用户可观察变化 | `references/aw-readme-authoring.md` |

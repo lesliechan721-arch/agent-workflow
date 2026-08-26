@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import {
+  computeCaseCorpusDigest,
   computeSkillDigest,
   validateJsonSchema,
 } from '@lesliechan721/agent-skill-eval';
@@ -58,26 +58,8 @@ export interface AuditedPluginEvalOptions extends PluginEvalRunnerOptions {
   delegate?: typeof runPluginEvals;
 }
 
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stable(entry)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-function sha256(value: string): string {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
-}
-
 export async function computeAuditCaseCorpusDigest(casePaths: string[]): Promise<string> {
-  const documents = await Promise.all(
-    casePaths.map(async (casePath) => stable(JSON.parse(await readFile(casePath, 'utf8')))),
-  );
-  return sha256(documents.sort().join('\n'));
+  return computeCaseCorpusDigest(casePaths);
 }
 
 function valueAfter(args: string[], index: number, flag: string): string {

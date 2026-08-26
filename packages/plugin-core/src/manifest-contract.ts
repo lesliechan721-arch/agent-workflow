@@ -751,12 +751,14 @@ function normalizeMarketplacePolicy(
     );
   }
   const installation = ensureString(input.installation, `${fieldName}.installation`);
-  if (installation !== 'AVAILABLE') {
-    throw new Error(`Invalid ${fieldName}.installation: expected "AVAILABLE".`);
+  if (!['AVAILABLE', 'NOT_AVAILABLE', 'INSTALLED_BY_DEFAULT'].includes(installation)) {
+    throw new Error(
+      `Invalid ${fieldName}.installation: expected "AVAILABLE", "NOT_AVAILABLE", or "INSTALLED_BY_DEFAULT".`,
+    );
   }
 
   return {
-    installation,
+    installation: installation as PluginMarketplaceMeta['policy']['installation'],
     authentication: authentication as MarketplaceAuthenticationPolicy,
     products: normalizeMarketplaceProducts(input.products, `${fieldName}.products`),
   };
@@ -1090,6 +1092,44 @@ function normalizeSkillRuntimeFiles(
   });
 }
 
+function normalizeGeneratedSkillRuntimeFiles(
+  value: unknown,
+  fieldName: string,
+): NonNullable<BuildConfig['generatedSkillRuntimeFiles']> {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an array.`);
+  }
+  const targets = new Set<string>();
+  return value.map((entry, index) => {
+    const entryField = `${fieldName}[${index}]`;
+    const input = assertObject(entry, entryField);
+    assertAllowedKeys(input, entryField, ['skill', 'target', 'distributions']);
+    const skill = ensurePluginName(input.skill, `${entryField}.skill`);
+    const target = normalizeSkillRuntimeTarget(input.target, `${entryField}.target`);
+    const collisionKey = `${skill}/${target}`;
+    if (targets.has(collisionKey)) {
+      throw new Error(`Invalid ${fieldName}: duplicate target "${collisionKey}".`);
+    }
+    targets.add(collisionKey);
+    const distributions: Array<'agent-skills'> | undefined = input.distributions === undefined
+      ? undefined
+      : ensureStringArray(input.distributions, `${entryField}.distributions`).map((distribution, distributionIndex) => {
+          if (distribution !== 'agent-skills') {
+            throw new Error(`Invalid ${entryField}.distributions[${distributionIndex}]: expected agent-skills.`);
+          }
+          return distribution;
+        });
+    if (distributions && new Set(distributions).size !== distributions.length) {
+      throw new Error(`Invalid ${entryField}.distributions: duplicate distribution.`);
+    }
+    return {
+      skill,
+      target,
+      ...(distributions ? { distributions } : {}),
+    };
+  });
+}
+
 function normalizeBuildConfig(
   pluginRoot: string,
   value: unknown,
@@ -1105,6 +1145,7 @@ function normalizeBuildConfig(
     'runtimeExports',
     'buildImports',
     'skillRuntimeFiles',
+    'generatedSkillRuntimeFiles',
   ]);
 
   const buildConfig: BuildConfig = {};
@@ -1202,6 +1243,12 @@ function normalizeBuildConfig(
       input.skillRuntimeFiles,
       `${fieldName}.skillRuntimeFiles`,
       reservedImports,
+    );
+  }
+  if (input.generatedSkillRuntimeFiles !== undefined) {
+    buildConfig.generatedSkillRuntimeFiles = normalizeGeneratedSkillRuntimeFiles(
+      input.generatedSkillRuntimeFiles,
+      `${fieldName}.generatedSkillRuntimeFiles`,
     );
   }
 
@@ -3179,7 +3226,7 @@ async function validateSourceSkillInventory(
   );
 
   for (const [index, entry] of (manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
-    const nativeSelected = entry.platforms !== undefined || entry.distributions === undefined;
+    const nativeSelected = entry.distributions === undefined;
     const portableSelected = entry.distributions?.includes('agent-skills') ?? false;
     if (nativeSelected && (!manifest.skills || !staticSkillNameSet.has(entry.skill))) {
       throw new Error(
@@ -3194,6 +3241,25 @@ async function validateSourceSkillInventory(
     if (nativeSelected && dynamicSkillNameSet.has(entry.skill)) {
       throw new Error(
         `Invalid buildConfig.skillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
+      );
+    }
+  }
+  for (const [index, entry] of (manifest.buildConfig?.generatedSkillRuntimeFiles ?? []).entries()) {
+    const nativeSelected = entry.distributions === undefined;
+    const portableSelected = entry.distributions?.includes('agent-skills') ?? false;
+    if (nativeSelected && (!manifest.skills || !staticSkillNameSet.has(entry.skill))) {
+      throw new Error(
+        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
+      );
+    }
+    if (portableSelected && !portableSkillNameSet.has(entry.skill)) {
+      throw new Error(
+        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared portable Skill key.`,
+      );
+    }
+    if (nativeSelected && dynamicSkillNameSet.has(entry.skill)) {
+      throw new Error(
+        `Invalid buildConfig.generatedSkillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
       );
     }
   }
@@ -3266,8 +3332,17 @@ export async function validateSourcePluginManifest(
   options: Pick<ValidatePluginManifestOptions, 'reservedImports'> = {},
 ): Promise<NormalizedPluginManifest> {
   await assertPluginInputTree(pluginRoot);
+  const distributionsInput = rawManifest !== null
+    && typeof rawManifest === 'object'
+    && !Array.isArray(rawManifest)
+    ? (rawManifest as Record<string, unknown>).distributions
+    : undefined;
+  const requiresExplicitMinVersion = distributionsInput !== null
+    && typeof distributionsInput === 'object'
+    && !Array.isArray(distributionsInput)
+    && Object.hasOwn(distributionsInput, 'agentSkills');
   const manifest = validatePluginManifest(pluginRoot, rawManifest, {
-    compatibilityMode: 'defaulted',
+    compatibilityMode: requiresExplicitMinVersion ? 'required' : 'defaulted',
     defaultMinVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
     reservedImports: options.reservedImports,
   });
@@ -3590,6 +3665,7 @@ export function createBundleSourceManifest(plugin: PluginMeta): NormalizedPlugin
     delete buildConfig.runtimeExports;
     delete buildConfig.buildImports;
     delete buildConfig.skillRuntimeFiles;
+    delete buildConfig.generatedSkillRuntimeFiles;
     if (Object.keys(buildConfig).length === 0) {
       buildConfig = undefined;
     }

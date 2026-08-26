@@ -32,11 +32,14 @@ import {
   type RebuildTargetIdentity,
 } from './rebuild-operations.js';
 import {
+  assertNoClaudeUnboundNativeNameCollision,
   createRebuildIntegration,
   discoverRebuildTargetNames,
+  inspectNativeMarketplaceRegistrations,
   type PreparedRebuildTarget,
   type RebuildExecutionContext,
 } from './rebuild-integration.js';
+import { getNamespacedMarketplaceName } from '../utils/local-marketplace.js';
 import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
 import {
   formatPluginId,
@@ -1364,39 +1367,16 @@ export async function runRebuildCommand(options: {
       });
       if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(stateInventory);
       const commandProjectKey = await resolveCanonicalRepoProjectKey(options.commandOptions.cwd);
-      const marketplaceNameFor = (
-        entry: (typeof available)[number],
-        platform: PlatformName,
-        scope: Scope,
-        projectKey: string | null = scope === 'project' ? commandProjectKey : null,
-      ): string => {
-        const liveName = stateInventory.references.find((reference) =>
-          (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
-          && reference.sourceId === entry.source.sourceId
-          && reference.sourceIdentity === entry.source.sourceIdentity
-          && reference.pluginName === entry.plugin.manifest.name
-          && reference.platform === platform
-          && reference.scope === scope
-          && (scope === 'user' || reference.projectKey === projectKey)
-          && reference.marketplaceName)?.marketplaceName;
-        if (liveName) return liveName;
-        const registeredNames = canonicalMarketplaceRegistrationNames(
-          stateInventory.references,
-          entry.source.sourceId,
-        );
-        if (registeredNames.length > 1) {
-          throw new Error(
-            'marketplaceIdentityUnavailable: Multiple canonical native marketplace registrations match the source.',
-          );
-        }
-        return registeredNames[0]
-          ?? (entry.source.sourceId === catalog.primarySourceId ? 'aw' : `aw-${entry.source.sourceId}`);
-      };
-      const legacy = selectedLegacyLiveReferences(
+      const selectedLegacy = selectedLegacyLiveReferences(
         stateInventory.references,
         new Set(executionSelections.map((selection) => selection.platform)),
         options.commandOptions.scope,
       );
+      const legacy = options.all
+        ? selectedLegacy
+        : selectedLegacy.filter((reference) => executionSelections.some((selection) =>
+            selection.entry.plugin.manifest.name === reference.pluginName
+            && selection.platform === reference.platform));
       if (legacy.length > 0) {
         const blockingLegacyTargets = projectLegacyTargets(legacy);
         throw namespacedPreflightError(
@@ -1419,6 +1399,76 @@ export async function runRebuildCommand(options: {
           );
         }
       }
+      const marketplaceNamesBySource = new Map<string, string>();
+      for (const entry of new Map(closureEntries.map((candidate) => [
+        candidate.source.sourceId,
+        candidate,
+      ] as const)).values()) {
+        const sourceNames = new Set(stateInventory.references.flatMap((reference) =>
+          (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+          && reference.sourceId === entry.source.sourceId
+          && (reference.sourceIdentity === undefined
+            || reference.sourceIdentity === entry.source.sourceIdentity)
+          && reference.marketplaceName
+            ? [reference.marketplaceName]
+            : []));
+        if (sourceNames.size > 1) {
+          throw new Error(
+            'marketplaceIdentityUnavailable: Multiple canonical native marketplace registrations match the source.',
+          );
+        }
+        const persistedName = [...sourceNames][0];
+        const marketplaceRoot = path.join(
+          resolveAwHome(runtimeEnv),
+          'marketplaces',
+          entry.source.sourceId,
+        );
+        let marketplaceName = persistedName
+          ?? (entry.source.sourceId === catalog.primarySourceId
+            ? 'aw'
+            : getNamespacedMarketplaceName(entry.source.sourceId));
+        if (options.command === 'cleanup' || options.command === 'uninstall') {
+          marketplaceNamesBySource.set(entry.source.sourceId, marketplaceName);
+          continue;
+        }
+        let registrations = await inspectNativeMarketplaceRegistrations({
+          marketplaceName,
+          marketplaceRoot,
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+        });
+        if (!persistedName
+          && marketplaceName === 'aw'
+          && Object.values(registrations).includes('foreign')) {
+          marketplaceName = getNamespacedMarketplaceName(entry.source.sourceId);
+          registrations = await inspectNativeMarketplaceRegistrations({
+            marketplaceName,
+            marketplaceRoot,
+            cwd: options.commandOptions.cwd,
+            env: runtimeEnv,
+          });
+        }
+        const foreignPlatforms = (Object.entries(registrations) as Array<[
+          PlatformName,
+          'absent' | 'canonical' | 'foreign',
+        ]>).flatMap(([platform, state]) => state === 'foreign' ? [platform] : []);
+        if (foreignPlatforms.length > 0) {
+          throw new Error(
+            `externalOwnershipPresent: Marketplace ${marketplaceName} is foreign on ${foreignPlatforms.join(', ')}.`,
+          );
+        }
+        marketplaceNamesBySource.set(entry.source.sourceId, marketplaceName);
+      }
+      const marketplaceNameFor = (
+        entry: (typeof available)[number],
+        ..._placement: [PlatformName, Scope, (string | null)?]
+      ): string => {
+        const marketplaceName = marketplaceNamesBySource.get(entry.source.sourceId);
+        if (!marketplaceName) {
+          throw new Error('marketplaceIdentityUnavailable: No marketplace name was selected for the source.');
+        }
+        return marketplaceName;
+      };
       const executionContext: RebuildExecutionContext = {
         env: runtimeEnv,
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
@@ -1431,18 +1481,6 @@ export async function runRebuildCommand(options: {
       const inspection = createRebuildIntegration({
         context: executionContext,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
-      });
-      await assertAgentVersions({
-        platforms: [...new Set(executionSelections.flatMap(({ entry, platform }) =>
-          supportsPlatform(entry.plugin.manifest, platform) ? [platform] : []))],
-        cwd: options.commandOptions.cwd,
-        env: runtimeEnv,
-        runtime: {
-          env: runtimeEnv,
-          nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
-          reporter: options.runtime?.reporter ?? createNoopReporter(),
-          debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
-        },
       });
       const createPlan = async (): Promise<DependencyOperationPlan> => {
         const inventory = await inventoryCatalogSourceReferences({
@@ -1639,6 +1677,31 @@ export async function runRebuildCommand(options: {
           });
       }
         const lockedPlan = await createPlan();
+        for (const pluginName of new Set(lockedPlan.targets.flatMap((target) =>
+          target.platform === 'claude'
+          && (target.action === 'install'
+            || target.action === 'upgrade'
+            || target.action === 'reinstall')
+            ? [target.pluginName]
+            : []))) {
+          await assertNoClaudeUnboundNativeNameCollision({
+            pluginName,
+            cwd: options.commandOptions.cwd,
+            env: runtimeEnv,
+          });
+        }
+        await assertAgentVersions({
+          platforms: [...new Set(executionSelections.flatMap(({ entry, platform }) =>
+            supportsPlatform(entry.plugin.manifest, platform) ? [platform] : []))],
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+          runtime: {
+            env: runtimeEnv,
+            nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+            reporter: options.runtime?.reporter ?? createNoopReporter(),
+            debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
+          },
+        });
         const preparedTargets = new Map<string, PreparedRebuildTarget>();
         const preparedTargetErrors = new Map<string, unknown>();
         const lockedCollisionSelections = [];

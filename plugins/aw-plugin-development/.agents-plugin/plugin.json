@@ -8,7 +8,9 @@
     "agent-skill-toolkit"
   ],
   "compatibility": {
-    "aw": { "minVersion": "0.0.0" }
+    "aw": {
+      "minVersion": "0.0.0"
+    }
   },
   "skills": "./skills",
   "buildConfig": {
@@ -18,7 +20,21 @@
         "plugin": "@aw/cli",
         "export": "skill-frontmatter-capabilities",
         "env": "AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES"
+      },
+      {
+        "plugin": "@aw/cli",
+        "export": "plugin-authoring-capabilities",
+        "env": "AW_PLUGIN_IMPORT_PLUGIN_AUTHORING_CAPABILITIES"
       }
+    ],
+    "generatedSkillRuntimeFiles": [
+      { "skill": "author-aw-plugin", "target": "references/skill-frontmatter-capabilities.md" },
+      { "skill": "author-aw-plugin", "target": "references/plugin-manifest-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/build-config-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/extensions-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/slash-command-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/mcp-app-capabilities.generated.md" },
+      { "skill": "author-aw-plugin", "target": "references/config-lifecycle-artifact-capabilities.generated.md" }
     ],
     "skillRuntimeFiles": [
       {
@@ -62,18 +78,18 @@
       },
       {
         "skill": "review-aw-plugin",
-        "target": "scripts/validate-review-result-lite.mjs",
+        "target": "scripts/validate-quality-review-result.mjs",
         "import": {
           "plugin": "agent-skill-toolkit",
-          "export": "validate-review-result-lite"
+          "export": "validate-quality-review-result"
         }
       },
       {
         "skill": "review-aw-plugin",
-        "target": "assets/review-result-lite.schema.json",
+        "target": "assets/quality-review-result.schema.json",
         "import": {
           "plugin": "agent-skill-toolkit",
-          "export": "review-result-lite-schema"
+          "export": "quality-review-result-schema"
         }
       },
       {
@@ -102,6 +118,14 @@
       },
       {
         "skill": "review-aw-plugin",
+        "target": "scripts/corpus-digest.mjs",
+        "import": {
+          "plugin": "@aw/agent-skill-eval",
+          "export": "case-corpus-digest"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
         "target": "scripts/validate-eval-run-bundle.mjs",
         "import": {
           "plugin": "agent-skill-toolkit",
@@ -125,9 +149,25 @@
         }
       },
       {
+        "skill": "review-aw-plugin",
+        "target": "references/review-publication.md",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "review-publication-reference"
+        }
+      },
+      {
         "skill": "review-aw-workflow",
         "target": "scripts/discover-aw-workflow.mjs",
         "source": "./scripts/discover-aw-workflow.mjs"
+      },
+      {
+        "skill": "review-aw-workflow",
+        "target": "references/review-publication.md",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "review-publication-reference"
+        }
       }
     ]
   },

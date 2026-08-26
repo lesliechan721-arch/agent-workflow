@@ -81,7 +81,7 @@
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "perRunTimeoutMs": 420000
     },
     {
       "id": "lightweight-delta",

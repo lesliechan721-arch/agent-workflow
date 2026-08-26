@@ -26,6 +26,12 @@ export class PluginManifestStructureError extends Error {
 
 function formatIssue(issue: ErrorObject): string {
   const location = issue.instancePath || '/'
+  if (
+    issue.keyword === 'pattern'
+    && (location === '/version' || location.endsWith('/minVersion'))
+  ) {
+    return `${location} must match pattern (expected a strict SemVer 2.0.0 string)`
+  }
   return `${location} ${issue.message ?? 'is invalid'}`
 }
 

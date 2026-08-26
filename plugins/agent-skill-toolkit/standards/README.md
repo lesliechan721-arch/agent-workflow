@@ -6,7 +6,7 @@
 
 - 对下层内容规则的 `skill_author`、`skill_review`、`eval_design`、`eval_audit` 投影；
 - Skill/Eval 专属规则；
-- Composition Fitness、Finding Admission 与 ReviewResult 决策策略。
+- Composition Fitness、Finding Admission 与 Quality Review 决策策略。
 
 `review-dimensions.json` 维护机器可读维度注册。详细人类 rubric 和评分策略直接由 `review-agent-skill` 维护。由共享规则渲染的动作视图只在 staging/runtime 构建，不作为 Git source 真值。
 

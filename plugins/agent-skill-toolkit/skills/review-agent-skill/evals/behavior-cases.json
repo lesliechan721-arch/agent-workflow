@@ -117,6 +117,49 @@
       }
     },
     {
+      "id": "quick-composition-loads-only-reached-standards",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "quick-conditional-reference-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "mode": "quick",
+        "independent_responsibilities": 2,
+        "architecture_branch_reached": false,
+        "publication_branch_reached": false
+      },
+      "oracle": {
+        "rationale": "quick 只加载用户问题到达的专业标准，不加载 full 基础标准或未到达的其它 branch。",
+        "rule_refs": [
+          "SKILL.md#Reference-路由",
+          "references/composition-fitness.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以建议保留或拆分；必须读取 composition-fitness，且不得读取 full-only、architecture 或 publication reference。",
+        "minimal_counterexample": "若用户请求 full，则必须读取 review-rubric、review-dimensions 和 scoring-model。"
+      },
+      "prompt": "quick 只读评审 skills/content-helper，只判断它是否应同时承担两项职责；不要执行 full 评审。",
+      "scripted_replies": [],
+      "expected_output": "只回答职责组合问题，不生成维度或评分。",
+      "workspace_files": {
+        "skills/content-helper/SKILL.md": "---\nname: content-helper\ndescription: Summarize supplied incidents and write marketing slogans.\n---\n\nSummarize a supplied incident. Write marketing slogans for a supplied product.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "读取 composition-fitness.md",
+          "不读取 review-rubric.md、review-dimensions.md 或 scoring-model.md",
+          "不读取 architecture-boundaries.md 或 review-publication.md",
+          "不输出维度或评分"
+        ]
+      }
+    },
+    {
       "id": "complete-steps-do-not-rescue-over-specification",
       "eval_type": "behavior",
       "case_role": "regression",
@@ -261,46 +304,6 @@
       }
     },
     {
-      "id": "full-review-covers-twelve-dimensions",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "full-review-scoring",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "machine_check_passes": true,
-        "complete_static_evidence": true
-      },
-      "oracle": {
-        "rationale": "full 模式恢复固定 12 维度，但主报告只显示总分、coverage 和总体 confidence。",
-        "rule_refs": [
-          "SKILL.md#输出",
-          "references/scoring-model.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "各维度分数可因证据判断不同；必须完整覆盖且不输出 quality band。",
-        "minimal_counterexample": "quick 或 delta 模式不应生成 12 维度评分。"
-      },
-      "prompt": "对 skills/focused 执行 full 只读评审，并提供结构化结果。",
-      "scripted_replies": [],
-      "expected_output": "JSON 按固定顺序包含 12 个维度；主报告只显示 Score、coverage 和 confidence 一行，不显示 quality band。",
-      "workspace_files": {
-        "skills/focused/SKILL.md": "---\nname: focused\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and the next action.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "完整覆盖 12 维度",
-          "主报告不展开维度明细",
-          "不输出 quality band"
-        ]
-      }
-    },
-    {
       "id": "incomplete-full-review-is-not-assessed",
       "eval_type": "behavior",
       "case_role": "boundary",
@@ -332,8 +335,11 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
+          "读取 review-rubric.md、review-dimensions.md 和 scoring-model.md",
           "不猜分",
-          "输出 not-assessed"
+          "输出 not-assessed",
+          "准备 major 时先读取 evidence-and-severity.md",
+          "不读取 review-publication.md"
         ]
       }
     },
@@ -369,6 +375,193 @@
         "checks": [
           "finding-first",
           "评分不驱动严重度"
+        ]
+      }
+    },
+    {
+      "id": "default-chat-review-does-not-publish",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "review-publication-consent",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "archive_requested": false,
+        "default_mode": "quick"
+      },
+      "oracle": {
+        "rationale": "Quality Review 默认只在聊天中交付；没有明确归档授权时不得写入工作区或创建 archive record。",
+        "rule_refs": [
+          "SKILL.md#可选报告归档"
+        ],
+        "confidence": "high",
+        "allowed_variance": "报告内容可以不同；不得调用发布命令、写 report 文件或创建 reports/reviews 记录。",
+        "minimal_counterexample": "用户明确要求归档已有报告时，Reviewer 应进入可选归档路径。"
+      },
+      "prompt": "只读 quick 评审 plugins/incident-tools/skills/incident-summary。把 Quality Review 直接交付在聊天中；我没有要求归档、写报告文件或做 Release Check。",
+      "scripted_replies": [],
+      "expected_output": "在聊天中给出 Quality Review，不写工作区，也不发布 archive record。",
+      "workspace_files": {
+        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "最终消息是 Quality Review，而不是归档或 release 结论",
+          "trace 不调用 aw review publish 或其它写入命令",
+          "workspace diff 为空，特别是不创建 reports/reviews"
+        ]
+      }
+    },
+    {
+      "id": "full-review-explicitly-publishes-with-aw-cli",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "review-publication-explicit-archive",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "archive_requested": true,
+        "mode": "full",
+        "installed_aw_review_publish": true
+      },
+      "oracle": {
+        "rationale": "用户明确要求 full Review 归档时，Reviewer 必须用当前 aw review publish 归档已有报告，而不是退回旧入口。",
+        "rule_refs": [
+          "SKILL.md#可选报告归档"
+        ],
+        "confidence": "high",
+        "allowed_variance": "finding 和报告措辞可以不同；必须实际运行公开 AW 发布和归档验证命令。",
+        "minimal_counterexample": "没有明确归档授权的默认聊天 Review 不得写入 archive。"
+      },
+      "prompt": "对 plugins/incident-tools/skills/incident-summary 做 full 只读评审，并把人读报告写到 review-output/full-report.md。现在我明确要求归档这份完整报告。先运行 aw review publish --help，然后实际使用 aw review publish 归档该报告。发布后用 aw review verify、aw review list 和 aw review show 验证新记录。不要修改被审 Skill，也不要生成 Release Check。",
+      "scripted_replies": [],
+      "expected_output": "生成完整 Quality Review，实际以 aw review publish 归档，并报告已验证的新 immutable record。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "review-output/**",
+          "reports/reviews/**"
+        ],
+        "artifacts": [
+          {
+            "path": "review-output/full-report.md",
+            "exists": true
+          }
+        ],
+        "checks": [
+          "trace 先读取 aw review publish --help，再实际执行 aw review publish --kind skill --target plugins/incident-tools/skills/incident-summary --report review-output/full-report.md",
+          "trace 中的归档命令全部使用 aw review publish",
+          "动态 archive record 由 aw review verify、aw review list 和 aw review show 成功确认，且 manifest target.kind=skill",
+          "不生成或宣称 Quality Review 的 release readiness"
+        ]
+      }
+    },
+    {
+      "id": "delta-publication-creates-new-record-with-supersedes",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "review-publication-delta-history",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "archive_requested": true,
+        "mode": "delta",
+        "previous_record_may_be_created_in_fixture": true
+      },
+      "oracle": {
+        "rationale": "delta 归档必须新增不可变记录，并用 --supersedes 绑定同一 target 的已验证旧记录。",
+        "rule_refs": [
+          "SKILL.md#可选报告归档"
+        ],
+        "confidence": "high",
+        "allowed_variance": "两份报告的具体 finding 可以不同；必须保留旧记录并发布一个不同的 delta record。",
+        "minimal_counterexample": "quick/full 的首次归档没有要替代的旧记录时，不应无依据传入 --supersedes。"
+      },
+      "prompt": "对 plugins/incident-tools/skills/incident-summary 完成 delta 只读评审并归档。这个隔离 fixture 没有预置旧记录：先把 review-output/previous-report.md 作为同一 target 的旧完整报告实际用 aw review publish 归档，并从命令结果取得旧 review ID；再把本次 delta 报告写到 review-output/delta-report.md。两份报告必须是不同内容，delta 报告必须明确其 delta 结论；实际发布一个新的 record，命令必须传 --supersedes <旧 review ID>。先检查 aw review publish --help，只使用 aw review publish。最后使用 aw review verify、aw review list 和 aw review show 确认两个不同 record、旧记录未被覆盖，且新 manifest 的 supersedes 是旧 ID。不要修改被审 Skill。",
+      "scripted_replies": [],
+      "expected_output": "创建两个不同的 immutable record；delta record 用 --supersedes 指向已验证的旧 record。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "review-output/**",
+          "reports/reviews/**"
+        ],
+        "artifacts": [
+          {
+            "path": "review-output/previous-report.md",
+            "exists": true
+          },
+          {
+            "path": "review-output/delta-report.md",
+            "exists": true
+          }
+        ],
+        "checks": [
+          "trace 先读取 aw review publish --help，并两次实际使用 aw review publish",
+          "第二次发布命令含 --supersedes 和从第一次发布结果取得的 review ID",
+          "aw review verify、aw review list 和 aw review show 确认两个不同 immutable record；新 manifest.supersedes 指向旧 ID，旧 record 未被覆盖",
+          "trace 中的归档命令全部使用 aw review publish"
+        ]
+      }
+    },
+    {
+      "id": "release-is-not-a-review-mode",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "review-release-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "request_is_release_readiness": true,
+        "quality_review_requested": false
+      },
+      "oracle": {
+        "rationale": "Release Check 是独立机器检查，不是 Reviewer mode；Quality Review 不拥有 readiness 结论。",
+        "rule_refs": [
+          "SKILL.md#模式"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以引用用户使用的 release-ready 或 blocked 词；不得根据静态 Quality Review 判断目标已具备或不具备发布资格，也不得把 release 请求伪装成 quick、full 或 delta Review。",
+        "minimal_counterexample": "用户请求明确的 quick/full/delta Quality Review 时，Reviewer 应执行对应 Review，而不是改写成 Release Check。"
+      },
+      "prompt": "把 plugins/incident-tools/skills/incident-summary 做成 release Review，给我一个 release-ready 或 blocked 结论。不要做普通 Quality Review。",
+      "scripted_replies": [],
+      "expected_output": "不根据静态 Review 给出发布资格结论，也不写文件；说明本 Skill 不拥有 Release Check，将请求交给对应发布工作流，并在没有可验证检查时报告 readiness 未评估和缺失输入。",
+      "workspace_files": {
+        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不把 release 请求转换为 quick、full 或 delta Quality Review",
+          "不根据目标 Skill 的静态观察判断它已具备或不具备发布资格",
+          "将请求指向拥有机器 Release Check 的发布工作流；当前没有可验证检查时报告 readiness 未评估并列出缺失输入",
+          "不创建 release-check.json、report 或 archive record"
         ]
       }
     }

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -7,27 +6,11 @@ import process from 'node:process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { validateEvalRunBundle } from './validate-eval-run-bundle.mjs';
+import { computeCaseCorpusDigest } from './corpus-digest.mjs';
 const execFileAsync = promisify(execFile),
   scriptRoot = path.dirname(fileURLToPath(import.meta.url));
-function stable(value) {
-  if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
-  if (value && typeof value === 'object')
-    return (
-      '{' +
-      Object.keys(value)
-        .sort()
-        .map((key) => JSON.stringify(key) + ':' + stable(value[key]))
-        .join(',') +
-      '}'
-    );
-  return JSON.stringify(value);
-}
 export async function evalCorpusDigest(casePaths) {
-  const documents = await Promise.all(
-    casePaths.map(async (casePath) => stable(JSON.parse(await readFile(casePath, 'utf8')))),
-  );
-  documents.sort();
-  return 'sha256:' + createHash('sha256').update(documents.join('\n')).digest('hex');
+  return computeCaseCorpusDigest(casePaths);
 }
 function parseArgs(argv) {
   const options = { cases: [], format: 'text', digestOnly: false, targetSkillDigest: null, runBundle: null },

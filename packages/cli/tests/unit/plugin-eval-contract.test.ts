@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { computeSkillDigest } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
@@ -13,6 +15,7 @@ import {
 import { materializePluginEvalSubjects } from '../../scripts/plugin-eval-materializer.js';
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 function skillEvalPath(pluginRoot: string, ...segments: string[]): string {
   return path.join(pluginRoot, 'skills', 'eval-fixture', 'evals', ...segments);
@@ -135,14 +138,29 @@ afterEach(async () => {
 });
 
 describe('plugin eval contract and materialization', () => {
-  it('materializes project and user evidence without starting a model', async () => {
+  it('materializes conversation subjects as isolated Git repositories with HEAD', async () => {
     const pluginRoot = await createStaticEvalPlugin();
     const plugin = await readPluginManifest(pluginRoot);
     const manifest = await readPluginEvalManifest(pluginRoot, 'eval-fixture');
+    manifest.suites = [{
+      id: 'conversation',
+      kind: 'conversation',
+      skill: 'eval-fixture',
+      skills: ['eval-fixture'],
+      cases: './conversation-cases.json',
+      profiles: ['project-runtime', 'user-runtime'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+      isolation: 'standard',
+    }];
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-output-'));
     const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-work-'));
     tempDirs.push(outputRoot);
     tempDirs.push(workRoot);
+    const hostGitConfig = path.join(workRoot, 'host.gitconfig');
+    await fs.writeFile(hostGitConfig, '[invalid git config', 'utf8');
 
     const subjects = await materializePluginEvalSubjects({
       plugin,
@@ -150,7 +168,11 @@ describe('plugin eval contract and materialization', () => {
       manifest,
       outputRoot,
       workRoot,
-      env: process.env,
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: hostGitConfig,
+        GIT_DIR: path.join(workRoot, 'host-git-dir'),
+      },
     });
 
     expect(subjects).toHaveLength(2);
@@ -180,7 +202,54 @@ describe('plugin eval contract and materialization', () => {
         'skills',
         'eval-fixture',
       ))).resolves.toMatch(/^sha256:[0-9a-f]{64}$/u);
+      const subjectRoot = path.join(outputRoot, subject.root);
+      await expect(execFileAsync('git', ['rev-parse', '--verify', 'HEAD'], {
+        cwd: subjectRoot,
+        encoding: 'utf8',
+      })).resolves.toMatchObject({ stdout: expect.stringMatching(/^[0-9a-f]{40}\n$/u) });
+      const baselineTree = await execFileAsync('git', ['ls-tree', '-r', '--name-only', 'HEAD'], {
+        cwd: subjectRoot,
+        encoding: 'utf8',
+      });
+      expect(baselineTree.stdout).not.toContain('.codex/');
+      expect(baselineTree.stdout).not.toContain('.agents/skills/eval-fixture/');
+      await expect(execFileAsync('git', ['status', '--porcelain'], {
+        cwd: subjectRoot,
+        encoding: 'utf8',
+      })).resolves.toMatchObject({ stdout: '' });
+
+      await fs.outputFile(path.join(subjectRoot, 'docs', 'review-target.md'), 'Review target.\n');
+      await execFileAsync('git', ['add', 'docs/review-target.md'], { cwd: subjectRoot });
+      await execFileAsync('git', [
+        '-c',
+        'user.name=AW Eval Test',
+        '-c',
+        'user.email=aw-eval-test@example.invalid',
+        '-c',
+        'commit.gpgSign=false',
+        'commit',
+        '-q',
+        '--no-verify',
+        '-m',
+        'Add review target fixture',
+      ], { cwd: subjectRoot });
+      await expect(execFileAsync('git', ['show', 'HEAD:docs/review-target.md'], {
+        cwd: subjectRoot,
+        encoding: 'utf8',
+      })).resolves.toMatchObject({ stdout: 'Review target.\n' });
+      await expect(execFileAsync('git', [
+        'show',
+        'HEAD:.agents/skills/eval-fixture/SKILL.md',
+      ], {
+        cwd: subjectRoot,
+        encoding: 'utf8',
+      })).rejects.toMatchObject({ code: 128 });
+      await expect(execFileAsync('git', ['status', '--porcelain'], {
+        cwd: subjectRoot,
+        encoding: 'utf8',
+      })).resolves.toMatchObject({ stdout: '' });
     }
+    await expect(fs.readFile(hostGitConfig, 'utf8')).resolves.toBe('[invalid git config');
   });
 
   it('rejects release splits for conversation suites without split filtering', async () => {

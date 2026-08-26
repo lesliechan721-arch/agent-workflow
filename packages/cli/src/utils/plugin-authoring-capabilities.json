@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "verifiedSource": "packages/cli/src/utils/manifest.ts and packages/cli/authoring/scripts/validate-plugin.mjs",
+  "surfaces": {
+    "plugin-manifest": {
+      "title": "Plugin Manifest Capabilities",
+      "entries": [
+        { "field": "name", "type": "kebab-case string", "required": true },
+        { "field": "version", "type": "stable strict SemVer", "required": true },
+        { "field": "description", "type": "non-empty string", "required": true },
+        { "field": "compatibility.aw.minVersion", "type": "strict SemVer", "required": true },
+        { "field": "dependencies", "type": "unique plugin-name[]", "required": false, "acceptedValues": "same-source plugin names", "conflicts": "self, cycles, missing provider" },
+        { "field": "skills|slashCommands|mcpServers|apps", "type": "single ./ relative path", "required": false, "requires": "declared path exists; apps requires CODEX" },
+        { "field": "distributions.agentSkills", "type": "{skills?: ./ relative path}", "required": false, "profiles": "agent-skills", "requires": "strict compatibility.aw.minVersion and at least one non-empty native capability in V1", "conflicts": "portable-only plugin or implicit promotion of native skills", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest" },
+        { "field": "distributions.agentSkills.skills", "type": "./ plugin-relative directory", "required": "for static portable Skills", "profiles": "agent-skills static", "requires": "each direct child is a valid portable-agent-skills Skill with production README.md", "conflicts": "native skills root inference", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest" },
+        { "field": "marketplace.category", "type": "non-empty string", "required": true },
+        { "field": "marketplace.strict", "type": "boolean", "required": true },
+        { "field": "marketplace.policy.installation", "type": "enum", "required": true, "acceptedValues": ["AVAILABLE", "NOT_AVAILABLE", "INSTALLED_BY_DEFAULT"] },
+        { "field": "marketplace.policy.authentication", "type": "enum", "required": true, "acceptedValues": ["ON_INSTALL", "ON_USE"] },
+        { "field": "marketplace.policy.products", "type": "unique enum[]", "required": false, "acceptedValues": ["CODEX", "CLAUDE"], "profiles": "omitted means both" },
+        { "field": "interface", "type": "display-only object", "required": false }
+      ]
+    },
+    "build-config": {
+      "title": "Build Config Capabilities",
+      "entries": [
+        { "field": "cacheable", "type": "literal true", "required": false, "requires": "deterministic scripts.node.build" },
+        { "field": "templates", "type": "include globs + dual-platform vars", "required": false, "acceptedValues": "string or boolean vars" },
+        { "field": "fileRules", "type": "platform include/exclude", "required": false, "requires": "selected product" },
+        { "field": "manifestOverrides.claude", "type": "object", "required": false, "acceptedValues": ["outputStyles", "lspServers", "userConfig", "channels"], "requires": "CLAUDE" },
+        { "field": "runtimeExports", "type": "{name,source}[]", "required": false, "conflicts": "Skill/report/eval/generated roots" },
+        { "field": "buildImports", "type": "{plugin,export,env}[]", "required": false, "requires": "AW_PLUGIN_IMPORT_* env" },
+        { "field": "skillRuntimeFiles", "type": "{skill,target,platforms?,distributions?,source|import}[]", "required": false, "requires": "declared static Skill and a target below references/, assets/, or scripts/", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest" },
+        { "field": "skillRuntimeFiles[].distributions", "type": "unique enum[]", "required": false, "acceptedValues": ["agent-skills"], "profiles": "agent-skills projection", "requires": "distributions.agentSkills and a declared static portable Skill key", "conflicts": "omission selects native surfaces; platforms plus distributions selects both explicit surface groups", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest" },
+        { "field": "generatedSkillRuntimeFiles", "type": "{skill,target,distributions?}[]", "required": false, "requires": "scripts.node.build creates every final target; omitted distributions apply to all supported native platforms", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest; packages/cli/src/generators/local-plugin.ts validateGeneratedSkillRuntimeFiles" },
+        { "field": "generatedSkillRuntimeFiles[].distributions", "type": "unique enum[]", "required": false, "acceptedValues": ["agent-skills"], "profiles": "agent-skills projection", "requires": "distributions.agentSkills and a declared static portable Skill key", "conflicts": "omission selects all supported native platforms; explicit agent-skills selects only the portable surface", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest; packages/cli/src/generators/local-plugin.ts validateGeneratedSkillRuntimeFiles" }
+      ]
+    },
+    "extensions": {
+      "title": "Extensions Capabilities",
+      "entries": [
+        { "field": "instructions[]", "type": "{name,title,content,paths?,agentOverrides?}", "required": false },
+        { "field": "permissions[]", "type": "{name,allow?,ask?,deny?,agentOverrides?}", "required": false, "acceptedValues": "plain command token prefixes" },
+        { "field": "hooks[]", "type": "{event,matcher?,command,agentOverrides?}", "required": false, "acceptedValues": ["before_tool", "after_tool", "session_start"] },
+        { "field": "nativeHooks.claude[]", "type": "native event handler", "required": false, "requires": "CLAUDE" },
+        { "field": "nativeHooks.codex[]", "type": "native event handler", "required": false, "requires": "CODEX" },
+        { "field": "agents[]", "type": "{name,description,prompt,tools?,agentOverrides?}", "required": false },
+        { "field": "agentOverrides.<platform>", "type": "object|null", "required": false, "conflicts": "non-null override for unsupported product" }
+      ]
+    },
+    "slash-command": {
+      "title": "Slash Command Capabilities",
+      "entries": [
+        { "field": "description", "type": "string", "required": true },
+        { "field": "claude", "type": "frontmatter object", "required": false, "acceptedValues": ["description", "allowed-tools", "model", "argument-hint", "shell"], "profiles": "CLAUDE" },
+        { "field": "claude.shell", "type": "enum", "required": false, "acceptedValues": ["bash", "powershell"] },
+        { "field": "codex.description", "type": "string", "required": false, "profiles": "CODEX" },
+        { "field": "codex.interface", "type": "display metadata", "required": false, "requires": "default_prompt includes $command-name" },
+        { "field": "codex generated invocation", "type": "fixed policy", "required": true, "acceptedValues": "allow_implicit_invocation=false" }
+      ]
+    },
+    "mcp-app": {
+      "title": "MCP and App Capabilities",
+      "entries": [
+        { "field": "mcpServers.<key>.command", "type": "string", "required": "stdio only", "conflicts": "url" },
+        { "field": "mcpServers.<key>.args", "type": "string[]", "required": false },
+        { "field": "mcpServers.<key>.env|headers", "type": "string map", "required": false, "acceptedValues": "${ENV_VAR} placeholders for shared assets" },
+        { "field": "mcpServers.<key>.url", "type": "URL string", "required": "HTTP only", "conflicts": "command" },
+        { "field": "apps.<key>.id", "type": "non-empty connector id", "required": true, "profiles": "CODEX user scope", "conflicts": "CLAUDE-only or Codex project scope" }
+      ]
+    },
+    "config-lifecycle-artifact": {
+      "title": "Config, Lifecycle, and Artifact Capabilities",
+      "entries": [
+        { "field": "config.schema.<key>.type", "type": "enum", "required": true, "acceptedValues": ["string", "number", "boolean", "enum", "file", "directory"] },
+        { "field": "config.schema.<key>", "type": "field policy", "required": false, "acceptedValues": ["title", "description", "default", "required", "sensitive", "values", "min", "max"] },
+        { "field": "config.presentation", "type": "groups/fields/presets", "required": false, "conflicts": "schema mutation or sensitive/path preset values" },
+        { "field": "scripts.lifecycle", "type": "event selectors", "required": false, "acceptedValues": ["install", "upgrade", "uninstall"], "requires": "in-root executable entry" },
+        { "field": "scripts.timeoutMs", "type": "integer milliseconds", "required": false, "acceptedValues": "1000..300000" },
+        { "field": "scripts.helpers.config", "type": "Node path", "required": false },
+        { "field": "scripts.artifacts.render", "type": "Node entry", "required": "with artifacts.targets", "verifiedSource": "packages/cli/authoring/scripts/validate-plugin.mjs validateDynamicArtifactsLightweight" },
+        { "field": "artifacts.targets[].target", "type": "enum", "required": true, "acceptedValues": ["codex.skill", "claude.skill", "codex.developerInstructionsBlock", "codex.agentRole", "agent-skills.skill"] },
+        { "field": "artifacts.targets[]", "type": "static capability", "required": true, "requires": "id, platform/distribution, scopes, states, refreshKeys and target-specific key; scripts.artifacts.render", "verifiedSource": "packages/cli/authoring/scripts/validate-plugin.mjs validateDynamicArtifactsLightweight" },
+        { "field": "artifacts.targets[agent-skills.skill]", "type": "{id,distribution,scopes,target,kind?,states,refreshKeys,skillKey,sourceDirs?,runtimeImports?}", "required": false, "profiles": "agent-skills dynamic", "requires": "distributions.agentSkills, scripts.artifacts.render, distribution=agent-skills, target=agent-skills.skill, skillKey, non-empty scopes and states", "conflicts": "platform, projectManagedKind, roleKey, requiresCodexProjectConfig", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest; packages/cli/authoring/scripts/validate-plugin.mjs validateDynamicArtifactsLightweight" },
+        { "field": "artifacts.targets[agent-skills.skill].runtimeImports", "type": "unique {name,plugin,export}[]", "required": false, "profiles": "agent-skills dynamic", "requires": "provider buildConfig.runtimeExports; a typed build-time reuse edge that does not declare or infer manifest dependencies; resolver copies resolved bytes into the consumer bundle and renderer reads only its bundle-local import", "conflicts": "native artifact targets or author-supplied resolved provenance", "verifiedSource": "packages/cli/src/utils/manifest.ts validateSourcePluginManifest; packages/cli/src/generators/local-plugin.ts resolveArtifactRuntimeImports" },
+        { "field": "ArtifactPlan.version", "type": "literal 2", "required": true },
+        { "field": "ArtifactPlan.artifacts[].state", "type": "enum", "required": true, "acceptedValues": ["present", "disabled"] },
+        { "field": "ArtifactPlan.artifacts[agent-skills.skill]", "type": "{id,distribution,target,kind,state,skillKey,refreshKeys,content?}", "required": "for every declared target in the current agent-skills distribution and scope, including disabled", "profiles": "agent-skills dynamic", "requires": "distribution=agent-skills, target=agent-skills.skill, kind=skill and identity matching the declared target", "conflicts": "platform identity or files outside a valid portable Skill tree", "verifiedSource": "packages/cli/src/utils/artifact-plan.ts validateArtifactPlan" }
+      ]
+    }
+  }
+}

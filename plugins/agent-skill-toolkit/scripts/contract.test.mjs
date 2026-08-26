@@ -16,7 +16,6 @@ const context = process.env.AW_PLUGIN_CONTEXT
 const sourceRoot = context?.sourceRoot ?? localRoot;
 const bundleRoot = context?.plugin?.rootDir ?? localRoot;
 const runtimeRoot = context ? path.join(bundleRoot, context.platform) : localRoot;
-
 async function exists(root, relative) {
   return access(path.join(root, relative)).then(() => true, () => false);
 }
@@ -29,18 +28,70 @@ async function runtimeExportSource(plugin, exportName) {
   return path.join(providerRoot, item.source);
 }
 
-test('reviewer runtime exposes only the lightweight machine contract', async () => {
+test('reviewer manifest and runtime expose only the current quality contract', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
+  assert.deepEqual(
+    manifest.buildConfig.runtimeExports.map((entry) => entry.name).sort(),
+    [
+      'check-agent-skill',
+      'eval-audit-result-schema',
+      'eval-run-bundle-schema',
+      'quality-review-result-schema',
+      'review-dimensions',
+      'review-publication-reference',
+      'skill-design-brief-schema',
+      'skill-rules',
+      'validate-eval-audit-result',
+      'validate-eval-run-bundle',
+      'validate-json-contract',
+      'validate-quality-review-result',
+    ],
+  );
+  assert.deepEqual(
+    manifest.buildConfig.runtimeExports.map((entry) => `${entry.name}:${entry.source}`).sort(),
+    [
+      'check-agent-skill:./scripts/check-agent-skill.mjs',
+      'eval-audit-result-schema:./schemas/eval-audit-result.schema.json',
+      'eval-run-bundle-schema:./schemas/eval-run-bundle.schema.json',
+      'quality-review-result-schema:./schemas/quality-review-result.schema.json',
+      'review-dimensions:./standards/review-dimensions.json',
+      'review-publication-reference:./references/review-publication.md',
+      'skill-design-brief-schema:./schemas/skill-design-brief.schema.json',
+      'skill-rules:./standards/skill-rules.json',
+      'validate-eval-audit-result:./scripts/validate-eval-audit-result.mjs',
+      'validate-eval-run-bundle:./scripts/validate-eval-run-bundle.mjs',
+      'validate-json-contract:./scripts/validate-json-contract.mjs',
+      'validate-quality-review-result:./scripts/validate-quality-review-result.mjs',
+    ],
+  );
   const targets = manifest.buildConfig.skillRuntimeFiles
     .filter((entry) => entry.skill === 'review-agent-skill')
     .map((entry) => entry.target)
     .sort();
   assert.deepEqual(targets, [
+    'assets/quality-review-result.schema.json',
     'assets/review-dimensions.json',
-    'assets/review-result-lite.schema.json',
+    'references/review-publication.md',
     'scripts/check-agent-skill.mjs',
-    'scripts/validate-review-result-lite.mjs',
+    'scripts/validate-quality-review-result.mjs',
   ]);
+});
+
+test('reviewer production and materialized closures use registered current dependencies', async () => {
+  const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
+  assert.deepEqual(
+    manifest.buildConfig.buildImports.map((entry) => `${entry.plugin}:${entry.export}`).sort(),
+    [
+      '@aw/agent-skill-eval:case-corpus-digest',
+      'agent-content-toolkit:content-rules',
+    ],
+  );
+  assert.deepEqual(
+    manifest.buildConfig.skillRuntimeFiles
+      .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
+      .sort(),
+    [],
+  );
   const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill');
   for (const relative of [
     'assets/review-input-bundle.schema.json',
@@ -116,7 +167,25 @@ test('materialized audit validator runs with its projected dependency closure', 
   }
 });
 
+test('materialized audit validator matches the canonical digest for a formerly divergent corpus', async () => {
+  if (!context) return;
+  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
+  const runtimeDigest = path.join(auditRoot, 'scripts/corpus-digest.mjs');
+  const packageDigest = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/corpus-digest.js');
+  assert.deepEqual(await readFile(runtimeDigest), await readFile(packageDigest));
+  const casePath = path.join(sourceRoot, 'skills/review-agent-skill/evals/behavior-cases.json');
+  const { stdout } = await execFileAsync(process.execPath, [
+    path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs'),
+    '--digest-only', '--case', casePath,
+  ], { cwd: auditRoot, encoding: 'utf8' });
+  assert.equal(
+    stdout.trim(),
+    'sha256:53192c7077741c79dfc1ed2bd88956d67ca057c34b487a3ede85261b5b5bc247',
+  );
+});
+
 test('audit triage rejects conclusions from an unmet bundle evidence requirement', async () => {
+  if (!context) return;
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
   const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-evidence-requirement-'));

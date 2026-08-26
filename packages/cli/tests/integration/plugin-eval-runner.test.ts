@@ -20,9 +20,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   readSourceRevision,
   runChild,
-  runPluginEvals,
+  runPluginEvals as runPluginEvalsProduction,
   terminatePosixProcessTree,
   terminateWindowsProcessTree,
+  type PluginEvalRunnerOptions,
 } from '../../scripts/eval-plugin-skills.js';
 import {
   createPluginEvalRunLayout,
@@ -43,6 +44,24 @@ import {
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 let testRunCounter = 0;
+
+async function deployTestEvalCli(target: string): Promise<void> {
+  await fs.outputJson(path.join(target, 'package.json'), {
+    name: '@fixture/aw',
+    version: '0.1.0',
+  });
+  await fs.outputFile(path.join(target, 'dist', 'index.js'), 'export {};\n');
+}
+
+function runPluginEvals(
+  args: string[],
+  options: PluginEvalRunnerOptions = {},
+): Promise<number> {
+  return runPluginEvalsProduction(args, {
+    deployEvalCli: deployTestEvalCli,
+    ...options,
+  });
+}
 
 function testRunLayoutFactory(outputRoot: string) {
   return async (options: {
@@ -128,13 +147,30 @@ function sha256(value: string | Buffer): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
-async function writeFakeCodex(root: string, skillName: string): Promise<string> {
+async function writeFakeCodex(
+  root: string,
+  skillName: string,
+  cliProbePath?: string,
+): Promise<string> {
   const codexBin = path.join(root, 'fake-codex');
   await fs.writeFile(codexBin, [
     '#!/usr/bin/env node',
+    "const fs = require('node:fs');",
     "const path = require('node:path');",
     "if (process.argv[2] === '--version') { process.stdout.write('codex-fake 1.0\\n'); process.exit(0); }",
     "if (process.argv[2] !== 'app-server') process.exit(3);",
+    ...(cliProbePath ? [
+      "const { execFileSync } = require('node:child_process');",
+      "const resolvedAw = execFileSync('/bin/sh', ['-c', 'command -v aw'], { encoding: 'utf8' }).trim();",
+      "const launcher = fs.readFileSync(resolvedAw, 'utf8');",
+      "const envEntry = process.env.AW_PLUGIN_EVAL_CLI_ENTRY;",
+      "const entryRealpath = fs.realpathSync(envEntry);",
+      "const moduleRealpath = fs.realpathSync(require.resolve('commander', { paths: [path.dirname(envEntry)] }));",
+      "const dependencyBinPresent = fs.existsSync(path.join(path.dirname(path.dirname(envEntry)), 'node_modules', '.bin'));",
+      "const awVersion = execFileSync('aw', ['--version'], { encoding: 'utf8' }).trim();",
+      "const validateHelp = execFileSync('aw', ['plugin', 'validate', '--help'], { encoding: 'utf8' });",
+      `fs.appendFileSync(${JSON.stringify(cliProbePath)}, JSON.stringify({ resolvedAw, launcher, envEntry, entryRealpath, moduleRealpath, dependencyBinPresent, awVersion, validateHelp }) + '\\n');`,
+    ] : []),
     'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
     "const readline = require('node:readline');",
     'const input = readline.createInterface({ input: process.stdin });',
@@ -669,15 +705,117 @@ describe('plugin eval runner', () => {
         descendantCleanupGuaranteed: false,
         limitation: result.bundle.processManagement.limitation,
       },
+      cliCapsule: result.bundle.cliCapsule,
     }));
   });
+
+  it('binds checkpoint reuse to the deployed CLI production closure', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-cli-identity-'));
+    const deploymentSource = path.join(root, 'deployment-source');
+    const dependencyPath = path.join(
+      deploymentSource,
+      'node_modules',
+      'fixture-dependency',
+      'index.js',
+    );
+    const statePath = path.join(root, 'identity-state.json');
+    tempDirs.push(root);
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(root);
+    await writeCommandPlugin(root, {
+      name: 'identity-demo',
+      script: [
+        "import { mkdir, readFile, writeFile } from 'node:fs/promises';",
+        "import path from 'node:path';",
+        `const statePath = ${JSON.stringify(statePath)};`,
+        "const caseId = process.argv[process.argv.indexOf('--case') + 1];",
+        "const output = process.argv[process.argv.indexOf('--output') + 1];",
+        "let state = { failedOnce: false };",
+        "try { state = JSON.parse(await readFile(statePath, 'utf8')); } catch {}",
+        "const incomplete = caseId === 'case_b' && !state.failedOnce;",
+        "if (incomplete) state.failedOnce = true;",
+        "await writeFile(statePath, JSON.stringify(state));",
+        "await mkdir(path.dirname(output), { recursive: true });",
+        "await writeFile(output, JSON.stringify({ complete: !incomplete, passed: !incomplete, summary: {}, case_results: [{ id: caseId, outcome: incomplete ? 'incomplete' : 'passed', complete: !incomplete, mechanical_passed: !incomplete }] }));",
+        "if (incomplete) process.exitCode = 1;",
+      ].join('\n'),
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: ['codexBin', 'runs', 'case'],
+      caseIds: ['case_a', 'case_b'],
+    });
+    await fs.outputJson(path.join(deploymentSource, 'package.json'), {
+      name: '@fixture/aw',
+      version: '0.1.0',
+    });
+    await fs.outputFile(path.join(deploymentSource, 'dist', 'index.js'), 'export {};\n');
+    await fs.outputFile(dependencyPath, 'export const identity = "first";\n');
+    const deployedTargets: string[] = [];
+    const deployEvalCli = (target: string): Promise<void> => {
+      deployedTargets.push(target);
+      return fs.copy(deploymentSource, target, { dereference: false });
+    };
+    const run = async (batchArgs: string[]): Promise<{
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }> => {
+      let stdout = '';
+      let stderr = '';
+      const exitCode = await runPluginEvals([
+        'identity-demo',
+        '--skill',
+        'identity-demo',
+        '--no-inherit-codex-config',
+        '--codex-bin',
+        process.execPath,
+        ...batchArgs,
+      ], {
+        repoRoot: root,
+        env: { ...process.env, CODEX_PERMISSION_PROFILE: undefined },
+        deployEvalCli,
+        stdout: (text) => { stdout += text; },
+        stderr: (text) => { stderr += text; },
+      });
+      return { exitCode, stdout, stderr };
+    };
+
+    const first = await run(['--batch-name', 'cli-identity']);
+    expect(first.exitCode, first.stderr).toBe(1);
+    const firstResult = JSON.parse(first.stdout);
+    expect(firstResult.bundle.cliCapsule).toMatchObject({
+      packageName: '@fixture/aw',
+      packageVersion: '0.1.0',
+      contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+
+    await fs.writeFile(dependencyPath, 'export const identity = "changed";\n');
+    const changed = await run(['--batch-id', firstResult.batchId]);
+    expect(changed.exitCode).toBe(2);
+    expect(changed.stdout).toBe('');
+    expect(changed.stderr).toContain('uses a different model environment');
+
+    await fs.writeFile(dependencyPath, 'export const identity = "first";\n');
+    const unchanged = await run(['--batch-id', firstResult.batchId]);
+    expect(unchanged.exitCode, unchanged.stderr).toBe(0);
+    const unchangedResult = JSON.parse(unchanged.stdout);
+    expect(unchangedResult.bundle.cliCapsule).toEqual(firstResult.bundle.cliCapsule);
+    expect(unchangedResult.bundle.suites[0].caseResults[0]).toMatchObject({
+      reused: true,
+      sourceRunId: firstResult.runId,
+    });
+    for (const target of deployedTargets) {
+      await expect(fs.pathExists(path.dirname(target))).resolves.toBe(false);
+    }
+  }, 30_000);
 
   it('rejects plugin path traversal before resolving a manifest', async () => {
     let stderr = '';
     const exitCode = await runPluginEvals([
-      '../skill-review',
+      '../outside-plugin',
       '--skill',
-      'skill-review',
+      'outside-skill',
       '--materialize-only',
       '--batch-name',
       'test-batch',
@@ -1084,7 +1222,16 @@ describe('plugin eval runner', () => {
       tempDirs.push(outputRoot);
       registerCurrentTestReadonlyFixtureRoot(root);
       registerCurrentTestWritableStateRoot(outputRoot);
-      const codexBin = await writeFakeCodex(outputRoot, 'codex-explore');
+      const oldBin = path.join(outputRoot, 'old-bin');
+      const oldMarker = path.join(outputRoot, 'old-aw-ran');
+      const cliProbePath = path.join(outputRoot, 'aw-probes.jsonl');
+      await fs.ensureDir(oldBin);
+      await fs.writeFile(path.join(oldBin, 'aw'), [
+        '#!/bin/sh',
+        `printf old > ${JSON.stringify(oldMarker)}`,
+        'exit 19',
+      ].join('\n'), { encoding: 'utf8', mode: 0o700 });
+      const codexBin = await writeFakeCodex(outputRoot, 'codex-explore', cliProbePath);
       let stdout = '';
       let stderr = '';
 
@@ -1103,17 +1250,22 @@ describe('plugin eval runner', () => {
         codexBin,
       ], {
         repoRoot: root,
-        env: process.env,
+        env: {
+          ...process.env,
+          PATH: [oldBin, process.env.PATH].filter(Boolean).join(path.delimiter),
+        },
         stdout: (text) => { stdout += text; },
         stderr: (text) => { stderr += text; },
         inspectProcessTree: async () => undefined,
         createRunLayout: testRunLayoutFactory(outputRoot),
+        deployEvalCli: undefined,
       });
 
       expect(exitCode, stderr).toBe(1);
       expect(stderr).toContain('codex-enhance/trigger/all');
       expect(stderr).not.toContain('codex-enhance/trigger/validation');
       const commandReport = JSON.parse(stdout);
+      const probeLines = (await fs.readFile(cliProbePath, 'utf8')).trim().split('\n');
       expect(
         commandReport.bundle,
         JSON.stringify(commandReport.bundle, null, 2),
@@ -1130,7 +1282,36 @@ describe('plugin eval runner', () => {
       expect(commandReport.bundle.suites).toEqual([
         expect.objectContaining({ split: 'all', outcome: 'incomplete', complete: false }),
       ]);
+      const probes = probeLines.map(
+        (line) => JSON.parse(line) as {
+          resolvedAw: string;
+          launcher: string;
+          envEntry: string;
+          entryRealpath: string;
+          moduleRealpath: string;
+          dependencyBinPresent: boolean;
+          awVersion: string;
+          validateHelp: string;
+        },
+      );
+      expect(probes.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(probes.map((probe) => probe.resolvedAw))).toHaveLength(1);
+      expect(probes.every((probe) => probe.awVersion === '0.1.0')).toBe(true);
+      expect(probes.every((probe) => probe.validateHelp.includes('Usage: aw plugin validate')))
+        .toBe(true);
+      for (const probe of probes) {
+        expect(JSON.stringify(probe)).not.toContain(root);
+        expect(probe.entryRealpath).toMatch(/\/cli\/dist\/index\.js$/u);
+        expect(probe.moduleRealpath).toContain(`${path.sep}cli${path.sep}node_modules${path.sep}`);
+        expect(probe.dependencyBinPresent).toBe(false);
+      }
+      await expect(fs.pathExists(oldMarker)).resolves.toBe(false);
+      await expect(fs.pathExists(probes[0]!.resolvedAw)).resolves.toBe(false);
+      expect(JSON.stringify(commandReport.bundle)).not.toContain(
+        path.join(root, 'packages', 'cli'),
+      );
     },
+    90_000,
   );
 
   it.runIf(process.platform !== 'win32')(

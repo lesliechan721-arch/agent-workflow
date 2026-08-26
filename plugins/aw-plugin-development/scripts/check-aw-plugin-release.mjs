@@ -449,7 +449,7 @@ async function main() {
   }
 
   const checker = await bundledScript('check-agent-skill.mjs');
-  const validator = await bundledScript('validate-review-result-lite.mjs');
+  const validator = await bundledScript('validate-quality-review-result.mjs');
   const evalAuditValidator = await bundledScript('validate-eval-audit-result.mjs');
   const evalBundleValidator = await bundledScript('validate-eval-run-bundle.mjs');
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'aw-release-check-'));

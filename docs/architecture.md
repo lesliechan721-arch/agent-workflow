@@ -25,12 +25,14 @@
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；只有基于 Git base 的 status 差异检查依赖 Git。
+- `utils/plugin-authoring-capabilities.json` 是插件作者聚焦字段视图的 canonical registry。CLI virtual build export 只投影该真值；复杂规则通过 `verifiedSource` 继续归属 canonical manifest/author validator。
 
 公开包 `@lesliechan721/aw-plugin-core` 还拥有 AW Plugin Workspace v1 metadata、单插件 bundle 和 schema 4 Catalog snapshot build/validate 的机器合同。固定源码入口是 `plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
 
 ### Module Invariants
 
 - renderer 只返回 `ArtifactPlan`，不直接写平台文件。
+- build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
 - live ownership 和实际平台组件是插件存在、清理和 status 的唯一真值。不得新增安装合同存储、第二套安装状态或持久依赖图。
@@ -141,7 +143,8 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 ## Platform Boundaries
 
 - 只删除可证明属于 AW 的 marker、managed block、artifact 或 namespaced 组件。
-- 外部 Codex/Claude 命令、用户手改目录和共享 marketplace 都是不受 AW 完全控制的边界。命令允许部分成功，并报告残留和失败。
+- primary source 默认继续使用 `aw` marketplace。若用户级 Codex 或 Claude 的 `aw` 已由 legacy 或 foreign source 占用，首次安装改用 source-bound `aw-<sourceId>`；两个平台使用同一名称。已有 canonical 注册继续决定名称，候选名称被 foreign source 占用时 fail closed。
+- 外部 Codex/Claude 命令、用户手改目录和共享 marketplace 都是不受 AW 完全控制的边界。Claude 合法的未绑定默认安装记录不属于任何 marketplace；来源 inventory 必须保留并忽略它，不能把它归为 canonical 或 foreign。执行 native install 前，若任意 scope 存在与目标原生插件名称相同的未绑定 bare-key 记录，写命令必须在清理、mirror 和 native CLI 调用前 fail closed；不同名记录继续保留并忽略。cleanup 和 uninstall 不删除、迁移或重命名未绑定记录。命令允许部分成功，并报告残留和失败。
 - active marketplace、backup、quarantine 和 lifecycle snapshot 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
 
@@ -150,8 +153,38 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 - Eval Runner 是可替换的执行适配器。每个 Runner 可以定义自己的执行计划输入；Review 从已安装 Skill 能力中选择兼容 Runner，不维护中心 dispatcher 或 Runner 配置表。
 - 所有兼容 Runner 输出统一的 `EvalRunBundle v3`。bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，不包含 Audit 字段。
 - 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。它消费 `AwSkillEvalExecutionPlan v3`，只负责本次副作用授权、运行时能力检查、执行和 bundle 完整性。
+- plugin model Eval 把本次构建的 CLI production closure 实体部署到 run-owned runtime capsule，并提供只指向 capsule 内入口的临时 `aw` launcher。探针和实际模型进程使用同一前置 `PATH`；它们不能通过 CLI 模块路径访问仓库或用户全局 `aw`。最终 capsule 的 package identity 和确定性 content digest 进入公开 eval evidence 和 model environment identity；依赖字节变化时，batch 在复用 checkpoint 前拒绝 append。materialize-only 不创建 capsule。
+- `hostSourceAccessAbsent` 只按 app-server 事件中的显式命令、审批和文件访问输入归因。命令输出、Agent 消息、reasoning 和 diff 中的宿主路径文本不是访问证据。
 - Plan 可用可选的 `minimumEvidenceLevel` 固定最低证据要求。省略时为 `executed`；要求 `comparative` 时，默认 runner 只在 macOS/Linux 的 Full Access verified observation 或更强 external containment 下接受 grading。verified observation 必须在 bundle 中保留非 OS 强隔离限制，不能记录后代清理保证。
 - Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。未经 Audit/triage 的 bundle 可以作为原始诊断证据，但不得影响 Review finding、生产 Skill 修改或发布结论。
+
+## Quality Review、Release Check 与 Review Publication
+
+这三种合同彼此独立：
+
+- **Quality Review** 只报告设计、复杂度、findings、未知项和最小改动；主产物是 `report.md`，可选 `QualityReviewResult`。workflow Review 还定义有界的 scope。Review 不计算发布准备度，`QualityReviewResult` 也不拥有 Eval 证据等级。
+- **Release Check** 是独立的机器检查，产物为 `release-check.json`。它消费自己的确定性输入并拥有 readiness 结论；它不是 Review mode，也不会把 readiness 或 Eval 等级写回 Quality Review。
+- **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。只有本次请求的顶层 Reviewer 可以发布其目标；下层 Reviewer 只返回材料，除非用户明确要求多个独立归档目标。Publication 不重新评审、不运行或封存 Eval batch、不更新 README，也不维护可变 index。
+
+公开入口是 `aw review digest|publish|verify|list|show`。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。
+
+### Immutable record
+
+每条 record 位于：
+
+```text
+reports/reviews/<kind>/<encoded-target-id>/<review-id>/
+```
+
+文档把稳定编码后的中间目录抽象为 `<target-id>`；实现使用 `id-` 加 target id 的 UTF-8 base64url。`kind` 只能是 `skill`、`workflow`、`aw-plugin` 或 `aw-workflow`。`review-id` 格式为 `<YYYYMMDDTHHMMSSZ>-<target-digest-8>-<report-digest-8>`。
+
+record 最少包含 `manifest.json` 和 `report.md`。schema 1 manifest 只拥有 record identity、`publishedAt`、目标 `{ kind, id, digest }`、report/附件的路径与 digest、source `{ commit, dirty }` 和可选 `supersedes`；它不解释 report、result 或 release check 的语义。可选内容为 `review-result.json`、唯一 kebab-case kind 的 `checks/<kind>.json` 与 `evidence/<kind>.json`、`release-check.json`，以及 workflow 的 `scope.json`。JSON 附件必须以 canonical JSON 归档，manifest 的文件清单必须完全匹配实际普通文件。
+
+leaf `skill` 使用静态 Skill 或 `plugin/skill` id，`aw-plugin` 使用插件 production bundle digest；二者不接受 scope。`aw-plugin --target` 可使用 id 对应的默认 `plugins/<id>`，也可使用仓库内其它 plugin root；path chain、root 和 manifest 必须是非符号链接，且 manifest name 必须匹配 root 的 target id。production digest 始终从该实际 root 构建，并使用同一仓库中所需的 provider source set，因此仍绑定 build/generated runtime bytes。实际引用的 direct provider root 必须位于同一仓库内；其完整 path chain、root、`.agents-plugin` 目录和 manifest 都必须是预期的普通非符号链接节点。
+
+`workflow` 和 `aw-workflow` 必须提供 schema 1 `scope.json`，其 `kind`、`id`、用户结果、入口、非空组件和代表性路径、外部依赖及排除项共同形成 target digest；归档后的 `scope.json` 是该 target binding 的 canonical 副本。每个 component path 必须解析为仓库内现存的普通文件或目录，完整 path chain 和目录树不得包含符号链接。component digest 使用与 production tree 相同的 canonical records v1：按 codepoint 排序相对路径，绑定普通文件执行模式和文件 SHA-256；单文件使用 `.` 作为 tree-relative path。发布时必须重算并拒绝伪造或 stale digest。公开 `verify` 验证归档后的 canonical scope、component digest 声明和 target digest 绑定；它不把当前源码是否仍与历史 scope 相同混入不可变记录验证。scope target digest 仍只使用 canonical scope JSON，不混入第二个 target digest 协议。
+
+发布先在同一 target 父目录创建临时 record，写完并验证 inventory/digest 后原子 rename 到不可变最终目录；失败清理临时目录。相同 target digest 与 report digest 只有在 target、report、所有附件、source 和 `supersedes` 都等价时才幂等返回原 record；同一 target/report digest 的不同输入必须失败，不能覆盖。`supersedes` 必须引用一个已验证、同 kind 且同 target id 的 record；它可以引用旧 target digest。`verify` 验证一个 record 的完整 binding 和 digest；`show` 要求全仓唯一 review id；`list` 扫描固定 records 根的 manifest，按 `publishedAt`、`reviewId` 稳定排序，并可按 kind 和 target id 过滤。归档根不计入发布时的 source dirty 检查。
 
 ## Release Flow
 

@@ -83,28 +83,39 @@ async function resolveCliVirtualExport(
   if (purpose !== 'build') {
     throw new Error('Invalid catalog runtime import: virtual provider "@aw/cli" is only available to buildImports.');
   }
-  if (!CLI_RESERVED_IMPORTS['@aw/cli'].includes(
-    reference.export as (typeof CLI_RESERVED_IMPORTS)['@aw/cli'][number],
-  )) {
+  const virtualExports = {
+    'skill-frontmatter-capabilities': 'skill-frontmatter-capabilities.json',
+    'plugin-authoring-capabilities': 'plugin-authoring-capabilities.json',
+  } as const;
+  const sourceFile = virtualExports[reference.export as keyof typeof virtualExports];
+  if (
+    !sourceFile
+    || !CLI_RESERVED_IMPORTS['@aw/cli'].includes(
+      reference.export as (typeof CLI_RESERVED_IMPORTS)['@aw/cli'][number],
+    )
+  ) {
     throw new Error(`Invalid catalog runtime import: unknown @aw/cli export "${reference.export}".`);
   }
   const packageRoot = options.cliVirtualExportRoot ?? resolveCliPackageRoot();
   const sourceCandidates = options.cliVirtualExportRoot
-    ? [path.join(packageRoot, 'src', 'utils', 'skill-frontmatter-capabilities.json')]
+    ? [path.join(packageRoot, 'src', 'utils', sourceFile)]
     : [
-        path.join(packageRoot, 'src', 'utils', 'skill-frontmatter-capabilities.json'),
-        path.join(packageRoot, 'dist', 'src', 'utils', 'skill-frontmatter-capabilities.json'),
+        path.join(packageRoot, 'src', 'utils', sourceFile),
+        path.join(packageRoot, 'dist', 'src', 'utils', sourceFile),
       ];
   const sourceCandidate = sourceCandidates.find((candidate) => fs.existsSync(candidate));
   if (!sourceCandidate) {
+    const registryName = reference.export === 'skill-frontmatter-capabilities'
+      ? 'skill frontmatter'
+      : reference.export;
     throw new Error(
-      `Invalid @aw/cli runtime export: canonical skill frontmatter registry is missing from ${packageRoot}.`,
+      `Invalid @aw/cli runtime export: canonical ${registryName} registry is missing from ${packageRoot}.`,
     );
   }
   const canonicalSource = await resolveCoreRuntimeSourceIdentity(
     packageRoot,
     `./${path.relative(packageRoot, sourceCandidate).split(path.sep).join('/')}`,
-    '@aw/cli runtime export "skill-frontmatter-capabilities"',
+    `@aw/cli runtime export "${reference.export}"`,
   );
   const packageJson = options.cliProviderVersion === undefined
     ? await fs.readJson(path.join(packageRoot, 'package.json')) as { version?: unknown }
@@ -117,7 +128,49 @@ async function resolveCliVirtualExport(
     provider: '@aw/cli',
     providerVersion,
     name: reference.export,
-    source: './src/utils/skill-frontmatter-capabilities.json',
+    source: `./src/utils/${sourceFile}`,
+    sourcePath: canonicalSource.sourceRealPath,
+    sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
+    canonicalSource,
+    supportedPlatforms: new Set<PlatformName>(['claude', 'codex']),
+    virtual: true,
+  };
+}
+
+async function resolveEvalVirtualExport(
+  reference: BuildConfigImportReference,
+  purpose: CatalogRuntimeImportPurpose,
+): Promise<CatalogRuntimeExportResolution> {
+  if (purpose !== 'build' && purpose !== 'skill-runtime-file') {
+    throw new Error('Invalid catalog runtime import: virtual provider "@aw/agent-skill-eval" is only available to buildImports and skillRuntimeFiles.');
+  }
+  if (reference.export !== 'case-corpus-digest') {
+    throw new Error(`Invalid catalog runtime import: unknown @aw/agent-skill-eval export "${reference.export}".`);
+  }
+  const cliPackageRoot = resolveCliPackageRoot();
+  const packageRootCandidates = [
+    path.resolve(cliPackageRoot, '..', 'agent-skill-eval'),
+    path.join(cliPackageRoot, 'node_modules', '@lesliechan721', 'agent-skill-eval'),
+  ];
+  const packageRoot = packageRootCandidates.find((candidate) =>
+    fs.existsSync(path.join(candidate, 'package.json')));
+  if (!packageRoot) {
+    throw new Error('Invalid @aw/agent-skill-eval runtime export: package root is unavailable.');
+  }
+  const packageJson = await fs.readJson(path.join(packageRoot, 'package.json')) as { version?: unknown };
+  if (typeof packageJson.version !== 'string' || packageJson.version.trim() === '') {
+    throw new Error('Invalid @aw/agent-skill-eval runtime export: package version is missing.');
+  }
+  const canonicalSource = await resolveCoreRuntimeSourceIdentity(
+    packageRoot,
+    './dist/corpus-digest.js',
+    '@aw/agent-skill-eval runtime export "case-corpus-digest"',
+  );
+  return {
+    provider: '@aw/agent-skill-eval',
+    providerVersion: packageJson.version,
+    name: reference.export,
+    source: './dist/corpus-digest.js',
     sourcePath: canonicalSource.sourceRealPath,
     sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
     canonicalSource,
@@ -149,6 +202,9 @@ export function createCatalogRuntimeImportResolver(
   return {
     async resolve({ consumer, reference, purpose, platform }) {
       if (reference.plugin.startsWith('@aw/')) {
+        if (reference.plugin === '@aw/agent-skill-eval') {
+          return resolveEvalVirtualExport(reference, purpose);
+        }
         if (!Object.hasOwn(CLI_RESERVED_IMPORTS, reference.plugin)) {
           throw new Error(`Invalid catalog runtime import: unknown reserved provider "${reference.plugin}".`);
         }

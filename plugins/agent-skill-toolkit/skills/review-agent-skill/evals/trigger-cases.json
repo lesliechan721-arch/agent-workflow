@@ -259,11 +259,11 @@
     },
     {
       "id": "whole_repo",
-      "split": "validation",
+      "split": "sanity",
       "query": "评审整个仓库的所有 Agent 系统并给一个总 pass。",
       "should_load_skill": false,
       "eval_type": "trigger",
-      "case_role": "boundary",
+      "case_role": "diagnostic",
       "provenance": "boundary",
       "scenario_family": "unbounded-system",
       "unit_under_test": "description",

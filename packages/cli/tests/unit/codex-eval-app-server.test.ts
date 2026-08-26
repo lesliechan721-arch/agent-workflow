@@ -348,12 +348,16 @@ describe('Codex app-server eval driver', () => {
     expect(currentRun.without_skill.diagnostics).toEqual([]);
   });
 
-  it('rejects participant source and materialized subject reads outside the copied workspace', async () => {
+  it('rejects host source command inputs but ignores passive output mentions', async () => {
     const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-source-'));
     const subjectRoot = path.join(sourceRoot, 'subject');
     const subjectOwnerRoot = path.join(subjectRoot, '.agents', 'skills', 'ask-me');
     const forbiddenRoot = path.join(sourceRoot, 'host-owner');
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-host-report-'));
+    const capsuleRoot = path.join(outputRoot, 'runtime-capsule');
+    const capsuleBin = path.join(capsuleRoot, 'bin');
+    const capsuleEntry = path.join(capsuleRoot, 'cli', 'dist', 'index.js');
+    const capsuleModule = path.join(capsuleRoot, 'cli', 'node_modules', 'fixture', 'index.js');
     const workRoot = path.join(sourceRoot, 'batch-work');
     tempDirs.push(sourceRoot, outputRoot);
     await fs.outputFile(
@@ -361,10 +365,15 @@ describe('Codex app-server eval driver', () => {
       '# Ask Me\n',
     );
     await fs.outputFile(path.join(forbiddenRoot, 'SKILL.md'), '# Host Owner\n');
+    await fs.outputFile(capsuleEntry, 'export {};\n');
+    await fs.outputFile(capsuleModule, 'export {};\n');
+    await fs.ensureDir(capsuleBin);
+    await fs.writeFile(path.join(capsuleBin, 'aw'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     await fs.writeFile(
       path.join(subjectRoot, 'app-server'),
       [
         "const fs = require('node:fs');",
+        "const { execFileSync } = require('node:child_process');",
         "const readline = require('node:readline');",
         `const forbiddenRoot = ${JSON.stringify(forbiddenRoot)};`,
         `const subjectOwnerRoot = ${JSON.stringify(subjectOwnerRoot)};`,
@@ -379,6 +388,9 @@ describe('Codex app-server eval driver', () => {
         "    const ownerPresent = fs.existsSync('.agents/skills/ask-me/SKILL.md');",
         "    const prompt = frame.params?.input?.[0]?.text ?? '';",
         "    const targetRoot = prompt.includes('materialized subject') ? subjectOwnerRoot : forbiddenRoot;",
+        "    const resolvedAw = execFileSync('/bin/sh', ['-c', 'command -v aw'], { encoding: 'utf8' }).trim();",
+        `    const safeProbe = { resolvedAw, launcher: fs.readFileSync(resolvedAw, 'utf8'), envEntry: process.env.AW_PLUGIN_EVAL_CLI_ENTRY, entryRealpath: fs.realpathSync(process.env.AW_PLUGIN_EVAL_CLI_ENTRY), moduleRealpath: fs.realpathSync(${JSON.stringify(capsuleModule)}), passiveHostRootMention: forbiddenRoot };`,
+        "    send({ method: 'item/completed', params: { item: { type: 'commandExecution', id: 'capsule-probe', command: 'inspect eval aw capsule', status: 'completed', aggregatedOutput: JSON.stringify(safeProbe) } } });",
         "    if (!ownerPresent) send({ method: 'item/completed', params: { item: { type: 'commandExecution', id: 'command-1', command: `sed -n 1p ${targetRoot}/SKILL.md`, status: 'completed' } } });",
         "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text: `cwd=${process.cwd()} owner=${ownerPresent}` } } });",
         "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
@@ -406,7 +418,12 @@ describe('Codex app-server eval driver', () => {
       runs: 1,
       codexBin: process.execPath,
       timeoutMs: 10_000,
-      sourceEnv: process.env,
+      sourceEnv: {
+        ...process.env,
+        PATH: [capsuleBin, process.env.PATH].filter(Boolean).join(path.delimiter),
+        AW_PLUGIN_EVAL_CLI_ENTRY: capsuleEntry,
+        AW_PLUGIN_EVAL_CLI_NODE: process.execPath,
+      },
       reportPath,
       forbiddenHostRoots: [forbiddenRoot],
       workRoot,
@@ -425,6 +442,8 @@ describe('Codex app-server eval driver', () => {
       const run = result.runs[0];
       expect(run.with_skill.hostSourceAccessAbsent).toBe(true);
       expect(run.without_skill.hostSourceAccessAbsent).toBe(false);
+      expect(JSON.stringify(run.with_skill.eventTrace)).toContain(capsuleRoot);
+      expect(JSON.stringify(run.with_skill.eventTrace)).toContain(forbiddenRoot);
       expect(run.with_skill.finalMessages[0]).not.toContain(sourceRoot);
       expect(run.without_skill.finalMessages[0]).not.toContain(sourceRoot);
     }
@@ -458,8 +477,13 @@ describe('Codex app-server eval driver', () => {
         "  } else if (frame.method === 'turn/start') {",
         "    fs.mkdirSync('outputs', { recursive: true });",
         "    fs.writeFileSync('outputs/result.json', JSON.stringify({ status: 'ok', evidence: 'written' }));",
+        "    fs.mkdirSync('reports/reviews/record', { recursive: true });",
+        "    fs.writeFileSync('reports/reviews/record/manifest.json', JSON.stringify({ status: 'ok' }));",
+        "    fs.mkdirSync('review-output', { recursive: true });",
+        "    fs.writeFileSync('review-output/full-report.md', 'Review evidence written.');",
         "    const prompt = frame.params.input?.[0]?.text ?? '';",
         "    if (prompt.includes('control directory')) fs.writeFileSync('.git/marker', 'forbidden');",
+        "    if (prompt.includes('foreign file')) fs.writeFileSync('review-output/foreign.md', 'forbidden');",
         "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
         "    const text = `thread=${threadSandbox} turn=${frame.params.sandboxPolicy.type}`;",
         "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text } } });",
@@ -480,7 +504,11 @@ describe('Codex app-server eval driver', () => {
         sandbox: 'workspace-write',
         review: {
           workspace_unchanged: false,
-          allowed_workspace_changes: ['outputs/**'],
+          allowed_workspace_changes: [
+            'outputs/**',
+            'reports/reviews/**',
+            'review-output/full-report.md',
+          ],
           artifacts: [{
             path: 'outputs/result.json',
             exists: true,
@@ -515,7 +543,16 @@ describe('Codex app-server eval driver', () => {
     expect(run.with_skill.finalMessages).toEqual([
       'thread=workspace-write turn=workspaceWrite',
     ]);
-    expect(run.with_skill.workspaceChanges).toEqual(['outputs/', 'outputs/result.json']);
+    expect(run.with_skill.workspaceChanges).toEqual([
+      'outputs/',
+      'outputs/result.json',
+      'reports/',
+      'reports/reviews/',
+      'reports/reviews/record/',
+      'reports/reviews/record/manifest.json',
+      'review-output/',
+      'review-output/full-report.md',
+    ]);
     expect(run.with_skill.workspaceArtifacts).toEqual([
       expect.objectContaining({
         path: 'outputs/result.json',
@@ -526,10 +563,11 @@ describe('Codex app-server eval driver', () => {
         text: '{"status":"ok","evidence":"written"}',
       }),
     ]);
-    expect(run.without_skill.workspaceChanges).toEqual(['outputs/', 'outputs/result.json']);
+    expect(run.without_skill.workspaceChanges).toEqual(run.with_skill.workspaceChanges);
 
     const controlDirectoryCases = await fs.readJson(casesPath);
-    controlDirectoryCases.evals[0].prompt = 'Write the result and modify the control directory.';
+    controlDirectoryCases.evals[0].prompt =
+      'Write the result, modify the control directory, and add a foreign file.';
     await fs.writeJson(casesPath, controlDirectoryCases, { spaces: 2 });
     const blockedReportPath = path.join(outputRoot, 'blocked.json');
     await expect(runCodexConversationSuite({
@@ -549,6 +587,7 @@ describe('Codex app-server eval driver', () => {
       mechanicalPassed: false,
       diagnostics: expect.arrayContaining([
         expect.stringContaining('.git/marker'),
+        expect.stringContaining('review-output/foreign.md'),
       ]),
     });
   });

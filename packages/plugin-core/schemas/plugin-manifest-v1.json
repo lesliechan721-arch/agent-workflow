@@ -89,7 +89,7 @@
           "additionalProperties": false,
           "required": ["installation", "authentication"],
           "properties": {
-            "installation": { "const": "AVAILABLE" },
+            "installation": { "enum": ["AVAILABLE", "NOT_AVAILABLE", "INSTALLED_BY_DEFAULT"] },
             "authentication": { "enum": ["ON_INSTALL", "ON_USE"] },
             "products": {
               "type": "array",
@@ -232,7 +232,8 @@
         },
         "runtimeExports": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name", "source"], "properties": { "name": { "type": "string" }, "source": { "type": "string" } } } },
         "buildImports": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["plugin", "export", "env"], "properties": { "plugin": { "type": "string" }, "export": { "type": "string" }, "env": { "type": "string" } } } },
-        "skillRuntimeFiles": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["skill", "target"], "properties": { "skill": { "type": "string" }, "target": { "type": "string" }, "platforms": { "type": "array", "items": { "enum": ["codex", "claude"] } }, "distributions": { "type": "array", "items": { "const": "agent-skills" } }, "source": { "type": "string" }, "import": { "$ref": "#/$defs/importReference" } } } }
+        "skillRuntimeFiles": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["skill", "target"], "properties": { "skill": { "type": "string" }, "target": { "type": "string" }, "platforms": { "type": "array", "items": { "enum": ["codex", "claude"] } }, "distributions": { "type": "array", "items": { "const": "agent-skills" } }, "source": { "type": "string" }, "import": { "$ref": "#/$defs/importReference" } } } },
+        "generatedSkillRuntimeFiles": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["skill", "target"], "properties": { "skill": { "type": "string" }, "target": { "type": "string" }, "distributions": { "type": "array", "items": { "const": "agent-skills" } } } } }
       }
     },
     "platformTemplateValue": {
