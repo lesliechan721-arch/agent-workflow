@@ -1,11 +1,23 @@
 import { PassThrough } from 'node:stream';
 
 import { cleanup, render } from 'ink-testing-library';
-import { Text } from 'ink';
+import { Box, Text } from 'ink';
 import { useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import {
+  ChoiceRow,
+  InputCard,
+  ProgressRow,
+  ResultRow,
+  ReviewCard,
+  ReviewChangeRow,
+  ScreenFrame,
+  SectionCard,
+  StaticRow,
+  ToggleRow,
+} from '../../src/tui/components.js';
 import { createInkPrompt } from '../../src/tui/prompt.js';
 import { resolveTuiKeyAction } from '../../src/tui/keys.js';
 import { resolveTuiSizePolicy } from '../../src/tui/layout.js';
@@ -70,6 +82,123 @@ function createPrompt(sessions: string[][]): {
 }
 
 describe('TUI foundation', () => {
+  it('renders semantic containers with a stable bordered hierarchy', async () => {
+    const instance = render(
+      <Box flexDirection="column">
+        <SectionCard label="概要" title="插件状态" description="可信状态摘要" meta="3 个">
+          <Text>内容区</Text>
+        </SectionCard>
+        <ReviewCard title="确认更改"><Text>将安装一个插件</Text></ReviewCard>
+        <InputCard focused label="输入"><Text>agent-content-toolkit</Text></InputCard>
+      </Box>,
+    );
+    await nextTurn();
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame.match(/╭/g)).toHaveLength(3);
+    expect(frame.match(/╰/g)).toHaveLength(3);
+    expect(frame).toContain('─ 概要');
+    expect(frame).toContain('插件状态');
+    expect(frame).toContain('3 个');
+    expect(frame).toContain('确认更改');
+    expect(frame).toContain('agent-content-toolkit');
+  });
+
+  it('keeps long card and row titles with meta to one line at 60 columns', async () => {
+    const instance = render(
+      <Box flexDirection="column" width={60}>
+        <SectionCard
+          title="很长的卡片标题用于确认标题不会在紧凑终端中占用多行"
+          description="卡片说明保留自己的独立行"
+          meta="很长的卡片元数据也必须保持单行"
+        />
+        <ToggleRow
+          title="很长的交互行标题用于确认标题不会占用多行"
+          description="交互行说明保留自己的独立行"
+          meta="很长的交互元数据必须保持单行"
+          selected
+          focused
+        />
+        <StaticRow
+          title="很长的静态行标题用于确认标题不会占用多行"
+          description="静态行说明保留自己的独立行"
+          meta="很长的静态元数据必须保持单行"
+        />
+      </Box>,
+    );
+    await nextTurn();
+
+    const lines = (instance.lastFrame() ?? '').split('\n');
+    expect(lines).toHaveLength(8);
+    expect(lines.every((line) => line.length <= 60)).toBe(true);
+    expect(instance.lastFrame()).toContain('卡片说明保留自己的独立行');
+    expect(instance.lastFrame()).toContain('交互行说明保留自己的独立行');
+    expect(instance.lastFrame()).toContain('静态行说明保留自己的独立行');
+  });
+
+  it('keeps toggle and choice selection independent from focus', async () => {
+    const instance = render(
+      <Box flexDirection="column">
+        <ToggleRow title="已选择但未聚焦" selected />
+        <ToggleRow title="已聚焦但未选择" selected={false} focused />
+        <ChoiceRow title="选中的单选项" selected />
+        <ChoiceRow title="聚焦的未选项" selected={false} focused />
+      </Box>,
+    );
+    await nextTurn();
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toMatch(/◆ 已选择但未聚焦/);
+    expect(frame).toMatch(/› ◇ 已聚焦但未选择/);
+    expect(frame).toMatch(/● 选中的单选项/);
+    expect(frame).toMatch(/› ○ 聚焦的未选项/);
+    expect(frame.match(/›/g)).toHaveLength(2);
+  });
+
+  it('never renders action pointers for static review, progress, and result rows', async () => {
+    const instance = render(
+      <Box flexDirection="column">
+        <ReviewChangeRow title="新增设置" meta="user" />
+        <ProgressRow title="检查依赖" state="active" />
+        <ResultRow title="安装完成" status="success" />
+      </Box>,
+    );
+    await nextTurn();
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('新增设置');
+    expect(frame).toContain('● 检查依赖');
+    expect(frame).toContain('✓ 安装完成');
+    expect(frame).not.toContain('›');
+  });
+
+  it('renders the ScreenFrame header, content, and footer hierarchy at supported sizes', async () => {
+    for (const size of [{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }]) {
+      const instance = render(
+        <ScreenFrame
+          title="插件设置"
+          description="编辑可信设置"
+          breadcrumb="设置"
+          context="project"
+          help="Enter 继续"
+          size={size}
+        >
+          <Text>页面内容</Text>
+        </ScreenFrame>,
+      );
+      await nextTurn();
+
+      const frame = instance.lastFrame() ?? '';
+      expect(frame).toContain('AW / 设置');
+      expect(frame).toContain('project');
+      expect(frame).toContain('插件设置');
+      expect(frame).toContain('页面内容');
+      expect(frame).toContain('Enter 继续');
+      expect(frame).toContain('─');
+      expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+    }
+  });
+
   it('applies the standard, compact, and minimum-size policies', () => {
     expect(resolveTuiSizePolicy(120, 30).mode).toBe('single-column');
     expect(resolveTuiSizePolicy(80, 24).mode).toBe('single-column');
