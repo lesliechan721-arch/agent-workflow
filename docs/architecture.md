@@ -87,6 +87,8 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 
 每个 source 在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 有独立身份、当前快照和最近一次可用快照。resolver 先使用有效的 `current`，需要时可回退同一 source 的 `last-good`。cache 只是可删除的性能和离线状态；它不决定安装、配置或删除权限。
 
+Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，默认远端解析超时为 180 秒，并可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整；它禁止 URL 内嵌凭据、SSH local command 和 proxy command，且 AW 不保存 Catalog 授权信息。
+
 `aw catalog source add` 和 `update` 先原子提交 source config，再尽力刷新该 source。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`list`、`set-primary` 和 `remove` 只修改 source config。
 
 多来源 resolver 在稳定的 cache generation 内调用消费者回调。回调只能返回普通数据，不能保留 bundle root、manifest path 或其它缓存路径。generation 结束后，调用方必须重新解析，不得保存内部路径。
@@ -194,9 +196,11 @@ leaf `skill` 使用静态 Skill 或 `plugin/skill` id，`aw-plugin` 使用插件
 - 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取；Catalog-only 仍要求对应渠道已有兼容且一致的三个 CLI train npm 包。
 - 元数据 commit 后运行所选轴的完整 release verify，再从干净 source HEAD 生成 `.release/prepared/descriptor.json`。
 - 发布顺序是 `Eval → Core → CLI → CLI tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
+- beta CLI 选择候选时，把 registry 中三个包已出现的最高 beta 和本地已尝试 beta 都视为已占用。部分发布或第一次写入结果不确定后，普通发布保留稳定 target 并选择下一个 beta，再以新 beta 重新发布三个包。稳定 CLI 失败仍要求提升稳定 target。
+- `pnpm release -- --repair-cli` 是同一 CLI 候选的显式补发入口。它只接受与 `attempted.json` 精确绑定且未变化的 prepared descriptor、source commit、build 和 tarball；逐包核验已存在的远端 tarball，只发布 registry 明确缺失的包，最后重新核验整组三包并补 CLI tag。内容冲突或查询不确定时停止；它不发布 Catalog。
 - `pnpm release -- --repair-cli-tag` 只从有效 prepared descriptor 核验并补发 CLI tag。它不准备新候选或修改分支。
 
-`.release/prepared/` 在 gitignore 下，是可删除的弱状态；删除后重新 prepare。`attempted.json` 是 gitignored 的本地安全门禁，不得手动删除。任何远端尝试前写入该 marker；远端失败或结果不确定后，必须 bump 相关 target。工具在 target digest 改变后处理旧 marker，再 prepare 和 publish 新版本；不得重跑同一候选。
+`.release/prepared/` 在 gitignore 下，是可删除的弱状态；删除后重新 prepare。`attempted.json` 是 gitignored 的本地安全门禁，不得手动删除。任何远端尝试前写入该 marker；普通发布不得重跑已尝试的同一候选。beta CLI 自动提升 beta 序号；稳定 CLI 和 Catalog 必须提升相关 target。只有上述显式 CLI repair 可以在完整绑定与逐包内容核验后补发同一候选。
 
 Catalog publisher 使用 prepared snapshot 写入相应 channel 和版本 tag。远端原子写失败或结果不确定时，同样必须提升 Catalog 版本后重发。CLI tag 推送异常时先读取远端；预期 tag 已指向 source commit 即成功，缺失时用 tag repair 补发，冲突时停止。
 

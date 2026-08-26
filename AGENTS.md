@@ -15,7 +15,7 @@
 - plugin config 和 catalog source config 是强配置，写入必须原子提交。plugin outputs、依赖现场、lifecycle snapshot、Catalog cache 和 prepared release 是可删除、可重建的弱状态。
 - 插件安装依赖第三方工具，且用户可能手动修改其结果。动作应尽力完成，并允许部分成功；不要为不可控现场承诺完全正确或补偿回滚。
 - 每条失败链必须保留 `cleanup`、`cleanup --force`、`reinstall`、`refresh` 或发布新版本中的至少一种恢复方式。安全边界不得删除 foreign 或 shared 内容；弱状态损坏也不得永久阻止清理。
-- 发布远端失败或结果不确定后，必须提升版本后重新发布；不得续跑同一版本事务。
+- 发布远端失败或结果不确定后，普通发布必须提升版本，不得直接续跑同一候选。唯一例外是 CLI 显式 repair：它必须绑定未变化的 prepared descriptor 和 attempt，逐包核验 registry 中已存在 tarball 与本地 artifact 相同，只补发确认缺失的包，并在完成后核验整组和 CLI tag。Catalog 不支持同版本 repair。
 - 新增 ledger、持久合同、摘要协议、锁层级、事务、补偿或迁移状态机前，必须证明高概率或高影响的可观察风险，且简单恢复渠道不足。低概率且低影响的问题不得增加代码复杂度；代码评审也忽略这类会增加复杂度的建议。
 
 ## 按任务读取

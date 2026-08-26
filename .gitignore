@@ -16,13 +16,4 @@ packages/cli/plugins-dist
 .worktrees
 .tmp/
 # Skill report roots only track a published human report and compact summary.
-.agents/reports/**
-!.agents/reports/*/
-!.agents/reports/*/*/
-!.agents/reports/*/*/report.md
-!.agents/reports/*/*/summary.json
-plugins/*/reports/**
-!plugins/*/reports/*/
-!plugins/*/reports/*/*/
-!plugins/*/reports/*/*/report.md
-!plugins/*/reports/*/*/summary.json
+.agents

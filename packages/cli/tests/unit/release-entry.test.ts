@@ -24,12 +24,15 @@ describe('one-command release entry', () => {
     expect(parseReleaseArgs(['release', '--catalog'])).toMatchObject({
       channel: 'stable', axes: { cli: false, catalog: true },
     });
+    expect(parseReleaseArgs(['--repair-cli'])).toEqual({ repairCli: true });
     expect(parseReleaseArgs(['--repair-cli-tag'])).toEqual({ repairCliTag: true });
     expect(() => parseReleaseArgs(['beta'])).toThrow('Select exactly one');
     expect(() => parseReleaseArgs(['beta', '--cli', '--catalog'])).toThrow('exactly one');
     expect(() => parseReleaseArgs(['beta', '--catalog', '--cli-bump', 'patch']))
       .toThrow('--cli-bump requires');
     expect(() => parseReleaseArgs(['--repair-cli-tag', '--cli']))
+      .toThrow('cannot be combined');
+    expect(() => parseReleaseArgs(['--repair-cli', '--cli']))
       .toThrow('cannot be combined');
   });
 
@@ -137,6 +140,20 @@ describe('one-command release entry', () => {
       },
     });
     expect(events).toEqual(['attempt', 'prepared', 'registry', 'commit', 'tag']);
+  });
+
+  it('dispatches explicit CLI package repair without running a normal release', async () => {
+    const repairCli = vi.fn(async () => ({
+      version: '0.1.0-beta.1',
+      sourceHead: 'a'.repeat(40),
+      status: 'published',
+    }));
+
+    await expect(runRelease(['--repair-cli'], { repairCli })).resolves.toMatchObject({
+      version: '0.1.0-beta.1',
+      status: 'published',
+    });
+    expect(repairCli).toHaveBeenCalledOnce();
   });
 
   it('rejects CLI tag repair when the prepared source changed after the CLI attempt', async () => {
