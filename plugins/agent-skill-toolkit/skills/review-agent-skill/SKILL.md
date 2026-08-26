@@ -22,7 +22,7 @@ metadata:
 - `full`：覆盖该 Skill 的全部适用领域。
 - `delta`：只复核旧问题、受影响领域、直接回归和净复杂度；读取 `references/delta-review.md`。
 
-选择模式前，若用户称请求为 `release Review`，或要求 Reviewer 给出 `release-ready` / `blocked`，不选择 `quick`、`full` 或 `delta`，也不输出 readiness verdict。Release 不是 Review mode。只有用户明确要求独立 Release Check，且已提供真实机器检查输入时，才转交该独立检查；否则停止，并列出仍需提供的机器输入。安全停止的首句必须是“Release readiness: not assessed / 未评估”或“无法执行该请求”；不得把停止状态命名为 `blocked`，也不得输出 `release-ready`，`blocked` 只可用于引用用户请求词。
+Quality Review 只评估设计、复杂度和 findings，不判断发布资格。用户要求 release readiness 时，本 Skill 不把请求转换为 `quick`、`full` 或 `delta` Review；将其交给拥有该目标机器 Release Check 的发布工作流。没有可验证的 Release Check 时，只报告 `readiness: not-assessed` 并列出缺失输入；不得把缺少检查转换为通过、失败或阻断结论。
 
 ## 评审流程
 
@@ -71,8 +71,4 @@ node scripts/validate-quality-review-result.mjs <review.json> \
 
 ## 可选报告归档
 
-默认只在聊天中交付；只有用户明确要求归档时才写入。归档不改变 findings、design 或 complexity，不自动运行 Eval 或 Release Check，也不更新 README。
-
-先运行 `aw review publish --help`；若未显示该子命令则停止。随后使用 `--kind skill` 和当前 Skill root 或 `plugin/skill` target 发布已有 `report.md`；需要时附加已有 `--result`、`--check`、`--evidence` 或独立生成的 `--release-check`。不得调用旧 `pnpm review:publish` 或旧 publisher。
-
-`quick` 默认不归档，但用户明确要求时可以归档；`full` 可以归档；`delta` 必须创建新的不可变 record，并用 `--supersedes <review-id>` 指向同一 target 的旧 record。Release 不是 Review mode；Quality Review 不计算 readiness，独立 `release-check.json` 只可作为附件。
+默认只在聊天中交付。用户明确要求归档且本 Skill 是本次请求的顶层 Reviewer 时，读取 [Review Publication](references/review-publication.md)；作为其它 Reviewer 的子级运行时只返回材料，不归档。

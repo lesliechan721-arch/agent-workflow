@@ -32,12 +32,19 @@ test('workflow Reviewer requires an admitted user-result boundary', async () => 
   assert.match(skill, /不能给整个仓库或系统 `pass`/u);
 });
 
-test('workflow Reviewer binds archive components with the public digest command', async () => {
-  // Static contract exception: installed publication instructions must require the public canonical digest producer; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+test('workflow Reviewer discloses top-level publication with the public digest command', async () => {
+  // Static contract exception: installed publication instructions must preserve the publication owner and canonical digest producer; behavior test is not suitable because the consumer contract is the final Skill instruction and its disclosed reference.
   const skill = await readSkill('review-agent-workflow');
-  assert.match(skill, /aw review digest <component-path> --json/u);
-  assert.match(skill, /返回的 `path` 和 `digest` 原样写入/u);
-  assert.match(skill, /不得自行计算或猜测 digest/u);
+  const publication = await readFile(
+    path.join(runtimeRoot, 'skills', 'review-agent-workflow', 'references', 'review-publication.md'),
+    'utf8',
+  );
+  assert.match(skill, /本次请求的顶层 Reviewer/u);
+  assert.match(skill, /\[Review Publication\]\(references\/review-publication\.md\)/u);
+  assert.match(publication, /作为其它 Reviewer 的子级运行时.*不自行发布记录/u);
+  assert.match(publication, /aw review digest <component-path> --json/u);
+  assert.match(publication, /返回的 `path` 和 `digest` 原样写入/u);
+  assert.match(publication, /不自行计算或猜测/u);
 });
 
 test('workflow Reviewer owns Leaf Fix Admission and parent synthesis', async () => {

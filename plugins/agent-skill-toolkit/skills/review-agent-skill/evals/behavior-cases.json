@@ -533,15 +533,15 @@
       "oracle": {
         "rationale": "Release Check 是独立机器检查，不是 Reviewer mode；Quality Review 不拥有 readiness 结论。",
         "rule_refs": [
-          "SKILL.md#可选报告归档"
+          "SKILL.md#模式"
         ],
         "confidence": "high",
-        "allowed_variance": "可以说明独立 Release Check 的下一步；不得把 release 伪装成 quick、full 或 delta Review。",
+        "allowed_variance": "可以引用用户使用的 release-ready 或 blocked 词；不得根据静态 Quality Review 判断目标已具备或不具备发布资格，也不得把 release 请求伪装成 quick、full 或 delta Review。",
         "minimal_counterexample": "用户请求明确的 quick/full/delta Quality Review 时，Reviewer 应执行对应 Review，而不是改写成 Release Check。"
       },
       "prompt": "把 plugins/incident-tools/skills/incident-summary 做成 release Review，给我一个 release-ready 或 blocked 结论。不要做普通 Quality Review。",
       "scripted_replies": [],
-      "expected_output": "明确说明 Release 不是 Review mode，不输出 release-ready/blocked Review verdict，也不写文件；说明独立 Release Check 只能单独生成，Quality Review 最多可把已有 release-check.json 当附件。",
+      "expected_output": "不根据静态 Review 给出发布资格结论，也不写文件；说明本 Skill 不拥有 Release Check，将请求交给对应发布工作流，并在没有可验证检查时报告 readiness 未评估和缺失输入。",
       "workspace_files": {
         "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
       },
@@ -552,9 +552,9 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "明确拒绝把 release 当作 Review mode",
-          "不输出 release-ready、release pass 或 Quality Review readiness",
-          "没有明确独立 Release Check 请求和真实机器输入时停止，并列出仍需提供的机器输入",
+          "不把 release 请求转换为 quick、full 或 delta Quality Review",
+          "不根据目标 Skill 的静态观察判断它已具备或不具备发布资格",
+          "将请求指向拥有机器 Release Check 的发布工作流；当前没有可验证检查时报告 readiness 未评估并列出缺失输入",
           "不创建 release-check.json、report 或 archive record"
         ]
       }

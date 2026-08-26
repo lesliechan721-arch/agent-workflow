@@ -23,6 +23,10 @@
         "source": "./standards/review-dimensions.json"
       },
       {
+        "name": "review-publication-reference",
+        "source": "./references/review-publication.md"
+      },
+      {
         "name": "validate-json-contract",
         "source": "./scripts/validate-json-contract.mjs"
       },
@@ -101,6 +105,16 @@
         "skill": "review-agent-skill",
         "source": "./standards/review-dimensions.json",
         "target": "assets/review-dimensions.json"
+      },
+      {
+        "skill": "review-agent-skill",
+        "source": "./references/review-publication.md",
+        "target": "references/review-publication.md"
+      },
+      {
+        "skill": "review-agent-workflow",
+        "source": "./references/review-publication.md",
+        "target": "references/review-publication.md"
       },
       {
         "skill": "audit-agent-skill-evals",

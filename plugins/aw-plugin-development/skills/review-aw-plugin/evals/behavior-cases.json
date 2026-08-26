@@ -131,7 +131,7 @@
         "allowed_variance": "可以说明归档 record id 和 Quality findings；必须先检查新 publish help，使用 aw review publish --kind aw-plugin，并且不生成、推断或宣称 Release Check/readiness。",
         "minimal_counterexample": "用户没有明确要求归档时，Reviewer 只在聊天中交付 Quality Review，不调用发布命令。"
       },
-      "prompt": "使用 $review-aw-plugin 处理 plugins/archive-me 的已完成 full Quality Review。用户明确要求将已有的 outputs/report.md 归档。先运行 chmod +x fixtures/bin/aw fixtures/bin/pnpm。fixtures/bin/aw 和 fixtures/bin/pnpm 是本用例唯一允许的 CLI；每个 aw 或 pnpm 命令均以 PATH=\"$PWD/fixtures/bin:$PATH\" 开头。再运行 aw review publish --help，确认存在子命令；再使用新的 aw review publish --kind aw-plugin --target archive-me --report outputs/report.md 归档这个 AW plugin。归档生成的 record 路径是动态值：从发布输出取得它后，运行 aw review verify、aw review list 和 aw review show 复核。不要调用 pnpm review:publish、任何旧 publisher，或生成 Release Check。Quality Review 不拥有 release readiness。不要修改 plugins/archive-me 或 outputs/report.md。",
+      "prompt": "使用 $review-aw-plugin 处理 plugins/archive-me 的已完成 full Quality Review。用户明确要求将已有的 outputs/report.md 归档。先运行 chmod +x fixtures/bin/aw fixtures/bin/pnpm。fixtures/bin/aw 和 fixtures/bin/pnpm 是本用例唯一允许的 CLI；每个 aw 或 pnpm 命令均以 PATH=\"$PWD/fixtures/bin:$PATH\" 开头。再运行 aw review publish --help，确认存在子命令；再使用新的 aw review publish --kind aw-plugin --target archive-me --report outputs/report.md 归档这个 AW plugin。归档生成的 record 路径是动态值：从发布输出取得它后，运行 aw review verify、aw review list 和 aw review show 复核。最后用 grep 统计 outputs/aw-command-log.txt 中以 review publish --kind 开头的非 help 发布命令，将数字写入 outputs/review-publish-count.txt，并确认数字严格等于 1。不要调用 pnpm review:publish、任何旧 publisher、leaf Skill publication，或生成 Release Check。Quality Review 不拥有 release readiness。不要修改 plugins/archive-me 或 outputs/report.md。",
       "scripted_replies": [],
       "expected_output": "归档已有 Quality Review，使用 aw-plugin 新归档入口并复核动态 record；只说明 Quality findings，明确 release readiness 未评估。",
       "sandbox": "workspace-write",
@@ -151,6 +151,7 @@
         "allowed_workspace_changes": [
           "outputs/aw-command-log.txt",
           "outputs/review-id.txt",
+          "outputs/review-publish-count.txt",
           "fixtures/bin/aw",
           "fixtures/bin/pnpm"
         ],
@@ -173,10 +174,17 @@
             "contains": [
               "20260825T120000Z-aaaaaaaa-bbbbbbbb"
             ]
+          },
+          {
+            "path": "outputs/review-publish-count.txt",
+            "exists": true,
+            "contains": [
+              "1"
+            ]
           }
         ],
         "checks": [
-          "trace 先执行 aw review publish --help，再用 aw review publish --kind aw-plugin 归档已有 report",
+          "trace 先执行 aw review publish --help，再且仅再执行一次 aw review publish --kind aw-plugin 归档已有 report；没有 leaf Skill publication",
           "trace 对动态 record 执行 verify、list 和 show；不把动态 record 路径作为固定 artifact 断言",
           "trace 没有 pnpm review:publish、旧 publisher、Release Check 或 readiness checker 调用",
           "最终说明把 Quality Review findings/design/complexity 与独立 Release Check 的机器 readiness 分开，且不宣称 ready"

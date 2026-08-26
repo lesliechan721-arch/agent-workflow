@@ -32,7 +32,7 @@
 - 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin`、`aw-plugin-development` Author 和 Skill Reviewer 只编排这些命令，不保存第二份核心 frontmatter 或 Codex metadata 实现。
 - 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `status` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `status` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
-- Reviewer 默认只在聊天中交付 Quality Review。用户明确要求归档时，先运行 `aw review publish --help`，再使用 `aw review publish`；`quick`、`full` 可归档，`delta` 必须创建新 record 并使用 `--supersedes`。release 不是 Review mode；独立生成的 `release-check.json` 只能作为可选附件。
+- Reviewer 默认只在聊天中交付 Quality Review。用户明确要求归档时，只有本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。修订已有记录时创建新 record 并使用 `--supersedes`。Quality Review 不拥有 readiness；独立生成的 `release-check.json` 只能作为可选附件。
 
 ## Catalog build-time 文件复用
 

@@ -154,7 +154,7 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 
 - **Quality Review** 只报告设计、复杂度、findings、未知项和最小改动；主产物是 `report.md`，可选 `QualityReviewResult`。workflow Review 还定义有界的 scope。Review 不计算发布准备度，`QualityReviewResult` 也不拥有 Eval 证据等级。
 - **Release Check** 是独立的机器检查，产物为 `release-check.json`。它消费自己的确定性输入并拥有 readiness 结论；它不是 Review mode，也不会把 readiness 或 Eval 等级写回 Quality Review。
-- **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。它不重新评审、不运行或封存 Eval batch、不更新 README，也不维护可变 index。
+- **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。只有本次请求的顶层 Reviewer 可以发布其目标；下层 Reviewer 只返回材料，除非用户明确要求多个独立归档目标。Publication 不重新评审、不运行或封存 Eval batch、不更新 README，也不维护可变 index。
 
 公开入口是 `aw review digest|publish|verify|list|show`。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。新入口不导入旧 `ReviewInputBundle`、AW summary、target plan、batch 或 seal 合同。
 

@@ -141,9 +141,25 @@
         }
       },
       {
+        "skill": "review-aw-plugin",
+        "target": "references/review-publication.md",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "review-publication-reference"
+        }
+      },
+      {
         "skill": "review-aw-workflow",
         "target": "scripts/discover-aw-workflow.mjs",
         "source": "./scripts/discover-aw-workflow.mjs"
+      },
+      {
+        "skill": "review-aw-workflow",
+        "target": "references/review-publication.md",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "review-publication-reference"
+        }
       }
     ]
   },

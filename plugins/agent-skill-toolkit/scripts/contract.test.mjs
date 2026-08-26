@@ -90,6 +90,7 @@ test('reviewer manifest and runtime expose only the current quality contract', a
       'eval-run-bundle-schema',
       'quality-review-result-schema',
       'review-dimensions',
+      'review-publication-reference',
       'skill-design-brief-schema',
       'skill-rules',
       'validate-eval-audit-result',
@@ -106,6 +107,7 @@ test('reviewer manifest and runtime expose only the current quality contract', a
       'eval-run-bundle-schema:./schemas/eval-run-bundle.schema.json',
       'quality-review-result-schema:./schemas/quality-review-result.schema.json',
       'review-dimensions:./standards/review-dimensions.json',
+      'review-publication-reference:./references/review-publication.md',
       'skill-design-brief-schema:./schemas/skill-design-brief.schema.json',
       'skill-rules:./standards/skill-rules.json',
       'validate-eval-audit-result:./scripts/validate-eval-audit-result.mjs',
@@ -132,6 +134,7 @@ test('reviewer manifest and runtime expose only the current quality contract', a
   assert.deepEqual(targets, [
     'assets/quality-review-result.schema.json',
     'assets/review-dimensions.json',
+    'references/review-publication.md',
     'scripts/check-agent-skill.mjs',
     'scripts/validate-quality-review-result.mjs',
   ]);
@@ -248,7 +251,7 @@ test('materialized audit validator matches the canonical digest for a formerly d
   ], { cwd: auditRoot, encoding: 'utf8' });
   assert.equal(
     stdout.trim(),
-    'sha256:f4867d1b714687cfb02179d1f311269b97bc115b20259484b3b5faa199b43de3',
+    'sha256:e88a324467f643a179df8d6c3523120bd728b232e1c45646e07b8c6e9cf302c4',
   );
 });
 
