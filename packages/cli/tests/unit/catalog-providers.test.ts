@@ -34,6 +34,32 @@ const {
 const identity = `sha256:${'1'.repeat(64)}`;
 const execFileAsync = promisify(execFile);
 
+describe('catalog Git authentication environment', () => {
+  it('uses local Git credentials and SSH config without allowing interactive or proxy commands', () => {
+    const env = catalogGitProviderInternal.gitEnvironment({
+      HOME: '/isolated-home',
+      SSH_AUTH_SOCK: '/auth/socket',
+      GIT_DIR: '/foreign/repository',
+      GIT_SSH_COMMAND: 'ssh -F /foreign/config',
+    });
+
+    expect(env).toMatchObject({
+      HOME: '/isolated-home',
+      SSH_AUTH_SOCK: '/auth/socket',
+      GIT_TERMINAL_PROMPT: '0',
+      GCM_INTERACTIVE: 'Never',
+      GIT_ASKPASS: '',
+      SSH_ASKPASS: '',
+      SSH_ASKPASS_REQUIRE: 'never',
+    });
+    expect(env.GIT_DIR).toBeUndefined();
+    expect(env.GIT_SSH_COMMAND).toContain('-oBatchMode=yes');
+    expect(env.GIT_SSH_COMMAND).toContain('-oPermitLocalCommand=no');
+    expect(env.GIT_SSH_COMMAND).toContain('-oProxyCommand=none');
+    expect(env.GIT_SSH_COMMAND).not.toMatch(/(?:^|\s)-F(?:\s|$)/u);
+  });
+});
+
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   if (value && typeof value === 'object') {

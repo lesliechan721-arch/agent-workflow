@@ -131,9 +131,9 @@ function resolveSafeSshCommand(): string {
   if (process.platform === 'win32') {
     const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
     const executable = path.join(systemRoot, 'System32', 'OpenSSH', 'ssh.exe');
-    return `"${executable}" -F NUL -oBatchMode=yes -oPermitLocalCommand=no -oProxyCommand=none`;
+    return `"${executable}" -oBatchMode=yes -oPermitLocalCommand=no -oProxyCommand=none`;
   }
-  return '/usr/bin/ssh -F /dev/null -oBatchMode=yes -oPermitLocalCommand=no -oProxyCommand=none';
+  return '/usr/bin/ssh -oBatchMode=yes -oPermitLocalCommand=no -oProxyCommand=none';
 }
 
 function gitEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -497,6 +497,7 @@ async function resolveGitCatalogSource(
 /** @internal Provider bridge for the multi-source resolver. */
 export const catalogGitProviderInternal = {
   resolve: resolveGitCatalogSource,
+  gitEnvironment,
 };
 
 async function resolveGitCatalogSourceDirect(
