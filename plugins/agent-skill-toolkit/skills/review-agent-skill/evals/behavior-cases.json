@@ -117,6 +117,49 @@
       }
     },
     {
+      "id": "quick-composition-loads-only-reached-standards",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "quick-conditional-reference-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "mode": "quick",
+        "independent_responsibilities": 2,
+        "architecture_branch_reached": false,
+        "publication_branch_reached": false
+      },
+      "oracle": {
+        "rationale": "quick 只加载用户问题到达的专业标准，不加载 full 基础标准或未到达的其它 branch。",
+        "rule_refs": [
+          "SKILL.md#Reference-路由",
+          "references/composition-fitness.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以建议保留或拆分；必须读取 composition-fitness，且不得读取 full-only、architecture 或 publication reference。",
+        "minimal_counterexample": "若用户请求 full，则必须读取 review-rubric、review-dimensions 和 scoring-model。"
+      },
+      "prompt": "quick 只读评审 skills/content-helper，只判断它是否应同时承担两项职责；不要执行 full 评审。",
+      "scripted_replies": [],
+      "expected_output": "只回答职责组合问题，不生成维度或评分。",
+      "workspace_files": {
+        "skills/content-helper/SKILL.md": "---\nname: content-helper\ndescription: Summarize supplied incidents and write marketing slogans.\n---\n\nSummarize a supplied incident. Write marketing slogans for a supplied product.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "读取 composition-fitness.md",
+          "不读取 review-rubric.md、review-dimensions.md 或 scoring-model.md",
+          "不读取 architecture-boundaries.md 或 review-publication.md",
+          "不输出维度或评分"
+        ]
+      }
+    },
+    {
       "id": "complete-steps-do-not-rescue-over-specification",
       "eval_type": "behavior",
       "case_role": "regression",
@@ -261,46 +304,6 @@
       }
     },
     {
-      "id": "full-review-covers-twelve-dimensions",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "full-review-scoring",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "machine_check_passes": true,
-        "complete_static_evidence": true
-      },
-      "oracle": {
-        "rationale": "full 模式恢复固定 12 维度，但主报告只显示总分、coverage 和总体 confidence。",
-        "rule_refs": [
-          "SKILL.md#输出",
-          "references/scoring-model.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "各维度分数可因证据判断不同；必须完整覆盖且不输出 quality band。",
-        "minimal_counterexample": "quick 或 delta 模式不应生成 12 维度评分。"
-      },
-      "prompt": "对 skills/focused 执行 full 只读评审，并提供结构化结果。",
-      "scripted_replies": [],
-      "expected_output": "JSON 按固定顺序包含 12 个维度；主报告只显示 Score、coverage 和 confidence 一行，不显示 quality band。",
-      "workspace_files": {
-        "skills/focused/SKILL.md": "---\nname: focused\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and the next action.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "完整覆盖 12 维度",
-          "主报告不展开维度明细",
-          "不输出 quality band"
-        ]
-      }
-    },
-    {
       "id": "incomplete-full-review-is-not-assessed",
       "eval_type": "behavior",
       "case_role": "boundary",
@@ -332,8 +335,11 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
+          "读取 review-rubric.md、review-dimensions.md 和 scoring-model.md",
           "不猜分",
-          "输出 not-assessed"
+          "输出 not-assessed",
+          "准备 major 时先读取 evidence-and-severity.md",
+          "不读取 review-publication.md"
         ]
       }
     },

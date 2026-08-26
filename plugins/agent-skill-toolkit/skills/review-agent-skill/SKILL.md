@@ -18,9 +18,22 @@ metadata:
 
 ## 模式
 
-- `quick`：默认，只检查用户问题和最相关领域。
+- `quick`：默认。运行机器检查，只检查用户问题和直接相关领域；不评维度，不计算 score、coverage 或总体 confidence。
 - `full`：覆盖该 Skill 的全部适用领域。
-- `delta`：只复核旧问题、受影响领域、直接回归和净复杂度；读取 `references/delta-review.md`。
+- `delta`：只复核旧问题、受影响领域、直接回归和净复杂度。
+
+## Reference 路由
+
+先确定模式，再判断已到达的 branch。进入表中某个条件后，必须先读取该行的全部 reference；未到达条件时不得读取。`full` 模式始终到达 `full` 行，即使后续因证据不足进入 `not-assessed` 分支。
+
+| 到达条件 | 读取 |
+| --- | --- |
+| 仅 `full` | `references/review-rubric.md`、`references/review-dimensions.md` 和 `references/scoring-model.md` |
+| 任一模式；用户问题或证据涉及独立职责、权限或证据生命周期 | `references/composition-fitness.md` |
+| 任一模式；Skill 涉及异步状态、重试、跨 actor 协议、权限或复杂工具编排 | `references/architecture-boundaries.md` |
+| 任一模式；目标包含本地脚本或重复实现确定性逻辑 | `references/scripts-and-resources.md` |
+| 任一模式；准备 critical/major finding，或证据类型有争议 | `references/evidence-and-severity.md` |
+| `delta` | `references/delta-review.md` |
 
 Quality Review 只评估设计、复杂度和 findings，不判断发布资格。用户要求 release readiness 时，本 Skill 不把请求转换为 `quick`、`full` 或 `delta` Review；将其交给拥有该目标机器 Release Check 的发布工作流。没有可验证的 Release Check 时，只报告 `readiness: not-assessed` 并列出缺失输入；不得把缺少检查转换为通过、失败或阻断结论。
 
@@ -36,8 +49,8 @@ Quality Review 只评估设计、复杂度和 findings，不判断发布资格�
    ```
 
    机器错误直接阻断，不复制成多重 gate。
-3. 检查没有该 Skill 时的具体失败、description 与 near-miss、一个 Skill 内部是否混入多个独立职责、强制规则是否最小充分、reference/script/asset 是否必要且可达，以及已有 Eval 是否能支持当前结论。
-4. `full` 时读取 `references/review-rubric.md`、`references/review-dimensions.md`、`references/scoring-model.md` 和 `references/composition-fitness.md`。先完成 finding 和 unknown。任何必要 evidence 缺失时，整个 Review 立即进入优先于普通 full 报告的 `not-assessed` 分支，输出字段仅为：机器检查、findings（如有）、evidence gap、unknown、`Score: not-assessed`、`coverage: not-calculated`、`design: not-assessed` 和 complexity；不得评分、加权或计算 coverage，不得输出数值总分、百分比或维度名、状态、分数列表，finding severity 不得改变 design。需要结构化 result 时，未评估维度仍写 `score=null`、`confidence=unknown`。否则按固定顺序填写全部 12 个维度。异步状态或跨 actor 协议按需读取 `references/architecture-boundaries.md`；本地脚本或资源问题按需读取 `references/scripts-and-resources.md`；准备 critical/major finding 或证据类型有争议时读取 `references/evidence-and-severity.md`。
+3. 按当前模式，从以下检查项选择适用范围：没有该 Skill 时的具体失败、description 与 near-miss、一个 Skill 内部是否混入多个独立职责、强制规则是否最小充分、reference/script/asset 是否必要且可达，以及已有 Eval 是否能支持当前结论。`quick` 不扩张到用户问题以外的完整 package 审计。
+4. `full` 先完成 finding 和 unknown。任何必要 evidence 缺失时，整个 Review 立即进入优先于普通 full 报告的 `not-assessed` 分支，输出字段仅为：机器检查、findings（如有）、evidence gap、unknown、`Score: not-assessed`、`coverage: not-calculated`、`design: not-assessed` 和 complexity；不得评分、加权或计算 coverage，不得输出数值总分、百分比或维度名、状态、分数列表，finding severity 不得改变 design。用户要求估计、假设分、非正式分或分数区间时也不例外。需要结构化 result 时，未评估维度仍写 `score=null`、`confidence=unknown`。否则按固定顺序填写全部 12 个维度。
 5. 被审材料很多且能按 package、reference、scripts 或 Eval 独立划分时，可以使用独立上下文子代理分别审核；每个子代理只返回结论、证据位置和关键 unknown，最终 finding 由当前 Reviewer 判断。
 
 ## 可选 Eval 分支

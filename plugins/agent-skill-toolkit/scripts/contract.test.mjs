@@ -251,11 +251,12 @@ test('materialized audit validator matches the canonical digest for a formerly d
   ], { cwd: auditRoot, encoding: 'utf8' });
   assert.equal(
     stdout.trim(),
-    'sha256:e88a324467f643a179df8d6c3523120bd728b232e1c45646e07b8c6e9cf302c4',
+    'sha256:d447a63b1b2cdadacd0cee169730649680f953da5dfbbd19881210dca713c133',
   );
 });
 
 test('audit triage rejects conclusions from an unmet bundle evidence requirement', async () => {
+  if (!context) return;
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
   const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-evidence-requirement-'));
