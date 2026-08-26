@@ -112,7 +112,7 @@ async function resolveTestContext() {
     path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
     'utf8',
   ));
-  assert.equal(context.plugin.name, 'git');
+  assert.equal(context.plugin.name, 'git-toolkit');
   assert.equal(context.plugin.version, sourceManifest.version);
   assert.equal(context.event, 'test');
   return {

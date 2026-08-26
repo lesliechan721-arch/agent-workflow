@@ -902,7 +902,7 @@ describe('plugin eval runner', () => {
       ['ask-me', 'decision-grill'],
       ['codex-enhance', 'codex-explore'],
       ['codex-enhance', 'codex-subagent-guide'],
-      ['git', 'git-commit'],
+      ['git-toolkit', 'git-commit'],
     ] as const;
     const bundles = [];
     for (const [plugin, skill] of targets) {

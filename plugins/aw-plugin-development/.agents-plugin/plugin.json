@@ -163,5 +163,12 @@
         "CLAUDE"
       ]
     }
+  },
+  "interface": {
+    "displayName": "AW Plugin Development",
+    "shortDescription": "创建、维护和评审 AW 插件及跨插件工作流",
+    "capabilities": [
+      "Skills"
+    ]
   }
 }

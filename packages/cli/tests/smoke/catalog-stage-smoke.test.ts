@@ -31,7 +31,7 @@ const EXPECTED_PLUGINS = [
   'aw-skill-eval-runner',
   'codex-enhance',
   'dev-workflow',
-  'git',
+  'git-toolkit',
 ];
 
 function repoRoot(): string {

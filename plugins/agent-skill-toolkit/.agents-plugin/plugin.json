@@ -177,5 +177,12 @@
         "CLAUDE"
       ]
     }
+  },
+  "interface": {
+    "displayName": "Agent Skill Toolkit",
+    "shortDescription": "创建和评审 Agent Skill，设计和审核 Eval 与跨 Skill 工作流",
+    "capabilities": [
+      "Skills"
+    ]
   }
 }
