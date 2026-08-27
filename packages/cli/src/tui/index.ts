@@ -6,6 +6,7 @@ export {
   ChoiceRow,
   HelpBar,
   InputCard,
+  PluginListRow,
   PluginRow,
   ProgressRow,
   ResultCard,
@@ -23,6 +24,7 @@ export {
   TechnicalDetails,
   ToggleRow,
   type InteractiveRowProps,
+  type PluginListRowProps,
   type ProgressState,
   type SelectableRowProps,
   type SemanticCardProps,
@@ -72,6 +74,7 @@ export {
 } from './model.js';
 export {
   TuiRouter,
+  type PluginInstallFilter,
   type TuiPageContext,
   type TuiRoute,
   type TuiRouteFrame,
@@ -79,6 +82,7 @@ export {
 } from './router.js';
 export { CommandWizard } from './wizard.js';
 export { getTuiStatusColor, tuiTheme, type TuiStatus } from './theme.js';
+export { contentRowBudget, rowViewport, type RowViewport } from './viewport.js';
 export {
   ConfirmView,
   MultiSelectView,

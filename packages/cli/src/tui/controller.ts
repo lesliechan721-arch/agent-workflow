@@ -30,6 +30,7 @@ import {
 } from './model.js';
 import {
   TuiRouter,
+  type PluginInstallFilter,
   type PortableBlockerCode,
   type TuiPageContext,
   type TuiRoute,
@@ -1389,11 +1390,13 @@ export class TuiController {
     mode: 'browse' | 'installed';
     sourceId?: string;
     query?: string;
+    installFilter?: PluginInstallFilter;
   }): PluginListItemViewModel[] {
     const query = options.query?.trim().toLocaleLowerCase('en');
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
       && (options.mode === 'browse' || hasInstalledPlacement(plugin))
+      && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
   }
 

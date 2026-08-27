@@ -8,6 +8,8 @@ export type PortableBlockerCode =
   | 'portableScopeUnavailable'
   | 'portableValidationFailed';
 
+export type PluginInstallFilter = 'all' | 'uninstalled';
+
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
@@ -76,6 +78,7 @@ export interface TuiPageContext {
   scrollOffset?: number;
   query?: string;
   sourceTabId?: string;
+  installFilter?: PluginInstallFilter;
 }
 
 export interface TuiRouteFrame {

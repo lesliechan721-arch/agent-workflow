@@ -22,6 +22,8 @@ export function HelpBar(props: {
       borderRight={false}
       borderBottom={false}
       paddingX={1}
+      maxHeight={props.compact ? 3 : 2}
+      overflow="hidden"
     >
       <Text color={tuiTheme.colors.muted} wrap={props.compact ? 'wrap' : 'truncate-end'}>
         {props.children}
@@ -304,6 +306,43 @@ export function TaskRow(props: InteractiveRowProps): React.JSX.Element {
 
 export function PluginRow(props: InteractiveRowProps): React.JSX.Element {
   return <FocusRow {...props} />;
+}
+
+export interface PluginListRowProps {
+  name: ReactNode;
+  sourceLabel: ReactNode;
+  description: ReactNode;
+  placementSummary: ReactNode;
+  statusLabel: ReactNode;
+  status: TuiStatus;
+  focused?: boolean;
+}
+
+export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
+  const color = getTuiStatusColor(props.status);
+  return (
+    <Box
+      flexDirection="column"
+      backgroundColor={props.focused ? tuiTheme.colors.selectionBackground : undefined}
+      paddingX={1}
+    >
+      <Box>
+        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
+          <Text bold={props.focused} wrap="truncate-end">
+            {props.focused ? '›' : ' '} {props.name}
+          </Text>
+        </Box>
+        <Box flexShrink={0} marginLeft={1}>
+          <Text color={tuiTheme.colors.muted} wrap="truncate-end">{props.sourceLabel}</Text>
+        </Box>
+        <Box flexShrink={0} marginLeft={1}>
+          <Text color={color} wrap="truncate-end">{props.statusLabel}</Text>
+        </Box>
+      </Box>
+      <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.description}</Text>
+      <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.placementSummary}</Text>
+    </Box>
+  );
 }
 
 export function SectionRow(props: InteractiveRowProps): React.JSX.Element {

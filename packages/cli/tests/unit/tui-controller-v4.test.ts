@@ -605,6 +605,40 @@ describe('TUI v4 router and ViewModel', () => {
 });
 
 describe('TUI v4 background source checks', () => {
+  it('combines source, installation, and query filters without treating error placement as uninstalled', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({
+          sources: [source('official'), source('team', { primary: false })],
+          targets: [
+            target({ pluginName: 'matching-tool', sourceId: 'official', scope: 'user', state: 'absent' }),
+            target({ pluginName: 'installed-matching-tool', sourceId: 'official', scope: 'user', state: 'present' }),
+            target({ pluginName: 'error-matching-tool', sourceId: 'official', scope: 'user', state: 'error' }),
+            target({ pluginName: 'matching-tool', sourceId: 'team', scope: 'user', state: 'absent' }),
+          ],
+        }),
+        pluginSummaries: summaries(
+          ['official', 'matching-tool'],
+          ['official', 'installed-matching-tool'],
+          ['official', 'error-matching-tool'],
+          ['team', 'matching-tool'],
+        ),
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listPlugins({
+      mode: 'browse',
+      sourceId: 'official',
+      installFilter: 'uninstalled',
+      query: 'matching-tool',
+    }).map((plugin) => plugin.pluginId)).toEqual(['official/matching-tool']);
+    expect(controller.listPlugins({
+      mode: 'browse',
+      installFilter: 'uninstalled',
+    }).map((plugin) => plugin.pluginId)).toEqual(['official/matching-tool', 'team/matching-tool']);
+  });
+
   it('publishes a safe terminal state when the initial status load fails', async () => {
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockRejectedValue(new Error('nativeStateUnreadable: /private/path')),

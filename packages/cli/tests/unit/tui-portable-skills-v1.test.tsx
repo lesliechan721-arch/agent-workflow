@@ -1134,6 +1134,7 @@ describe('Portable Skills TUI V1', () => {
   it.each([
     { columns: 60, rows: 18 },
     { columns: 80, rows: 24 },
+    { columns: 80, rows: 40 },
   ])('keeps the focused portable Skill and Continue visible at $columns x $rows', async (size) => {
     const manyCandidates: PortableReview['selected'] = Array.from({ length: 10 }, (_, index) => ({
       name: `portable-skill-${index}`,

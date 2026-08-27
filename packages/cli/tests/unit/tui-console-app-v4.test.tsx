@@ -1446,11 +1446,80 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('× 验证完整结果');
     expect(instance.lastFrame()).not.toContain('● 验证完整结果');
     expect(instance.lastFrame()).toContain('× Agent Lab');
-    expect(instance.lastFrame()).toContain('另有 1 个目标');
+    expect(instance.lastFrame()).toContain('另有 2 个目标');
     expect(instance.lastFrame()).toContain('d 技术进度');
     execution.resolve({ overallState: 'partial', targetResults: [
       { target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project' }, state: 'failed' },
     ] });
+    await running;
+  });
+
+  it('grows a large dependency progress target viewport from 60x18 through 80x40 without clipping', async () => {
+    const execution = deferred<unknown>();
+    const loaded = dependencyLoadResult();
+    const targetIds = Array.from({ length: 12 }, (_, index) =>
+      index === 11 ? 'official/agent-lab' : `official/progress-target-${index + 1}`);
+    loaded.pluginSummaries.push(...targetIds.slice(0, -1).map((pluginId, index) => ({
+      pluginName: pluginId.split('/')[1]!,
+      pluginId,
+      displayName: `Progress Target ${index + 1}`,
+      description: `Dependency ${index + 1}`,
+      supportedTargets: { codex: ['user' as const], claude: [] },
+      configFieldCount: 0,
+    })));
+    loaded.payload.targets.push(...targetIds.slice(0, -1).map((pluginId) => target({
+      pluginName: pluginId.split('/')[1]!,
+      platform: 'codex',
+      scope: 'user',
+      state: 'absent',
+    })));
+    const plan: DependencyOperationPlan = {
+      dependencyPlanSchemaVersion: 1,
+      requestedPluginIds: ['official/agent-lab'],
+      resolvedPluginIds: targetIds,
+      dependencyEdges: targetIds.slice(0, -1).map((pluginId) => ({ from: 'official/agent-lab', to: pluginId })),
+      targets: targetIds.map((pluginId, index) => ({
+        pluginId,
+        pluginName: pluginId.split('/')[1]!,
+        platform: 'codex' as const,
+        requestedScope: 'user' as const,
+        resolvedScope: 'user' as const,
+        relation: index === targetIds.length - 1 ? 'requested' as const : 'dependency' as const,
+        requiredBy: index === targetIds.length - 1 ? [] : ['official/agent-lab'],
+        state: 'absent' as const,
+        action: 'install' as const,
+        order: index + 1,
+      })),
+    };
+    const value = new TuiController({
+      ...controller().dependencies,
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn().mockResolvedValue({ ...evidence, dependencyPlan: plan }),
+      executeIntent: vi.fn(() => execution.promise),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    });
+    const running = value.executeOperation(review.reviewToken);
+    const visibleCounts: number[] = [];
+    for (const size of [
+      { columns: 60, rows: 18 },
+      { columns: 80, rows: 24 },
+      { columns: 80, rows: 40 },
+    ]) {
+      const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+      await nextTurn(2);
+      const frame = instance.lastFrame() ?? '';
+      visibleCounts.push(frame.match(/Progress Target \d+/gu)?.length ?? 0);
+      expect(frame).toContain('执行目标');
+      expect(frame).toContain('? 帮助');
+      expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+      instance.unmount();
+    }
+    expect(visibleCounts[0]).toBeLessThan(visibleCounts[1]!);
+    expect(visibleCounts[1]).toBeLessThan(visibleCounts[2]!);
+    execution.resolve({ targetResults: [] });
     await running;
   });
 
@@ -1503,11 +1572,48 @@ describe('ConsoleAppV4', () => {
     await value.executeOperation(review.reviewToken);
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('另有 10 个目标');
+    expect(instance.lastFrame()).toContain('另有 8 个目标');
     await input(instance, '\u001B[B');
     expect(instance.lastFrame()).toContain('› 返回首页');
     expect(instance.lastFrame()).toContain('↑↓ 移动');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+  });
+
+  it('grows a large dependency result target viewport with available terminal rows', async () => {
+    const value = controller({
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'succeeded',
+        targetResults: Array.from({ length: 12 }, (_, index) => ({
+          target: { pluginId: `official/result-target-${index + 1}`, platform: 'codex' as const, scope: 'user' as const },
+          state: 'completed' as const,
+        })),
+      }),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    });
+    await value.executeOperation(review.reviewToken);
+
+    const visibleCounts: number[] = [];
+    for (const size of [
+      { columns: 60, rows: 18 },
+      { columns: 80, rows: 24 },
+      { columns: 80, rows: 40 },
+    ]) {
+      const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+      await nextTurn(2);
+      const frame = instance.lastFrame() ?? '';
+      visibleCounts.push(frame.match(/result-target-\d+/gu)?.length ?? 0);
+      await input(instance, '\u001B[B');
+      expect(instance.lastFrame()).toContain('› 返回首页');
+      expect(instance.lastFrame()).toContain('? 帮助');
+      expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
+      instance.unmount();
+    }
+    expect(visibleCounts[0]).toBeLessThan(visibleCounts[1]!);
+    expect(visibleCounts[1]).toBeLessThan(visibleCounts[2]!);
+    expect(visibleCounts[2]).toBe(12);
   });
 
   it('keeps the last source action visible with HelpBar at 60x18', async () => {
@@ -1715,6 +1821,164 @@ describe('ConsoleAppV4', () => {
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
       if (size.columns === 60) expect(frame).toMatch(/来源\s+\[全部\]\s+1 \/ 4/);
     }
+  });
+
+  it('keeps the browse install filter with source, query, preview, and Back navigation', async () => {
+    const value = controller();
+    value.push({ name: 'pluginList', mode: 'browse' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, 'f', '\u001B[C', ']');
+    expect(instance.lastFrame()).toContain('没有匹配插件');
+    expect(instance.lastFrame()).not.toContain('团队发布审查');
+    await input(instance, '[', '/', 'review');
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('[未安装]');
+    expect(instance.lastFrame()).toContain('› Review Gate');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse', sourceId: 'official' });
+
+    await input(instance, ']');
+    expect(instance.lastFrame()).toContain('没有匹配插件');
+    expect(instance.lastFrame()).not.toContain('团队发布审查');
+    await input(instance, '[');
+    expect(instance.lastFrame()).toContain('› Review Gate');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginPreview', pluginId: 'official/review-gate' });
+
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse', sourceId: 'official' });
+    expect(value.snapshot.router.current.context).toMatchObject({
+      query: 'review',
+      installFilter: 'uninstalled',
+      sourceTabId: 'official',
+    });
+    expect(instance.lastFrame()).toContain('[未安装]');
+    expect(instance.lastFrame()).toContain('/ review');
+    expect(instance.lastFrame()).toContain('› Review Gate');
+  });
+
+  it('keeps source and status visible when a plugin name is truncated at 60 columns', async () => {
+    const data = loadResult();
+    const displayName = 'This Plugin Name Is Intentionally Much Too Long For The Available Width';
+    data.pluginSummaries = [{
+      pluginName: 'long-name',
+      pluginId: 'team-tools/long-name',
+      displayName,
+      description: '用途说明',
+      supportedTargets: { codex: ['user'], claude: [] },
+      configFieldCount: 0,
+    }];
+    data.payload.targets = [target({ pluginName: 'long-name', sourceId: 'team-tools', platform: 'codex', scope: 'user', state: 'absent' })];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(data) });
+    value.push({ name: 'pluginList', mode: 'browse' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('team-tools');
+    expect(frame).toContain('未添加');
+    expect(frame).not.toContain(displayName);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('keeps the current longest legal source tab and last plugin focus visible on one line at 80x24', async () => {
+    const data = loadResult();
+    const sourceIds = Array.from({ length: 4 }, (_, index) => `${String(index + 1).repeat(31)}a`);
+    data.payload.catalog.sources = sourceIds.map((id, index) => ({
+      id,
+      identity: `identity:${id}`,
+      type: 'path' as const,
+      primary: index === 0,
+      requestedRef: 'path',
+      freshness: 'path' as const,
+    }));
+    data.payload.catalog.primarySourceId = sourceIds[0]!;
+    data.pluginSummaries = sourceIds.flatMap((sourceId, sourceIndex) =>
+      Array.from({ length: sourceIndex === sourceIds.length - 1 ? 8 : 1 }, (_, pluginIndex) => ({
+        pluginName: `source-${sourceIndex}-plugin-${pluginIndex}`,
+        pluginId: `${sourceId}/source-${sourceIndex}-plugin-${pluginIndex}`,
+        displayName: `Source ${sourceIndex + 1} Plugin ${pluginIndex + 1}`,
+        description: `Description ${pluginIndex + 1}`,
+        supportedTargets: { codex: ['user' as const], claude: [] },
+        configFieldCount: 0,
+      })));
+    data.payload.targets = data.pluginSummaries.map((summary) => target({
+      pluginName: summary.pluginName,
+      sourceId: summary.pluginId.split('/')[0],
+      platform: 'codex',
+      scope: 'user',
+      state: 'absent',
+    }));
+    data.sourceDetails = data.payload.catalog.sources.map((source) => ({
+      id: source.id,
+      type: source.type,
+      primary: source.primary,
+      locationSummary: `已选择本地目录（${source.id}）`,
+      pluginCount: data.pluginSummaries.filter((plugin) => plugin.pluginId.startsWith(`${source.id}/`)).length,
+      sourceIdentity: source.identity,
+      requestedRef: source.requestedRef,
+      freshness: source.freshness,
+      configDigest: 'sha256:config',
+    }));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(data) });
+    value.push({ name: 'pluginList', mode: 'browse' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, ']', ']', ']', ']');
+    expect(instance.lastFrame()).toContain(`[${sourceIds.at(-1)}]  5 / 5`);
+    await input(instance, ...Array.from({ length: 7 }, () => '\u001B[B'));
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('› Source 4 Plugin 8');
+    expect(frame).toContain('↑↓ 移动');
+    expect(frame.split('\n').length).toBeLessThanOrEqual(24);
+  });
+
+  it('grows the same plugin viewport with terminal rows and keeps the last focus visible', async () => {
+    const sizes = [
+      { columns: 60, rows: 18 },
+      { columns: 80, rows: 24 },
+      { columns: 80, rows: 40 },
+    ];
+    const visibleCounts: number[] = [];
+    for (const size of sizes) {
+      const data = loadResult();
+      data.pluginSummaries = Array.from({ length: 8 }, (_, index) => ({
+        pluginName: `viewport-${index + 1}`,
+        pluginId: `official/viewport-${index + 1}`,
+        displayName: `Viewport Plugin ${index + 1}`,
+        description: `Viewport description ${index + 1}`,
+        supportedTargets: { codex: ['user'], claude: [] },
+        configFieldCount: 0,
+      }));
+      data.payload.targets = data.pluginSummaries.map((summary) => target({
+        pluginName: summary.pluginName,
+        platform: 'codex',
+        scope: 'user',
+        state: 'absent',
+      }));
+      data.payload.catalog.sources = [data.payload.catalog.sources[0]!];
+      data.sourceDetails = data.sourceDetails?.filter((source) => source.id === 'official');
+      const value = controller({ loadStatus: vi.fn().mockResolvedValue(data) });
+      value.push({ name: 'pluginList', mode: 'browse' });
+      const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+      await nextTurn(3);
+
+      const initialFrame = instance.lastFrame() ?? '';
+      visibleCounts.push(initialFrame.match(/Viewport Plugin \d+/gu)?.length ?? 0);
+      expect(initialFrame.split('\n').length).toBeLessThanOrEqual(size.rows);
+      await input(instance, ...Array.from({ length: 7 }, () => '\u001B[B'));
+      expect(instance.lastFrame()).toContain('› Viewport Plugin 8');
+      expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
+      instance.unmount();
+    }
+
+    expect(visibleCounts[0]).toBeLessThan(visibleCounts[1]!);
+    expect(visibleCounts[1]).toBeLessThan(visibleCounts[2]!);
+    expect(visibleCounts[2]).toBe(8);
   });
 
   it('keeps the focused item visible in a 60x18 viewport and opens that exact item', async () => {
@@ -1988,6 +2252,25 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('字段级高级模型');
   });
 
+  it('preserves preset, manifest group, and advanced headings on the mutable settings page', async () => {
+    const page = configPage();
+    page.groups[0]!.fields = [page.groups[0]!.fields[0]!];
+    const value = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => ({ ...page, layer })) });
+    value.push({
+      name: 'configFields', pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('快速方案');
+    expect(frame).toContain('基本设置');
+    expect(frame).toContain('高级设置');
+    expect(frame).not.toContain('设置字段');
+    expect(frame.split('\n').length).toBeLessThanOrEqual(24);
+  });
+
   it('renders config partial retry, reset Review, unavailable terminal state, and compact field viewport', async () => {
     const partialScreens = new Set<ConsoleV4ScreenId>();
     const partialReload = loadResult();
@@ -2201,7 +2484,7 @@ describe('ConsoleAppV4', () => {
       fieldKey: 'level',
       editor: 'enum',
     });
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'));
     expect(instance.lastFrame()).toContain('当前没有未保存修改');
     value.push({
       name: 'configFieldEditor',
@@ -2211,7 +2494,7 @@ describe('ConsoleAppV4', () => {
       editor: 'string',
     });
     await nextTurn(2);
-    await input(instance, '\u0015');
+    await input(instance, '\u0015', ...Array.from({ length: 8 }, () => '\u001B[B'));
     expect(instance.lastFrame()).toContain('当前没有未保存修改');
     await input(instance, 's');
     expect(value.snapshot.activeReview).toBeUndefined();
@@ -2994,7 +3277,8 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain('操作已完成');
     expect(frame).toContain('Agent Lab');
     expect(frame).toContain('Agent Content Toolkit');
-    expect(frame).toContain('另有 1 个目标');
+    expect(frame).toContain('Agent Skill Toolkit');
+    expect(frame).not.toContain('另有 1 个目标');
     expect(frame).toContain('› 查看插件');
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
