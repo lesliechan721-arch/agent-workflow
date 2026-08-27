@@ -61,7 +61,17 @@ it('uses the built common publisher to bootstrap independent official beta and l
     ['beta', '92.0.0-beta.1'],
     ['latest', '92.0.0'],
   ] as const) {
-    const preparation = await prepareCatalogRelease(version, mode, {
+    await runAw(cliEntry, workspaceRoot, [
+      'catalog', 'version', version, '--workspace-root', workspaceRoot,
+    ]);
+    await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], {
+      cwd: workspaceRoot,
+    });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '--quiet', '-m', 'catalog version',
+    ], { cwd: workspaceRoot });
+    const preparation = await prepareCatalogRelease(mode, {
       repoRoot: workspaceRoot,
       remoteUrl,
       env: getCurrentSourceTestIsolation().env,

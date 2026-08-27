@@ -28,8 +28,6 @@ export interface BundlePluginsOptions {
   outputRoot?: string;
   buildMode?: PluginBundleBuildMode;
   stagingRunner?: PluginStagingRunner;
-  catalogVersion?: string;
-  channel?: import('../src/types.js').CatalogChannel;
   assertPackageVersions?: boolean;
 }
 
@@ -59,12 +57,18 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
   const [[, rootPackageJsonPath], [, targetsPath], [, evalPackageJsonPath], [, cliPackageJsonPath]] = truthFiles;
   const [rootPackageJson, targets, evalPackageJson, cliPackageJson] = await Promise.all([
     fs.readJson(rootPackageJsonPath) as Promise<{ version?: unknown }>,
-    fs.readJson(targetsPath) as Promise<{ cli?: unknown }>,
+    fs.readJson(targetsPath) as Promise<{ schemaVersion?: unknown; cli?: unknown }>,
     fs.readJson(evalPackageJsonPath) as Promise<{ version?: unknown }>,
     fs.readJson(cliPackageJsonPath) as Promise<{ version?: unknown }>,
   ]);
   if (Object.hasOwn(rootPackageJson, 'version')) {
     throw new Error('package.json must not declare a version; release/version-targets.json is the release target source.');
+  }
+  if (
+    targets.schemaVersion !== 2
+    || Object.keys(targets).sort().join('\n') !== ['cli', 'schemaVersion'].join('\n')
+  ) {
+    throw new Error('release/version-targets.json must use schemaVersion 2 with only the CLI target.');
   }
   const targetVersion = assertStrictSemVer(targets.cli, 'release/version-targets.json cli');
   if (targetVersion.includes('-')) {
@@ -163,8 +167,6 @@ export async function bundlePlugins(
   await stageCatalogArtifacts({
     repoRoot,
     outputRoot,
-    catalogVersion: options.catalogVersion ?? sourceMeta.catalog.version,
-    ...(options.channel ? { channel: options.channel } : {}),
   });
 
   return {

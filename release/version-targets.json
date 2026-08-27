@@ -1,5 +1,4 @@
 {
-  "schemaVersion": 1,
-  "cli": "0.1.0",
-  "catalog": "0.1.0"
+  "schemaVersion": 2,
+  "cli": "0.1.0"
 }

@@ -69,7 +69,6 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
       workspaceRoot,
       remoteUrl,
       branch: 'catalog/latest',
-      catalogVersion: '2.0.0',
       env: process.env,
       failOnUnavailable: true,
     });
@@ -96,10 +95,13 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
     fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes),
     fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes),
   ]);
-  const targets = { schemaVersion: 1, cli: '1.0.0', catalog: '2.0.0' };
+  const targets = { schemaVersion: 2, cli: '1.0.0' };
   const descriptor = {
     schemaVersion: 1,
-    source: { head: sourceHead, targetsDigest: calculateCanonicalDigest(targets) },
+    source: {
+      head: sourceHead,
+      targetsDigest: axes.cli ? calculateCanonicalDigest(targets) : null,
+    },
     channel: 'stable',
     axes,
     candidates: { cli: axes.cli ? '1.0.0' : null, catalog: axes.catalog ? '2.0.0' : null },
@@ -127,7 +129,6 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
     attemptPath: path.join(root, 'attempted.json'),
     remoteUrl,
     targets,
-    publishedCliVersion: '1.0.0',
     fail,
   }));
   const child = path.resolve(
@@ -158,7 +159,11 @@ it('runs official release order through the common Catalog publisher and unified
     ok: true, events: ['catalog'], catalogAttempt: 'published', releaseAttempt: null,
   });
   await expect(runCase({ cli: true, catalog: true }, 'eval')).resolves.toMatchObject({
-    ok: false, events: ['eval'], error: expect.stringContaining('--cli-bump'),
+    ok: false,
+    events: ['eval'],
+    error: expect.stringContaining('--cli-bump'),
+    catalogAttempt: null,
+    releaseAttempt: { cli: '1.0.0' },
   });
   await expect(runCase({ cli: false, catalog: true }, 'catalog')).resolves.toMatchObject({
     ok: false, events: ['catalog'], error: expect.stringContaining('version <higher>'),

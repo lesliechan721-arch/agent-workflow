@@ -2769,10 +2769,8 @@ export function validateMarketplaceSourceMeta(rawValue: unknown): MarketplaceSou
   assertAllowedKeys(ownerInput, 'marketplace source metadata.owner', ['name', 'url']);
   const interfaceInput = assertObject(input.interface, 'marketplace source metadata.interface');
   assertAllowedKeys(interfaceInput, 'marketplace source metadata.interface', ['displayName']);
-  const catalogInput = input.catalog === undefined
-    ? null
-    : assertObject(input.catalog, 'marketplace source metadata.catalog');
-  if (catalogInput) assertAllowedKeys(catalogInput, 'marketplace source metadata.catalog', ['version']);
+  const catalogInput = assertObject(input.catalog, 'marketplace source metadata.catalog');
+  assertAllowedKeys(catalogInput, 'marketplace source metadata.catalog', ['version']);
 
   return {
     owner: {
@@ -2786,12 +2784,10 @@ export function validateMarketplaceSourceMeta(rawValue: unknown): MarketplaceSou
       ),
     },
     catalog: {
-      version: catalogInput === null
-        ? '0.1.0'
-        : assertCatalogVersion(
-            catalogInput.version,
-            'marketplace source metadata.catalog.version',
-          ),
+      version: assertCatalogVersion(
+        catalogInput.version,
+        'marketplace source metadata.catalog.version',
+      ),
     },
   };
 }

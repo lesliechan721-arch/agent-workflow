@@ -110,9 +110,8 @@ async function writeRepoPackageVersions(
   await fs.outputJson(
     path.join(repoRoot, 'release', 'version-targets.json'),
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       cli: versions.targetVersion,
-      catalog: versions.targetVersion,
     },
     { spaces: 2 },
   );
@@ -416,6 +415,22 @@ describe('bundle layout validation', () => {
     })).resolves.toMatchObject({
       pluginNames: ['git-commit'],
     });
+  });
+
+  it('stages the exact Catalog version only from Workspace metadata', async () => {
+    const repoRoot = await makeTempRepo();
+    const sourcePath = path.join(repoRoot, 'plugins', 'marketplace-source.json');
+    const source = await fs.readJson(sourcePath);
+    await fs.writeJson(sourcePath, {
+      ...source,
+      catalog: { version: '2.3.0-beta.4' },
+    }, { spaces: 2 });
+    const outputRoot = path.join(repoRoot, 'embedded');
+
+    await bundlePlugins({ repoRoot, outputRoot });
+
+    await expect(fs.readJson(path.join(outputRoot, 'catalog-manifest.json')))
+      .resolves.toMatchObject({ catalogVersion: '2.3.0-beta.4', channel: 'beta' });
   });
 
   it('rejects portable source manifests without an explicit AW minimum before catalog output', async () => {

@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -60,17 +61,21 @@ async function loadCatalogPublicationService(options = {}) {
   return { ...inspection, ...publication };
 }
 
-export async function prepareCatalogRelease(catalogVersion, mode, options = {}) {
+export async function prepareCatalogRelease(mode, options = {}) {
   if (mode !== 'latest' && mode !== 'beta') throw new Error('Catalog mode must be latest or beta.');
   const service = await loadCatalogPublicationService(options);
-  return service.prepareCatalogPublicationInspection({
+  const preparation = await service.prepareCatalogPublicationInspection({
     workspaceRoot: options.repoRoot ?? defaultRepoRoot,
     remoteUrl: resolveCatalogMaintenanceRemote(options),
     branch: CATALOG_CHANNEL_BRANCHES[mode],
-    catalogVersion,
     env: options.env ?? process.env,
     failOnUnavailable: true,
   });
+  if (preparation.descriptor.channel !== mode) {
+    await service.disposeCatalogPublicationInspection(preparation);
+    throw new Error(`Catalog source version does not match the ${mode} release channel.`);
+  }
+  return preparation;
 }
 
 export async function disposeCatalogRelease(preparation, options = {}) {
@@ -104,24 +109,46 @@ export async function readCatalogVersions(options = {}) {
   });
 }
 
-export async function readCatalogChannelState(mode, options = {}) {
-  if (mode !== 'latest' && mode !== 'beta') throw new Error('Catalog mode must be latest or beta.');
-  const service = await loadCatalogPublicationService(options);
-  const state = await service.readCatalogPublicationBranchState({
-    workspaceRoot: options.repoRoot ?? defaultRepoRoot,
-    remoteUrl: resolveCatalogMaintenanceRemote(options),
-    branch: CATALOG_CHANNEL_BRANCHES[mode],
-    env: options.env ?? process.env,
+export async function readCatalogSourceVersion(options = {}) {
+  const repoRoot = path.resolve(options.repoRoot ?? defaultRepoRoot);
+  const sourcePath = path.join(repoRoot, 'plugins', 'marketplace-source.json');
+  let source;
+  try {
+    source = JSON.parse(await fs.readFile(sourcePath, 'utf8'));
+  } catch (error) {
+    throw new Error('Catalog source metadata is not valid JSON.', { cause: error });
+  }
+  const version = source?.catalog?.version;
+  if (
+    typeof version !== 'string'
+    || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(version)
+  ) {
+    throw new Error('Catalog source metadata must contain a stable or exact beta Catalog version.');
+  }
+  return version;
+}
+
+export async function readCatalogAttemptVersions(options = {}) {
+  const attemptsRoot = path.join(
+    path.resolve(options.repoRoot ?? defaultRepoRoot),
+    '.aw',
+    'publish',
+    'attempts',
+  );
+  let entries;
+  try {
+    entries = await fs.readdir(attemptsRoot);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  return entries.flatMap((entry) => {
+    if (!entry.endsWith('.json')) return [];
+    const version = entry.slice(0, -'.json'.length);
+    return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(version)
+      ? [version]
+      : [];
   });
-  if (!state) return null;
-  if (state.manifest.channel !== mode) {
-    throw new Error(`Published Catalog ${mode} channel has the wrong manifest channel.`);
-  }
-  const prerelease = state.version.includes('-');
-  if ((mode === 'latest' && prerelease) || (mode === 'beta' && !prerelease)) {
-    throw new Error(`Published Catalog ${mode} channel has an invalid version kind.`);
-  }
-  return state;
 }
 
 export async function assertCatalogTagAvailable(catalogVersion, options = {}) {

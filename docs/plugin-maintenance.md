@@ -53,7 +53,7 @@ manifest `dependencies` 声明安装或升级某插件时必须同时满足的�
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
-- 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时返回通过的 `unreleasedChanges`，不要求立即改 version。release train 使用 `pnpm release -- beta|release --catalog|--all --plugin <name>=major|minor|patch` 一次设置稳定目标并发布；candidate 身份由 registry、immutable Catalog history 和 ledger 生成。
+- 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时返回通过的 `unreleasedChanges`，不要求立即改 version。release train 使用 `pnpm release -- beta|release --catalog|--all --plugin <name>=major|minor|patch` 发布；`plugins/marketplace-source.json.catalog.version` 保存精确 Catalog candidate，官方入口通过公共 `aw catalog version` mutation 设置它，并用 immutable Catalog history 和 Workspace attempt 选择未使用版本。
 - 正常维护发布只使用 `pnpm release`。它只提交指定的发布元数据，并从已提交的 source HEAD 生成和消费 immutable prepared state。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。

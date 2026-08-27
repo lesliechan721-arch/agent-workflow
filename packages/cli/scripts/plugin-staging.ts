@@ -75,8 +75,8 @@ import type {
   PluginMeta,
 } from '../src/types.js';
 import {
-  assertStrictSemVer,
   compareStrictSemVer,
+  readMarketplaceSourceMeta,
   resolvePluginsFromCatalog,
 } from '../src/utils/manifest.js';
 import {
@@ -106,8 +106,6 @@ export type { PluginConfigValue } from '../src/utils/plugin-config.js';
 export interface CatalogStageOptions {
   repoRoot?: string;
   outputRoot: string;
-  catalogVersion?: string;
-  channel?: CatalogChannel;
 }
 
 export interface CatalogStageResult {
@@ -133,27 +131,6 @@ function resolveCatalogMinAwVersion(plugins: readonly PluginMeta[]): string {
   return current;
 }
 
-async function readCliPackageMetadata(
-  repoRoot: string,
-): Promise<{ version: string }> {
-  const candidatePaths = [
-    path.join(repoRoot, 'packages', 'cli', 'package.json'),
-    path.join(repoRoot, 'package.json'),
-    path.join(resolveCliPackageRoot(), 'package.json'),
-  ];
-  let cliPackageJsonPath = candidatePaths[candidatePaths.length - 1];
-  for (const candidatePath of candidatePaths) {
-    if (await fs.pathExists(candidatePath)) {
-      cliPackageJsonPath = candidatePath;
-      break;
-    }
-  }
-  const packageJson = await readJsonFile<Record<string, unknown>>(cliPackageJsonPath);
-  return {
-    version: assertStrictSemVer(packageJson.version, 'packages/cli/package.json version'),
-  };
-}
-
 async function writeCanonicalJsonFile(filePath: string, value: unknown): Promise<string> {
   const content = `${JSON.stringify(value, null, 2)}\n`;
   await fs.ensureDir(path.dirname(filePath));
@@ -166,22 +143,13 @@ export async function stageCatalogArtifacts(
   options: CatalogStageOptions,
 ): Promise<CatalogStageResult> {
   const repoRoot = options.repoRoot ?? path.resolve(resolveCliPackageRoot(), '..', '..');
-  const [{ version }, sourcePlugins] = await Promise.all([
-    readCliPackageMetadata(repoRoot),
+  const [sourceMetadata, sourcePlugins] = await Promise.all([
+    readMarketplaceSourceMeta(repoRoot),
     resolvePluginsFromCatalog(options.outputRoot),
   ]);
   validatePluginMetaDependencyGraph(sourcePlugins);
-  const catalogVersion = assertStrictSemVer(
-    options.catalogVersion ?? version,
-    'catalog version',
-  );
-  const derivedChannel = detectCatalogChannel(catalogVersion);
-  const channel = options.channel ?? derivedChannel;
-  if (channel !== derivedChannel) {
-    throw new Error(
-      `Catalog channel ${JSON.stringify(channel)} does not match catalog version ${catalogVersion}.`,
-    );
-  }
+  const catalogVersion = sourceMetadata.catalog.version;
+  const channel = detectCatalogChannel(catalogVersion);
   for (const plugin of sourcePlugins) {
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }

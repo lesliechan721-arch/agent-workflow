@@ -44,7 +44,7 @@ Manifest 中所有 source path 必须留在插件根内，并且任何路径 seg
 - `version` 是单个插件的稳定 artifact 版本。
 - `compatibility.aw.minVersion` 是运行该插件所需的最低 AW CLI 版本。
 
-`catalog.version` 是整个 workspace snapshot 的版本，独立于插件 `version`。日常 source 修改不要为了 build 而提高插件 `version`。但在发布 production artifact 内容已变化、且当前稳定 plugin `version` 已进入 release ledger 的插件前，必须按作者的 release policy 提高该插件的稳定 `version`。发布新 Catalog 时用 `aw catalog version <higher>` 设置新的 Catalog 版本；只提高 `catalog.version` 不能解决同一 plugin `version` 对应不同 production 内容的问题。
+`catalog.version` 是整个 workspace snapshot 的精确候选版本，独立于插件 `version`。日常 source 修改不要为了 build 而提高插件 `version`。但在发布 production artifact 内容已变化、且当前稳定 plugin `version` 已进入 release ledger 的插件前，必须按作者的 release policy 提高该插件的稳定 `version`。发布新 Catalog 时用 `aw catalog version <exact>` 设置精确版本，或用 `aw catalog version --bump major|minor|patch` 提升当前 stable SemVer base；只提高 `catalog.version` 不能解决同一 plugin `version` 对应不同 production 内容的问题。
 
 同一 source 内的运行时依赖只在 manifest `dependencies` 中声明，值是裸插件名，例如 `"dependencies": ["shared-rules"]`。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。安装选择器 `source/plugin` 用于精确指定插件并固定 trust source。裸插件名必须在当前命令所需和已配置的 Catalog source 集合中唯一匹配；零匹配会失败，多个 source 有同名插件会以歧义失败。需要固定 source 或消除歧义时，使用精确选择器。
 
@@ -122,7 +122,7 @@ aw catalog publish \
 
 Publication requires a clean source Git worktree, an existing Git commit, a configured remote, and a valid branch. In non-TTY or JSON use, `--yes` is required. The CLI archives the resolved source HEAD into an isolated workspace, runs the public source validator for every plugin there, and builds only from those committed bytes. Ignored or untracked working-tree bytes are never publication inputs. It then creates an immutable annotated `catalog-v<version>` tag and atomically pushes the dedicated branch and tag. It does not use the official `catalog/latest` or `catalog/beta` release train.
 
-Before the first remote write, the CLI records a version-specific publish attempt. A failed or uncertain push permanently blocks that Catalog version. Do not retry it and do not delete the attempt file: increase `catalog.version` with `aw catalog version <higher>`, then publish the new Catalog candidate. This recovery does not change a plugin artifact identity. If an already-ledgered stable plugin `version` would publish different production content, first increase that plugin `version` under the author release policy; only increasing `catalog.version` is not valid recovery for same-version different-content. A consumer can add the published source with:
+Before the first remote write, the CLI records a version-specific publish attempt. A failed or uncertain push permanently blocks that Catalog version. Do not retry it and do not delete the attempt file: set a new exact version with `aw catalog version <higher>`, or bump the stable base with `aw catalog version --bump <level>`, then publish the new Catalog candidate. This recovery does not change a plugin artifact identity. If an already-ledgered stable plugin `version` would publish different production content, first increase that plugin `version` under the author release policy; only increasing `catalog.version` is not valid recovery for same-version different-content. A consumer can add the published source with:
 
 ```bash
 aw catalog source add example \

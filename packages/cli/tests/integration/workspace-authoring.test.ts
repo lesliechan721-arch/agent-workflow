@@ -294,6 +294,38 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       catalogVersion: '1.0.0-beta.1',
     });
 
+    const bumpOutput = capture();
+    expect(await runCli(['catalog', 'version', '--bump', 'patch', '--workspace-root', root, '--json'], {
+      cwd: root,
+      io: bumpOutput.io,
+    })).toBe(0);
+    expect(JSON.parse(bumpOutput.stdout())).toMatchObject({
+      command: 'catalog:version',
+      ok: true,
+      catalogVersion: '1.0.1',
+      changed: true,
+    });
+
+    const conflictingOutput = capture();
+    expect(await runCli([
+      'catalog', 'version', '1.0.2', '--bump', 'minor', '--workspace-root', root, '--json',
+    ], { cwd: root, io: conflictingOutput.io })).toBe(1);
+    expect(JSON.parse(conflictingOutput.stdout())).toMatchObject({
+      command: 'catalog:version',
+      ok: false,
+    });
+    expect(conflictingOutput.stderr()).toContain('not both');
+
+    const invalidBumpOutput = capture();
+    expect(await runCli([
+      'catalog', 'version', '--bump', 'prerelease', '--workspace-root', root, '--json',
+    ], { cwd: root, io: invalidBumpOutput.io })).toBe(1);
+    expect(JSON.parse(invalidBumpOutput.stdout())).toMatchObject({
+      command: 'catalog:version',
+      ok: false,
+    });
+    expect(invalidBumpOutput.stderr()).toContain('major, minor, or patch');
+
     for (const version of ['1.0.0-rc.1', '1.0.0+build.1']) {
       const invalidOutput = capture();
       expect(await runCli(['catalog', 'version', version, '--workspace-root', root, '--json'], {

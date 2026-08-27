@@ -96,14 +96,14 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
-Release unit/integration 覆盖 CLI target 更新的 package 同步、local prepared artifacts、CLI attempted marker、Workspace Catalog attempt、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序和 Catalog-only compatibility。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Workspace Catalog attempt、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 
 | 发布风险 | 最低证据 |
 |---|---|
 | CLI target 同步两个 public package 与 workspace dependency | prepared release unit |
-| beta/release 独立选择 CLI 和 Catalog 候选 | prepared release unit |
+| beta/release 独立选择 CLI target 和 Catalog metadata 候选 | prepared release unit |
 | CLI tag 指向 prepared source commit | CLI tag integration |
 | npm 成功后 tag 可补发 | release entry unit + CLI tag integration |
 | CLI 成功后 Catalog 失败保留部分成功 | release publish smoke |

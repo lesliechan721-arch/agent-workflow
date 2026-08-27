@@ -1550,13 +1550,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('version')
     .description('Read or set the Catalog version')
     .argument('[version]', 'stable or x.y.z-beta.N catalog version')
+    .option('--bump <level>', 'bump the stable SemVer base: patch, minor, or major')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--json', 'emit one machine-readable JSON result', false)
-    .action(async (version: string | undefined, rawOptions: { workspaceRoot?: string; json?: boolean }) => {
+    .action(async (version: string | undefined, rawOptions: {
+      workspaceRoot?: string;
+      bump?: 'major' | 'minor' | 'patch';
+      json?: boolean;
+    }) => {
       try {
         await runCatalogVersionCommand({
           workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
           version,
+          bump: rawOptions.bump,
           json: rawOptions.json,
           io,
         });

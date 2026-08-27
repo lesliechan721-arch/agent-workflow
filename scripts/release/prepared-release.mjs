@@ -29,7 +29,8 @@ import {
   disposeCatalogRelease,
   prepareCatalogRelease,
   publishCatalogRelease,
-  readCatalogChannelState,
+  readCatalogAttemptVersions,
+  readCatalogSourceVersion,
   readCatalogVersions,
 } from './catalog-publication.mjs';
 import {
@@ -193,7 +194,7 @@ function assertCandidateAbovePublished(candidate, versionSets, currentVersions, 
   }
 }
 
-function nextCandidate(
+function nextCliCandidate(
   targetVersion,
   channel,
   versionSets,
@@ -233,10 +234,46 @@ function nextCandidate(
   return candidate;
 }
 
+export function selectCatalogReleaseCandidate(channel, currentVersion, usedVersions) {
+  if (channel !== 'stable' && channel !== 'beta') {
+    throw new Error('Catalog candidate channel must be beta or stable.');
+  }
+  if (
+    typeof currentVersion !== 'string'
+    || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(currentVersion)
+  ) {
+    throw new Error('Catalog source version must be stable or exact x.y.z-beta.N.');
+  }
+  const used = new Set(usedVersions);
+  const stableBase = currentVersion.replace(/-beta\.[1-9]\d*$/u, '');
+  if (channel === 'stable') return used.has(stableBase) ? null : stableBase;
+  if (currentVersion.includes('-beta.') && !used.has(currentVersion)) return currentVersion;
+  const pattern = new RegExp(`^${stableBase.replaceAll('.', '\\.')}-beta\\.([1-9]\\d*)$`, 'u');
+  const highest = [...used].reduce((value, version) => {
+    const match = pattern.exec(version);
+    if (!match) return value;
+    const sequence = BigInt(match[1]);
+    return sequence > value ? sequence : value;
+  }, 0n);
+  return `${stableBase}-beta.${highest + 1n}`;
+}
+
+export async function resolveCatalogReleaseCandidate(channel, options = {}) {
+  const [currentVersion, publishedVersions, attemptedVersions] = await Promise.all([
+    (options.readCatalogVersion ?? readCatalogSourceVersion)(options),
+    (options.readCatalogVersions ?? readCatalogVersions)(options),
+    (options.readCatalogAttemptVersions ?? readCatalogAttemptVersions)(options),
+  ]);
+  return selectCatalogReleaseCandidate(
+    channel,
+    currentVersion,
+    [...publishedVersions, ...attemptedVersions],
+  );
+}
+
 export async function resolvePreparedCandidates(channel, targets, options = {}) {
   const readVersions = options.readPackageVersions ?? readPackageVersions;
   const readChannelVersion = options.readPackageChannelVersion ?? readPackageChannelVersion;
-  const mode = channel === 'stable' ? 'latest' : 'beta';
   const axes = options.axes ?? { cli: true, catalog: true };
   const cliState = axes.cli
     ? {
@@ -245,18 +282,12 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
           readChannelVersion(name, channel, options))),
       }
     : null;
-  const catalogState = axes.catalog
-    ? await Promise.all([
-        (options.readCatalogVersions ?? readCatalogVersions)(options),
-        (options.readCatalogChannelState ?? readCatalogChannelState)(mode, options),
-      ])
-    : null;
   const attempt = channel === 'beta' && axes.cli
     ? await (options.readAttempt ?? readAttempt)(options)
     : null;
   return {
     cli: cliState
-      ? nextCandidate(
+      ? nextCliCandidate(
           targets.cli,
           channel,
           cliState.versions,
@@ -265,14 +296,8 @@ export async function resolvePreparedCandidates(channel, targets, options = {}) 
           attempt?.candidates?.cli ?? null,
         )
       : null,
-    catalog: catalogState
-      ? nextCandidate(
-          targets.catalog,
-          channel,
-          [catalogState[0]],
-          [catalogState[1]?.version ?? null],
-          'Catalog',
-        )
+    catalog: axes.catalog
+      ? await resolveCatalogReleaseCandidate(channel, options)
       : null,
   };
 }
@@ -323,19 +348,24 @@ export async function prepareLocalRelease(channel, options = {}) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const localReleaseRoot = options.releaseRoot ?? releaseRoot;
   const localPreparedRoot = options.preparedRoot ?? path.join(localReleaseRoot, 'prepared');
+  const axes = options.axes ?? { cli: true, catalog: true };
   await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
-  await (options.assertTargetsMatchHead ?? assertVersionTargetsMatchHead)(repoRoot, options);
+  if (axes.cli) {
+    await (options.assertTargetsMatchHead ?? assertVersionTargetsMatchHead)(repoRoot, options);
+  }
   const [targets, versions, sourceHead] = await Promise.all([
-    (options.readTargets ?? readVersionTargets)(repoRoot),
-    (options.assertPackageVersions ?? assertPublicPackageVersions)(repoRoot),
+    axes.cli ? (options.readTargets ?? readVersionTargets)(repoRoot) : null,
+    axes.cli ? (options.assertPackageVersions ?? assertPublicPackageVersions)(repoRoot) : null,
     (options.resolveHead ?? resolveReleaseHead)({ cwd: repoRoot }),
   ]);
-  if (versions.targetVersion !== targets.cli) throw new Error('CLI package versions do not match release targets.');
+  if (axes.cli && versions.targetVersion !== targets.cli) {
+    throw new Error('CLI package versions do not match release targets.');
+  }
   const candidates = await (options.resolveCandidates ?? resolvePreparedCandidates)(channel, targets, {
-    ...options, repoRoot, axes: options.axes ?? { cli: true, catalog: true },
+    ...options, repoRoot, axes,
   });
-  assertSelectedCandidates(options.axes ?? { cli: true, catalog: true }, candidates);
-  const targetsDigest = calculateCanonicalDigest(targets);
+  assertSelectedCandidates(axes, candidates);
+  const targetsDigest = targets === null ? null : calculateCanonicalDigest(targets);
   await assertCandidateNotAttempted(targetsDigest, candidates, { ...options, releaseRoot: localReleaseRoot });
   await fs.mkdir(localReleaseRoot, { recursive: true });
   const temporaryRoot = await fs.mkdtemp(path.join(localReleaseRoot, '.prepared-'));
@@ -384,11 +414,14 @@ export async function prepareLocalRelease(channel, options = {}) {
       let catalog = null;
       if (candidates.catalog !== null) {
         const mode = channel === 'stable' ? 'latest' : 'beta';
-        const preparation = await (options.prepareCatalog ?? prepareCatalogRelease)(
-          candidates.catalog,
-          mode,
-          { ...options, repoRoot },
-        );
+        const preparation = await (options.prepareCatalog ?? prepareCatalogRelease)(mode, {
+          ...options,
+          repoRoot,
+        });
+        if (preparation.descriptor.catalogVersion !== candidates.catalog) {
+          await (options.disposeCatalog ?? disposeCatalogRelease)(preparation, options);
+          throw new Error('Prepared Catalog version does not match source metadata.');
+        }
         const catalogPath = path.join(artifactRoot, 'catalog');
         try {
           await fs.cp(preparation.prepared.outputRoot, catalogPath, {
@@ -587,29 +620,6 @@ async function assertCandidatesUnavailable(descriptor, options = {}) {
   }
 }
 
-async function readPublishedCliVersion(channel, options = {}) {
-  const registryUrl = options.registryUrl ?? await resolveRegistryUrl(
-    options.packageJsonPath ?? cliPackageJsonPath,
-    options.env ?? process.env,
-  );
-  const tag = channel === 'stable' ? 'latest' : 'beta';
-  const versions = [];
-  for (const packageName of CLI_PACKAGES) {
-    const result = await (options.captureCommand ?? captureCommand)('pnpm', [
-      'view', `${packageName}@${tag}`, 'version', '--json', '--registry', registryUrl,
-    ], { cwd: options.repoRoot ?? defaultRepoRoot, env: options.env });
-    versions.push(JSON.parse(result.stdout));
-  }
-  if (versions.some((version) => typeof version !== 'string') || new Set(versions).size !== 1) {
-    throw new Error(`Catalog-only release requires matching published ${tag} versions for all npm packages.`);
-  }
-  const prerelease = versions[0].includes('-');
-  if ((channel === 'stable' && prerelease) || (channel === 'beta' && !prerelease)) {
-    throw new Error(`Catalog-only release requires a ${tag === 'latest' ? 'stable' : 'prerelease'} npm channel version.`);
-  }
-  return versions[0];
-}
-
 async function assertRemoteCandidateGate(descriptor, targets, options = {}) {
   const live = await (options.resolveCandidates ?? resolvePreparedCandidates)(
     descriptor.channel,
@@ -618,23 +628,6 @@ async function assertRemoteCandidateGate(descriptor, targets, options = {}) {
   );
   if (!sameCandidates(live, descriptor.candidates)) {
     throw new Error('Published channel state changed after prepare; bump the involved target and prepare again.');
-  }
-}
-
-async function assertCatalogCliCompatibility(descriptor, options = {}) {
-  if (!descriptor.axes.catalog) return;
-  const cliVersion = descriptor.axes.cli
-    ? descriptor.candidates.cli
-    : await (options.readPublishedCliVersion ?? readPublishedCliVersion)(descriptor.channel, options);
-  const prerelease = cliVersion.includes('-');
-  if ((descriptor.channel === 'stable' && prerelease) || (descriptor.channel === 'beta' && !prerelease)) {
-    throw new Error('Catalog-only release selected an npm channel version with the wrong stable/beta type.');
-  }
-  if (compareReleaseSemVer(cliVersion, descriptor.catalog.minCliVersion) < 0) {
-    throw new Error(
-      `Catalog ${descriptor.candidates.catalog} requires aw >= ${descriptor.catalog.minCliVersion}, ` +
-      `but the selected CLI is ${cliVersion}.`,
-    );
   }
 }
 
@@ -675,14 +668,18 @@ async function assertLiveSourceBinding(descriptor, repoRoot, options = {}) {
   await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
   const [head, targets, versions] = await Promise.all([
     (options.resolveHead ?? resolveReleaseHead)({ cwd: repoRoot }),
-    (options.readTargets ?? readVersionTargets)(repoRoot),
-    (options.assertPackageVersions ?? assertPublicPackageVersions)(repoRoot),
+    descriptor.axes.cli ? (options.readTargets ?? readVersionTargets)(repoRoot) : null,
+    descriptor.axes.cli
+      ? (options.assertPackageVersions ?? assertPublicPackageVersions)(repoRoot)
+      : null,
   ]);
   if (head !== descriptor.source.head) throw new Error('Release HEAD changed after prepare; prepare again.');
-  if (calculateCanonicalDigest(targets) !== descriptor.source.targetsDigest) {
+  if (descriptor.axes.cli && calculateCanonicalDigest(targets) !== descriptor.source.targetsDigest) {
     throw new Error('Release version targets changed after prepare; prepare again.');
   }
-  if (versions.targetVersion !== targets.cli) throw new Error('CLI package versions changed after prepare; prepare again.');
+  if (descriptor.axes.cli && versions.targetVersion !== targets.cli) {
+    throw new Error('CLI package versions changed after prepare; prepare again.');
+  }
 }
 
 async function assertPreparedBuildBinding(descriptor, repoRoot, options = {}) {
@@ -769,10 +766,11 @@ export async function publishPreparedRelease(options = {}) {
   await assertLiveSourceBinding(descriptor, repoRoot, options);
   await assertPreparedBuildBinding(descriptor, repoRoot, options);
   await assertPreparedArtifacts(root, descriptor, options);
-  const targets = await (options.readTargets ?? readVersionTargets)(repoRoot);
+  const targets = descriptor.axes.cli
+    ? await (options.readTargets ?? readVersionTargets)(repoRoot)
+    : null;
   await assertRemoteCandidateGate(descriptor, targets, { ...options, repoRoot });
   await assertCandidatesUnavailable(descriptor, { ...options, repoRoot });
-  await assertCatalogCliCompatibility(descriptor, { ...options, repoRoot });
   await assertLiveSourceBinding(descriptor, repoRoot, options);
 
   await assertCandidateNotAttempted(

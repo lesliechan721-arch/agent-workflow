@@ -327,7 +327,6 @@ export async function publishPreparedCatalogPublication(options: {
     remote: options.remote,
     remoteUrl: options.remoteUrl,
     branch: options.branch,
-    catalogVersion: options.descriptor.catalogVersion,
     env: options.env,
     failOnUnavailable: true,
   });

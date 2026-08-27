@@ -287,7 +287,6 @@ export async function prepareCatalogPublicationInspection(options: {
   remote?: string;
   remoteUrl?: string;
   branch?: string;
-  catalogVersion?: string;
   env: NodeJS.ProcessEnv;
   failOnUnavailable?: boolean;
 }): Promise<CatalogPublicationPreparation> {
@@ -361,7 +360,7 @@ export async function prepareCatalogPublicationInspection(options: {
       throw inspectionError('workspaceInvalid', error);
     }
     await validateCatalogPublicationPlugins(catalogWorkspace, env);
-    const catalogVersion = options.catalogVersion ?? catalogWorkspace.metadata.catalog.version;
+    const catalogVersion = catalogWorkspace.metadata.catalog.version;
     const tag = `catalog-v${catalogVersion}`;
     await publicationGit(
       repoRoot,
@@ -442,7 +441,6 @@ export async function prepareCatalogPublicationInspection(options: {
       prepared = await preparePublishedCatalogWorkspace({
         workspaceRoot: archivedCatalogWorkspaceRoot,
         sourceHead,
-        catalogVersion,
         previousSnapshotRoot,
         adapter: publicationBuildAdapter,
         reservedImports: CLI_RESERVED_IMPORTS,

@@ -55,6 +55,17 @@ async function createWorkspace(version = '0.1.0'): Promise<{ root: string; remot
   return { root, remote };
 }
 
+async function commitCatalogVersion(root: string, version: string): Promise<void> {
+  await runCli([
+    'catalog', 'version', version, '--workspace-root', root,
+  ], { cwd: root, io: quietIo() });
+  await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], { cwd: root });
+  await execFileAsync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    'commit', '--quiet', '-m', 'catalog version',
+  ], { cwd: root });
+}
+
 describe('common Catalog publisher used by official release', () => {
   it('prepares identical public and official snapshots and publishes an official channel', async () => {
     const { root, remote } = await createWorkspace('2.0.0');
@@ -62,11 +73,10 @@ describe('common Catalog publisher used by official release', () => {
       workspaceRoot: root,
       remoteUrl: remote,
       branch: 'catalog/latest',
-      catalogVersion: '2.0.0',
       env: process.env,
       failOnUnavailable: true,
     });
-    const officialPreparation = await prepareCatalogRelease('2.0.0', 'latest', {
+    const officialPreparation = await prepareCatalogRelease('latest', {
       repoRoot: root,
       remoteUrl: remote,
       catalogPublicationService: service,
@@ -118,12 +128,18 @@ describe('common Catalog publisher used by official release', () => {
         '--yes', '--json',
       ], { cwd: root, interactive: false, io: blocked })).toBe(1);
 
-      const update = await prepareCatalogRelease('2.0.1', 'latest', {
+      await commitCatalogVersion(root, '2.0.1');
+      const updatedSourceHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: root,
+      })).stdout.trim();
+      const update = await prepareCatalogRelease('latest', {
         repoRoot: root,
         remoteUrl: remote,
         catalogPublicationService: service,
       });
       try {
+        expect(update.descriptor.sourceHead).toBe(updatedSourceHead);
+        expect(update.descriptor.catalogVersion).toBe('2.0.1');
         const updated = await publishCatalogRelease({
           descriptor: update.descriptor,
           stagedRoot: update.prepared.outputRoot,
@@ -148,8 +164,8 @@ describe('common Catalog publisher used by official release', () => {
     ['latest', 'catalog/latest', '3.0.0'],
     ['beta', 'catalog/beta', '3.1.0-beta.1'],
   ] as const)('publishes %s through the same branch-parameterized service', async (mode, branch, version) => {
-    const { root, remote } = await createWorkspace();
-    const preparation = await prepareCatalogRelease(version, mode, {
+    const { root, remote } = await createWorkspace(version);
+    const preparation = await prepareCatalogRelease(mode, {
       repoRoot: root,
       remoteUrl: remote,
       catalogPublicationService: service,
@@ -184,7 +200,7 @@ describe('common Catalog publisher used by official release', () => {
     ], { cwd: root, interactive: false, io: quietIo() })).toBe(1);
     await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '3.2.0.json')))
       .resolves.toMatchObject({ state: 'attempted', branch: 'catalog/latest' });
-    await expect(prepareCatalogRelease('3.2.0', 'latest', {
+    await expect(prepareCatalogRelease('latest', {
       repoRoot: root,
       remoteUrl: remote,
       catalogPublicationService: service,
@@ -194,8 +210,8 @@ describe('common Catalog publisher used by official release', () => {
   it.each(['descriptor', 'snapshot', 'source'] as const)(
     'rejects prepared %s drift before an attempt or remote write',
     async (drift) => {
-      const { root, remote } = await createWorkspace();
-      const preparation = await prepareCatalogRelease('4.0.0', 'latest', {
+      const { root, remote } = await createWorkspace('4.0.0');
+      const preparation = await prepareCatalogRelease('latest', {
         repoRoot: root,
         remoteUrl: remote,
         catalogPublicationService: service,
@@ -227,8 +243,8 @@ describe('common Catalog publisher used by official release', () => {
   );
 
   it('rejects a prepared descriptor that changes the official channel branch', async () => {
-    const { root, remote } = await createWorkspace();
-    const preparation = await prepareCatalogRelease('4.1.0', 'latest', {
+    const { root, remote } = await createWorkspace('4.1.0');
+    const preparation = await prepareCatalogRelease('latest', {
       repoRoot: root,
       remoteUrl: remote,
       catalogPublicationService: service,
@@ -251,8 +267,8 @@ describe('common Catalog publisher used by official release', () => {
   });
 
   it('rejects a branch parent that disappears after the final remote check', async () => {
-    const { root, remote } = await createWorkspace();
-    const initial = await prepareCatalogRelease('5.0.0', 'latest', {
+    const { root, remote } = await createWorkspace('5.0.0');
+    const initial = await prepareCatalogRelease('latest', {
       repoRoot: root,
       remoteUrl: remote,
       catalogPublicationService: service,
@@ -270,7 +286,8 @@ describe('common Catalog publisher used by official release', () => {
       await disposeCatalogRelease(initial, { catalogPublicationService: service });
     }
 
-    const update = await prepareCatalogRelease('5.0.1', 'latest', {
+    await commitCatalogVersion(root, '5.0.1');
+    const update = await prepareCatalogRelease('latest', {
       repoRoot: root,
       remoteUrl: remote,
       catalogPublicationService: service,

@@ -47,7 +47,6 @@ try {
     resolveCandidates: async () => descriptor.candidates,
     readPackageVersions: async () => [],
     assertCliTagAvailable: async () => undefined,
-    readPublishedCliVersion: async () => config.publishedCliVersion,
     computeTarballTreeDigest: async (file) => file.includes('eval')
       ? 'eval-tree'
       : file.includes('core') ? 'core-tree' : 'cli-tree',

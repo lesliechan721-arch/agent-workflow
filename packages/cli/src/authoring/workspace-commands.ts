@@ -5,9 +5,10 @@ import {
   buildCatalogWorkspace,
   buildCatalogWorkspacePlugin,
   initializeCatalogWorkspace,
+  mutateCatalogWorkspaceVersion,
   readCatalogWorkspace,
-  setCatalogWorkspaceVersion,
   validateCatalogSnapshot,
+  type CatalogVersionBump,
   type CatalogWorkspaceBuildAdapter,
   type CatalogWorkspacePluginBuildAdapter,
 } from '@lesliechan721/aw-plugin-core';
@@ -71,23 +72,38 @@ export async function runCatalogInitCommand(options: {
 export async function runCatalogVersionCommand(options: {
   workspaceRoot: string;
   version?: string;
+  bump?: CatalogVersionBump;
   json?: boolean;
   io: AuthoringCommandIo;
-}): Promise<void> {
-  const metadata = options.version === undefined
-    ? (await readCatalogWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS })).metadata
-    : await setCatalogWorkspaceVersion(options.workspaceRoot, options.version, {
-        reservedImports: CLI_RESERVED_IMPORTS,
-      });
+}): Promise<{
+  command: 'catalog:version';
+  ok: true;
+  workspaceRoot: string;
+  catalogVersion: string;
+  changed: boolean;
+}> {
+  if (options.version !== undefined && options.bump !== undefined) {
+    throw new Error('Catalog version accepts an exact version or --bump, not both.');
+  }
+  const current = await readCatalogWorkspace(options.workspaceRoot, {
+    reservedImports: CLI_RESERVED_IMPORTS,
+  });
+  const metadata = options.version === undefined && options.bump === undefined
+    ? current.metadata
+    : await mutateCatalogWorkspaceVersion(options.workspaceRoot, {
+        ...(options.version === undefined ? {} : { version: options.version }),
+        ...(options.bump === undefined ? {} : { bump: options.bump }),
+      }, { reservedImports: CLI_RESERVED_IMPORTS });
   const receipt = {
-    command: 'catalog:version',
-    ok: true,
+    command: 'catalog:version' as const,
+    ok: true as const,
     workspaceRoot: path.resolve(options.workspaceRoot),
     catalogVersion: metadata.catalog.version,
-    changed: options.version !== undefined,
+    changed: metadata.catalog.version !== current.metadata.catalog.version,
   };
   if (options.json) writeJson(options.io, receipt);
   else options.io.stdout(`${metadata.catalog.version}\n`);
+  return receipt;
 }
 
 export async function runCatalogBuildCommand(options: {

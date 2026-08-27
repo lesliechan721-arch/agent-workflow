@@ -72,6 +72,13 @@ export interface CatalogWorkspaceSourceOptions {
   reservedImports?: ReservedImportRegistry;
 }
 
+export type CatalogVersionBump = 'major' | 'minor' | 'patch';
+
+export interface CatalogVersionMutation {
+  version?: string;
+  bump?: CatalogVersionBump;
+}
+
 export interface CatalogWorkspace {
   workspaceRoot: string;
   markerPath: string;
@@ -371,15 +378,41 @@ export async function readCatalogWorkspace(
   };
 }
 
-export async function setCatalogWorkspaceVersion(
+export function resolveCatalogVersionMutation(
+  currentVersion: string,
+  mutation: CatalogVersionMutation,
+): string {
+  const current = assertCatalogVersion(currentVersion, 'current catalog version');
+  const hasVersion = mutation.version !== undefined;
+  const hasBump = mutation.bump !== undefined;
+  if (hasVersion === hasBump) {
+    throw new Error('Catalog version mutation requires exactly one of version or bump.');
+  }
+  if (mutation.version !== undefined) {
+    return assertCatalogVersion(mutation.version, 'catalog version');
+  }
+  if (!['major', 'minor', 'patch'].includes(mutation.bump!)) {
+    throw new Error('Catalog version bump must be major, minor, or patch.');
+  }
+  const [major, minor, patch] = current.split('-', 1)[0]!.split('.').map(BigInt);
+  if (mutation.bump === 'major') return `${major + 1n}.0.0`;
+  if (mutation.bump === 'minor') return `${major}.${minor + 1n}.0`;
+  return `${major}.${minor}.${patch + 1n}`;
+}
+
+export async function mutateCatalogWorkspaceVersion(
   workspaceRoot: string,
-  version: string,
+  mutation: CatalogVersionMutation,
   options: CatalogWorkspaceSourceOptions = {},
 ): Promise<MarketplaceSourceMeta> {
   const current = await readCatalogWorkspace(workspaceRoot, options);
+  const version = resolveCatalogVersionMutation(current.metadata.catalog.version, mutation);
+  if (version === current.metadata.catalog.version) return current.metadata;
   const metadata = {
     ...current.metadata,
-    catalog: { version: assertCatalogVersion(version, 'catalog version') },
+    catalog: {
+      version,
+    },
   };
   await writeJsonAtomic(current.metadataPath, metadata);
   return metadata;
@@ -723,7 +756,6 @@ export async function validatePublishedCatalogSnapshot(snapshotDirectory: string
 export async function preparePublishedCatalogWorkspace(options: {
   workspaceRoot: string;
   sourceHead: string;
-  catalogVersion?: string;
   outputPath?: string;
   previousSnapshotRoot?: string;
   adapter: CatalogWorkspaceBuildAdapter;
@@ -744,12 +776,7 @@ export async function preparePublishedCatalogWorkspace(options: {
   for (const plugin of catalogWorkspace.plugins) {
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }
-  const catalogVersion = options.catalogVersion === undefined
-    ? catalogWorkspace.metadata.catalog.version
-    : assertStrictSemVer(options.catalogVersion, 'published Catalog version');
-  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(catalogVersion)) {
-    throw new Error('Published Catalog version must be stable SemVer or exact x.y.z-beta.N.');
-  }
+  const catalogVersion = catalogWorkspace.metadata.catalog.version;
   const channel = deriveCatalogChannel(catalogVersion);
   const previous = options.previousSnapshotRoot
     ? await validatePublishedCatalogSnapshot(options.previousSnapshotRoot)

@@ -9,10 +9,11 @@ import {
   buildCatalogWorkspace,
   buildCatalogWorkspacePlugin,
   initializeCatalogWorkspace,
+  mutateCatalogWorkspaceVersion,
   preparePublishedCatalogWorkspace,
   readCatalogWorkspace,
+  resolveCatalogVersionMutation,
   resolveCatalogWorkspaceOutputPath,
-  setCatalogWorkspaceVersion,
   validateCatalogSnapshot,
   validatePublishedCatalogSnapshot,
 } from '../../src/workspace.js'
@@ -111,14 +112,34 @@ describe('AW Catalog Workspace v1', () => {
       metadata: { catalog: { version: '0.1.0' } },
     })
 
-    await expect(setCatalogWorkspaceVersion(root, '1.2.3-beta.1'))
+    await expect(mutateCatalogWorkspaceVersion(root, { version: '1.2.3-beta.1' }))
       .resolves.toMatchObject({ catalog: { version: '1.2.3-beta.1' } })
-    await expect(setCatalogWorkspaceVersion(root, '01.2.3')).rejects.toThrow(/strict SemVer/u)
+    await expect(mutateCatalogWorkspaceVersion(root, { bump: 'patch' }))
+      .resolves.toMatchObject({ catalog: { version: '1.2.4' } })
+    const unchangedBytes = await fs.readFile(initialized.metadataPath)
+    await expect(mutateCatalogWorkspaceVersion(root, { version: '1.2.4' }))
+      .resolves.toMatchObject({ catalog: { version: '1.2.4' } })
+    await expect(fs.readFile(initialized.metadataPath)).resolves.toEqual(unchangedBytes)
+    await expect(mutateCatalogWorkspaceVersion(root, { version: '01.2.3' }))
+      .rejects.toThrow(/strict SemVer/u)
     await expect(readCatalogWorkspace(root)).resolves.toMatchObject({
       markerPath: initialized.markerPath,
       workspaceIdentity: initialized.workspaceIdentity,
-      metadata: { catalog: { version: '1.2.3-beta.1' } },
+      metadata: { catalog: { version: '1.2.4' } },
     })
+  })
+
+  it('resolves exact and stable-base Catalog version mutations deterministically', () => {
+    expect(resolveCatalogVersionMutation('1.2.3-beta.7', { version: '2.0.0-beta.1' }))
+      .toBe('2.0.0-beta.1')
+    expect(resolveCatalogVersionMutation('1.2.3-beta.7', { bump: 'patch' })).toBe('1.2.4')
+    expect(resolveCatalogVersionMutation('1.2.3-beta.7', { bump: 'minor' })).toBe('1.3.0')
+    expect(resolveCatalogVersionMutation('1.2.3-beta.7', { bump: 'major' })).toBe('2.0.0')
+    expect(() => resolveCatalogVersionMutation('1.2.3', {})).toThrow('exactly one')
+    expect(() => resolveCatalogVersionMutation('1.2.3', {
+      version: '1.2.4',
+      bump: 'patch',
+    })).toThrow('exactly one')
   })
 
   it('requires the Catalog Workspace marker to read a Catalog Workspace', async () => {
@@ -199,7 +220,7 @@ describe('AW Catalog Workspace v1', () => {
 
       const versionRoot = await createWorkspace()
       await initializeCatalogWorkspace({ workspaceRoot: versionRoot })
-      await expect(setCatalogWorkspaceVersion(versionRoot, version)).rejects.toThrow(
+      await expect(mutateCatalogWorkspaceVersion(versionRoot, { version })).rejects.toThrow(
         /stable SemVer or an exact x\.y\.z-beta\.N/u,
       )
       await expect(readCatalogWorkspace(versionRoot)).resolves.toMatchObject({
@@ -208,12 +229,13 @@ describe('AW Catalog Workspace v1', () => {
     },
   )
 
-  it('defaults legacy metadata but rejects invalid and unknown public fields', () => {
+  it('requires exact Catalog metadata and rejects invalid and unknown public fields', () => {
     const legacy = {
       owner: { name: 'Owner', url: 'https://example.invalid/owner' },
       interface: { displayName: 'Example' },
     }
-    expect(validateMarketplaceSourceMeta(legacy).catalog.version).toBe('0.1.0')
+    expect(() => validateMarketplaceSourceMeta(legacy))
+      .toThrow(/marketplace source metadata\.catalog.*expected an object/u)
     expect(() => validateMarketplaceSourceMeta({ ...legacy, unknown: true }))
       .toThrow(/unknown field/u)
     expect(() => validateMarketplaceSourceMeta({
@@ -284,7 +306,7 @@ describe('AW Catalog Workspace v1', () => {
       path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
       sourceManifest,
     )
-    await setCatalogWorkspaceVersion(root, '0.2.0')
+    await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
     const rebuiltPlugin = await buildCatalogWorkspacePlugin({
       workspaceRoot: root,
       pluginDirectory: 'plugins/atomic-plugin',
@@ -432,7 +454,7 @@ describe('AW Catalog Workspace v1', () => {
     await expect(validateCatalogSnapshot(first.outputRoot)).rejects.toThrow(/does not match catalog entry/u)
     await fs.writeFile(firstLedgerPath, firstLedger)
 
-    await setCatalogWorkspaceVersion(root, '0.2.0')
+    await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
     const second = await preparePublishedCatalogWorkspace({
       workspaceRoot: root,
       sourceHead: '2'.repeat(40),
@@ -447,7 +469,7 @@ describe('AW Catalog Workspace v1', () => {
       planId: second.contentDigest,
       contentDigest: second.contentDigest,
     })
-    await setCatalogWorkspaceVersion(root, '0.1.0')
+    await mutateCatalogWorkspaceVersion(root, { version: '0.1.0' })
     await expect(preparePublishedCatalogWorkspace({
       workspaceRoot: root,
       sourceHead: '3'.repeat(40),
@@ -488,14 +510,14 @@ describe('AW Catalog Workspace v1', () => {
     )
   })
 
-  it('uses an explicit release candidate without changing Workspace version truth', async () => {
+  it('uses the committed Workspace version as the exact release candidate', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
+    await mutateCatalogWorkspaceVersion(root, { version: '2.0.0-beta.3' })
     const prepared = await preparePublishedCatalogWorkspace({
       workspaceRoot: root,
       sourceHead: '4'.repeat(40),
-      catalogVersion: '2.0.0-beta.3',
       adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
     })
     const validation = await validatePublishedCatalogSnapshot(prepared.outputRoot)
@@ -510,7 +532,7 @@ describe('AW Catalog Workspace v1', () => {
       },
     })
     await expect(readCatalogWorkspace(root)).resolves.toMatchObject({
-      metadata: { catalog: { version: '0.1.0' } },
+      metadata: { catalog: { version: '2.0.0-beta.3' } },
     })
   })
 
@@ -523,7 +545,7 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: '1'.repeat(40),
       adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
     })
-    await setCatalogWorkspaceVersion(root, '0.2.0')
+    await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
     await expect(preparePublishedCatalogWorkspace({
       workspaceRoot: root,
       sourceHead: '2'.repeat(40),
