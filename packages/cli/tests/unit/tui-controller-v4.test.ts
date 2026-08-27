@@ -2755,6 +2755,61 @@ describe('TUI v4 Review safety', () => {
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
+  it('uses one preparation entry and publishes only stages reported by real review work', async () => {
+    const prepareReviewEvidence: NonNullable<TuiControllerDependencies['prepareReviewEvidence']> = vi.fn(
+      async (_intent, _signal, onStage) => {
+        for (const stage of ['status', 'catalog', 'inventory', 'dependencyPlan', 'evidence'] as const) {
+          await onStage(stage);
+        }
+        return baseEvidence;
+      },
+    );
+    const validateIntent = vi.fn();
+    const captureEvidence = vi.fn();
+    const controller = new TuiController(dependencies({
+      prepareReviewEvidence,
+      validateIntent,
+      captureEvidence,
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const observedStages: string[][] = [];
+    controller.subscribe((snapshot) => {
+      if (snapshot.reviewPreparation) {
+        observedStages.push(snapshot.reviewPreparation.stages.map((stage) =>
+          `${stage.id}:${stage.state}`));
+      }
+    });
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'install' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    controller.startReviewPreparation(intent);
+    await nextTurn(2);
+
+    expect(prepareReviewEvidence).toHaveBeenCalledOnce();
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+    expect(observedStages).toEqual(expect.arrayContaining([
+      ['status:running'],
+      ['status:completed', 'catalog:running'],
+      ['status:completed', 'catalog:completed', 'inventory:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:completed', 'evidence:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:completed', 'evidence:completed'],
+    ]));
+    expect(controller.snapshot.router.current.route.name).toBe('review');
+
+    await controller.buildOperationReview(intent);
+    expect(prepareReviewEvidence).toHaveBeenCalledTimes(2);
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+  });
+
   it('replaces a preparation when the same intent has a different return route', async () => {
     const firstCapture = deferred<OperationEvidence>();
     const secondCapture = deferred<OperationEvidence>();

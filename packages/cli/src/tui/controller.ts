@@ -188,6 +188,19 @@ export interface ReviewPreparationSnapshot {
   message?: string;
 }
 
+function reviewPreparationStageLabel(stage: ReviewPreparationStageId): string {
+  return {
+    validate: '验证当前状态',
+    status: '读取安装状态',
+    catalog: '解析 Catalog',
+    inventory: '检查本地现场',
+    dependencyPlan: '准备依赖计划',
+    config: '验证设置',
+    portable: '准备 Portable Skills',
+    evidence: '准备确认信息',
+  }[stage];
+}
+
 export type OperationExecuteResult =
   | {
       state: 'succeeded';
@@ -310,6 +323,11 @@ export interface TuiControllerDependencies {
   inspectSourceRemoval?: (sourceId: string, signal: AbortSignal) => Promise<SourceReferenceSummaryViewModel>;
   captureEvidence: (intent: OperationIntent, signal?: AbortSignal) => Promise<OperationEvidence>;
   validateIntent?: (intent: OperationIntent, signal: AbortSignal) => Promise<void>;
+  prepareReviewEvidence?: (
+    intent: OperationIntent,
+    signal: AbortSignal,
+    onStage: (stage: ReviewPreparationStageId) => void | Promise<void>,
+  ) => Promise<OperationEvidence>;
   executeIntent: (
     intent: OperationIntent,
     expectedEvidence: OperationEvidence,
@@ -1662,8 +1680,7 @@ export class TuiController {
   async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
     try {
       this.#validateReviewIntent(intent);
-      await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
-      const evidence = await this.dependencies.captureEvidence(structuredClone(intent), this.#abort.signal);
+      const evidence = await this.#prepareReviewEvidence(intent, this.#abort.signal);
       return this.#storeOperationReview(intent, evidence, 'push', returnRoute);
     } catch (error) {
       const code = issueCode(error);
@@ -1697,7 +1714,7 @@ export class TuiController {
       id,
       intent: structuredClone(intent),
       state: 'running',
-      stages: [
+      stages: this.dependencies.prepareReviewEvidence ? [] : [
         { id: 'validate', label: '验证当前状态', state: 'running' },
         { id: 'evidence', label: '准备确认信息', state: 'pending' },
       ],
@@ -1761,18 +1778,27 @@ export class TuiController {
     const signal = AbortSignal.any([this.#abort.signal, preparation.abort.signal]);
     try {
       this.#validateReviewIntent(intent);
-      await this.dependencies.validateIntent?.(structuredClone(intent), signal);
+      const evidence = await this.#prepareReviewEvidence(intent, signal, (stage) => {
+        if (!this.#reviewPreparationIsCurrent(token)) return;
+        const existing = preparation.snapshot.stages.find((entry) => entry.id === stage);
+        preparation.snapshot.stages = preparation.snapshot.stages.map((entry) =>
+          entry.state === 'running' ? { ...entry, state: 'completed' } : entry);
+        if (existing) {
+          preparation.snapshot.stages = preparation.snapshot.stages.map((entry) =>
+            entry.id === stage ? { ...entry, state: 'running' } : entry);
+        } else {
+          preparation.snapshot.stages.push({
+            id: stage,
+            label: reviewPreparationStageLabel(stage),
+            state: 'running',
+          });
+        }
+        this.#publish();
+      });
       if (!this.#reviewPreparationIsCurrent(token)) return;
-      preparation.snapshot.stages = [
-        { id: 'validate', label: '验证当前状态', state: 'completed' },
-        { id: 'evidence', label: '准备确认信息', state: 'running' },
-      ];
+      preparation.snapshot.stages = preparation.snapshot.stages.map((stage) =>
+        stage.state === 'running' ? { ...stage, state: 'completed' } : stage);
       this.#publish();
-      const evidence = await this.dependencies.captureEvidence(structuredClone(intent), signal);
-      if (!this.#reviewPreparationIsCurrent(token)) return;
-      preparation.snapshot.stages[1] = {
-        id: 'evidence', label: '准备确认信息', state: 'completed',
-      };
       const returnRoute = structuredClone(preparation.returnRoute);
       this.#reviewPreparation = undefined;
       this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
@@ -1787,6 +1813,20 @@ export class TuiController {
       this.#publish();
       await this.#logOperationError(error, issueCode(error), intent);
     }
+  }
+
+  async #prepareReviewEvidence(
+    intent: OperationIntent,
+    signal: AbortSignal,
+    onStage: (stage: ReviewPreparationStageId) => void | Promise<void> = () => undefined,
+  ): Promise<OperationEvidence> {
+    if (this.dependencies.prepareReviewEvidence) {
+      return this.dependencies.prepareReviewEvidence(structuredClone(intent), signal, onStage);
+    }
+    await onStage('validate');
+    await this.dependencies.validateIntent?.(structuredClone(intent), signal);
+    await onStage('evidence');
+    return this.dependencies.captureEvidence(structuredClone(intent), signal);
   }
 
   #cancelReviewPreparation(): void {

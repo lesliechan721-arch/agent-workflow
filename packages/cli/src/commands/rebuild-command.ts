@@ -93,6 +93,8 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   bypassDependencyPlan?: boolean;
   dependencyReviewPreflightHandled?: boolean;
   previewDependencyPlanOnly?: boolean;
+  previewCatalogFreshnessPolicy?: 'cacheFirst';
+  onPreviewStage?: (stage: 'catalog' | 'inventory' | 'dependencyPlan') => Promise<void> | void;
   targetBuiltHookHandled?: boolean;
   preparedTarget?: PreparedRebuildTarget;
   preparedTargetError?: unknown;
@@ -1261,9 +1263,16 @@ export async function runRebuildCommand(options: {
     return mergeRebuildCommandResults([]);
   }
   try {
+    if (options.runtime?.previewDependencyPlanOnly) {
+      await options.runtime.onPreviewStage?.('catalog');
+    }
     const resolvedResult = await withResolvedMultiSourceCatalog({
     cliVersion: resolveRuntimeCliVersion(),
-    freshnessPolicy: options.command === 'cleanup' ? 'cacheFirst' : 'requireRemote',
+    freshnessPolicy: options.command === 'cleanup'
+      ? 'cacheFirst'
+      : options.runtime?.previewDependencyPlanOnly
+        ? options.runtime.previewCatalogFreshnessPolicy ?? 'requireRemote'
+        : 'requireRemote',
     ...(sourceIds ? { sourceIds } : {}),
     env: runtimeEnv,
     consume: async (catalog) => {
@@ -1377,6 +1386,9 @@ export async function runRebuildCommand(options: {
         platform,
         scope: options.commandOptions.scope,
       }));
+      if (options.runtime?.previewDependencyPlanOnly) {
+        await options.runtime.onPreviewStage?.('inventory');
+      }
       const stateInventory = await inventoryCatalogSourceReferences({
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
@@ -1502,8 +1514,10 @@ export async function runRebuildCommand(options: {
         context: executionContext,
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
       });
-      const createPlan = async (): Promise<DependencyOperationPlan> => {
-        const inventory = await inventoryCatalogSourceReferences({
+      const createPlan = async (
+        preparedInventory?: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
+      ): Promise<DependencyOperationPlan> => {
+        const inventory = preparedInventory ?? await inventoryCatalogSourceReferences({
           cwd: options.commandOptions.cwd,
           env: runtimeEnv,
         });
@@ -1556,12 +1570,10 @@ export async function runRebuildCommand(options: {
             return { ...result, state };
           };
           const otherScope = resolvedScope === 'user' ? 'project' : 'user';
-          const [requestedInspection, otherInspection] = await Promise.all([
-            inspectScope(resolvedScope),
-            platform === 'codex' && codexScopePathsAlias && resolvedScope === 'user'
-              ? Promise.resolve({ state: 'absent' as const, components: [], errors: [] })
-              : inspectScope(otherScope),
-          ]);
+          const requestedInspection = await inspectScope(resolvedScope);
+          const otherInspection = platform === 'codex' && codexScopePathsAlias && resolvedScope === 'user'
+            ? { state: 'absent' as const, components: [], errors: [] }
+            : await inspectScope(otherScope);
           let state: 'absent' | 'present' | 'partial' | 'error' = requestedInspection.state;
           let action: 'install' | 'upgrade' | 'reinstall' | 'keep' | 'block' = relation === 'requested'
             ? options.command as 'install' | 'upgrade' | 'reinstall'
@@ -1677,7 +1689,8 @@ export async function runRebuildCommand(options: {
         });
       };
       if (options.runtime?.previewDependencyPlanOnly) {
-        const initialPlan = await createPlan();
+        await options.runtime.onPreviewStage?.('dependencyPlan');
+        const initialPlan = await createPlan(stateInventory);
         const preview = mergeRebuildCommandResults([]);
         preview.dependencyPlan = initialPlan;
         return preview;

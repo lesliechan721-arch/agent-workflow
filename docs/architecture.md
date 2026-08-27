@@ -108,9 +108,9 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
   → 输出 receipt v4
 ```
 
-TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入；页面只显示这些真实粗粒度边界，可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
+TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。准备读取统一使用 cache-first Catalog：有效 cache 立即可用，cache miss 仍可按 resolver 合同访问远端。依赖 preview 也使用这个策略；`requireRemote` 仍允许匹配 cache fallback，不表示无回退的严格远端读取。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
 
-Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。执行前仍重新验证 intent 并采集 fresh evidence；准备页证据不能替代 stale/TOCTOU 防护。
+Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。执行前仍重新验证 intent，并在 `AW_HOME` mutation lock 内使用新鲜 Catalog 和现场重新采集 evidence。若 cache-first Review 证据与执行证据不同，必须在任何写入前返回 typed `operationReviewStale` 或新 Review；准备页证据不能替代 stale/TOCTOU 防护。
 
 依赖执行顺序只在本次命令内存在。receipt 可摘要公开 requested/resolved plugin ID、dependency edge、relation、requiredBy 和 dependency state；它不公开持久计划、摘要、锁或来源内部证据。
 

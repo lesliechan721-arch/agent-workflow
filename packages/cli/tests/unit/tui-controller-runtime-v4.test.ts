@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { StatusV4Payload } from '../../src/commands/status-v4.js';
@@ -7,6 +9,11 @@ import {
   statusTargetFingerprint,
 } from '../../src/tui/controller-runtime.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
 
 const runtimeMocks = vi.hoisted(() => ({
   statusCommandV4: vi.fn(),
@@ -15,6 +22,8 @@ const runtimeMocks = vi.hoisted(() => ({
   reinstallWriteCommand: vi.fn(),
   uninstallWriteCommand: vi.fn(),
   upgradeWriteCommand: vi.fn(),
+  preflightCatalogSourceMutation: vi.fn(),
+  preparePortableInstall: vi.fn(),
 }));
 
 vi.mock('../../src/commands/status-v4.js', async (importOriginal) => ({
@@ -28,6 +37,16 @@ vi.mock('../../src/commands/write-commands.js', () => ({
   reinstallWriteCommand: runtimeMocks.reinstallWriteCommand,
   uninstallWriteCommand: runtimeMocks.uninstallWriteCommand,
   upgradeWriteCommand: runtimeMocks.upgradeWriteCommand,
+}));
+
+vi.mock('../../src/commands/catalog-source.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/catalog-source.js')>(),
+  preflightCatalogSourceMutation: runtimeMocks.preflightCatalogSourceMutation,
+}));
+
+vi.mock('../../src/portable/commands.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/portable/commands.js')>(),
+  preparePortableInstall: runtimeMocks.preparePortableInstall,
 }));
 
 function target(
@@ -181,5 +200,280 @@ describe('TUI controller runtime scope conflict validation', () => {
     await expect(dependencies.validateIntent!({
       kind: 'pluginWrite', action: 'upgrade', pluginId: 'official/demo', platform: 'codex', scope: 'user',
     }, new AbortController().signal)).resolves.toBeUndefined();
+  });
+
+  it('prepares config review with one status read, ordered real stages, and safe duration logging', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-config-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+    });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    runtimeMocks.statusCommandV4.mockResolvedValue({
+      payload: {
+        schemaVersion: 4,
+        catalog: {
+          configDigest: configured.digest,
+          compositeDigest: 'sha256:composite',
+          primarySourceId: 'team',
+          sources: [],
+        },
+        targets: [],
+        errors: [],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo',
+        pluginName: 'demo',
+        sourceId: 'team',
+        sourceIdentity: 'ignored-by-test',
+        dependencyDirectCount: 0,
+        dependencyTotalCount: 0,
+      }],
+      targetRevisions: [],
+    });
+    const debugLog = vi.fn()
+      .mockImplementationOnce(() => { throw new Error('log unavailable'); })
+      .mockRejectedValueOnce(new Error('async log unavailable'));
+    const times = [10, 14, 20, 27, 31, 40];
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+      debugLogger: { log: debugLog },
+    }), undefined, { now: () => times.shift() ?? 40 });
+    const stages: string[] = [];
+
+    await expect(dependencies.prepareReviewEvidence!({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      updates: { mode: 'strict' },
+    }, new AbortController().signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
+      config: { scope: 'user', projectLayer: 'shared' },
+    });
+
+    expect(runtimeMocks.statusCommandV4).toHaveBeenCalledOnce();
+    expect(stages).toEqual(['status', 'catalog', 'config', 'evidence']);
+    expect(debugLog.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ type: 'review.prepare.status', data: { durationMs: 4 } }),
+      expect.objectContaining({ type: 'review.prepare.catalog', data: { durationMs: 7 } }),
+      expect.objectContaining({ type: 'review.prepare.config', data: { durationMs: 9 } }),
+      expect.objectContaining({ type: 'review.prepare.evidence', data: { durationMs: 0 } }),
+    ]);
+  });
+
+  it('rejects a Review that would combine status and Catalog config generations', async () => {
+    runtimeMocks.statusCommandV4.mockResolvedValue({
+      payload: {
+        catalog: {
+          configDigest: 'sha256:stale-config',
+          compositeDigest: 'sha256:stale-composite',
+        },
+        targets: [],
+      },
+      pluginSummaries: [],
+      targetRevisions: [],
+    });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const stages: string[] = [];
+
+    await expect(dependencies.prepareReviewEvidence!({
+      kind: 'configReset',
+      pluginId: 'official/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+    }, new AbortController().signal, (stage) => { stages.push(stage); }))
+      .rejects.toMatchObject({ code: 'operationReviewStale' });
+
+    expect(runtimeMocks.statusCommandV4).toHaveBeenCalledOnce();
+    expect(stages).toEqual(['status']);
+  });
+
+  it.each([
+    ['install', 'absent', undefined],
+    ['upgrade', 'present', 'upgradeAvailable'],
+    ['reinstall', 'present', undefined],
+    ['uninstall', 'present', undefined],
+    ['cleanup', 'present', undefined],
+  ] as const)('prepares one legal %s Review with one status entry', async (action, state, revisionState) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, `runtime-review-${action}-source`);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    runtimeMocks.statusCommandV4.mockResolvedValue({
+      payload: {
+        catalog: {
+          configDigest: configured.digest,
+          compositeDigest: 'sha256:composite',
+        },
+        targets: [{
+          pluginName: 'demo',
+          pluginId: 'team/demo',
+          sourceId: 'team',
+          sourceIdentity: 'identity:team',
+          version: '0.0.0',
+          platform: 'codex',
+          scope: 'user',
+          cwd: isolation.layout.fixtureCwd,
+          state,
+          components: [],
+          errors: [],
+        }],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo',
+        pluginName: 'demo',
+        sourceId: 'team',
+        sourceIdentity: 'identity:team',
+        dependencyDirectCount: 0,
+        dependencyTotalCount: 0,
+      }],
+      targetRevisions: revisionState ? [{
+        pluginId: 'team/demo',
+        platform: 'codex',
+        scope: 'user',
+        revision: {
+          state: revisionState,
+          availableVersion: '0.0.0',
+          installedVersion: '0.0.0',
+        },
+      }] : [],
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const stages: string[] = [];
+
+    await expect(dependencies.prepareReviewEvidence!({
+      kind: 'pluginWrite',
+      action,
+      pluginId: 'team/demo',
+      platform: 'codex',
+      scope: 'user',
+    }, new AbortController().signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
+      source: { sourceId: 'team' },
+    });
+
+    expect(runtimeMocks.statusCommandV4).toHaveBeenCalledOnce();
+    expect(stages).toEqual(['status', 'catalog', 'evidence']);
+  });
+
+  it('uses one source mutation preflight for review validation and evidence', async () => {
+    runtimeMocks.preflightCatalogSourceMutation.mockResolvedValue({
+      configDigest: 'sha256:before',
+      candidateDigest: 'sha256:after',
+      sourceIdentity: 'sha256:source',
+      references: { references: [], errors: [] },
+    });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const stages: string[] = [];
+
+    await expect(dependencies.prepareReviewEvidence!({
+      kind: 'sourceMutation',
+      action: 'setPrimary',
+      sourceId: 'team',
+    }, new AbortController().signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
+      sourceWrite: { configDigest: 'sha256:before', candidateDigest: 'sha256:after' },
+    });
+
+    expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
+    expect(stages).toEqual(['inventory', 'evidence']);
+    expect(runtimeMocks.statusCommandV4).not.toHaveBeenCalled();
+  });
+
+  it('does not return source evidence after cancellation during an unsupported preflight boundary', async () => {
+    let resolvePreflight!: (value: {
+      configDigest: string;
+      candidateDigest: string;
+      references: { references: never[]; errors: never[] };
+    }) => void;
+    runtimeMocks.preflightCatalogSourceMutation.mockReturnValue(new Promise((resolve) => {
+      resolvePreflight = resolve;
+    }));
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const abort = new AbortController();
+    const stages: string[] = [];
+    const preparation = dependencies.prepareReviewEvidence!({
+      kind: 'sourceMutation',
+      action: 'setPrimary',
+      sourceId: 'team',
+    }, abort.signal, (stage) => { stages.push(stage); });
+    await vi.waitFor(() => expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce());
+
+    abort.abort();
+    resolvePreflight({
+      configDigest: 'sha256:before',
+      candidateDigest: 'sha256:after',
+      references: { references: [], errors: [] },
+    });
+
+    await expect(preparation).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stages).toEqual(['inventory']);
+  });
+
+  it('uses one portable prepare call for review evidence', async () => {
+    runtimeMocks.preparePortableInstall.mockResolvedValue({
+      configDigest: 'sha256:config',
+      evidenceDigest: 'sha256:portable',
+      selected: [],
+      dependencyContributions: [],
+      conflicts: [],
+    });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const stages: string[] = [];
+
+    await expect(dependencies.prepareReviewEvidence!({
+      kind: 'portableInstall',
+      pluginId: 'team/demo',
+      scope: 'user',
+      selectedSkills: [],
+    }, new AbortController().signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
+      portable: { evidenceDigest: 'sha256:portable' },
+    });
+
+    expect(runtimeMocks.preparePortableInstall).toHaveBeenCalledOnce();
+    expect(stages).toEqual(['portable', 'evidence']);
+    expect(runtimeMocks.statusCommandV4).not.toHaveBeenCalled();
   });
 });
