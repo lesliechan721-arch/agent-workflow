@@ -2816,7 +2816,9 @@ export function ConsoleAppV4(props: {
       }
       if (entry.id === 'refreshSource' && issue.sourceId) await props.controller.refreshSource(issue.sourceId);
       else if (entry.id === 'continueWithCache' || entry.id === 'retryLater') go({ name: 'issueList' });
-      else if (entry.id === 'editSource' && issue.sourceId) go({ name: 'sourceDetail', sourceId: issue.sourceId });
+      else if (entry.id === 'editSource' && issue.sourceId) go(issue.entity.kind === 'source'
+        ? { name: 'sourceEdit', sourceId: issue.sourceId }
+        : { name: 'sourceDetail', sourceId: issue.sourceId });
       else if (entry.id === 'reAddSource' && issue.sourceId) beginIssueSourceAdd(issue.sourceId);
       else if (entry.id === 'viewSourceChange' && issue.sourceId) go({ name: 'sourceTechnical', sourceId: issue.sourceId });
       else if (entry.id === 'openConfig' && issue.pluginId) {

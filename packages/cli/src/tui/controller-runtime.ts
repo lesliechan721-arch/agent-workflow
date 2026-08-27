@@ -630,7 +630,7 @@ export function createTuiControllerDependencies(
         : intent.action === 'update'
           ? { action: 'update' as const, sourceId: intent.sourceId, update: intent.update! }
           : { action: intent.action, sourceId: intent.sourceId };
-      await preparation?.reporter.emit('inventory');
+      await preparation?.reporter.emit('validate');
       const preview = await preflightCatalogSourceMutation({
         request,
         cwd: context.cwd,

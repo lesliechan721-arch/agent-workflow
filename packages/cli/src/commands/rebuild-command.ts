@@ -1570,10 +1570,12 @@ export async function runRebuildCommand(options: {
             return { ...result, state };
           };
           const otherScope = resolvedScope === 'user' ? 'project' : 'user';
-          const requestedInspection = await inspectScope(resolvedScope);
-          const otherInspection = platform === 'codex' && codexScopePathsAlias && resolvedScope === 'user'
-            ? { state: 'absent' as const, components: [], errors: [] }
-            : await inspectScope(otherScope);
+          const [requestedInspection, otherInspection] = await Promise.all([
+            inspectScope(resolvedScope),
+            platform === 'codex' && codexScopePathsAlias && resolvedScope === 'user'
+              ? Promise.resolve({ state: 'absent' as const, components: [], errors: [] })
+              : inspectScope(otherScope),
+          ]);
           let state: 'absent' | 'present' | 'partial' | 'error' = requestedInspection.state;
           let action: 'install' | 'upgrade' | 'reinstall' | 'keep' | 'block' = relation === 'requested'
             ? options.command as 'install' | 'upgrade' | 'reinstall'

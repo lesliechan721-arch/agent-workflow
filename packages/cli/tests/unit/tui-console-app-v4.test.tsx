@@ -2041,6 +2041,20 @@ describe('ConsoleAppV4', () => {
     expect(degraded.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
   });
 
+  it('opens source editing from the unavailable source issue edit action', async () => {
+    const value = controller();
+    await value.load();
+    const issue = value.listUserIssues().find((candidate) => candidate.category === 'sourceUnavailable')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('› 编辑来源');
+    await input(instance, '\r');
+
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceEdit', sourceId: 'research' });
+  });
+
   it('shows platform state diagnostics as a safe product layer before the technical layer', async () => {
     const loaded = loadResult();
     loaded.payload.errors = [{

@@ -408,7 +408,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
 
     expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
-    expect(stages).toEqual(['inventory', 'evidence']);
+    expect(stages).toEqual(['validate', 'evidence']);
     expect(runtimeMocks.statusCommandV4).not.toHaveBeenCalled();
   });
 
@@ -444,7 +444,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
 
     await expect(preparation).rejects.toMatchObject({ name: 'AbortError' });
-    expect(stages).toEqual(['inventory']);
+    expect(stages).toEqual(['validate']);
   });
 
   it('uses one portable prepare call for review evidence', async () => {
