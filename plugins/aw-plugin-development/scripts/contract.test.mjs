@@ -101,11 +101,20 @@ test('AW reviewer production and materialized closures use registered current de
 
 test('author adapter uses only public single-plugin workspace-root commands', async () => {
   const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
-  // Static contract exception: installed agents must discover every public plugin authoring command and stop at the Catalog boundary; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  // Static contract exception: installed agents must discover every public plugin authoring command, safe deletion boundary, and Catalog handoff; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
   for (const command of ['init', 'add-skill', 'validate', 'test', 'build', 'status']) {
     assert.match(skill, new RegExp(`aw plugin ${command}[\\s\\S]*--workspace-root`, 'u'));
   }
   assert.match(skill, /调用每个作者命令前[^\n]+对应 `--help`/u);
+  assert.match(skill, /aw --version` 和 `aw plugin remove --help`/u);
+  assert.match(skill, /aw plugin remove <plugin-name> --workspace-root <workspace-root> --yes --json/u);
+  assert.match(skill, /不得直接调用 `rm`、递归删除/u);
+  assert.match(skill, /不得提供、猜测或要求 `--force`/u);
+  assert.match(skill, /不得新增 tombstone 或 retirement metadata/u);
+  assert.match(skill, /只在 `author-aw-catalog` 已明确交接一个删除任务时进入/u);
+  assert.match(skill, /没有这一个明确 handoff 时停止，并要求调用 `author-aw-catalog`/u);
+  assert.match(skill, /结构化 receipt 和控制权交回 `author-aw-catalog`/u);
+  assert.match(skill, /不得对已删除插件运行 validate、test、build 或 status/u);
   assert.doesNotMatch(skill, /aw catalog (?:init|version|build|validate|status|publish)/u);
   assert.match(skill, /缺少或不合法时停止/u);
   assert.match(skill, /要求调用 `author-aw-catalog`/u);

@@ -35,8 +35,17 @@ test('three Skills keep distinct routing and side-effect boundaries', async () =
     readRuntimeSkill('publish-aw-catalog', 'agents/openai.yaml'),
   ]);
 
-  // Static contract exception: these final installed instructions directly authorize or prohibit remote publication; a deterministic test cannot execute a model routing decision safely.
+  // Static contract exception: these final installed instructions directly authorize deletion handoff and prohibit unsafe publication; a deterministic test cannot execute a model routing decision safely.
   assert.match(author, /交给 `author-aw-plugin`/u);
+  assert.match(author, /Catalog Author 是唯一直接入口/u);
+  assert.match(author, /拥有删除意图和 Workspace 编排/u);
+  assert.match(author, /确认其明确给出 `<workspace-root>` 和 `<plugin-name>`/u);
+  assert.match(author, /目标的反向依赖/u);
+  assert.match(author, /决定删除是否关联 Catalog version/u);
+  assert.match(author, /返回结构化 receipt/u);
+  assert.match(author, /不新增 tombstone、retirement metadata 或 release ledger/u);
+  assert.match(author, /删除成功后不得对已删除目标运行 validate、test、build 或 status/u);
+  assert.match(author, /若 inventory 为空，记录 empty inventory/u);
   assert.match(author, /绝不运行 `aw catalog publish`/u);
   assert.match(reviewer, /不得传 `--preflight`/u);
   assert.match(reviewer, /不得运行 plugin build\/test、catalog build\/validate\/publish/u);

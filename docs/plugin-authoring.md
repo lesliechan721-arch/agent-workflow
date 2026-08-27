@@ -75,6 +75,8 @@ Workspace 必须位于有有效 HEAD 的 Git worktree 中，也可以是仓库�
 
 若其它当前 plugin manifest 的 `dependencies` 包含目标，命令列出反向依赖者并停止。所有检查在删除前完成；缺少 `--yes` 时不修改文件。成功只删除 plugin root，不修改 `catalog.version`，也不 commit、build 或 publish。命令没有 `--force`。删除阶段发生 I/O 失败时，诊断会给出从已核验 HEAD 恢复目标的 Git 命令。
 
+Agent 删除由 Catalog Author 编排：普通用户删除请求先进入 Catalog Author；它先确认用户明确给出的 Workspace 和插件名、当前 inventory 与反向依赖，再明确交接这一个命令给 Plugin Author。没有该 handoff 时 Plugin Author 停止并指向 Catalog Author。Plugin Author 先查询 `aw --version` 和 `aw plugin remove --help`，只执行公开参数的删除命令并返回 JSON receipt；成功后不对已删除对象运行 validate、test、build 或 status。Catalog Author 重新读取 inventory 和依赖，并验证剩余插件。
+
 ## Build、Portable 和信任边界
 
 Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输入。不要隐式安装工具或读取真实用户配置。`buildConfig.runtimeExports`、`buildImports`、`skillRuntimeFiles.import` 和 artifact `runtimeImports` 是 typed build-time reuse edge；它们不自动形成 manifest dependency。

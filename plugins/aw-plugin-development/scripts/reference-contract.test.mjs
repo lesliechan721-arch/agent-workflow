@@ -126,6 +126,7 @@ test('AW author references keep public commands aligned to single-plugin workspa
     'utf8',
   );
   for (const command of [
+    'aw plugin remove',
     'aw plugin validate',
     'aw plugin test',
     'aw plugin build',
@@ -133,6 +134,9 @@ test('AW author references keep public commands aligned to single-plugin workspa
     'aw plugin capabilities',
   ]) assert.match(reference, new RegExp(command.replaceAll(' ', '\\s+'), 'u'));
   assert.match(reference, /--workspace-root <workspace-root>/u);
+  assert.match(reference, /aw plugin remove <plugin-name> --workspace-root <workspace-root> --yes --json/u);
+  assert.match(reference, /不使用或猜测 `--force`/u);
+  assert.match(reference, /删除的插件不再运行 validate、test、build 或 status/u);
   assert.doesNotMatch(reference, /aw catalog (?:init|version|build|validate|status|publish|source)/u);
   assert.doesNotMatch(reference, /--repo-root|pnpm plugin:test|pnpm build/u);
 });

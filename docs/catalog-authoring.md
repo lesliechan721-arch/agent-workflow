@@ -39,14 +39,20 @@ aw catalog version --bump patch --workspace-root "$workspace"
 
 单插件 `version` 是 artifact identity；`catalog.version` 是整个 snapshot candidate identity。只提高 Catalog version 不能使同一 plugin version 的不同 production bytes 合法。是否需要 plugin bump 由 workspace policy、现有 ledger 和 plugin status 证据决定。
 
-先逐插件完成 `aw plugin validate`、`aw plugin test` 和必要的 `aw plugin build/status`，再执行：
+## 删除一个 canonical Plugin Source
+
+Catalog Author 是删除意图和 Workspace 编排 owner。先确认用户明确给出 `<workspace-root>` 和 `<plugin-name>`，读取当前 inventory、目标 manifest dependency graph 和反向依赖。依据 Workspace 版本策略和已有发布证据，决定删除是否关联 Catalog version；`aw plugin remove` 不会修改 version，策略或授权不足时不要猜测 mutation。
+
+实际删除只交给 `author-aw-plugin`：它先查询 `aw --version` 与 `aw plugin remove --help`，再调用公开的 `aw plugin remove <name> --workspace-root <root> --yes --json`。它不直接删除目录、不使用 `--force`、不修改 Catalog metadata、也不 commit、build 或 publish。成功 receipt 返回后，Catalog Author 必须重新读取 inventory 和依赖图；不再验证已删除对象。对每个剩余 canonical plugin 运行 validate/test，并在需要时运行 build/status；若 inventory 为空，记录 empty inventory，不运行 plugin 命令。然后执行聚合验证。普通删除不创建 tombstone、retirement metadata 或 release ledger。
+
+先逐个完成当前 inventory 中插件的 `aw plugin validate`、`aw plugin test` 和必要的 `aw plugin build/status`，再执行：
 
 ```bash
 aw catalog build --workspace-root "$workspace" --json
 aw catalog validate "$workspace/.aw/catalog" --json
 ```
 
-`aw catalog build` 执行 inventory 中插件的 validator/build code。生成 snapshot、manifest、digest、ledger projection 和 platform marketplace 都不能手改。需要 determinism 证据时，对相同受控 source 输入执行独立 build，并比较 CLI/Core 提供的 digest；文档判断不能替代该证据。
+`aw catalog build` 执行 inventory 中插件的 validator/build code。生成 snapshot、manifest、digest、ledger projection 和 platform marketplace 都不能手改。需要 determinism 证据时，对相同受控 source 输入执行独立 build，并比较 CLI/Core 提供的 digest；文档判断不能替代该证据。删除和日常维护都不会自动 publish；远端 publication 仍只由显式 `publish-aw-catalog` 完成。
 
 ## Publication preflight 和授权
 
