@@ -44,6 +44,15 @@ describe('CLI entry v4', () => {
     expect(output.stdout()).toContain('--codex-metadata');
   });
 
+  it('documents the Catalog status preflight execution boundary', async () => {
+    const output = capture();
+    expect(await runCli(['catalog', 'status', '--help'], { io: output.io })).toBe(0);
+    expect(output.stdout()).toContain('--preflight');
+    expect(output.stdout()).toContain('executes plugin');
+    expect(output.stdout()).toContain('--remote');
+    expect(output.stdout()).toContain('--branch');
+  });
+
   it.each(['init', 'add-skill'])('keeps plugin %s help on public authoring commands', async (command) => {
     const output = capture();
     expect(await runCli(['plugin', command, '--help'], { io: output.io })).toBe(0);

@@ -98,6 +98,18 @@ The install command writes platform output. Treat each Catalog as executable sof
 
 `aw catalog publish` is optional and is never an automatic author step. Run it only after the user has explicitly authorized publication.
 
+Use static status first. It does not run plugin code, build, create `.aw` output, or access the publication remote:
+
+```bash
+aw catalog status --workspace-root "$workspace" --json
+```
+
+Use `--preflight` only when you want the complete publication check. Preflight runs each plugin public validator and build code in a temporary committed-HEAD archive. It reads the selected remote, branch, tag, previous snapshot, and local version attempt, but it does not create an attempt or push:
+
+```bash
+aw catalog status --workspace-root "$workspace" --preflight --remote origin --branch catalog --json
+```
+
 ```bash
 aw catalog version 0.2.0 --workspace-root "$workspace"
 aw catalog publish \

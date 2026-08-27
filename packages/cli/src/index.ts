@@ -142,6 +142,7 @@ import {
   runPluginTestCommand,
 } from './authoring/workspace-commands.js';
 import { runCatalogPublishCommand } from './commands/catalog-publish.js';
+import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
 import {
   getPluginCapabilitiesResult,
   parsePluginCapabilitySurface,
@@ -1612,6 +1613,33 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   catalog
+    .command('status')
+    .description('Inspect a Catalog Workspace; --preflight executes plugin validation and build code')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--remote <name>', 'configured Git remote name for preflight (default: origin)')
+    .option('--branch <name>', 'dedicated Catalog branch for preflight (default: catalog)')
+    .option('--preflight', 'run publication validation and temporary plugin builds (executes plugin code)', false)
+    .option('--json', 'emit one machine-readable JSON status object', false)
+    .action(async (rawOptions: {
+      workspaceRoot?: string;
+      remote?: string;
+      branch?: string;
+      preflight?: boolean;
+      json?: boolean;
+    }) => {
+      const receipt = await getCatalogStatus({
+        workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+        remote: rawOptions.remote,
+        branch: rawOptions.branch,
+        preflight: rawOptions.preflight,
+        env,
+      });
+      if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+      else io.stdout(renderCatalogStatus(receipt));
+      commandExitState.exitCode = receipt.ok ? 0 : 1;
+    });
+
+  catalog
     .command('publish')
     .description('Publish a versioned Catalog snapshot to a configured Git remote')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
@@ -2809,7 +2837,7 @@ export async function runCli(
   };
   const jsonAuthoringCommand = argv.includes('--json')
     && (
-      (argv[0] === 'catalog' && ['init', 'version', 'build', 'validate', 'publish'].includes(argv[1] ?? ''))
+      (argv[0] === 'catalog' && ['init', 'version', 'build', 'validate', 'status', 'publish'].includes(argv[1] ?? ''))
       || (argv[0] === 'plugin' && ['build', 'test'].includes(argv[1] ?? ''))
     )
     ? `${argv[0]}:${argv[1]}`
