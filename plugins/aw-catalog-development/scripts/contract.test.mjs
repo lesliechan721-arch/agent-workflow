@@ -58,23 +58,48 @@ test('three Skills keep distinct routing and side-effect boundaries', async () =
   assert.match(publisher, /不重试同一 Catalog version/u);
 });
 
-test('eval corpus covers delegation, routing, review scope, and publication authorization', async () => {
-  const cases = await Promise.all([
-    ['author-aw-catalog', 'trigger-cases.json'],
-    ['author-aw-catalog', 'behavior-cases.json'],
-    ['review-aw-catalog', 'trigger-cases.json'],
-    ['review-aw-catalog', 'behavior-cases.json'],
-    ['publish-aw-catalog', 'trigger-cases.json'],
-    ['publish-aw-catalog', 'behavior-cases.json'],
-  ].map(async ([skill, file]) => JSON.parse(await readFile(
-    path.join(sourceRoot, 'skills', skill, 'evals', file),
-    'utf8',
-  ))));
-  const ids = cases.flatMap((entry) => (entry.cases ?? entry.evals).map(({ id }) => id));
+test('eval corpus covers release routing pairs and publication preflight failure', async () => {
+  const skills = ['author-aw-catalog', 'review-aw-catalog', 'publish-aw-catalog'];
+  const evalsBySkill = new Map(await Promise.all(skills.map(async (skill) => {
+    const evalRoot = path.join(sourceRoot, 'skills', skill, 'evals');
+    const [manifest, triggerCases, behaviorCases] = await Promise.all([
+      readFile(path.join(evalRoot, 'manifest.json'), 'utf8').then((contents) => JSON.parse(contents)),
+      readFile(path.join(evalRoot, 'trigger-cases.json'), 'utf8').then((contents) => JSON.parse(contents)),
+      readFile(path.join(evalRoot, 'behavior-cases.json'), 'utf8').then((contents) => JSON.parse(contents)),
+    ]);
+    return [skill, { manifest, triggerCases, behaviorCases }];
+  })));
+
+  for (const [skill, { manifest, triggerCases }] of evalsBySkill) {
+    const requiredTriggerSuites = manifest.suites.filter(
+      (suite) => suite.kind === 'trigger' && suite.requiredForRelease,
+    );
+    assert.ok(requiredTriggerSuites.length > 0, `${skill} must have a required trigger suite`);
+    for (const suite of requiredTriggerSuites) {
+      for (const split of suite.releaseSplits) {
+        const releaseCases = triggerCases.cases.filter((entry) => entry.split === split);
+        assert.ok(
+          releaseCases.some((entry) => entry.should_load_skill === true),
+          `${skill} trigger release split ${split} must contain a positive case`,
+        );
+        assert.ok(
+          releaseCases.some((entry) => entry.should_load_skill === false),
+          `${skill} trigger release split ${split} must contain a negative case`,
+        );
+      }
+    }
+  }
+
+  const ids = [...evalsBySkill.values()].flatMap(({ triggerCases, behaviorCases }) => [
+    ...triggerCases.cases,
+    ...behaviorCases.evals,
+  ].map(({ id }) => id));
   for (const id of [
     'lifecycle_change_routes_to_plugin_author',
+    'catalog_dependency_update_requires_aggregation',
+    'catalog_dependency_consistency_review',
     'add-plugin-delegate-then-aggregate',
     'composition-review-does-not-cross-boundary',
-    'preflight-exact-authorization-and-no-retry',
+    'preflight-failure-stops-before-authorization',
   ]) assert.ok(ids.includes(id), `missing eval case ${id}`);
 });

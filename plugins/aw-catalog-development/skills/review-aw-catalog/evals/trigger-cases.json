@@ -27,6 +27,25 @@
       }
     },
     {
+      "id": "catalog_dependency_consistency_review",
+      "split": "validation",
+      "query": "只读检查当前 Catalog 中所有插件的 inventory、版本约束和依赖图是否一致；不要评价单个 Skill 的 prompt。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "catalog-review",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "请求的评审对象是 Catalog 级 inventory、版本和跨插件依赖 composition。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "必须保持只读，并把单插件内部质量留给 review-aw-plugin。",
+        "minimal_counterexample": "若只评审一个插件的 Skill prompt 或 lifecycle，则不应加载 Catalog Reviewer。"
+      }
+    },
+    {
       "id": "single_plugin_review",
       "split": "validation",
       "query": "只读评审 plugins/status-tools 的 Skill prompt 和 lifecycle 设计。",
