@@ -6,7 +6,6 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
-import * as pluginStaging from '../../scripts/plugin-staging.js';
 import type { CatalogManifestV3, PluginMeta } from '../../src/types.js';
 import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
 import {
@@ -86,69 +85,12 @@ afterEach(async () => {
 });
 
 describe('plugin release workflow', () => {
-  it('stages a stable skip beside a beta publish only with matching stable history', async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-mixed-plan-'));
-    tempDirs.push(repoRoot);
-    await fs.copy(path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'repo-template',
-    ), repoRoot);
-    const sourceRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const secondRoot = path.join(repoRoot, 'plugins', 'git-commit-extra');
-    await fs.copy(sourceRoot, secondRoot);
-    const secondManifestPath = path.join(secondRoot, '.agents-plugin', 'plugin.json');
-    const secondManifest = await fs.readJson(secondManifestPath);
-    await fs.writeJson(secondManifestPath, {
-      ...secondManifest,
-      name: 'git-commit-extra',
-      description: 'Extra fixture',
-    }, { spaces: 2 });
-    const outputRoot = path.join(repoRoot, 'output');
-    await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
-    const stable = await pluginStaging.stageCatalogArtifacts({
-      repoRoot, outputRoot, phase: 'release', catalogVersion: '1.0.0', channel: 'latest',
-    });
-    const stableHistory = {
-      schemaVersion: 2 as const,
-      records: stable.releaseLedger.records.filter((record) => record.plugin === 'git-commit'),
-    };
-    await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
-    const content = Object.fromEntries(await Promise.all(['git-commit', 'git-commit-extra'].map(async (name) => [
-      name, await calculateCatalogEntryContentDigest(path.join(outputRoot, 'plugins', name)),
-    ])));
-    const staged = await pluginStaging.stageCatalogArtifacts({
-      repoRoot,
-      outputRoot,
-      phase: 'release',
-      catalogVersion: '1.1.0-beta.1',
-      channel: 'beta',
-      previousReleaseLedger: stableHistory,
-      pluginVersionOverrides: {
-        'git-commit': '0.1.0',
-        'git-commit-extra': '0.1.0-beta.1',
-      },
-      pluginCandidates: [
-        {
-          name: 'git-commit', targetVersion: '0.1.0', candidateVersion: '0.1.0',
-          contentDigest: content['git-commit'], action: 'skip',
-        },
-        {
-          name: 'git-commit-extra', targetVersion: '0.1.0', candidateVersion: '0.1.0-beta.1',
-          contentDigest: content['git-commit-extra'], action: 'publish',
-        },
-      ],
-    });
-    expect(staged.manifest.entries.map((entry) => [entry.name, entry.version])).toEqual([
-      ['git-commit', '0.1.0'],
-      ['git-commit-extra', '0.1.0-beta.1'],
-    ]);
-  });
-
   it('rejects the unpublished schema 1 ledger instead of mixing digest formats', () => {
     expect(() => validatePluginReleaseLedger({ schemaVersion: 1, records: [] }))
       .toThrow('expected schemaVersion 2');
   });
 
-  it('materializes beta versions only in release staging and keeps the source stable', async () => {
+  it('keeps development snapshots versioned from stable source manifests', async () => {
     const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-release-stage-'));
     tempDirs.push(repoRoot);
     await fs.copy(
@@ -192,43 +134,14 @@ describe('plugin release workflow', () => {
     await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(outputRoot, '.catalog'))).resolves.toBe(false);
 
-    const staged = await pluginStaging.stageCatalogArtifacts({
-      outputRoot,
-      catalogVersion: '9.0.0-beta.1',
-      channel: 'beta',
-      repoRoot,
-      phase: 'release',
-    });
-    expect(staged.manifest).toMatchObject({
-      schemaVersion: 4,
-      catalogVersion: '9.0.0-beta.1',
-      channel: 'beta',
-      compatibility: { aw: { minVersion: '0.0.0' } },
-      release: { state: 'development' },
-    });
-    expect(staged.manifest).not.toHaveProperty('packages');
-    expect(staged.manifest.entries).toEqual([
+    expect(developmentManifest.entries).toEqual([
       expect.objectContaining({
         name: 'git-commit',
-        version: '0.2.0-beta.1',
+        version: '0.2.0',
         contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       }),
     ]);
-    await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json')))
-      .resolves.toBe(false);
     await expect(fs.readJson(sourceManifestPath)).resolves.toMatchObject({ version: '0.2.0' });
-
-    await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
-    const stable = await pluginStaging.stageCatalogArtifacts({
-      outputRoot,
-      catalogVersion: '9.0.0',
-      channel: 'latest',
-      repoRoot,
-      phase: 'release',
-    });
-    expect(stable.manifest.entries).toEqual([
-      expect.objectContaining({ name: 'git-commit', version: '0.2.0' }),
-    ]);
   });
 
   it('uses the schema floor for a lower plugin minimum and a higher real plugin minimum when required', async () => {

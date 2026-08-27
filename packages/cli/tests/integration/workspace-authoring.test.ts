@@ -509,7 +509,19 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       .toBe(first.commit);
     await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json'))).resolves.toBe(true);
     await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
-      .resolves.toMatchObject({ catalogVersion: '0.1.0', state: 'published' });
+      .resolves.toMatchObject({
+        schemaVersion: 1,
+        catalogVersion: '0.1.0',
+        state: 'published',
+        sourceHead: expect.stringMatching(/^[0-9a-f]{40}$/u),
+        remote: { name: 'origin', identityDigest: expect.stringMatching(/^sha256:/u) },
+        branch: 'catalog',
+        parent: null,
+        tag: 'catalog-v0.1.0',
+        snapshotDigest: expect.stringMatching(/^sha256:/u),
+        planId: expect.stringMatching(/^sha256:/u),
+        attemptedAt: expect.any(String),
+      });
     const secondOutput = capture();
     expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
       cwd: root,
@@ -698,6 +710,36 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     })).toBe(0);
   });
 
+  it('retains the unified attempt when post-publication verification is uncertain', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createPublishWorkspace(root, 'postverify-demo');
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    await fs.writeFile(path.join(remote, 'hooks', 'post-receive'), [
+      '#!/bin/sh',
+      'git update-ref -d refs/heads/catalog',
+      '',
+    ].join('\n'), { mode: 0o755 });
+
+    const failed = capture();
+    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+      cwd: root,
+      interactive: false,
+      io: failed.io,
+    })).toBe(1);
+    expect(failed.stderr()).toContain('result is uncertain');
+    await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
+      .resolves.toMatchObject({ state: 'attempted', catalogVersion: '0.1.0' });
+    const retry = capture();
+    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+      cwd: root,
+      interactive: false,
+      io: retry.io,
+    })).toBe(1);
+    expect(retry.stderr()).toContain('version <higher>');
+  });
+
   it('uses the push endpoint for all publication history and the fetch endpoint for source guidance', async () => {
     const root = await createRoot();
     const fetchRemote = await createRoot();
@@ -809,7 +851,7 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await createPublishWorkspace(root, 'attempt-history-demo');
     await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
     const oldAttempt = path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json');
-    await fs.outputFile(path.join(root, '.aw', 'publish', 'attempted.json'), '{ corrupt attempt');
+    await fs.outputFile(oldAttempt, '{ corrupt attempt');
 
     const corrupt = capture();
     expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {

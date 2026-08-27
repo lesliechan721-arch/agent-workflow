@@ -40,6 +40,27 @@ function sha256(value: string | Buffer) {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
 
+function catalogPublicationDescriptor(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1,
+    workspaceIdentity: 'workspace:test',
+    catalogVersion: '2.3.0',
+    channel: 'latest',
+    sourceHead: head,
+    remote: { name: null, identityDigest: sha256('remote') },
+    branch: 'catalog/latest',
+    parent: null,
+    tag: 'catalog-v2.3.0',
+    snapshotDigest: 'catalog-digest',
+    contentDigest: sha256('catalog-content'),
+    planId: sha256('catalog-plan'),
+    ledgerDigest: sha256(Buffer.from('{}')),
+    minCliVersion: '1.0.0',
+    pluginNames: [],
+    ...overrides,
+  };
+}
+
 async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
   const root = await temporaryRoot();
   const artifacts = path.join(root, 'artifacts');
@@ -52,6 +73,8 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
   await fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes);
   await fs.writeFile(path.join(artifacts, 'catalog', 'catalog-manifest.json'), '{}');
   await fs.writeFile(path.join(artifacts, 'catalog', 'plugin-release-ledger.json'), '{}');
+  const catalogLedgerDigest = sha256(Buffer.from('{}'));
+  const catalogPublication = catalogPublicationDescriptor();
   return {
     root,
     descriptor: {
@@ -76,7 +99,8 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
       } : null,
       catalog: axes.catalog ? {
         version: '2.3.0', path: 'artifacts/catalog', snapshotDigest: 'catalog-digest',
-        minCliVersion: '1.0.0', ledgerDigest: calculateCanonicalDigest({}),
+        minCliVersion: '1.0.0', ledgerDigest: catalogLedgerDigest,
+        publication: catalogPublication,
       } : null,
     },
   };
@@ -262,17 +286,25 @@ describe('local prepared release', () => {
       resolveHead: async () => head,
       ...emptyRemote,
       withSnapshot: async (callback: (snapshot: typeof build) => unknown) => callback(build),
-      readContent: async () => ({
-        catalog: { contentDigest: sha256('catalog'), minCliVersion: floor },
-      }),
-      readCatalogChannelLedger: async () => undefined,
-      stageCatalog: async (argv: string[], stageOptions: { internalOutputRoot: string }) => {
-        expect(argv).toEqual(['--catalog-version', candidates.catalog]);
-        await fs.mkdir(stageOptions.internalOutputRoot, { recursive: true });
-        await fs.writeFile(path.join(stageOptions.internalOutputRoot, 'catalog-manifest.json'), '{}');
-        await fs.writeFile(path.join(stageOptions.internalOutputRoot, 'plugin-release-ledger.json'), '{}');
-        return { outputRoot: stageOptions.internalOutputRoot, snapshotDigest: 'catalog-digest' };
+      prepareCatalog: async (catalogVersion: string, mode: string) => {
+        expect(catalogVersion).toBe(candidates.catalog);
+        expect(mode).toBe('beta');
+        const outputRoot = path.join(root, 'common-catalog-preparation');
+        await fs.mkdir(outputRoot, { recursive: true });
+        await fs.writeFile(path.join(outputRoot, 'catalog-manifest.json'), '{}');
+        await fs.writeFile(path.join(outputRoot, 'plugin-release-ledger.json'), '{}');
+        return {
+          prepared: { outputRoot },
+          descriptor: {
+            ...catalogPublicationDescriptor(),
+            catalogVersion,
+            channel: 'beta',
+            tag: `catalog-v${catalogVersion}`,
+            minCliVersion: floor,
+          },
+        };
       },
+      disposeCatalog: async () => undefined,
     });
     expect(descriptor).toMatchObject({
       channel: 'beta',
@@ -505,22 +537,21 @@ describe('local prepared release', () => {
       resolveHead: async () => head,
       resolveCandidates: async () => ({ cli: '1.2.0', catalog: '2.3.0' }),
       withSnapshot: async (callback: (value: typeof snapshot) => unknown) => callback(snapshot),
-      readContent: async () => ({ catalog: { contentDigest: sha256('catalog') } }),
       packEval: pack('eval', evalRoot),
       packCore: pack('core', coreRoot),
       packCli: pack('cli', cliRoot),
       computeTarballTreeDigest: async (file: string) => sha256(await fs.readFile(file)),
-      readCatalogChannelLedger: async () => undefined,
-      stageCatalog: async (_argv: string[], stageOptions: {
-        internalOutputRoot: string;
-        snapshot: typeof snapshot;
-      }) => {
-        expect(stageOptions.snapshot).toBe(snapshot);
-        await fs.mkdir(stageOptions.internalOutputRoot, { recursive: true });
-        await fs.writeFile(path.join(stageOptions.internalOutputRoot, 'catalog-manifest.json'), '{}');
-        await fs.writeFile(path.join(stageOptions.internalOutputRoot, 'plugin-release-ledger.json'), '{}');
-        return { outputRoot: stageOptions.internalOutputRoot, snapshotDigest: 'catalog-digest' };
+      prepareCatalog: async (catalogVersion: string) => {
+        const outputRoot = path.join(root, 'common-catalog-preparation');
+        await fs.mkdir(outputRoot, { recursive: true });
+        await fs.writeFile(path.join(outputRoot, 'catalog-manifest.json'), '{}');
+        await fs.writeFile(path.join(outputRoot, 'plugin-release-ledger.json'), '{}');
+        return {
+          prepared: { outputRoot },
+          descriptor: catalogPublicationDescriptor({ catalogVersion, tag: `catalog-v${catalogVersion}` }),
+        };
       },
+      disposeCatalog: async () => undefined,
     };
     const descriptor = await prepareLocalRelease('stable', prepareOptions);
     expect(descriptor.axes).toEqual({ cli: true, catalog: true });
@@ -652,10 +683,8 @@ describe('local prepared release', () => {
     expect(runNpmCommand).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['CLI', { cli: '1.2.0', catalog: '2.3.1' }],
-    ['Catalog', { cli: '1.2.1', catalog: '2.3.0' }],
-  ] as const)('rejects a new descriptor that reuses the attempted %s candidate', async (_axis, candidates) => {
+  it('rejects a new descriptor that reuses the attempted CLI candidate', async () => {
+    const candidates = { cli: '1.2.0', catalog: '2.3.1' };
     const fixture = await publicationFixture({ cli: true, catalog: true });
     await fs.writeFile(path.join(fixture.root, 'attempted.json'), JSON.stringify({
       schemaVersion: 1,
@@ -673,6 +702,20 @@ describe('local prepared release', () => {
       runCommand,
     })).rejects.toThrow('already attempted');
     expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not let .release/attempted.json own the Catalog candidate', async () => {
+    const fixture = await publicationFixture({ cli: false, catalog: true });
+    await fs.writeFile(path.join(fixture.root, 'attempted.json'), '{ corrupt CLI attempt');
+    const publishCatalog = vi.fn();
+
+    await expect(publishPreparedRelease({
+      ...publishOptions(fixture),
+      publishCatalog,
+    })).resolves.toBe(fixture.descriptor);
+    expect(publishCatalog).toHaveBeenCalledOnce();
+    await expect(fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8'))
+      .resolves.toBe('{ corrupt CLI attempt');
   });
 
   it('replaces the attempted marker after every participating candidate changes', async () => {
@@ -701,7 +744,7 @@ describe('local prepared release', () => {
 
     expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
-      .toMatchObject({ candidates });
+      .toMatchObject({ candidates: { cli: candidates.cli } });
   });
 
   it('allows the unattempted Catalog candidate after an Eval failure and only a CLI bump', async () => {
@@ -727,10 +770,10 @@ describe('local prepared release', () => {
 
     expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(failed.root, 'attempted.json'), 'utf8')))
-      .toMatchObject({ candidates: { cli: '1.2.1', catalog: '2.3.0' } });
+      .toMatchObject({ candidates: { cli: '1.2.1' } });
   });
 
-  it('records both axes when CLI succeeds and Catalog publication is uncertain', async () => {
+  it('keeps Catalog attempts out of .release/attempted.json when Catalog publication is uncertain', async () => {
     const fixture = await publicationFixture({ cli: true, catalog: true });
     await expect(publishPreparedRelease({
       ...publishOptions(fixture),
@@ -739,7 +782,7 @@ describe('local prepared release', () => {
     })).rejects.toThrow('uncertain');
 
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
-      .toMatchObject({ candidates: { cli: '1.2.0', catalog: '2.3.0' } });
+      .toMatchObject({ candidates: { cli: '1.2.0' } });
   });
 
   it('rejects HEAD, build, artifact, and registry candidate drift before remote writes', async () => {
@@ -773,12 +816,27 @@ describe('local prepared release', () => {
   it('rejects a Catalog-only release when the published CLI train is incompatible', async () => {
     const fixture = await publicationFixture({ cli: false, catalog: true });
     fixture.descriptor.catalog!.minCliVersion = '9.0.0';
+    fixture.descriptor.catalog!.publication.minCliVersion = '9.0.0';
     const publishCatalog = vi.fn();
     await expect(publishPreparedRelease({
       ...publishOptions(fixture),
       readPublishedCliVersion: async () => '1.2.0',
       publishCatalog,
     })).rejects.toThrow('requires aw >= 9.0.0');
+    expect(publishCatalog).not.toHaveBeenCalled();
+  });
+
+  it('rejects a prepared Catalog compatibility floor that differs from its publication binding', async () => {
+    const fixture = await publicationFixture({ cli: false, catalog: true });
+    fixture.descriptor.catalog!.minCliVersion = '0.1.0';
+    fixture.descriptor.catalog!.publication.minCliVersion = '9.0.0';
+    const publishCatalog = vi.fn();
+
+    await expect(publishPreparedRelease({
+      ...publishOptions(fixture),
+      readPublishedCliVersion: async () => '1.2.0',
+      publishCatalog,
+    })).rejects.toThrow('compatibility binding changed');
     expect(publishCatalog).not.toHaveBeenCalled();
   });
 

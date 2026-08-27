@@ -71,7 +71,6 @@ import {
 import type {
   CatalogChannel,
   CatalogManifestV4,
-  CatalogManifestV4Release,
   MarketplaceManifest,
   PluginMeta,
 } from '../src/types.js';
@@ -80,9 +79,6 @@ import {
   compareStrictSemVer,
   resolvePluginsFromCatalog,
 } from '../src/utils/manifest.js';
-import {
-  calculateCatalogEntryContentDigest,
-} from '../src/utils/catalog-digests.js';
 import {
   createCatalogManifestV4,
   createCatalogManifestV4Entry,
@@ -94,13 +90,8 @@ import { validatePluginMetaDependencyGraph } from '../src/utils/plugin-dependenc
 import { readJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import {
-  appendCatalogToPluginReleaseLedger,
   assertStablePluginVersion,
-  type PluginReleaseLedger,
   PLUGIN_RELEASE_LEDGER_FILENAME,
-  PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
-  resolveBetaPluginVersionOverrides,
-  validatePluginReleaseLedgerAgainstManifest,
 } from '../src/utils/plugin-release.js';
 
 export type {
@@ -117,22 +108,10 @@ export interface CatalogStageOptions {
   outputRoot: string;
   catalogVersion?: string;
   channel?: CatalogChannel;
-  phase?: 'development' | 'release';
-  previousReleaseLedger?: PluginReleaseLedger;
-  pluginVersionOverrides?: Readonly<Record<string, string>>;
-  pluginCandidates?: ReadonlyArray<{
-    name: string;
-    targetVersion: string;
-    candidateVersion: string;
-    contentDigest: string;
-    action: 'publish' | 'skip';
-  }>;
-  release?: CatalogManifestV4Release;
 }
 
 export interface CatalogStageResult {
   manifest: CatalogManifestV4;
-  releaseLedger: PluginReleaseLedger;
   canonicalManifestPath: string;
 }
 
@@ -183,34 +162,10 @@ async function writeCanonicalJsonFile(filePath: string, value: unknown): Promise
 }
 
 
-async function rewriteBundledPluginVersions(
-  outputRoot: string,
-  overrides: Readonly<Record<string, string>>,
-): Promise<void> {
-  for (const [pluginName, requestedVersion] of Object.entries(overrides)) {
-    const version = assertStrictSemVer(requestedVersion, `${pluginName} release version`);
-    const pluginRoot = path.join(outputRoot, 'plugins', pluginName);
-    if (!(await fs.pathExists(pluginRoot))) {
-      throw new Error(`Plugin version override refers to unknown plugin ${JSON.stringify(pluginName)}.`);
-    }
-    for (const relativePath of [
-      '.agents-plugin/plugin.json',
-      '.claude-plugin/plugin.json',
-      '.codex-plugin/plugin.json',
-    ]) {
-      const manifestPath = path.join(pluginRoot, relativePath);
-      if (!(await fs.pathExists(manifestPath))) continue;
-      const manifest = await readJsonFile<Record<string, unknown>>(manifestPath);
-      await writeCanonicalJsonFile(manifestPath, { ...manifest, version });
-    }
-  }
-}
-
 export async function stageCatalogArtifacts(
   options: CatalogStageOptions,
 ): Promise<CatalogStageResult> {
   const repoRoot = options.repoRoot ?? path.resolve(resolveCliPackageRoot(), '..', '..');
-  const phase = options.phase ?? 'development';
   const [{ version }, sourcePlugins] = await Promise.all([
     readCliPackageMetadata(repoRoot),
     resolvePluginsFromCatalog(options.outputRoot),
@@ -230,69 +185,7 @@ export async function stageCatalogArtifacts(
   for (const plugin of sourcePlugins) {
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }
-  const contentDigestEntries = await Promise.all(sourcePlugins.map(async (plugin) => [
-    plugin.manifest.name,
-    await calculateCatalogEntryContentDigest(
-      path.join(options.outputRoot, 'plugins', plugin.manifest.name),
-    ),
-  ] as const));
-  const contentDigests = new Map(contentDigestEntries);
-  const previousReleaseLedger: PluginReleaseLedger = options.previousReleaseLedger
-    ?? { schemaVersion: PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION, records: [] };
-  if (phase === 'release') {
-    const overrides = options.pluginVersionOverrides ?? (channel === 'beta'
-      ? resolveBetaPluginVersionOverrides({
-          plugins: sourcePlugins,
-          contentDigests,
-          ledger: previousReleaseLedger,
-        })
-      : Object.fromEntries(sourcePlugins.map((plugin) => [
-          plugin.manifest.name, plugin.manifest.version,
-        ])));
-    if (options.pluginVersionOverrides) {
-      const expectedNames = sourcePlugins.map((plugin) => plugin.manifest.name).sort();
-      const actualNames = Object.keys(overrides).sort();
-      if (expectedNames.join('\0') !== actualNames.join('\0')) {
-        throw new Error('Plan plugin candidate overrides must cover the complete catalog inventory.');
-      }
-      for (const plugin of sourcePlugins) {
-        const candidateVersion = assertStrictSemVer(
-          overrides[plugin.manifest.name],
-          `${plugin.manifest.name} plan candidate version`,
-        );
-        const targetVersion = plugin.manifest.version;
-        if (
-          candidateVersion !== targetVersion
-          && !candidateVersion.startsWith(`${targetVersion}-beta.`)
-        ) throw new Error(`Plan plugin candidate ${plugin.manifest.name}@${candidateVersion} does not match stable target ${targetVersion}.`);
-        const planned = options.pluginCandidates?.find((entry) => entry.name === plugin.manifest.name);
-        if (options.pluginCandidates && (
-          !planned
-          || planned.targetVersion !== targetVersion
-          || planned.candidateVersion !== candidateVersion
-          || planned.contentDigest !== contentDigests.get(plugin.manifest.name)
-        )) {
-          throw new Error(`Plan plugin candidate ${plugin.manifest.name} does not match the staged target or content.`);
-        }
-        const stableSkipInBeta = channel === 'beta'
-          && candidateVersion === targetVersion
-          && planned?.action === 'skip';
-        if (stableSkipInBeta && !previousReleaseLedger.records.some((record) =>
-          record.plugin === plugin.manifest.name
-          && record.version === targetVersion
-          && record.contentDigest === contentDigests.get(plugin.manifest.name))) {
-          throw new Error(`Stable skip candidate ${plugin.manifest.name}@${targetVersion} is not present in release history with the same content.`);
-        }
-        if ((channel === 'beta') !== candidateVersion.includes('-beta.') && !stableSkipInBeta) {
-          throw new Error(`Plan plugin candidate ${plugin.manifest.name}@${candidateVersion} does not match catalog channel ${channel}.`);
-        }
-      }
-    }
-    await rewriteBundledPluginVersions(options.outputRoot, overrides);
-  }
-  const plugins = phase === 'release'
-    ? await resolvePluginsFromCatalog(options.outputRoot)
-    : sourcePlugins;
+  const plugins = sourcePlugins;
   const minAwVersion = resolveCatalogMinAwVersion(plugins);
   const entries = await Promise.all(plugins.map((plugin) =>
     createCatalogManifestV4Entry(
@@ -314,13 +207,8 @@ export async function stageCatalogArtifacts(
         minVersion: minAwVersion,
       },
     },
-    release: options.release ?? { state: 'development' },
+    release: { state: 'development' },
     entries,
-  });
-  const releaseLedger = appendCatalogToPluginReleaseLedger({
-    previous: previousReleaseLedger,
-    manifest,
-    contentDigests,
   });
   const canonicalManifestPath = path.join(options.outputRoot, CATALOG_MANIFEST_FILENAME);
   const releaseLedgerPath = path.join(options.outputRoot, PLUGIN_RELEASE_LEDGER_FILENAME);
@@ -332,15 +220,10 @@ export async function stageCatalogArtifacts(
     canonicalManifestPath,
     manifest,
   );
-  if (manifest.release.state === 'published') {
-    await writeCanonicalJsonFile(releaseLedgerPath, releaseLedger);
-    validatePluginReleaseLedgerAgainstManifest(releaseLedger, manifest);
-  }
   await validateCatalogSnapshot(options.outputRoot);
 
   return {
     manifest,
-    releaseLedger,
     canonicalManifestPath,
   };
 }

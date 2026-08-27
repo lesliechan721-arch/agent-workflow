@@ -1,149 +1,305 @@
-import fs from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
+import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   CATALOG_CHANNEL_REFS,
-  publishStagedCatalog,
-} from '../../../../scripts/release/git-catalog-publisher.mjs';
-import { captureCommand } from '../../../../scripts/release/common.mjs';
+  disposeCatalogRelease,
+  prepareCatalogRelease,
+  publishCatalogRelease,
+} from '../../../../scripts/release/catalog-publication.mjs';
+import * as inspectionService from '../../src/commands/catalog-publication-inspection.js';
+import * as publicationService from '../../src/commands/catalog-publish.js';
+import { runCli } from '../../src/index.js';
 
+const execFileAsync = promisify(execFile);
 const roots: string[] = [];
+const service = { ...inspectionService, ...publicationService };
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+  await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
 });
 
-async function git(args: string[], cwd?: string) {
-  return captureCommand('git', args, { cwd });
+async function temporaryRoot(prefix: string): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  roots.push(root);
+  return root;
 }
 
-async function fixture() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-simple-catalog-publisher-'));
-  roots.push(root);
-  const remote = path.join(root, 'catalog.git');
-  await git(['init', '--bare', '--quiet', '--object-format=sha1', remote]);
+function quietIo() {
+  return { stdout: () => undefined, stderr: () => undefined };
+}
+
+async function createWorkspace(version = '0.1.0'): Promise<{ root: string; remote: string }> {
+  const root = await temporaryRoot('aw-common-catalog-publisher-');
+  const remote = await temporaryRoot('aw-common-catalog-remote-');
+  await execFileAsync('git', ['init', '--bare', '--quiet', remote]);
+  await execFileAsync('git', ['init', '--quiet'], { cwd: root });
+  await runCli([
+    'catalog', 'init', '--workspace-root', root, '--catalog-version', version,
+  ], { cwd: root, io: quietIo() });
+  await runCli([
+    'plugin', 'init', 'publisher-demo', '--description', 'Publisher demo.', '--no-skills',
+    '--workspace-root', root,
+  ], { cwd: root, io: quietIo() });
+  await execFileAsync('git', ['add', '.'], { cwd: root });
+  await execFileAsync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    'commit', '--quiet', '-m', 'initial',
+  ], { cwd: root });
+  await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
   return { root, remote };
 }
 
-async function stage(root: string, version: string) {
-  const stagedRoot = path.join(root, `stage-${version}`);
-  await fs.mkdir(stagedRoot);
-  await fs.writeFile(path.join(stagedRoot, 'catalog-manifest.json'), JSON.stringify({
-    catalogVersion: version,
-    channel: version.includes('-') ? 'beta' : 'latest',
-  }));
-  await fs.writeFile(path.join(stagedRoot, 'plugin-release-ledger.json'), '{}');
-  return stagedRoot;
-}
+describe('common Catalog publisher used by official release', () => {
+  it('prepares identical public and official snapshots and publishes an official channel', async () => {
+    const { root, remote } = await createWorkspace('2.0.0');
+    const publicPreparation = await inspectionService.prepareCatalogPublicationInspection({
+      workspaceRoot: root,
+      remoteUrl: remote,
+      branch: 'catalog/latest',
+      catalogVersion: '2.0.0',
+      env: process.env,
+      failOnUnavailable: true,
+    });
+    const officialPreparation = await prepareCatalogRelease('2.0.0', 'latest', {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    });
+    try {
+      expect(officialPreparation.descriptor).toEqual(publicPreparation.descriptor);
+      await expect(fs.readFile(path.join(
+        officialPreparation.prepared.outputRoot,
+        'catalog-manifest.json',
+      ))).resolves.toEqual(await fs.readFile(path.join(
+        publicPreparation.prepared.outputRoot,
+        'catalog-manifest.json',
+      )));
+      await expect(fs.readFile(path.join(
+        officialPreparation.prepared.outputRoot,
+        'plugin-release-ledger.json',
+      ))).resolves.toEqual(await fs.readFile(path.join(
+        publicPreparation.prepared.outputRoot,
+        'plugin-release-ledger.json',
+      )));
 
-function catalogModules(_mode?: 'latest' | 'beta', _version?: string) {
-  return {
-    catalogSnapshot: {
-      validateCatalogSnapshot: async (root: string) => {
-        const bytes = await fs.readFile(path.join(root, 'catalog-manifest.json'), 'utf8');
-        const manifest = JSON.parse(bytes);
-        return { manifest, snapshotDigest: `digest-${manifest.catalogVersion}` };
-      },
+      const published = await publishCatalogRelease({
+        descriptor: officialPreparation.descriptor,
+        stagedRoot: officialPreparation.prepared.outputRoot,
+      }, {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+      });
+      const branchCommit = (await execFileAsync('git', [
+        '--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.latest,
+      ])).stdout.trim();
+      expect(branchCommit).toBe(published.commit);
+      expect((await execFileAsync('git', [
+        '--git-dir', remote, 'cat-file', '-t', 'refs/tags/catalog-v2.0.0',
+      ])).stdout.trim()).toBe('tag');
+      await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '2.0.0.json')))
+        .resolves.toMatchObject({
+          state: 'published',
+          workspaceIdentity: officialPreparation.descriptor.workspaceIdentity,
+          branch: 'catalog/latest',
+          parent: null,
+          planId: officialPreparation.descriptor.planId,
+        });
+
+      const blocked = quietIo();
+      expect(await runCli([
+        'catalog', 'publish', '--workspace-root', root, '--branch', 'catalog/latest',
+        '--yes', '--json',
+      ], { cwd: root, interactive: false, io: blocked })).toBe(1);
+
+      const update = await prepareCatalogRelease('2.0.1', 'latest', {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+      });
+      try {
+        const updated = await publishCatalogRelease({
+          descriptor: update.descriptor,
+          stagedRoot: update.prepared.outputRoot,
+        }, {
+          repoRoot: root,
+          remoteUrl: remote,
+          catalogPublicationService: service,
+        });
+        expect((await execFileAsync('git', [
+          '--git-dir', remote, 'show', '-s', '--format=%P', updated.commit,
+        ])).stdout.trim()).toBe(branchCommit);
+      } finally {
+        await disposeCatalogRelease(update, { catalogPublicationService: service });
+      }
+    } finally {
+      await inspectionService.disposeCatalogPublicationInspection(publicPreparation);
+      await disposeCatalogRelease(officialPreparation, { catalogPublicationService: service });
+    }
+  });
+
+  it.each([
+    ['latest', 'catalog/latest', '3.0.0'],
+    ['beta', 'catalog/beta', '3.1.0-beta.1'],
+  ] as const)('publishes %s through the same branch-parameterized service', async (mode, branch, version) => {
+    const { root, remote } = await createWorkspace();
+    const preparation = await prepareCatalogRelease(version, mode, {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    });
+    try {
+      expect(preparation.descriptor.branch).toBe(branch);
+      const published = await publishCatalogRelease({
+        descriptor: preparation.descriptor,
+        stagedRoot: preparation.prepared.outputRoot,
+      }, {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+      });
+      expect((await execFileAsync('git', [
+        '--git-dir', remote, 'rev-parse', `refs/heads/${branch}`,
+      ])).stdout.trim()).toBe(published.commit);
+    } finally {
+      await disposeCatalogRelease(preparation, { catalogPublicationService: service });
+    }
+  });
+
+  it('blocks an official release after a public publication result is uncertain', async () => {
+    const { root, remote } = await createWorkspace('3.2.0');
+    await fs.writeFile(path.join(remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', {
+      mode: 0o755,
+    });
+
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root, '--branch', 'catalog/latest',
+      '--yes', '--json',
+    ], { cwd: root, interactive: false, io: quietIo() })).toBe(1);
+    await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '3.2.0.json')))
+      .resolves.toMatchObject({ state: 'attempted', branch: 'catalog/latest' });
+    await expect(prepareCatalogRelease('3.2.0', 'latest', {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    })).rejects.toThrow('attempted publication record');
+  });
+
+  it.each(['descriptor', 'snapshot', 'source'] as const)(
+    'rejects prepared %s drift before an attempt or remote write',
+    async (drift) => {
+      const { root, remote } = await createWorkspace();
+      const preparation = await prepareCatalogRelease('4.0.0', 'latest', {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+      });
+      try {
+        const descriptor = drift === 'descriptor'
+          ? { ...preparation.descriptor, planId: `sha256:${'f'.repeat(64)}` }
+          : preparation.descriptor;
+        if (drift === 'snapshot') {
+          await fs.outputFile(path.join(preparation.prepared.outputRoot, 'tampered.txt'), 'tampered\n');
+        }
+        if (drift === 'source') await fs.outputFile(path.join(root, 'dirty.txt'), 'dirty\n');
+
+        await expect(publishCatalogRelease({
+          descriptor,
+          stagedRoot: preparation.prepared.outputRoot,
+        }, {
+          repoRoot: root,
+          remoteUrl: remote,
+          catalogPublicationService: service,
+        })).rejects.toThrow(drift === 'source' ? 'worktree to be clean' : /descriptor|snapshot|identity/iu);
+        await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '4.0.0.json')))
+          .resolves.toBe(false);
+        expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
+      } finally {
+        await disposeCatalogRelease(preparation, { catalogPublicationService: service });
+      }
     },
-    pluginStaging: {
-      validatePluginReleaseLedgerAgainstManifest: () => undefined,
-    },
-  };
-}
+  );
 
-describe('simple Catalog Git publisher', () => {
-  it('publishes stable and beta as annotated immutable tags with independent channel refs', async () => {
-    const { root, remote } = await fixture();
-    const stableRoot = await stage(root, '2.0.0');
-    const betaRoot = await stage(root, '2.1.0-beta.1');
-    await publishStagedCatalog({
-      mode: 'latest', catalogVersion: '2.0.0', stagedRoot: stableRoot,
-    }, { remoteUrl: remote, catalogModules: catalogModules('latest', '2.0.0') });
-    await publishStagedCatalog({
-      mode: 'beta', catalogVersion: '2.1.0-beta.1', stagedRoot: betaRoot,
-    }, { remoteUrl: remote, catalogModules: catalogModules('beta', '2.1.0-beta.1') });
-
-    const latest = (await git(['--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.latest])).stdout.trim();
-    const beta = (await git(['--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.beta])).stdout.trim();
-    expect(latest).not.toBe(beta);
-    expect((await git(['--git-dir', remote, 'cat-file', '-t', 'refs/tags/catalog-v2.0.0'])).stdout.trim())
-      .toBe('tag');
-    expect((await git(['--git-dir', remote, 'cat-file', '-t', 'refs/tags/catalog-v2.1.0-beta.1'])).stdout.trim())
-      .toBe('tag');
-    await expect(publishStagedCatalog({
-      mode: 'latest', catalogVersion: '2.0.0', stagedRoot: stableRoot,
-    }, { remoteUrl: remote, catalogModules: catalogModules('latest', '2.0.0') }))
-      .rejects.toThrow('already exists');
+  it('rejects a prepared descriptor that changes the official channel branch', async () => {
+    const { root, remote } = await createWorkspace();
+    const preparation = await prepareCatalogRelease('4.1.0', 'latest', {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    });
+    try {
+      await expect(publishCatalogRelease({
+        descriptor: { ...preparation.descriptor, branch: 'catalog/unexpected' },
+        stagedRoot: preparation.prepared.outputRoot,
+      }, {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+      })).rejects.toThrow('official channel branch');
+      await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '4.1.0.json')))
+        .resolves.toBe(false);
+      expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
+    } finally {
+      await disposeCatalogRelease(preparation, { catalogPublicationService: service });
+    }
   });
 
-  it('does not offer recovery when an atomic push fails and requires a version bump', async () => {
-    const { root, remote } = await fixture();
-    const hook = path.join(remote, 'hooks', 'pre-receive');
-    await fs.writeFile(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    const stagedRoot = await stage(root, '3.0.0');
-    await expect(publishStagedCatalog({
-      mode: 'latest', catalogVersion: '3.0.0', stagedRoot,
-    }, { remoteUrl: remote, catalogModules: catalogModules('latest', '3.0.0') }))
-      .rejects.toThrow('Do not retry 3.0.0');
-    await expect(git(['--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
-      .rejects.toThrow();
-    await expect(git(['--git-dir', remote, 'rev-parse', 'refs/tags/catalog-v3.0.0']))
-      .rejects.toThrow();
-  });
+  it('rejects a branch parent that disappears after the final remote check', async () => {
+    const { root, remote } = await createWorkspace();
+    const initial = await prepareCatalogRelease('5.0.0', 'latest', {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    });
+    try {
+      await publishCatalogRelease({
+        descriptor: initial.descriptor,
+        stagedRoot: initial.prepared.outputRoot,
+      }, {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+      });
+    } finally {
+      await disposeCatalogRelease(initial, { catalogPublicationService: service });
+    }
 
-  it('publishes a second version on the same channel with the validated first commit as parent', async () => {
-    const { root, remote } = await fixture();
-    await publishStagedCatalog({
-      mode: 'latest', catalogVersion: '4.0.0', stagedRoot: await stage(root, '4.0.0'),
-    }, { remoteUrl: remote, catalogModules: catalogModules() });
-    const first = (await git(['--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.latest])).stdout.trim();
-    await publishStagedCatalog({
-      mode: 'latest', catalogVersion: '4.0.1', stagedRoot: await stage(root, '4.0.1'),
-    }, { remoteUrl: remote, catalogModules: catalogModules() });
-    const second = (await git(['--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.latest])).stdout.trim();
-    expect((await git(['--git-dir', remote, 'rev-parse', `${second}^`])).stdout.trim()).toBe(first);
-  });
-
-  it('ignores Git repository, object, config, namespace, ceiling, and template injection', async () => {
-    const { root, remote } = await fixture();
-    const injected = path.join(root, 'injected');
-    await fs.mkdir(injected);
-    const env = {
-      ...process.env,
-      GIT_DIR: injected,
-      GIT_WORK_TREE: injected,
-      GIT_OBJECT_DIRECTORY: injected,
-      GIT_ALTERNATE_OBJECT_DIRECTORIES: injected,
-      GIT_CONFIG_COUNT: '1',
-      GIT_CONFIG_KEY_0: 'core.hooksPath',
-      GIT_CONFIG_VALUE_0: injected,
-      GIT_NAMESPACE: 'hostile',
-      GIT_CEILING_DIRECTORIES: root,
-      GIT_TEMPLATE_DIR: injected,
-    };
-    await publishStagedCatalog({
-      mode: 'latest', catalogVersion: '4.2.0', stagedRoot: await stage(root, '4.2.0'),
-    }, { remoteUrl: remote, catalogModules: catalogModules(), env });
-    expect((await git(['--git-dir', remote, 'cat-file', '-t', 'refs/tags/catalog-v4.2.0'])).stdout.trim())
-      .toBe('tag');
-  });
-
-  it('rejects a corrupt existing channel before creating a new tag', async () => {
-    const { root, remote } = await fixture();
-    const corrupt = path.join(root, 'corrupt');
-    await git(['init', '--quiet', '--object-format=sha1', corrupt]);
-    await fs.writeFile(path.join(corrupt, 'catalog-manifest.json'), '{broken');
-    await fs.writeFile(path.join(corrupt, 'plugin-release-ledger.json'), '{}');
-    await git(['add', '--all'], corrupt);
-    await git(['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '--quiet', '-m', 'corrupt'], corrupt);
-    await git(['push', '--quiet', remote, `HEAD:${CATALOG_CHANNEL_REFS.latest}`], corrupt);
-    await expect(publishStagedCatalog({
-      mode: 'latest', catalogVersion: '5.0.0', stagedRoot: await stage(root, '5.0.0'),
-    }, { remoteUrl: remote, catalogModules: catalogModules() })).rejects.toThrow();
-    await expect(git(['--git-dir', remote, 'rev-parse', 'refs/tags/catalog-v5.0.0']))
-      .rejects.toThrow();
+    const update = await prepareCatalogRelease('5.0.1', 'latest', {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    });
+    try {
+      expect(update.descriptor.parent).not.toBeNull();
+      await expect(publishCatalogRelease({
+        descriptor: update.descriptor,
+        stagedRoot: update.prepared.outputRoot,
+      }, {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+        beforeRemoteWrite: async () => {
+          await execFileAsync('git', [
+            '--git-dir', remote, 'update-ref', '-d', CATALOG_CHANNEL_REFS.latest,
+          ]);
+        },
+      })).rejects.toThrow('uncertain');
+      await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '5.0.1.json')))
+        .resolves.toMatchObject({ state: 'attempted', parent: update.descriptor.parent });
+      await expect(execFileAsync('git', [
+        '--git-dir', remote, 'rev-parse', '--verify', CATALOG_CHANNEL_REFS.latest,
+      ])).rejects.toBeDefined();
+      await expect(execFileAsync('git', [
+        '--git-dir', remote, 'rev-parse', '--verify', 'refs/tags/catalog-v5.0.1',
+      ])).rejects.toBeDefined();
+    } finally {
+      await disposeCatalogRelease(update, { catalogPublicationService: service });
+    }
   });
 });

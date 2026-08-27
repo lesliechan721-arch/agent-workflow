@@ -274,6 +274,64 @@ describe('Catalog publication status CLI', () => {
     expect((await execFileAsync('git', ['ls-remote', replacementRemote])).stdout).toBe('');
   });
 
+  it('rejects branch drift after preparation before writing an attempt', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    const contender = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createCommittedWorkspace(root, 'branch-drift-demo');
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    await execFileAsync('git', ['init', '--quiet'], { cwd: contender });
+    await fs.outputFile(path.join(contender, 'contender.txt'), 'contender\n');
+    await execFileAsync('git', ['add', '.'], { cwd: contender });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '--quiet', '-m', 'contender',
+    ], { cwd: contender });
+    const output = capture();
+
+    expect(await runCli(['catalog', 'publish', '--workspace-root', root], {
+      cwd: root,
+      interactive: true,
+      prompt: {
+        confirm: async () => {
+          await execFileAsync('git', ['push', '--quiet', remote, 'HEAD:refs/heads/catalog'], {
+            cwd: contender,
+          });
+          return { cancelled: false, value: true };
+        },
+      },
+      io: output.io,
+    })).toBe(1);
+    expect(output.stderr()).toContain('remote changed during preparation');
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
+      .resolves.toBe(false);
+  });
+
+  it('rejects an immutable tag collision before writing an attempt or branch', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createCommittedWorkspace(root, 'tag-collision-demo');
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'tag', '--annotate', 'catalog-v0.1.0', '--message', 'collision',
+    ], { cwd: root });
+    await execFileAsync('git', ['push', '--quiet', 'origin', 'refs/tags/catalog-v0.1.0'], { cwd: root });
+    const output = capture();
+
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root, '--yes', '--json',
+    ], { cwd: root, interactive: false, io: output.io })).toBe(1);
+    expect(output.stderr()).toContain('already exists');
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
+      .resolves.toBe(false);
+    await expect(execFileAsync('git', [
+      '--git-dir', remote, 'rev-parse', '--verify', 'refs/heads/catalog',
+    ])).rejects.toBeDefined();
+  });
+
   it('fails preflight closed for an existing version attempt without modifying it or the remote', async () => {
     const root = await createRoot();
     const remote = await createRoot();

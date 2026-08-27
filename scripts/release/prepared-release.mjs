@@ -26,19 +26,18 @@ import {
 } from './common.mjs';
 import {
   assertCatalogTagAvailable,
-  publishStagedCatalog,
+  disposeCatalogRelease,
+  prepareCatalogRelease,
+  publishCatalogRelease,
   readCatalogChannelState,
-  readCatalogChannelLedger,
   readCatalogVersions,
-} from './git-catalog-publisher.mjs';
+} from './catalog-publication.mjs';
 import {
   assertCliTagAvailable,
   ensureCliTag,
 } from './cli-git-tag.mjs';
 import { calculateCanonicalDigest } from './release-model.mjs';
-import { readCurrentReleaseContent } from './release-observe.mjs';
 import { assertVersionTargetsMatchHead, readVersionTargets } from './release-target.mjs';
-import { stageCatalogRelease } from './stage-catalog.mjs';
 
 export const preparedReleaseRoot = path.join(releaseRoot, 'prepared');
 export const preparedDescriptorPath = path.join(preparedReleaseRoot, 'descriptor.json');
@@ -76,7 +75,7 @@ async function readAttempt(options = {}) {
 }
 
 function attemptedCandidates(candidates) {
-  return Object.fromEntries(['cli', 'catalog'].flatMap((axis) =>
+  return Object.fromEntries(['cli'].flatMap((axis) =>
     typeof candidates?.[axis] === 'string' && candidates[axis] !== ''
       ? [[axis, candidates[axis]]]
       : []));
@@ -89,10 +88,11 @@ function sameCandidates(left, right) {
 function reusesAttemptedCandidate(attempt, candidates) {
   const previous = attemptedCandidates(attempt?.candidates);
   const next = attemptedCandidates(candidates);
-  return ['cli', 'catalog'].some((axis) => previous[axis] !== undefined && previous[axis] === next[axis]);
+  return previous.cli !== undefined && previous.cli === next.cli;
 }
 
 async function assertCandidateNotAttempted(targetsDigest, candidates, options = {}) {
+  if (typeof candidates?.cli !== 'string' || candidates.cli === '') return;
   const attempt = await readAttempt(options);
   if (!attempt) return;
   if (reusesAttemptedCandidate(attempt, candidates)) {
@@ -344,7 +344,6 @@ export async function prepareLocalRelease(channel, options = {}) {
     await fs.mkdir(artifactRoot, { recursive: true });
     await Promise.all([fs.chmod(temporaryRoot, 0o700), fs.chmod(artifactRoot, 0o700)]);
     const descriptor = await (options.withSnapshot ?? withReleaseBuildSnapshot)(async (snapshot) => {
-      const content = await (options.readContent ?? readCurrentReleaseContent)(snapshot, sourceHead, options);
       let npm = null;
       if (candidates.cli !== null) {
         await stampCandidatePackages(snapshot, candidates.cli);
@@ -385,35 +384,28 @@ export async function prepareLocalRelease(channel, options = {}) {
       let catalog = null;
       if (candidates.catalog !== null) {
         const mode = channel === 'stable' ? 'latest' : 'beta';
-        const internalOutputRoot = path.join(temporaryRoot, '.release', 'catalog-staging', 'catalog');
-        const previousReleaseLedger = await (options.readCatalogChannelLedger
-          ?? readCatalogChannelLedger)(mode, options);
-        const staged = await (options.stageCatalog ?? stageCatalogRelease)([
-          '--catalog-version', candidates.catalog,
-        ], {
-          snapshot,
-          internalOutputRoot,
-          previousReleaseLedger,
-          catalogRelease: {
-            state: 'published',
-            targetVersion: targets.catalog,
-            planId: content.catalog.contentDigest,
-            sourceHead,
-            contentDigest: content.catalog.contentDigest,
-          },
-        });
+        const preparation = await (options.prepareCatalog ?? prepareCatalogRelease)(
+          candidates.catalog,
+          mode,
+          { ...options, repoRoot },
+        );
         const catalogPath = path.join(artifactRoot, 'catalog');
-        await fs.cp(staged.outputRoot, catalogPath, { recursive: true, verbatimSymlinks: true });
-        await fs.rm(path.join(temporaryRoot, '.release'), { recursive: true, force: true });
-        catalog = {
-          version: candidates.catalog,
-          path: path.relative(temporaryRoot, catalogPath),
-          snapshotDigest: staged.snapshotDigest,
-          minCliVersion: content.catalog.minCliVersion,
-          ledgerDigest: calculateCanonicalDigest(JSON.parse(await fs.readFile(
-            path.join(catalogPath, 'plugin-release-ledger.json'), 'utf8',
-          ))),
-        };
+        try {
+          await fs.cp(preparation.prepared.outputRoot, catalogPath, {
+            recursive: true,
+            verbatimSymlinks: true,
+          });
+          catalog = {
+            version: candidates.catalog,
+            path: path.relative(temporaryRoot, catalogPath),
+            snapshotDigest: preparation.descriptor.snapshotDigest,
+            minCliVersion: preparation.descriptor.minCliVersion,
+            ledgerDigest: preparation.descriptor.ledgerDigest,
+            publication: preparation.descriptor,
+          };
+        } finally {
+          await (options.disposeCatalog ?? disposeCatalogRelease)(preparation, options);
+        }
       }
       return {
         schemaVersion: 1,
@@ -475,6 +467,10 @@ export async function readPreparedDescriptor(options = {}) {
     || (descriptor.axes.catalog && (
       descriptor.catalog?.version !== descriptor.candidates.catalog
       || typeof descriptor.catalog?.ledgerDigest !== 'string'
+      || descriptor.catalog?.publication?.catalogVersion !== descriptor.candidates.catalog
+      || descriptor.catalog?.publication?.snapshotDigest !== descriptor.catalog?.snapshotDigest
+      || descriptor.catalog?.publication?.ledgerDigest !== descriptor.catalog?.ledgerDigest
+      || descriptor.catalog?.publication?.minCliVersion !== descriptor.catalog?.minCliVersion
     ))
     || (!descriptor.axes.catalog && descriptor.catalog !== null)
   ) {
@@ -538,6 +534,9 @@ export async function assertPreparedCliArtifacts(root, descriptor, options = {})
 async function assertPreparedArtifacts(root, descriptor, options = {}) {
   await assertPreparedCliArtifacts(root, descriptor, options);
   if (descriptor.catalog) {
+    if (descriptor.catalog.publication?.minCliVersion !== descriptor.catalog.minCliVersion) {
+      throw new Error('Prepared Catalog compatibility binding changed; prepare again.');
+    }
     const modules = options.catalogModules ?? await loadCatalogModules(options.cliDistRoot);
     const catalogRoot = resolvePreparedPath(root, descriptor.catalog.path);
     const [stats, realPath, realRoot] = await Promise.all([
@@ -551,12 +550,17 @@ async function assertPreparedArtifacts(root, descriptor, options = {}) {
       throw new Error('Prepared Catalog path is not a regular local directory; prepare again.');
     }
     const validation = await modules.catalogSnapshot.validateCatalogSnapshot(catalogRoot);
-    const ledger = JSON.parse(await fs.readFile(path.join(catalogRoot, 'plugin-release-ledger.json'), 'utf8'));
+    const ledgerPath = path.join(catalogRoot, 'plugin-release-ledger.json');
+    const ledgerBytes = await fs.readFile(ledgerPath);
+    const ledger = JSON.parse(ledgerBytes);
     modules.pluginStaging.validatePluginReleaseLedgerAgainstManifest(ledger, validation.manifest);
     if (validation.snapshotDigest !== descriptor.catalog.snapshotDigest) {
       throw new Error('Prepared Catalog snapshot digest changed; prepare again.');
     }
-    if (calculateCanonicalDigest(ledger) !== descriptor.catalog.ledgerDigest) {
+    if (
+      digest(ledgerBytes) !== descriptor.catalog.ledgerDigest
+      || descriptor.catalog.publication.ledgerDigest !== descriptor.catalog.ledgerDigest
+    ) {
       throw new Error('Prepared Catalog ledger digest changed; prepare again.');
     }
   }
@@ -800,12 +804,10 @@ export async function publishPreparedRelease(options = {}) {
     );
   }
   if (descriptor.axes.catalog) {
-    await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, 'catalog', options);
-    await (options.publishCatalog ?? publishStagedCatalog)({
-      mode: descriptor.channel === 'stable' ? 'latest' : 'beta',
-      catalogVersion: descriptor.candidates.catalog,
+    await (options.publishCatalog ?? publishCatalogRelease)({
+      descriptor: descriptor.catalog.publication,
       stagedRoot: resolvePreparedPath(root, descriptor.catalog.path),
-    }, publicationOptions);
+    }, { ...publicationOptions, repoRoot });
   }
   return descriptor;
 }

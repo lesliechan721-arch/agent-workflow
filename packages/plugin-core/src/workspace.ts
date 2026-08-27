@@ -723,6 +723,7 @@ export async function validatePublishedCatalogSnapshot(snapshotDirectory: string
 export async function preparePublishedCatalogWorkspace(options: {
   workspaceRoot: string;
   sourceHead: string;
+  catalogVersion?: string;
   outputPath?: string;
   previousSnapshotRoot?: string;
   adapter: CatalogWorkspaceBuildAdapter;
@@ -743,7 +744,12 @@ export async function preparePublishedCatalogWorkspace(options: {
   for (const plugin of catalogWorkspace.plugins) {
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }
-  const catalogVersion = catalogWorkspace.metadata.catalog.version;
+  const catalogVersion = options.catalogVersion === undefined
+    ? catalogWorkspace.metadata.catalog.version
+    : assertStrictSemVer(options.catalogVersion, 'published Catalog version');
+  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(catalogVersion)) {
+    throw new Error('Published Catalog version must be stable SemVer or exact x.y.z-beta.N.');
+  }
   const channel = deriveCatalogChannel(catalogVersion);
   const previous = options.previousSnapshotRoot
     ? await validatePublishedCatalogSnapshot(options.previousSnapshotRoot)
@@ -791,6 +797,8 @@ export async function preparePublishedCatalogWorkspace(options: {
     );
     const manifestWithoutRelease = {
       ...development.manifest,
+      catalogVersion,
+      channel,
       entries,
     };
     const contentDigest = publishedContentDigest(manifestWithoutRelease);

@@ -488,6 +488,32 @@ describe('AW Catalog Workspace v1', () => {
     )
   })
 
+  it('uses an explicit release candidate without changing Workspace version truth', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const prepared = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '4'.repeat(40),
+      catalogVersion: '2.0.0-beta.3',
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    const validation = await validatePublishedCatalogSnapshot(prepared.outputRoot)
+
+    expect(validation.manifest).toMatchObject({
+      catalogVersion: '2.0.0-beta.3',
+      channel: 'beta',
+      release: {
+        state: 'published',
+        targetVersion: '2.0.0',
+        planId: prepared.planId,
+      },
+    })
+    await expect(readCatalogWorkspace(root)).resolves.toMatchObject({
+      metadata: { catalog: { version: '0.1.0' } },
+    })
+  })
+
   it('rejects reuse of a published plugin version for different content', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
