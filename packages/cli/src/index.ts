@@ -1414,6 +1414,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
 
   plugin
+    .command('remove')
+    .description('Remove one committed and unchanged canonical plugin source tree')
+    .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
+    .requiredOption('--workspace-root <path>', 'Catalog Workspace root')
+    .option('--yes', 'confirm plugin source deletion', false)
+    .option('--json', 'emit one schema 1 JSON object', false);
+
+  plugin
     .command('validate')
     .description('Validate one source plugin directory')
     .argument('<plugin-directory>', 'source plugin directory')
@@ -2856,6 +2864,7 @@ export async function runCli(
     const authoringScriptByCommand: Record<string, string> = {
       init: 'init-plugin.mjs',
       'add-skill': 'add-skill.mjs',
+      remove: 'remove-plugin.mjs',
       validate: 'validate-plugin.mjs',
       status: 'plugin-status.mjs',
       'check-versions': 'check-plugin-versions.mjs',

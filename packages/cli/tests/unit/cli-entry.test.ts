@@ -77,6 +77,17 @@ describe('CLI entry v4', () => {
 
   });
 
+  it('publishes the confirmed canonical plugin removal options', async () => {
+    const output = capture();
+    expect(await runCli(['plugin', 'remove', '--help'], { io: output.io })).toBe(0);
+    expect(output.stdout()).toContain('Usage: aw plugin remove');
+    expect(output.stdout()).toContain('--workspace-root <path>');
+    expect(output.stdout()).toContain('--yes');
+    expect(output.stdout()).toContain('--json');
+    expect(output.stdout()).not.toContain('--force');
+    expect(output.stdout()).not.toContain('--plugin-root');
+  });
+
   it('treats diagnose as an unknown command', async () => {
     const output = capture();
     expect(await runCli(['diagnose'], { io: output.io })).toBe(1);

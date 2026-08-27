@@ -35,7 +35,7 @@ function codedError(code, message) {
   return new PluginVersionCheckError(code, message);
 }
 
-function parseStablePluginVersion(version, fieldName) {
+export function parseStablePluginVersion(version, fieldName) {
   const parsed = parseStrictSemVer(version, fieldName);
   if (parsed.prerelease.length > 0 || parsed.build.length > 0) {
     throw codedError(
@@ -46,7 +46,7 @@ function parseStablePluginVersion(version, fieldName) {
   return parsed;
 }
 
-async function runGit(repoRoot, args, options = {}) {
+export async function runGit(repoRoot, args, options = {}) {
   try {
     const result = await execFileAsync('git', args, {
       cwd: repoRoot,
@@ -65,7 +65,7 @@ async function runGit(repoRoot, args, options = {}) {
   }
 }
 
-async function resolveBaseCommit(repoRoot, base) {
+export async function resolveBaseCommit(repoRoot, base) {
   await runGit(repoRoot, ['rev-parse', '--show-toplevel'], {
     code: 'gitUnavailable',
     label: 'Git repository discovery',
@@ -219,7 +219,7 @@ async function lstatOrNull(filePath) {
 
 
 
-async function readManifestDocument(pluginRoot) {
+export async function readManifestDocument(pluginRoot) {
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   let manifest;
   try {
