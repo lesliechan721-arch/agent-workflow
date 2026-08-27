@@ -24,6 +24,7 @@ export interface CatalogPublishIo {
 export interface CatalogPublishReceipt {
   command: 'catalog:publish';
   ok: true;
+  workspaceIdentity: string;
   catalogVersion: string;
   channel: 'latest' | 'beta';
   remote: string;
@@ -31,11 +32,13 @@ export interface CatalogPublishReceipt {
   fetchUrl: string;
   pushUrl: string;
   branch: string;
+  parent: string | null;
   tag: string;
   commit: string;
   sourceHead: string;
   pluginCount: number;
   snapshotDigest: string;
+  planId: string;
 }
 
 function digest(value: string | Buffer): string {
@@ -297,6 +300,7 @@ async function publishCatalogPublicationPreparation(options: {
   return {
     command: 'catalog:publish',
     ok: true,
+    workspaceIdentity: descriptor.workspaceIdentity,
     catalogVersion: descriptor.catalogVersion,
     channel: descriptor.channel,
     remote,
@@ -304,11 +308,13 @@ async function publishCatalogPublicationPreparation(options: {
     fetchUrl: safeFetchUrl,
     pushUrl: safePushUrl,
     branch,
+    parent,
     tag,
     commit,
     sourceHead,
     pluginCount: descriptor.pluginNames.length,
     snapshotDigest: descriptor.snapshotDigest,
+    planId: descriptor.planId,
   };
 }
 

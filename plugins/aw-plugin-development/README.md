@@ -1,16 +1,14 @@
 # aw-plugin-development
 
-在任意兼容的 Workspace v1 中创建或维护 AW 插件，并分别评审单个插件或有界的跨插件工作流。
+在既有合法 AW Catalog Workspace 中创建或维护单个 AW 插件，并分别评审单个插件或有界的跨插件工作流。
 
 这是 Agent-facing Developer Assistant。它依赖已经安装的 `aw` CLI 来执行公开作者命令；它不是 SDK，也不是 AW manifest、Catalog 或发布合同的规范真值。不需要 clone `agent-workflows`，也不要求目标 workspace 有本仓库的 `packages/cli` 或 `node_modules`。
 
 ## 安装
 
-需要 Node.js 22+、已安装并可执行的 `aw` CLI，以及目标工作区依赖。先安装两个通用工具插件：
+需要 Node.js 22+、已安装并可执行的 `aw` CLI，以及目标工作区依赖。安装会解析两个通用工具插件依赖：
 
 ```bash
-aw install agent-content-toolkit -p both
-aw install agent-skill-toolkit -p both
 aw install aw-plugin-development -p both
 ```
 
@@ -18,7 +16,7 @@ aw install aw-plugin-development -p both
 
 | Skill | 用途 |
 | --- | --- |
-| `author-aw-plugin` | 创建或维护一个 AW plugin。 |
+| `author-aw-plugin` | 在既有 Catalog Workspace 中创建或维护一个 AW Plugin Source。 |
 | `review-aw-plugin` | 只读评审一个 AW plugin 及 materialized profiles。 |
 | `review-aw-workflow` | 只读评审一个有界的跨 AW plugin 工作流。 |
 
@@ -32,7 +30,7 @@ aw install aw-plugin-development -p both
 
 ## 边界
 
-- `author-aw-plugin` 会发现或创建 Workspace v1，通过当前 PATH 的 `aw plugin capabilities` 查询字段合同，并只调用公开 `aw catalog` / `aw plugin` 命令写入和验证插件源码。修改 Skill 时它组合 `author-agent-skill` 和 `aw skill validate`；不手改生成目录、catalog 或 runtime cache。
+- `author-aw-plugin` 要求既有合法 Catalog Workspace，通过当前 PATH 的 `aw plugin capabilities` 查询字段合同，并只调用公开 `aw plugin` 命令写入和验证一个 Plugin Source。缺少 Workspace 时它停止，并要求使用 `author-aw-catalog`。
 - 两个 Reviewer 保持只读，不修改插件或 materialized 产物，也不输出发布资格。
 - 单 Skill 质量由 `review-agent-skill` 负责；通用跨 Skill 组合由 `review-agent-workflow` 负责。
-- Author 不自动 Review、Audit、运行模型 Eval 或 publish。真实模型 Eval 和 `aw catalog publish` 都需要单独请求及相应授权。
+- Author 不拥有 Catalog metadata、inventory、聚合 build/validate 或 publication。`review-aw-workflow` 仍只评审跨插件业务 workflow；workflow 不等于 Catalog composition。

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Publish AW Catalog"
+  short_description: "Preflight 并在精确用户授权后发布 Catalog"
+  default_prompt: "使用 $publish-aw-catalog 发布用户明确指定的 AW Catalog。"
+
+policy:
+  allow_implicit_invocation: false

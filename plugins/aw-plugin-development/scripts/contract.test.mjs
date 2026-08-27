@@ -99,16 +99,16 @@ test('AW reviewer production and materialized closures use registered current de
   );
 });
 
-test('author adapter uses public workspace-root CLI commands and never auto-publishes', async () => {
+test('author adapter uses only public single-plugin workspace-root commands', async () => {
   const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
-  // Static contract exception: installed agents must discover every public authoring command and preserve the no-auto-publish boundary; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  // Static contract exception: installed agents must discover every public plugin authoring command and stop at the Catalog boundary; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
   for (const command of ['init', 'add-skill', 'validate', 'test', 'build', 'status']) {
     assert.match(skill, new RegExp(`aw plugin ${command}[\\s\\S]*--workspace-root`, 'u'));
   }
   assert.match(skill, /调用每个作者命令前[^\n]+对应 `--help`/u);
-  for (const command of ['init', 'build', 'validate']) assert.match(skill, new RegExp(`aw catalog ${command}`, 'u'));
-  assert.match(skill, /aw catalog publish --help/u);
-  assert.match(skill, /绝不自动 publish/u);
+  assert.doesNotMatch(skill, /aw catalog (?:init|version|build|validate|status|publish)/u);
+  assert.match(skill, /缺少或不合法时停止/u);
+  assert.match(skill, /要求调用 `author-aw-catalog`/u);
   assert.doesNotMatch(skill, /--repo-root|pnpm plugin:test|pnpm build/u);
   assert.match(skill, /不得回退到本 Skill 的本地 registry 或工具副本/u);
   assert.match(skill, /aw plugin capabilities --surface <surface> --json/u);

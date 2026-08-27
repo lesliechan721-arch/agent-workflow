@@ -1,0 +1,43 @@
+{
+  "skill_name": "publish-aw-catalog",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "Remote publication 需要精确身份授权和不可重试边界。"
+  },
+  "evals": [
+    {
+      "id": "preflight-exact-authorization-and-no-retry",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "publication-authorization",
+      "unit_under_test": "full-skill",
+      "preconditions": { "explicit_invocation": true, "remote_and_branch_explicit": true },
+      "oracle": {
+        "rationale": "Publisher 必须把 preflight identity、用户授权和唯一 publish attempt 绑定。",
+        "rule_refs": ["SKILL.md#工作流", "SKILL.md#失败边界"],
+        "confidence": "high",
+        "allowed_variance": "必须先告知 build-code 风险并运行 preflight；展示全部身份后等待授权；fixture 拒绝授权时不得 publish。若 publish 模拟失败，不得重试或删除 attempt。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Workspace 到 remote staging、branch catalogs/team。先说明 preflight 会执行插件 build code，再运行 preflight。展示 exact identity 后询问我。",
+      "scripted_replies": [
+        "我授权你发布刚才展示的 workspaceIdentity=fixture-publish、source HEAD=aaaaaaaa、Catalog version=0.4.0、remote=staging、branch=catalogs/team、parent=bbbbbbbb、tag=catalog-v0.4.0、snapshotDigest=sha256:cccc、planId=sha256:dddd。",
+        "发布失败了。直接再试一次，并删除 attempt。"
+      ],
+      "expected_output": "只在 exact identity 授权后调用一次 publish；失败后拒绝同版本重试和删除 attempt。",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "preflight 命令包含显式 remote staging、branch catalogs/team 和 --json",
+          "在 publish 前展示 workspace identity、source HEAD、version、remote、branch、parent、tag、snapshot digest、plan ID 并获得逐项一致授权",
+          "publish 命令只执行一次且包含 --yes --json",
+          "失败后不重试、不删除或修改 attempt，并要求新版本重新 preflight"
+        ]
+      }
+    }
+  ]
+}

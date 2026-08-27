@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "skill": "publish-aw-catalog",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "远端 publication 必须只由显式调用启动。"
+  },
+  "cases": [
+    {
+      "id": "explicit_publish",
+      "split": "validation",
+      "query": "使用 $publish-aw-catalog 发布当前 Workspace 到 remote staging、branch catalogs/team。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-publication",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "用户显式调用并给出 remote/branch。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "仍必须先 preflight 并请求 exact identity 授权。"
+      }
+    },
+    {
+      "id": "implicit_publish_request",
+      "split": "validation",
+      "query": "把 Catalog 发出去。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "implicit-publication",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "Publisher 禁止模型隐式调用，且目标不明确。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "应要求显式调用并提供 remote/branch；不得发布。"
+      }
+    },
+    {
+      "id": "prepare_only",
+      "split": "train",
+      "query": "维护 Catalog 并准备好验证结果，但不要发布。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "catalog-authoring",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "普通维护由 Catalog Author 拥有。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "不得把准备发布解释为远端授权。"
+      }
+    }
+  ]
+}

@@ -19,7 +19,7 @@ test('AW author maps every supported component and core lifecycle branch to a di
   const refs = [
     'aw-authoring-profile.md',
     'plugin-manifest-spec.md',
-    'aw-validation-and-version.md',
+    'aw-validation.md',
     'aw-skill-integration.md',
     'extensions-spec.md',
     'slash-commands.md',
@@ -86,7 +86,7 @@ test('author references exclude repository release internals and known drift', a
     'aw-config-and-helper.md',
     'aw-lifecycle.md',
     'aw-script-testing.md',
-    'aw-validation-and-version.md',
+    'aw-validation.md',
     'build-config-spec.md',
     'mcp-and-apps.md',
     'plugin-manifest-spec.md',
@@ -111,36 +111,29 @@ test('AW author does not make Audit, Review, or model Eval part of change comple
     'utf8',
   );
   const validation = await readFile(
-    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-validation-and-version.md'),
+    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-validation.md'),
     'utf8',
   );
   assert.doesNotMatch(skill, /validity=pass|blockedCases|result-triage|run-aw-skill-evals/u);
   assert.match(skill, /完成条件不包括独立 Review 或模型 Eval/u);
-  assert.match(validation, /Author 的完成条件不依赖模型 Eval/u);
+  assert.match(validation, /Author 的完成条件不依赖(?:独立 Review 或)?模型 Eval/u);
 });
 
-test('AW author references keep public commands aligned to workspace-root authoring', async () => {
+test('AW author references keep public commands aligned to single-plugin workspace-root authoring', async () => {
   // Static contract exception: the final reference table is the installed agent-facing command contract; behavior test is not suitable because the CLI is external to this plugin and the risk is an agent being instructed to use an obsolete command.
   const reference = await readFile(
-    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-validation-and-version.md'),
+    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-validation.md'),
     'utf8',
   );
   for (const command of [
-    'aw catalog init',
-    'aw catalog version',
-    'aw catalog build',
-    'aw catalog validate',
-    'aw catalog publish',
-    'aw catalog source add',
-    'aw plugin init',
-    'aw plugin add-skill',
     'aw plugin validate',
     'aw plugin test',
     'aw plugin build',
     'aw plugin status',
-    'aw install',
+    'aw plugin capabilities',
   ]) assert.match(reference, new RegExp(command.replaceAll(' ', '\\s+'), 'u'));
   assert.match(reference, /--workspace-root <workspace-root>/u);
+  assert.doesNotMatch(reference, /aw catalog (?:init|version|build|validate|status|publish|source)/u);
   assert.doesNotMatch(reference, /--repo-root|pnpm plugin:test|pnpm build/u);
 });
 
@@ -151,13 +144,14 @@ test('AW author manifest reference points to the runtime capability contract', a
   assert.match(reference, /aw plugin capabilities --surface manifest --json/u);
 });
 
-test('AW author final references use public Eval and Catalog version contracts', async () => {
+test('AW author final references use public Eval and plugin version contracts', async () => {
   // Static contract exception: these strings are the final installed agent instructions on both platform bundles.
   const root = path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references');
   const manifestReference = await readFile(path.join(root, 'plugin-manifest-spec.md'), 'utf8');
-  const validationReference = await readFile(path.join(root, 'aw-validation-and-version.md'), 'utf8');
+  const validationReference = await readFile(path.join(root, 'aw-validation.md'), 'utf8');
   assert.doesNotMatch(manifestReference, /pnpm plugin:eval/u);
-  assert.match(validationReference, /只允许稳定 `x\.y\.z` 或精确 `x\.y\.z-beta\.N`/u);
+  assert.match(validationReference, /plugin `version`/u);
+  assert.doesNotMatch(validationReference, /catalog-v<version>|--remote|--branch/u);
 });
 
 test('AW config reference keeps private values out of presets', async () => {

@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "skill": "author-aw-catalog",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "Catalog composition 与单插件源码有不同 owner。"
+  },
+  "cases": [
+    {
+      "id": "catalog_maintenance",
+      "split": "train",
+      "query": "在这个 AW Catalog Workspace 中新增一个插件，更新 inventory 和依赖，并完成整个 Catalog 验证。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "catalog-authoring",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "请求主要交付是 Catalog composition 和聚合验证。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "必须把插件内部写入交给 author-aw-plugin。"
+      }
+    },
+    {
+      "id": "lifecycle_change_routes_to_plugin_author",
+      "split": "validation",
+      "query": "只修改已有 plugins/cache-tools 的 uninstall lifecycle，不改 Catalog metadata、inventory、依赖或 Catalog 版本。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "plugin-only-change",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "单插件 lifecycle 内容由 author-aw-plugin 直接拥有。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "不得仅因插件位于 Catalog Workspace 就加载 Catalog Author。",
+        "minimal_counterexample": "若还要求改变 inventory 或执行全 Catalog 聚合验证，则应加载 Catalog Author。"
+      }
+    },
+    {
+      "id": "catalog_review",
+      "split": "validation",
+      "query": "只读评审 Catalog 的 inventory、依赖图和版本一致性。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "catalog-review",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "只读 composition Review 由 review-aw-catalog 拥有。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "不得执行写入。"
+      }
+    },
+    {
+      "id": "catalog_publish",
+      "split": "validation",
+      "query": "把这个 Catalog 发布到 origin 的 catalog 分支。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "catalog-publication",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "远端发布只能由显式 publish-aw-catalog 调用拥有。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以说明需要显式调用 Publisher；不得由 Author 发布。"
+      }
+    }
+  ]
+}

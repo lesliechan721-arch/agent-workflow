@@ -170,6 +170,7 @@ describe('Catalog publication status CLI', () => {
         branch: 'catalog',
         publishedVersion: null,
         parent: null,
+        tag: 'catalog-v0.1.0',
         tagAvailable: true,
         attemptAvailable: true,
         snapshotDigest: expect.stringMatching(/^sha256:/u),
@@ -238,8 +239,18 @@ describe('Catalog publication status CLI', () => {
       'catalog', 'publish', '--workspace-root', root, '--yes', '--json',
     ], { cwd: root, interactive: false, io: publishOutput.io })).toBe(0);
 
-    expect(JSON.parse(publishOutput.stdout()).snapshotDigest)
-      .toBe(JSON.parse(statusOutput.stdout()).publication.snapshotDigest);
+    const status = JSON.parse(statusOutput.stdout());
+    expect(JSON.parse(publishOutput.stdout())).toMatchObject({
+      workspaceIdentity: status.workspace.identity,
+      catalogVersion: status.catalog.version,
+      sourceHead: status.git.sourceHead,
+      remote: status.publication.remote,
+      branch: status.publication.branch,
+      parent: status.publication.parent,
+      tag: status.publication.tag,
+      snapshotDigest: status.publication.snapshotDigest,
+      planId: status.publication.planId,
+    });
   });
 
   it('rejects a selected remote identity change before writing an attempt or pushing', async () => {

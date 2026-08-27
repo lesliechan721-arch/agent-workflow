@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 2,
+  "plugin": "aw-catalog-development",
+  "skill": "publish-aw-catalog",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "plugins": [
+        { "name": "agent-content-toolkit", "config": {} },
+        { "name": "agent-skill-toolkit", "config": {} },
+        { "name": "aw-plugin-development", "config": {} },
+        { "name": "aw-catalog-development", "config": {} }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skills": ["author-aw-catalog", "review-aw-catalog", "publish-aw-catalog"],
+      "cases": "./trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skills": ["publish-aw-catalog"],
+      "cases": "./behavior-cases.json",
+      "isolation": "strict",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 240000
+    }
+  ]
+}

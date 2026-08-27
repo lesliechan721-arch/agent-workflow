@@ -58,6 +58,7 @@ export interface CatalogStatusReceipt {
     branch: string | null;
     publishedVersion: string | null;
     parent: string | null;
+    tag: string | null;
     tagAvailable: boolean | null;
     attemptAvailable: boolean | null;
     snapshotDigest: string | null;
@@ -186,6 +187,7 @@ function emptyReceipt(workspaceRoot: string, preflight: boolean): CatalogStatusR
       branch: null,
       publishedVersion: null,
       parent: null,
+      tag: null,
       tagAvailable: null,
       attemptAvailable: null,
       snapshotDigest: null,
@@ -247,6 +249,7 @@ export async function getCatalogStatus(options: {
         branch: inspection.branch,
         publishedVersion: inspection.publishedVersion,
         parent: inspection.parent,
+        tag: inspection.tag,
         tagAvailable: inspection.tagAvailable,
         attemptAvailable: inspection.attemptAvailable,
         snapshotDigest: inspection.prepared.snapshotDigest,
@@ -300,6 +303,7 @@ export function renderCatalogStatus(receipt: CatalogStatusReceipt): string {
       lines.push(`Remote: ${receipt.publication.remote}${receipt.publication.remoteUrl ? ` (${receipt.publication.remoteUrl})` : ''}`);
       lines.push(`Branch: refs/heads/${receipt.publication.branch}`);
     }
+    if (receipt.publication.tag) lines.push(`Tag: refs/tags/${receipt.publication.tag}`);
     if (receipt.publication.snapshotDigest) lines.push(`Snapshot: ${receipt.publication.snapshotDigest}`);
   } else {
     lines.push('Publication preflight: not checked (use --preflight; it executes plugin validation and build code)');

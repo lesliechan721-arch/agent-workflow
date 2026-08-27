@@ -284,7 +284,7 @@
         "rationale": "构建修复改变 production bundle，必须修复直接根因、保持开发期稳定目标不变，并重新运行发现的构建与开发状态检查。",
         "rule_refs": [
           "SKILL.md#工作流",
-          "references/aw-validation-and-version.md",
+          "references/aw-validation.md",
           "references/aw-script-testing.md"
         ],
         "confidence": "high",
