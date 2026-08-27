@@ -73,13 +73,9 @@ test('review adapter manifest and runtime contain only current quality and relea
 test('AW reviewer production and materialized closures use registered current dependencies', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
   assert.deepEqual(manifest.buildConfig.runtimeExports ?? [], []);
-  assert.deepEqual(
-    manifest.buildConfig.buildImports.map((entry) => `${entry.plugin}:${entry.export}`).sort(),
-    [
-      '@aw/cli:plugin-authoring-capabilities',
-      '@aw/cli:skill-frontmatter-capabilities',
-    ],
-  );
+  assert.deepEqual(manifest.buildConfig.buildImports ?? [], []);
+  assert.deepEqual(manifest.buildConfig.generatedSkillRuntimeFiles ?? [], []);
+  assert.equal(manifest.scripts.node?.build, undefined);
   assert.deepEqual(
     manifest.buildConfig.skillRuntimeFiles
       .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
@@ -107,16 +103,18 @@ test('author adapter uses public workspace-root CLI commands and never auto-publ
   const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
   // Static contract exception: installed agents must discover every public authoring command and preserve the no-auto-publish boundary; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
   for (const command of ['init', 'add-skill', 'validate', 'test', 'build', 'status']) {
-    assert.match(skill, new RegExp(`aw plugin ${command} --help`, 'u'));
     assert.match(skill, new RegExp(`aw plugin ${command}[\\s\\S]*--workspace-root`, 'u'));
   }
-  for (const command of ['init', 'build', 'validate']) {
-    assert.match(skill, new RegExp(`aw catalog ${command} --help`, 'u'));
-  }
+  assert.match(skill, /调用每个作者命令前[^\n]+对应 `--help`/u);
+  for (const command of ['init', 'build', 'validate']) assert.match(skill, new RegExp(`aw catalog ${command}`, 'u'));
   assert.match(skill, /aw catalog publish --help/u);
   assert.match(skill, /绝不自动 publish/u);
   assert.doesNotMatch(skill, /--repo-root|pnpm plugin:test|pnpm build/u);
-  assert.match(skill, /不得回退到本 Skill 的本地工具副本/u);
+  assert.match(skill, /不得回退到本 Skill 的本地 registry 或工具副本/u);
+  assert.match(skill, /aw plugin capabilities --surface <surface> --json/u);
+  assert.match(skill, /委托 `author-agent-skill`/u);
+  assert.match(skill, /aw skill validate <skill-root>/u);
+  assert.doesNotMatch(skill, /capabilities\.generated\.md|skill-frontmatter-capabilities\.md/u);
 });
 
 test('author adapter exposes structured context tools from the final Skill entrypoint', async () => {

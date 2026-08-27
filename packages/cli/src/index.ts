@@ -142,6 +142,11 @@ import {
   runPluginTestCommand,
 } from './authoring/workspace-commands.js';
 import { runCatalogPublishCommand } from './commands/catalog-publish.js';
+import {
+  getPluginCapabilitiesResult,
+  parsePluginCapabilitySurface,
+  renderPluginCapabilities,
+} from './commands/plugin-capabilities.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -997,6 +1002,28 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const plugin = program
     .command('plugin')
     .description('Create and validate AW plugin source');
+
+  plugin
+    .command('capabilities')
+    .description('Show the current plugin authoring capability contract')
+    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | lifecycle | artifacts')
+    .option('--json', 'emit one machine-readable JSON object', false)
+    .action((rawOptions: { surface?: string; json?: boolean }) => {
+      try {
+        const surface = rawOptions.surface === undefined
+          ? undefined
+          : parsePluginCapabilitySurface(rawOptions.surface);
+        const result = getPluginCapabilitiesResult({
+          awVersion: resolveCliVersion(),
+          ...(surface ? { surface } : {}),
+        });
+        if (rawOptions.json) writeJsonReceipt(io.stdout, result);
+        else for (const line of renderPluginCapabilities(result)) writeLine(io.stdout, line);
+      } catch (error) {
+        writeLine(io.stderr, error instanceof Error ? error.message : String(error));
+        commandExitState.exitCode = 1;
+      }
+    });
 
   const skill = program
     .command('skill')

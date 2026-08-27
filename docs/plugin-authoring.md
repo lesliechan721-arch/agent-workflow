@@ -36,6 +36,8 @@ Catalog Workspace v1 的固定根布局如下：
 
 Manifest 中所有 source path 必须留在插件根内，并且任何路径 segment 都不能是 `.git` 或 `node_modules`。这包括 Skill、MCP、App、脚本、package root、runtime export 和 artifact source。
 
+用当前 PATH 中的 CLI 查询字段合同，例如 `aw plugin capabilities --surface manifest --json`。固定 surface 是 `manifest`、`build-config`、`extensions`、`slash-commands`、`mcp-apps`、`config`、`lifecycle` 和 `artifacts`。不要从已安装 development plugin 的文档缓存字段表。
+
 每个插件的 `.agents-plugin/plugin.json` 使用 `schemaVersion: 1`。缺失 `schemaVersion` 的历史 manifest 按 legacy v1 读取；其它 schema 版本会被拒绝。不要混淆三个版本：
 
 - `schemaVersion` 是 manifest 结构版本，当前固定为 `1`。
@@ -65,6 +67,8 @@ aw plugin add-skill "$plugin" \
   --skill-description "Describe the Skill." \
   --workspace-root "$workspace"
 
+aw plugin capabilities --surface manifest --json
+
 aw plugin validate "plugins/$plugin" --workspace-root "$workspace" --json
 aw plugin test "plugins/$plugin" --workspace-root "$workspace" --json
 aw plugin build "plugins/$plugin" --workspace-root "$workspace" --json
@@ -74,6 +78,8 @@ aw catalog validate "$workspace/.aw/catalog" --json
 ```
 
 `aw plugin build` materializes one plugin bundle. `aw catalog build` materializes the complete development snapshot. Run either when its output is needed; then validate the result. `aw plugin test` runs the deterministic Node tests declared by that plugin. `aw plugin status <plugin> --workspace-root "$workspace"` is a development status check and does not require Git. Only an explicit `--base <git-ref>` comparison requires Git.
+
+`author-aw-plugin` 修改插件内 Skill 时调用 `author-agent-skill`，并用 `aw skill validate <skill-root>` 验证结果。它不保存 Skill frontmatter 投影。
 
 To consume the generated path snapshot, use a separate isolated AW home when testing:
 

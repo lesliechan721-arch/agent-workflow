@@ -32,7 +32,7 @@ aw install aw-plugin-development -p both
 
 ## 边界
 
-- `author-aw-plugin` 会发现或创建 Workspace v1，并只调用公开 `aw catalog` / `aw plugin` 命令写入目标插件源码、执行 build、validation 和 tests；它不手改生成目录、catalog 或 runtime cache。
+- `author-aw-plugin` 会发现或创建 Workspace v1，通过当前 PATH 的 `aw plugin capabilities` 查询字段合同，并只调用公开 `aw catalog` / `aw plugin` 命令写入和验证插件源码。修改 Skill 时它组合 `author-agent-skill` 和 `aw skill validate`；不手改生成目录、catalog 或 runtime cache。
 - 两个 Reviewer 保持只读，不修改插件或 materialized 产物，也不输出发布资格。
 - 单 Skill 质量由 `review-agent-skill` 负责；通用跨 Skill 组合由 `review-agent-workflow` 负责。
 - Author 不自动 Review、Audit、运行模型 Eval 或 publish。真实模型 Eval 和 `aw catalog publish` 都需要单独请求及相应授权。

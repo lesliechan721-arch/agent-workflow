@@ -21,8 +21,8 @@ AW CLI/Core 是机器规范。本 Skill 是 Agent-facing Developer Assistant：�
 
 1. 明确 `<workspace-root>`、canonical `<plugin-root>`（固定为 `<workspace-root>/plugins/<plugin-name>`）、允许修改文件和用户授权。读取现有 manifest、源码和工作区规则。没有 Workspace v1 时，先运行 `aw --version`、`aw catalog init --help`，再使用 `aw catalog init --workspace-root <workspace-root>` 创建它。已有 workspace 不重新初始化。
 2. 新建插件、多组件请求、组件增删或 manifest capability 变化时，先读 `references/aw-authoring-profile.md`。把完整 `components[]` 写入临时 JSON。新建时不要预建空插件目录；从本 Skill 根运行 `node scripts/prepare-aw-authoring-context.mjs <workspace-root>/plugins/<name> --mode create --plugin <name> --workspace-root <workspace-root> --components <json-file>`，验证 context 后运行 `aw plugin init <name> --workspace-root <workspace-root>`。修改已有插件时运行同一 context 工具并传 `--mode edit`，不传 `--plugin`。stdout 是 `AWAuthoringContext` v3，输出形状见 `assets/aw-authoring-context.json`。把 stdout 保存到临时文件后，从同一目录运行 `node scripts/validate-json-contract.mjs assets/aw-authoring-context.schema.json <context-json>`。只把验证通过的 context 交给后续作者分支，不写入插件源码。单一已有 Skill 正文的轻量 delta 跳过该工具。
-3. 调用每个作者命令前运行 `aw --version` 和对应帮助：`aw plugin init --help`、`aw plugin add-skill --help`、`aw plugin validate --help`、`aw plugin test --help`、`aw plugin build --help`、`aw plugin status --help`、`aw catalog build --help` 或 `aw catalog validate --help`。只使用帮助公开的参数。使用 `aw plugin init <plugin-name> --workspace-root <workspace-root>`、`aw plugin add-skill <plugin-name> --workspace-root <workspace-root>`、`aw plugin validate <plugin-root> --workspace-root <workspace-root>`、`aw plugin test <plugin-root> --workspace-root <workspace-root>` 和 `aw plugin status <plugin-name> --workspace-root <workspace-root>`；不得回退到本 Skill 的本地工具副本。
-4. 只读取实际变更面对应的 reference。新建或重大变更 Skill 时使用 `author-agent-skill`；轻量 delta 只传意图、允许路径和验收证据。
+3. 调用每个作者命令前运行 `aw --version` 和对应 `--help`。只使用帮助公开的参数。公开插件入口是 `aw plugin init <name> --workspace-root <workspace-root>`、`aw plugin add-skill <name> --workspace-root <workspace-root>`、`aw plugin validate <plugin-root> --workspace-root <workspace-root>`、`aw plugin test <plugin-root> --workspace-root <workspace-root>`、`aw plugin build <plugin-root> --workspace-root <workspace-root>` 和 `aw plugin status <name> --workspace-root <workspace-root>`。机械字段问题运行 `aw plugin capabilities --surface <surface> --json`；只读取 stdout 的单一 JSON 对象，不缓存或复制其字段表。可用 surface 是 `manifest`、`build-config`、`extensions`、`slash-commands`、`mcp-apps`、`config`、`lifecycle` 和 `artifacts`。不得回退到本 Skill 的本地 registry 或工具副本。
+4. 只读取实际变更面对应的 reference。创建或修改插件内 Skill 时委托 `author-agent-skill`，传递意图、允许路径和验收证据；返回后运行 `aw skill validate <skill-root>`。插件级修改继续由本 Skill 持有。
 5. 用户明确要求创建或修改 Eval 资产时使用 `design-agent-skill-evals`。本 Skill不自动审核或运行 Eval。
 6. 写入插件 source truth，不手改 generated runtime、Catalog snapshot、digest、marketplace 或 cache。
 7. 先运行 `aw plugin validate <plugin-root> --workspace-root <workspace-root>` 和 `aw plugin test <plugin-root> --workspace-root <workspace-root>`。需要一个插件 bundle 时运行 `aw plugin build <plugin-root> --workspace-root <workspace-root>`；需要完整 snapshot 时运行 `aw catalog build --workspace-root <workspace-root>`，再用 `aw catalog validate <workspace-root>/.aw/catalog` 验证。`status` 只有用户要求 Git 基线比较时才传明确的 `--base <git-ref>`。
@@ -36,15 +36,15 @@ AW CLI/Core 是机器规范。本 Skill 是 Agent-facing Developer Assistant：�
 | --- | --- |
 | 新建插件、多组件、组件增删、manifest capability | `references/aw-authoring-profile.md` |
 | manifest、版本或兼容性 | `references/plugin-manifest-spec.md` |
-| Portable static Skill 或 portable-only runtime projection | `references/plugin-manifest-capabilities.generated.md` 与 `references/build-config-capabilities.generated.md`；保留 native capability 门禁，且只用 `distributions: ["agent-skills"]` 选择 portable-only projection |
+| Portable static Skill 或 portable-only runtime projection | 查询 `manifest` 与 `build-config` surface；保留 native capability 门禁 |
 | 验证、版本、materialization、Eval 或 release | `references/aw-validation-and-version.md` |
-| Skill | `references/aw-skill-integration.md` 与 `references/skill-frontmatter-capabilities.md` |
+| Skill | `references/aw-skill-integration.md`；字段由 `author-agent-skill` 与 `aw skill validate` 处理 |
 | Extension/hooks/permissions/agents | `references/extensions-spec.md` |
 | Slash command | `references/slash-commands.md` |
 | MCP/App | `references/mcp-and-apps.md` |
 | Claude-only | `references/claude-only-capabilities.md` |
 | Node/build | `references/build-config-spec.md` 与 `references/aw-script-testing.md` |
 | config/helper | `references/aw-config-and-helper.md` |
-| dynamic artifact；含 `agent-skills.skill` 与 `runtimeImports` | `references/aw-artifact-renderer.md` 与 `references/config-lifecycle-artifact-capabilities.generated.md`；Portable target 使用 distribution identity，不把它推断成第三个平台 |
+| dynamic artifact；含 `agent-skills.skill` 与 `runtimeImports` | `references/aw-artifact-renderer.md`；查询 `artifacts` surface |
 | lifecycle | `references/aw-lifecycle.md` |
 | 用户可观察变化 | `references/aw-readme-authoring.md` |

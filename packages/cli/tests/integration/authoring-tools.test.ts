@@ -7,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { getPluginAuthoringAcceptedValues } from '@lesliechan721/aw-plugin-core/manifest';
+
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { getPluginAuthoringAcceptedValues } from '../../src/utils/plugin-authoring-capabilities.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -2129,235 +2130,6 @@ describe('authoring tools', () => {
         errors: [expect.stringContaining('current: Invalid runtime Skill closure')],
       });
     }
-  });
-
-  productionVersionCheckTest('isolates the base CLI virtual registry during version checks', async () => {
-    const distRoot = path.join(repoRoot(), 'packages', 'cli', 'dist');
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-cli-import-'));
-    tempDirs.push(tempRoot);
-    const tempRepo = path.join(tempRoot, 'repo');
-    const checkerTempRoot = path.join(tempRoot, 'checker-tmp');
-    const registryPath = path.join(
-      tempRepo,
-      'packages',
-      'cli',
-      'src',
-      'utils',
-      'skill-frontmatter-capabilities.json',
-    );
-    await fs.ensureDir(path.dirname(registryPath));
-    await fs.ensureDir(checkerTempRoot);
-    await fs.ensureSymlink(distRoot, path.join(tempRepo, 'packages', 'cli', 'dist'), 'dir');
-    await fs.writeJson(path.join(tempRepo, 'packages', 'cli', 'package.json'), {
-      name: '@fixture/aw',
-      version: '1.0.0',
-      type: 'module',
-    }, { spaces: 2 });
-    await fs.writeJson(registryPath, { generation: 'base' }, { spaces: 2 });
-
-    const { manifestPath } = await writeSourcePlugin(
-      path.join(tempRepo, 'plugins'),
-      'virtual-import-consumer',
-      createBaseManifest('virtual-import-consumer', {
-        skills: './skills',
-        buildConfig: {
-          buildImports: [{
-            plugin: '@aw/cli',
-            export: 'skill-frontmatter-capabilities',
-            env: 'AW_PLUGIN_IMPORT_CAPABILITIES',
-          }],
-          skillRuntimeFiles: [{
-            skill: 'virtual-import-skill',
-            target: 'references/capabilities.json',
-            source: './generated-capabilities.json',
-          }],
-        },
-        scripts: {
-          node: {
-            build: { runner: 'node', path: './build.mjs' },
-          },
-        },
-      }),
-      {
-        'build.mjs': [
-          "import fs from 'node:fs';",
-          "import path from 'node:path';",
-          "import { fileURLToPath } from 'node:url';",
-          '',
-          "const pluginRoot = path.dirname(fileURLToPath(import.meta.url));",
-          "fs.copyFileSync(process.env.AW_PLUGIN_IMPORT_CAPABILITIES, path.join(pluginRoot, 'generated-capabilities.json'));",
-        ].join('\n'),
-        'skills/virtual-import-skill/SKILL.md': [
-          '---',
-          'name: virtual-import-skill',
-          'description: Validate an isolated CLI virtual registry import.',
-          '---',
-          '',
-          '# Virtual Import Skill',
-        ].join('\n'),
-        'skills/virtual-import-skill/agents/openai.yaml': [
-          'interface:',
-          '  display_name: "Virtual Import Skill"',
-          '  short_description: "Validate a CLI virtual import"',
-          'policy:',
-          '  allow_implicit_invocation: true',
-        ].join('\n'),
-      },
-    );
-    await runGit(tempRepo, ['init']);
-    await runGit(tempRepo, ['add', 'plugins', 'packages/cli/package.json', registryPath]);
-    await runGit(tempRepo, [
-      '-c',
-      'user.name=AW Test',
-      '-c',
-      'user.email=aw-test@example.invalid',
-      'commit',
-      '-m',
-      'CLI virtual registry baseline',
-    ]);
-
-    await fs.writeJson(registryPath, { generation: 'current' }, { spaces: 2 });
-    await fs.writeJson(path.join(tempRepo, 'packages', 'cli', 'package.json'), {
-      name: '@fixture/aw',
-      version: '2.0.0',
-      type: 'module',
-    }, { spaces: 2 });
-    const checkerPath = authoringScriptPath('plugin-status.mjs');
-    const allDevelopmentStatus = await execFileAsync('node', [
-        checkerPath,
-        '--base',
-        'HEAD',
-        '--all',
-        '--json',
-        '--workspace-root',
-        tempRepo,
-      ], {
-        cwd: repoRoot(),
-        env: { ...process.env, TMPDIR: checkerTempRoot },
-        maxBuffer: 20 * 1024 * 1024,
-      });
-    expect(JSON.parse(allDevelopmentStatus.stdout)).toMatchObject({
-      checkedPlugins: 1,
-      checks: [{
-        plugin: 'virtual-import-consumer',
-        status: 'unreleasedChanges',
-        productionChanged: true,
-      }],
-    });
-
-    const developmentStatus = await execFileAsync('node', [
-        checkerPath,
-        '--base',
-        'HEAD',
-        'virtual-import-consumer',
-        '--json',
-        '--workspace-root',
-        tempRepo,
-      ], {
-        cwd: repoRoot(),
-        env: { ...process.env, TMPDIR: checkerTempRoot },
-        maxBuffer: 20 * 1024 * 1024,
-      });
-    expect(JSON.parse(developmentStatus.stdout).checks[0]).toMatchObject({
-      status: 'unreleasedChanges',
-      productionChanged: true,
-      changedPaths: expect.arrayContaining([
-        'codex/skills/virtual-import-skill/references/capabilities.json',
-      ]),
-    });
-
-    const manifest = await fs.readJson(manifestPath);
-    manifest.version = '0.2.0';
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    const bumped = await execFileAsync('node', [
-      checkerPath,
-      '--base',
-      'HEAD',
-      'virtual-import-consumer',
-      '--json',
-      '--workspace-root',
-      tempRepo,
-    ], {
-      cwd: repoRoot(),
-      env: { ...process.env, TMPDIR: checkerTempRoot },
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
-      status: 'versionBumped',
-      productionChanged: true,
-      baseVersion: '0.1.0',
-      currentVersion: '0.2.0',
-    });
-    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
-  });
-
-  productionVersionCheckTest('fails closed for one-sided or partial workspace CLI ownership', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-cli-ownership-'));
-    tempDirs.push(tempRoot);
-    const workspaceRoot = path.join(tempRoot, 'workspace');
-    const cliPackagePath = path.join(workspaceRoot, 'packages', 'cli', 'package.json');
-    const cliRegistryPath = path.join(
-      workspaceRoot,
-      'packages',
-      'cli',
-      'src',
-      'utils',
-      'skill-frontmatter-capabilities.json',
-    );
-    const checkerPath = authoringScriptPath('plugin-status.mjs');
-
-    await writeSourcePlugin(
-      path.join(workspaceRoot, 'plugins'),
-      'ownership-demo',
-      createBaseManifest('ownership-demo'),
-    );
-    await fs.outputJson(cliPackagePath, {
-      name: '@fixture/aw',
-      version: '1.0.0',
-      type: 'module',
-    }, { spaces: 2 });
-    await fs.outputJson(cliRegistryPath, { generation: 'base' }, { spaces: 2 });
-    await runGit(workspaceRoot, ['init']);
-    await runGit(workspaceRoot, ['add', 'plugins', 'packages/cli']);
-    await runGit(workspaceRoot, [
-      '-c',
-      'user.name=AW Test',
-      '-c',
-      'user.email=aw-test@example.invalid',
-      'commit',
-      '-m',
-      'workspace CLI ownership baseline',
-    ]);
-
-    await fs.remove(path.join(workspaceRoot, 'packages', 'cli'));
-    await expect(execFileAsync('node', [
-      checkerPath,
-      '--base',
-      'HEAD',
-      'ownership-demo',
-      '--workspace-root',
-      workspaceRoot,
-    ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining('workspace CLI source ownership differs'),
-    });
-
-    await fs.outputJson(cliPackagePath, {
-      name: '@fixture/aw',
-      version: '1.0.0',
-      type: 'module',
-    }, { spaces: 2 });
-    await expect(execFileAsync('node', [
-      checkerPath,
-      '--base',
-      'HEAD',
-      'ownership-demo',
-      '--workspace-root',
-      workspaceRoot,
-    ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
-      code: 1,
-      stderr: expect.stringContaining('incomplete current workspace @aw/cli source set'),
-    });
   });
 
   productionVersionCheckTest('uses one verified external CLI provider when neither tree owns CLI source', async () => {
@@ -5460,7 +5232,7 @@ describe('authoring tools', () => {
     const manifest = await fs.readJson(manifestPath);
     manifest.marketplace.policy.products = ['codex', 'claude'];
     for (const installation of getPluginAuthoringAcceptedValues(
-      'plugin-manifest',
+      'manifest',
       'marketplace.policy.installation',
     )) {
       manifest.marketplace.policy.installation = installation;
@@ -6283,10 +6055,6 @@ describe('authoring tools', () => {
         path.join(tempRoot, 'packages', 'cli', 'node_modules'),
         'dir',
       ),
-      fs.copy(
-        path.join(repoRoot(), 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
-        path.join(tempRoot, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
-      ),
     ]);
     const pluginDir = path.join(tempRoot, 'plugins', 'fallback-dependency');
     await Promise.all([
@@ -6338,10 +6106,6 @@ describe('authoring tools', () => {
           'exports.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 4;',
           'exports.validateSourcePluginManifest = async () => { throw new Error("stale v4 validator was trusted"); };',
         ].join('\n'),
-      ),
-      fs.copy(
-        path.join(repoRoot(), 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
-        path.join(tempRoot, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
       ),
     ]);
     const pluginDir = path.join(tempRoot, 'plugins', 'stale-portable');

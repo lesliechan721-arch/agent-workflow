@@ -10,4 +10,4 @@
 
 本 Skill 会写入目标插件的 source truth，并按修改面运行外部 build、validation 和 tests。交付结果包含源码变化、确定性验证、已有的 materialized artifacts 和未完成项。
 
-它不手改 generated runtime、catalog 或 cache。AW CLI/Core 是机器规范；本 Skill 只是调用公开命令的 Agent-facing 助手。独立 Review、Eval Audit、模型 Eval 和发布裁决不属于默认作者完成条件，必须由用户或上层工作流单独请求。
+它通过当前 PATH 的 `aw plugin capabilities` 查询字段合同；修改 Skill 时组合 `author-agent-skill`，并用 `aw skill validate` 验证。它不手改 generated runtime、catalog 或 cache。AW CLI/Core 是机器规范；本 Skill 只是调用公开命令的 Agent-facing 助手。独立 Review、Eval Audit、模型 Eval 和发布裁决不属于默认作者完成条件，必须由用户或上层工作流单独请求。

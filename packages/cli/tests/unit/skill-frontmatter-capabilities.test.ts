@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getSkillFrontmatterCapabilityRegistry,
   validateSkillFrontmatterCapabilities,
-} from '../../src/utils/skill-frontmatter-capabilities.js';
+} from '@lesliechan721/aw-plugin-core/manifest';
 
 const portable = {
   name: 'example-skill',

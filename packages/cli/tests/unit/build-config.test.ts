@@ -123,8 +123,8 @@ describe('buildConfig validation', () => {
       buildConfig: {
         runtimeExports: [{ name: 'frontmatter-registry', source: './registry.json' }],
         buildImports: [{
-          plugin: '@aw/cli',
-          export: 'skill-frontmatter-capabilities',
+          plugin: 'provider',
+          export: 'frontmatter-registry',
           env: 'AW_PLUGIN_IMPORT_FRONTMATTER',
         }],
         skillRuntimeFiles: [{
@@ -139,8 +139,8 @@ describe('buildConfig validation', () => {
     expect(manifest.buildConfig).toMatchObject({
       runtimeExports: [{ name: 'frontmatter-registry', source: './registry.json' }],
       buildImports: [{
-        plugin: '@aw/cli',
-        export: 'skill-frontmatter-capabilities',
+        plugin: 'provider',
+        export: 'frontmatter-registry',
         env: 'AW_PLUGIN_IMPORT_FRONTMATTER',
       }],
       skillRuntimeFiles: [{
@@ -169,7 +169,7 @@ describe('buildConfig validation', () => {
     }]);
   });
 
-  it('rejects CLI reserved imports that are not in the injected registry', () => {
+  it('rejects removed CLI reserved imports', () => {
     expect(() => validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
       buildConfig: {
@@ -179,7 +179,7 @@ describe('buildConfig validation', () => {
           env: 'AW_PLUGIN_IMPORT_UNKNOWN',
         }],
       },
-    })).toThrow('unknown reserved export "unknown-export"');
+    })).toThrow('unknown reserved provider "@aw/cli"');
   });
 
   it('keeps native runtime file defaults and accepts explicit portable distribution projection', () => {

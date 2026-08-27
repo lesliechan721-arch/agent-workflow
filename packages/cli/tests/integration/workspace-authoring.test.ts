@@ -308,30 +308,13 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     }
   });
 
-  it('reads and writes Catalog versions in a workspace with the reserved CLI import', async () => {
+  it('reads and writes Catalog versions without a CLI capability build import', async () => {
     const root = await createRoot();
     await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
     await runCli([
       'plugin', 'init', 'reserved-import', '--description', 'Reserved import fixture.',
       '--no-skills', '--workspace-root', root,
     ], { cwd: root, io: capture().io });
-    const pluginRoot = path.join(root, 'plugins', 'reserved-import');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    manifest.scripts = { node: { build: { runner: 'node', path: './build.mjs' } } };
-    manifest.buildConfig = {
-      cacheable: true,
-      buildImports: [{
-        plugin: '@aw/cli',
-        export: 'skill-frontmatter-capabilities',
-        env: 'AW_PLUGIN_IMPORT_FRONTMATTER',
-      }],
-    };
-    await Promise.all([
-      fs.writeJson(manifestPath, manifest, { spaces: 2 }),
-      fs.writeFile(path.join(pluginRoot, 'build.mjs'), 'export {};\n'),
-    ]);
-
     const readOutput = capture();
     expect(await runCli(['catalog', 'version', '--workspace-root', root, '--json'], {
       cwd: root,

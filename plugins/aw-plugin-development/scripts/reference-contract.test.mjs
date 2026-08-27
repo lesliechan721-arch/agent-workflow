@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -12,7 +11,6 @@ const pluginContext = process.env.AW_PLUGIN_CONTEXT
 const runtimeRoot = pluginContext?.platform
   ? path.join(pluginRoot, pluginContext.platform)
   : pluginRoot;
-const sourceRoot = pluginContext?.sourceRoot ?? pluginRoot;
 
 test('AW author maps every supported component and core lifecycle branch to a direct reference', async () => {
   // Static contract exception: installed agents must discover each maintained AW author reference from the final Skill entrypoint; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
@@ -23,7 +21,6 @@ test('AW author maps every supported component and core lifecycle branch to a di
     'plugin-manifest-spec.md',
     'aw-validation-and-version.md',
     'aw-skill-integration.md',
-    'skill-frontmatter-capabilities.md',
     'extensions-spec.md',
     'slash-commands.md',
     'mcp-and-apps.md',
@@ -40,53 +37,25 @@ test('AW author maps every supported component and core lifecycle branch to a di
     assert.ok(content.length > 150, ref + ' must contain focused guidance');
     assert.match(skill, new RegExp('references/' + ref.replaceAll('.', '\\.'), 'u'));
   }
-  for (const ref of [
-    'plugin-manifest-capabilities.generated.md',
-    'build-config-capabilities.generated.md',
-    'extensions-capabilities.generated.md',
-    'slash-command-capabilities.generated.md',
-    'mcp-app-capabilities.generated.md',
-    'config-lifecycle-artifact-capabilities.generated.md',
-  ]) {
-    const content = await readFile(path.join(root, 'references', ref), 'utf8');
-    assert.ok(content.length > 150, ref + ' must contain a focused generated view');
-  }
 });
 
-test('generated authoring views are fresh projections of the CLI canonical registry', async () => {
-  // Static contract exception: installed agents consume these generated tables as a public field contract; behavior test is not suitable because freshness is byte provenance between the canonical registry and final runtime reference.
-  const registryPath = path.resolve(
-    sourceRoot,
-    '..',
-    '..',
-    'packages/cli/src/utils/plugin-authoring-capabilities.json',
-  );
-  const bytes = await readFile(registryPath);
-  const registry = JSON.parse(bytes.toString('utf8'));
-  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  const expected = {
-    'plugin-manifest': 'plugin-manifest-capabilities.generated.md',
-    'build-config': 'build-config-capabilities.generated.md',
-    extensions: 'extensions-capabilities.generated.md',
-    'slash-command': 'slash-command-capabilities.generated.md',
-    'mcp-app': 'mcp-app-capabilities.generated.md',
-    'config-lifecycle-artifact': 'config-lifecycle-artifact-capabilities.generated.md',
-  };
-  for (const [surface, fileName] of Object.entries(expected)) {
-    const content = await readFile(
-      path.join(runtimeRoot, 'skills/author-aw-plugin/references', fileName),
-      'utf8',
-    );
-    assert.match(content, new RegExp(digest, 'u'));
-    for (const entry of registry.surfaces[surface].entries) {
-      const field = entry.field.replaceAll('|', '\\|');
-      assert.ok(content.includes(`| \`${field}\` |`), `${fileName} must include ${entry.field}`);
-      assert.ok(
-        content.includes((entry.verifiedSource ?? registry.verifiedSource).replaceAll('|', '\\|')),
-        `${fileName} must trace ${entry.field} to its verified source`,
-      );
-    }
+test('authoring references use runtime capability lookup without bundled field truth', async () => {
+  // Static contract exception: installed authors must query the live CLI instead of a bundled field table; behavior test is not suitable because the final installed guidance is the consumer interface.
+  const root = path.join(runtimeRoot, 'skills', 'author-aw-plugin');
+  const contents = await Promise.all([
+    readFile(path.join(root, 'SKILL.md'), 'utf8'),
+    ...[
+      'plugin-manifest-spec.md', 'build-config-spec.md', 'extensions-spec.md',
+      'slash-commands.md', 'mcp-and-apps.md', 'aw-config-and-helper.md',
+      'aw-lifecycle.md', 'aw-artifact-renderer.md',
+    ].map((name) => readFile(path.join(root, 'references', name), 'utf8')),
+  ]);
+  const combined = contents.join('\n');
+  assert.match(combined, /aw plugin capabilities --surface manifest --json/u);
+  for (const surface of ['build-config', 'extensions', 'slash-commands', 'mcp-apps', 'config', 'lifecycle', 'artifacts']) {
+    assert.match(combined, new RegExp(`aw plugin capabilities --surface ${surface} --json`, 'u'));
   }
+  assert.doesNotMatch(combined, /capabilities\.generated\.md|skill-frontmatter-capabilities\.md/u);
 });
 
 test('artifact renderer reference exposes the portable distribution input contract', async () => {
@@ -175,18 +144,11 @@ test('AW author references keep public commands aligned to workspace-root author
   assert.doesNotMatch(reference, /--repo-root|pnpm plugin:test|pnpm build/u);
 });
 
-test('AW author manifest reference exposes the Core installation policy', async () => {
-  // Static contract exception: an installed author agent can otherwise generate a manifest value that Core rejects; behavior test is not suitable because this plugin publishes guidance and Core owns runtime validation.
+test('AW author manifest reference points to the runtime capability contract', async () => {
+  // Static contract exception: installed authors must reach the live manifest contract; behavior test is not suitable because the final installed reference is the consumer interface.
   const root = path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references');
-  const [reference, capabilities] = await Promise.all([
-    readFile(path.join(root, 'plugin-manifest-spec.md'), 'utf8'),
-    readFile(path.join(root, 'plugin-manifest-capabilities.generated.md'), 'utf8'),
-  ]);
-  assert.match(reference, /CLI 生成的能力视图/u);
-  assert.match(
-    capabilities,
-    /`marketplace\.policy\.installation`[^\n]+AVAILABLE, NOT_AVAILABLE, INSTALLED_BY_DEFAULT/u,
-  );
+  const reference = await readFile(path.join(root, 'plugin-manifest-spec.md'), 'utf8');
+  assert.match(reference, /aw plugin capabilities --surface manifest --json/u);
 });
 
 test('AW author final references use public Eval and Catalog version contracts', async () => {
