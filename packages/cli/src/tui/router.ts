@@ -37,12 +37,17 @@ export type TuiRoute =
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }
   | { name: 'pluginTechnical'; pluginId: string }
-  | { name: 'configLayer'; pluginId: string }
+  | {
+      name: 'configLayer';
+      pluginId: string;
+      fieldKey?: string;
+      groupId?: string;
+      presetId?: string;
+    }
   | {
       name: 'configFields';
       pluginId: string;
       layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer };
-      groupId?: string;
     }
   | {
       name: 'configFieldEditor';
@@ -50,11 +55,6 @@ export type TuiRoute =
       layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
       fieldKey: string;
       editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
-    }
-  | {
-      name: 'configPresets';
-      pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
     }
   | {
       name: 'configUnavailable';
@@ -79,6 +79,7 @@ export interface TuiPageContext {
   query?: string;
   sourceTabId?: string;
   installFilter?: PluginInstallFilter;
+  configGroupId?: string;
 }
 
 export interface TuiRouteFrame {

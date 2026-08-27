@@ -168,14 +168,14 @@ function helpRowsForRoute(
 }
 
 function configOwnerKey(route: Extract<TuiRoute, {
-  name: 'configFields' | 'configFieldEditor' | 'configPresets';
+  name: 'configFields' | 'configFieldEditor';
 }>): string {
   return `${route.pluginId}\0${route.layer.scope}\0${route.layer.projectLayer}`;
 }
 
 function configPageMatches(
   page: ConfigPageViewModel | undefined,
-  route: Extract<TuiRoute, { name: 'configFields' | 'configFieldEditor' | 'configPresets' }> | undefined,
+  route: Extract<TuiRoute, { name: 'configFields' | 'configFieldEditor' }> | undefined,
 ): page is ConfigPageViewModel {
   return Boolean(page && route
     && page.pluginId === route.pluginId
@@ -496,6 +496,51 @@ function SourceTabs(props: {
   );
 }
 
+interface ConfigTab {
+  id: string;
+  label: string;
+  count: number;
+  kind: 'group' | 'presets';
+}
+
+function configTabs(page: ConfigPageViewModel): ConfigTab[] {
+  return [
+    ...page.groups.map((group) => ({
+      id: group.id,
+      label: group.title,
+      count: group.fields.length,
+      kind: 'group' as const,
+    })),
+    ...(page.presets.length > 0
+      ? [{ id: '@presets', label: '快速方案', count: page.presets.length, kind: 'presets' as const }]
+      : []),
+  ];
+}
+
+function ConfigGroupTabs(props: {
+  tabs: ConfigTab[];
+  current: string;
+  compact: boolean;
+  columns: number;
+}): React.JSX.Element {
+  const index = Math.max(0, props.tabs.findIndex((tab) => tab.id === props.current));
+  const fullText = `分组  ${props.tabs.map((tab) => `${tab.id === props.current ? '[' : ''}${tab.label} ${tab.count}${tab.id === props.current ? ']' : ''}  `).join('')}`;
+  if (props.compact || terminalTextWidth(fullText) > props.columns) {
+    const tab = props.tabs[index]!;
+    return <Text wrap="truncate-end">分组  <Text color={tuiTheme.colors.accent}>[{tab.label} {tab.count}]</Text>  {index + 1} / {props.tabs.length}  ← →</Text>;
+  }
+  return (
+    <Text wrap="truncate-end">
+      分组  {props.tabs.map((tab) => {
+        const active = tab.id === props.current;
+        return <Text key={tab.id} bold={active} color={active ? tuiTheme.colors.accent : tuiTheme.colors.muted}>
+          {active ? '[' : ''}{tab.label} {tab.count}{active ? ']' : ''}{'  '}
+        </Text>;
+      })}← →
+    </Text>
+  );
+}
+
 function placementStatus(placement: PlatformPlacementSummary): {
   value: string;
   status: ActionItem['status'];
@@ -677,12 +722,10 @@ export function resolveConsoleV4ScreenId(
   if (route.name === 'pluginAbout') return 'P20';
   if (route.name === 'pluginTechnical') return 'P21';
   if (route.name === 'configLayer') return 'C01';
-  if (route.name === 'configFields') return route.layer.scope === 'effective'
-    ? 'C02' : route.groupId ? 'C04' : 'C03';
+  if (route.name === 'configFields') return route.layer.scope === 'effective' ? 'C02' : 'C03';
   if (route.name === 'configFieldEditor') return {
     enum: 'C05', boolean: 'C06', number: 'C07', string: 'C08', path: 'C09', sensitive: 'C10',
   }[route.editor] as ConsoleV4ScreenId;
-  if (route.name === 'configPresets') return 'C11';
   if (route.name === 'configUnavailable') return 'C17';
   if (route.name === 'sourceList') return 'S01';
   if (route.name === 'sourceDetail') return 'S02';
@@ -769,6 +812,7 @@ export function ConsoleAppV4(props: {
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [portableAgentInput, setPortableAgentInput] = useState('');
   const [draftOwner, setDraftOwner] = useState<string>();
+  const [pendingPresetId, setPendingPresetId] = useState<string>();
   const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
@@ -841,7 +885,6 @@ export function ConsoleAppV4(props: {
   }, [route.name]);
   const configRoute = route.name === 'configFields'
     || route.name === 'configFieldEditor'
-    || route.name === 'configPresets'
     ? route
     : undefined;
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
@@ -898,6 +941,15 @@ export function ConsoleAppV4(props: {
       });
     return () => abort.abort();
   }, [configLoadKey, configRoute?.pluginId, configRoute?.layer.scope, configRoute?.layer.projectLayer, props.controller]);
+
+  useEffect(() => {
+    if (route.name !== 'configFields' || !currentConfigPage) return;
+    const tabs = configTabs(currentConfigPage);
+    if (tabs.length === 0) return;
+    const current = snapshot.router.current.context.configGroupId;
+    if (tabs.some((tab) => tab.id === current)) return;
+    props.controller.updatePageContext({ configGroupId: tabs[0]!.id });
+  }, [props.controller, route.name, currentConfigPage, snapshot.router.current.context.configGroupId]);
 
   useEffect(() => {
     if (route.name !== 'configUnavailable' || !route.layer) {
@@ -1025,6 +1077,8 @@ export function ConsoleAppV4(props: {
   let content: React.ReactNode;
   let actions: ActionItem[] = [];
   let pluginRows: PluginListRowViewModel[] = [];
+  let visibleConfigTabs: ConfigTab[] = [];
+  let activeConfigTabId: string | undefined;
   const dynamicMenu = plugin && route.name === 'pluginPreview'
     ? buildPluginPreviewActions(plugin)
     : plugin && route.name === 'pluginDetail'
@@ -1333,6 +1387,87 @@ export function ConsoleAppV4(props: {
       return next;
     });
   };
+  const configFieldTarget = (page: ConfigPageViewModel, key: string | undefined): {
+    groupId: string;
+    focusIndex: number;
+  } | undefined => {
+    if (!key) return undefined;
+    for (const group of page.groups) {
+      const focusIndex = group.fields.findIndex((field) => field.key === key);
+      if (focusIndex >= 0) return { groupId: group.id, focusIndex };
+    }
+    return undefined;
+  };
+  const applyConfigPreset = (page: ConfigPageViewModel, presetId: string): void => {
+    const preset = page.presets.find((candidate) => candidate.id === presetId);
+    if (!preset) return;
+    const fields = new Map(page.groups.flatMap((group) => group.fields)
+      .map((field) => [field.key, field]));
+    setDraftUpdates((current) => {
+      const next = { ...current };
+      for (const [key, value] of Object.entries(preset.values)) {
+        const field = fields.get(key);
+        if (field?.configured && field.value === value) delete next[key];
+        else next[key] = value;
+      }
+      const nextRemoves = draftRemoves.filter((key) => !Object.hasOwn(preset.values, key));
+      setDraftRemoves(nextRemoves);
+      setDirty(Object.keys(next).length + nextRemoves.length > 0);
+      return next;
+    });
+    const target = configFieldTarget(page, Object.keys(preset.values)[0])
+      ?? (page.groups[0] ? { groupId: page.groups[0].id, focusIndex: 0 } : undefined);
+    if (target) {
+      props.controller.updatePageContext({
+        configGroupId: target.groupId,
+        focusIndex: target.focusIndex,
+        scrollOffset: 0,
+      });
+      setFocus(target.focusIndex);
+      setScrollOffset(0);
+    }
+    setConfigActionError((preset.privateFieldTitles?.length ?? 0) > 0
+      ? `${preset.privateFieldTitles!.join('、')}需手动输入。`
+      : undefined);
+  };
+  const openConfigLayerTarget = (
+    layer: { scope: Scope; projectLayer: 'shared' | 'local' },
+  ): void => {
+    if (route.name !== 'configLayer') return;
+    const field = route.fieldKey && configPage
+      ? configPage.groups.flatMap((group) => group.fields).find((candidate) => candidate.key === route.fieldKey)
+      : undefined;
+    const fieldTarget = configPage ? configFieldTarget(configPage, route.fieldKey) : undefined;
+    const preset = route.presetId && configPage
+      ? configPage.presets.find((candidate) => candidate.id === route.presetId)
+      : undefined;
+    const presetTarget = preset
+      ? configFieldTarget(configPage!, Object.keys(preset.values)[0])
+      : undefined;
+    const target = fieldTarget ?? (route.groupId ? { groupId: route.groupId, focusIndex: 0 } : undefined) ?? presetTarget
+      ?? (configPage?.groups[0] ? { groupId: configPage.groups[0].id, focusIndex: 0 } : undefined);
+    const context = target
+      ? { configGroupId: target.groupId, focusIndex: target.focusIndex, scrollOffset: 0 }
+      : {};
+    props.controller.replace({ name: 'configFields', pluginId: route.pluginId, layer }, context);
+    if (route.presetId) {
+      setPendingPresetId(route.presetId);
+      setFocus(target?.focusIndex ?? 0);
+      setScrollOffset(0);
+      return;
+    }
+    if (field && route.fieldKey) {
+      props.controller.push({
+        name: 'configFieldEditor',
+        pluginId: route.pluginId,
+        layer,
+        fieldKey: route.fieldKey,
+        editor: fieldEditor(field),
+      });
+    }
+    setFocus(0);
+    setScrollOffset(0);
+  };
   const configChanges = (): NonNullable<Extract<OperationIntent, { kind: 'configSave' }>['changes']> => {
     const fields = currentConfigPage?.groups.flatMap((group) => group.fields) ?? [];
     return [...Object.keys(draftUpdates), ...draftRemoves.filter((key) => !Object.hasOwn(draftUpdates, key))]
@@ -1366,6 +1501,18 @@ export function ConsoleAppV4(props: {
       setConfigActionError('设置值未通过验证。请重新检查修改。');
     }
   };
+  useEffect(() => {
+    if (!pendingPresetId || route.name !== 'configFields'
+      || route.layer.scope === 'effective' || !currentConfigPage) return;
+    const presetId = pendingPresetId;
+    setPendingPresetId(undefined);
+    applyConfigPreset(currentConfigPage, presetId);
+  }, [pendingPresetId, route.name, currentConfigPage]);
+  useEffect(() => {
+    if (!pendingPresetId) return;
+    if (route.name === 'configFields' && route.layer.scope !== 'effective') return;
+    setPendingPresetId(undefined);
+  }, [pendingPresetId, route.name, route.name === 'configFields' ? route.layer.scope : '']);
 
   if (snapshot.phase === 'error') {
     breadcrumb = '启动失败';
@@ -2126,92 +2273,86 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'configLayer' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;
-    title = `修改 ${plugin.displayName} 设置`;
-    description = '选择修改保存到哪里。';
+    const selectedField = route.fieldKey && configPage
+      ? configPage.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
+      : undefined;
+    const selectedPreset = route.presetId && configPage
+      ? configPage.presets.find((preset) => preset.id === route.presetId)
+      : undefined;
+    title = selectedField ? `修改“${selectedField.title}”`
+      : selectedPreset ? `应用“${selectedPreset.title}”` : `修改 ${plugin.displayName} 设置`;
+    description = selectedField
+      ? `当前：${effectiveFieldDisplay(selectedField)} · ${selectedField.effectiveSourceLabel}。选择保存位置后直接编辑。`
+      : selectedPreset ? '选择保存位置后，方案会应用到该位置的草稿。' : '选择修改保存到哪里。';
     help = '↑↓ 移动 · Enter 打开 · Esc 返回';
     actions = [
-      { label: '个人默认', description: '在所有项目中作为默认值', meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'user', projectLayer: 'shared' } }) },
-      { label: '当前项目', description: '随仓库共享，适合团队约定', meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'project', projectLayer: 'shared' } }) },
-      { label: '当前项目（仅本机）', description: '只保存在本机，不提交到仓库', meta: configLayerCounts.local === undefined ? undefined : configLayerCounts.local === 0 ? '未设置' : `${configLayerCounts.local} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'project', projectLayer: 'local' } }) },
+      { label: '个人默认', description: '在所有项目中作为默认值', meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`, run: () => openConfigLayerTarget({ scope: 'user', projectLayer: 'shared' }) },
+      { label: '当前项目', description: '随仓库共享，适合团队约定', meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`, run: () => openConfigLayerTarget({ scope: 'project', projectLayer: 'shared' }) },
+      { label: '当前项目（仅本机）', description: '只保存在本机，不提交到仓库', meta: configLayerCounts.local === undefined ? undefined : configLayerCounts.local === 0 ? '未设置' : `${configLayerCounts.local} 个值`, run: () => openConfigLayerTarget({ scope: 'project', projectLayer: 'local' }) },
     ];
     content = <SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />;
   } else if (route.name === 'configFields' && plugin) {
     const readonly = route.layer.scope === 'effective';
-    const selectedGroups = route.groupId
-      ? currentConfigPage?.groups.filter((group) => group.id === route.groupId) ?? []
-      : currentConfigPage?.groups ?? [];
     breadcrumb = readonly ? `${plugin.displayName} / 设置` : `${plugin.displayName} / 设置 / ${configLayerLabel(route.layer)}`;
-    context = readonly ? '只读' : dirty ? `${Object.keys(draftUpdates).length + draftRemoves.length} 项未保存` : undefined;
-    title = readonly ? '当前插件设置' : route.groupId ? selectedGroups[0]?.title ?? '高级设置' : configLayerLabel(route.layer);
-    description = readonly ? '查看当前实际生效的配置和值来源。' : route.groupId ? '这些字段来自 manifest 的高级设置分组。' : '字段来自插件 manifest；修改先保存在本地草稿。';
+    title = readonly ? '当前插件设置' : '编辑插件设置';
+    description = readonly
+      ? '查看当前实际生效的值；← → 切换设置分组。'
+      : `保存位置：${configLayerLabel(route.layer)} · ← → 切换设置分组。`;
     if (!readonly && configActionError) description = configActionError;
-    help = readonly ? '↑↓ 查看 · Esc 返回' : '↑↓ 移动 · Enter 修改 · s 保存 · u 恢复继承 · Esc 返回';
+    help = readonly
+      ? '↑↓ 选择配置 · Enter 修改 · ←→ 分组 · Esc 返回'
+      : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · u 恢复继承 · Esc 返回';
     if (!currentConfigPage) {
       content = <StatusCard status="info" title="正在读取可信设置定义"><ProgressRow title="读取 manifest 设置字段" state="active" /></StatusCard>;
-    } else if (readonly) {
-      const rowGroups = selectedGroups.map((group) => ({
-        id: group.id,
-        title: group.title,
-        rows: group.fields.map((field) => ({
-          label: field.title,
-          description: field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`,
-          meta: currentFieldDisplay(field),
-        })),
-      }));
-      const fieldRows = rowGroups.flatMap((group) => group.rows);
-      actions = [...fieldRows, {
-        label: '修改设置…',
-        description: '选择设置保存位置后开始修改',
-        run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }),
-      }];
-      const fieldCount = fieldRows.length;
-      const viewport = groupedRowViewport({
-        rowHeights: actions.map((action) => policy.mode === 'compact' || !action.description ? 1 : 2),
-        groupKeys: [...rowGroups.flatMap((group) => group.rows.map(() => group.id)), undefined],
-        groupOverhead: 3,
-        focus,
-        requestedOffset: scrollOffset,
-        rowBudget: pageActionBudget(),
-      });
-      const viewportEnd = viewport.offset + viewport.limit;
-      let groupOffset = 0;
-      content = <Box flexDirection="column">{rowGroups.map((group) => {
-        const start = groupOffset;
-        const end = start + group.rows.length;
-        groupOffset = end;
-        const visibleStart = Math.max(start, viewport.offset);
-        const visibleEnd = Math.min(end, viewportEnd);
-        return visibleStart < visibleEnd
-          ? <SectionCard key={group.id} title={group.title} meta={viewport.hiddenBefore > 0 || viewport.hiddenAfter > 0 ? `${viewport.position}/${viewport.total}` : undefined}>
-              {group.rows.slice(visibleStart - start, visibleEnd - start).map((action, index) => <StaticRow key={`${action.label}:${visibleStart + index}`} title={action.label} description={action.description} meta={action.meta} compact={policy.mode === 'compact'} />)}
-            </SectionCard>
-          : null;
-      })}{viewportEnd > fieldCount
-        ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={fieldCount} limit={1} />
-        : null}</Box>;
     } else {
+      visibleConfigTabs = configTabs(currentConfigPage);
+      const requestedTab = snapshot.router.current.context.configGroupId;
+      const activeTab = visibleConfigTabs.find((tab) => tab.id === requestedTab) ?? visibleConfigTabs[0];
+      activeConfigTabId = activeTab?.id;
+      const activeGroup = activeTab?.kind === 'group'
+        ? currentConfigPage.groups.find((group) => group.id === activeTab.id)
+        : undefined;
       const mutableLayer = {
         scope: route.layer.scope as Scope,
         projectLayer: route.layer.projectLayer,
       };
-      const rowGroups: Array<{ id: string; title: string; rows: ActionItem[] }> = [];
-      if (!route.groupId && currentConfigPage.presets.length > 0) {
-        rowGroups.push({ id: 'presets', title: '快速方案', rows: [{ label: '当前方案', description: '应用 manifest 声明的预设', meta: `${currentConfigPage.presets.length} 个`, run: () => go({ name: 'configPresets', pluginId: plugin.pluginId, layer: mutableLayer }) }] });
-      }
-      for (const group of selectedGroups) {
-        const rows: ActionItem[] = group.advanced && !route.groupId
-          ? [{ label: group.title, description: group.description ?? '渐进展开高级字段', meta: `${group.fields.length} 项`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: route.layer, groupId: group.id }) }]
-          : group.fields.map((field) => ({
-              label: field.title,
-              description: `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
-              meta: currentFieldDisplay(field),
-              configKey: field.key,
-              run: () => go({ name: 'configFieldEditor', pluginId: plugin.pluginId, layer: mutableLayer, fieldKey: field.key, editor: fieldEditor(field) }),
-            }));
-        rowGroups.push({ id: group.id, title: group.advanced && !route.groupId ? '高级设置' : group.title, rows });
-      }
-      actions = rowGroups.flatMap((group) => group.rows);
-      if (!route.groupId) actions.push(
+      const tabActions: ActionItem[] = activeTab?.kind === 'presets'
+        ? currentConfigPage.presets.map((preset) => ({
+            label: preset.title,
+            description: (preset.privateFieldTitles?.length ?? 0) > 0
+              ? `${preset.description ? `${preset.description} · ` : ''}${preset.privateFieldTitles!.join('、')}需手动输入`
+              : preset.description,
+            run: readonly
+              ? () => go({
+                  name: 'configLayer',
+                  pluginId: plugin.pluginId,
+                  presetId: preset.id,
+                })
+              : () => applyConfigPreset(currentConfigPage, preset.id),
+          }))
+        : (activeGroup?.fields ?? []).map((field) => ({
+            label: field.title,
+            description: readonly
+              ? field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`
+              : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
+            meta: readonly ? effectiveFieldDisplay(field) : currentFieldDisplay(field),
+            configKey: field.key,
+            run: readonly
+              ? () => go({
+                  name: 'configLayer',
+                  pluginId: plugin.pluginId,
+                  fieldKey: field.key,
+                  groupId: activeGroup!.id,
+                })
+              : () => go({
+                  name: 'configFieldEditor',
+                  pluginId: plugin.pluginId,
+                  layer: mutableLayer,
+                  fieldKey: field.key,
+                  editor: fieldEditor(field),
+                }),
+          }));
+      const operationActions: ActionItem[] = readonly ? [] : [
         { label: '保存修改', description: dirty ? '查看安全变更汇总' : '当前没有未保存修改', disabled: dirty ? undefined : '当前没有未保存修改', run: beginConfigSave },
         {
           label: '重置此设置层…',
@@ -2220,33 +2361,50 @@ export function ConsoleAppV4(props: {
           disabled: currentConfigPage.storedCount === 0 ? '本层没有已存值' : undefined,
           run: () => beginReview({ kind: 'configReset', pluginId: plugin.pluginId, scope: route.layer.scope as Scope, projectLayer: route.layer.projectLayer }),
         },
-      );
-      const fieldCount = rowGroups.reduce((count, group) => count + group.rows.length, 0);
-      const groupKeys = rowGroups.flatMap((group) => group.rows.map(() => group.id));
-      const viewport = groupedRowViewport({
-        rowHeights: actions.map((action) => policy.mode === 'compact' || !action.description ? 1 : 2),
-        groupKeys: [...groupKeys, ...actions.slice(fieldCount).map(() => undefined)],
-        groupOverhead: 3,
-        focus,
-        requestedOffset: focus === fieldCount - 1 ? focus : scrollOffset,
-        rowBudget: pageActionBudget(),
-      });
-      const viewportEnd = viewport.offset + viewport.limit;
-      let groupOffset = 0;
-      content = <Box flexDirection="column">{rowGroups.map((group) => {
-        const start = groupOffset;
-        const end = start + group.rows.length;
-        groupOffset = end;
-        const visibleStart = Math.max(start, viewport.offset);
-        const visibleEnd = Math.min(end, viewportEnd);
-        return visibleStart < visibleEnd
-          ? <SectionCard key={group.id} title={group.title} meta={viewport.hiddenBefore > 0 || viewport.hiddenAfter > 0 ? `${viewport.position}/${viewport.total}` : undefined}>
-              <SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} offset={visibleStart} limit={visibleEnd - visibleStart} />
+      ];
+      actions = [...tabActions, ...operationActions];
+      const effectiveConfigFocus = Math.min(focus, Math.max(0, actions.length - 1));
+      const fieldFocus = tabActions.length > 0
+        ? effectiveConfigFocus < tabActions.length ? effectiveConfigFocus : Math.min(scrollOffset, tabActions.length - 1)
+        : 0;
+      const operationRows = operationActions.reduce((rows, action) =>
+        rows + (policy.mode === 'compact' || !action.description ? 1 : 2), 0);
+      const viewport = actionViewport(tabActions, policy.mode === 'compact', fieldFocus, scrollOffset,
+        pageActionBudget(1 + operationRows + 3));
+      const totalFields = currentConfigPage.groups.reduce((count, group) => count + group.fields.length, 0);
+      const countLabel = `${totalFields} 项${currentConfigPage.presets.length > 0 ? ` · ${currentConfigPage.presets.length} 个方案` : ''}`;
+      context = readonly ? countLabel
+        : dirty ? `${Object.keys(draftUpdates).length + draftRemoves.length} 项未保存` : countLabel;
+      content = <Box flexDirection="column">
+        {activeTab ? <ConfigGroupTabs
+          tabs={visibleConfigTabs}
+          current={activeTab.id}
+          compact={policy.mode === 'compact'}
+          columns={size.columns - 2}
+        /> : null}
+        {activeTab && tabActions.length > 0
+          ? <SectionCard title={activeTab.label} meta={viewport.hiddenBefore > 0 || viewport.hiddenAfter > 0 ? `${viewport.position}/${viewport.total}` : undefined}>
+              <SemanticRows
+                actions={tabActions}
+                focus={effectiveConfigFocus}
+                kind="section"
+                compact={policy.mode === 'compact'}
+                offset={viewport.offset}
+                limit={viewport.limit}
+              />
             </SectionCard>
-          : null;
-      })}{viewportEnd > fieldCount
-        ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={Math.max(fieldCount, viewport.offset)} limit={viewportEnd - Math.max(fieldCount, viewport.offset)} />
-        : null}</Box>;
+          : null}
+        {operationActions.length > 0
+          ? <SemanticRows
+              actions={actions}
+              focus={effectiveConfigFocus}
+              kind="action"
+              compact={policy.mode === 'compact'}
+              offset={tabActions.length}
+              limit={operationActions.length}
+            />
+          : null}
+      </Box>;
     }
   } else if (route.name === 'configFieldEditor' && plugin && activeField) {
     breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title}`;
@@ -2278,32 +2436,6 @@ export function ConsoleAppV4(props: {
         : route.editor === 'path' ? privatePathInput(inputValue) : inputValue;
       content = <InputCard focused title={visibleInput || activeField.placeholder || ' '} description={inputError ?? (route.editor === 'sensitive' ? '输入已隐藏。' : route.editor === 'path' ? '已隐藏父目录；Backspace 仍会编辑原始输入。' : activeField.placeholder ?? '按 Enter 使用输入值。')} status={inputError ? 'error' : undefined} />;
     }
-  } else if (route.name === 'configPresets' && plugin) {
-    breadcrumb = `${plugin.displayName} / 设置 / 预设`;
-    title = '选择快速方案';
-    description = '预设由插件 manifest 声明；应用后仍可逐项修改。';
-    actions = (currentConfigPage?.presets ?? []).map((preset) => ({
-      label: preset.title,
-      description: (preset.privateFieldTitles?.length ?? 0) > 0
-        ? `${preset.description ? `${preset.description} · ` : ''}${preset.privateFieldTitles!.join('、')}需手动输入`
-        : preset.description,
-      run: () => {
-        const fields = new Map(currentConfigPage?.groups.flatMap((group) => group.fields)
-          .map((field) => [field.key, field]));
-        const nextUpdates = { ...draftUpdates };
-        for (const [key, value] of Object.entries(preset.values)) {
-          const field = fields.get(key);
-          if (field?.configured && field.value === value) delete nextUpdates[key];
-          else nextUpdates[key] = value;
-        }
-        const nextRemoves = draftRemoves.filter((key) => !Object.hasOwn(preset.values, key));
-        setDraftUpdates(nextUpdates);
-        setDraftRemoves(nextRemoves);
-        setDirty(Object.keys(nextUpdates).length + nextRemoves.length > 0);
-        back();
-      },
-    }));
-    content = currentConfigPage ? <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} /> : <StatusCard status="info" title="正在读取预设"><ProgressRow title="读取 manifest 预设" state="active" /></StatusCard>;
   } else if (route.name === 'configUnavailable' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;
     context = '暂时不可编辑';
@@ -3429,8 +3561,7 @@ export function ConsoleAppV4(props: {
     }
     if (key.tab && (route.name === 'configLayer'
       || route.name === 'configFields'
-      || route.name === 'configFieldEditor'
-      || route.name === 'configPresets')) {
+      || route.name === 'configFieldEditor')) {
       return;
     }
     if (canOpenHelp && input === '?') {
@@ -3443,9 +3574,7 @@ export function ConsoleAppV4(props: {
     } else if (input.toLowerCase() === 'd' && supportsTechnicalDetails) {
       setShowTechnical((value) => !value);
     } else if ((key.escape || input.toLowerCase() === 'b')
-      && (route.name === 'configFieldEditor'
-        || route.name === 'configPresets'
-        || (route.name === 'configFields' && Boolean(route.groupId)))) {
+      && route.name === 'configFieldEditor') {
       back();
     } else if (key.escape || input.toLowerCase() === 'b') {
       if (dirty) {
@@ -3476,6 +3605,14 @@ export function ConsoleAppV4(props: {
     } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 'u') {
       const key = actions[focus]?.configKey;
       if (key) removeDraft(key);
+    } else if (route.name === 'configFields' && visibleConfigTabs.length > 1
+      && (key.leftArrow || key.rightArrow)) {
+      const current = Math.max(0, visibleConfigTabs.findIndex((tab) => tab.id === activeConfigTabId));
+      const direction = key.leftArrow ? -1 : 1;
+      const next = visibleConfigTabs[(current + direction + visibleConfigTabs.length) % visibleConfigTabs.length]!;
+      props.controller.updatePageContext({ configGroupId: next.id, focusIndex: 0, scrollOffset: 0 });
+      setFocus(0);
+      setScrollOffset(0);
     } else if (input.toLowerCase() === 'r' && route.name === 'sourceDetail') {
       void props.controller.refreshSource(route.sourceId);
     } else if (input.toLowerCase() === 'r' && route.name === 'sourceList') {

@@ -838,7 +838,6 @@ export class TuiController {
       || route.name === 'configLayer'
       || route.name === 'configFields'
       || route.name === 'configFieldEditor'
-      || route.name === 'configPresets'
       || route.name === 'configUnavailable';
     if (pluginRoute && !this.#viewModel?.plugins.some((plugin) => plugin.pluginId === route.pluginId)) {
       return {
