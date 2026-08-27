@@ -10,6 +10,8 @@ import type {
   StatusV4PluginSummary,
   StatusV4Target,
   StatusV4Component,
+  StatusTargetRevision,
+  TargetRevisionState,
 } from '../commands/status-v4.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 
@@ -29,12 +31,24 @@ export type PlatformPlacementSummary =
       state: 'installed';
       scope: Scope;
       health: 'ready' | 'incomplete' | 'error';
+      revision: TargetRevisionState;
     }
   | {
       platform: PlatformName;
       state: 'scopeConflict';
-      placements: Array<{ scope: Scope; health: 'ready' | 'incomplete' | 'error' }>;
+      placements: Array<{
+        scope: Scope;
+        health: 'ready' | 'incomplete' | 'error';
+        revision: TargetRevisionState;
+      }>;
     };
+
+export type PluginMenuAction =
+  | { id: 'add' | 'manage' | 'repair' | 'portableSkills' | 'dependencies' | 'settings'
+      | 'source' | 'sourceProblem' | 'about' | 'refreshSource' | 'technical' | 'back' }
+  | { id: 'platform' | 'scopeConflict'; platform: PlatformName }
+  | { id: 'upgrade'; platform: PlatformName; scope: Scope; availableVersion: string }
+  | { id: 'reinstall' | 'remove'; platform: PlatformName; scope: Scope };
 
 export interface PluginListItemViewModel {
   pluginId: string;
@@ -150,7 +164,10 @@ export interface ConfigFieldViewModel {
   inherited: boolean;
   configured: boolean;
   sourceLabel: string;
+  effectiveDisplayValue: string;
+  effectiveSourceLabel: string;
   value?: string | number | boolean;
+  effectiveValue?: string | number | boolean;
   defaultValue?: string | number | boolean;
   enumValues?: string[];
   valueLabels?: Record<string, string>;
@@ -334,17 +351,35 @@ function dependencyPluginIdFromMessage(message: string): string | undefined {
 export function projectPlatformPlacement(
   platform: PlatformName,
   targets: StatusV4Target[],
+  revisions: StatusTargetRevision[] = [],
 ): PlatformPlacementSummary {
+  const revisionFor = (target: StatusV4Target): TargetRevisionState =>
+    revisions.find((entry) => entry.pluginId === target.pluginId
+      && entry.platform === target.platform
+      && entry.scope === target.scope)?.revision
+      ?? { state: 'unknown', ...(target.version ? { availableVersion: target.version } : {}) };
   const supportedScopes = [...new Set(targets.map((target) => target.scope))];
   const installed = targets.filter(isInstalledScopeEvidence);
   if (installed.length === 0) {
     const errorTarget = targets.find((target) => target.state === 'error');
     if (!errorTarget) return { platform, state: 'notInstalled', supportedScopes };
-    return { platform, state: 'installed', scope: errorTarget.scope, health: 'error' };
+    return {
+      platform,
+      state: 'installed',
+      scope: errorTarget.scope,
+      health: 'error',
+      revision: revisionFor(errorTarget),
+    };
   }
   if (installed.length === 1) {
     const target = installed[0]!;
-    return { platform, state: 'installed', scope: target.scope, health: targetHealth(target) };
+    return {
+      platform,
+      state: 'installed',
+      scope: target.scope,
+      health: targetHealth(target),
+      revision: revisionFor(target),
+    };
   }
   return {
     platform,
@@ -352,8 +387,96 @@ export function projectPlatformPlacement(
     placements: installed.map((target) => ({
       scope: target.scope,
       health: targetHealth(target),
+      revision: revisionFor(target),
     })).sort((left, right) => compareText(left.scope, right.scope)),
   };
+}
+
+function hasIncompletePlacement(plugin: PluginListItemViewModel): boolean {
+  return plugin.installedPlacements.some((placement) =>
+    placement.state === 'scopeConflict'
+    || placement.state === 'installed' && placement.health !== 'ready');
+}
+
+function hasMissingPlatform(plugin: PluginListItemViewModel): boolean {
+  return plugin.supportedPlatforms.some((platform) =>
+    plugin.installedPlacements.find((placement) => placement.platform === platform)?.state === 'notInstalled');
+}
+
+function capabilityActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
+  return [
+    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
+    ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
+    ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
+  ];
+}
+
+export function buildPluginPreviewActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
+  const installed = hasInstalledPlacement(plugin);
+  if (plugin.aggregateStatus === 'unavailable') {
+    return [{ id: 'sourceProblem' }, ...(installed ? [{ id: 'manage' as const }] : [])];
+  }
+  const primary: PluginMenuAction = hasIncompletePlacement(plugin)
+    || (plugin.dependencySummary?.issueCount ?? 0) > 0
+    ? { id: 'repair' }
+    : installed && !hasMissingPlatform(plugin)
+      ? { id: 'manage' }
+      : { id: 'add' };
+  return [primary, ...capabilityActions(plugin), { id: 'source' }];
+}
+
+export function buildPluginDetailActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
+  if (plugin.aggregateStatus === 'unavailable') {
+    return [
+      ...plugin.installedPlacements.flatMap((placement) => placement.state === 'notInstalled'
+        ? []
+        : [{ id: 'platform' as const, platform: placement.platform }]),
+      { id: 'sourceProblem' },
+      { id: 'about' },
+    ];
+  }
+  return [
+    ...plugin.installedPlacements.map((placement): PluginMenuAction => placement.state === 'scopeConflict'
+      ? { id: 'scopeConflict', platform: placement.platform }
+      : { id: 'platform', platform: placement.platform }),
+    ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
+    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
+    ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
+    { id: 'about' },
+  ];
+}
+
+export function buildPlatformActions(
+  plugin: PluginListItemViewModel,
+  platform: PlatformName,
+): PluginMenuAction[] {
+  if (plugin.aggregateStatus === 'unavailable') {
+    return [{ id: 'sourceProblem' }, { id: 'refreshSource' }];
+  }
+  const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
+  if (!placement || placement.state === 'notInstalled') return [{ id: 'add' }, { id: 'about' }];
+  if (placement.state === 'scopeConflict') return [{ id: 'scopeConflict', platform }];
+  if (placement.health === 'error') return [{ id: 'technical' }, { id: 'back' }];
+  if (placement.health === 'incomplete') {
+    return [
+      { id: 'reinstall', platform, scope: placement.scope },
+      { id: 'technical' },
+      { id: 'remove', platform, scope: placement.scope },
+    ];
+  }
+  return [
+    ...(placement.revision.state === 'upgradeAvailable'
+      ? [{
+          id: 'upgrade' as const,
+          platform,
+          scope: placement.scope,
+          availableVersion: placement.revision.availableVersion,
+        }]
+      : []),
+    { id: 'reinstall', platform, scope: placement.scope },
+    { id: 'remove', platform, scope: placement.scope },
+    { id: 'technical' },
+  ];
 }
 
 export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean {
@@ -735,6 +858,7 @@ function enrichDependencyIssuePlacements(
 export function buildTuiViewModel(options: {
   status: StatusV4Payload;
   pluginSummaries: StatusV4PluginSummary[];
+  targetRevisions?: StatusTargetRevision[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
@@ -754,7 +878,9 @@ export function buildTuiViewModel(options: {
     const sourceId = targets[0]?.sourceId ?? pluginId.slice(0, pluginId.indexOf('/'));
     const placements = (['codex', 'claude'] as const).flatMap((platform) => {
       const platformTargets = targets.filter((target) => target.platform === platform);
-      return platformTargets.length > 0 ? [projectPlatformPlacement(platform, platformTargets)] : [];
+      return platformTargets.length > 0
+        ? [projectPlatformPlacement(platform, platformTargets, options.targetRevisions)]
+        : [];
     });
     const attention = placements.some((placement) => placement.state === 'scopeConflict'
       || (placement.state === 'installed' && placement.health !== 'ready'));
@@ -871,28 +997,45 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
 export function buildConfigGroups(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
+  effectiveRead?: ResolvedConfigRead;
   dirtyKeys?: ReadonlySet<string>;
 }): ConfigGroupViewModel[] {
   const entryByKey = new Map(options.read.fields.map((field) => [field.key, field]));
+  const effectiveEntryByKey = new Map(
+    (options.effectiveRead ?? options.read).fields.map((field) => [field.key, field]),
+  );
   const effectivePage = options.read.scope === 'effective';
   const fieldModel = (key: string): ConfigFieldViewModel => {
     const schema = options.schema.schema[key]!;
     const entry = entryByKey.get(key);
+    const effectiveEntry = effectiveEntryByKey.get(key);
     const presentation = options.schema.presentation?.fields?.[key];
     const inherited = effectivePage
-      ? entry?.sourceLayer === undefined || entry?.sourceLayer === null
+      ? false
       : entry?.storedSourceLayer === undefined;
     const configured = effectivePage
-      ? entry?.valueState === 'configured' || entry?.valueState === 'default'
+      ? entry?.sourceLayer !== undefined
+        && entry.sourceLayer !== null
+        && entry.effectiveValue !== undefined
+        && entry.effectiveValue !== null
+        && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
     const privateValue = schema.sensitive === true || schema.type === 'file' || schema.type === 'directory';
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
+    const selectedStoredInvalid = !effectivePage
+      && entry?.storedSourceLayer !== undefined
+      && entry.storedValue === undefined;
+    const effectiveConfigured = effectiveEntry?.sourceLayer !== undefined
+      && effectiveEntry.sourceLayer !== null
+      && effectiveEntry.effectiveValue !== undefined
+      && effectiveEntry.effectiveValue !== null
+      && (effectiveEntry.valueState === 'configured' || effectiveEntry.valueState === 'default');
     return {
       key,
       title: schema.title ?? key,
       ...(schema.description ? { description: schema.description } : {}),
       type: schema.type,
-      displayValue: displayConfigValue({
+      displayValue: selectedStoredInvalid ? '值无效' : displayConfigValue({
         privateValue,
         inherited,
         configured,
@@ -906,8 +1049,18 @@ export function buildConfigGroups(options: {
       sourceLabel: effectivePage
         ? configSourceLabel(entry?.sourceLayer ?? null)
         : configured ? '本层已设置' : '继承',
+      effectiveDisplayValue: displayConfigValue({
+        privateValue,
+        inherited: false,
+        configured: effectiveConfigured,
+        value: effectiveEntry?.effectiveValue,
+      }),
+      effectiveSourceLabel: configSourceLabel(effectiveEntry?.sourceLayer ?? null),
       ...(!privateValue && selectedValue !== undefined
         ? { value: selectedValue as string | number | boolean }
+        : {}),
+      ...(!privateValue && effectiveEntry?.effectiveValue !== undefined && effectiveEntry.effectiveValue !== null
+        ? { effectiveValue: effectiveEntry.effectiveValue as string | number | boolean }
         : {}),
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
       ...(schema.values ? { enumValues: [...schema.values] } : {}),
@@ -978,6 +1131,7 @@ export function buildConfigPage(options: {
   pluginId: string;
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
+  effectiveRead?: ResolvedConfigRead;
 }): ConfigPageViewModel {
   const privateFields = new Set(Object.entries(options.schema.schema)
     .filter(([, field]) => field.sensitive === true || field.type === 'file' || field.type === 'directory')

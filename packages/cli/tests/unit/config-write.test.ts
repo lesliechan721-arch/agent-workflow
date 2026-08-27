@@ -41,7 +41,7 @@ import {
   resolveConfigRead,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
-import { buildConfigGroups } from '../../src/tui/model.js';
+import { buildConfigGroups, buildConfigPage } from '../../src/tui/model.js';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 
 const execFileAsync = promisify(execFile);
@@ -268,6 +268,9 @@ describe('config write full reinstall apply', () => {
     expect(JSON.stringify(groups)).not.toContain(privateDirectory);
     expect(JSON.stringify(groups)).not.toContain(privateFile);
     expect(JSON.stringify(groups)).not.toContain('private-token');
+    expect(JSON.stringify(read)).not.toContain(privateDirectory);
+    expect(JSON.stringify(read)).not.toContain(privateFile);
+    expect(JSON.stringify(read)).not.toContain('private-token');
   });
 
   it('passes the active progress reporter into config-triggered reinstall', async () => {
@@ -920,10 +923,17 @@ describe('config write full reinstall apply', () => {
     expect(store.values).toEqual({ only: 'old' });
   });
 
-  it('keeps selected project shared values separate from project local effective values', async () => {
+  it('keeps each selected layer value separate from the project local effective value', async () => {
     const fixture = await createFixture();
     fixture.plugin.manifest.config!.schema.label = { type: 'string' };
     fixture.plugin.manifest.config!.schema.count = { type: 'number' };
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { label: 'user-label', count: 7 },
+    });
     await writePluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
       scope: 'project',
@@ -949,6 +959,30 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     });
+    const userResult = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'user',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const localResult = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const effectiveResult = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'effective',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
 
     expect(result.fields).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -966,6 +1000,184 @@ describe('config write full reinstall apply', () => {
         storedSourceLayer: 'project',
       }),
     ]));
+    expect(userResult.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'label',
+        effectiveValue: 'user-label',
+        sourceLayer: 'user',
+        storedValue: 'user-label',
+        storedSourceLayer: 'user',
+      }),
+    ]));
+    expect(localResult.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'label',
+        effectiveValue: 'local-label',
+        sourceLayer: 'local',
+        storedValue: 'local-label',
+        storedSourceLayer: 'local',
+      }),
+    ]));
+    expect(buildConfigPage({
+      pluginId: 'official/configurable-plugin',
+      schema: fixture.plugin.manifest.config!,
+      read: userResult,
+      effectiveRead: effectiveResult,
+    }).groups.flatMap((group) => group.fields).find((field) => field.key === 'label')).toMatchObject({
+      displayValue: 'user-label',
+      effectiveDisplayValue: 'local-label',
+      effectiveSourceLabel: '当前项目（仅本机）',
+    });
+  });
+
+  it('keeps missing optional and required fields unset through the real read-to-page projection', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.config!.schema.optional = { type: 'string' };
+    fixture.plugin.manifest.config!.schema.required = { type: 'string', required: true };
+
+    const effectiveRead = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'effective',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const userRead = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'user',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const page = buildConfigPage({
+      pluginId: 'official/configurable-plugin',
+      schema: fixture.plugin.manifest.config!,
+      read: effectiveRead,
+    });
+
+    for (const key of ['optional', 'required']) {
+      expect(effectiveRead.fields.find((field) => field.key === key)).toMatchObject({
+        valueState: 'default',
+        effectiveValue: null,
+        sourceLayer: null,
+      });
+      expect(userRead.fields.find((field) => field.key === key)).toMatchObject({
+        valueState: 'default',
+        effectiveValue: null,
+        sourceLayer: null,
+      });
+      expect(page.groups.flatMap((group) => group.fields).find((field) => field.key === key)).toMatchObject({
+        displayValue: '未设置',
+        configured: false,
+        sourceLabel: '未设置',
+      });
+    }
+  });
+
+  it.each([
+    {
+      label: 'user', scope: 'user' as const, projectLayer: 'shared' as const,
+      storedSourceLayer: 'user' as const,
+      higher: { scope: 'project' as const, projectLayer: 'shared' as const },
+      effectiveSourceLabel: '当前项目',
+    },
+    {
+      label: 'project shared', scope: 'project' as const, projectLayer: 'shared' as const,
+      storedSourceLayer: 'project' as const,
+      higher: { scope: 'project' as const, projectLayer: 'local' as const },
+      effectiveSourceLabel: '当前项目（仅本机）',
+    },
+    {
+      label: 'project local', scope: 'project' as const, projectLayer: 'local' as const,
+      storedSourceLayer: 'local' as const,
+      higher: undefined,
+      effectiveSourceLabel: '当前项目（仅本机）',
+    },
+  ])('keeps an invalid $label value observable and removable without exposing it', async ({
+    scope,
+    projectLayer,
+    storedSourceLayer,
+    higher,
+    effectiveSourceLabel,
+  }) => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.config!.schema.broken = { type: 'string', sensitive: true };
+    const rawSecret = `PRIVATE_INVALID_${storedSourceLayer}`;
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope,
+      projectLayer,
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { broken: { rawSecret } },
+    });
+    if (higher) {
+      await writePluginConfigStore({
+        pluginName: fixture.plugin.manifest.name,
+        scope: higher.scope,
+        projectLayer: higher.projectLayer,
+        cwd: fixture.cwd,
+        env: fixture.env,
+        values: { broken: 'higher-private-value' },
+      });
+    }
+
+    const read = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope,
+      projectLayer,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const effectiveRead = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'effective',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const page = buildConfigPage({
+      pluginId: 'official/configurable-plugin',
+      schema: fixture.plugin.manifest.config!,
+      read,
+      effectiveRead,
+    });
+    const field = page.groups.flatMap((group) => group.fields)
+      .find((candidate) => candidate.key === 'broken');
+
+    expect(read.fields.find((candidate) => candidate.key === 'broken')).toMatchObject({
+      storedSourceLayer,
+    });
+    expect(field).toMatchObject({
+      configured: true,
+      displayValue: '值无效',
+      effectiveDisplayValue: higher ? '已设置' : '未设置',
+      effectiveSourceLabel,
+    });
+    expect(page.storedCount).toBe(1);
+    expect(JSON.stringify({ read, effectiveRead, page })).not.toContain(rawSecret);
+    expect(JSON.stringify({ read, effectiveRead, page })).not.toContain('higher-private-value');
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope,
+      projectLayer,
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { removeKeys: ['broken'] },
+    });
+    expect(receipt.removedKeys).toEqual(['broken']);
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope,
+      projectLayer,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).values).not.toHaveProperty('broken');
   });
 
   it('reads only legacy keys from the selected project local store and redacts their values', async () => {

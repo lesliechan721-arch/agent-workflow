@@ -40,6 +40,20 @@ export interface CatalogSourceCacheLocation {
   lastGoodDir: string;
 }
 
+interface PublishCatalogSourceCacheEntryOptions {
+  location: CatalogSourceCacheLocation;
+  sourceId: CatalogSourceId;
+  sourceIdentity: SourceIdentity;
+  requestedRef: string;
+  cliVersion: CliVersion;
+  resolvedCommit: string;
+  snapshotRoot: string;
+  validation: CatalogSnapshotValidation;
+  signal?: AbortSignal;
+}
+
+const publicationTails = new Map<string, Promise<void>>();
+
 function digestJson(value: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
@@ -186,17 +200,34 @@ async function readCatalogSourceCache(options: {
     ?? await readSnapshotAt({ ...common, entryDir: options.location.lastGoodDir });
 }
 
-async function publishCatalogSourceCacheEntry(options: {
-  location: CatalogSourceCacheLocation;
-  sourceId: CatalogSourceId;
-  sourceIdentity: SourceIdentity;
-  requestedRef: string;
-  cliVersion: CliVersion;
-  resolvedCommit: string;
-  snapshotRoot: string;
-  validation: CatalogSnapshotValidation;
-  signal?: AbortSignal;
-}): Promise<CatalogSourceCacheEntry> {
+async function withCatalogSourceCachePublication<T>(
+  rootDir: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const previous = publicationTails.get(rootDir) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => current);
+  publicationTails.set(rootDir, tail);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (publicationTails.get(rootDir) === tail) publicationTails.delete(rootDir);
+  }
+}
+
+async function publishCatalogSourceCacheEntry(
+  options: PublishCatalogSourceCacheEntryOptions,
+): Promise<CatalogSourceCacheEntry> {
+  return withCatalogSourceCachePublication(options.location.rootDir, () =>
+    publishCatalogSourceCacheEntryUnlocked(options));
+}
+
+async function publishCatalogSourceCacheEntryUnlocked(
+  options: PublishCatalogSourceCacheEntryOptions,
+): Promise<CatalogSourceCacheEntry> {
   assertCacheIdentity(options.sourceId, options.sourceIdentity);
   if (options.requestedRef.length === 0 || !COMMIT_IDENTITY_PATTERN.test(options.resolvedCommit)) {
     throw new Error('Invalid catalog source cache snapshot identity.');

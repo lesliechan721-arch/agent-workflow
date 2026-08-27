@@ -2132,6 +2132,25 @@ async function buildManifestFieldEntries(options: {
     cwd: options.cwd,
     env: options.env,
   });
+  const effectiveFieldState = (key: string): Pick<ConfigFieldEntry,
+    'valueState' | 'effectiveValue' | 'sourceLayer'> => {
+    const field = schema[key]!;
+    const source = effective.sources[key];
+    const sourceLayer = toConfigSourceLayer(source);
+    if (source === undefined || source === 'missing') {
+      return { valueState: 'default', effectiveValue: null, sourceLayer: null };
+    }
+    const issue = effective.issues.find((entry) => entry.key === key && entry.source === source);
+    return {
+      valueState: issue ? 'invalid' : source === 'default' ? 'default' : 'configured',
+      effectiveValue: issue
+        ? null
+        : isPathTypeField(field) && effective.redactedValues[key] !== undefined
+          ? '[redacted]'
+          : effective.redactedValues[key] ?? null,
+      sourceLayer,
+    };
+  };
 
   const fields: ConfigFieldEntry[] = [];
   for (const [key, field] of Object.entries(schema)) {
@@ -2158,9 +2177,9 @@ async function buildManifestFieldEntries(options: {
           fields.push({
             ...base,
             valueState: 'configured',
-            effectiveValue: redactValue(field, value),
+            effectiveValue: isPathTypeField(field) ? '[redacted]' : redactValue(field, value),
             sourceLayer: 'user',
-            storedValue: redactValue(field, value),
+            storedValue: isPathTypeField(field) ? '[redacted]' : redactValue(field, value),
             storedSourceLayer: 'user',
           });
         } catch {
@@ -2168,6 +2187,7 @@ async function buildManifestFieldEntries(options: {
             ...base,
             valueState: 'invalid',
             sourceLayer: 'user',
+            storedSourceLayer: 'user',
           });
         }
         continue;
@@ -2182,7 +2202,7 @@ async function buildManifestFieldEntries(options: {
           });
           fields.push({
             ...base,
-            effectiveValue: redactValue(field, value),
+            effectiveValue: isPathTypeField(field) ? '[redacted]' : redactValue(field, value),
             sourceLayer: 'default',
           });
         } catch {
@@ -2210,9 +2230,9 @@ async function buildManifestFieldEntries(options: {
           fields.push({
             ...base,
             valueState: 'configured',
-            effectiveValue: redactValue(field, value),
+            effectiveValue: isPathTypeField(field) ? '[redacted]' : redactValue(field, value),
             sourceLayer: 'local',
-            storedValue: redactValue(field, value),
+            storedValue: isPathTypeField(field) ? '[redacted]' : redactValue(field, value),
             storedSourceLayer: 'local',
           });
         } catch {
@@ -2220,6 +2240,7 @@ async function buildManifestFieldEntries(options: {
             ...base,
             valueState: 'invalid',
             sourceLayer: 'local',
+            storedSourceLayer: 'local',
           });
         }
       } else {
@@ -2229,7 +2250,7 @@ async function buildManifestFieldEntries(options: {
     }
 
     let storedProjectValue: {
-      storedValue: PluginConfigValue | '[redacted]';
+      storedValue?: PluginConfigValue | '[redacted]';
       storedSourceLayer: 'project';
     } | undefined;
     if (options.scope === 'project' && Object.hasOwn(projectPlainEntries, key)) {
@@ -2241,37 +2262,15 @@ async function buildManifestFieldEntries(options: {
           projectRoot,
         });
         storedProjectValue = {
-          storedValue: redactValue(field, value),
+          storedValue: isPathTypeField(field) ? '[redacted]' : redactValue(field, value),
           storedSourceLayer: 'project',
         };
       } catch {
-        storedProjectValue = undefined;
+        storedProjectValue = { storedSourceLayer: 'project' };
       }
     }
 
-    const source = effective.sources[key];
-    const layer = toConfigSourceLayer(source);
-    if (source === 'default') {
-      fields.push({
-        ...base,
-        effectiveValue: effective.redactedValues[key] ?? null,
-        sourceLayer: 'default',
-        ...storedProjectValue,
-      });
-      continue;
-    }
-    if (source === 'user' || source === 'project' || source === 'projectLocal') {
-      const issue = effective.issues.find((entry) => entry.key === key && entry.source === source);
-      fields.push({
-        ...base,
-        valueState: issue ? 'invalid' : 'configured',
-        effectiveValue: issue ? null : effective.redactedValues[key] ?? null,
-        sourceLayer: layer,
-        ...storedProjectValue,
-      });
-      continue;
-    }
-    fields.push({ ...base, ...storedProjectValue });
+    fields.push({ ...base, ...effectiveFieldState(key), ...storedProjectValue });
   }
 
   return fields;
