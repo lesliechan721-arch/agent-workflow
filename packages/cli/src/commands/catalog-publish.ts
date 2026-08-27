@@ -7,10 +7,11 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import {
   assertStrictSemVer,
-  preparePublishedWorkspaceCatalog,
-  readPluginWorkspace,
+  preparePublishedCatalogWorkspace,
+  readCatalogWorkspace,
   validatePublishedCatalogSnapshot,
-  type WorkspaceCatalogBuildAdapter,
+  type CatalogWorkspace,
+  type CatalogWorkspaceBuildAdapter,
 } from '@lesliechan721/aw-plugin-core';
 
 import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
@@ -80,12 +81,12 @@ export function safeRemoteIdentity(value: string): string {
     .replace(/^[^@\s]+@(?=[^:/\s]+[/:])/u, '');
 }
 
-function attemptPath(workspaceRoot: string, catalogVersion: string): string {
-  return path.join(workspaceRoot, '.aw', 'publish', 'attempts', `${catalogVersion}.json`);
+function attemptPath(catalogWorkspaceRoot: string, catalogVersion: string): string {
+  return path.join(catalogWorkspaceRoot, '.aw', 'publish', 'attempts', `${catalogVersion}.json`);
 }
 
-async function migrateLegacyAttempt(workspaceRoot: string, catalogVersion: string): Promise<void> {
-  const legacyPath = path.join(workspaceRoot, LEGACY_ATTEMPTED_MARKER);
+async function migrateLegacyAttempt(catalogWorkspaceRoot: string, catalogVersion: string): Promise<void> {
+  const legacyPath = path.join(catalogWorkspaceRoot, LEGACY_ATTEMPTED_MARKER);
   if (!(await fs.pathExists(legacyPath))) return;
   let recordedVersion = catalogVersion;
   try {
@@ -96,7 +97,7 @@ async function migrateLegacyAttempt(workspaceRoot: string, catalogVersion: strin
   } catch {
     // Bind an unreadable legacy marker to the current version. A later version uses a new file.
   }
-  const destination = attemptPath(workspaceRoot, recordedVersion);
+  const destination = attemptPath(catalogWorkspaceRoot, recordedVersion);
   await fs.ensureDir(path.dirname(destination));
   if (await fs.pathExists(destination)) return;
   await fs.rename(legacyPath, destination);
@@ -182,8 +183,8 @@ async function materializeSourceHead(options: {
   }
 }
 
-async function validatePublishedSourceWorkspace(
-  workspace: Awaited<ReturnType<typeof readPluginWorkspace>>,
+async function validatePublishedCatalogWorkspace(
+  catalogWorkspace: CatalogWorkspace,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
   const validator = path.join(
@@ -193,15 +194,15 @@ async function validatePublishedSourceWorkspace(
     'scripts',
     'validate-plugin.mjs',
   );
-  for (const plugin of workspace.plugins) {
+  for (const plugin of catalogWorkspace.plugins) {
     try {
       await execFileAsync(process.execPath, [
         validator,
         plugin.rootDir,
-        '--workspace-root', workspace.workspaceRoot,
+        '--workspace-root', catalogWorkspace.workspaceRoot,
         '--json',
       ], {
-        cwd: workspace.workspaceRoot,
+        cwd: catalogWorkspace.workspaceRoot,
         env,
         encoding: 'utf8',
         maxBuffer: 16 * 1024 * 1024,
@@ -226,7 +227,7 @@ async function validatePublishedSourceWorkspace(
   }
 }
 
-const publishBuildAdapter: WorkspaceCatalogBuildAdapter = {
+const publishBuildAdapter: CatalogWorkspaceBuildAdapter = {
   async build(options) {
     await bundleLocalPlugin(options.plugin, options.outputRoot, {
       buildMode: 'staging',
@@ -251,9 +252,9 @@ export async function runCatalogPublishCommand(options: {
   const remote = options.remote ?? 'origin';
   const branch = options.branch ?? 'catalog';
   const env = sanitizedGitEnvironment(options.env);
-  const workspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
-  const repoRoot = await git(workspaceRoot, ['rev-parse', '--show-toplevel'], env, 'Workspace must be inside a real Git worktree.');
-  const sourceHead = await git(repoRoot, ['rev-parse', '--verify', 'HEAD'], env, 'Workspace Git HEAD must be committed and not unborn.');
+  const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
+  const repoRoot = await git(catalogWorkspaceRoot, ['rev-parse', '--show-toplevel'], env, 'Catalog Workspace must be inside a real Git worktree.');
+  const sourceHead = await git(repoRoot, ['rev-parse', '--verify', 'HEAD'], env, 'Catalog Workspace Git HEAD must be committed and not unborn.');
   const status = await git(repoRoot, [
     'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none',
   ], env, 'Could not inspect the source worktree.');
@@ -266,22 +267,22 @@ export async function runCatalogPublishCommand(options: {
   try {
     const sourceRoot = path.join(temporaryRoot, 'source');
     await materializeSourceHead({ repoRoot, sourceHead, outputRoot: sourceRoot, temporaryRoot, env });
-    const workspaceRelative = path.relative(repoRoot, workspaceRoot);
-    if (workspaceRelative === '..' || workspaceRelative.startsWith(`..${path.sep}`) || path.isAbsolute(workspaceRelative)) {
-      throw new Error('Catalog workspace must stay inside its Git worktree root.');
+    const catalogWorkspaceRelative = path.relative(repoRoot, catalogWorkspaceRoot);
+    if (catalogWorkspaceRelative === '..' || catalogWorkspaceRelative.startsWith(`..${path.sep}`) || path.isAbsolute(catalogWorkspaceRelative)) {
+      throw new Error('Catalog Workspace must stay inside its Git worktree root.');
     }
-    const sourceWorkspaceRoot = path.join(sourceRoot, workspaceRelative);
+    const archivedCatalogWorkspaceRoot = path.join(sourceRoot, catalogWorkspaceRelative);
     await git(repoRoot, ['check-ref-format', '--branch', branch], env, 'Invalid Catalog publication branch name.');
-    const workspace = await readPluginWorkspace(sourceWorkspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
-    await validatePublishedSourceWorkspace(workspace, env);
-    const catalogVersion = workspace.metadata.catalog.version;
+    const catalogWorkspace = await readCatalogWorkspace(archivedCatalogWorkspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
+    await validatePublishedCatalogWorkspace(catalogWorkspace, env);
+    const catalogVersion = catalogWorkspace.metadata.catalog.version;
     const tag = `catalog-v${catalogVersion}`;
     await git(repoRoot, ['check-ref-format', `refs/tags/${tag}`], env, 'Invalid Catalog publication tag.');
-    const markerPath = attemptPath(workspaceRoot, catalogVersion);
+    const markerPath = attemptPath(catalogWorkspaceRoot, catalogVersion);
     if (!(await gitExit(repoRoot, ['check-ignore', '-q', markerPath], env))) {
       throw new Error('Catalog publish state under .aw/publish must be ignored by Git. Add .aw/ to .gitignore.');
     }
-    await migrateLegacyAttempt(workspaceRoot, catalogVersion);
+    await migrateLegacyAttempt(catalogWorkspaceRoot, catalogVersion);
     if (await fs.pathExists(markerPath)) {
       throw new Error(
         `Catalog ${catalogVersion} already has an attempted publication record. `
@@ -316,8 +317,8 @@ export async function runCatalogPublishCommand(options: {
       await git(repositoryRoot, ['--work-tree', previousSnapshotRoot, 'checkout', '--quiet', 'refs/remotes/publish/catalog', '--', '.'], env, 'Could not read the published Catalog snapshot.');
       await validatePublishedCatalogSnapshot(previousSnapshotRoot);
     }
-    const prepared = await preparePublishedWorkspaceCatalog({
-      workspaceRoot: sourceWorkspaceRoot,
+    const prepared = await preparePublishedCatalogWorkspace({
+      workspaceRoot: archivedCatalogWorkspaceRoot,
       sourceHead,
       previousSnapshotRoot,
       adapter: publishBuildAdapter,
@@ -374,7 +375,10 @@ export async function runCatalogPublishCommand(options: {
     const attempted = {
       schemaVersion: 1,
       state: 'attempted',
-      workspaceIdentity: digest(JSON.stringify({ repoRoot, workspaceRelative: path.relative(repoRoot, workspaceRoot) })),
+      workspaceIdentity: digest(JSON.stringify({
+        repoRoot,
+        workspaceRelative: path.relative(repoRoot, catalogWorkspaceRoot),
+      })),
       catalogVersion,
       sourceHead,
       remote: { name: remote, identityDigest: remoteIdentityDigest },

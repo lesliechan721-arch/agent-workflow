@@ -50,7 +50,7 @@ async function createPublishWorkspace(root: string, pluginName: string): Promise
   ], { cwd: root });
 }
 
-describe('public workspace authoring commands', () => {
+describe('public Catalog Workspace authoring commands', () => {
   it('creates context for an absent canonical root before public plugin init', async () => {
     const root = await createRoot();
     await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });

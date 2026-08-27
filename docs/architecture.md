@@ -27,7 +27,7 @@
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；只有基于 Git base 的 status 差异检查依赖 Git。
 - `utils/plugin-authoring-capabilities.json` 是插件作者聚焦字段视图的 canonical registry。CLI virtual build export 只投影该真值；复杂规则通过 `verifiedSource` 继续归属 canonical manifest/author validator。
 
-公开包 `@lesliechan721/aw-plugin-core` 还拥有 AW Plugin Workspace v1 metadata、单插件 bundle 和 schema 4 Catalog snapshot build/validate 的机器合同。固定源码入口是 `plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
+公开包 `@lesliechan721/aw-plugin-core` 还拥有 Catalog Workspace v1 marker 与 metadata、单插件 bundle 和 schema 4 Catalog snapshot build/validate 的机器合同。固定源码入口是 `.aw-workspace.json`、`plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
 
 ### Module Invariants
 
@@ -41,7 +41,7 @@
 ## Distribution and Runtime State
 
 ```text
-Source Workspace
+Catalog Workspace
   plugins/marketplace-source.json
   plugins/<name>/.agents-plugin/plugin.json
   plugins/<name>/skills/**
@@ -62,7 +62,7 @@ installed plugin
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
 - 第三方 workspace 用 `aw catalog build` 生成 `.aw/catalog` schema 4 snapshot；本仓库维护者的 `pnpm build` 还会生成本地 staging。两种输出都是生成目录，不手工修改。
 - `aw catalog build` 从独立 workspace 生成 `.aw/catalog` development snapshot；`aw plugin build` 默认生成 `.aw/plugins/<name>`。两者先在同父 staging 完整构建和验证，再替换已证明为生成物的旧输出，并拒绝 workspace 外、符号链接及 `.git`、`plugins` 等受保护边界。
-- `aw catalog init` 生成的 workspace marker 提供稳定 ownership identity。source、manifest 或 `catalog.version` 变化不改变该 identity；独立初始化的 workspace identity 不同。生成输出 marker 不进入公开 plugin 或 snapshot digest。
+- `aw catalog init` 生成 `.aw-workspace.json`，唯一合法合同是 schema 1、`kind: "aw-catalog-workspace"` 和稳定非空的 `workspaceIdentity`。marker 必须存在；source、manifest 或 `catalog.version` 变化不改变该 identity，`--force` 也保留已有合法 identity。独立初始化的 Catalog Workspace identity 不同。生成输出 marker 不进入公开 plugin 或 snapshot digest。
 - source plugin 的 authoring 输入树不允许符号链接。Manifest 声明的 source path 不能进入任意深度的 `.git/` 或 `node_modules/`；CLI 在读取 manifest、脚本或静态资源前统一检查该树，并跳过这两类不进入 source bundle 的目录。Catalog 严格校验把每个平台 `plugin.json` 与 bundle source manifest 的完整生成投影逐字段核对，并验证所有生成路径留在 bundle 内且存在。
 - `aw catalog publish` 从干净且已有提交的 Source Workspace 发布到用户配置的 Git remote。CLI 先把已解析的 source HEAD 归档到隔离 workspace，在其中对每个插件执行公开 source validator，并只从该归档构建；ignored 或其它不属于 source HEAD 的工作树字节不能进入 snapshot。Core 准备 schema 4 published snapshot、完整 release ledger 和 release identity；CLI 只负责 Git 前置条件、确认、隔离 commit/tag 和一次 atomic push。第三方 Catalog 使用独立 branch 根和不可变 `catalog-v<version>` 注解 tag，不使用官方 `catalog/latest|beta` refs。首次发布创建 root commit，后续发布只以读取并验证的远端 branch commit 为父提交。
 - 第三方发布在第一次远端写入前保存 gitignored `.aw/publish/attempts/<version>.json`。每个版本文件独立保留；文件损坏或发布结果不确定时只阻止该版本，作者用 `aw catalog version <higher>` 恢复。该恢复合同不增加 force、补偿 push 或平台专用发布路径。

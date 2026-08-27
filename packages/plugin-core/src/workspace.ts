@@ -39,15 +39,15 @@ import type {
   PluginMeta,
 } from './types.js';
 
-export const DEFAULT_WORKSPACE_CATALOG_VERSION = '0.1.0';
+export const DEFAULT_CATALOG_WORKSPACE_VERSION = '0.1.0';
 export const DEFAULT_CATALOG_OUTPUT_PATH = path.join('.aw', 'catalog');
 export const DEFAULT_PUBLISHED_CATALOG_OUTPUT_PATH = path.join('.aw', 'publish', 'catalog');
 export const DEFAULT_PLUGIN_OUTPUT_PATH = path.join('.aw', 'plugins');
 export const CATALOG_MANIFEST_FILENAME = 'catalog-manifest.json';
 export const GENERATED_OUTPUT_MARKER_FILENAME = '.aw-generated.json';
-export const WORKSPACE_MARKER_FILENAME = '.aw-workspace.json';
+export const CATALOG_WORKSPACE_MARKER_FILENAME = '.aw-workspace.json';
 
-export interface WorkspaceCatalogInitOptions {
+export interface CatalogWorkspaceInitOptions {
   workspaceRoot: string;
   ownerName?: string;
   ownerUrl?: string;
@@ -56,7 +56,7 @@ export interface WorkspaceCatalogInitOptions {
   force?: boolean;
 }
 
-export interface WorkspacePluginBuildAdapter {
+export interface CatalogWorkspacePluginBuildAdapter {
   build(options: {
     workspaceRoot: string;
     plugin: PluginMeta;
@@ -66,10 +66,19 @@ export interface WorkspacePluginBuildAdapter {
   }): Promise<void>;
 }
 
-export type WorkspaceCatalogBuildAdapter = WorkspacePluginBuildAdapter;
+export type CatalogWorkspaceBuildAdapter = CatalogWorkspacePluginBuildAdapter;
 
-export interface WorkspaceSourceOptions {
+export interface CatalogWorkspaceSourceOptions {
   reservedImports?: ReservedImportRegistry;
+}
+
+export interface CatalogWorkspace {
+  workspaceRoot: string;
+  markerPath: string;
+  workspaceIdentity: string;
+  metadataPath: string;
+  metadata: MarketplaceSourceMeta;
+  plugins: PluginMeta[];
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -109,15 +118,15 @@ async function assertNoSymlinkPath(root: string, target: string): Promise<void> 
   }
 }
 
-export async function resolveWorkspaceOutputPath(options: {
+export async function resolveCatalogWorkspaceOutputPath(options: {
   workspaceRoot: string;
   outputPath: string;
   kind?: 'catalog' | 'plugin';
 }): Promise<{ workspaceRoot: string; outputRoot: string }> {
-  const workspaceRoot = await assertDirectoryWithoutSymlinks(options.workspaceRoot, 'Workspace root');
+  const workspaceRoot = await assertDirectoryWithoutSymlinks(options.workspaceRoot, 'Catalog Workspace root');
   const outputRoot = path.resolve(workspaceRoot, options.outputPath);
   if (!isInside(workspaceRoot, outputRoot) || outputRoot === workspaceRoot) {
-    throw new Error(`Output must be inside the workspace: ${outputRoot}`);
+    throw new Error(`Output must be inside the Catalog Workspace: ${outputRoot}`);
   }
   await assertNoSymlinkPath(workspaceRoot, outputRoot);
   const protectedRoots = [
@@ -128,7 +137,7 @@ export async function resolveWorkspaceOutputPath(options: {
   for (const protectedRoot of protectedRoots) {
     if (protectedRoot.endsWith(`${path.sep}.aw`) && outputRoot !== protectedRoot) continue;
     if (isInside(protectedRoot, outputRoot) || isInside(outputRoot, protectedRoot)) {
-      throw new Error(`Output overlaps a protected workspace path: ${outputRoot}`);
+      throw new Error(`Output overlaps a protected Catalog Workspace path: ${outputRoot}`);
     }
   }
   const otherGeneratedRoot = path.join(
@@ -141,26 +150,26 @@ export async function resolveWorkspaceOutputPath(options: {
   return { workspaceRoot, outputRoot };
 }
 
-function safeWorkspaceName(workspaceRoot: string): string {
+function safeCatalogWorkspaceName(workspaceRoot: string): string {
   const normalized = path.basename(workspaceRoot).toLowerCase()
     .replace(/[^a-z0-9]+/gu, '-')
     .replace(/^-+|-+$/gu, '');
   return normalized || 'aw-workspace';
 }
 
-function workspaceMetadata(options: WorkspaceCatalogInitOptions, workspaceRoot: string): MarketplaceSourceMeta {
-  const workspaceName = safeWorkspaceName(workspaceRoot);
+function catalogWorkspaceMetadata(options: CatalogWorkspaceInitOptions, workspaceRoot: string): MarketplaceSourceMeta {
+  const catalogWorkspaceName = safeCatalogWorkspaceName(workspaceRoot);
   return {
     owner: {
-      name: options.ownerName?.trim() || workspaceName,
-      url: options.ownerUrl?.trim() || `https://example.invalid/aw-workspaces/${workspaceName}`,
+      name: options.ownerName?.trim() || catalogWorkspaceName,
+      url: options.ownerUrl?.trim() || `https://example.invalid/aw-workspaces/${catalogWorkspaceName}`,
     },
     interface: {
-      displayName: options.displayName?.trim() || workspaceName,
+      displayName: options.displayName?.trim() || catalogWorkspaceName,
     },
     catalog: {
       version: assertCatalogVersion(
-        options.catalogVersion ?? DEFAULT_WORKSPACE_CATALOG_VERSION,
+        options.catalogVersion ?? DEFAULT_CATALOG_WORKSPACE_VERSION,
         'catalog version',
       ),
     },
@@ -189,51 +198,43 @@ async function writeTextAtomic(filePath: string, value: string): Promise<void> {
   }
 }
 
-function workspaceIdentity(workspaceRoot: string): string {
-  return sha256(`aw-plugin-workspace-v1\0${path.resolve(workspaceRoot)}`);
-}
-
-function workspaceScaffoldMarker(metadata: MarketplaceSourceMeta) {
+function catalogWorkspaceMarker() {
   return {
     schemaVersion: 1,
-    kind: 'aw-plugin-workspace',
+    kind: 'aw-catalog-workspace',
     workspaceIdentity: sha256(crypto.randomUUID()),
-    sourceIdentity: sha256(stableStringify(metadata)),
   };
 }
 
-function validateWorkspaceScaffoldMarker(
+function validateCatalogWorkspaceMarker(
   value: unknown,
 ): { workspaceIdentity: string } {
   const marker = value as Record<string, unknown>;
-  const digestPattern = /^sha256:[0-9a-f]{64}$/u;
   if (
     !marker
     || typeof marker !== 'object'
     || Array.isArray(marker)
     || !isDeepStrictEqual(Object.keys(marker).sort(), [
-      'kind', 'schemaVersion', 'sourceIdentity', 'workspaceIdentity',
+      'kind', 'schemaVersion', 'workspaceIdentity',
     ])
     || marker.schemaVersion !== 1
-    || marker.kind !== 'aw-plugin-workspace'
+    || marker.kind !== 'aw-catalog-workspace'
     || typeof marker.workspaceIdentity !== 'string'
-    || !digestPattern.test(marker.workspaceIdentity)
-    || typeof marker.sourceIdentity !== 'string'
-    || !digestPattern.test(marker.sourceIdentity)
+    || marker.workspaceIdentity.trim().length === 0
   ) {
-    throw new Error('Invalid workspace scaffold marker.');
+    throw new Error('Invalid Catalog Workspace marker.');
   }
   return { workspaceIdentity: marker.workspaceIdentity };
 }
 
-async function readWorkspaceOwnershipIdentity(
+async function readCatalogWorkspaceMarker(
   workspaceRoot: string,
-): Promise<string> {
-  const markerPath = path.join(workspaceRoot, WORKSPACE_MARKER_FILENAME);
-  if (!await fs.pathExists(markerPath)) return workspaceIdentity(workspaceRoot);
-  return validateWorkspaceScaffoldMarker(
-    await readRegularJson(markerPath, 'Workspace marker'),
-  ).workspaceIdentity;
+): Promise<{ markerPath: string; workspaceIdentity: string }> {
+  const markerPath = path.join(workspaceRoot, CATALOG_WORKSPACE_MARKER_FILENAME);
+  const marker = validateCatalogWorkspaceMarker(
+    await readRegularJson(markerPath, 'Catalog Workspace marker'),
+  );
+  return { markerPath, workspaceIdentity: marker.workspaceIdentity };
 }
 
 async function readRegularJson(filePath: string, label: string): Promise<unknown> {
@@ -247,23 +248,32 @@ async function readRegularJson(filePath: string, label: string): Promise<unknown
   return fs.readJson(filePath);
 }
 
-export async function initializePluginWorkspace(
-  options: WorkspaceCatalogInitOptions,
-): Promise<{ workspaceRoot: string; metadataPath: string; metadata: MarketplaceSourceMeta }> {
-  const workspaceRoot = await assertDirectoryWithoutSymlinks(options.workspaceRoot, 'Workspace root');
+export async function initializeCatalogWorkspace(
+  options: CatalogWorkspaceInitOptions,
+): Promise<{
+  workspaceRoot: string;
+  markerPath: string;
+  workspaceIdentity: string;
+  metadataPath: string;
+  metadata: MarketplaceSourceMeta;
+}> {
+  const workspaceRoot = await assertDirectoryWithoutSymlinks(options.workspaceRoot, 'Catalog Workspace root');
   const pluginsRoot = path.join(workspaceRoot, 'plugins');
   const metadataPath = path.join(workspaceRoot, MARKETPLACE_SOURCE_PATH);
-  const markerPath = path.join(workspaceRoot, WORKSPACE_MARKER_FILENAME);
-  const metadata = workspaceMetadata(options, workspaceRoot);
+  const markerPath = path.join(workspaceRoot, CATALOG_WORKSPACE_MARKER_FILENAME);
+  const metadata = catalogWorkspaceMetadata(options, workspaceRoot);
   const existingMetadata = await fs.pathExists(metadataPath);
   const existingMarker = await fs.pathExists(markerPath);
   if ((existingMetadata || existingMarker) && !options.force) {
-    throw new Error(`Workspace catalog scaffold already exists: ${workspaceRoot}`);
+    throw new Error(`Catalog Workspace scaffold already exists: ${workspaceRoot}`);
+  }
+  if (existingMetadata && !existingMarker) {
+    throw new Error(`Refusing to adopt Catalog Workspace metadata without a valid marker: ${metadataPath}`);
   }
   if (await fs.pathExists(pluginsRoot)) {
     const stat = await fs.lstat(pluginsRoot);
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new Error(`Workspace plugins path must be a regular directory: ${pluginsRoot}`);
+      throw new Error(`Catalog Workspace plugins path must be a regular directory: ${pluginsRoot}`);
     }
     const entries = (await fs.readdir(pluginsRoot)).filter((entry) => entry !== path.basename(metadataPath));
     if (entries.length > 0 && !existingMarker) {
@@ -273,16 +283,17 @@ export async function initializePluginWorkspace(
   if (existingMetadata) {
     const current = await readMarketplaceSourceMeta(workspaceRoot);
     if (!isDeepStrictEqual(current, metadata)) {
-      throw new Error(`Refusing to replace different workspace catalog metadata: ${metadataPath}`);
+      throw new Error(`Refusing to replace different Catalog Workspace metadata: ${metadataPath}`);
     }
   }
-  const expectedMarker = workspaceScaffoldMarker(metadata);
+  const expectedMarker = catalogWorkspaceMarker();
+  let workspaceIdentity = expectedMarker.workspaceIdentity;
   if (existingMarker) {
-    const currentMarker = await readRegularJson(markerPath, 'Workspace marker');
+    const currentMarker = await readRegularJson(markerPath, 'Catalog Workspace marker');
     try {
-      validateWorkspaceScaffoldMarker(currentMarker);
+      workspaceIdentity = validateCatalogWorkspaceMarker(currentMarker).workspaceIdentity;
     } catch {
-      throw new Error(`Refusing to replace a workspace scaffold with a different identity: ${workspaceRoot}`);
+      throw new Error(`Refusing to replace a Catalog Workspace marker with a different identity: ${workspaceRoot}`);
     }
   }
   const gitignorePath = path.join(workspaceRoot, '.gitignore');
@@ -291,7 +302,7 @@ export async function initializePluginWorkspace(
   if (gitignoreExists) {
     const stat = await fs.lstat(gitignorePath);
     if (!stat.isFile() || stat.isSymbolicLink()) {
-      throw new Error(`Workspace .gitignore must be a regular file: ${gitignorePath}`);
+      throw new Error(`Catalog Workspace .gitignore must be a regular file: ${gitignorePath}`);
     }
     previousGitignore = await fs.readFile(gitignorePath, 'utf8');
   }
@@ -313,51 +324,59 @@ export async function initializePluginWorkspace(
     if ((await fs.readdir(pluginsRoot)).length === 0) await fs.remove(pluginsRoot);
     throw error;
   }
-  return { workspaceRoot, metadataPath, metadata };
+  return { workspaceRoot, markerPath, workspaceIdentity, metadataPath, metadata };
 }
 
-export async function readPluginWorkspace(
+export async function readCatalogWorkspace(
   workspaceRoot: string,
-  options: WorkspaceSourceOptions = {},
-): Promise<{ workspaceRoot: string; metadataPath: string; metadata: MarketplaceSourceMeta; plugins: PluginMeta[] }> {
-  const root = await assertDirectoryWithoutSymlinks(workspaceRoot, 'Workspace root');
+  options: CatalogWorkspaceSourceOptions = {},
+): Promise<CatalogWorkspace> {
+  const root = await assertDirectoryWithoutSymlinks(workspaceRoot, 'Catalog Workspace root');
+  const marker = await readCatalogWorkspaceMarker(root);
   const metadataPath = path.join(root, MARKETPLACE_SOURCE_PATH);
-  await readRegularJson(metadataPath, 'Workspace catalog metadata');
-  if (!isInside(root, await fs.realpath(metadataPath))) throw new Error('Workspace catalog metadata resolves outside the workspace.');
+  await readRegularJson(metadataPath, 'Catalog Workspace metadata');
+  if (!isInside(root, await fs.realpath(metadataPath))) throw new Error('Catalog Workspace metadata resolves outside the workspace.');
   const metadata = await readMarketplaceSourceMeta(root);
-  const pluginsRoot = await assertDirectoryWithoutSymlinks(path.join(root, 'plugins'), 'Workspace plugins directory');
-  if (!isInside(root, pluginsRoot)) throw new Error('Workspace plugins directory resolves outside the workspace.');
+  const pluginsRoot = await assertDirectoryWithoutSymlinks(path.join(root, 'plugins'), 'Catalog Workspace plugins directory');
+  if (!isInside(root, pluginsRoot)) throw new Error('Catalog Workspace plugins directory resolves outside the workspace.');
   const plugins: PluginMeta[] = [];
   for (const entry of (await fs.readdir(pluginsRoot, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.name === path.basename(metadataPath) || !entry.isDirectory()) {
-      if (entry.isSymbolicLink()) throw new Error(`Workspace plugin source must not be a symbolic link: ${entry.name}`);
+      if (entry.isSymbolicLink()) throw new Error(`Catalog Workspace plugin source must not be a symbolic link: ${entry.name}`);
       continue;
     }
     const pluginRoot = path.join(pluginsRoot, entry.name);
     const pluginStat = await fs.lstat(pluginRoot);
     if (!pluginStat.isDirectory() || pluginStat.isSymbolicLink() || !isInside(root, await fs.realpath(pluginRoot))) {
-      throw new Error(`Workspace plugin source must be a regular in-workspace directory: ${pluginRoot}`);
+      throw new Error(`Catalog Workspace plugin source must be a regular in-workspace directory: ${pluginRoot}`);
     }
     const manifestDir = path.join(pluginRoot, path.dirname(SOURCE_MANIFEST_PATH));
     const manifestPath = path.join(pluginRoot, SOURCE_MANIFEST_PATH);
     await assertDirectoryWithoutSymlinks(manifestDir, 'Plugin manifest directory');
     await readRegularJson(manifestPath, 'Plugin manifest');
-    if (!isInside(root, await fs.realpath(manifestPath))) throw new Error(`Plugin manifest resolves outside the workspace: ${manifestPath}`);
+    if (!isInside(root, await fs.realpath(manifestPath))) throw new Error(`Plugin manifest resolves outside the Catalog Workspace: ${manifestPath}`);
     const plugin = await readPluginManifest(pluginRoot, { mode: 'source', reservedImports: options.reservedImports });
     if (plugin.manifest.name !== entry.name) {
       throw new Error(`Plugin directory name ${JSON.stringify(entry.name)} must match manifest name ${JSON.stringify(plugin.manifest.name)}.`);
     }
     plugins.push(plugin);
   }
-  return { workspaceRoot: root, metadataPath, metadata, plugins };
+  return {
+    workspaceRoot: root,
+    markerPath: marker.markerPath,
+    workspaceIdentity: marker.workspaceIdentity,
+    metadataPath,
+    metadata,
+    plugins,
+  };
 }
 
-export async function setWorkspaceCatalogVersion(
+export async function setCatalogWorkspaceVersion(
   workspaceRoot: string,
   version: string,
-  options: WorkspaceSourceOptions = {},
+  options: CatalogWorkspaceSourceOptions = {},
 ): Promise<MarketplaceSourceMeta> {
-  const current = await readPluginWorkspace(workspaceRoot, options);
+  const current = await readCatalogWorkspace(workspaceRoot, options);
   const metadata = {
     ...current.metadata,
     catalog: { version: assertCatalogVersion(version, 'catalog version') },
@@ -580,27 +599,27 @@ function normalizeCatalogRelease(
   };
 }
 
-export async function buildWorkspaceCatalog(options: {
+export async function buildCatalogWorkspace(options: {
   workspaceRoot: string;
   outputPath?: string;
   force?: boolean;
-  adapter: WorkspaceCatalogBuildAdapter;
+  adapter: CatalogWorkspaceBuildAdapter;
   reservedImports?: ReservedImportRegistry;
 }): Promise<{ outputRoot: string; catalogVersion: string; channel: CatalogChannel; pluginNames: string[] }> {
-  const workspace = await readPluginWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
-  const plugins = orderPlugins(workspace.plugins);
-  const resolved = await resolveWorkspaceOutputPath({
-    workspaceRoot: workspace.workspaceRoot,
+  const catalogWorkspace = await readCatalogWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
+  const plugins = orderPlugins(catalogWorkspace.plugins);
+  const resolved = await resolveCatalogWorkspaceOutputPath({
+    workspaceRoot: catalogWorkspace.workspaceRoot,
     outputPath: options.outputPath ?? DEFAULT_CATALOG_OUTPUT_PATH,
     kind: 'catalog',
   });
-  const catalogVersion = workspace.metadata.catalog.version;
+  const catalogVersion = catalogWorkspace.metadata.catalog.version;
   const channel = deriveCatalogChannel(catalogVersion);
   const pluginNames = plugins.map((plugin) => plugin.manifest.name).sort();
-  const identity = sourceIdentity(workspace.metadata, plugins);
+  const identity = sourceIdentity(catalogWorkspace.metadata, plugins);
   const marker = generatedOutputMarker({
     kind: 'catalog',
-    workspaceIdentity: await readWorkspaceOwnershipIdentity(workspace.workspaceRoot),
+    workspaceIdentity: catalogWorkspace.workspaceIdentity,
     sourceIdentity: identity,
   });
   await replaceGeneratedOutput({
@@ -613,7 +632,7 @@ export async function buildWorkspaceCatalog(options: {
         const outputRoot = path.join(stagingRoot, 'plugins', plugin.manifest.name);
         await fs.ensureDir(outputRoot);
         await options.adapter.build({
-          workspaceRoot: workspace.workspaceRoot,
+          workspaceRoot: catalogWorkspace.workspaceRoot,
           plugin,
           plugins,
           dependencies: closure.slice(0, -1),
@@ -626,12 +645,12 @@ export async function buildWorkspaceCatalog(options: {
         .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
       await fs.outputJson(
         path.join(stagingRoot, '.agents', 'plugins', 'marketplace.json'),
-        createMarketplaceManifest(workspace.metadata, byPlatform('codex')),
+        createMarketplaceManifest(catalogWorkspace.metadata, byPlatform('codex')),
         { spaces: 2 },
       );
       await fs.outputJson(
         path.join(stagingRoot, '.claude-plugin', 'marketplace.json'),
-        createMarketplaceManifest(workspace.metadata, byPlatform('claude')),
+        createMarketplaceManifest(catalogWorkspace.metadata, byPlatform('claude')),
         { spaces: 2 },
       );
       let minVersion = '0.0.0';
@@ -650,8 +669,8 @@ export async function buildWorkspaceCatalog(options: {
         channel,
         compatibility: { aw: { minVersion } },
         marketplace: {
-          owner: workspace.metadata.owner,
-          interface: workspace.metadata.interface,
+          owner: catalogWorkspace.metadata.owner,
+          interface: catalogWorkspace.metadata.interface,
         },
         release: { state: 'development' },
         entries,
@@ -701,12 +720,12 @@ export async function validatePublishedCatalogSnapshot(snapshotDirectory: string
   return { ...validation, ledger: validation.ledger };
 }
 
-export async function preparePublishedWorkspaceCatalog(options: {
+export async function preparePublishedCatalogWorkspace(options: {
   workspaceRoot: string;
   sourceHead: string;
   outputPath?: string;
   previousSnapshotRoot?: string;
-  adapter: WorkspaceCatalogBuildAdapter;
+  adapter: CatalogWorkspaceBuildAdapter;
   reservedImports?: ReservedImportRegistry;
 }): Promise<{
   outputRoot: string;
@@ -720,11 +739,11 @@ export async function preparePublishedWorkspaceCatalog(options: {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(options.sourceHead)) {
     throw new Error('Published Catalog sourceHead must be a committed Git object ID.');
   }
-  const workspace = await readPluginWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
-  for (const plugin of workspace.plugins) {
+  const catalogWorkspace = await readCatalogWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
+  for (const plugin of catalogWorkspace.plugins) {
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }
-  const catalogVersion = workspace.metadata.catalog.version;
+  const catalogVersion = catalogWorkspace.metadata.catalog.version;
   const channel = deriveCatalogChannel(catalogVersion);
   const previous = options.previousSnapshotRoot
     ? await validatePublishedCatalogSnapshot(options.previousSnapshotRoot)
@@ -741,10 +760,10 @@ export async function preparePublishedWorkspaceCatalog(options: {
   const temporaryRelative = path.join('.aw', 'publish', `.catalog-preparation-${crypto.randomUUID()}`);
   const finalRelative = options.outputPath
     ?? `${DEFAULT_PUBLISHED_CATALOG_OUTPUT_PATH}-v${catalogVersion}`;
-  let temporaryRoot = path.resolve(workspace.workspaceRoot, temporaryRelative);
+  let temporaryRoot = path.resolve(catalogWorkspace.workspaceRoot, temporaryRelative);
   try {
-    const built = await buildWorkspaceCatalog({
-      workspaceRoot: workspace.workspaceRoot,
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: catalogWorkspace.workspaceRoot,
       outputPath: temporaryRelative,
       adapter: options.adapter,
       reservedImports: options.reservedImports,
@@ -754,14 +773,14 @@ export async function preparePublishedWorkspaceCatalog(options: {
     const contentDigests = new Map(development.manifest.entries.map((entry) => [entry.name, entry.contentDigest]));
     const overrides = channel === 'beta'
       ? resolveBetaPluginVersionOverrides({
-          plugins: workspace.plugins,
+          plugins: catalogWorkspace.plugins,
           contentDigests,
           ledger: previousLedger,
         })
-      : Object.fromEntries(workspace.plugins.map((plugin) => [plugin.manifest.name, plugin.manifest.version]));
+      : Object.fromEntries(catalogWorkspace.plugins.map((plugin) => [plugin.manifest.name, plugin.manifest.version]));
     await rewritePublishedPluginVersions(temporaryRoot, overrides);
     const bundledPlugins = await Promise.all(
-      workspace.plugins.map((plugin) => readPluginManifest(
+      catalogWorkspace.plugins.map((plugin) => readPluginManifest(
         path.join(temporaryRoot, 'plugins', plugin.manifest.name),
         { mode: 'bundle' },
       )),
@@ -795,8 +814,8 @@ export async function preparePublishedWorkspaceCatalog(options: {
       fs.writeFile(path.join(temporaryRoot, PLUGIN_RELEASE_LEDGER_FILENAME), `${JSON.stringify(ledger, null, 2)}\n`),
     ]);
     const prepared = await validatePublishedCatalogSnapshot(temporaryRoot);
-    const resolved = await resolveWorkspaceOutputPath({
-      workspaceRoot: workspace.workspaceRoot,
+    const resolved = await resolveCatalogWorkspaceOutputPath({
+      workspaceRoot: catalogWorkspace.workspaceRoot,
       outputPath: finalRelative,
       kind: 'catalog',
     });
@@ -843,33 +862,33 @@ function dependencyClosure(plugin: PluginMeta, all: readonly PluginMeta[]): Plug
   return result;
 }
 
-export async function buildWorkspacePlugin(options: {
+export async function buildCatalogWorkspacePlugin(options: {
   workspaceRoot: string;
   pluginDirectory: string;
   outputPath?: string;
   force?: boolean;
-  adapter: WorkspacePluginBuildAdapter;
+  adapter: CatalogWorkspacePluginBuildAdapter;
   reservedImports?: ReservedImportRegistry;
 }): Promise<{ outputRoot: string; pluginName: string; dependencies: string[]; digest: string }> {
-  const workspace = await readPluginWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
-  assertDependencyGraph(workspace.plugins);
-  const requestedPluginRoot = path.resolve(workspace.workspaceRoot, options.pluginDirectory);
+  const catalogWorkspace = await readCatalogWorkspace(options.workspaceRoot, { reservedImports: options.reservedImports });
+  assertDependencyGraph(catalogWorkspace.plugins);
+  const requestedPluginRoot = path.resolve(catalogWorkspace.workspaceRoot, options.pluginDirectory);
   const pluginRoot = await fs.realpath(requestedPluginRoot);
-  if (!isInside(workspace.workspaceRoot, pluginRoot)) throw new Error('Plugin directory must stay inside the workspace.');
-  const plugin = workspace.plugins.find((entry) => entry.rootDir === pluginRoot);
+  if (!isInside(catalogWorkspace.workspaceRoot, pluginRoot)) throw new Error('Plugin directory must stay inside the Catalog Workspace.');
+  const plugin = catalogWorkspace.plugins.find((entry) => entry.rootDir === pluginRoot);
   if (!plugin) {
-    throw new Error(`Plugin directory is not part of this workspace source: ${pluginRoot}`);
+    throw new Error(`Plugin directory is not part of this Catalog Workspace source: ${pluginRoot}`);
   }
-  const closure = dependencyClosure(plugin, workspace.plugins);
+  const closure = dependencyClosure(plugin, catalogWorkspace.plugins);
   const identity = sha256(normalizeManifestDigestInput(plugin.manifest));
   const marker = generatedOutputMarker({
     kind: 'plugin',
-    workspaceIdentity: await readWorkspaceOwnershipIdentity(workspace.workspaceRoot),
+    workspaceIdentity: catalogWorkspace.workspaceIdentity,
     sourceIdentity: identity,
     sourceName: plugin.manifest.name,
   });
-  const resolved = await resolveWorkspaceOutputPath({
-    workspaceRoot: workspace.workspaceRoot,
+  const resolved = await resolveCatalogWorkspaceOutputPath({
+    workspaceRoot: catalogWorkspace.workspaceRoot,
     outputPath: options.outputPath ?? path.join(DEFAULT_PLUGIN_OUTPUT_PATH, plugin.manifest.name),
     kind: 'plugin',
   });
@@ -877,9 +896,9 @@ export async function buildWorkspacePlugin(options: {
     outputRoot: resolved.outputRoot,
     force: options.force === true,
     build: (stagingRoot) => options.adapter.build({
-      workspaceRoot: workspace.workspaceRoot,
+      workspaceRoot: catalogWorkspace.workspaceRoot,
       plugin,
-      plugins: workspace.plugins,
+      plugins: catalogWorkspace.plugins,
       dependencies: closure.slice(0, -1),
       outputRoot: stagingRoot,
     }).then(() => fs.writeJson(path.join(stagingRoot, GENERATED_OUTPUT_MARKER_FILENAME), marker, { spaces: 2 })),
@@ -918,7 +937,7 @@ async function assertGeneratedOutput(root: string, expected: Record<string, unkn
     !isDeepStrictEqual(Object.keys(marker).sort(), expectedKeys)
     || marker.schemaVersion !== 1
     || typeof marker.workspaceIdentity !== 'string'
-    || !digestPattern.test(marker.workspaceIdentity)
+    || marker.workspaceIdentity.trim().length === 0
     || typeof marker.sourceIdentity !== 'string'
     || !digestPattern.test(marker.sourceIdentity)
   ) {
@@ -983,7 +1002,7 @@ export async function validateCatalogSnapshot(snapshotDirectory: string): Promis
       || marker.schemaVersion !== 1
       || marker.kind !== 'catalog'
       || typeof marker.workspaceIdentity !== 'string'
-      || !digestPattern.test(marker.workspaceIdentity)
+      || marker.workspaceIdentity.trim().length === 0
       || typeof marker.sourceIdentity !== 'string'
       || !digestPattern.test(marker.sourceIdentity)
     ) {

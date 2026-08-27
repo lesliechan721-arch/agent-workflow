@@ -1053,12 +1053,24 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const workspaceRoot = path.join(tempRoot, 'workspace');
     const pluginRoot = path.join(workspaceRoot, 'plugins', 'demo');
-    await fs.ensureDir(path.join(workspaceRoot, 'plugins'));
-    await fs.writeJson(path.join(workspaceRoot, 'plugins', 'marketplace-source.json'), {
-      owner: { name: 'Fixture', url: 'https://example.invalid/fixture' },
-      interface: { displayName: 'Fixture' },
-      catalog: { version: '1.0.0' },
-    });
+    const cliEntry = path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js');
+    await fs.ensureDir(workspaceRoot);
+    await execFileAsync('node', [
+      cliEntry,
+      'catalog',
+      'init',
+      '--owner-name',
+      'Fixture',
+      '--owner-url',
+      'https://example.invalid/fixture',
+      '--display-name',
+      'Fixture',
+      '--catalog-version',
+      '1.0.0',
+      '--workspace-root',
+      workspaceRoot,
+      '--json',
+    ], { cwd: workspaceRoot, env: process.env });
     await runGit(workspaceRoot, ['init']);
 
     await execFileAsync('node', [
@@ -1118,7 +1130,6 @@ describe('authoring tools', () => {
       '--json',
     ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(validation.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
-    const cliEntry = path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js');
     for (const args of [
       ['plugin', 'test', pluginRoot, '--workspace-root', workspaceRoot, '--json'],
       ['plugin', 'build', pluginRoot, '--workspace-root', workspaceRoot, '--json'],

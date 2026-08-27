@@ -2,14 +2,14 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import {
-  buildWorkspaceCatalog,
-  buildWorkspacePlugin,
-  initializePluginWorkspace,
-  readPluginWorkspace,
-  setWorkspaceCatalogVersion,
+  buildCatalogWorkspace,
+  buildCatalogWorkspacePlugin,
+  initializeCatalogWorkspace,
+  readCatalogWorkspace,
+  setCatalogWorkspaceVersion,
   validateCatalogSnapshot,
-  type WorkspaceCatalogBuildAdapter,
-  type WorkspacePluginBuildAdapter,
+  type CatalogWorkspaceBuildAdapter,
+  type CatalogWorkspacePluginBuildAdapter,
 } from '@lesliechan721/aw-plugin-core';
 
 import {
@@ -24,7 +24,7 @@ export interface AuthoringCommandIo {
   stderr(text: string): void;
 }
 
-const catalogBuildAdapter: WorkspaceCatalogBuildAdapter = {
+const catalogBuildAdapter: CatalogWorkspaceBuildAdapter = {
   async build(options) {
     await bundleLocalPlugin(options.plugin, options.outputRoot, {
       buildMode: 'staging',
@@ -33,7 +33,7 @@ const catalogBuildAdapter: WorkspaceCatalogBuildAdapter = {
   },
 };
 
-const pluginBuildAdapter: WorkspacePluginBuildAdapter = {
+const pluginBuildAdapter: CatalogWorkspacePluginBuildAdapter = {
   async build(options) {
     await bundleLocalPlugin(options.plugin, options.outputRoot, {
       buildMode: 'staging',
@@ -56,7 +56,7 @@ export async function runCatalogInitCommand(options: {
   catalogVersion?: string;
   io: AuthoringCommandIo;
 }): Promise<void> {
-  const result = await initializePluginWorkspace(options);
+  const result = await initializeCatalogWorkspace(options);
   const receipt = {
     command: 'catalog:init',
     ok: true,
@@ -65,7 +65,7 @@ export async function runCatalogInitCommand(options: {
     catalogVersion: result.metadata.catalog.version,
   };
   if (options.json) writeJson(options.io, receipt);
-  else options.io.stdout(`Catalog workspace initialized at ${result.workspaceRoot}.\n`);
+  else options.io.stdout(`Catalog Workspace initialized at ${result.workspaceRoot}.\n`);
 }
 
 export async function runCatalogVersionCommand(options: {
@@ -75,8 +75,8 @@ export async function runCatalogVersionCommand(options: {
   io: AuthoringCommandIo;
 }): Promise<void> {
   const metadata = options.version === undefined
-    ? (await readPluginWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS })).metadata
-    : await setWorkspaceCatalogVersion(options.workspaceRoot, options.version, {
+    ? (await readCatalogWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS })).metadata
+    : await setCatalogWorkspaceVersion(options.workspaceRoot, options.version, {
         reservedImports: CLI_RESERVED_IMPORTS,
       });
   const receipt = {
@@ -97,7 +97,7 @@ export async function runCatalogBuildCommand(options: {
   json?: boolean;
   io: AuthoringCommandIo;
 }): Promise<void> {
-  const result = await buildWorkspaceCatalog({
+  const result = await buildCatalogWorkspace({
     workspaceRoot: options.workspaceRoot,
     ...(options.out ? { outputPath: options.out } : {}),
     force: options.force,
@@ -135,7 +135,7 @@ export async function runPluginBuildCommand(options: {
   json?: boolean;
   io: AuthoringCommandIo;
 }): Promise<void> {
-  const result = await buildWorkspacePlugin({
+  const result = await buildCatalogWorkspacePlugin({
     workspaceRoot: options.workspaceRoot,
     pluginDirectory: options.pluginDirectory,
     ...(options.out ? { outputPath: options.out } : {}),
@@ -154,14 +154,14 @@ export async function runPluginTestCommand(options: {
   json?: boolean;
   io: AuthoringCommandIo;
 }): Promise<number> {
-  const workspace = await readPluginWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
-  const pluginRoot = await fs.realpath(path.resolve(workspace.workspaceRoot, options.pluginDirectory));
-  const plugin = workspace.plugins.find((entry) => entry.rootDir === pluginRoot);
-  if (!plugin) throw new Error(`Plugin directory is not part of this workspace source: ${pluginRoot}`);
+  const catalogWorkspace = await readCatalogWorkspace(options.workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
+  const pluginRoot = await fs.realpath(path.resolve(catalogWorkspace.workspaceRoot, options.pluginDirectory));
+  const plugin = catalogWorkspace.plugins.find((entry) => entry.rootDir === pluginRoot);
+  if (!plugin) throw new Error(`Plugin directory is not part of this Catalog Workspace source: ${pluginRoot}`);
   let stdout = '';
   let stderr = '';
   const exitCode = await runPluginScriptTests([plugin.manifest.name], {
-    repoRoot: workspace.workspaceRoot,
+    repoRoot: catalogWorkspace.workspaceRoot,
     stdout: (text) => { stdout += text; },
     stderr: (text) => { stderr += text; },
   });

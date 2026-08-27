@@ -5,7 +5,7 @@
 ## 三层模型
 
 ```text
-Source Workspace
+Catalog Workspace
   plugins/marketplace-source.json + plugins/<name>/
              ↓ aw catalog build
 generated Catalog Snapshot
@@ -19,19 +19,20 @@ installed plugin
 
 path source 用本地 snapshot，适合开发和离线验证。Git source 消费已发布的 snapshot，适合分发给其它用户。两者都解析相同的 Catalog 合同。
 
-## Workspace v1 和 manifest
+## Catalog Workspace v1 和 manifest
 
-Workspace v1 的固定根布局如下：
+Catalog Workspace v1 的固定根布局如下：
 
 ```text
 <workspace>/
+  .aw-workspace.json
   plugins/
     marketplace-source.json
     <plugin-name>/
       .agents-plugin/plugin.json
 ```
 
-先用 `aw catalog init --workspace-root <workspace>` 创建 workspace。它写入 `plugins/marketplace-source.json`，其中必须有 `owner`、`interface.displayName` 和 `catalog.version`。该版本只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。插件 source 只放在 `plugins/<name>/`。
+先用 `aw catalog init --workspace-root <workspace>` 创建 Catalog Workspace。它写入 `.aw-workspace.json` 和 `plugins/marketplace-source.json`。marker 必须是 schema 1，`kind` 必须是 `aw-catalog-workspace`，并包含稳定非空的 `workspaceIdentity`；metadata 必须有 `owner`、`interface.displayName` 和 `catalog.version`。该版本只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。插件 source 只放在 `plugins/<name>/`。
 
 Manifest 中所有 source path 必须留在插件根内，并且任何路径 segment 都不能是 `.git` 或 `node_modules`。这包括 Skill、MCP、App、脚本、package root、runtime export 和 artifact source。
 

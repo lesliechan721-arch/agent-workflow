@@ -1361,7 +1361,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--version <semver>', 'initial stable plugin version (default: 0.1.0)')
     .option('--min-version <semver>', 'compatibility.aw.minVersion')
     .option('--catalog-min-version <semver>', 'target catalog compatibility minimum')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--no-skills', 'create the plugin without a skills directory')
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
@@ -1383,7 +1383,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill-description <text>', 'Skill goal and discovery description (required)')
     .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)');
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
 
   plugin
     .command('validate')
@@ -1393,14 +1393,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--strict-agent-skills', 'allow only Agent Skills portable core frontmatter', false)
     .option('--claude-skill-profile <profile>', 'minimum | current (default: minimum)')
     .option('--version-base <git-ref>', 'production bundle comparison base (default: HEAD)')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--json', 'emit one machine-readable JSON result', false);
 
   plugin
     .command('test')
     .description('Run deterministic Node tests declared by one source plugin')
     .argument('<plugin-directory>', 'source plugin directory')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (pluginDirectory: string, rawOptions: {
       workspaceRoot?: string;
@@ -1425,8 +1425,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('build')
     .description('Build and inspect one source plugin bundle')
     .argument('<plugin-directory>', 'source plugin directory')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
-    .option('--out <path>', 'output path inside the workspace')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--out <path>', 'output path inside the Catalog Workspace')
     .option('--force', 'replace an existing generated output', false)
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (pluginDirectory: string, rawOptions: {
@@ -1456,10 +1456,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('status')
     .description('Show current plugin status or compare against an explicit Git base')
     .argument('[plugin-name]', 'one explicit plugin name')
-    .option('--all', 'check every current workspace plugin', false)
+    .option('--all', 'check every current Catalog Workspace plugin', false)
     .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'workspace root (default: current directory)');
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
 
   plugin
     .command('check-versions')
@@ -1468,7 +1468,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--all', 'check every plugin changed relative to the Git base', false)
     .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'workspace root (default: current directory)');
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
 
   skill
     .command('validate')
@@ -1487,13 +1487,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   catalog
     .command('init')
-    .description('Initialize a local AW plugin workspace')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .description('Initialize a local AW Catalog Workspace')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--owner-name <name>', 'catalog owner name')
     .option('--owner-url <url>', 'catalog owner URL')
     .option('--display-name <name>', 'catalog display name')
     .option('--catalog-version <version>', 'initial stable or x.y.z-beta.N catalog version (default: 0.1.0)')
-    .option('--force', 'repair a matching managed workspace scaffold', false)
+    .option('--force', 'repair a matching managed Catalog Workspace scaffold', false)
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (rawOptions: {
       workspaceRoot?: string;
@@ -1520,9 +1520,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   catalog
     .command('version')
-    .description('Read or set the workspace catalog version')
+    .description('Read or set the Catalog version')
     .argument('[version]', 'stable or x.y.z-beta.N catalog version')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (version: string | undefined, rawOptions: { workspaceRoot?: string; json?: boolean }) => {
       try {
@@ -1543,8 +1543,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalog
     .command('build')
     .description('Build a deterministic development Catalog snapshot')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
-    .option('--out <path>', 'output path inside the workspace')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--out <path>', 'output path inside the Catalog Workspace')
     .option('--force', 'replace an existing generated output', false)
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (rawOptions: { workspaceRoot?: string; out?: string; force?: boolean; json?: boolean }) => {
@@ -1587,7 +1587,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalog
     .command('publish')
     .description('Publish a versioned Catalog snapshot to a configured Git remote')
-    .option('--workspace-root <path>', 'workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--remote <name>', 'configured Git remote name (default: origin)')
     .option('--branch <name>', 'dedicated Catalog branch (default: catalog)')
     .option('-y, --yes', 'confirm publication without a prompt', false)
