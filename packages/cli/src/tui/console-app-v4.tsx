@@ -1086,9 +1086,11 @@ export function ConsoleAppV4(props: {
     const selectedPlatform = action.platform ?? selectedIssue.platform;
     const writeAction = action.writeAction ?? (action.id === 'reinstall'
       ? 'reinstall'
-      : action.id === 'remove' || action.id === 'keepUserScope' || action.id === 'keepProjectScope'
-        ? 'uninstall'
-        : undefined);
+      : action.id === 'cleanup'
+        ? 'cleanup'
+        : action.id === 'remove' || action.id === 'keepUserScope' || action.id === 'keepProjectScope'
+          ? 'uninstall'
+          : undefined);
     if (!selectedScope || !selectedPlatform || !writeAction) return undefined;
     return {
       kind: 'pluginWrite',

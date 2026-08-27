@@ -143,6 +143,8 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
 
 `status --json` 保持 schema 4。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。
 
+TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理 AW-owned live 内容、保留 plugin config 且不运行 uninstall lifecycle，并显示不含 `--force` 的等价命令。普通 cleanup 继续执行 dependent 保护；成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
+
 配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
 ## Platform Boundaries

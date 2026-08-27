@@ -553,7 +553,7 @@ describe('TUI v4 router and ViewModel', () => {
     unavailableTarget.errors.push({ code: 'bundleUnavailable', message: 'bundle missing' });
     const view = buildTuiViewModel({
       status: status({ targets: [unavailableTarget] }),
-      pluginSummaries: summaries(['official', 'offline']),
+      pluginSummaries: [],
       sourceHealth: new Map([['official', {
         sourceId: 'official', state: 'degraded', issueId: 'source:official:cache',
       }]]),
@@ -570,11 +570,20 @@ describe('TUI v4 router and ViewModel', () => {
         issueId: expect.stringContaining('bundleUnavailable'),
         pluginId: 'official/offline', category: 'sourceUnavailable',
         rootCode: 'bundleUnavailable', mergeEligible: false,
-        explanation: '当前来源中无法取得这个插件的可信 bundle。',
+        title: expect.stringContaining('当前 Catalog 不再包含此插件'),
+        explanation: '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。',
+        actions: expect.arrayContaining([
+          expect.objectContaining({ id: 'cleanup', writeAction: 'cleanup', label: '清理已安装内容' }),
+        ]),
       }),
     ]));
     expect(view.issues.find((issue) => issue.rootCode === 'bundleUnavailable')?.impact)
-      .toContain('当前目标不能使用这个插件包；这不表示来源缓存整体不可用。');
+      .toContain('可以清理可信的 AW 现场；这不表示来源缓存整体不可用。');
+    expect(view.plugins).toContainEqual(expect.objectContaining({
+      pluginId: 'official/offline',
+      aggregateStatus: 'needsAttention',
+      installedPlacements: [expect.objectContaining({ state: 'installed', health: 'error' })],
+    }));
   });
 
   it('keeps config issue type and layer while isolating a safe per-plugin read diagnostic', () => {
@@ -1226,8 +1235,8 @@ describe('TUI v4 Review safety', () => {
         overallState: 'failed',
         dependencyPlan,
         targetResults: [
-          { target: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }, action: 'install', state: 'failed' },
-          { target: { pluginId: 'official/root', platform: 'codex', scope: 'user' }, action: 'skipped', state: 'failed' },
+          { target: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }, action: 'install', state: 'failed', errorCode: 'dependencyStillRequired' },
+          { target: { pluginId: 'official/root', platform: 'codex', scope: 'user' }, action: 'skipped', state: 'failed', errorCode: 'writeFailed' },
         ],
       }),
     }));

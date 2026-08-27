@@ -46,6 +46,33 @@ function target(
   };
 }
 
+function bundleUnavailableStatus(): Awaited<ReturnType<typeof runtimeMocks.statusCommandV4>> {
+  const orphan = target('user', 'error');
+  orphan.errors = [{ code: 'bundleUnavailable', message: 'safe failure' }];
+  return {
+    payload: {
+      schemaVersion: 4,
+      catalog: {
+        primarySourceId: 'official',
+        configDigest: 'sha256:config',
+        compositeDigest: 'sha256:composite',
+        sources: [{
+          id: 'official',
+          identity: 'identity:official',
+          type: 'path',
+          primary: true,
+          requestedRef: 'path',
+          freshness: 'path',
+        }],
+      },
+      filters: { plugins: ['official/demo'], platform: 'codex', cwd: '/workspace' },
+      targets: [orphan],
+      errors: [],
+    },
+    pluginSummaries: [],
+  };
+}
+
 describe('TUI controller runtime scope conflict validation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -113,5 +140,70 @@ describe('TUI controller runtime scope conflict validation', () => {
         actionId: 'keepUserScope',
       },
     }, new AbortController().signal)).resolves.toBeUndefined();
+  });
+
+  it('uses status ownership evidence to run ordinary cleanup when the current Catalog bundle is absent', async () => {
+    runtimeMocks.statusCommandV4.mockResolvedValue(bundleUnavailableStatus());
+    runtimeMocks.cleanupWriteCommand.mockResolvedValue({
+      platforms: ['codex'],
+      plugins: ['demo'],
+      warnings: [],
+      rebuildResults: [],
+      targetResults: [{
+        target: {
+          pluginName: 'demo',
+          pluginId: 'official/demo',
+          sourceId: 'official',
+          platform: 'codex',
+          scope: 'user',
+          cwd: '/workspace',
+        },
+        action: 'cleanup',
+        state: 'completed',
+      }],
+      overallState: 'succeeded',
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+      receiptTargets: [],
+    });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'cleanup' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+      originIssue: {
+        issueId: 'target:official/demo:codex:user:error',
+        issueKey: 'sourceUnavailable\0official/demo\0\0\0\0\0official\0identity:official\0codex\0user',
+        category: 'sourceUnavailable' as const,
+        actionId: 'cleanup' as const,
+      },
+    };
+
+    await expect(dependencies.validateIntent!(intent, new AbortController().signal))
+      .resolves.toBeUndefined();
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(evidence).toMatchObject({
+      source: { sourceId: 'official', sourceIdentity: 'identity:official', requestedRef: 'path' },
+      targetFingerprint: expect.stringMatching(/^sha256:/u),
+    });
+
+    await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
+      overallState: 'succeeded',
+    });
+    expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledWith(
+      ['official/demo'],
+      expect.objectContaining({ platform: 'codex', scope: 'user', force: false }),
+      expect.objectContaining({ reviewPreflight: expect.any(Function) }),
+    );
+    expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
+    expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
   });
 });

@@ -149,6 +149,20 @@ function loadResult(): TuiStatusLoadResult {
   };
 }
 
+function orphanLoadResult(): TuiStatusLoadResult {
+  const loaded = loadResult();
+  loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+  loaded.payload.targets = [target({
+    pluginName: 'retired-tool',
+    platform: 'codex',
+    scope: 'user',
+    state: 'error',
+    errorCode: 'bundleUnavailable',
+  })];
+  loaded.pluginSummaries = [];
+  return loaded;
+}
+
 function dependencyPlan(): DependencyOperationPlan {
   return {
     dependencyPlanSchemaVersion: 1,
@@ -499,6 +513,99 @@ describe('ConsoleAppV4', () => {
     }), evidence);
     expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(false);
     resultInstance.unmount();
+  });
+
+  it('cleans a Catalog orphan through ordinary cleanup and removes it from both lists after refresh', async () => {
+    const initial = orphanLoadResult();
+    const resolved = structuredClone(initial);
+    resolved.payload.targets = [];
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(resolved);
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded',
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
+    const value = controller({ loadStatus, executeIntent });
+    await value.load();
+
+    expect(value.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId))
+      .toEqual(['official/retired-tool']);
+    expect(value.listPlugins({ mode: 'installed' }).map((plugin) => plugin.pluginId))
+      .toEqual(['official/retired-tool']);
+    const issue = value.listUserIssues()[0]!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('当前 Catalog 不再包含此插件');
+    expect(instance.lastFrame()).toContain('清理已安装内容');
+    expect(instance.lastFrame()).not.toContain('--force');
+    await input(instance, '\r');
+
+    const reviewFrame = instance.lastFrame() ?? '';
+    expect(value.snapshot.activeReview).toMatchObject({
+      pluginAction: 'cleanup',
+      originIssue: { actionId: 'cleanup' },
+      equivalentCommand: 'aw cleanup official/retired-tool --platform codex --scope user',
+    });
+    expect(reviewFrame).toContain('只清理可证明属于 AW 的现场内容');
+    expect(reviewFrame).toContain('保留插件设置');
+    expect(reviewFrame).toContain('不运行 uninstall lifecycle');
+    expect(reviewFrame).toContain('等价命令：aw cleanup official/retired-tool --platform codex --scope user');
+    expect(reviewFrame).not.toContain('--force');
+
+    await confirmReview(instance, value);
+    await nextTurn(4);
+
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWrite',
+      action: 'cleanup',
+      pluginId: 'official/retired-tool',
+      platform: 'codex',
+      scope: 'user',
+    }), evidence);
+    expect(executeIntent.mock.calls[0]?.[0]).not.toHaveProperty('force');
+    expect(value.listPlugins({ mode: 'browse' })).toEqual([]);
+    expect(value.listPlugins({ mode: 'installed' })).toEqual([]);
+    expect(value.listUserIssues()).toEqual([]);
+    expect(instance.lastFrame()).toContain('问题已处理');
+  });
+
+  it('keeps the Catalog orphan issue when ordinary cleanup is blocked by a dependent', async () => {
+    const initial = orphanLoadResult();
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(initial),
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'failed',
+        targetResults: [{
+          target: { pluginId: 'official/retired-tool', platform: 'codex', scope: 'user' },
+          action: 'cleanup',
+          state: 'failed',
+          errorCode: 'dependencyStillRequired',
+        }],
+      }),
+    });
+    await value.load();
+    const issue = value.listUserIssues()[0]!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    await input(instance, '\r');
+    await confirmReview(instance, value);
+    await nextTurn(4);
+
+    expect(value.snapshot.result).toMatchObject({
+      state: 'blocked',
+      code: 'dependencyStillRequired',
+      originIssue: { issueId: issue.issueId, actionId: 'cleanup' },
+    });
+    expect(value.listUserIssues()).toContainEqual(expect.objectContaining({ issueId: issue.issueId }));
+    expect(value.snapshot.result).not.toHaveProperty('writeMayHaveCompleted');
+    expect(instance.lastFrame()).toContain('问题仍未解决');
+    expect(instance.lastFrame()).toContain('操作被安全阻止');
+    expect(instance.lastFrame()).toContain('dependencyStillRequired');
+    expect(instance.lastFrame()).not.toContain('--force');
   });
 
   it('keeps a failed issue and routes I13 back to its detail with a fixed error', async () => {
