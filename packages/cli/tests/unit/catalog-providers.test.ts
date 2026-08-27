@@ -163,6 +163,23 @@ describe('catalog source current and last-good cache', () => {
     }))!.validation.snapshotDigest).not.toBe(firstDigest);
   });
 
+  it('serializes concurrent publications for one source', async () => {
+    const roots = await Promise.all(Array.from({ length: 6 }, async (_value, index) => {
+      const root = fixturePath(`cache-concurrent-${index}`);
+      await createCatalogSnapshotFixture(root, 'demo', '0.1.0', `${index}\n`);
+      return root;
+    }));
+    const location = await publish(roots[0]!, '1'.repeat(40));
+    await publish(roots[1]!, '2'.repeat(40));
+
+    await expect(Promise.all(roots.slice(2).map((root, index) =>
+      publish(root, String(index + 3).repeat(40))))).resolves.toHaveLength(4);
+
+    for (const entryDir of [location.currentDir, location.lastGoodDir]) {
+      await expect(validateCatalogSnapshot(path.join(entryDir, 'snapshot'))).resolves.toBeDefined();
+    }
+  });
+
   it('falls back to matching last-good when current is corrupt', async () => {
     const first = fixturePath('fallback-first');
     const second = fixturePath('fallback-second');

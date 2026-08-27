@@ -9,7 +9,14 @@ import {
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import { buildConfigPage, buildTuiViewModel } from '../../src/tui/model.js';
+import {
+  buildConfigPage,
+  buildPlatformActions,
+  buildPluginDetailActions,
+  buildPluginPreviewActions,
+  buildTuiViewModel,
+  type PluginListItemViewModel,
+} from '../../src/tui/model.js';
 import { TuiRouter } from '../../src/tui/router.js';
 
 function source(
@@ -116,6 +123,28 @@ function dependencies(overrides: Partial<TuiControllerDependencies> = {}): TuiCo
   };
 }
 
+function menuPlugin(overrides: Partial<PluginListItemViewModel> = {}): PluginListItemViewModel {
+  return {
+    pluginId: 'official/demo',
+    sourceId: 'official',
+    displayName: 'Demo',
+    description: 'Demo plugin',
+    version: '2.0.0',
+    configFieldCount: 0,
+    sourceLabel: 'Official',
+    supportedPlatforms: ['codex'],
+    installedPlacements: [{ platform: 'codex', state: 'notInstalled', supportedScopes: ['user', 'project'] }],
+    aggregateStatus: 'available',
+    portableSkills: false,
+    dependencySummary: {
+      directCount: 0, transitiveCount: 0, totalCount: 0,
+      readyCount: 0, missingCount: 0, issueCount: 0,
+    },
+    technicalComponents: [],
+    ...overrides,
+  };
+}
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -135,6 +164,144 @@ async function nextTurn(): Promise<void> {
 }
 
 describe('TUI v4 router and ViewModel', () => {
+  it('builds capability actions only for capabilities with live content', () => {
+    const empty = menuPlugin();
+    expect(buildPluginPreviewActions(empty).map((action) => action.id)).toEqual(['add', 'source']);
+    expect(buildPluginDetailActions(empty).map((action) => action.id)).toEqual(['platform', 'about']);
+
+    const capable = menuPlugin({
+      portableSkills: true,
+      configFieldCount: 2,
+      dependencySummary: {
+        directCount: 1, transitiveCount: 1, totalCount: 2,
+        readyCount: 2, missingCount: 0, issueCount: 0,
+      },
+    });
+    expect(buildPluginPreviewActions(capable).map((action) => action.id)).toEqual([
+      'add', 'portableSkills', 'dependencies', 'settings', 'source',
+    ]);
+    expect(buildPluginDetailActions(capable).map((action) => action.id)).toEqual([
+      'platform', 'dependencies', 'portableSkills', 'settings', 'about',
+    ]);
+  });
+
+  it('builds preview primary actions from live placement health and availability', () => {
+    const incomplete = menuPlugin({
+      aggregateStatus: 'needsAttention',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'incomplete',
+        revision: { state: 'unknown', availableVersion: '2.0.0' },
+      }],
+    });
+    const healthyWithMissingPlatform = menuPlugin({
+      aggregateStatus: 'installed',
+      supportedPlatforms: ['codex', 'claude'],
+      installedPlacements: [
+        {
+          platform: 'codex', state: 'installed', scope: 'user', health: 'ready',
+          revision: { state: 'current', availableVersion: '2.0.0', installedVersion: '2.0.0' },
+        },
+        { platform: 'claude', state: 'notInstalled', supportedScopes: ['user'] },
+      ],
+    });
+    const healthyEverywhere = menuPlugin({
+      aggregateStatus: 'installed',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'ready',
+        revision: { state: 'current', availableVersion: '2.0.0', installedVersion: '2.0.0' },
+      }],
+    });
+
+    expect(buildPluginPreviewActions(incomplete)[0]?.id).toBe('repair');
+    expect(buildPluginPreviewActions(healthyWithMissingPlatform)[0]?.id).toBe('add');
+    expect(buildPluginPreviewActions(healthyEverywhere)[0]?.id).toBe('manage');
+  });
+
+  it('shows upgrade only with reliable upgradeAvailable revision evidence', () => {
+    const ready = (revision: Extract<PluginListItemViewModel['installedPlacements'][number], {
+      state: 'installed';
+    }>['revision']): PluginListItemViewModel => menuPlugin({
+      aggregateStatus: 'installed',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'ready', revision,
+      }],
+    });
+
+    expect(buildPlatformActions(ready({
+      state: 'current', availableVersion: '2.0.0', installedVersion: '2.0.0',
+    }), 'codex').map((action) => action.id)).not.toContain('upgrade');
+    expect(buildPlatformActions(ready({ state: 'unknown', availableVersion: '2.0.0' }), 'codex')
+      .map((action) => action.id)).not.toContain('upgrade');
+    expect(buildPlatformActions(ready({
+      state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0',
+    }), 'codex')).toContainEqual(expect.objectContaining({ id: 'upgrade', availableVersion: '2.0.0' }));
+  });
+
+  it('limits unavailable source menus to source and safe recovery actions', () => {
+    const unavailable = menuPlugin({ aggregateStatus: 'unavailable' });
+    expect(buildPluginPreviewActions(unavailable).map((action) => action.id)).toEqual(['sourceProblem']);
+    expect(buildPluginDetailActions(unavailable).map((action) => action.id)).toEqual([
+      'sourceProblem', 'about',
+    ]);
+    expect(buildPlatformActions(unavailable, 'codex').map((action) => action.id)).toEqual([
+      'sourceProblem', 'refreshSource',
+    ]);
+
+    const installed = menuPlugin({
+      aggregateStatus: 'unavailable',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'ready',
+        revision: { state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0' },
+      }],
+    });
+    expect(buildPluginPreviewActions(installed).map((action) => action.id)).toEqual([
+      'sourceProblem', 'manage',
+    ]);
+    expect(buildPluginDetailActions(installed).map((action) => action.id)).toEqual([
+      'platform', 'sourceProblem', 'about',
+    ]);
+    expect(buildPlatformActions(installed, 'codex').map((action) => action.id)).toEqual([
+      'sourceProblem', 'refreshSource',
+    ]);
+  });
+
+  it('uses add for absent and reinstall for incomplete platform placement', () => {
+    expect(buildPlatformActions(menuPlugin(), 'codex')[0]?.id).toBe('add');
+    expect(buildPlatformActions(menuPlugin({
+      aggregateStatus: 'needsAttention',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'project', health: 'incomplete',
+        revision: { state: 'unknown', availableVersion: '2.0.0' },
+      }],
+    }), 'codex')[0]?.id).toBe('reinstall');
+  });
+
+  it('centralizes install target compatibility and recomputes it for the selected scope', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ targets: [
+          target({ platform: 'codex', scope: 'user', state: 'absent' }),
+          target({ platform: 'codex', scope: 'project', state: 'absent' }),
+          target({ platform: 'claude', scope: 'project', state: 'absent' }),
+        ] }),
+        pluginSummaries: [{
+          ...summaries(['official', 'demo'])[0]!,
+          supportedTargets: { codex: ['user', 'project'], claude: ['project'] },
+        }],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listInstallTargets('official/demo', 'user')).toEqual([
+      { platform: 'codex', compatible: true },
+      { platform: 'claude', compatible: false, disabled: '不支持所选位置' },
+    ]);
+    expect(controller.listInstallTargets('official/demo', 'project')).toEqual([
+      { platform: 'codex', compatible: true },
+      { platform: 'claude', compatible: true },
+    ]);
+  });
+
   it('projects manifest order, presentation groups, fallback fields, presets, and private values safely', () => {
     const fields = [
       { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
@@ -219,7 +386,12 @@ describe('TUI v4 router and ViewModel', () => {
     const editable = buildConfigPage({
       pluginId: 'official/demo',
       schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
-      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [layeredField] },
+      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [{
+        ...layeredField,
+        effectiveValue: 'strict',
+        sourceLayer: 'user',
+      }] },
+      effectiveRead: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
     });
     const effective = buildConfigPage({
       pluginId: 'official/demo',
@@ -228,6 +400,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
     expect(editable.groups[0]!.fields[0]).toMatchObject({
       displayValue: 'strict', value: 'strict', configured: true, sourceLabel: '本层已设置',
+      effectiveDisplayValue: 'fast', effectiveValue: 'fast', effectiveSourceLabel: '当前项目',
     });
     expect(effective.groups[0]!.fields[0]).toMatchObject({
       displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '当前项目',
@@ -434,8 +607,8 @@ describe('TUI v4 router and ViewModel', () => {
       platform: 'codex',
       state: 'scopeConflict',
       placements: [
-        { scope: 'project', health: 'incomplete' },
-        { scope: 'user', health: 'ready' },
+        { scope: 'project', health: 'incomplete', revision: { state: 'unknown', availableVersion: '1.0.0' } },
+        { scope: 'user', health: 'ready', revision: { state: 'unknown', availableVersion: '1.0.0' } },
       ],
     }]);
     expect(view.issues).toEqual(expect.arrayContaining([
@@ -471,6 +644,7 @@ describe('TUI v4 router and ViewModel', () => {
       state: 'installed',
       scope: userState === 'present' ? 'user' : 'project',
       health: 'ready',
+      revision: { state: 'unknown', availableVersion: '1.0.0' },
     }]);
     expect(view.issues.some((issue) => issue.category === 'scopeConflict')).toBe(false);
     expect(view.issues.some((issue) => issue.category === 'diagnostic')).toBe(true);
@@ -605,15 +779,57 @@ describe('TUI v4 router and ViewModel', () => {
       title: 'invalid · 设置值无效',
       configLayer: { scope: 'project', projectLayer: 'local' },
       requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'projectLocal' }],
+      diagnostic: {
+        technical: { code: 'invalid-config', stage: 'validate-config' },
+      },
     });
+    expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')?.diagnostic.technical?.checks)
+      .toContain('完成或修正列出的设置字段。');
     expect(view.issues.find((issue) => issue.pluginId === 'official/unreadable')).toMatchObject({
       category: 'diagnostic',
-      technicalDetails: [{ code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' }],
+      technicalDetails: [{ code: 'configReadFailed', message: '设置读取报告了这个安全错误代码。' }],
+      diagnostic: {
+        technical: { code: 'configReadFailed', stage: 'read-config' },
+      },
     });
   });
 });
 
 describe('TUI v4 background source checks', () => {
+  it('combines source, installation, and query filters without treating error placement as uninstalled', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({
+          sources: [source('official'), source('team', { primary: false })],
+          targets: [
+            target({ pluginName: 'matching-tool', sourceId: 'official', scope: 'user', state: 'absent' }),
+            target({ pluginName: 'installed-matching-tool', sourceId: 'official', scope: 'user', state: 'present' }),
+            target({ pluginName: 'error-matching-tool', sourceId: 'official', scope: 'user', state: 'error' }),
+            target({ pluginName: 'matching-tool', sourceId: 'team', scope: 'user', state: 'absent' }),
+          ],
+        }),
+        pluginSummaries: summaries(
+          ['official', 'matching-tool'],
+          ['official', 'installed-matching-tool'],
+          ['official', 'error-matching-tool'],
+          ['team', 'matching-tool'],
+        ),
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listPlugins({
+      mode: 'browse',
+      sourceId: 'official',
+      installFilter: 'uninstalled',
+      query: 'matching-tool',
+    }).map((plugin) => plugin.pluginId)).toEqual(['official/matching-tool']);
+    expect(controller.listPlugins({
+      mode: 'browse',
+      installFilter: 'uninstalled',
+    }).map((plugin) => plugin.pluginId)).toEqual(['official/matching-tool', 'team/matching-tool']);
+  });
+
   it('publishes a safe terminal state when the initial status load fails', async () => {
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockRejectedValue(new Error('nativeStateUnreadable: /private/path')),
@@ -2467,6 +2683,216 @@ describe('TUI v4 Review safety', () => {
       operationKind: 'sourceMutation',
       sourceAction: 'setPrimary',
       review: { operationKind: 'sourceMutation', sourceAction: 'setPrimary' },
+    });
+  });
+
+  it('publishes ReviewPreparing before validation and replaces it with Review without growing the stack', async () => {
+    const validation = deferred<void>();
+    const captured = deferred<OperationEvidence>();
+    const validateIntent = vi.fn(() => validation.promise);
+    const captureEvidence = vi.fn(() => captured.promise);
+    const controller = new TuiController(dependencies({ validateIntent, captureEvidence }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' }, { focusIndex: 3 });
+    const depth = controller.snapshot.router.depth;
+
+    const preparation = controller.startReviewPreparation({
+      kind: 'pluginWrite', action: 'upgrade', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    expect(controller.snapshot.router).toMatchObject({
+      depth: depth + 1,
+      current: { route: { name: 'reviewPreparing', preparationId: preparation.id } },
+    });
+    expect(controller.snapshot.reviewPreparation).toMatchObject({
+      state: 'running',
+      currentLabel: 'demo',
+      stages: [
+        { id: 'validate', state: 'running' },
+        { id: 'evidence', state: 'pending' },
+      ],
+    });
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+
+    await nextTurn();
+    expect(validateIntent).toHaveBeenCalledOnce();
+    validation.resolve();
+    await nextTurn();
+    expect(controller.snapshot.reviewPreparation?.stages).toEqual([
+      { id: 'validate', label: '验证当前状态', state: 'completed' },
+      { id: 'evidence', label: '准备确认信息', state: 'running' },
+    ]);
+    captured.resolve(baseEvidence);
+    await nextTurn();
+
+    expect(controller.snapshot.router).toMatchObject({
+      depth: depth + 1,
+      current: { route: { name: 'review' } },
+    });
+    expect(controller.snapshot.reviewPreparation).toBeUndefined();
+    controller.back();
+    expect(controller.snapshot.router.current).toEqual({
+      route: { name: 'pluginDetail', pluginId: 'official/demo' },
+      context: { focusIndex: 3 },
+    });
+  });
+
+  it('single-flights identical preparation and discards late completion after cancellation', async () => {
+    const captured = deferred<OperationEvidence>();
+    const executeIntent = vi.fn();
+    const captureEvidence = vi.fn(() => captured.promise);
+    const controller = new TuiController(dependencies({ captureEvidence, executeIntent }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'reinstall' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    const first = controller.startReviewPreparation(intent);
+    const second = controller.startReviewPreparation(structuredClone(intent));
+    expect(second.id).toBe(first.id);
+    expect(controller.snapshot.router.depth).toBe(3);
+    await nextTurn();
+    expect(captureEvidence).toHaveBeenCalledOnce();
+
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    expect(controller.snapshot.reviewPreparation).toBeUndefined();
+    expect(captureEvidence.mock.calls[0]?.[1]).toMatchObject({ aborted: true });
+    captured.resolve(baseEvidence);
+    await nextTurn();
+
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    expect(controller.snapshot.activeReview).toBeUndefined();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('uses one preparation entry and publishes only stages reported by real review work', async () => {
+    const prepareReviewEvidence: NonNullable<TuiControllerDependencies['prepareReviewEvidence']> = vi.fn(
+      async (_intent, _signal, onStage) => {
+        for (const stage of ['status', 'catalog', 'inventory', 'dependencyPlan', 'evidence'] as const) {
+          await onStage(stage);
+        }
+        return baseEvidence;
+      },
+    );
+    const validateIntent = vi.fn();
+    const captureEvidence = vi.fn();
+    const controller = new TuiController(dependencies({
+      prepareReviewEvidence,
+      validateIntent,
+      captureEvidence,
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const observedStages: string[][] = [];
+    controller.subscribe((snapshot) => {
+      if (snapshot.reviewPreparation) {
+        observedStages.push(snapshot.reviewPreparation.stages.map((stage) =>
+          `${stage.id}:${stage.state}`));
+      }
+    });
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'install' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    controller.startReviewPreparation(intent);
+    await nextTurn(2);
+
+    expect(prepareReviewEvidence).toHaveBeenCalledOnce();
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+    expect(observedStages).toEqual(expect.arrayContaining([
+      ['status:running'],
+      ['status:completed', 'catalog:running'],
+      ['status:completed', 'catalog:completed', 'inventory:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:completed', 'evidence:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:completed', 'evidence:completed'],
+    ]));
+    expect(controller.snapshot.router.current.route.name).toBe('review');
+
+    await controller.buildOperationReview(intent);
+    expect(prepareReviewEvidence).toHaveBeenCalledTimes(2);
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+  });
+
+  it('replaces a preparation when the same intent has a different return route', async () => {
+    const firstCapture = deferred<OperationEvidence>();
+    const secondCapture = deferred<OperationEvidence>();
+    const captureEvidence = vi.fn()
+      .mockImplementationOnce(() => firstCapture.promise)
+      .mockImplementationOnce(() => secondCapture.promise);
+    const controller = new TuiController(dependencies({ captureEvidence }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'reinstall' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    const first = controller.startReviewPreparation(intent, { name: 'home' });
+    await nextTurn();
+    const second = controller.startReviewPreparation(intent, {
+      name: 'pluginDetail', pluginId: 'official/demo',
+    });
+    await nextTurn();
+
+    expect(second.id).not.toBe(first.id);
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
+    expect(captureEvidence.mock.calls[0]?.[1]).toMatchObject({ aborted: true });
+    firstCapture.resolve(baseEvidence);
+    secondCapture.resolve(baseEvidence);
+    await nextTurn();
+
+    expect(controller.snapshot.router.current.route.name).toBe('review');
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/demo',
+    });
+  });
+
+  it('keeps a safe preparation failure on the page and supports retry and Back', async () => {
+    const validateIntent = vi.fn()
+      .mockRejectedValueOnce(new Error('/private/user/token failed'))
+      .mockResolvedValueOnce(undefined);
+    const controller = new TuiController(dependencies({ validateIntent }));
+    await controller.load();
+    controller.push({ name: 'sourceDetail', sourceId: 'official' }, { focusIndex: 2 });
+    const intent = { kind: 'sourceMutation' as const, action: 'setPrimary' as const, sourceId: 'official' };
+
+    controller.startReviewPreparation(intent);
+    await nextTurn();
+    expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
+    expect(controller.snapshot.reviewPreparation).toMatchObject({
+      state: 'failed',
+      currentLabel: 'official',
+      code: 'reviewPreparationFailed',
+      message: '无法准备确认信息。请返回检查选择，或重试。',
+    });
+    expect(JSON.stringify(controller.snapshot)).not.toContain('/private/user/token');
+
+    controller.retryReviewPreparation();
+    await nextTurn();
+    expect(controller.snapshot.router.current.route.name).toBe('review');
+    expect(validateIntent).toHaveBeenCalledTimes(2);
+    controller.back();
+    expect(controller.snapshot.router.current).toEqual({
+      route: { name: 'sourceDetail', sourceId: 'official' },
+      context: { focusIndex: 2 },
     });
   });
 });

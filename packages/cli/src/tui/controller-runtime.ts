@@ -2,7 +2,11 @@ import crypto from 'node:crypto';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { CatalogFreshnessPolicy, CatalogSourceResolution, PlatformName } from '../types.js';
-import { statusCommandV4 } from '../commands/status-v4.js';
+import {
+  statusCommandV4,
+  type StatusTargetRevision,
+  type StatusV4Target,
+} from '../commands/status-v4.js';
 import {
   addCatalogSourceCommand,
   listCatalogSources,
@@ -48,6 +52,7 @@ import {
   TuiOperationBlockedError,
   type OperationEvidence,
   type OperationIntent,
+  type ReviewPreparationStageId,
   type TuiControllerDependencies,
 } from './controller.js';
 import {
@@ -105,6 +110,32 @@ export function setTuiControllerRuntimeTestHooksForTests(
 
 function digest(value: unknown): string {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+export function statusTargetFingerprint(
+  targets: StatusV4Target[],
+  revisions: StatusTargetRevision[] = [],
+): string {
+  return digest({
+    targets: targets.map((target) => ({
+      pluginId: target.pluginId,
+      sourceIdentity: target.sourceIdentity,
+      platform: target.platform,
+      scope: target.scope,
+      state: target.state,
+      errors: target.errors.map((error) => error.code).sort(),
+      components: target.components.map((component) => [component.key, component.state])
+        .sort(([left], [right]) => left!.localeCompare(right!, 'en')),
+    })).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+      .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en')),
+    revisions: revisions.map((entry) => ({
+      pluginId: entry.pluginId,
+      platform: entry.platform,
+      scope: entry.scope,
+      revision: entry.revision,
+    })).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+      .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en')),
+  });
 }
 
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
@@ -169,12 +200,14 @@ function pluginIntent(intent: OperationIntent): intent is Extract<OperationInten
 function assertIntentIsLegal(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
   targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
+  revisions: StatusTargetRevision[] = [],
 ): void {
   const platforms: PlatformName[] = intent.platform === 'both'
     ? ['codex', 'claude']
     : [intent.platform];
   for (const platform of platforms) {
-    const selected = targets.find((target) => target.platform === platform && target.scope === intent.scope);
+    const selected = targets.find((target) => target.pluginId === intent.pluginId
+      && target.platform === platform && target.scope === intent.scope);
     if (!selected || selected.errors.some((error) => error.code === 'unsupportedTarget')) {
       throw new TuiOperationBlockedError('unsupportedTarget', '所选插件不支持这个平台和使用位置。');
     }
@@ -188,7 +221,10 @@ function assertIntentIsLegal(
     if (intent.action === 'install' && selected.state !== 'absent') {
       throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
     }
-    if (intent.action === 'upgrade' && selected.state !== 'present') {
+    const revision = revisions.find((entry) => entry.pluginId === intent.pluginId
+      && entry.platform === platform && entry.scope === intent.scope)?.revision;
+    if (intent.action === 'upgrade'
+      && (selected.state !== 'present' || revision?.state !== 'upgradeAvailable')) {
       throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
     }
     if (intent.action === 'uninstall' && !targetCanBeUninstalled(selected.state)) {
@@ -479,9 +515,41 @@ async function loadDependencyOverviews(options: {
   });
 }
 
+function createReviewStageReporter(options: {
+  context: CliExecutionContext;
+  onStage: (stage: ReviewPreparationStageId) => void | Promise<void>;
+  now: () => number;
+}): {
+  emit: (stage: ReviewPreparationStageId) => Promise<void>;
+  finish: () => Promise<void>;
+} {
+  let active: { stage: ReviewPreparationStageId; startedAt: number } | undefined;
+  const finish = async (): Promise<void> => {
+    if (!active) return;
+    const completed = active;
+    active = undefined;
+    await Promise.allSettled([Promise.resolve().then(() => options.context.debugLogger.log({
+      type: `review.prepare.${completed.stage}`,
+      level: 'debug',
+      target: 'debugLog',
+      message: 'TUI review preparation stage completed.',
+      data: { durationMs: Math.max(0, options.now() - completed.startedAt) },
+    }))]);
+  };
+  return {
+    async emit(stage) {
+      await finish();
+      active = { stage, startedAt: options.now() };
+      await options.onStage(stage);
+    },
+    finish,
+  };
+}
+
 export function createTuiControllerDependencies(
   context: CliExecutionContext,
   progressFeed?: RebuildProgressFeed,
+  options: { now?: () => number } = {},
 ): TuiControllerDependencies {
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
@@ -513,6 +581,7 @@ export function createTuiControllerDependencies(
       return {
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
+        targetRevisions: result.targetRevisions,
         dependencyOverviews,
         portablePluginIds,
         sourceDetails: configured.sources.map((source) => {
@@ -536,6 +605,7 @@ export function createTuiControllerDependencies(
             ...(status?.catalogVersion ? { catalogVersion: status.catalogVersion } : {}),
             ...(status?.channel ? { channel: status.channel } : {}),
             ...(status?.freshness ? { freshness: status.freshness } : {}),
+            ...(status?.errorCode ? { errorCode: status.errorCode } : {}),
             configDigest: configured.configDigest,
           };
         }),
@@ -551,6 +621,10 @@ export function createTuiControllerDependencies(
     intent: OperationIntent,
     signal?: AbortSignal,
     freshnessPolicy: CatalogFreshnessPolicy = 'cacheFirst',
+    preparation?: {
+      reporter: ReturnType<typeof createReviewStageReporter>;
+      validateIntent: boolean;
+    },
   ): Promise<OperationEvidence> => {
     if (intent.kind === 'sourceMutation') {
       signal?.throwIfAborted();
@@ -563,12 +637,16 @@ export function createTuiControllerDependencies(
         : intent.action === 'update'
           ? { action: 'update' as const, sourceId: intent.sourceId, update: intent.update! }
           : { action: intent.action, sourceId: intent.sourceId };
+      await preparation?.reporter.emit('validate');
       const preview = await preflightCatalogSourceMutation({
         request,
         cwd: context.cwd,
         env: context.env,
       });
-      return {
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('evidence');
+      signal?.throwIfAborted();
+      const evidence: OperationEvidence = {
         catalog: { configDigest: preview.configDigest, compositeDigest: preview.candidateDigest },
         sourceWrite: {
           configDigest: preview.configDigest,
@@ -579,6 +657,11 @@ export function createTuiControllerDependencies(
           inventoryComplete: preview.references.errors.length === 0,
         },
       };
+      if (preparation?.validateIntent
+        && evidence.sourceWrite?.configDigest === evidence.sourceWrite?.candidateDigest) {
+        throw new TuiOperationBlockedError('sourceNoChanges', '来源没有变化。');
+      }
+      return evidence;
     }
     if (!pluginIntent(intent)) {
       throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
@@ -586,6 +669,7 @@ export function createTuiControllerDependencies(
     signal?.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
     if (intent.kind === 'portableInstall') {
+      await preparation?.reporter.emit('portable');
       const portable = await preparePortableInstall({
         selector: intent.pluginId,
         scope: intent.scope,
@@ -596,6 +680,9 @@ export function createTuiControllerDependencies(
         cliVersion: packageInfo.version,
         signal,
       });
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('evidence');
+      signal?.throwIfAborted();
       return {
         catalog: {
           configDigest: portable.configDigest,
@@ -604,6 +691,7 @@ export function createTuiControllerDependencies(
         portable,
       };
     }
+    await preparation?.reporter.emit('status');
     const status = await statusCommandV4({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
@@ -619,40 +707,17 @@ export function createTuiControllerDependencies(
     signal?.throwIfAborted();
     if (intent.kind === 'pluginWrite') {
       await assertTypedIssueOrigin(intent, status.payload.targets);
+      if (preparation?.validateIntent) {
+        assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);
+      }
     }
     const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
-    let dependencyPlan: DependencyOperationPlan | undefined;
-    const hasDeclaredDependencies = (status.pluginSummaries.find((summary) =>
-      summary.pluginId === intent.pluginId)?.dependencyTotalCount ?? 0) > 0;
-    if (intent.kind === 'pluginWrite'
-      && hasDeclaredDependencies
-      && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
-      const command = {
-        install: installWriteCommand,
-        upgrade: upgradeWriteCommand,
-        reinstall: reinstallWriteCommand,
-      }[intent.action];
-      const preview = await command([intent.pluginId], {
-        cwd: context.cwd,
-        platform: intent.platform,
-        scope: intent.scope,
-      }, {
-        ...context,
-        expectedCatalogConfigDigest: status.payload.catalog.configDigest,
-        previewDependencyPlanOnly: true,
-      });
-      dependencyPlan = preview.dependencyPlan;
-      if (!dependencyPlan) {
-        throw new TuiOperationBlockedError('dependencyGraphInvalid', '无法建立可信的依赖安装计划。');
-      }
-      const blocker = dependencyPlan.targets.find((target) => target.action === 'block');
-      if (blocker) {
-        throw new TuiOperationBlockedError(
-          blocker.errorCode ?? 'dependencyNotReady',
-          `${blocker.errorCode ?? 'dependencyNotReady'}: 依赖安装计划被阻止。`,
-        );
-      }
+    signal?.throwIfAborted();
+    if (configSnapshot.digest !== status.payload.catalog.configDigest) {
+      throw operationReviewStale('准备确认信息期间来源配置发生变化。');
     }
+    let dependencyPlan: DependencyOperationPlan | undefined;
+    await preparation?.reporter.emit('catalog');
     const bundleUnavailableCleanupTarget = intent.kind === 'pluginWrite'
       && intent.action === 'cleanup'
       && intent.originIssue?.category === 'sourceUnavailable'
@@ -682,11 +747,68 @@ export function createTuiControllerDependencies(
           configSnapshot,
           env: context.env,
           ...(signal ? { signal } : {}),
-          consume: ({ plugin, source }) => ({
-            pluginName: plugin.manifest.name,
-            source: sourceEvidenceForPlugin(source, plugin.manifest.name),
-          }),
+          consume: async ({ plugin, source }) => {
+            if (preparation?.validateIntent && intent.kind === 'configSave') {
+              await preparation.reporter.emit('config');
+              if (!plugin.manifest.config) {
+                throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
+              }
+              await coercePluginConfigUpdates({
+                schema: plugin.manifest.config.schema,
+                updates: intent.updates ?? {},
+                cwd: context.cwd,
+              });
+              for (const key of intent.removeKeys ?? []) {
+                if (!plugin.manifest.config.schema[key]) {
+                  throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
+                }
+              }
+            }
+            return {
+              pluginName: plugin.manifest.name,
+              source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+            };
+          },
         });
+    const hasDeclaredDependencies = (status.pluginSummaries.find((summary) =>
+      summary.pluginId === intent.pluginId)?.dependencyTotalCount ?? 0) > 0;
+    if (intent.kind === 'pluginWrite'
+      && hasDeclaredDependencies
+      && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
+      const command = {
+        install: installWriteCommand,
+        upgrade: upgradeWriteCommand,
+        reinstall: reinstallWriteCommand,
+      }[intent.action];
+      const preview = await command([intent.pluginId], {
+        cwd: context.cwd,
+        platform: intent.platform,
+        scope: intent.scope,
+      }, {
+        ...context,
+        expectedCatalogConfigDigest: status.payload.catalog.configDigest,
+        previewDependencyPlanOnly: true,
+        ...(preparation ? {
+          previewCatalogFreshnessPolicy: 'cacheFirst' as const,
+          onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
+            stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
+        } : {}),
+      });
+      signal?.throwIfAborted();
+      dependencyPlan = preview.dependencyPlan;
+      if (!dependencyPlan) {
+        throw new TuiOperationBlockedError('dependencyGraphInvalid', '无法建立可信的依赖安装计划。');
+      }
+      const blocker = dependencyPlan.targets.find((target) => target.action === 'block');
+      if (blocker) {
+        throw new TuiOperationBlockedError(
+          blocker.errorCode ?? 'dependencyNotReady',
+          `${blocker.errorCode ?? 'dependencyNotReady'}: 依赖安装计划被阻止。`,
+        );
+      }
+    }
+    await preparation?.reporter.emit('evidence');
+    signal?.throwIfAborted();
     const evidence: OperationEvidence = {
       catalog: {
         configDigest: status.payload.catalog.configDigest,
@@ -694,17 +816,10 @@ export function createTuiControllerDependencies(
       },
       source: selected.source,
       ...(dependencyPlan ? { dependencyPlan } : {}),
-      targetFingerprint: digest(status.payload.targets.map((target) => ({
-        pluginId: target.pluginId,
-        sourceIdentity: target.sourceIdentity,
-        platform: target.platform,
-        scope: target.scope,
-        state: target.state,
-        errors: target.errors.map((error) => error.code).sort(),
-        components: target.components.map((component) => [component.key, component.state])
-          .sort(([left], [right]) => left!.localeCompare(right!, 'en')),
-      })).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
-        .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'))),
+      targetFingerprint: statusTargetFingerprint(
+        status.payload.targets,
+        status.targetRevisions ?? [],
+      ),
     };
     if (intent.kind === 'configSave' || intent.kind === 'configReset') {
       const store = await readPluginConfigStore({
@@ -716,6 +831,7 @@ export function createTuiControllerDependencies(
         cwd: context.cwd,
         env: context.env,
       });
+      signal?.throwIfAborted();
       evidence.config = {
         scope: intent.scope,
         projectLayer: intent.projectLayer,
@@ -739,6 +855,21 @@ export function createTuiControllerDependencies(
         marketplaceCount: 0,
         dependencies: [],
       };
+    },
+    async prepareReviewEvidence(intent, signal, onStage) {
+      const reporter = createReviewStageReporter({
+        context,
+        onStage,
+        now: options.now ?? Date.now,
+      });
+      try {
+        return await captureEvidence(intent, signal, 'cacheFirst', {
+          reporter,
+          validateIntent: true,
+        });
+      } finally {
+        await reporter.finish();
+      }
     },
     async validateIntent(intent, signal) {
       if (intent.kind === 'sourceMutation') {
@@ -787,7 +918,7 @@ export function createTuiControllerDependencies(
       });
       signal.throwIfAborted();
       await assertTypedIssueOrigin(intent, status.payload.targets);
-      assertIntentIsLegal(intent, status.payload.targets);
+      assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);
     },
     async checkSource(sourceId, signal) {
       const packageInfo = await readCliPackageInfo();
@@ -841,7 +972,15 @@ export function createTuiControllerDependencies(
             cwd: context.cwd,
             env: context.env,
           });
-          return buildConfigGroups({ schema: plugin.manifest.config, read });
+          const effectiveRead = await resolveConfigRead({
+            pluginName: plugin.manifest.name,
+            plugin,
+            scope: 'effective',
+            projectLayer: layer.projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          return buildConfigGroups({ schema: plugin.manifest.config, read, effectiveRead });
         },
       });
     },
@@ -865,7 +1004,15 @@ export function createTuiControllerDependencies(
             cwd: context.cwd,
             env: context.env,
           });
-          return buildConfigPage({ pluginId, schema: plugin.manifest.config, read });
+          const effectiveRead = layer.scope === 'effective' ? read : await resolveConfigRead({
+            pluginName: plugin.manifest.name,
+            plugin,
+            scope: 'effective',
+            projectLayer: layer.projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          return buildConfigPage({ pluginId, schema: plugin.manifest.config, read, effectiveRead });
         },
       });
     },

@@ -4,8 +4,10 @@ export {
   Card,
   Callout,
   ChoiceRow,
+  DiagnosticSummary,
   HelpBar,
   InputCard,
+  PluginListRow,
   PluginRow,
   ProgressRow,
   ResultCard,
@@ -23,12 +25,23 @@ export {
   TechnicalDetails,
   ToggleRow,
   type InteractiveRowProps,
+  type PluginListRowProps,
   type ProgressState,
   type SelectableRowProps,
   type SemanticCardProps,
   type StaticRowProps,
   type TuiSize,
 } from './components.js';
+export {
+  safeDiagnosticCode,
+  sanitizeDiagnosticCause,
+  sanitizeDiagnosticText,
+  type DiagnosticContextKey,
+  type DiagnosticImpactEntryViewModel,
+  type DiagnosticImpactState,
+  type DiagnosticSummaryViewModel,
+  type DiagnosticTechnicalViewModel,
+} from './diagnostics.js';
 export { resolveTuiKeyAction, type TuiInputMode, type TuiKeyContext } from './keys.js';
 export { resolveTuiSizePolicy, type TuiLayoutMode, type TuiSizePolicy } from './layout.js';
 export { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from './runner.js';
@@ -41,6 +54,9 @@ export {
   type OperationIntent,
   type OperationResultSummary,
   type OperationReviewModel,
+  type ReviewPreparationSnapshot,
+  type ReviewPreparationStage,
+  type ReviewPreparationStageId,
   type SourceReferenceSummaryViewModel,
   type TuiControllerDependencies,
   type TuiControllerSnapshot,
@@ -72,6 +88,7 @@ export {
 } from './model.js';
 export {
   TuiRouter,
+  type PluginInstallFilter,
   type TuiPageContext,
   type TuiRoute,
   type TuiRouteFrame,
@@ -79,6 +96,7 @@ export {
 } from './router.js';
 export { CommandWizard } from './wizard.js';
 export { getTuiStatusColor, tuiTheme, type TuiStatus } from './theme.js';
+export { contentRowBudget, rowViewport, type RowViewport } from './viewport.js';
 export {
   ConfirmView,
   MultiSelectView,

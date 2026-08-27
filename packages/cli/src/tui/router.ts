@@ -8,6 +8,8 @@ export type PortableBlockerCode =
   | 'portableScopeUnavailable'
   | 'portableValidationFailed';
 
+export type PluginInstallFilter = 'all' | 'uninstalled';
+
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
@@ -27,7 +29,7 @@ export type TuiRoute =
     }
   | { name: 'installPlacement'; pluginId: string }
   | {
-      name: 'installTools';
+      name: 'installTargets';
       pluginId: string;
       view?: 'selection' | 'blocked';
     }
@@ -35,12 +37,17 @@ export type TuiRoute =
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }
   | { name: 'pluginTechnical'; pluginId: string }
-  | { name: 'configLayer'; pluginId: string }
+  | {
+      name: 'configLayer';
+      pluginId: string;
+      fieldKey?: string;
+      groupId?: string;
+      presetId?: string;
+    }
   | {
       name: 'configFields';
       pluginId: string;
       layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer };
-      groupId?: string;
     }
   | {
       name: 'configFieldEditor';
@@ -50,14 +57,11 @@ export type TuiRoute =
       editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
     }
   | {
-      name: 'configPresets';
-      pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
-    }
-  | {
       name: 'configUnavailable';
       pluginId: string;
       layer?: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      diagnosticCode?: string;
+      diagnosticStage?: string;
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
@@ -67,6 +71,7 @@ export type TuiRoute =
   | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
+  | { name: 'reviewPreparing'; preparationId: string }
   | { name: 'review'; operationId: string }
   | { name: 'progress'; operationId: string }
   | { name: 'result'; operationId: string };
@@ -76,6 +81,8 @@ export interface TuiPageContext {
   scrollOffset?: number;
   query?: string;
   sourceTabId?: string;
+  installFilter?: PluginInstallFilter;
+  configGroupId?: string;
 }
 
 export interface TuiRouteFrame {
@@ -95,6 +102,7 @@ function copyFrame(frame: TuiRouteFrame): TuiRouteFrame {
 export class TuiRouter {
   readonly #stack: TuiRouteFrame[] = [{ route: { name: 'home' }, context: {} }];
   #portableOrigin?: { pluginId: string; index: number };
+  #configOrigin?: { pluginId: string; index: number };
 
   get snapshot(): TuiRouterSnapshot {
     return { current: copyFrame(this.#stack.at(-1)!), depth: this.#stack.length };
@@ -118,6 +126,41 @@ export class TuiRouter {
 
   back(): TuiRouterSnapshot {
     if (this.#stack.length > 1) this.#stack.pop();
+    if (this.#configOrigin && this.#stack.length - 1 <= this.#configOrigin.index) {
+      this.#configOrigin = undefined;
+    }
+    return this.snapshot;
+  }
+
+  beginConfigFlow(pluginId: string): TuiRoute {
+    const index = this.#stack.length - 1;
+    const route = this.#stack[index]!.route;
+    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
+      || route.pluginId !== pluginId) {
+      throw new Error('Config flow must start from its plugin preview or detail.');
+    }
+    this.#configOrigin = { pluginId, index };
+    return structuredClone(route);
+  }
+
+  configOrigin(pluginId: string): TuiRoute | undefined {
+    if (this.#configOrigin?.pluginId !== pluginId) return undefined;
+    const frame = this.#stack[this.#configOrigin.index];
+    if (!frame || (frame.route.name !== 'pluginPreview' && frame.route.name !== 'pluginDetail')
+      || frame.route.pluginId !== pluginId) {
+      this.#configOrigin = undefined;
+      return undefined;
+    }
+    return copyFrame(frame).route;
+  }
+
+  resetConfigFlow(pluginId: string, target?: TuiRoute): TuiRouterSnapshot | undefined {
+    if (!this.configOrigin(pluginId) || !this.#configOrigin) return undefined;
+    this.#stack.splice(this.#configOrigin.index + 1);
+    this.#configOrigin = undefined;
+    if (target && JSON.stringify(this.#stack.at(-1)!.route) !== JSON.stringify(target)) {
+      this.replace(target);
+    }
     return this.snapshot;
   }
 

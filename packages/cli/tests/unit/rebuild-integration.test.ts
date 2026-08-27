@@ -12,6 +12,7 @@ import {
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
 import { statusCommand } from '../../src/commands/status.js';
+import { projectTargetRevision } from '../../src/commands/status-v4.js';
 import {
   executeRebuildOperation,
   type RebuildActiveStore,
@@ -659,7 +660,7 @@ describe('rebuild adapter integration', () => {
   );
 
   it.each(['codex', 'claude'] as const)(
-    'reports a validated stale %s native version as partial',
+    'keeps a validated stale %s native version healthy and reports revision evidence separately',
     async (platform) => {
       const isolation = getCurrentSourceTestIsolation();
       const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'stale-native-version');
@@ -707,9 +708,144 @@ describe('rebuild adapter integration', () => {
           nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
         }),
       });
-      expect(inspected.inspection.state).toBe('partial');
+      expect(inspected.inspection.state).toBe('present');
+      expect(inspected.installedVersion).toBe('1.0.0');
     },
   );
+
+  it('prefers the Codex installed manifest and rejects ambiguous cache-only revision evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'revision-evidence');
+    plugin.manifest.version = '2.0.0';
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    plugin.manifest.apps = './apps';
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+      '[plugins."revision-evidence@aw"]',
+      'enabled = true',
+      '',
+    ].join('\n'));
+    const writeManifest = (version: string) => fs.outputJson(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'cache',
+      'aw',
+      'revision-evidence',
+      version,
+      '.codex-plugin',
+      'plugin.json',
+    ), { name: 'revision-evidence', version });
+    await Promise.all([writeManifest('1.0.0'), writeManifest('3.0.0')]);
+    const inspect = () => inspectRebuildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      }),
+    });
+
+    const ambiguous = await inspect();
+    expect(ambiguous.inspection.state).toBe('present');
+    expect(ambiguous.installedVersion).toBeUndefined();
+    expect(projectTargetRevision(plugin.manifest.version, ambiguous.installedVersion))
+      .toEqual({ state: 'unknown', availableVersion: '2.0.0' });
+
+    await fs.outputJson(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'revision-evidence@aw',
+      'manifest.json',
+    ), { name: 'revision-evidence', version: '2.0.0' });
+    const installed = await inspect();
+    expect(installed.installedVersion).toBe('2.0.0');
+    expect(projectTargetRevision(plugin.manifest.version, installed.installedVersion)).toEqual({
+      state: 'current',
+      availableVersion: '2.0.0',
+      installedVersion: '2.0.0',
+    });
+  });
+
+  it('rejects ambiguous Claude installed revision evidence for the matching scope', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'claude-revision-evidence');
+    plugin.manifest.version = '2.0.0';
+    await writeClaudeNativeState({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      pluginName: plugin.manifest.name,
+      pluginVersion: '1.0.0',
+      scope: 'user',
+      installed: true,
+    });
+    const paths = resolveClaudePaths(isolation.layout.fixtureCwd, 'user', isolation.env);
+    const installed = await fs.readJson(paths.installedPluginsPath) as {
+      plugins: Record<string, Array<Record<string, unknown>>>;
+    };
+    installed.plugins[`${plugin.manifest.name}@aw`]!.push({
+      scope: 'user',
+      version: '3.0.0',
+    });
+    await fs.outputJson(paths.installedPluginsPath, installed);
+
+    const inspected = await inspectRebuildTarget({
+      plugin,
+      platform: 'claude',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      }),
+    });
+
+    expect(inspected.inspection.state).toBe('present');
+    expect(inspected.installedVersion).toBeUndefined();
+    expect(projectTargetRevision(plugin.manifest.version, inspected.installedVersion)).toEqual({
+      state: 'unknown', availableVersion: '2.0.0',
+    });
+  });
+
+  it('projects only lower strict SemVer evidence as an available upgrade', () => {
+    expect(projectTargetRevision('2.0.0', '1.0.0')).toEqual({
+      state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0',
+    });
+    expect(projectTargetRevision('2.0.0', '3.0.0')).toEqual({
+      state: 'unknown', availableVersion: '2.0.0', installedVersion: '3.0.0',
+    });
+    expect(projectTargetRevision('2.0.0', 'not-semver')).toEqual({
+      state: 'unknown', availableVersion: '2.0.0', installedVersion: 'not-semver',
+    });
+  });
+
+  it('does not infer a revision for a non-native placement', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'project-only-revision');
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    const inspected = await inspectRebuildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      }),
+    });
+    expect(inspected.target.requiresNative).toBe(false);
+    expect(inspected.installedVersion).toBeUndefined();
+    expect(projectTargetRevision(plugin.manifest.version, inspected.installedVersion)).toEqual({
+      state: 'unknown', availableVersion: plugin.manifest.version,
+    });
+  });
 
   it.each([
     { label: 'disabled', configEntry: 'enabled = false' },

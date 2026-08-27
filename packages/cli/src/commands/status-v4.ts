@@ -27,7 +27,12 @@ import {
   planPluginSelectorSourceIds,
   withResolvedMultiSourceCatalog,
 } from '../utils/multi-source-catalog.js';
-import { assertStrictSemVer, readPluginManifest } from '../utils/manifest.js';
+import {
+  assertStrictSemVer,
+  compareStrictSemVer,
+  readPluginManifest,
+  tryParseStrictSemVer,
+} from '../utils/manifest.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import { parsePlatformValue, parseScopeValue } from './options.js';
@@ -102,6 +107,18 @@ export interface StatusV4Payload {
   errors: Array<{ code: string; message: string }>;
 }
 
+export type TargetRevisionState =
+  | { state: 'current'; availableVersion: string; installedVersion?: string }
+  | { state: 'upgradeAvailable'; availableVersion: string; installedVersion?: string }
+  | { state: 'unknown'; availableVersion?: string; installedVersion?: string };
+
+export interface StatusTargetRevision {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+  revision: TargetRevisionState;
+}
+
 interface StatusPluginCapability {
   name: string;
   version: string;
@@ -116,6 +133,7 @@ interface StatusPluginCapability {
     state: StatusV4Target['state'];
     errors: StatusV4Target['errors'];
     components: StatusV4Component[];
+    installedVersion?: string;
   }>>>>;
   dependencies: string[];
 }
@@ -247,6 +265,25 @@ function projectedLiveState(options: {
     entry.component === component && entry.state === 'present')) ? 'present' : 'absent';
 }
 
+export function projectTargetRevision(
+  availableVersion: string | undefined,
+  installedVersion: string | undefined,
+): TargetRevisionState {
+  if (!availableVersion || !installedVersion
+    || !tryParseStrictSemVer(availableVersion)
+    || !tryParseStrictSemVer(installedVersion)) {
+    return {
+      state: 'unknown',
+      ...(availableVersion ? { availableVersion } : {}),
+      ...(installedVersion ? { installedVersion } : {}),
+    };
+  }
+  const relation = compareStrictSemVer(installedVersion, availableVersion);
+  if (relation === 0) return { state: 'current', availableVersion, installedVersion };
+  if (relation < 0) return { state: 'upgradeAvailable', availableVersion, installedVersion };
+  return { state: 'unknown', availableVersion, installedVersion };
+}
+
 function renderStatusV4(payload: StatusV4Payload, verbose: boolean): string {
   const lines = [`Catalog sources: ${payload.catalog.sources.length}`];
   for (const source of payload.catalog.sources) {
@@ -284,6 +321,7 @@ export async function statusCommandV4(options: {
   output: string;
   hasErrors: boolean;
   pluginSummaries: StatusV4PluginSummary[];
+  targetRevisions: StatusTargetRevision[];
 }> {
   const env = options.env ?? process.env;
   const dependencyPluginCache = new Map<string, Promise<PluginMeta>>();
@@ -669,6 +707,9 @@ export async function statusCommandV4(options: {
                             };
                           })
                         : [],
+                      ...(inspected.installedVersion
+                        ? { installedVersion: inspected.installedVersion }
+                        : {}),
                     };
                   } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
@@ -1018,6 +1059,22 @@ export async function statusCommandV4(options: {
     ...target,
     errors: target.errors.map((error) => projectTargetError(error, env, options.cwd)),
   }));
+  const selectedByPluginId = new Map(selected.map((entry) => [
+    formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
+    entry,
+  ]));
+  const targetRevisions: StatusTargetRevision[] = projectedTargets.map((target) => {
+    const entry = selectedByPluginId.get(target.pluginId);
+    return {
+      pluginId: target.pluginId,
+      platform: target.platform,
+      scope: target.scope,
+      revision: projectTargetRevision(
+        entry?.version,
+        entry?.states[target.platform]?.[target.scope]?.installedVersion,
+      ),
+    };
+  });
   const payload: StatusV4Payload = {
     schemaVersion: 4,
     catalog: {
@@ -1046,6 +1103,7 @@ export async function statusCommandV4(options: {
     payload,
     output: options.json ? JSON.stringify(payload) : renderStatusV4(payload, options.verbose === true),
     hasErrors,
+    targetRevisions,
     pluginSummaries: available.map((entry) => {
       const sourceEntries = available.filter((candidate) => candidate.source.id === entry.source.id);
       const byName = new Map(sourceEntries.map((candidate) => [candidate.name, candidate]));
