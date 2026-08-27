@@ -598,6 +598,7 @@ export function createTuiControllerDependencies(
             ...(status?.catalogVersion ? { catalogVersion: status.catalogVersion } : {}),
             ...(status?.channel ? { channel: status.channel } : {}),
             ...(status?.freshness ? { freshness: status.freshness } : {}),
+            ...(status?.errorCode ? { errorCode: status.errorCode } : {}),
             configDigest: configured.configDigest,
           };
         }),

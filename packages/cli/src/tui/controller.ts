@@ -29,6 +29,7 @@ import {
   type UserIssueCategory,
   type UserIssueViewModel,
 } from './model.js';
+import { safeDiagnosticCode } from './diagnostics.js';
 import {
   TuiRouter,
   type PluginInstallFilter,
@@ -731,7 +732,10 @@ export function extractPortableError(error: unknown): {
     : undefined;
   const message = error instanceof Error ? error.message : String(error);
   const fallback = message.match(/^([A-Za-z][A-Za-z0-9]*):/u)?.[1];
-  const diagnosticCode = typedCode ?? fallback ?? 'portableValidationFailed';
+  const diagnosticCode = safeDiagnosticCode(
+    typedCode ?? fallback,
+    'portableValidationFailed',
+  );
   if (diagnosticCode === 'requiredConfigMissing') return { code: 'requiredConfigMissing', diagnosticCode };
   if (diagnosticCode === 'portableSkillsCliMissing') return { code: 'portableSkillsCliMissing', diagnosticCode };
   if (diagnosticCode === 'portableSkillsCliIncompatible') return { code: 'portableSkillsCliIncompatible', diagnosticCode };

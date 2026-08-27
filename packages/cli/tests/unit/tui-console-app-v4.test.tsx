@@ -144,6 +144,7 @@ function loadResult(): TuiStatusLoadResult {
       ...(source.catalogVersion ? { catalogVersion: source.catalogVersion } : {}),
       ...(source.channel ? { channel: source.channel } : {}),
       ...(source.freshness ? { freshness: source.freshness } : {}),
+      ...(source.errorCode ? { errorCode: source.errorCode } : {}),
       configDigest: 'sha256:config',
     })),
   };
@@ -432,7 +433,7 @@ describe('ConsoleAppV4', () => {
         expect(detailInstance.lastFrame()).toContain(
           'aw cleanup archive/missing --platform codex --scope',
         );
-        expect(detailInstance.lastFrame()).toMatch(/│ user\s+│/u);
+        expect(detailInstance.lastFrame()).toContain('user');
         expect(detailInstance.lastFrame()).toContain('--force');
         expect(detailInstance.lastFrame()).not.toContain('没有安全的自动清理');
       }
@@ -888,7 +889,7 @@ describe('ConsoleAppV4', () => {
     }
   });
 
-  it('does not show an empty technical-details action or shortcut', async () => {
+  it('shows structured dependency diagnostics when legacy technical details are empty', async () => {
     const loaded = dependencyLoadResult({
       rootState: 'error',
       rootErrorCode: 'dependencyMissing',
@@ -896,7 +897,8 @@ describe('ConsoleAppV4', () => {
     });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
-    const issue = value.listUserIssues().find((candidate) => candidate.category === 'dependencyMissing')!;
+    const issue = value.listUserIssues().find((candidate) =>
+      candidate.category === 'dependencyMissing' && candidate.scope === 'project')!;
     const issuesWithoutDetails = value.listUserIssues().map((candidate) => candidate.issueId === issue.issueId
       ? { ...candidate, technicalDetails: [] }
       : candidate);
@@ -906,10 +908,14 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     const frame = instance.lastFrame() ?? '';
-    expect(frame).not.toContain('技术详情');
-    expect(frame).not.toContain('d 技术详情');
+    expect(frame).toContain('技术详情');
+    expect(frame).toContain('d 技术详情');
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+    await input(instance, 'd');
+    expect(instance.lastFrame()).toContain('dependencyMissing');
+    expect(instance.lastFrame()).toContain('resolve-dependencies');
+    expect(instance.lastFrame()).not.toContain('has changed state');
   });
 
   it('does not treat target platform selection as an unsaved write', async () => {
@@ -1942,6 +1948,7 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
     await nextTurn(2);
+    expect(instance.lastFrame()).not.toContain('远端 Catalog 检查失败');
 
     for (const [index, label] of ['重新检查来源', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
       if (index > 0) await input(instance, '\u001B[B');
@@ -1954,6 +1961,230 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'team-tools' });
+  });
+
+  it('separates degraded and unavailable source diagnostics and redacts every technical field', async () => {
+    const privateFailure = 'native stderr Authorization: Bearer bearer-secret '
+      + 'https://alice:url-secret@example.test/catalog?access_token=query-secret '
+      + '/Users/private-user /workspace/private /tmp/private /private/source/root';
+    const unavailableLoad = loadResult();
+    unavailableLoad.payload.catalog.sources = unavailableLoad.payload.catalog.sources.map((source) =>
+      source.id === 'research' ? {
+        ...source,
+        type: 'git' as const,
+        requestedRef: 'https://alice:url-secret@example.test/catalog?access_token=query-secret',
+        error: privateFailure,
+        errorCode: 'catalogSourceUnavailable',
+      } : source);
+    unavailableLoad.sourceDetails = unavailableLoad.sourceDetails?.map((source) =>
+      source.id === 'research' ? {
+        ...source,
+        type: 'git' as const,
+        requestedRef: 'https://alice:url-secret@example.test/catalog?access_token=query-secret',
+        resolvedCommit: 'Authorization: Bearer commit-secret',
+        locationSummary: '/private/source/root',
+        errorCode: 'catalogSourceUnavailable',
+      } : source);
+    const unavailable = controller({ loadStatus: vi.fn().mockResolvedValue(unavailableLoad) });
+    await unavailable.load();
+    unavailable.push({ name: 'sourceDetail', sourceId: 'research' });
+    const unavailableInstance = render(<ConsoleAppV4 controller={unavailable} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    const unavailableDefault = unavailableInstance.lastFrame() ?? '';
+    expect(unavailableDefault).toContain('当前不能浏览或安装这个来源中的插件');
+    expect(unavailableDefault).toContain('已安装插件和已保存设置不会被删除');
+    expect(unavailableDefault).not.toContain('继续使用缓存');
+    expect(unavailableDefault).not.toContain('catalogSourceUnavailable');
+    for (const privateText of ['native stderr', 'bearer-secret', 'alice', 'url-secret', 'query-secret',
+      '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root']) {
+      expect(unavailableDefault).not.toContain(privateText);
+    }
+    await input(unavailableInstance, ...Array.from({ length: 4 }, () => '\u001B[B'), '\r');
+    expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'research' });
+    const unavailableTechnical = unavailableInstance.lastFrame() ?? '';
+    expect(unavailableTechnical).toContain('catalogSourceUnavailable');
+    expect(unavailableTechnical).toContain('resolve-source');
+    expect(unavailableTechnical).toMatch(/last good\s+无/u);
+    expect(unavailableTechnical).toContain('下面的信息已脱敏，可用于排查或提交 issue');
+    expect(unavailableTechnical).not.toContain('sha256:');
+    for (const privateText of ['native stderr', 'Authorization', 'Bearer', 'bearer-secret', 'alice', 'url-secret', 'query-secret',
+      '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root', 'commit-secret']) {
+      expect(unavailableTechnical).not.toContain(privateText);
+    }
+    await input(unavailableInstance, '\r');
+    expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'research' });
+
+    const degradedLoad = loadResult();
+    const degraded = controller({
+      loadStatus: vi.fn().mockResolvedValue(degradedLoad),
+      checkSource: vi.fn().mockRejectedValue(Object.assign(new Error(privateFailure), {
+        code: 'catalogSourceRemoteFailed',
+      })),
+    });
+    await degraded.load();
+    await nextTurn(4);
+    degraded.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const degradedInstance = render(<ConsoleAppV4 controller={degraded} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    const degradedDefault = degradedInstance.lastFrame() ?? '';
+    expect(degradedDefault).toContain('匹配缓存中的插件仍可浏览和安装');
+    expect(degradedDefault).toContain('继续使用缓存');
+    expect(degradedDefault).not.toContain('当前不能浏览或安装这个来源中的插件');
+    await input(degradedInstance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    const degradedTechnical = degradedInstance.lastFrame() ?? '';
+    expect(degradedTechnical).toContain('catalogSourceDegraded');
+    expect(degradedTechnical).toContain('last good: 可用');
+    expect(degradedTechnical).not.toContain('bearer-secret');
+    expect(degradedTechnical).toContain('› 返回来源详情');
+    expect(degradedTechnical.split('\n').length).toBeLessThanOrEqual(18);
+    await input(degradedInstance, '\r');
+    expect(degraded.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+  });
+
+  it('shows platform state diagnostics as a safe product layer before the technical layer', async () => {
+    const loaded = loadResult();
+    loaded.payload.errors = [{
+      code: 'nativeStateUnreadable',
+      message: 'stderr Authorization: Bearer platform-secret /Users/private/platform',
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const issue = value.listUserIssues().find((candidate) => candidate.issueId === 'status:nativeStateUnreadable')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    const productFrame = instance.lastFrame() ?? '';
+    expect(productFrame).toContain('当前不能安全读取平台状态');
+    expect(productFrame).toContain('现有安装和已保存设置不会因本页自动改变');
+    expect(productFrame).toContain('下一步');
+    expect(productFrame).not.toContain('nativeStateUnreadable');
+    expect(productFrame).not.toContain('platform-secret');
+    await input(instance, 'd');
+    const technicalFrame = instance.lastFrame() ?? '';
+    expect(technicalFrame).toContain('nativeStateUnreadable');
+    expect(technicalFrame).toContain('read-platform-state');
+    expect(technicalFrame).not.toContain('platform-secret');
+    expect(technicalFrame).not.toContain('/Users/private/platform');
+  });
+
+  it('uses the shared diagnostic summary from the platform route and preserves its typed issue action', async () => {
+    const loaded = loadResult();
+    loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'official/agent-lab'
+      && entry.platform === 'codex' && entry.scope === 'user'
+      ? {
+          ...entry,
+          state: 'error' as const,
+          errors: [{
+            code: 'nativeTargetUnreadable',
+            message: 'native stderr Bearer platform-route-secret /Users/private/platform-route',
+          }],
+        }
+      : entry);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    const productFrame = instance.lastFrame() ?? '';
+    expect(productFrame).toContain('现有安装和已保存设置不会因本页自动改变');
+    expect(productFrame).toContain('› 查看对应问题');
+    expect(productFrame).not.toContain('nativeTargetUnreadable');
+    expect(productFrame).not.toContain('platform-route-secret');
+
+    await input(instance, '\r', 'd');
+    const technicalFrame = instance.lastFrame() ?? '';
+    expect(technicalFrame).toContain('nativeTargetUnreadable');
+    expect(technicalFrame).toContain('read-platform-state');
+    expect(technicalFrame).not.toContain('platform-route-secret');
+  });
+
+  it('shows dependency diagnostics without exposing the status message and keeps recovery actions', async () => {
+    const loaded = dependencyLoadResult({
+      rootState: 'error',
+      rootErrorCode: 'dependencyMissing',
+      rootErrorMessage: 'dependencyMissing: official/skill-toolkit Authorization: Bearer dependency-secret /tmp/source',
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const issue = value.listUserIssues().find((candidate) => candidate.category === 'dependencyMissing')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    const productFrame = instance.lastFrame() ?? '';
+    expect(productFrame).toContain('查看依赖关系');
+    expect(productFrame).toContain('现有安装和已保存设置不会因本页自动改变');
+    expect(productFrame).not.toContain('dependencyMissing');
+    expect(productFrame).not.toContain('dependency-secret');
+    await input(instance, 'd');
+    const technicalFrame = instance.lastFrame() ?? '';
+    expect(technicalFrame).toContain('dependencyMissing');
+    expect(technicalFrame).toContain('resolve-dependencies');
+    expect(technicalFrame).not.toContain('dependency-secret');
+    expect(technicalFrame).not.toContain('/tmp/source');
+  });
+
+  it('keeps typed config failure information without exposing the rejected Error', async () => {
+    const getConfigPage = vi.fn().mockRejectedValue(Object.assign(
+      new Error('stderr token=config-secret /Users/private/config'),
+      { code: 'configReadFailed' },
+    ));
+    const value = controller({ getConfigPage });
+    await value.load();
+    value.push({
+      name: 'configFields',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configUnavailable',
+      diagnosticCode: 'configReadFailed',
+      diagnosticStage: 'read-config',
+    });
+    const productFrame = instance.lastFrame() ?? '';
+    expect(productFrame).toContain('当前无法取得可信的字段定义');
+    expect(productFrame).toContain('已保存的设置保持不变');
+    expect(productFrame).toContain('重新检查来源');
+    expect(productFrame).not.toContain('configReadFailed');
+    expect(productFrame).not.toContain('config-secret');
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 技术详情');
+    await input(instance, '\r');
+    const technicalFrame = instance.lastFrame() ?? '';
+    expect(technicalFrame).toContain('configReadFailed');
+    expect(technicalFrame).toContain('read-config');
+    expect(technicalFrame).not.toContain('config-secret');
+    expect(technicalFrame).not.toContain('sha256:');
+  });
+
+  it('uses the shared diagnostic layers for Portable blockers and keeps its recovery flow', async () => {
+    const value = controller();
+    await value.load();
+    value.push({
+      name: 'portableBlocker',
+      pluginId: 'official/agent-lab',
+      code: 'portableValidationFailed',
+      diagnosticCode: 'portableSkillInvalid',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    const productFrame = instance.lastFrame() ?? '';
+    expect(productFrame).toContain('候选 Skill 没有通过 Portable 安全校验');
+    expect(productFrame).toContain('Portable 草稿保持不变');
+    expect(productFrame).toContain('重新检查');
+    expect(productFrame).toContain('返回插件预览');
+    expect(productFrame).not.toContain('portableSkillInvalid');
+    await input(instance, '\u001B[B', '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 技术详情');
+    await input(instance, '\r');
+    const technicalFrame = instance.lastFrame() ?? '';
+    expect(technicalFrame).toContain('portableSkillInvalid');
+    expect(technicalFrame).toContain('prepare-portable');
+    expect(technicalFrame).toContain('下面的信息已脱敏，可用于排查或提交 issue');
+    await input(instance, 'd');
+    expect(instance.lastFrame()).toContain('返回插件预览');
   });
 
   it('ignores a second Enter after the Review primary action becomes busy', async () => {
@@ -2934,15 +3165,16 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     expect(instance.lastFrame()).not.toContain('重置此设置层');
-    expect(instance.lastFrame()).toContain('查看可信身份和设置层摘要');
+    expect(instance.lastFrame()).toContain('技术详情');
     expect(instance.lastFrame()).not.toContain(sourceIdentity);
     expect(instance.lastFrame()).not.toContain(storeDigest);
     expect(instance.lastFrame()).not.toContain('/Users/private');
     await input(instance, 'd');
-    const technicalFrame = instance.lastFrame()?.replace(/[\s│]/gu, '') ?? '';
-    expect(technicalFrame).toContain(sourceIdentity);
-    expect(technicalFrame).toContain('设置摘要：sha256:');
-    expect(technicalFrame.match(/b/gu)?.length).toBeGreaterThanOrEqual(64);
+    const technicalFrame = instance.lastFrame() ?? '';
+    expect(technicalFrame).toContain('configUnavailable');
+    expect(technicalFrame).toContain('read-config');
+    expect(technicalFrame).not.toContain(sourceIdentity);
+    expect(technicalFrame).not.toContain(storeDigest);
   });
 
   it('does not let an aborted config layer response overwrite the newer layer page', async () => {
@@ -3271,7 +3503,10 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain(secretUrl);
     await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     expect(screens).toContain('S03');
-    expect(instance.lastFrame()).toContain('sourceIdentity');
+    expect(instance.lastFrame()).toContain('catalogSourceReady');
+    expect(instance.lastFrame()).toContain('requested ref');
+    expect(instance.lastFrame()).not.toContain('sourceIdentity');
+    expect(instance.lastFrame()).not.toContain('configDigest');
     expect(instance.lastFrame()).not.toContain('/Users/private');
     expect(instance.lastFrame()).not.toContain('token:secret');
   });
@@ -3909,7 +4144,8 @@ describe('ConsoleAppV4', () => {
     const frame = instance.lastFrame() ?? '';
     expect(screens).toContain(expectedScreen);
     expect(frame).toContain(category);
-    expect(frame).toContain('状态检查报告了这个安全错误代码。');
+    expect(frame).toContain('resolve-dependencies');
+    expect(frame).toContain('下面的信息已脱敏，可用于排查或提交 issue');
     expect(frame).toContain('d 技术详情');
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
@@ -3923,7 +4159,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('› 技术详情');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain(category);
-    expect(instance.lastFrame()).toContain('状态检查报告了这个安全错误代码。');
+    expect(instance.lastFrame()).toContain('resolve-dependencies');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
   });
 
@@ -4295,21 +4531,22 @@ describe('ConsoleAppV4', () => {
     expect(screens).toContain('D17');
     expect(frame).toContain('来源中的依赖关系无效');
     expect(frame).toContain('没有修改任何安');
-    expect(frame).toContain('dependencyGraphInvalid');
+    expect(frame).not.toContain('dependencyGraphInvalid');
     expect(frame).toContain('› 查看来源问题');
     expect(frame).toContain('查看依赖关系');
-    expect(frame).toContain('d 查看安全错误代码');
+    expect(frame).toContain('技术详情');
     expect(frame).toContain('↑↓ 移动');
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
 
     await input(detail, 'd');
-    expect(detail.lastFrame()).toContain('状态检查报告了这个安全错误代码。');
+    expect(detail.lastFrame()).toContain('dependencyGraphInvalid');
+    expect(detail.lastFrame()).toContain('插件: official/agent-lab');
     await input(detail, 'd');
     const technicalIndex = graphIssue!.actions.findIndex((action) => action.id === 'viewTechnical') + 1;
     for (let index = 0; index < technicalIndex; index += 1) await input(detail, '\u001B[B');
     expect(detail.lastFrame()).toContain('› 技术详情');
     await input(detail, '\r');
-    expect(detail.lastFrame()).toContain('状态检查报告了这个安全错误代码。');
+    expect(detail.lastFrame()).toContain('dependencyGraphInvalid');
     await input(detail, 'd', ...Array.from({ length: technicalIndex }, () => '\u001B[A'));
     await input(detail, '\r');
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'official' });

@@ -434,7 +434,7 @@ describe('Portable Skills TUI V1', () => {
     ['requiredConfigMissing', 'U09', '完成插件设置'],
     ['portableSkillsCliMissing', 'U10', '查看安装说明'],
     ['portableSkillsCliIncompatible', 'U10', '查看安装说明'],
-    ['portableValidationFailed', 'U11', 'd 查看脱敏诊断'],
+    ['portableValidationFailed', 'U11', '重新检查'],
   ] as const)('renders typed blocker %s as %s with its recovery action', async (code, screen, action) => {
     const { value } = portableController();
     await value.load();
@@ -446,7 +446,8 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).toContain(action);
     if (code === 'portableValidationFailed') {
       await send(instance, 'd');
-      expect(instance.lastFrame()).toContain('诊断代码：portableSkillInvalid');
+      expect(instance.lastFrame()).toContain('portableSkillInvalid');
+      expect(instance.lastFrame()).toContain('prepare-portable');
       expect(instance.lastFrame()).not.toContain('/private/');
     }
   });

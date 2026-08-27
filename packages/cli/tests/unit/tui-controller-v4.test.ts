@@ -770,10 +770,18 @@ describe('TUI v4 router and ViewModel', () => {
       title: 'invalid · 设置值无效',
       configLayer: { scope: 'project', projectLayer: 'local' },
       requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'projectLocal' }],
+      diagnostic: {
+        technical: { code: 'invalid-config', stage: 'validate-config' },
+      },
     });
+    expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')?.diagnostic.technical?.checks)
+      .toContain('完成或修正列出的设置字段。');
     expect(view.issues.find((issue) => issue.pluginId === 'official/unreadable')).toMatchObject({
       category: 'diagnostic',
-      technicalDetails: [{ code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' }],
+      technicalDetails: [{ code: 'configReadFailed', message: '设置读取报告了这个安全错误代码。' }],
+      diagnostic: {
+        technical: { code: 'configReadFailed', stage: 'read-config' },
+      },
     });
   });
 });

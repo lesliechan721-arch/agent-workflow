@@ -11,6 +11,7 @@ import {
   ActionRow,
   Callout,
   ChoiceRow,
+  DiagnosticSummary,
   InputCard,
   PluginListRow,
   ProgressRow,
@@ -27,6 +28,11 @@ import {
   TechnicalDetails,
   ToggleRow,
 } from './components.js';
+import {
+  safeDiagnosticCode,
+  sanitizeDiagnosticText,
+  type DiagnosticSummaryViewModel,
+} from './diagnostics.js';
 import type {
   OperationIntent,
   OperationReviewChange,
@@ -46,6 +52,8 @@ import type {
   UserIssueActionViewModel,
   UserIssueViewModel,
   PluginMenuAction,
+  SourceDetailViewModel,
+  SourceHealthViewModel,
 } from './model.js';
 import {
   buildPlatformActions,
@@ -361,6 +369,122 @@ function privatePathInput(value: string): string {
   if (!value) return '';
   const basename = value.split(/[\\/]/u).filter(Boolean).at(-1) ?? '已选择';
   return `已选择 / … / ${basename}`;
+}
+
+function portableBlockerDiagnostic(
+  route: Extract<TuiRoute, { name: 'portableBlocker' }>,
+): DiagnosticSummaryViewModel {
+  const cliUnavailable = route.code === 'portableSkillsCliMissing'
+    || route.code === 'portableSkillsCliIncompatible';
+  const userMessage = route.code === 'requiredConfigMissing'
+    ? '插件缺少生成内容所需的设置。'
+    : route.code === 'portableScopeUnavailable'
+      ? '至少一个所选 Skill 不适用于这个范围。'
+      : cliUnavailable
+        ? '没有找到兼容的 Skills CLI。'
+        : '候选 Skill 没有通过 Portable 安全校验。';
+  const blocked = route.code === 'requiredConfigMissing'
+    ? '缺少生成 Skill 所需的设置；没有调用 Skills CLI。'
+    : cliUnavailable
+      ? '当前不能开始安装；没有调用 Skills CLI。'
+      : route.code === 'portableScopeUnavailable'
+        ? '所选内容不能在这个范围完整生成；没有开始写入。'
+        : '候选内容没有通过安全校验；没有开始写入。';
+  const nextStep = route.code === 'requiredConfigMissing'
+    ? '完成插件设置，然后重新准备。'
+    : cliUnavailable
+      ? '安装或升级兼容的 Skills CLI，然后重新检查。'
+      : route.code === 'portableScopeUnavailable'
+        ? '返回 Skill 选择或更改范围，然后重新检查。'
+        : '修复来源内容或修改选择，然后重新检查。';
+  return {
+    severity: 'error',
+    title: route.code === 'portableScopeUnavailable' ? '所选范围不可用'
+      : cliUnavailable ? '暂时无法安装通用 Skills' : '无法准备通用 Skills',
+    userMessage,
+    impact: [
+      { state: 'blocked', message: blocked },
+      { state: 'preserved', message: '现有插件、Skills、设置和 Portable 草稿保持不变。' },
+    ],
+    nextStep,
+    technical: {
+      code: safeDiagnosticCode(route.diagnosticCode, 'portableValidationFailed'),
+      stage: cliUnavailable ? 'check-skills-cli' : 'prepare-portable',
+      ...(cliUnavailable ? { context: [{
+        key: 'compatibility' as const,
+        value: 'Skills CLI >=1.5.23 <2.0.0',
+      }] } : {}),
+      checks: cliUnavailable
+        ? ['检查 PATH 中的 Skills CLI 版本。', '安装兼容版本后运行“重新检查”。']
+        : ['检查插件设置、所选范围和 Portable 来源内容。', '修复后运行“重新检查”。'],
+    },
+  };
+}
+
+function configUnavailableDiagnostic(
+  route: Extract<TuiRoute, { name: 'configUnavailable' }>,
+): DiagnosticSummaryViewModel {
+  return {
+    severity: 'error',
+    title: 'Manifest 或来源不可用',
+    userMessage: '当前无法取得可信的字段定义，因此不能验证新值。',
+    impact: [
+      { state: 'blocked', message: '恢复可信字段定义前，不能编辑或重置这个插件的设置。' },
+      { state: 'preserved', message: '已保存的设置保持不变。' },
+    ],
+    nextStep: '重新检查来源，然后再次打开设置。',
+    technical: {
+      code: safeDiagnosticCode(route.diagnosticCode, 'configUnavailable'),
+      stage: safeDiagnosticCode(route.diagnosticStage, 'read-config'),
+      context: [
+        { key: 'pluginId', value: route.pluginId },
+        ...(route.layer ? [{ key: 'scope' as const, value: route.layer.scope }] : []),
+      ],
+      checks: ['恢复插件来源和可信 Manifest。', '重新检查来源后再次打开设置。'],
+    },
+  };
+}
+
+function sourceDiagnostic(
+  sourceId: string,
+  state: SourceHealthViewModel['state'] | 'error' | undefined,
+  detail: SourceDetailViewModel | undefined,
+): DiagnosticSummaryViewModel | undefined {
+  const degraded = state === 'degraded';
+  const unavailable = state === 'unavailable' || state === 'error';
+  if (!degraded && !unavailable) return undefined;
+  return {
+    severity: degraded ? 'warning' : 'error',
+    title: degraded ? '远端 Catalog 检查失败，正在使用缓存' : 'Catalog 来源不可用',
+    userMessage: degraded
+      ? '远端读取没有成功。当前使用匹配且已验证的缓存数据。'
+      : '当前无法读取这个来源，并且没有可用缓存数据。',
+    impact: degraded
+      ? [
+          { state: 'degraded', message: '数据可能不是最新；匹配缓存中的插件仍可浏览和安装。' },
+          { state: 'preserved', message: '已安装插件和已保存设置不会被删除。' },
+        ]
+      : [
+          { state: 'blocked', message: '当前不能浏览或安装这个来源中的插件。' },
+          { state: 'preserved', message: '已安装插件和已保存设置不会被删除。' },
+        ],
+    nextStep: degraded
+      ? '重新检查来源；在修复前也可以继续使用匹配缓存。'
+      : '重新检查来源；如仍失败，请编辑来源 URL、路径或 ref。',
+    technical: {
+      code: safeDiagnosticCode(
+        detail?.errorCode,
+        degraded ? 'catalogSourceDegraded' : 'catalogSourceUnavailable',
+      ),
+      stage: 'resolve-source',
+      sourceId,
+      ...(detail?.requestedRef ? { requestedRef: detail.requestedRef } : {}),
+      ...(detail?.resolvedCommit ? { resolvedCommit: detail.resolvedCommit } : {}),
+      lastGood: degraded ? 'available' : 'unavailable',
+      ...(detail?.freshness ? { context: [{ key: 'freshness', value: detail.freshness }] } : {}),
+      checks: ['检查 Git URL、ref 或本地目录。', '确认当前终端具备来源授权。', '运行“重新检查来源”验证修复。'],
+    },
+  };
 }
 
 function terminalTextWidth(value: string): number {
@@ -802,7 +926,6 @@ export function ConsoleAppV4(props: {
   const [inputValue, setInputValue] = useState('');
   const [inputError, setInputError] = useState<string>();
   const [configActionError, setConfigActionError] = useState<string>();
-  const [configResetAvailability, setConfigResetAvailability] = useState<Awaited<ReturnType<TuiController['getConfigResetAvailability']>>>();
   const [actionError, setActionError] = useState<string>();
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>();
   const [sourceInput, setSourceInput] = useState('');
@@ -935,14 +1058,19 @@ export function ConsoleAppV4(props: {
           || expectedLayer !== JSON.stringify(configRoute.layer)) return;
         setConfigPage(page);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!abort.signal.aborted) {
           const layer = configRoute.layer.scope === 'effective'
             ? undefined
             : { scope: configRoute.layer.scope as Scope, projectLayer: configRoute.layer.projectLayer };
+          const code = typeof error === 'object' && error !== null && 'code' in error
+            ? safeDiagnosticCode((error as { code?: unknown }).code, 'configUnavailable')
+            : 'configUnavailable';
           props.controller.replace({
             name: 'configUnavailable',
             pluginId: expectedPluginId,
+            diagnosticCode: code,
+            diagnosticStage: 'read-config',
             ...(layer ? { layer } : {}),
           });
         }
@@ -958,22 +1086,6 @@ export function ConsoleAppV4(props: {
     if (tabs.some((tab) => tab.id === current)) return;
     props.controller.updatePageContext({ configGroupId: tabs[0]!.id });
   }, [props.controller, route.name, currentConfigPage, snapshot.router.current.context.configGroupId]);
-
-  useEffect(() => {
-    if (route.name !== 'configUnavailable' || !route.layer) {
-      setConfigResetAvailability(undefined);
-      return;
-    }
-    const abort = new AbortController();
-    void props.controller.getConfigResetAvailability(route.pluginId, route.layer)
-      .then((availability) => {
-        if (!abort.signal.aborted) setConfigResetAvailability(availability);
-      })
-      .catch(() => {
-        if (!abort.signal.aborted) setConfigResetAvailability({ exists: false, sourceIdentityPresent: false });
-      });
-    return () => abort.abort();
-  }, [props.controller, route.name, route.name === 'configUnavailable' ? route.pluginId : '', route.name === 'configUnavailable' ? JSON.stringify(route.layer) : '']);
 
   useEffect(() => {
     let count: number | undefined;
@@ -1048,14 +1160,13 @@ export function ConsoleAppV4(props: {
   const supportsTechnicalDetails = Boolean(route.name === 'progress' && snapshot.progress.messages.length > 0)
     || Boolean(route.name === 'review' && snapshot.activeReview?.technicalDetails?.length)
     || Boolean(route.name === 'issueDetail' && issue
-      && (issue.category === 'legacyState' || issue.technicalDetails.length > 0))
+      && issue.diagnostic.technical)
     || Boolean(route.name === 'pluginDependencies' && plugin)
     || portableVariantCandidates.length > 0
     || Boolean(route.name === 'portableDependencies' && plugin
       && props.controller.getPluginDependencyOverview(plugin.pluginId)?.dependencies.length)
     || Boolean(route.name === 'portableBlocker' && plugin)
-    || Boolean(route.name === 'configUnavailable' && plugin
-      && configResetAvailability?.sourceIdentityPresent)
+    || Boolean(route.name === 'configUnavailable' && plugin)
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
       && snapshot.result.operationKind === 'portableInstall');
   const canOpenHelp = !tooSmall
@@ -1893,12 +2004,9 @@ export function ConsoleAppV4(props: {
     content = <Box flexDirection="column"><SemanticRows actions={actions.slice(0, 2)} focus={focus} kind="choice" compact={policy.mode === 'compact'} /><SemanticRows actions={actions} focus={focus} kind="action" compact offset={2} /></Box>;
   } else if (route.name === 'portableBlocker' && plugin) {
     breadcrumb = `${plugin.displayName} / 通用 Skills`;
-    title = route.code === 'requiredConfigMissing' ? '无法准备通用 Skills'
-      : route.code === 'portableScopeUnavailable' ? '所选范围不可用'
-      : route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '暂时无法安装通用 Skills' : '无法准备通用 Skills';
-    description = route.code === 'requiredConfigMissing' ? '插件缺少生成内容所需的设置。'
-      : route.code === 'portableScopeUnavailable' ? '至少一个所选 Skill 不适用于这个范围。请返回 Skill 选择或更改范围。'
-      : route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '没有找到兼容的 Skills CLI。' : '候选 Skill 没有通过 Portable 校验。';
+    const diagnostic = portableBlockerDiagnostic(route);
+    title = diagnostic.title;
+    description = '';
     actions = [
       ...(route.code === 'requiredConfigMissing' ? [{ label: '完成插件设置', run: () => {
         props.controller.replace({ name: 'configLayer', pluginId: plugin.pluginId });
@@ -1906,7 +2014,8 @@ export function ConsoleAppV4(props: {
         setScrollOffset(0);
       } }] : []),
       ...(route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible'
-        ? [{ label: '查看安装说明', run: () => setShowTechnical((value) => !value) }] : []),
+        ? [{ label: showTechnical ? '返回问题摘要' : '查看安装说明', run: () => setShowTechnical((value) => !value) }]
+        : []),
       ...(route.code === 'portableScopeUnavailable' ? [{ label: '返回 Skill 选择', run: () => {
         props.controller.resetPortableFlowToPreview(
           plugin.pluginId,
@@ -1918,22 +2027,14 @@ export function ConsoleAppV4(props: {
       } }] : []),
       { label: '重新检查', run: () => beginPortable(plugin.pluginId) },
       { label: '返回插件预览', run: () => props.controller.resetPortableFlowToPreview(plugin.pluginId) },
+      ...(route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible'
+        ? []
+        : [{ label: showTechnical ? '返回问题摘要' : '技术详情', run: () => setShowTechnical((value) => !value) }]),
     ];
-    const blockerImpact = route.code === 'requiredConfigMissing'
-      ? '缺少生成 Skill 所需的设置；没有调用 Skills CLI。'
-      : route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible'
-        ? '当前不能开始安装；插件和现有 Skills 保持不变。'
-        : route.code === 'portableScopeUnavailable'
-          ? '所选内容不能在这个范围完整生成；没有开始写入。'
-          : '候选内容没有通过安全校验；没有开始写入。';
-    description = '';
+    const blockerActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 4));
     content = <Box flexDirection="column">
-      <StatusCard status="error" title={title} description={blockerImpact} />
-      <Callout status="warning" title="安全恢复" description={route.code === 'requiredConfigMissing' ? '完成插件设置后重新准备。' : route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '安装或升级兼容的 Skills CLI 后重新检查。' : '返回修改选择，或修复来源内容后重新检查。'} />
-      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
-      {showTechnical ? <TechnicalDetails>
-        <StaticRow title={route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '兼容版本：Skills CLI >=1.5.23 <2.0.0' : `诊断代码：${route.diagnosticCode}`} compact />
-      </TechnicalDetails> : <StaticRow title="d 查看脱敏诊断" status="muted" compact />}
+      <DiagnosticSummary diagnostic={diagnostic} technical={showTechnical} compact={policy.mode === 'compact'} />
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={blockerActionViewport.offset} limit={blockerActionViewport.limit} />
     </Box>;
   } else if (route.name === 'pluginDependencies' && plugin) {
     const overview = dependencyOverview(plugin);
@@ -2262,6 +2363,10 @@ export function ConsoleAppV4(props: {
           && candidate.platform === route.platform
           && candidate.scope === placement.scope)
       : undefined;
+    const sourceIssue = plugin.aggregateStatus === 'unavailable'
+      ? props.controller.listUserIssues().find((candidate) =>
+          candidate.entity.kind === 'source' && candidate.sourceId === plugin.sourceId)
+      : undefined;
     const platformAction = (action: PluginMenuAction): ActionItem => {
       if (action.id === 'sourceProblem') return { label: '查看来源问题', description: `${plugin.sourceId} 无可用缓存`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) };
       if (action.id === 'refreshSource') return { label: '重新检查状态', description: '不会修改现场内容', run: () => props.controller.refreshSource(plugin.sourceId) };
@@ -2287,10 +2392,18 @@ export function ConsoleAppV4(props: {
     };
     breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
     if (plugin.aggregateStatus === 'unavailable') {
+      const sourceOverview = props.controller.getSourceOverview(plugin.sourceId);
+      const diagnostic = sourceIssue?.diagnostic ?? sourceDiagnostic(
+        plugin.sourceId,
+        sourceOverview.health?.state ?? sourceOverview.source?.state,
+        sourceOverview.detail,
+      );
       title = `暂时无法管理 ${platformLabel(route.platform)}`;
-      description = '插件来源不可用，当前状态不能安全确认。';
+      description = '';
       actions = platformMenu.map(platformAction);
-      content = <Box flexDirection="column"><StatusCard status="error" title="来源不可用" description="插件设置保持不变" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      content = <Box flexDirection="column">{diagnostic
+        ? <DiagnosticSummary diagnostic={diagnostic} compact={policy.mode === 'compact'} />
+        : null}<SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (!placement || placement.state === 'notInstalled') {
       title = `尚未添加到 ${platformLabel(route.platform)}`;
       description = '此插件支持所列使用位置。';
@@ -2302,10 +2415,29 @@ export function ConsoleAppV4(props: {
       actions = platformMenu.map(platformAction);
       content = <SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} />;
     } else if (placement.health === 'error') {
+      const diagnostic = typedIssue?.diagnostic ?? {
+        severity: 'error' as const,
+        title: '状态检查失败',
+        userMessage: '平台状态检查失败，当前不能安全选择写操作。',
+        impact: [
+          { state: 'blocked' as const, message: '当前只提供只读操作。' },
+          { state: 'preserved' as const, message: '现有安装和已保存设置不会因本页自动改变。' },
+        ],
+        nextStep: '查看安全技术详情，然后重新检查当前状态。',
+        technical: {
+          code: 'targetStateError',
+          stage: 'read-platform-state',
+          context: [
+            { key: 'pluginId' as const, value: plugin.pluginId },
+            { key: 'platform' as const, value: route.platform },
+            { key: 'scope' as const, value: placement.scope },
+          ],
+        },
+      };
       title = `${platformLabel(route.platform)} 暂时不可管理`;
-      description = typedIssue?.explanation ?? '平台状态检查失败，当前不能安全选择写操作。';
+      description = '';
       actions = platformMenu.map(platformAction);
-      content = <Box flexDirection="column"><StatusCard status="error" title="状态检查失败" description="当前只提供只读操作" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      content = <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} compact={policy.mode === 'compact'} /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (placement.health === 'incomplete') {
       title = `${platformLabel(route.platform)} ${placement.health === 'incomplete' ? '安装不完整' : '暂时不可用'}`;
       description = '缺少一项必要内容，插件可能无法稳定启动。';
@@ -2486,20 +2618,19 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'configUnavailable' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;
     context = '暂时不可编辑';
-    title = '暂时无法编辑设置';
-    description = '当前无法取得可信的字段定义，因此不能验证新值。';
+    const diagnostic = configUnavailableDiagnostic(route);
+    title = diagnostic.title;
+    description = '';
     actions = [
       { label: '重新检查来源', description: '刷新当前来源后重新读取可信定义', run: async () => {
         await props.controller.refreshSource(plugin.sourceId);
         setConfigLoadKey((value) => value + 1);
         props.controller.replace({ name: 'configFields', pluginId: plugin.pluginId, layer: route.layer ?? { scope: 'user', projectLayer: 'shared' } });
       } },
-      ...(configResetAvailability?.sourceIdentityPresent
-        ? [{ label: '技术详情', description: '查看可信身份和设置层摘要', run: () => setShowTechnical((value) => !value) }]
-        : []),
+      { label: showTechnical ? '返回问题摘要' : '技术详情', description: '查看脱敏错误代码和阶段', run: () => setShowTechnical((value) => !value) },
       { label: '返回', run: back },
     ];
-    content = <Box flexDirection="column"><Callout status="error" title="Manifest 或来源不可用" description="已保存的设置保持不变。恢复来源后才能编辑或重置。" />{showTechnical && configResetAvailability?.sourceIdentityPresent ? <TechnicalDetails><Text>来源身份：{configResetAvailability.sourceIdentity}</Text><Text>设置摘要：{configResetAvailability.storeDigest}</Text></TechnicalDetails> : null}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} technical={showTechnical} compact={policy.mode === 'compact'} /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceList') {
     breadcrumb = '插件来源';
     title = '插件来源';
@@ -2533,28 +2664,63 @@ export function ConsoleAppV4(props: {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
     const state = overview.health?.state ?? overview.source?.state;
+    const diagnostic = sourceDiagnostic(route.sourceId, state, detail);
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
-    description = state === 'cache' || state === 'degraded' ? '当前使用已缓存的 Catalog 数据。'
-      : state === 'unavailable' ? '当前无法读取这个来源。' : '来源状态可用。';
+    description = diagnostic ? '' : '来源状态可用。';
     help = '↑↓ 移动 · Enter 选择 · r 重新检查 · Esc 返回';
-    actions = [
-      { label: '重新检查来源', description: '读取远端并更新缓存', run: () => props.controller.refreshSource(route.sourceId) },
-      { label: '编辑来源…', description: 'ID 与类型创建后不可修改', run: () => go({ name: 'sourceEdit', sourceId: route.sourceId }) },
-      { label: '设为主来源…', description: '只改变默认 marketplace', disabled: detail?.primary ? '当前已经是主来源' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'setPrimary', sourceId: route.sourceId, changes: [{ title: '主来源', before: snapshot.viewModel?.sourceTabs.find((source) => source.primary)?.id, after: route.sourceId }] }) },
-      { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
-      { label: '技术详情', description: '只读身份与解析证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
-    ];
+    actions = diagnostic
+      ? [
+          { label: '重新检查来源', description: '读取远端并验证可用数据', run: () => props.controller.refreshSource(route.sourceId) },
+          ...(state === 'degraded' ? [{
+            label: '继续使用缓存',
+            description: '浏览匹配且已验证的缓存数据',
+            run: () => go({ name: 'pluginList', mode: 'browse', sourceId: route.sourceId }),
+          }] : []),
+          { label: '编辑来源…', description: '检查 URL、路径或 ref', run: () => go({ name: 'sourceEdit', sourceId: route.sourceId }) },
+          { label: '设为主来源…', description: '只改变默认 marketplace', disabled: detail?.primary ? '当前已经是主来源' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'setPrimary', sourceId: route.sourceId, changes: [{ title: '主来源', before: snapshot.viewModel?.sourceTabs.find((source) => source.primary)?.id, after: route.sourceId }] }) },
+          { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
+          { label: '技术详情', description: '查看脱敏错误代码和解析证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
+        ]
+      : [
+          { label: '重新检查来源', description: '读取远端并更新缓存', run: () => props.controller.refreshSource(route.sourceId) },
+          { label: '编辑来源…', description: 'ID 与类型创建后不可修改', run: () => go({ name: 'sourceEdit', sourceId: route.sourceId }) },
+          { label: '设为主来源…', description: '只改变默认 marketplace', disabled: detail?.primary ? '当前已经是主来源' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'setPrimary', sourceId: route.sourceId, changes: [{ title: '主来源', before: snapshot.viewModel?.sourceTabs.find((source) => source.primary)?.id, after: route.sourceId }] }) },
+          { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
+          { label: '技术详情', description: '只读身份与解析证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
+        ];
     const sourceActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 6));
-    content = <Box flexDirection="column"><StatusCard status={state === 'unavailable' ? 'error' : state === 'cache' || state === 'degraded' ? 'warning' : 'success'} title={state === 'checking' ? '正在检查' : state === 'unavailable' ? '无法读取' : state === 'cache' || state === 'degraded' ? '使用缓存' : '可用'} /><SectionCard title="来源配置"><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} /><StaticRow title="插件" meta={`${detail?.pluginCount ?? 0} 个`} />{policy.mode === 'compact' ? null : <><StaticRow title="版本选择" meta={detail?.type === 'path' ? '本地目录' : detail?.refPolicy === 'explicit' ? '固定 Git 引用' : '跟随 AW 版本通道'} />{detail?.explicitRef ? <StaticRow title="引用" meta={detail.explicitRef} /> : null}</>}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
+    content = <Box flexDirection="column">{diagnostic
+      ? <DiagnosticSummary diagnostic={diagnostic} compact={policy.mode === 'compact'} />
+      : <><StatusCard status={state === 'checking' ? 'warning' : 'success'} title={state === 'checking' ? '正在检查' : '可用'} /><SectionCard title="来源配置"><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} /><StaticRow title="插件" meta={`${detail?.pluginCount ?? 0} 个`} />{policy.mode === 'compact' ? null : <><StaticRow title="版本选择" meta={detail?.type === 'path' ? '本地目录' : detail?.refPolicy === 'explicit' ? '固定 Git 引用' : '跟随 AW 版本通道'} />{detail?.explicitRef ? <StaticRow title="引用" meta={detail.explicitRef} /> : null}</>}</SectionCard></>}
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
   } else if (route.name === 'sourceTechnical') {
-    const detail = props.controller.getSourceOverview(route.sourceId).detail;
+    const overview = props.controller.getSourceOverview(route.sourceId);
+    const detail = overview.detail;
+    const state = overview.health?.state ?? overview.source?.state;
+    const diagnostic = sourceDiagnostic(route.sourceId, state, detail) ?? {
+      severity: 'warning' as const,
+      title: '来源解析详情',
+      userMessage: '来源当前可用。',
+      impact: [{ state: 'preserved' as const, message: '当前来源状态没有阻止操作。' }],
+      nextStep: '返回来源详情。',
+      technical: {
+        code: 'catalogSourceReady',
+        stage: 'resolve-source',
+        sourceId: route.sourceId,
+        ...(detail?.requestedRef ? { requestedRef: detail.requestedRef } : {}),
+        ...(detail?.resolvedCommit ? { resolvedCommit: detail.resolvedCommit } : {}),
+        ...(detail?.freshness ? { context: [{ key: 'freshness' as const, value: detail.freshness }] } : {}),
+      },
+    };
     breadcrumb = `插件来源 / ${route.sourceId} / 技术详情`;
     context = '只读';
-    title = '来源身份与解析详情';
-    description = '用于诊断和安全审查；不显示认证信息或绝对路径。';
-    content = <TechnicalDetails><StaticRow title="sourceId" meta={route.sourceId} /><StaticRow title="sourceIdentity" meta={detail?.sourceIdentity ?? '不可用'} /><StaticRow title="requestedRef" meta={detail?.requestedRef ?? '不可用'} />{detail?.resolvedCommit ? <StaticRow title="resolvedCommit" meta={detail.resolvedCommit} /> : null}<StaticRow title="freshness" meta={detail?.freshness ?? '不可用'} /><StaticRow title="configDigest" meta={detail?.configDigest ?? '不可用'} /></TechnicalDetails>;
+    title = '来源技术诊断';
+    description = '';
+    help = 'Enter 返回 · Esc 返回';
+    actions = [{ label: '返回来源详情', run: back }];
+    content = <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} technical compact={policy.mode === 'compact'} /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceAdd' && sourceDraft?.owner === route.owner) {
     breadcrumb = sourceDraft.mode === 'add' ? '插件来源 / 添加' : `插件来源 / ${sourceDraft.sourceId} / 编辑`;
     const stepLabel = { type: '第 1 步，共 6 步', id: '第 2 步，共 6 步', location: '第 3 步，共 6 步', refPolicy: '第 4 步，共 6 步', ref: '第 5 步，共 6 步', subdir: '可选高级步骤' }[route.step];
@@ -2670,9 +2836,9 @@ export function ConsoleAppV4(props: {
       }
       else setShowTechnical((value) => !value);
     };
-    const issueHasTechnicalDetails = issue.technicalDetails.length > 0 || issue.category === 'legacyState';
+    const issueHasTechnicalDetails = Boolean(issue.diagnostic.technical);
     actions = issue.actions.filter((entry) => entry.id !== 'viewTechnical' || issueHasTechnicalDetails).map((entry) => ({
-      label: entry.label,
+      label: entry.id === 'viewTechnical' && showTechnical ? '返回问题摘要' : entry.label,
       description: entry.description,
       status: entry.id === 'remove'
         || entry.id === 'keepUserScope' || entry.id === 'keepProjectScope' ? 'error' as const : undefined,
@@ -2680,10 +2846,11 @@ export function ConsoleAppV4(props: {
     }));
     const issuePlugin = issue.pluginId ? props.controller.getPluginOverview(issue.pluginId) : undefined;
     const issueOverview = issue.pluginId ? props.controller.getPluginDependencyOverview(issue.pluginId) : undefined;
-    const manualMigration = issue.category === 'legacyState' && showTechnical;
-    const issueTechnicalDetails = showTechnical
-      ? <IssueTechnicalDetails details={issue.technicalDetails} compact={policy.mode === 'compact'} />
-      : null;
+    const issueDiagnosticSummary = <DiagnosticSummary
+      diagnostic={issue.diagnostic}
+      technical={showTechnical}
+      compact={policy.mode === 'compact' || issue.category.startsWith('dependency')}
+    />;
     const issueActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(6));
     const compactTechnicalActionViewport = policy.mode === 'compact' && showTechnical
       ? {
@@ -2705,7 +2872,7 @@ export function ConsoleAppV4(props: {
       const dependencyBlockedViewport = policy.mode === 'compact' && showTechnical
         ? { offset: Math.min(Math.max(0, focus - 1), Math.max(0, actions.length - 2)), limit: 2 }
         : actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(4));
-      content = <Box flexDirection="column"><Callout status="error" title={`${blockingDependents.length} 个已安装插件仍在使用`} />{showTechnical ? null : <SectionCard title="使用这个依赖的插件">{blockingDependents.map((dependent) => <StaticRow key={dependent.pluginId} title={dependent.displayName} meta={dependentTargetLabel(dependent)} />)}</SectionCard>}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={dependencyBlockedViewport.offset} limit={dependencyBlockedViewport.limit} />{issueTechnicalDetails}</Box>;
+      content = <Box flexDirection="column">{issueDiagnosticSummary}{showTechnical ? null : <SectionCard title="使用这个依赖的插件">{blockingDependents.map((dependent) => <StaticRow key={dependent.pluginId} title={dependent.displayName} meta={dependentTargetLabel(dependent)} />)}</SectionCard>}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={dependencyBlockedViewport.offset} limit={dependencyBlockedViewport.limit} /></Box>;
     } else if ((issue.category === 'dependencyMissing' || issue.category === 'dependencyNotReady') && issuePlugin) {
       const dependencyName = issue.dependencyPluginId
         ? props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId
@@ -2715,13 +2882,12 @@ export function ConsoleAppV4(props: {
         issue.dependencyScope ? scopeLabel(issue.dependencyScope) : undefined,
       ].filter((entry): entry is string => Boolean(entry)).join(' · ');
       content = <Box flexDirection="column">
-        <StatusCard status="warning" title={dependencyName} description={issue.explanation}>
+        {issueDiagnosticSummary}
+        {!showTechnical && policy.mode !== 'compact' ? <StatusCard status="warning" title={dependencyName} description="受影响的依赖目标">
           <StaticRow title={issuePlugin.displayName} description="受影响的根插件" meta={issue.platform && issue.scope ? `${platformLabel(issue.platform)} · ${scopeLabel(issue.scope)}` : undefined} />
           {dependencyTarget ? <StaticRow title="依赖目标" meta={dependencyTarget} status="warning" /> : null}
-        </StatusCard>
-        {showTechnical ? null : <SectionCard title="影响范围">{issue.impact.map((line) => <StaticRow key={line} title={line} compact={policy.mode === 'compact'} />)}</SectionCard>}
+        </StatusCard> : null}
         <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} {...compactTechnicalActionViewport} />
-        {issueTechnicalDetails}
       </Box>;
     } else if (issue.category === 'dependencyTargetUnsupported' && issuePlugin) {
       const issueScope = issue.scope ?? scope;
@@ -2750,7 +2916,7 @@ export function ConsoleAppV4(props: {
       const unsupportedTargetViewport = policy.mode === 'compact' && showTechnical
         ? { offset: Math.min(Math.max(0, focus - 1), Math.max(0, actions.length - 2)), limit: 2 }
         : actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(6));
-      content = <Box flexDirection="column"><Callout status="error" title={issue.dependencyPluginId ? `${props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId} 不支持所选目标平台` : '目标平台不兼容'} description="可用目标平台仍保持可选，不兼容目标平台不会进入确认页。" /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={unsupportedTargetViewport.offset} limit={unsupportedTargetViewport.limit} />{issueTechnicalDetails}</Box>;
+      content = <Box flexDirection="column">{issueDiagnosticSummary}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={unsupportedTargetViewport.offset} limit={unsupportedTargetViewport.limit} /></Box>;
     } else if (issue.category === 'dependencyGraphInvalid') {
       title = `暂时无法添加 ${issuePlugin?.displayName ?? issue.pluginId ?? '插件'}`;
       description = '来源中的依赖关系无效或安装记录不能安全验证。没有修改任何安装。';
@@ -2761,23 +2927,17 @@ export function ConsoleAppV4(props: {
           ...actions,
         ];
       }
-      content = <Box flexDirection="column"><Callout status="error" title={issue.rootCode ?? issue.category} description={issue.explanation} /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />{issueTechnicalDetails ?? <StaticRow title="d 查看安全错误代码" status="muted" />}</Box>;
+      content = <Box flexDirection="column">{issueDiagnosticSummary}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
       const sourceMissingCleanup = issue.category === 'sourceMissing' && issue.pluginId && issue.platform && issue.scope
         ? `aw cleanup ${issue.pluginId} --platform ${issue.platform} --scope ${issue.scope}`
         : undefined;
-      content = manualMigration
-        ? <Box flexDirection="column">
-            <TechnicalDetails title="手动处理说明">
-              <StaticRow title="1. 不自动迁移旧版状态。" />
-              <StaticRow title="2. 运行 aw status --json，记录公开错误 code。" />
-              <StaticRow title="3. 备份相关 AW 配置。" />
-              <StaticRow title="4. 按技术详情使用受支持命令或人工处理。" />
-              <StaticRow title="5. 再次运行状态检查。" />
-            </TechnicalDetails>
-            <SemanticRows actions={actions} focus={focus} kind="action" compact offset={focus} limit={1} />
-          </Box>
-        : <Box flexDirection="column"><SectionCard title="影响范围">{issue.impact.map((line) => <StaticRow key={line} title={line} />)}{sourceMissingCleanup ? <><Text color={tuiTheme.statusColors.warning}>可清理可信的 AW 现场：</Text><Text>{sourceMissingCleanup}</Text><Text color={tuiTheme.statusColors.warning}>如需跳过 dependent 保护，在命令末尾添加 --force。</Text></> : null}{issue.category === 'sourceIdentityChanged' ? <Callout status="warning" title="来源身份已变化" description="请确认来源变更，或恢复原 identity；当前不自动迁移或清理。" /> : null}{issue.placements ? <StaticRow title="位置" meta={issue.placements.map(scopeLabel).join('、')} /> : null}{issue.requiredFields ? <StaticRow title="字段" meta={issue.requiredFields.map((field) => field.title).join('、')} /> : null}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={issueActionViewport.offset} limit={issueActionViewport.limit} />{issueTechnicalDetails ?? (issueHasTechnicalDetails ? <StaticRow title="d 或“技术详情”查看安全错误代码" status="muted" /> : null)}</Box>;
+      const hasRecoveryEvidence = sourceMissingCleanup || issue.category === 'sourceIdentityChanged'
+        || issue.placements || issue.requiredFields;
+      const recoveryRows = <>{sourceMissingCleanup ? <><Text color={tuiTheme.statusColors.warning}>{sourceMissingCleanup}</Text><Text color={tuiTheme.statusColors.warning}>需要时可在命令末尾添加 --force。</Text></> : null}{issue.category === 'sourceIdentityChanged' ? <StaticRow title="来源身份已变化；请确认变更或恢复原来源。" status="warning" compact /> : null}{issue.placements ? <StaticRow title="位置" meta={issue.placements.map(scopeLabel).join('、')} compact /> : null}{issue.requiredFields ? <StaticRow title="字段" meta={sanitizeDiagnosticText(issue.requiredFields.map((field) => field.title).join('、'))} compact /> : null}</>;
+      content = <Box flexDirection="column">{issueDiagnosticSummary}{!showTechnical && hasRecoveryEvidence
+        ? policy.mode === 'compact' ? recoveryRows : <SectionCard title="恢复证据">{recoveryRows}</SectionCard>
+        : null}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={issueActionViewport.offset} limit={issueActionViewport.limit} /></Box>;
     }
   } else if (route.name === 'reviewPreparing' && snapshot.reviewPreparation) {
     const preparation = snapshot.reviewPreparation;

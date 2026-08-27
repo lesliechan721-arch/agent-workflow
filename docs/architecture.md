@@ -150,6 +150,12 @@ target health 只表示当前 live 组件是否完整，不表示 Catalog 版本
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user、project shared 或 project local 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
 
+### TUI 诊断投影与脱敏边界
+
+TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v4 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；来源使用匹配缓存和来源完全不可用必须使用不同影响与动作。
+
+技术层只接受白名单结构字段：安全错误 code、可选 stage、sourceId、requestedRef、resolvedCommit、last-good 证据，以及有限的 platform、scope、plugin、dependency、field、freshness 或 compatibility context。技术层在显示前再次执行通用凭据脱敏、URL userinfo 和敏感 query 清理、已知 home、cwd、临时目录和来源路径替换，并截断文本。任意 native stderr、未知 `Error.cause`、内部绝对路径、digest、credential 或未证明安全的 status message 不进入诊断 ViewModel；不能证明 cause 安全时省略 cause，只保留 code、stage 和白名单 context。
+
 ## Platform Boundaries
 
 - 只删除可证明属于 AW 的 marker、managed block、artifact 或 namespaced 组件。

@@ -60,6 +60,8 @@ export type TuiRoute =
       name: 'configUnavailable';
       pluginId: string;
       layer?: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      diagnosticCode?: string;
+      diagnosticStage?: string;
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
