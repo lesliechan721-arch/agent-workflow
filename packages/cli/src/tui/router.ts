@@ -69,6 +69,7 @@ export type TuiRoute =
   | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
+  | { name: 'reviewPreparing'; preparationId: string }
   | { name: 'review'; operationId: string }
   | { name: 'progress'; operationId: string }
   | { name: 'result'; operationId: string };

@@ -668,6 +668,7 @@ export function resolveConsoleV4ScreenId(
     if (placement.state === 'installed' && placement.health === 'ready') return 'P14';
     return 'P16';
   }
+  if (route.name === 'reviewPreparing') return 'P07';
   const dependencyOperation = snapshot.activeReview?.operationKind === 'pluginWrite'
     && Boolean(snapshot.activeReview.changes.some((change) => change.group));
   if (route.name === 'review' && dependencyOperation) {
@@ -790,6 +791,7 @@ export function ConsoleAppV4(props: {
   const [preferredTarget, setPreferredTarget] = useState<PlatformName>();
   const [technicalRouteKey, setTechnicalRouteKey] = useState<string>();
   const [exitAfterBusy, setExitAfterBusy] = useState(false);
+  const [exitAfterPreparation, setExitAfterPreparation] = useState(false);
   const [, setClockTick] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [configPage, setConfigPage] = useState<ConfigPageViewModel>();
@@ -825,6 +827,8 @@ export function ConsoleAppV4(props: {
     ? props.controller.listUserIssues().find((entry) => entry.issueId === route.issueId)
     : undefined;
   const busy = route.name === 'progress';
+  const preparationRunning = route.name === 'reviewPreparing'
+    && snapshot.reviewPreparation?.state === 'running';
   useEffect(() => {
     if (!busy) return;
     const timer = setInterval(() => setClockTick((value) => value + 1), 1_000);
@@ -859,6 +863,13 @@ export function ConsoleAppV4(props: {
         : state === 'stale' ? 'stale' : 'completed',
     });
   }, [exitAfterBusy, snapshot.result]);
+  useEffect(() => {
+    if (!exitAfterPreparation || preparationRunning) return;
+    requestExit({
+      code: snapshot.reviewPreparation?.state === 'failed' ? 1 : 0,
+      reason: snapshot.reviewPreparation?.state === 'failed' ? 'blocked' : 'user',
+    });
+  }, [exitAfterPreparation, preparationRunning, snapshot.reviewPreparation?.state]);
   useEffect(() => {
     if (route.name !== 'result'
       || !snapshot.result
@@ -1157,11 +1168,18 @@ export function ConsoleAppV4(props: {
     setShowTechnical(false);
     setActionError(undefined);
   };
-  const beginReview = async (intent: OperationIntent): Promise<void> => {
+  const beginReview = (intent: OperationIntent): void => {
     const underlyingResultRoute = route.name === 'result' && snapshot.result && 'returnRoute' in snapshot.result
       ? snapshot.result.returnRoute
       : undefined;
-    await props.controller.buildOperationReview(intent, underlyingResultRoute);
+    props.controller.updatePageContext({
+      focusIndex: focus,
+      scrollOffset,
+      query,
+      installFilter,
+      sourceTabId: route.name === 'pluginList' ? route.sourceId ?? 'all' : undefined,
+    });
+    props.controller.startReviewPreparation(intent, underlyingResultRoute);
     setFocus(0);
     setScrollOffset(0);
   };
@@ -1185,10 +1203,11 @@ export function ConsoleAppV4(props: {
       }
     }
   };
-  const beginPortableReview = async (pluginId: string, selectedScope: Scope): Promise<void> => {
+  const beginPortableReview = (pluginId: string, selectedScope: Scope): void => {
     props.controller.setPortableScope(selectedScope);
     try {
-      await props.controller.buildPortableInstallReview();
+      props.controller.updatePageContext({ focusIndex: focus, scrollOffset });
+      props.controller.startPortableInstallReviewPreparation();
       setFocus(0);
       setActionError(undefined);
     } catch (error) {
@@ -2760,6 +2779,49 @@ export function ConsoleAppV4(props: {
           </Box>
         : <Box flexDirection="column"><SectionCard title="影响范围">{issue.impact.map((line) => <StaticRow key={line} title={line} />)}{sourceMissingCleanup ? <><Text color={tuiTheme.statusColors.warning}>可清理可信的 AW 现场：</Text><Text>{sourceMissingCleanup}</Text><Text color={tuiTheme.statusColors.warning}>如需跳过 dependent 保护，在命令末尾添加 --force。</Text></> : null}{issue.category === 'sourceIdentityChanged' ? <Callout status="warning" title="来源身份已变化" description="请确认来源变更，或恢复原 identity；当前不自动迁移或清理。" /> : null}{issue.placements ? <StaticRow title="位置" meta={issue.placements.map(scopeLabel).join('、')} /> : null}{issue.requiredFields ? <StaticRow title="字段" meta={issue.requiredFields.map((field) => field.title).join('、')} /> : null}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={issueActionViewport.offset} limit={issueActionViewport.limit} />{issueTechnicalDetails ?? (issueHasTechnicalDetails ? <StaticRow title="d 或“技术详情”查看安全错误代码" status="muted" /> : null)}</Box>;
     }
+  } else if (route.name === 'reviewPreparing' && snapshot.reviewPreparation) {
+    const preparation = snapshot.reviewPreparation;
+    const labels = preparation.intent.kind === 'portableInstall'
+      ? ['通用 Skills / 安装', '正在准备通用 Skills 安装确认']
+      : preparation.intent.kind === 'configSave' || preparation.intent.kind === 'configReset'
+        ? ['设置', '正在准备设置确认']
+        : preparation.intent.kind === 'sourceMutation'
+          ? ['插件来源', '正在准备来源变更确认']
+          : ['插件操作', '正在准备插件操作确认'];
+    breadcrumb = `${labels[0]} / 准备确认`;
+    context = '只读';
+    title = preparation.state === 'failed' ? '无法准备确认信息' : labels[1]!;
+    description = preparation.state === 'failed'
+      ? preparation.message ?? '无法准备确认信息。请返回检查选择，或重试。'
+      : '这个阶段只读取和验证状态，不会修改任何安装或设置。';
+    help = preparation.state === 'running'
+      ? 'Esc 取消 · Ctrl-C 完成后退出'
+      : '↑↓ 移动 · Enter 选择 · Esc 返回';
+    actions = preparation.state === 'failed' ? [
+      { label: '重试', description: '重新读取和验证当前状态', run: () => {
+        props.controller.retryReviewPreparation();
+        setFocus(0);
+        setScrollOffset(0);
+      } },
+      { label: '返回修改', run: back },
+    ] : [];
+    const stageState = (state: typeof preparation.stages[number]['state']): 'pending' | 'active' | 'complete' | 'error' =>
+      state === 'running' ? 'active' : state === 'completed' ? 'complete' : state === 'failed' ? 'error' : 'pending';
+    content = <Box flexDirection="column">
+      <SectionCard title="准备步骤">
+        {preparation.stages.map((stage) => <ProgressRow
+          key={stage.id}
+          title={stage.label}
+          state={stageState(stage.state)}
+          meta={stage.state === 'running' ? '进行中' : stage.state === 'completed' ? '完成' : stage.state === 'failed' ? '失败' : '未开始'}
+          compact={policy.mode === 'compact'}
+        />)}
+      </SectionCard>
+      {preparation.currentLabel ? <StaticRow title="当前" meta={preparation.currentLabel} status="muted" /> : null}
+      {preparation.code && preparation.message
+        ? <Callout status="error" title={preparation.code} description={preparation.message} /> : null}
+      {actions.length > 0 ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /> : null}
+    </Box>;
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
     breadcrumb = `${review.subject.name} / ${review.title}`;
@@ -3405,6 +3467,19 @@ export function ConsoleAppV4(props: {
   };
 
   useInput((input, key) => {
+    if (!overlay && route.name === 'reviewPreparing' && snapshot.reviewPreparation?.state === 'failed'
+      && (key.escape || input.toLowerCase() === 'b')) {
+      back();
+      return;
+    }
+    if (preparationRunning) {
+      if (key.escape || input.toLowerCase() === 'b') {
+        back();
+      } else if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
+        setExitAfterPreparation(true);
+      }
+      return;
+    }
     if (busy) {
       if (overlay === 'help') {
         if (key.escape || key.return || input.toLowerCase() === 'b' || input === '?') {

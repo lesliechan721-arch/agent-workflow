@@ -169,6 +169,25 @@ export interface OperationReviewModel {
   destructive?: boolean;
 }
 
+export type ReviewPreparationStageId = 'validate' | 'status' | 'catalog' | 'inventory'
+  | 'dependencyPlan' | 'config' | 'portable' | 'evidence';
+
+export interface ReviewPreparationStage {
+  id: ReviewPreparationStageId;
+  label: string;
+  state: 'pending' | 'running' | 'completed' | 'failed';
+}
+
+export interface ReviewPreparationSnapshot {
+  id: string;
+  intent: OperationIntent;
+  state: 'running' | 'failed';
+  stages: ReviewPreparationStage[];
+  currentLabel: string;
+  code?: 'reviewPreparationFailed';
+  message?: string;
+}
+
 export type OperationExecuteResult =
   | {
       state: 'succeeded';
@@ -336,6 +355,7 @@ export interface TuiControllerSnapshot {
   progress: RebuildProgressSnapshot;
   progressTargets: PluginOperationProgressLine[];
   activeReview?: OperationReviewModel;
+  reviewPreparation?: ReviewPreparationSnapshot;
   result?: OperationExecuteResult;
   loadError?: { code: string; message: string };
   portableDraft?: PortableSkillSelectionViewModel & {
@@ -350,6 +370,14 @@ interface ReviewTicket {
   evidence: OperationEvidence;
   review: OperationReviewModel;
   returnRoute: TuiRoute;
+}
+
+interface ActiveReviewPreparation {
+  snapshot: ReviewPreparationSnapshot;
+  key: string;
+  returnRoute: TuiRoute;
+  abort: AbortController;
+  token: number;
 }
 
 export class TuiOperationBlockedError extends Error {
@@ -718,6 +746,8 @@ export class TuiController {
   #progress: RebuildProgressSnapshot = { messages: [] };
   #progressTargets: PluginOperationProgressLine[] = [];
   #activeReview?: OperationReviewModel;
+  #reviewPreparation?: ActiveReviewPreparation;
+  #reviewPreparationToken = 0;
   #result?: OperationExecuteResult;
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -773,6 +803,7 @@ export class TuiController {
       progress: this.#progress,
       progressTargets: this.#progressTargets,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
+      ...(this.#reviewPreparation ? { reviewPreparation: this.#reviewPreparation.snapshot } : {}),
       ...(this.#result ? { result: this.#result } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
       ...(this.#portableDraft ? { portableDraft: this.#portableDraft } : {}),
@@ -1074,6 +1105,7 @@ export class TuiController {
   }
 
   push(route: TuiRoute, context?: TuiPageContext): void {
+    this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#discardPortableDraftForRoute(route);
     this.#router.push(route, context);
@@ -1220,25 +1252,8 @@ export class TuiController {
   }
 
   async buildPortableInstallReview(): Promise<OperationReviewModel> {
-    const draft = this.#portableDraft;
-    if (!draft?.canContinue) {
-      throw new TuiOperationBlockedError('portableNoSkillsSelected', '至少选择一个 Skill。');
-    }
-    const unavailable = draft.candidates.filter((candidate) =>
-      candidate.selected && !candidate.availableScopes.includes(draft.scope));
-    if (unavailable.length > 0) {
-      throw new TuiOperationBlockedError(
-        'portableScopeUnavailable',
-        `所选范围不提供这些 Skill：${unavailable.map((candidate) => candidate.name).join(', ')}。请返回 Skill 选择或更改范围。`,
-      );
-    }
-    const intent: OperationIntent = {
-      kind: 'portableInstall',
-      pluginId: draft.pluginId,
-      scope: draft.scope,
-      selectedSkills: draft.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.name),
-      ...(draft.agentMode === 'explicit' ? { requestedAgents: draft.requestedAgents } : {}),
-    };
+    const intent = this.#portableInstallIntent();
+    const draft = this.#portableDraft!;
     const expectedRoute = this.#router.snapshot.current.route;
     return this.#runPortableRequest(`review:${JSON.stringify(intent)}`, async (signal, token) => {
       const evidence = await this.dependencies.captureEvidence(structuredClone(intent), signal);
@@ -1252,6 +1267,33 @@ export class TuiController {
     });
   }
 
+  #portableInstallIntent(): Extract<OperationIntent, { kind: 'portableInstall' }> {
+    const draft = this.#portableDraft;
+    if (!draft?.canContinue) {
+      throw new TuiOperationBlockedError('portableNoSkillsSelected', '至少选择一个 Skill。');
+    }
+    const unavailable = draft.candidates.filter((candidate) =>
+      candidate.selected && !candidate.availableScopes.includes(draft.scope));
+    if (unavailable.length > 0) {
+      throw new TuiOperationBlockedError(
+        'portableScopeUnavailable',
+        `所选范围不提供这些 Skill：${unavailable.map((candidate) => candidate.name).join(', ')}。请返回 Skill 选择或更改范围。`,
+      );
+    }
+    return {
+      kind: 'portableInstall',
+      pluginId: draft.pluginId,
+      scope: draft.scope,
+      selectedSkills: draft.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.name),
+      ...(draft.agentMode === 'explicit' ? { requestedAgents: draft.requestedAgents } : {}),
+    };
+  }
+
+  startPortableInstallReviewPreparation(): ReviewPreparationSnapshot {
+    const intent = this.#portableInstallIntent();
+    return this.startReviewPreparation(intent, this.#router.portableOrigin(intent.pluginId));
+  }
+
   discardPortableDraft(): void {
     this.#cancelPortableRequest();
     this.#portableDraft = undefined;
@@ -1259,6 +1301,7 @@ export class TuiController {
   }
 
   replace(route: TuiRoute, context?: TuiPageContext): void {
+    this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     const current = this.#router.snapshot.current.route;
     if (current.name === 'portableBlocker' && current.code === 'requiredConfigMissing'
@@ -1290,6 +1333,7 @@ export class TuiController {
   }
 
   back(): void {
+    this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     const route = this.#router.snapshot.current.route;
     if (route.name === 'review' && this.#activeReview?.operationId === route.operationId) {
@@ -1351,8 +1395,10 @@ export class TuiController {
       || route.name === 'portableAgentInput'
       || route.name === 'portableScope'
       || route.name === 'portableBlocker';
-    const portableOperationRoute = (route.name === 'review' || route.name === 'progress' || route.name === 'result')
-      && (this.#activeReview?.operationKind === 'portableInstall'
+    const portableOperationRoute = (route.name === 'reviewPreparing' || route.name === 'review'
+      || route.name === 'progress' || route.name === 'result')
+      && (this.#reviewPreparation?.snapshot.intent.kind === 'portableInstall'
+        || this.#activeReview?.operationKind === 'portableInstall'
         || this.#result?.operationKind === 'portableInstall');
     if (!portableRoute && !portableOperationRoute) {
       this.#cancelPortableRequest();
@@ -1615,17 +1661,7 @@ export class TuiController {
 
   async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
     try {
-      this.#assertIssueOrigin(intent);
-      if (intent.kind === 'pluginWrite'
-        && (intent.action === 'uninstall' || intent.action === 'cleanup')
-        && intent.force !== true
-        && (intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform])
-          .some((platform) => this.getBlockingDependents(intent.pluginId, platform, intent.scope).length > 0)) {
-        throw new TuiOperationBlockedError(
-          'dependencyStillRequired',
-          '仍有已安装插件依赖这个插件。请先查看完整依赖关系。',
-        );
-      }
+      this.#validateReviewIntent(intent);
       await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
       const evidence = await this.dependencies.captureEvidence(structuredClone(intent), this.#abort.signal);
       return this.#storeOperationReview(intent, evidence, 'push', returnRoute);
@@ -1634,6 +1670,130 @@ export class TuiController {
       await this.#logOperationError(error, code, intent);
       throw new TuiOperationBlockedError(code, '操作未建立。请检查当前设置后重试。');
     }
+  }
+
+  startReviewPreparation(intent: OperationIntent, returnRoute?: TuiRoute): ReviewPreparationSnapshot {
+    const inheritedReturnRoute = this.#reviewPreparation?.returnRoute;
+    const current = this.#router.snapshot.current.route;
+    const navigation = current.name === 'result' || current.name === 'reviewPreparing'
+      ? 'replace' : 'push';
+    const resolvedReturnRoute = returnRoute
+      ?? (current.name === 'reviewPreparing' ? inheritedReturnRoute : undefined)
+      ?? (current.name === 'result' && this.#result
+      && 'returnRoute' in this.#result && this.#result.returnRoute
+      ? this.#result.returnRoute
+      : current);
+    const normalizedReturnRoute = this.#normalizeRoute(resolvedReturnRoute);
+    const key = JSON.stringify(stableValue({ intent, returnRoute: normalizedReturnRoute }));
+    if (this.#reviewPreparation?.snapshot.state === 'running'
+      && this.#reviewPreparation.key === key) {
+      return cloneFrozen(this.#reviewPreparation.snapshot);
+    }
+    this.#cancelReviewPreparation();
+    const id = crypto.randomUUID();
+    const abort = new AbortController();
+    const token = ++this.#reviewPreparationToken;
+    const snapshot: ReviewPreparationSnapshot = {
+      id,
+      intent: structuredClone(intent),
+      state: 'running',
+      stages: [
+        { id: 'validate', label: '验证当前状态', state: 'running' },
+        { id: 'evidence', label: '准备确认信息', state: 'pending' },
+      ],
+      currentLabel: this.#reviewPreparationLabel(intent),
+    };
+    this.#reviewPreparation = {
+      snapshot,
+      key,
+      returnRoute: structuredClone(normalizedReturnRoute),
+      abort,
+      token,
+    };
+    this.#result = undefined;
+    this.#router[navigation]({ name: 'reviewPreparing', preparationId: id });
+    this.#publish();
+    queueMicrotask(() => void this.#runReviewPreparation(token));
+    return cloneFrozen(snapshot);
+  }
+
+  retryReviewPreparation(): ReviewPreparationSnapshot | undefined {
+    const preparation = this.#reviewPreparation;
+    if (!preparation || preparation.snapshot.state !== 'failed') return undefined;
+    return this.startReviewPreparation(preparation.snapshot.intent, preparation.returnRoute);
+  }
+
+  #validateReviewIntent(intent: OperationIntent): void {
+    this.#assertIssueOrigin(intent);
+    if (intent.kind === 'pluginWrite'
+      && (intent.action === 'uninstall' || intent.action === 'cleanup')
+      && intent.force !== true
+      && (intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform])
+        .some((platform) => this.getBlockingDependents(intent.pluginId, platform, intent.scope).length > 0)) {
+      throw new TuiOperationBlockedError(
+        'dependencyStillRequired',
+        '仍有已安装插件依赖这个插件。请先查看完整依赖关系。',
+      );
+    }
+  }
+
+  #reviewPreparationLabel(intent: OperationIntent): string {
+    if ('pluginId' in intent) {
+      return this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName
+        ?? pluginNameFromId(intent.pluginId);
+    }
+    return intent.sourceId;
+  }
+
+  #reviewPreparationIsCurrent(token: number): boolean {
+    const preparation = this.#reviewPreparation;
+    return Boolean(preparation && preparation.token === token
+      && !preparation.abort.signal.aborted
+      && !this.#disposed
+      && this.#router.snapshot.current.route.name === 'reviewPreparing'
+      && this.#router.snapshot.current.route.preparationId === preparation.snapshot.id);
+  }
+
+  async #runReviewPreparation(token: number): Promise<void> {
+    const preparation = this.#reviewPreparation;
+    if (!preparation || preparation.token !== token) return;
+    const intent = structuredClone(preparation.snapshot.intent);
+    const signal = AbortSignal.any([this.#abort.signal, preparation.abort.signal]);
+    try {
+      this.#validateReviewIntent(intent);
+      await this.dependencies.validateIntent?.(structuredClone(intent), signal);
+      if (!this.#reviewPreparationIsCurrent(token)) return;
+      preparation.snapshot.stages = [
+        { id: 'validate', label: '验证当前状态', state: 'completed' },
+        { id: 'evidence', label: '准备确认信息', state: 'running' },
+      ];
+      this.#publish();
+      const evidence = await this.dependencies.captureEvidence(structuredClone(intent), signal);
+      if (!this.#reviewPreparationIsCurrent(token)) return;
+      preparation.snapshot.stages[1] = {
+        id: 'evidence', label: '准备确认信息', state: 'completed',
+      };
+      const returnRoute = structuredClone(preparation.returnRoute);
+      this.#reviewPreparation = undefined;
+      this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
+    } catch (error) {
+      if (!this.#reviewPreparationIsCurrent(token)) return;
+      const active = this.#reviewPreparation!;
+      active.snapshot.state = 'failed';
+      active.snapshot.stages = active.snapshot.stages.map((stage) =>
+        stage.state === 'running' ? { ...stage, state: 'failed' } : stage);
+      active.snapshot.code = 'reviewPreparationFailed';
+      active.snapshot.message = '无法准备确认信息。请返回检查选择，或重试。';
+      this.#publish();
+      await this.#logOperationError(error, issueCode(error), intent);
+    }
+  }
+
+  #cancelReviewPreparation(): void {
+    if (!this.#reviewPreparation) return;
+    this.#reviewPreparationToken += 1;
+    this.#reviewPreparation.abort.abort();
+    this.#reviewPreparation = undefined;
   }
 
   async #logOperationError(error: unknown, code: string, intent: OperationIntent): Promise<void> {
@@ -2203,6 +2363,7 @@ export class TuiController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#abort.abort();
     this.#cancelSourceRefreshes();

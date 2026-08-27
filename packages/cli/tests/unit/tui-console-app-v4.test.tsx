@@ -991,6 +991,94 @@ describe('ConsoleAppV4', () => {
     }), expect.any(AbortSignal));
   });
 
+  it('mounts ReviewPreparing before deferred validation and lets Esc cancel without creating Review', async () => {
+    const validation = deferred<void>();
+    const captured = deferred<OperationEvidence>();
+    const executeIntent = vi.fn();
+    const value = controller({
+      validateIntent: vi.fn(() => validation.promise),
+      captureEvidence: vi.fn(() => captured.promise),
+      executeIntent,
+    });
+    value.push({ name: 'installTargets', pluginId: 'official/agent-lab' }, { focusIndex: 1 });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, '\r', '\u001B[B', '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('reviewPreparing');
+    expect(instance.lastFrame()).toContain('正在准备插件操作确认');
+    expect(instance.lastFrame()).toContain('● 验证当前状态');
+    expect(instance.lastFrame()).toContain('○ 准备确认信息');
+    expect(instance.lastFrame()).toContain('当前');
+    expect(instance.lastFrame()).toContain('Agent Lab');
+    expect(instance.lastFrame()).toContain('Esc 取消 · Ctrl-C 完成后退出');
+    expect(executeIntent).not.toHaveBeenCalled();
+
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await nextTurn(2);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'installTargets', pluginId: 'official/agent-lab' });
+    expect(value.snapshot.router.current.context).toEqual({
+      focusIndex: 2, scrollOffset: 0, query: '', installFilter: 'all', sourceTabId: undefined,
+    });
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    validation.resolve();
+    captured.resolve(evidence);
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('installTargets');
+    expect(value.snapshot.activeReview).toBeUndefined();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('keeps accepted Progress non-cancellable by Esc', async () => {
+    const execution = deferred<unknown>();
+    const value = controller({ executeIntent: vi.fn(() => execution.promise) });
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    });
+    void value.executeOperation(review.reviewToken);
+    await nextTurn(2);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await nextTurn(2);
+
+    expect(value.snapshot.router.current.route).toEqual({ name: 'progress', operationId: review.operationId });
+    expect(instance.lastFrame()).toContain('Ctrl-C 完成后退出');
+    execution.resolve({
+      overallState: 'succeeded',
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
+    await nextTurn(3);
+  });
+
+  it('renders a safe failed preparation with focused retry and Back actions', async () => {
+    const validateIntent = vi.fn()
+      .mockRejectedValueOnce(new Error('/Users/private/raw failure'))
+      .mockResolvedValueOnce(undefined);
+    const value = controller({ validateIntent });
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    value.startReviewPreparation({
+      kind: 'sourceMutation', action: 'setPrimary', sourceId: 'team-tools',
+    });
+    await nextTurn(2);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('无法准备确认信息');
+    expect(frame).toContain('reviewPreparationFailed');
+    expect(frame).toContain('› 重试');
+    expect(frame).toContain('返回修改');
+    expect(frame).not.toContain('/Users/private/raw failure');
+
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(validateIntent).toHaveBeenCalledTimes(2);
+  });
+
   it('automatically selects the only compatible target platform after the scope choice', async () => {
     const loaded = loadResult();
     const summary = loaded.pluginSummaries.find((entry) => entry.pluginId === 'official/agent-lab')!;
