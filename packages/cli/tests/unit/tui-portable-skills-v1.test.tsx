@@ -351,6 +351,19 @@ describe('Portable Skills TUI V1', () => {
     }))).toEqual({ code: 'portableScopeUnavailable', diagnosticCode: 'portableScopeUnavailable' });
   });
 
+  it('keeps Space as the Portable Skill toggle', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
+    await send(instance, ' ');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(2);
+    expect(instance.lastFrame()).toContain('◇ author-skill');
+  });
+
   it('advertises only the manifest capability before entry, then selects candidates and executes the reviewed subset', async () => {
     const { value, capture } = portableController();
     await value.load();

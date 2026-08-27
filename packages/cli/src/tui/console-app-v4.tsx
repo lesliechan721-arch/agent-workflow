@@ -149,9 +149,6 @@ function helpRowsForRoute(
     rows.push(['Space', '切换当前 Skill']);
     rows.push(['a', '全选 Skills']);
   }
-  if (route.name === 'installTargets' && route.view !== 'blocked') {
-    rows.push(['Space', '切换目标平台选择']);
-  }
   if (route.name === 'configFields' && route.layer.scope !== 'effective') {
     rows.push(['s', '保存设置']);
     rows.push(['u', '恢复当前字段继承']);
@@ -1050,7 +1047,9 @@ export function ConsoleAppV4(props: {
       && configResetAvailability?.sourceIdentityPresent)
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
       && snapshot.result.operationKind === 'portableInstall');
-  const canOpenHelp = !tooSmall && !isCharacterInputMode(route, searchMode);
+  const canOpenHelp = !tooSmall
+    && !isCharacterInputMode(route, searchMode)
+    && !(route.name === 'installTargets' && route.view !== 'blocked');
   useEffect(() => {
     props.onScreenChange?.(screenId);
   }, [props.onScreenChange, screenId]);
@@ -2146,7 +2145,7 @@ export function ConsoleAppV4(props: {
       ];
       content = <Box flexDirection="column"><StatusCard status="warning" title="所选目标平台不可用">{choices.map((choice) => <StaticRow key={choice.platform} title={platformLabel(choice.platform)} description={choice.disabled ? `不可选 · ${choice.disabled}` : '不可选'} status="muted" compact={policy.mode === 'compact'} />)}</StatusCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
-      actions = choices.map((choice) => ({
+      const targetActions = choices.map((choice) => ({
         label: platformLabel(choice.platform),
         selected: validSelectedTargets.includes(choice.platform),
         description: choice.disabled ?? '当前未安装，支持所选位置',
@@ -2163,8 +2162,37 @@ export function ConsoleAppV4(props: {
           });
         },
       }));
-      help = '↑↓ 移动 · Space 切换 · Enter 继续 · Esc 返回';
-      content = <Box flexDirection="column"><SemanticRows actions={actions} focus={focus} kind="toggle" compact={policy.mode === 'compact'} />{hasDependencies ? <Callout title="目标平台兼容性" description="不兼容的目标平台不能选择；请查看依赖关系了解原因。" /> : null}<Callout status={validSelectedTargets.length > 0 ? 'info' : 'warning'} title={validSelectedTargets.length > 0 ? 'Enter 继续' : '至少选择一个目标平台'} /></Box>;
+      actions = [
+        ...targetActions,
+        {
+          label: '确认目标平台',
+          description: validSelectedTargets.length > 0 ? `已选择 ${validSelectedTargets.length} 个平台` : undefined,
+          disabled: validSelectedTargets.length === 0 ? '至少选择一个目标平台' : undefined,
+          run: () => {
+            setDirty(false);
+            void beginReview(installIntent(plugin, validSelectedTargets));
+          },
+        },
+        { label: '返回选择位置', run: back },
+      ];
+      help = '↑↓ 移动 · Enter 选择/确认 · Esc 返回';
+      content = <Box flexDirection="column">
+        <SemanticRows
+          actions={actions}
+          focus={focus}
+          kind="toggle"
+          compact={policy.mode === 'compact'}
+          limit={targetActions.length}
+        />
+        {hasDependencies ? <Callout title="目标平台兼容性" description="不兼容的目标平台不能选择；请查看依赖关系了解原因。" /> : null}
+        <SemanticRows
+          actions={actions}
+          focus={focus}
+          kind="action"
+          compact={policy.mode === 'compact'}
+          offset={targetActions.length}
+        />
+      </Box>;
     }
   } else if (route.name === 'pluginDetail' && plugin) {
     breadcrumb = `我的插件 / ${plugin.displayName}`;
@@ -3336,6 +3364,18 @@ export function ConsoleAppV4(props: {
     help = `? 帮助 · ${help}`;
   }
 
+  const targetActionSignature = route.name === 'installTargets' && route.view !== 'blocked'
+    ? actions.map((action) => String(Boolean(action.disabled))).join(',')
+    : '';
+
+  useEffect(() => {
+    if (!targetActionSignature || !actions[focus]?.disabled) return;
+    const firstEnabled = actions.findIndex((action) => !action.disabled);
+    if (firstEnabled < 0) return;
+    setFocus(firstEnabled);
+    setScrollOffset(0);
+  }, [focus, targetActionSignature]);
+
   useEffect(() => {
     if (!dynamicActionIds || dynamicActionSignature === undefined) {
       dynamicMenuFocus.current = undefined;
@@ -3697,16 +3737,6 @@ export function ConsoleAppV4(props: {
         setScrollOffset(viewport.offset);
         return next;
       });
-    } else if (input === ' ' && route.name === 'installTargets' && route.view !== 'blocked') {
-      runAction(actions[effectiveFocus]);
-    } else if (key.return && route.name === 'installTargets' && route.view !== 'blocked') {
-      const validSelectedTargets = selectedTargets.filter((platform) =>
-        props.controller.listInstallTargets(plugin!.pluginId, scope)
-          .some((choice) => choice.platform === platform && choice.compatible));
-      if (validSelectedTargets.length > 0) {
-        setDirty(false);
-        void beginReview(installIntent(plugin!, validSelectedTargets));
-      }
     } else if (key.return && route.name === 'pluginList' && pluginRows[focus]) {
       go(route.mode === 'browse'
         ? { name: 'pluginPreview', pluginId: pluginRows[focus]!.pluginId }
