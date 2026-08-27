@@ -37,12 +37,17 @@ export type TuiRoute =
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }
   | { name: 'pluginTechnical'; pluginId: string }
-  | { name: 'configLayer'; pluginId: string }
+  | {
+      name: 'configLayer';
+      pluginId: string;
+      fieldKey?: string;
+      groupId?: string;
+      presetId?: string;
+    }
   | {
       name: 'configFields';
       pluginId: string;
       layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer };
-      groupId?: string;
     }
   | {
       name: 'configFieldEditor';
@@ -52,14 +57,11 @@ export type TuiRoute =
       editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
     }
   | {
-      name: 'configPresets';
-      pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
-    }
-  | {
       name: 'configUnavailable';
       pluginId: string;
       layer?: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      diagnosticCode?: string;
+      diagnosticStage?: string;
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
@@ -69,6 +71,7 @@ export type TuiRoute =
   | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
+  | { name: 'reviewPreparing'; preparationId: string }
   | { name: 'review'; operationId: string }
   | { name: 'progress'; operationId: string }
   | { name: 'result'; operationId: string };
@@ -79,6 +82,7 @@ export interface TuiPageContext {
   query?: string;
   sourceTabId?: string;
   installFilter?: PluginInstallFilter;
+  configGroupId?: string;
 }
 
 export interface TuiRouteFrame {

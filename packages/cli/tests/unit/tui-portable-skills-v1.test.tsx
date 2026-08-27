@@ -351,6 +351,19 @@ describe('Portable Skills TUI V1', () => {
     }))).toEqual({ code: 'portableScopeUnavailable', diagnosticCode: 'portableScopeUnavailable' });
   });
 
+  it('keeps Space as the Portable Skill toggle', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(3);
+    await send(instance, ' ');
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(2);
+    expect(instance.lastFrame()).toContain('◇ author-skill');
+  });
+
   it('advertises only the manifest capability before entry, then selects candidates and executes the reviewed subset', async () => {
     const { value, capture } = portableController();
     await value.load();
@@ -421,7 +434,7 @@ describe('Portable Skills TUI V1', () => {
     ['requiredConfigMissing', 'U09', '完成插件设置'],
     ['portableSkillsCliMissing', 'U10', '查看安装说明'],
     ['portableSkillsCliIncompatible', 'U10', '查看安装说明'],
-    ['portableValidationFailed', 'U11', 'd 查看脱敏诊断'],
+    ['portableValidationFailed', 'U11', '重新检查'],
   ] as const)('renders typed blocker %s as %s with its recovery action', async (code, screen, action) => {
     const { value } = portableController();
     await value.load();
@@ -433,7 +446,8 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).toContain(action);
     if (code === 'portableValidationFailed') {
       await send(instance, 'd');
-      expect(instance.lastFrame()).toContain('诊断代码：portableSkillInvalid');
+      expect(instance.lastFrame()).toContain('portableSkillInvalid');
+      expect(instance.lastFrame()).toContain('prepare-portable');
       expect(instance.lastFrame()).not.toContain('/private/');
     }
   });

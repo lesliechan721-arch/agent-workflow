@@ -770,10 +770,18 @@ describe('TUI v4 router and ViewModel', () => {
       title: 'invalid · 设置值无效',
       configLayer: { scope: 'project', projectLayer: 'local' },
       requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'projectLocal' }],
+      diagnostic: {
+        technical: { code: 'invalid-config', stage: 'validate-config' },
+      },
     });
+    expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')?.diagnostic.technical?.checks)
+      .toContain('完成或修正列出的设置字段。');
     expect(view.issues.find((issue) => issue.pluginId === 'official/unreadable')).toMatchObject({
       category: 'diagnostic',
-      technicalDetails: [{ code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' }],
+      technicalDetails: [{ code: 'configReadFailed', message: '设置读取报告了这个安全错误代码。' }],
+      diagnostic: {
+        technical: { code: 'configReadFailed', stage: 'read-config' },
+      },
     });
   });
 });
@@ -2666,6 +2674,216 @@ describe('TUI v4 Review safety', () => {
       operationKind: 'sourceMutation',
       sourceAction: 'setPrimary',
       review: { operationKind: 'sourceMutation', sourceAction: 'setPrimary' },
+    });
+  });
+
+  it('publishes ReviewPreparing before validation and replaces it with Review without growing the stack', async () => {
+    const validation = deferred<void>();
+    const captured = deferred<OperationEvidence>();
+    const validateIntent = vi.fn(() => validation.promise);
+    const captureEvidence = vi.fn(() => captured.promise);
+    const controller = new TuiController(dependencies({ validateIntent, captureEvidence }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' }, { focusIndex: 3 });
+    const depth = controller.snapshot.router.depth;
+
+    const preparation = controller.startReviewPreparation({
+      kind: 'pluginWrite', action: 'upgrade', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    expect(controller.snapshot.router).toMatchObject({
+      depth: depth + 1,
+      current: { route: { name: 'reviewPreparing', preparationId: preparation.id } },
+    });
+    expect(controller.snapshot.reviewPreparation).toMatchObject({
+      state: 'running',
+      currentLabel: 'demo',
+      stages: [
+        { id: 'validate', state: 'running' },
+        { id: 'evidence', state: 'pending' },
+      ],
+    });
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+
+    await nextTurn();
+    expect(validateIntent).toHaveBeenCalledOnce();
+    validation.resolve();
+    await nextTurn();
+    expect(controller.snapshot.reviewPreparation?.stages).toEqual([
+      { id: 'validate', label: '验证当前状态', state: 'completed' },
+      { id: 'evidence', label: '准备确认信息', state: 'running' },
+    ]);
+    captured.resolve(baseEvidence);
+    await nextTurn();
+
+    expect(controller.snapshot.router).toMatchObject({
+      depth: depth + 1,
+      current: { route: { name: 'review' } },
+    });
+    expect(controller.snapshot.reviewPreparation).toBeUndefined();
+    controller.back();
+    expect(controller.snapshot.router.current).toEqual({
+      route: { name: 'pluginDetail', pluginId: 'official/demo' },
+      context: { focusIndex: 3 },
+    });
+  });
+
+  it('single-flights identical preparation and discards late completion after cancellation', async () => {
+    const captured = deferred<OperationEvidence>();
+    const executeIntent = vi.fn();
+    const captureEvidence = vi.fn(() => captured.promise);
+    const controller = new TuiController(dependencies({ captureEvidence, executeIntent }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'reinstall' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    const first = controller.startReviewPreparation(intent);
+    const second = controller.startReviewPreparation(structuredClone(intent));
+    expect(second.id).toBe(first.id);
+    expect(controller.snapshot.router.depth).toBe(3);
+    await nextTurn();
+    expect(captureEvidence).toHaveBeenCalledOnce();
+
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    expect(controller.snapshot.reviewPreparation).toBeUndefined();
+    expect(captureEvidence.mock.calls[0]?.[1]).toMatchObject({ aborted: true });
+    captured.resolve(baseEvidence);
+    await nextTurn();
+
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    expect(controller.snapshot.activeReview).toBeUndefined();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('uses one preparation entry and publishes only stages reported by real review work', async () => {
+    const prepareReviewEvidence: NonNullable<TuiControllerDependencies['prepareReviewEvidence']> = vi.fn(
+      async (_intent, _signal, onStage) => {
+        for (const stage of ['status', 'catalog', 'inventory', 'dependencyPlan', 'evidence'] as const) {
+          await onStage(stage);
+        }
+        return baseEvidence;
+      },
+    );
+    const validateIntent = vi.fn();
+    const captureEvidence = vi.fn();
+    const controller = new TuiController(dependencies({
+      prepareReviewEvidence,
+      validateIntent,
+      captureEvidence,
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const observedStages: string[][] = [];
+    controller.subscribe((snapshot) => {
+      if (snapshot.reviewPreparation) {
+        observedStages.push(snapshot.reviewPreparation.stages.map((stage) =>
+          `${stage.id}:${stage.state}`));
+      }
+    });
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'install' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    controller.startReviewPreparation(intent);
+    await nextTurn(2);
+
+    expect(prepareReviewEvidence).toHaveBeenCalledOnce();
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+    expect(observedStages).toEqual(expect.arrayContaining([
+      ['status:running'],
+      ['status:completed', 'catalog:running'],
+      ['status:completed', 'catalog:completed', 'inventory:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:completed', 'evidence:running'],
+      ['status:completed', 'catalog:completed', 'inventory:completed', 'dependencyPlan:completed', 'evidence:completed'],
+    ]));
+    expect(controller.snapshot.router.current.route.name).toBe('review');
+
+    await controller.buildOperationReview(intent);
+    expect(prepareReviewEvidence).toHaveBeenCalledTimes(2);
+    expect(validateIntent).not.toHaveBeenCalled();
+    expect(captureEvidence).not.toHaveBeenCalled();
+  });
+
+  it('replaces a preparation when the same intent has a different return route', async () => {
+    const firstCapture = deferred<OperationEvidence>();
+    const secondCapture = deferred<OperationEvidence>();
+    const captureEvidence = vi.fn()
+      .mockImplementationOnce(() => firstCapture.promise)
+      .mockImplementationOnce(() => secondCapture.promise);
+    const controller = new TuiController(dependencies({ captureEvidence }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'reinstall' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    const first = controller.startReviewPreparation(intent, { name: 'home' });
+    await nextTurn();
+    const second = controller.startReviewPreparation(intent, {
+      name: 'pluginDetail', pluginId: 'official/demo',
+    });
+    await nextTurn();
+
+    expect(second.id).not.toBe(first.id);
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
+    expect(captureEvidence.mock.calls[0]?.[1]).toMatchObject({ aborted: true });
+    firstCapture.resolve(baseEvidence);
+    secondCapture.resolve(baseEvidence);
+    await nextTurn();
+
+    expect(controller.snapshot.router.current.route.name).toBe('review');
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/demo',
+    });
+  });
+
+  it('keeps a safe preparation failure on the page and supports retry and Back', async () => {
+    const validateIntent = vi.fn()
+      .mockRejectedValueOnce(new Error('/private/user/token failed'))
+      .mockResolvedValueOnce(undefined);
+    const controller = new TuiController(dependencies({ validateIntent }));
+    await controller.load();
+    controller.push({ name: 'sourceDetail', sourceId: 'official' }, { focusIndex: 2 });
+    const intent = { kind: 'sourceMutation' as const, action: 'setPrimary' as const, sourceId: 'official' };
+
+    controller.startReviewPreparation(intent);
+    await nextTurn();
+    expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
+    expect(controller.snapshot.reviewPreparation).toMatchObject({
+      state: 'failed',
+      currentLabel: 'official',
+      code: 'reviewPreparationFailed',
+      message: '无法准备确认信息。请返回检查选择，或重试。',
+    });
+    expect(JSON.stringify(controller.snapshot)).not.toContain('/private/user/token');
+
+    controller.retryReviewPreparation();
+    await nextTurn();
+    expect(controller.snapshot.router.current.route.name).toBe('review');
+    expect(validateIntent).toHaveBeenCalledTimes(2);
+    controller.back();
+    expect(controller.snapshot.router.current).toEqual({
+      route: { name: 'sourceDetail', sourceId: 'official' },
+      context: { focusIndex: 2 },
     });
   });
 });

@@ -14,6 +14,11 @@ import type {
   TargetRevisionState,
 } from '../commands/status-v4.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
+import {
+  safeDiagnosticCode,
+  type DiagnosticImpactEntryViewModel,
+  type DiagnosticSummaryViewModel,
+} from './diagnostics.js';
 
 export type SourceHealthState = 'ready' | 'cache' | 'path' | 'checking' | 'degraded' | 'unavailable';
 
@@ -140,6 +145,7 @@ export interface SourceDetailViewModel {
   catalogVersion?: string;
   channel?: string;
   freshness?: 'remote' | 'cache' | 'path';
+  errorCode?: string;
   configDigest: string;
 }
 
@@ -287,7 +293,10 @@ export interface UserIssueViewModel {
   configLayer?: { scope: Scope; projectLayer: 'shared' | 'local' };
   actions: UserIssueActionViewModel[];
   technicalDetails: Array<{ code: string; message: string }>;
+  diagnostic: DiagnosticSummaryViewModel;
 }
+
+type UserIssueDraft = Omit<UserIssueViewModel, 'diagnostic'>;
 
 export interface TuiViewModel {
   plugins: PluginListItemViewModel[];
@@ -499,9 +508,9 @@ function sourceState(
 function sourceIssue(
   health: SourceHealthViewModel,
   impactedTargets = 0,
-): UserIssueViewModel | undefined {
-  if (health.state !== 'cache' && health.state !== 'degraded' && health.state !== 'unavailable') return undefined;
-  const cached = health.state === 'cache' || health.state === 'degraded';
+): UserIssueDraft | undefined {
+  if (health.state !== 'degraded' && health.state !== 'unavailable') return undefined;
+  const cached = health.state === 'degraded';
   const issueId = health.issueId ?? `source:${health.sourceId}:${cached ? 'cache' : 'unavailable'}`;
   return {
     issueId,
@@ -509,7 +518,7 @@ function sourceIssue(
     title: `${health.sourceId} · ${cached ? '来源使用缓存' : '来源不可用'}`,
     explanation: cached
       ? '远端检查失败。当前仍使用已验证的缓存数据。'
-      : '远端检查失败，并且没有可用缓存数据。',
+      : '来源检查失败，并且没有可用缓存数据。',
     impact: [cached ? '插件仍可浏览，但数据可能不是最新。' : '当前不能浏览或安装这个来源的插件。',
       ...(impactedTargets > 0 ? [`${impactedTargets} 个安装位置受此来源根问题影响。`] : [])],
     entity: { kind: 'source', id: health.sourceId },
@@ -532,8 +541,8 @@ function sourceIssue(
   };
 }
 
-function targetIssues(payload: StatusV4Payload): UserIssueViewModel[] {
-  const issues: UserIssueViewModel[] = [];
+function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
+  const issues: UserIssueDraft[] = [];
   const byPlacement = new Map<string, StatusV4Target[]>();
   for (const target of payload.targets) {
     const key = `${target.pluginId}\0${target.platform}`;
@@ -703,10 +712,10 @@ function targetIssues(payload: StatusV4Payload): UserIssueViewModel[] {
   return issues;
 }
 
-function statusIssues(payload: StatusV4Payload): UserIssueViewModel[] {
+function statusIssues(payload: StatusV4Payload): UserIssueDraft[] {
   const targetCodes = new Set(payload.targets.flatMap((target) =>
     target.errors.map((error) => error.code)));
-  const issues = new Map<string, UserIssueViewModel>();
+  const issues = new Map<string, UserIssueDraft>();
   for (const error of payload.errors) {
     if (targetCodes.has(error.code) || issues.has(error.code)) continue;
     const projection = error.code === 'legacyStateUnsupported'
@@ -746,8 +755,8 @@ function statusIssues(payload: StatusV4Payload): UserIssueViewModel[] {
   return [...issues.values()];
 }
 
-function configIssues(pluginSummaries: StatusV4PluginSummary[]): UserIssueViewModel[] {
-  return pluginSummaries.flatMap((summary): UserIssueViewModel[] => {
+function configIssues(pluginSummaries: StatusV4PluginSummary[]): UserIssueDraft[] {
+  return pluginSummaries.flatMap((summary): UserIssueDraft[] => {
     const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
     if (summary.configDiagnostic) {
       return [{
@@ -763,7 +772,10 @@ function configIssues(pluginSummaries: StatusV4PluginSummary[]): UserIssueViewMo
           { id: 'retryLater' as const, label: '稍后重新检查' },
           { id: 'viewTechnical' as const, label: '查看技术详情' },
         ],
-        technicalDetails: [{ code: summary.configDiagnostic.code, message: summary.configDiagnostic.message }],
+        technicalDetails: [{
+          code: summary.configDiagnostic.code,
+          message: '设置读取报告了这个安全错误代码。',
+        }],
       }];
     }
     if (!summary.configIssues?.length) return [];
@@ -804,9 +816,9 @@ function configIssues(pluginSummaries: StatusV4PluginSummary[]): UserIssueViewMo
 }
 
 function enrichDependencyIssuePlacements(
-  issues: UserIssueViewModel[],
+  issues: UserIssueDraft[],
   overviews: PluginDependencyOverviewViewModel[],
-): UserIssueViewModel[] {
+): UserIssueDraft[] {
   const overviewById = new Map(overviews.map((overview) => [overview.pluginId, overview]));
   return issues.map((issue) => {
     if ((issue.category !== 'dependencyMissing' && issue.category !== 'dependencyNotReady')
@@ -853,6 +865,108 @@ function enrichDependencyIssuePlacements(
           : action),
     };
   });
+}
+
+function issueDiagnostic(
+  issue: UserIssueDraft,
+  sourceDetails: ReadonlyMap<string, SourceDetailViewModel>,
+): DiagnosticSummaryViewModel {
+  const source = issue.sourceId ? sourceDetails.get(issue.sourceId) : undefined;
+  const sourceDegraded = issue.category === 'sourceDegraded';
+  const sourceUnavailable = issue.category === 'sourceUnavailable' && issue.entity.kind === 'source';
+  const configUnavailable = issue.category === 'diagnostic' && issue.issueId.startsWith('config:');
+  const configInvalid = issue.category === 'requiredConfigMissing';
+  const dependency = issue.category.startsWith('dependency');
+  const platformState = issue.issueId.startsWith('status:') || issue.rootCode === 'targetDiagnostic';
+  const preserved = sourceDegraded || sourceUnavailable
+    ? '已安装插件和已保存设置不会被删除。'
+    : configUnavailable
+      ? '已保存的设置保持不变。'
+      : '现有安装和已保存设置不会因本页自动改变。';
+  const impact: DiagnosticImpactEntryViewModel[] = sourceDegraded
+    ? [
+        { state: 'degraded', message: '远端数据可能不是最新；匹配的已验证缓存仍可浏览和安装。' },
+        { state: 'preserved', message: preserved },
+      ]
+    : sourceUnavailable
+      ? [
+          { state: 'blocked', message: '没有可用缓存；当前不能浏览或安装这个来源中的插件。' },
+          { state: 'preserved', message: preserved },
+        ]
+      : [
+          ...issue.impact.map((message): DiagnosticImpactEntryViewModel => ({
+            state: dependency || configUnavailable || configInvalid || platformState ? 'blocked' : 'degraded',
+            message,
+          })),
+          { state: 'preserved', message: preserved },
+        ];
+  const primaryAction = issue.actions.find((action) => action.id !== 'viewTechnical');
+  const nextStep = primaryAction
+    ? `${primaryAction.label}，然后重新检查当前状态。`
+    : '打开技术详情，记录安全错误代码后重新检查。';
+  const sourceDiagnostic = sourceDegraded || sourceUnavailable;
+  const rawCode = sourceDiagnostic
+    ? source?.errorCode ?? issue.technicalDetails[0]?.code
+    : issue.technicalDetails[0]?.code;
+  const code = safeDiagnosticCode(rawCode, sourceDegraded
+    ? 'catalogSourceDegraded'
+    : sourceUnavailable ? 'catalogSourceUnavailable' : 'diagnosticUnavailable');
+  const stage = sourceDegraded || sourceUnavailable ? 'resolve-source'
+    : configUnavailable ? 'read-config'
+      : configInvalid ? 'validate-config'
+      : dependency ? 'resolve-dependencies'
+        : platformState ? 'read-platform-state' : 'inspect-target';
+  const context = [
+    ...(issue.pluginId ? [{ key: 'pluginId' as const, value: issue.pluginId }] : []),
+    ...(issue.dependencyPluginId
+      ? [{ key: 'dependencyPluginId' as const, value: issue.dependencyPluginId }]
+      : []),
+    ...(issue.platform ? [{ key: 'platform' as const, value: issue.platform }] : []),
+    ...(issue.scope ? [{ key: 'scope' as const, value: issue.scope }] : []),
+    ...(sourceDiagnostic && source?.freshness
+      ? [{ key: 'freshness' as const, value: source.freshness }]
+      : []),
+    ...(issue.requiredFields?.slice(0, 1).map((field) => ({
+      key: 'field' as const,
+      value: field.title,
+    })) ?? []),
+  ];
+  const checks = issue.category === 'legacyState'
+    ? [
+        '不自动迁移旧版状态。',
+        '运行 aw status --json，记录公开错误 code。',
+        '备份相关 AW 配置。',
+        '按技术详情使用受支持命令或人工处理。',
+        '再次运行状态检查。',
+      ]
+    : sourceDegraded || sourceUnavailable
+    ? ['检查 Git URL、ref 或本地目录。', '确认当前终端具备来源授权。', '运行“重新检查来源”验证修复。']
+    : dependency
+      ? ['检查依赖关系和依赖插件状态。', '完成恢复动作后重新检查根插件。']
+      : configUnavailable
+        ? ['恢复插件来源和可信字段定义。', '重新检查来源后再次打开设置。']
+        : configInvalid
+          ? ['完成或修正列出的设置字段。', '重新检查插件设置。']
+        : ['检查目标平台配置和访问权限。', '完成恢复动作后重新运行状态检查。'];
+  return {
+    severity: sourceDegraded ? 'warning' : 'error',
+    title: issue.title,
+    userMessage: issue.explanation,
+    impact,
+    nextStep,
+    technical: {
+      code,
+      stage,
+      ...(sourceDiagnostic && issue.sourceId ? { sourceId: issue.sourceId } : {}),
+      ...(sourceDiagnostic && source?.requestedRef ? { requestedRef: source.requestedRef } : {}),
+      ...(sourceDiagnostic && source?.resolvedCommit ? { resolvedCommit: source.resolvedCommit } : {}),
+      ...(sourceDegraded || sourceUnavailable
+        ? { lastGood: sourceDegraded ? 'available' as const : 'unavailable' as const }
+        : {}),
+      ...(context.length > 0 ? { context } : {}),
+      checks,
+    },
+  };
 }
 
 export function buildTuiViewModel(options: {
@@ -935,7 +1049,7 @@ export function buildTuiViewModel(options: {
     state: sourceState(source, options.sourceHealth?.get(source.id)),
   }));
   const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
-    .filter((health) => health.state === 'cache' || health.state === 'degraded' || health.state === 'unavailable')
+    .filter((health) => health.state === 'degraded' || health.state === 'unavailable')
     .map((health) => health.sourceId));
   const allTargetIssues = targetIssues(options.status);
   const targetImpactCounts = new Map<string, number>();
@@ -943,7 +1057,8 @@ export function buildTuiViewModel(options: {
     if (!issue.mergeEligible || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;
     targetImpactCounts.set(issue.sourceId, (targetImpactCounts.get(issue.sourceId) ?? 0) + 1);
   }
-  const issues = enrichDependencyIssuePlacements([
+  const sourceDetails = new Map((options.sourceDetails ?? []).map((detail) => [detail.id, detail]));
+  const issueDrafts = enrichDependencyIssuePlacements([
     ...allTargetIssues.filter((issue) => !issue.mergeEligible
       || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
     ...statusIssues(options.status),
@@ -951,6 +1066,10 @@ export function buildTuiViewModel(options: {
     ...[...(options.sourceHealth?.values() ?? [])].flatMap((health) =>
       sourceIssue(health, targetImpactCounts.get(health.sourceId) ?? 0) ?? []),
   ], options.dependencyOverviews ?? []);
+  const issues = issueDrafts.map((issue): UserIssueViewModel => ({
+    ...issue,
+    diagnostic: issueDiagnostic(issue, sourceDetails),
+  }));
   return {
     plugins,
     sourceTabs,

@@ -52,6 +52,7 @@ import {
   TuiOperationBlockedError,
   type OperationEvidence,
   type OperationIntent,
+  type ReviewPreparationStageId,
   type TuiControllerDependencies,
 } from './controller.js';
 import {
@@ -507,9 +508,41 @@ async function loadDependencyOverviews(options: {
   });
 }
 
+function createReviewStageReporter(options: {
+  context: CliExecutionContext;
+  onStage: (stage: ReviewPreparationStageId) => void | Promise<void>;
+  now: () => number;
+}): {
+  emit: (stage: ReviewPreparationStageId) => Promise<void>;
+  finish: () => Promise<void>;
+} {
+  let active: { stage: ReviewPreparationStageId; startedAt: number } | undefined;
+  const finish = async (): Promise<void> => {
+    if (!active) return;
+    const completed = active;
+    active = undefined;
+    await Promise.allSettled([Promise.resolve().then(() => options.context.debugLogger.log({
+      type: `review.prepare.${completed.stage}`,
+      level: 'debug',
+      target: 'debugLog',
+      message: 'TUI review preparation stage completed.',
+      data: { durationMs: Math.max(0, options.now() - completed.startedAt) },
+    }))]);
+  };
+  return {
+    async emit(stage) {
+      await finish();
+      active = { stage, startedAt: options.now() };
+      await options.onStage(stage);
+    },
+    finish,
+  };
+}
+
 export function createTuiControllerDependencies(
   context: CliExecutionContext,
   progressFeed?: RebuildProgressFeed,
+  options: { now?: () => number } = {},
 ): TuiControllerDependencies {
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
@@ -565,6 +598,7 @@ export function createTuiControllerDependencies(
             ...(status?.catalogVersion ? { catalogVersion: status.catalogVersion } : {}),
             ...(status?.channel ? { channel: status.channel } : {}),
             ...(status?.freshness ? { freshness: status.freshness } : {}),
+            ...(status?.errorCode ? { errorCode: status.errorCode } : {}),
             configDigest: configured.configDigest,
           };
         }),
@@ -580,6 +614,10 @@ export function createTuiControllerDependencies(
     intent: OperationIntent,
     signal?: AbortSignal,
     freshnessPolicy: CatalogFreshnessPolicy = 'cacheFirst',
+    preparation?: {
+      reporter: ReturnType<typeof createReviewStageReporter>;
+      validateIntent: boolean;
+    },
   ): Promise<OperationEvidence> => {
     if (intent.kind === 'sourceMutation') {
       signal?.throwIfAborted();
@@ -592,12 +630,16 @@ export function createTuiControllerDependencies(
         : intent.action === 'update'
           ? { action: 'update' as const, sourceId: intent.sourceId, update: intent.update! }
           : { action: intent.action, sourceId: intent.sourceId };
+      await preparation?.reporter.emit('validate');
       const preview = await preflightCatalogSourceMutation({
         request,
         cwd: context.cwd,
         env: context.env,
       });
-      return {
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('evidence');
+      signal?.throwIfAborted();
+      const evidence: OperationEvidence = {
         catalog: { configDigest: preview.configDigest, compositeDigest: preview.candidateDigest },
         sourceWrite: {
           configDigest: preview.configDigest,
@@ -608,6 +650,11 @@ export function createTuiControllerDependencies(
           inventoryComplete: preview.references.errors.length === 0,
         },
       };
+      if (preparation?.validateIntent
+        && evidence.sourceWrite?.configDigest === evidence.sourceWrite?.candidateDigest) {
+        throw new TuiOperationBlockedError('sourceNoChanges', '来源没有变化。');
+      }
+      return evidence;
     }
     if (!pluginIntent(intent)) {
       throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
@@ -615,6 +662,7 @@ export function createTuiControllerDependencies(
     signal?.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
     if (intent.kind === 'portableInstall') {
+      await preparation?.reporter.emit('portable');
       const portable = await preparePortableInstall({
         selector: intent.pluginId,
         scope: intent.scope,
@@ -625,6 +673,9 @@ export function createTuiControllerDependencies(
         cliVersion: packageInfo.version,
         signal,
       });
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('evidence');
+      signal?.throwIfAborted();
       return {
         catalog: {
           configDigest: portable.configDigest,
@@ -633,6 +684,7 @@ export function createTuiControllerDependencies(
         portable,
       };
     }
+    await preparation?.reporter.emit('status');
     const status = await statusCommandV4({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
@@ -648,9 +700,47 @@ export function createTuiControllerDependencies(
     signal?.throwIfAborted();
     if (intent.kind === 'pluginWrite') {
       await assertTypedIssueOrigin(intent, status.payload.targets);
+      if (preparation?.validateIntent) {
+        assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);
+      }
     }
     const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
+    signal?.throwIfAborted();
+    if (configSnapshot.digest !== status.payload.catalog.configDigest) {
+      throw operationReviewStale('准备确认信息期间来源配置发生变化。');
+    }
     let dependencyPlan: DependencyOperationPlan | undefined;
+    await preparation?.reporter.emit('catalog');
+    const selected = await withResolvedCatalogPlugin({
+          selector: intent.pluginId,
+          cliVersion: packageInfo.version,
+          freshnessPolicy,
+          configSnapshot,
+          env: context.env,
+          ...(signal ? { signal } : {}),
+          consume: async ({ plugin, source }) => {
+            if (preparation?.validateIntent && intent.kind === 'configSave') {
+              await preparation.reporter.emit('config');
+              if (!plugin.manifest.config) {
+                throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
+              }
+              await coercePluginConfigUpdates({
+                schema: plugin.manifest.config.schema,
+                updates: intent.updates ?? {},
+                cwd: context.cwd,
+              });
+              for (const key of intent.removeKeys ?? []) {
+                if (!plugin.manifest.config.schema[key]) {
+                  throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
+                }
+              }
+            }
+            return {
+              pluginName: plugin.manifest.name,
+              source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+            };
+          },
+        });
     const hasDeclaredDependencies = (status.pluginSummaries.find((summary) =>
       summary.pluginId === intent.pluginId)?.dependencyTotalCount ?? 0) > 0;
     if (intent.kind === 'pluginWrite'
@@ -669,7 +759,13 @@ export function createTuiControllerDependencies(
         ...context,
         expectedCatalogConfigDigest: status.payload.catalog.configDigest,
         previewDependencyPlanOnly: true,
+        ...(preparation ? {
+          previewCatalogFreshnessPolicy: 'cacheFirst' as const,
+          onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
+            stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
+        } : {}),
       });
+      signal?.throwIfAborted();
       dependencyPlan = preview.dependencyPlan;
       if (!dependencyPlan) {
         throw new TuiOperationBlockedError('dependencyGraphInvalid', '无法建立可信的依赖安装计划。');
@@ -682,18 +778,8 @@ export function createTuiControllerDependencies(
         );
       }
     }
-    const selected = await withResolvedCatalogPlugin({
-          selector: intent.pluginId,
-          cliVersion: packageInfo.version,
-          freshnessPolicy,
-          configSnapshot,
-          env: context.env,
-          ...(signal ? { signal } : {}),
-          consume: ({ plugin, source }) => ({
-            pluginName: plugin.manifest.name,
-            source: sourceEvidenceForPlugin(source, plugin.manifest.name),
-          }),
-        });
+    await preparation?.reporter.emit('evidence');
+    signal?.throwIfAborted();
     const evidence: OperationEvidence = {
       catalog: {
         configDigest: status.payload.catalog.configDigest,
@@ -716,6 +802,7 @@ export function createTuiControllerDependencies(
         cwd: context.cwd,
         env: context.env,
       });
+      signal?.throwIfAborted();
       evidence.config = {
         scope: intent.scope,
         projectLayer: intent.projectLayer,
@@ -739,6 +826,21 @@ export function createTuiControllerDependencies(
         marketplaceCount: 0,
         dependencies: [],
       };
+    },
+    async prepareReviewEvidence(intent, signal, onStage) {
+      const reporter = createReviewStageReporter({
+        context,
+        onStage,
+        now: options.now ?? Date.now,
+      });
+      try {
+        return await captureEvidence(intent, signal, 'cacheFirst', {
+          reporter,
+          validateIntent: true,
+        });
+      } finally {
+        await reporter.finish();
+      }
     },
     async validateIntent(intent, signal) {
       if (intent.kind === 'sourceMutation') {

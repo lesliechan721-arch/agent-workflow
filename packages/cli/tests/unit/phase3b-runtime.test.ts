@@ -1399,12 +1399,19 @@ describe('phase 3B namespaced runtime stores', () => {
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     };
 
+    const previewStages: string[] = [];
     const preview = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
-    }, { ...runtime, previewDependencyPlanOnly: true });
+    }, {
+      ...runtime,
+      previewDependencyPlanOnly: true,
+      previewCatalogFreshnessPolicy: 'cacheFirst',
+      onPreviewStage(stage) { previewStages.push(stage); },
+    });
     expect(preview.overallState).toBe('succeeded');
+    expect(previewStages).toEqual(['catalog', 'inventory', 'dependencyPlan']);
     expect(preview.dependencyPlan?.targets).toContainEqual(expect.objectContaining({
       pluginId: 'team/demo',
       action: 'install',

@@ -4,6 +4,7 @@ export {
   Card,
   Callout,
   ChoiceRow,
+  DiagnosticSummary,
   HelpBar,
   InputCard,
   PluginListRow,
@@ -31,6 +32,16 @@ export {
   type StaticRowProps,
   type TuiSize,
 } from './components.js';
+export {
+  safeDiagnosticCode,
+  sanitizeDiagnosticCause,
+  sanitizeDiagnosticText,
+  type DiagnosticContextKey,
+  type DiagnosticImpactEntryViewModel,
+  type DiagnosticImpactState,
+  type DiagnosticSummaryViewModel,
+  type DiagnosticTechnicalViewModel,
+} from './diagnostics.js';
 export { resolveTuiKeyAction, type TuiInputMode, type TuiKeyContext } from './keys.js';
 export { resolveTuiSizePolicy, type TuiLayoutMode, type TuiSizePolicy } from './layout.js';
 export { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from './runner.js';
@@ -43,6 +54,9 @@ export {
   type OperationIntent,
   type OperationResultSummary,
   type OperationReviewModel,
+  type ReviewPreparationSnapshot,
+  type ReviewPreparationStage,
+  type ReviewPreparationStageId,
   type SourceReferenceSummaryViewModel,
   type TuiControllerDependencies,
   type TuiControllerSnapshot,

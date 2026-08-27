@@ -1,6 +1,12 @@
 import { Box, Text, useWindowSize } from 'ink';
 import type { ReactNode } from 'react';
 
+import {
+  safeDiagnosticCode,
+  sanitizeDiagnosticCause,
+  sanitizeDiagnosticText,
+  type DiagnosticSummaryViewModel,
+} from './diagnostics.js';
 import { resolveTuiSizePolicy, type TuiSizePolicy } from './layout.js';
 import { getTuiStatusColor, tuiTheme, type TuiStatus } from './theme.js';
 
@@ -250,6 +256,127 @@ export function TechnicalDetails(props: SemanticCardProps): React.JSX.Element {
       compact={props.compact ?? true}
     />
   );
+}
+
+const diagnosticContextLabels = {
+  platform: '平台',
+  scope: '范围',
+  pluginId: '插件',
+  dependencyPluginId: '依赖插件',
+  field: '字段',
+  freshness: '数据来源',
+  compatibility: '兼容版本',
+} as const;
+
+export function DiagnosticSummary(props: {
+  diagnostic: DiagnosticSummaryViewModel;
+  technical?: boolean;
+  compact?: boolean;
+}): React.JSX.Element {
+  const compact = props.compact === true;
+  if (!props.technical) {
+    if (compact) {
+      return <SectionCard
+        title={sanitizeDiagnosticText(props.diagnostic.title)}
+        description={sanitizeDiagnosticText(props.diagnostic.userMessage)}
+        status={props.diagnostic.severity}
+        compact
+      >
+        {props.diagnostic.impact.map((entry, index) => <ResultRow
+          key={`${entry.state}:${index}`}
+          title={sanitizeDiagnosticText(entry.message)}
+          status={entry.state === 'blocked' ? 'error' : entry.state === 'preserved' ? 'success' : 'muted'}
+          compact
+        />)}
+        <StaticRow title={`下一步：${sanitizeDiagnosticText(props.diagnostic.nextStep)}`} status="info" compact />
+      </SectionCard>;
+    }
+    return <Box flexDirection="column">
+      <StatusCard
+        status={props.diagnostic.severity}
+        title={sanitizeDiagnosticText(props.diagnostic.title)}
+        description={sanitizeDiagnosticText(props.diagnostic.userMessage)}
+        compact={compact}
+      />
+      <SectionCard title="影响" compact={compact}>
+        {props.diagnostic.impact.map((entry, index) => <ResultRow
+          key={`${entry.state}:${index}`}
+          title={sanitizeDiagnosticText(entry.message)}
+          status={entry.state === 'blocked' ? 'error' : entry.state === 'preserved' ? 'success' : 'muted'}
+          compact
+        />)}
+      </SectionCard>
+      <Callout
+        status="info"
+        title="下一步"
+        description={sanitizeDiagnosticText(props.diagnostic.nextStep)}
+        compact
+      />
+    </Box>;
+  }
+
+  const technical = props.diagnostic.technical;
+  if (!technical) {
+    return <Callout status="muted" title="没有可公开的技术字段" compact />;
+  }
+  const cause = sanitizeDiagnosticCause(technical.sanitizedCause);
+  const fields = [
+    { label: 'code', value: safeDiagnosticCode(technical.code, 'diagnosticUnavailable') },
+    ...(technical.stage ? [{ label: 'stage', value: sanitizeDiagnosticText(technical.stage) }] : []),
+    ...(technical.sourceId ? [{ label: 'sourceId', value: sanitizeDiagnosticText(technical.sourceId) }] : []),
+    ...(technical.lastGood ? [{ label: 'last good', value: technical.lastGood === 'available' ? '可用' : '无' }] : []),
+    ...(technical.requestedRef ? [{ label: 'requested ref', value: sanitizeDiagnosticText(technical.requestedRef) }] : []),
+    ...(technical.resolvedCommit ? [{ label: 'resolved commit', value: sanitizeDiagnosticText(technical.resolvedCommit) }] : []),
+    ...(technical.context ?? []).map((entry) => ({
+      label: diagnosticContextLabels[entry.key],
+      value: sanitizeDiagnosticText(entry.value),
+    })),
+    ...(cause ? [{ label: 'cause', value: cause }] : []),
+  ];
+  const extendedChecks = (technical.checks?.length ?? 0) > 3;
+  const visibleFields = fields.slice(0, extendedChecks ? 1 : compact ? 4 : 8);
+  const checks = (technical.checks ?? []).slice(0, extendedChecks ? 5 : compact ? 1 : 3);
+  if (compact) {
+    return <Box flexDirection="column">
+      <Text color={tuiTheme.colors.muted}>下面的信息已脱敏，可用于排查或提交 issue。</Text>
+      <TechnicalDetails label="脱敏诊断" compact>
+        {visibleFields.map((field) => <StaticRow
+          key={field.label}
+          title={`${field.label}: ${field.value}`}
+          compact
+        />)}
+        {checks.map((check, index) => <StaticRow
+          key={`${index}:${check}`}
+          title={extendedChecks
+            ? `${index + 1}. ${sanitizeDiagnosticText(check)}`
+            : `建议：${sanitizeDiagnosticText(check)}`}
+          status="muted"
+          compact
+        />)}
+      </TechnicalDetails>
+    </Box>;
+  }
+  return <Box flexDirection="column">
+    <Text color={tuiTheme.colors.muted}>下面的信息已脱敏，可用于排查或提交 issue。</Text>
+    <TechnicalDetails label="脱敏诊断" compact>
+      {visibleFields.map((field) => <StaticRow
+        key={field.label}
+        title={field.label}
+        meta={field.value}
+        compact
+      />)}
+      {fields.length > visibleFields.length
+        ? <StaticRow title={`另有 ${fields.length - visibleFields.length} 个安全字段`} status="muted" compact />
+        : null}
+    </TechnicalDetails>
+    {checks.length > 0 ? <SectionCard title="建议检查" compact>
+      {checks.map((check, index) => <StaticRow
+        key={`${index}:${check}`}
+        title={`${index + 1}. ${sanitizeDiagnosticText(check)}`}
+        compact
+      />)}
+    </SectionCard> : null}
+  </Box>;
 }
 
 export interface InteractiveRowProps {
