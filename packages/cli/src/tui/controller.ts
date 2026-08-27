@@ -1271,6 +1271,20 @@ export class TuiController {
     this.#publish();
   }
 
+  beginConfigFlow(pluginId: string): void {
+    this.#router.beginConfigFlow(pluginId);
+    this.#router.push({
+      name: 'configFields',
+      pluginId,
+      layer: { scope: 'effective', projectLayer: 'shared' },
+    });
+    this.#publish();
+  }
+
+  configOrigin(pluginId: string): TuiRoute | undefined {
+    return this.#router.configOrigin(pluginId);
+  }
+
   updatePageContext(context: Partial<TuiPageContext>): void {
     this.#router.updateContext(context);
     this.#publish();
@@ -1310,6 +1324,14 @@ export class TuiController {
       const preserveDraft = target?.name === 'portableSkillSelect'
         || target?.name === 'portableAgentInput';
       this.resetPortableFlowToPreview(this.#result.pluginId, target, preserveDraft);
+      return;
+    }
+    if (this.#result?.state === 'succeeded'
+      && (this.#result.operationKind === 'configSave' || this.#result.operationKind === 'configReset')
+      && this.#result.pluginId
+      && this.#router.resetConfigFlow(this.#result.pluginId, target)) {
+      this.#result = undefined;
+      this.#publish();
       return;
     }
     const route = target ?? (this.#result && 'returnRoute' in this.#result

@@ -386,7 +386,12 @@ describe('TUI v4 router and ViewModel', () => {
     const editable = buildConfigPage({
       pluginId: 'official/demo',
       schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
-      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [layeredField] },
+      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [{
+        ...layeredField,
+        effectiveValue: 'strict',
+        sourceLayer: 'user',
+      }] },
+      effectiveRead: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
     });
     const effective = buildConfigPage({
       pluginId: 'official/demo',
@@ -395,6 +400,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
     expect(editable.groups[0]!.fields[0]).toMatchObject({
       displayValue: 'strict', value: 'strict', configured: true, sourceLabel: '本层已设置',
+      effectiveDisplayValue: 'fast', effectiveValue: 'fast', effectiveSourceLabel: '当前项目',
     });
     expect(effective.groups[0]!.fields[0]).toMatchObject({
       displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '当前项目',

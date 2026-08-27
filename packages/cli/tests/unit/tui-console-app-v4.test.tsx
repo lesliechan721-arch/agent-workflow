@@ -282,20 +282,34 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
     key: string,
     type: ConfigPageViewModel['groups'][number]['fields'][number]['type'],
     extra: Partial<ConfigPageViewModel['groups'][number]['fields'][number]> = {},
-  ): ConfigPageViewModel['groups'][number]['fields'][number] => ({
-    key,
-    title: key,
-    type,
-    displayValue: '未设置',
-    required: false,
-    sensitive: false,
-    dirty: false,
-    inherited: true,
-    configured: false,
-    sourceLabel: '未设置',
-    advanced: false,
-    ...extra,
-  });
+  ): ConfigPageViewModel['groups'][number]['fields'][number] => {
+    const value = {
+      key,
+      title: key,
+      type,
+      displayValue: '未设置',
+      required: false,
+      sensitive: false,
+      dirty: false,
+      inherited: true,
+      configured: false,
+      sourceLabel: '未设置',
+      effectiveDisplayValue: '未设置',
+      effectiveSourceLabel: '未设置',
+      advanced: false,
+      ...extra,
+    };
+    return {
+      ...value,
+      effectiveDisplayValue: extra.effectiveDisplayValue ?? value.displayValue,
+      effectiveSourceLabel: extra.effectiveSourceLabel ?? (value.configured ? '个人默认' : '未设置'),
+      ...(extra.effectiveValue !== undefined
+        ? { effectiveValue: extra.effectiveValue }
+        : value.value !== undefined && !value.sensitive && value.type !== 'file' && value.type !== 'directory'
+          ? { effectiveValue: value.value }
+          : {}),
+    };
+  };
   return {
     pluginId,
     layer: { scope: 'user', projectLayer: 'shared' },
@@ -2320,7 +2334,7 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledOnce();
   });
 
-  it('reaches C01-C14 through real keyboard editing without exposing private values or changing layer with Tab', async () => {
+  it('opens effective settings before selecting one write layer and keeps Review scoped to that layer', async () => {
     const reached = new Set<ConsoleV4ScreenId>();
     const exit = vi.fn();
     let finishExecution!: (value: unknown) => void;
@@ -2330,7 +2344,24 @@ describe('ConsoleAppV4', () => {
     const getConfigPage = vi.fn(async (
       pluginId: string,
       layer: ConfigPageViewModel['layer'],
-    ) => ({ ...configPage(pluginId), layer }));
+    ) => {
+      const page = configPage(pluginId);
+      return {
+        ...page,
+        layer,
+        groups: layer.scope === 'effective'
+          ? page.groups.map((group) => ({
+              ...group,
+              fields: group.fields.map((field) => ({
+                ...field,
+                displayValue: field.effectiveDisplayValue,
+                sourceLabel: field.effectiveSourceLabel,
+                ...(field.effectiveValue !== undefined ? { value: field.effectiveValue } : {}),
+              })),
+            }))
+          : page.groups,
+      };
+    });
     const value = controller({ getConfigPage, executeIntent });
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
     const instance = render(<ConsoleAppV4
@@ -2342,19 +2373,37 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
 
     await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(reached).toContain('C02');
+    const effectiveFrame = instance.lastFrame() ?? '';
+    expect(effectiveFrame).toContain('当前插件设置');
+    expect(effectiveFrame).toContain('基本设置');
+    expect(effectiveFrame).toContain('来自个人默认');
+    expect(effectiveFrame).toContain('没有任何位置提供值');
+    expect(effectiveFrame).not.toContain('保存修改');
+    expect(effectiveFrame).not.toContain('快速方案');
+    expect(effectiveFrame).not.toContain('/Users/private');
+
+    await input(instance, ...Array.from({ length: 7 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('高级设置');
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('修改设置…');
+    await input(instance, '\r');
     expect(reached).toContain('C01');
+    const chooserFrame = instance.lastFrame() ?? '';
+    expect(chooserFrame).toContain('修改 Review Gate 设置');
+    expect(chooserFrame).toContain('个人默认');
+    expect(chooserFrame).toContain('当前项目');
+    expect(chooserFrame).toContain('当前项目（仅本机）');
+    expect(chooserFrame).not.toContain('有效设置');
     const layerRoute = value.snapshot.router.current.route;
     await input(instance, '\t');
     expect(value.snapshot.router.current.route).toEqual(layerRoute);
 
     await input(instance, '\r');
     await nextTurn(3);
-    expect(reached).toContain('C02');
-    expect(instance.lastFrame()).toContain('只读');
-    expect(instance.lastFrame()).not.toContain('/Users/private');
-    await input(instance, 'b', '\u001B[B', '\r');
-    await nextTurn(3);
     expect(reached).toContain('C03');
+    expect(instance.lastFrame()).toContain('当前有效：');
 
     await confirmReview(instance, value);
     expect(reached).toContain('C11');
@@ -2405,6 +2454,124 @@ describe('ConsoleAppV4', () => {
       scope: 'user',
       projectLayer: 'shared',
     }), evidence);
+  });
+
+  it('opens the preview settings action on the effective read-only homepage', async () => {
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+    });
+    value.push({ name: 'pluginPreview', pluginId: 'official/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'configFields',
+      pluginId: 'official/review-gate',
+      layer: { scope: 'effective', projectLayer: 'shared' },
+    });
+    expect(instance.lastFrame()).toContain('当前插件设置');
+    expect(instance.lastFrame()).not.toContain('保存修改');
+  });
+
+  it('restores the settings route chain and focus from editor to plugin detail', async () => {
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+    });
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+    await input(instance, ...Array.from({ length: 8 }, () => '\u001B[B'), '\r', '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFields',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'configLayer',
+      pluginId: 'team-tools/review-gate',
+    });
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFields',
+      layer: { scope: 'effective', projectLayer: 'shared' },
+    });
+    expect(value.snapshot.router.current.context.focusIndex).toBe(8);
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail',
+      pluginId: 'team-tools/review-gate',
+    });
+    expect(value.snapshot.router.current.context.focusIndex).toBe(2);
+  });
+
+  it.each([
+    {
+      label: 'preview primary action',
+      previous: { name: 'pluginList', mode: 'browse' as const },
+      origin: { name: 'pluginPreview', pluginId: 'official/review-gate' } as const,
+      openSettings: ['\u001B[B', '\r'],
+      leaveResult: '\r',
+    },
+    {
+      label: 'detail Esc',
+      previous: { name: 'pluginList', mode: 'installed' as const },
+      origin: { name: 'pluginDetail', pluginId: 'team-tools/review-gate' } as const,
+      openSettings: ['\u001B[B', '\u001B[B', '\r'],
+      leaveResult: '\u001B',
+    },
+  ])('clears the mounted C14 settings flow for $label and preserves the original Back stack', async ({
+    previous,
+    origin,
+    openSettings,
+    leaveResult,
+  }) => {
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        targetResults: [],
+      }),
+    });
+    value.push(previous);
+    value.push(origin);
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onScreenChange={(screen) => screens.add(screen)}
+    />);
+    await nextTurn(4);
+
+    await input(instance, ...openSettings);
+    await nextTurn(3);
+    await input(instance, ...Array.from({ length: 8 }, () => '\u001B[B'), '\r', '\r');
+    await nextTurn(3);
+    await input(instance, '\r', '\r', 's');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    await input(instance, '\r');
+    await nextTurn(5);
+    expect(screens).toContain('C14');
+
+    if (leaveResult === '\u001B') {
+      instance.stdin.write(leaveResult);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await nextTurn(2);
+    } else {
+      await input(instance, leaveResult);
+    }
+    expect(value.snapshot.router.current.route).toEqual(origin);
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual(previous);
   });
 
   it('keeps field-level advanced settings behind C03 and makes them reachable in C04', async () => {

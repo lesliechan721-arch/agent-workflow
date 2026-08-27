@@ -164,7 +164,10 @@ export interface ConfigFieldViewModel {
   inherited: boolean;
   configured: boolean;
   sourceLabel: string;
+  effectiveDisplayValue: string;
+  effectiveSourceLabel: string;
   value?: string | number | boolean;
+  effectiveValue?: string | number | boolean;
   defaultValue?: string | number | boolean;
   enumValues?: string[];
   valueLabels?: Record<string, string>;
@@ -994,28 +997,45 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
 export function buildConfigGroups(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
+  effectiveRead?: ResolvedConfigRead;
   dirtyKeys?: ReadonlySet<string>;
 }): ConfigGroupViewModel[] {
   const entryByKey = new Map(options.read.fields.map((field) => [field.key, field]));
+  const effectiveEntryByKey = new Map(
+    (options.effectiveRead ?? options.read).fields.map((field) => [field.key, field]),
+  );
   const effectivePage = options.read.scope === 'effective';
   const fieldModel = (key: string): ConfigFieldViewModel => {
     const schema = options.schema.schema[key]!;
     const entry = entryByKey.get(key);
+    const effectiveEntry = effectiveEntryByKey.get(key);
     const presentation = options.schema.presentation?.fields?.[key];
     const inherited = effectivePage
-      ? entry?.sourceLayer === undefined || entry?.sourceLayer === null
+      ? false
       : entry?.storedSourceLayer === undefined;
     const configured = effectivePage
-      ? entry?.valueState === 'configured' || entry?.valueState === 'default'
+      ? entry?.sourceLayer !== undefined
+        && entry.sourceLayer !== null
+        && entry.effectiveValue !== undefined
+        && entry.effectiveValue !== null
+        && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
     const privateValue = schema.sensitive === true || schema.type === 'file' || schema.type === 'directory';
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
+    const selectedStoredInvalid = !effectivePage
+      && entry?.storedSourceLayer !== undefined
+      && entry.storedValue === undefined;
+    const effectiveConfigured = effectiveEntry?.sourceLayer !== undefined
+      && effectiveEntry.sourceLayer !== null
+      && effectiveEntry.effectiveValue !== undefined
+      && effectiveEntry.effectiveValue !== null
+      && (effectiveEntry.valueState === 'configured' || effectiveEntry.valueState === 'default');
     return {
       key,
       title: schema.title ?? key,
       ...(schema.description ? { description: schema.description } : {}),
       type: schema.type,
-      displayValue: displayConfigValue({
+      displayValue: selectedStoredInvalid ? '值无效' : displayConfigValue({
         privateValue,
         inherited,
         configured,
@@ -1029,8 +1049,18 @@ export function buildConfigGroups(options: {
       sourceLabel: effectivePage
         ? configSourceLabel(entry?.sourceLayer ?? null)
         : configured ? '本层已设置' : '继承',
+      effectiveDisplayValue: displayConfigValue({
+        privateValue,
+        inherited: false,
+        configured: effectiveConfigured,
+        value: effectiveEntry?.effectiveValue,
+      }),
+      effectiveSourceLabel: configSourceLabel(effectiveEntry?.sourceLayer ?? null),
       ...(!privateValue && selectedValue !== undefined
         ? { value: selectedValue as string | number | boolean }
+        : {}),
+      ...(!privateValue && effectiveEntry?.effectiveValue !== undefined && effectiveEntry.effectiveValue !== null
+        ? { effectiveValue: effectiveEntry.effectiveValue as string | number | boolean }
         : {}),
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
       ...(schema.values ? { enumValues: [...schema.values] } : {}),
@@ -1101,6 +1131,7 @@ export function buildConfigPage(options: {
   pluginId: string;
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
+  effectiveRead?: ResolvedConfigRead;
 }): ConfigPageViewModel {
   const privateFields = new Set(Object.entries(options.schema.schema)
     .filter(([, field]) => field.sensitive === true || field.type === 'file' || field.type === 'directory')

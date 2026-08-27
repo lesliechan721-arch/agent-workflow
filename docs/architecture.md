@@ -144,6 +144,8 @@ target health 只表示当前 live 组件是否完整，不表示 Catalog 版本
 
 配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
+控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user、project shared 或 project local 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
+
 ## Platform Boundaries
 
 - 只删除可证明属于 AW 的 marker、managed block、artifact 或 namespaced 组件。

@@ -849,7 +849,6 @@ export function ConsoleAppV4(props: {
     if (route.name !== 'configLayer') return;
     const abort = new AbortController();
     const layers = [
-      { key: 'effective', layer: { scope: 'effective' as const, projectLayer: 'shared' as const } },
       { key: 'user', layer: { scope: 'user' as const, projectLayer: 'shared' as const } },
       { key: 'project', layer: { scope: 'project' as const, projectLayer: 'shared' as const } },
       { key: 'local', layer: { scope: 'project' as const, projectLayer: 'local' as const } },
@@ -1068,6 +1067,21 @@ export function ConsoleAppV4(props: {
     setShowTechnical(false);
     setActionError(undefined);
   };
+  const beginConfigFlow = (pluginId: string): void => {
+    props.controller.updatePageContext({
+      focusIndex: focus,
+      scrollOffset,
+      query,
+      installFilter,
+      sourceTabId: route.name === 'pluginList' ? route.sourceId ?? 'all' : undefined,
+    });
+    props.controller.beginConfigFlow(pluginId);
+    setFocus(0);
+    setScrollOffset(0);
+    setSearchMode(false);
+    setShowTechnical(false);
+    setActionError(undefined);
+  };
   const back = (): void => {
     if (route.name === 'result') props.controller.leaveResult();
     else props.controller.back();
@@ -1274,6 +1288,15 @@ export function ConsoleAppV4(props: {
     }
     if (field.type === 'boolean' && field.value !== undefined) return field.value ? '开启' : '关闭';
     return `${field.displayValue}${field.unit && field.displayValue !== '未设置' ? ` ${field.unit}` : ''}`;
+  };
+  const effectiveFieldDisplay = (field: ConfigFieldViewModel): string => {
+    if (field.type === 'enum' && field.effectiveValue !== undefined) {
+      return field.valueLabels?.[String(field.effectiveValue)] ?? field.effectiveDisplayValue;
+    }
+    if (field.type === 'boolean' && field.effectiveValue !== undefined) {
+      return field.effectiveValue ? '开启' : '关闭';
+    }
+    return `${field.effectiveDisplayValue}${field.unit && field.effectiveDisplayValue !== '未设置' ? ` ${field.unit}` : ''}`;
   };
   const fieldEditor = (field: ConfigFieldViewModel): Extract<TuiRoute, { name: 'configFieldEditor' }>['editor'] => {
     if (field.sensitive) return 'sensitive';
@@ -1486,7 +1509,7 @@ export function ConsoleAppV4(props: {
         ...((overview?.blockers.length ?? 0) > 0 ? { status: 'warning' as const } : {}),
         run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
       };
-      if (action.id === 'settings') return { label: '查看插件设置定义', description: `${plugin.configFieldCount} 个配置字段`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) };
+      if (action.id === 'settings') return { label: '查看插件设置', description: `${plugin.configFieldCount} 个配置字段及当前来源`, run: () => beginConfigFlow(plugin.pluginId) };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
       return { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
     };
@@ -2030,7 +2053,7 @@ export function ConsoleAppV4(props: {
         meta: dependencySummary ? `可安装 · ${dependencySummary.totalCount} 个插件依赖` : '可安装',
         run: () => beginPortable(plugin.pluginId),
       };
-      if (action.id === 'settings') return { label: '设置', description: '个人默认、当前项目和本机覆盖', meta: `${plugin.configFieldCount} 项配置`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) };
+      if (action.id === 'settings') return { label: '设置', description: '查看当前实际生效的配置和值来源', meta: `${plugin.configFieldCount} 项配置`, run: () => beginConfigFlow(plugin.pluginId) };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
       return { label: '关于与技术详情', description: '版本、来源和受管内容', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
     });
@@ -2103,11 +2126,10 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'configLayer' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;
-    title = '选择要查看或修改的设置';
-    description = '安装位置与设置保存层是两个不同概念。';
+    title = `修改 ${plugin.displayName} 设置`;
+    description = '选择修改保存到哪里。';
     help = '↑↓ 移动 · Enter 打开 · Esc 返回';
     actions = [
-      { label: '有效设置', description: '合并后的实际结果 · 只读', meta: '查看', run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'effective', projectLayer: 'shared' } }) },
       { label: '个人默认', description: '在所有项目中作为默认值', meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'user', projectLayer: 'shared' } }) },
       { label: '当前项目', description: '随仓库共享，适合团队约定', meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'project', projectLayer: 'shared' } }) },
       { label: '当前项目（仅本机）', description: '只保存在本机，不提交到仓库', meta: configLayerCounts.local === undefined ? undefined : configLayerCounts.local === 0 ? '未设置' : `${configLayerCounts.local} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'project', projectLayer: 'local' } }) },
@@ -2118,22 +2140,55 @@ export function ConsoleAppV4(props: {
     const selectedGroups = route.groupId
       ? currentConfigPage?.groups.filter((group) => group.id === route.groupId) ?? []
       : currentConfigPage?.groups ?? [];
-    breadcrumb = `${plugin.displayName} / 设置 / ${configLayerLabel(route.layer)}`;
+    breadcrumb = readonly ? `${plugin.displayName} / 设置` : `${plugin.displayName} / 设置 / ${configLayerLabel(route.layer)}`;
     context = readonly ? '只读' : dirty ? `${Object.keys(draftUpdates).length + draftRemoves.length} 项未保存` : undefined;
-    title = readonly ? '当前实际使用的设置' : route.groupId ? selectedGroups[0]?.title ?? '高级设置' : configLayerLabel(route.layer);
-    description = readonly ? '由默认值、个人默认、当前项目和本机覆盖合并。' : route.groupId ? '这些字段来自 manifest 的高级设置分组。' : '字段来自插件 manifest；修改先保存在本地草稿。';
+    title = readonly ? '当前插件设置' : route.groupId ? selectedGroups[0]?.title ?? '高级设置' : configLayerLabel(route.layer);
+    description = readonly ? '查看当前实际生效的配置和值来源。' : route.groupId ? '这些字段来自 manifest 的高级设置分组。' : '字段来自插件 manifest；修改先保存在本地草稿。';
     if (!readonly && configActionError) description = configActionError;
     help = readonly ? '↑↓ 查看 · Esc 返回' : '↑↓ 移动 · Enter 修改 · s 保存 · u 恢复继承 · Esc 返回';
     if (!currentConfigPage) {
       content = <StatusCard status="info" title="正在读取可信设置定义"><ProgressRow title="读取 manifest 设置字段" state="active" /></StatusCard>;
     } else if (readonly) {
-      actions = selectedGroups.flatMap((group) => group.fields.map((field) => ({
-        label: field.title,
-        description: `来自${field.sourceLabel}`,
-        meta: currentFieldDisplay(field),
-      })));
-      const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(2));
-      content = <SectionCard title="有效设置">{actions.slice(viewport.offset, viewport.offset + viewport.limit).map((action, index) => <StaticRow key={`${action.label}:${index}`} title={action.label} description={action.description} meta={action.meta} compact={policy.mode === 'compact'} />)}</SectionCard>;
+      const rowGroups = selectedGroups.map((group) => ({
+        id: group.id,
+        title: group.title,
+        rows: group.fields.map((field) => ({
+          label: field.title,
+          description: field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`,
+          meta: currentFieldDisplay(field),
+        })),
+      }));
+      const fieldRows = rowGroups.flatMap((group) => group.rows);
+      actions = [...fieldRows, {
+        label: '修改设置…',
+        description: '选择设置保存位置后开始修改',
+        run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }),
+      }];
+      const fieldCount = fieldRows.length;
+      const viewport = groupedRowViewport({
+        rowHeights: actions.map((action) => policy.mode === 'compact' || !action.description ? 1 : 2),
+        groupKeys: [...rowGroups.flatMap((group) => group.rows.map(() => group.id)), undefined],
+        groupOverhead: 3,
+        focus,
+        requestedOffset: scrollOffset,
+        rowBudget: pageActionBudget(),
+      });
+      const viewportEnd = viewport.offset + viewport.limit;
+      let groupOffset = 0;
+      content = <Box flexDirection="column">{rowGroups.map((group) => {
+        const start = groupOffset;
+        const end = start + group.rows.length;
+        groupOffset = end;
+        const visibleStart = Math.max(start, viewport.offset);
+        const visibleEnd = Math.min(end, viewportEnd);
+        return visibleStart < visibleEnd
+          ? <SectionCard key={group.id} title={group.title} meta={viewport.hiddenBefore > 0 || viewport.hiddenAfter > 0 ? `${viewport.position}/${viewport.total}` : undefined}>
+              {group.rows.slice(visibleStart - start, visibleEnd - start).map((action, index) => <StaticRow key={`${action.label}:${visibleStart + index}`} title={action.label} description={action.description} meta={action.meta} compact={policy.mode === 'compact'} />)}
+            </SectionCard>
+          : null;
+      })}{viewportEnd > fieldCount
+        ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={fieldCount} limit={1} />
+        : null}</Box>;
     } else {
       const mutableLayer = {
         scope: route.layer.scope as Scope,
@@ -2148,7 +2203,7 @@ export function ConsoleAppV4(props: {
           ? [{ label: group.title, description: group.description ?? '渐进展开高级字段', meta: `${group.fields.length} 项`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: route.layer, groupId: group.id }) }]
           : group.fields.map((field) => ({
               label: field.title,
-              description: field.description,
+              description: `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
               meta: currentFieldDisplay(field),
               configKey: field.key,
               run: () => go({ name: 'configFieldEditor', pluginId: plugin.pluginId, layer: mutableLayer, fieldKey: field.key, editor: fieldEditor(field) }),
@@ -2809,6 +2864,7 @@ export function ConsoleAppV4(props: {
       && result.returnRoute?.name === 'pluginDetail';
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
+    const successfulConfigOperation = configOperation !== undefined && !blocked && !partial;
     const sourceOperation = operationKind === 'sourceMutation';
     const sourceRefreshWarning = sourceOperation && 'summary' in result
       && result.summary?.messages?.some((message) => message.startsWith('警告：'));
@@ -2868,6 +2924,9 @@ export function ConsoleAppV4(props: {
         : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const pluginId = resultSummary?.pluginId
       ?? ('pluginId' in result ? result.pluginId : undefined);
+    const configOrigin = successfulConfigOperation && pluginId
+      ? props.controller.configOrigin(pluginId)
+      : undefined;
     const dependencyTargets = resultSummary?.targets?.some((target) => target.relation) ?? false;
     const blockedDependencyFailure = blocked && result.code === 'operationFailed' && dependencyTargets;
     const dependencyRecovery = (partial && dependencyTargets) || blockedDependencyFailure;
@@ -2983,7 +3042,14 @@ export function ConsoleAppV4(props: {
           { label: '返回设置', run: () => leaveResult() },
           { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
         ]
-      : [{ label: partial || blockedDependencyFailure ? '查看失败项' : configOperation ? '查看插件' : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
+      : [{ label: partial || blockedDependencyFailure ? '查看失败项' : successfulConfigOperation && configOrigin
+        ? configOrigin?.name === 'pluginPreview' ? '返回插件预览' : '返回插件详情'
+        : configOperation ? '查看插件'
+          : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
+      if (successfulConfigOperation && configOrigin) {
+        leaveResult();
+        return;
+      }
       if ((partial || blockedDependencyFailure) && failedPluginId && failedTarget) {
         if (failedIssue) leaveResult({ name: 'issueDetail', issueId: failedIssue.issueId });
         else if (failedPluginPlatforms?.includes(failedTarget.platform)) {

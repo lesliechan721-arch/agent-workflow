@@ -841,7 +841,15 @@ export function createTuiControllerDependencies(
             cwd: context.cwd,
             env: context.env,
           });
-          return buildConfigGroups({ schema: plugin.manifest.config, read });
+          const effectiveRead = await resolveConfigRead({
+            pluginName: plugin.manifest.name,
+            plugin,
+            scope: 'effective',
+            projectLayer: layer.projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          return buildConfigGroups({ schema: plugin.manifest.config, read, effectiveRead });
         },
       });
     },
@@ -865,7 +873,15 @@ export function createTuiControllerDependencies(
             cwd: context.cwd,
             env: context.env,
           });
-          return buildConfigPage({ pluginId, schema: plugin.manifest.config, read });
+          const effectiveRead = layer.scope === 'effective' ? read : await resolveConfigRead({
+            pluginName: plugin.manifest.name,
+            plugin,
+            scope: 'effective',
+            projectLayer: layer.projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          return buildConfigPage({ pluginId, schema: plugin.manifest.config, read, effectiveRead });
         },
       });
     },

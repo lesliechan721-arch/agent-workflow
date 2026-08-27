@@ -98,6 +98,7 @@ function copyFrame(frame: TuiRouteFrame): TuiRouteFrame {
 export class TuiRouter {
   readonly #stack: TuiRouteFrame[] = [{ route: { name: 'home' }, context: {} }];
   #portableOrigin?: { pluginId: string; index: number };
+  #configOrigin?: { pluginId: string; index: number };
 
   get snapshot(): TuiRouterSnapshot {
     return { current: copyFrame(this.#stack.at(-1)!), depth: this.#stack.length };
@@ -121,6 +122,41 @@ export class TuiRouter {
 
   back(): TuiRouterSnapshot {
     if (this.#stack.length > 1) this.#stack.pop();
+    if (this.#configOrigin && this.#stack.length - 1 <= this.#configOrigin.index) {
+      this.#configOrigin = undefined;
+    }
+    return this.snapshot;
+  }
+
+  beginConfigFlow(pluginId: string): TuiRoute {
+    const index = this.#stack.length - 1;
+    const route = this.#stack[index]!.route;
+    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
+      || route.pluginId !== pluginId) {
+      throw new Error('Config flow must start from its plugin preview or detail.');
+    }
+    this.#configOrigin = { pluginId, index };
+    return structuredClone(route);
+  }
+
+  configOrigin(pluginId: string): TuiRoute | undefined {
+    if (this.#configOrigin?.pluginId !== pluginId) return undefined;
+    const frame = this.#stack[this.#configOrigin.index];
+    if (!frame || (frame.route.name !== 'pluginPreview' && frame.route.name !== 'pluginDetail')
+      || frame.route.pluginId !== pluginId) {
+      this.#configOrigin = undefined;
+      return undefined;
+    }
+    return copyFrame(frame).route;
+  }
+
+  resetConfigFlow(pluginId: string, target?: TuiRoute): TuiRouterSnapshot | undefined {
+    if (!this.configOrigin(pluginId) || !this.#configOrigin) return undefined;
+    this.#stack.splice(this.#configOrigin.index + 1);
+    this.#configOrigin = undefined;
+    if (target && JSON.stringify(this.#stack.at(-1)!.route) !== JSON.stringify(target)) {
+      this.replace(target);
+    }
     return this.snapshot;
   }
 
