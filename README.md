@@ -74,7 +74,8 @@ aw status
 | --- | --- | --- |
 | [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写或评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
 | [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审 Agent Skill，设计或审核 Skill Eval；人工依赖 `agent-content-toolkit` | Codex / Claude Code |
-| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在任意 Workspace v1 创建或评审 AW 插件；人工依赖前两个通用工具插件 | Codex / Claude Code |
+| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在既有 Catalog Workspace 中创建、维护、安全删除或评审单个 AW Plugin Source；依赖前两个通用工具插件 | Codex / Claude Code |
+| [`aw-catalog-development`](plugins/aw-catalog-development/) | 维护、编排安全删除或只读评审 Catalog Workspace，并通过显式精确授权发布；依赖 `aw-plugin-development` | Codex / Claude Code |
 
 ## 使用示例
 
@@ -199,39 +200,19 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 
 ## 本地开发与发版流程
 
-### 第三方插件作者快速闭环
+### 第三方 Catalog 与 Plugin 作者
 
-第三方作者只需要 Node.js 22+ 和已安装的 `aw` CLI，不需要 clone 本仓库、`pnpm` monorepo 或官方 release 脚本。先运行各命令的 `--help`，并使用 Workspace v1：
+第三方作者只需要 Node.js 22+ 和已安装的 `aw` CLI，不需要 clone 本仓库、`pnpm` monorepo 或官方 release 脚本。安装 `aw-catalog-development` 会解析完整作者工具依赖：
 
- ```bash
- workspace=/absolute/path/to/workspace
-
- aw --version
- aw catalog init --workspace-root "$workspace"
-aw plugin init example-plugin \
-  --description "Example plugin." \
-  --skill-description "Create an example plugin Skill." \
-  --workspace-root "$workspace"
-aw plugin validate plugins/example-plugin --workspace-root "$workspace" --json
-aw plugin test plugins/example-plugin --workspace-root "$workspace" --json
-aw plugin build plugins/example-plugin --workspace-root "$workspace" --json
-aw catalog build --workspace-root "$workspace" --json
-aw catalog validate "$workspace/.aw/catalog" --json
-
-AW_HOME=/tmp/aw-home \
-  aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json
- AW_HOME=/tmp/aw-home \
-   aw install local-example/example-plugin -p both --json
- aw skill validate <skill-directory> --frontmatter-profile portable-agent-skills
- # 在用户明确要求归档 Review 前，先确认当前公开参数
- aw review publish --help
+```bash
+aw install aw-catalog-development -p both
 ```
 
-`aw plugin status <plugin> --workspace-root "$workspace"` 不要求 Git；只有明确传入 `--base <git-ref>` 时才要求 Git。生成的 snapshot、digest 和 platform marketplace 都不能手改。完整 layout、Git 发布、依赖选择器、信任边界和恢复规则见[第三方插件作者指南](docs/plugin-authoring.md)。
+使用 `author-aw-catalog` 建立或维护 Workspace；单个 canonical Plugin Source 交给 `author-aw-plugin`。删除由 Catalog Author 确认 Workspace、插件名、inventory 和反向依赖后交给 Plugin Author 的公开 `aw plugin remove` 分支；receipt 返回后 Catalog Author 验证剩余 inventory，空 inventory 不验证已删除对象。删除不会自动 publish。Workspace、聚合验证、preflight、发布和失败恢复的唯一作者流程见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
 
 ### 本仓库维护与官方发版
 
-以下命令只面向本仓库维护者，不是第三方插件作者的常规路径：
+本官方仓库本身也是普通 Catalog Workspace，使用与第三方相同的 marker、metadata、inventory、Core validator、preflight、publisher 和 attempt 合同。以下 `pnpm` 命令只面向本 monorepo 维护者，用于编排 CLI/Core/npm/Product Release；它们不是第二套 Catalog contract：
 
 新 Review archive 只在用户明确要求时使用：本次请求的顶层 Reviewer 产出 `report.md` 并用 `aw review publish` 归档；下层 Reviewer 只返回材料。它只写不可变的 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`，不重新评审、不运行或封存 Eval、也不更新 README。完整参数以 `aw review publish --help` 为准；workflow publication 还必须传入其 `scope.json`。Quality Review 不计算发布准备度；独立的机器 `release-check.json` 只能作为可选附件。
 
@@ -270,9 +251,18 @@ pnpm release -- beta --catalog --catalog-bump patch --plugin <plugin-name>=patch
 pnpm release -- beta --all --cli-bump patch --catalog-bump patch --plugin <plugin-name>=patch
 ```
 
-产品源码必须先提交，且工作树必须干净。命令只在指定 bump 时原子更新并提交白名单发布元数据，然后运行所选轴的完整验证。它在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，再按 `Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。CLI tag 只推送到 `origin`；当前分支不自动推送。
+`release/version-targets.json` 只保存 schema 2 CLI stable target。Catalog 的唯一版本真值是 `plugins/marketplace-source.json.catalog.version`，并始终表示下一次精确 stable 或 `x.y.z-beta.N` candidate。维护者也可以通过同一公开入口显式设置或提升它：
 
-远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布三个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若三个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 失败仍需提升 Catalog target 后重发。
+```bash
+aw catalog version 0.2.0-beta.1 --workspace-root .
+aw catalog version --bump patch --workspace-root .
+```
+
+产品源码必须先提交，且工作树必须干净。命令先选择 Catalog candidate，再调用上述公共 version mutation；需要变化时创建一个精确只包含 `plugins/marketplace-source.json` 的 commit。CLI/plugin metadata 使用单独白名单 commit。没有 Catalog version 变化时不创建空 commit。随后运行所选轴的完整验证，在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 descriptor，并按 `Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。Catalog 轴最后调用与普通 Workspace 相同的 publisher；CLI tag 只推送到 `origin`，当前分支不自动推送。
+
+未发布且未尝试的 metadata candidate 会直接复用。beta candidate 已使用时，命令在同一 stable base 选择下一个未使用的 `beta.N`；stable metadata 进入 beta 渠道时也选择该 base 的 beta。stable 发布可把 beta metadata 提升为同 base stable；若 exact stable 已发布或已尝试，必须指定 `--catalog-bump`。任何 Workspace attempt 文件都占用对应 exact version，即使文件损坏。Catalog-only 不查询或发布 npm package，也不创建 CLI tag 或 `.release/attempted.json`。
+
+远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `.release/attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布三个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若三个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 使用 Workspace `.aw/publish/attempts/<catalogVersion>.json`；公开命令与官方 release 共用该门禁，失败后必须提升 Catalog version，不能删除 attempt 后重试同一版本。
 
 CLI 读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。
 
@@ -281,6 +271,8 @@ CLI 读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github
 - [架构说明](docs/architecture.md)
 - [编码约定](docs/coding-conventions.md)
 - [测试指南](docs/testing.md)
+- [Catalog 作者指南](docs/catalog-authoring.md)
+- [Plugin 作者指南](docs/plugin-authoring.md)
 - [插件维护指南](docs/plugin-maintenance.md)
 - [插件与 Skill README 规范](docs/readme-standard.md)
 - [Agent 项目指令](AGENTS.md)

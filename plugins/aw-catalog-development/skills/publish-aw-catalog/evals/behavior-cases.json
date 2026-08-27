@@ -1,0 +1,44 @@
+{
+  "skill_name": "publish-aw-catalog",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "Remote publication 需要精确身份授权和不可重试边界。"
+  },
+  "evals": [
+    {
+      "id": "preflight-failure-stops-before-authorization",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "publication-preflight-failure",
+      "unit_under_test": "full-skill",
+      "preconditions": { "explicit_invocation": true, "remote_and_branch_explicit": true },
+      "oracle": {
+        "rationale": "失败的 preflight 不能产生可授权的 exact identity，因此 Publisher 必须立即停止。",
+        "rule_refs": ["SKILL.md#工作流", "SKILL.md#失败边界"],
+        "confidence": "high",
+        "allowed_variance": "可以解释 fixture 返回的失败；必须只运行一次 preflight，且不得请求发布授权或运行 publish。",
+        "minimal_counterexample": "只有 preflight 成功并返回完整 exact identity 后，才可以请求该身份的发布授权。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布 workspace root `.` 到 remote `staging`、branch `catalogs/team`。本 case 只测试 preflight 失败边界：不要运行版本或 help 探测。`sh fixtures/bin/aw` 是本 case 唯一 CLI 入口；不要 chmod，不要把 fixture 放入 PATH，也不要创建日志或其它文件。先说明 preflight 会执行插件 build code，然后只运行一次 `sh fixtures/bin/aw catalog status --workspace-root . --preflight --remote staging --branch catalogs/team --json`。它返回失败后立即停止，不要询问发布授权，不要执行 publish。",
+      "scripted_replies": [],
+      "expected_output": "只运行一次显式 remote/branch 的 preflight；报告 preflight 失败并立即停止；不请求授权，不执行 publish，workspace 不变。",
+      "workspace_files": {
+        "fixtures/bin/aw": "#!/bin/sh\nset -eu\nif [ \"$#\" -eq 10 ] && [ \"$1\" = \"catalog\" ] && [ \"$2\" = \"status\" ] && [ \"$3\" = \"--workspace-root\" ] && [ \"$4\" = \".\" ] && [ \"$5\" = \"--preflight\" ] && [ \"$6\" = \"--remote\" ] && [ \"$7\" = \"staging\" ] && [ \"$8\" = \"--branch\" ] && [ \"$9\" = \"catalogs/team\" ] && [ \"${10}\" = \"--json\" ]; then\n  printf '%s\\n' '{\"ok\":false,\"stage\":\"preflight\",\"error\":\"fixture preflight failed\"}'\n  printf '%s\\n' 'fixture: catalog publication preflight failed' >&2\n  exit 7\nfi\nprintf '%s\\n' 'fixture: unexpected command' >&2\nexit 9\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "trace 中恰好一次 CLI 调用，且精确为 sh fixtures/bin/aw catalog status --workspace-root . --preflight --remote staging --branch catalogs/team --json",
+          "preflight 返回失败后立即停止，没有第二次 preflight 或其它 CLI 调用",
+          "trace 没有 request_user_input、授权问题或其它向用户请求发布许可的动作",
+          "trace 没有 catalog publish 或其它 publish 命令，且 workspace 保持不变"
+        ]
+      }
+    }
+  ]
+}

@@ -208,93 +208,22 @@ describe('catalog runtime projection', () => {
       .resolves.toBe('{"portable":true}\n');
   });
 
-  it('binds an explicit CLI virtual root to build provenance and projected bytes', async () => {
+  it('rejects removed CLI virtual capability providers', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-virtual-projection-'));
     tempRoots.push(root);
-    const consumer = await createPlugin({
+    await expect(createPlugin({
       root,
       name: 'consumer',
       buildConfig: {
-        cacheable: true,
         buildImports: [{
           plugin: '@aw/cli',
           export: 'skill-frontmatter-capabilities',
           env: 'AW_PLUGIN_IMPORT_FRONTMATTER',
         }],
-        skillRuntimeFiles: [{
-          skill: 'demo',
-          target: 'references/frontmatter.json',
-          source: './generated-frontmatter.json',
-        }],
       },
       scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
       files: { 'build.mjs': 'export {};\n' },
-    });
-    const createVirtualRoot = async (name: string, content: string): Promise<string> => {
-      const virtualRoot = path.join(root, name);
-      await fs.outputJson(path.join(virtualRoot, 'package.json'), {
-        name: '@lesliechan721/aw',
-        version: '0.1.0-beta.2',
-      });
-      await fs.outputFile(
-        path.join(virtualRoot, 'src', 'utils', 'skill-frontmatter-capabilities.json'),
-        content,
-      );
-      return virtualRoot;
-    };
-    const baseVirtualRoot = await createVirtualRoot('base-cli', '{"registry":"base"}\n');
-    const currentVirtualRoot = await createVirtualRoot('current-cli', '{"registry":"current"}\n');
-    const runner: PluginStagingRunner = {
-      async installPackageRoot() {},
-      async runNodeBuild({ pluginRoot, env }) {
-        await fs.copyFile(
-          env.AW_PLUGIN_IMPORT_FRONTMATTER!,
-          path.join(pluginRoot, 'generated-frontmatter.json'),
-        );
-      },
-    };
-    const bundleWithVirtualRoot = async (name: string, virtualRoot: string) =>
-      bundleLocalPlugin(consumer, path.join(root, name), {
-        buildMode: 'staging',
-        stagingRunner: runner,
-        runtimeResolver: createCatalogRuntimeImportResolver([consumer], {
-          cliVirtualExportRoot: virtualRoot,
-        }),
-      });
-
-    const [base, current] = await Promise.all([
-      bundleWithVirtualRoot('base-bundle', baseVirtualRoot),
-      bundleWithVirtualRoot('current-bundle', currentVirtualRoot),
-    ]);
-
-    expect(base.runtimeProjection.buildImports).toMatchObject([{
-      provider: '@aw/cli',
-      providerVersion: '0.1.0-beta.2',
-      name: 'skill-frontmatter-capabilities',
-    }]);
-    expect(base.runtimeProjection.buildImports[0]?.sourceDigest)
-      .not.toBe(current.runtimeProjection.buildImports[0]?.sourceDigest);
-    expect(base.runtimeProjection.skillRuntimeFiles[0]?.targetDigest)
-      .not.toBe(current.runtimeProjection.skillRuntimeFiles[0]?.targetDigest);
-    await expect(fs.readFile(
-      path.join(root, 'base-bundle', 'codex', 'skills', 'demo', 'references', 'frontmatter.json'),
-      'utf8',
-    )).resolves.toBe('{"registry":"base"}\n');
-    await expect(fs.readFile(
-      path.join(root, 'current-bundle', 'codex', 'skills', 'demo', 'references', 'frontmatter.json'),
-      'utf8',
-    )).resolves.toBe('{"registry":"current"}\n');
-
-    const missingVirtualRoot = path.join(root, 'missing-cli');
-    await fs.outputJson(path.join(missingVirtualRoot, 'package.json'), { version: '0.1.0-beta.2' });
-    const missingResolver = createCatalogRuntimeImportResolver([consumer], {
-      cliVirtualExportRoot: missingVirtualRoot,
-    });
-    await expect(missingResolver.resolve({
-      consumer,
-      reference: { plugin: '@aw/cli', export: 'skill-frontmatter-capabilities' },
-      purpose: 'build',
-    })).rejects.toThrow(`canonical skill frontmatter registry is missing from ${missingVirtualRoot}`);
+    })).rejects.toThrow('unknown reserved provider "@aw/cli"');
   });
 
   it('exposes only the self-contained Eval corpus digest through its reserved provider', async () => {
@@ -414,41 +343,27 @@ describe('catalog runtime projection', () => {
     )).resolves.toBe('{"provider":2}\n');
   });
 
-  it.each(['provider', '@aw/cli'] as const)(
+  it.each(['provider'] as const)(
     'rejects a %s build import that changes during a successful build and removes partial state',
     async (providerKind) => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-build-import-toctou-'));
       tempRoots.push(root);
-      const provider = providerKind === 'provider'
-        ? await createPlugin({
-            root,
-            name: 'provider',
-            buildConfig: {
-              runtimeExports: [{ name: 'registry', source: './registry.json' }],
-            },
-            files: { 'registry.json': '{"version":"a"}\n' },
-          })
-        : undefined;
-      const cliVirtualExportRoot = providerKind === '@aw/cli'
-        ? path.join(root, 'cli-provider')
-        : undefined;
-      const canonicalSource = provider
-        ? path.join(provider.rootDir, 'registry.json')
-        : path.join(cliVirtualExportRoot!, 'src', 'utils', 'skill-frontmatter-capabilities.json');
-      if (cliVirtualExportRoot) {
-        await fs.outputJson(path.join(cliVirtualExportRoot, 'package.json'), {
-          name: '@lesliechan721/aw',
-          version: '0.1.0-beta.2',
-        });
-        await fs.outputFile(canonicalSource, '{"version":"a"}\n');
-      }
+      const provider = await createPlugin({
+        root,
+        name: 'provider',
+        buildConfig: {
+          runtimeExports: [{ name: 'registry', source: './registry.json' }],
+        },
+        files: { 'registry.json': '{"version":"a"}\n' },
+      });
+      const canonicalSource = path.join(provider.rootDir, 'registry.json');
       const consumer = await createPlugin({
         root,
         name: 'consumer',
         buildConfig: {
           buildImports: [{
             plugin: providerKind,
-            export: provider ? 'registry' : 'skill-frontmatter-capabilities',
+            export: 'registry',
             env: 'AW_PLUGIN_IMPORT_REGISTRY',
           }],
         },
@@ -472,8 +387,7 @@ describe('catalog runtime projection', () => {
         buildMode: 'staging',
         stagingRunner: runner,
         runtimeResolver: createCatalogRuntimeImportResolver(
-          provider ? [provider, consumer] : [consumer],
-          cliVirtualExportRoot ? { cliVirtualExportRoot } : {},
+          [provider, consumer],
         ),
       })).rejects.toThrow('changed during build import projection');
       await expect(fs.pathExists(outputRoot)).resolves.toBe(false);

@@ -272,6 +272,7 @@ export interface OperationResultSummary {
     state: 'completed' | 'kept' | 'failed' | 'skipped';
     relation?: 'requested' | 'direct' | 'transitive';
     requiredBy?: string[];
+    errorCode?: 'dependencyStillRequired';
   }>;
 }
 
@@ -467,6 +468,14 @@ function operationLabels(intent: OperationIntent): {
   }
   if (intent.kind === 'pluginWrite') {
     if (intent.originIssue) {
+      if (intent.action === 'cleanup') {
+        return {
+          title: '清理已安装内容',
+          description: '只清理可证明属于 AW 的现场内容；保留插件设置；不运行 uninstall lifecycle。',
+          primaryLabel: '开始清理',
+          destructive: true,
+        };
+      }
       return {
         title: '处理问题',
         description: '只执行所选问题处理动作；插件设置保持不变。',
@@ -1904,8 +1913,8 @@ export class TuiController {
         'pluginId' in intent ? this.getPluginDependencyOverview(intent.pluginId) : undefined,
       ),
       technicalDetails: technicalDetails(evidence),
-      ...(intent.kind === 'pluginWrite' && intent.action === 'cleanup' && intent.force === true
-        ? { equivalentCommand: `aw cleanup ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope} --force` }
+      ...(intent.kind === 'pluginWrite' && intent.action === 'cleanup'
+        ? { equivalentCommand: `aw cleanup ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.force === true ? ' --force' : ''}` }
         : {}),
       primaryLabel: intent.kind === 'pluginWrite' && evidence.dependencyPlan
         ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
@@ -2081,12 +2090,16 @@ export class TuiController {
       const dependencyFailure = pluginSummary?.code === 'operationFailed'
         && Boolean(hasFailedDependencyTarget);
       if (pluginSummary?.code === 'operationFailed') {
-        return this.#setBlocked(operationId, 'operationFailed', {
+        const unsuccessfulTargets = pluginSummary.targets?.filter((target) =>
+          target.state === 'failed' || target.state === 'skipped') ?? [];
+        const dependencyStillRequired = unsuccessfulTargets.length > 0
+          && unsuccessfulTargets.every((target) => target.errorCode === 'dependencyStillRequired');
+        return this.#setBlocked(operationId, dependencyStillRequired ? 'dependencyStillRequired' : 'operationFailed', {
           intent: ticket.intent,
           navigation: 'result',
           returnRoute: ticket.returnRoute,
-          ...(dependencyFailure ? { summary: pluginSummary } : {}),
-          ...(!dependencyFailure ? { writeMayHaveCompleted: true } : {}),
+          ...(dependencyFailure || dependencyStillRequired ? { summary: pluginSummary } : {}),
+          ...(!dependencyFailure && !dependencyStillRequired ? { writeMayHaveCompleted: true } : {}),
         });
       }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
@@ -2382,6 +2395,10 @@ export class TuiController {
         : origin.actionId === 'remove'
           ? { action: 'uninstall' as const, scope: issue.scope }
           : undefined
+      : issue.category === 'sourceUnavailable'
+        ? origin.actionId === 'cleanup' && action.writeAction === 'cleanup'
+          ? { action: 'cleanup' as const, scope: issue.scope }
+          : undefined
       : issue.category === 'scopeConflict'
         ? origin.actionId === 'keepUserScope'
           ? { action: 'uninstall' as const, scope: 'project' as const }
@@ -2491,6 +2508,9 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         relation: dependencyRelation(executionPlan, planned.pluginId),
         requiredBy: planned.requiredBy,
       } : {}),
+      ...(entry.errorCode === 'dependencyStillRequired'
+        ? { errorCode: 'dependencyStillRequired' as const }
+        : {}),
     }];
   });
   const inferredTargets = intent.kind === 'pluginWrite' && targets.length === 0

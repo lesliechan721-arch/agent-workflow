@@ -414,13 +414,13 @@ describe('build cache input and environment identity', () => {
       '.agents-plugin',
       'plugin.json',
     );
-    const virtualRegistryPath = path.join(
+    const cliSourceInputPath = path.join(
       repoRoot,
       'packages',
       'cli',
       'src',
       'utils',
-      'skill-frontmatter-capabilities.ts',
+      'registered-input.ts',
     );
     const sharedPackageInputPath = path.join(
       repoRoot,
@@ -434,7 +434,7 @@ describe('build cache input and environment identity', () => {
       fs.mkdir(path.dirname(buildScriptPath), { recursive: true }),
       fs.mkdir(path.dirname(providerPath), { recursive: true }),
       fs.mkdir(path.dirname(providerManifestPath), { recursive: true }),
-      fs.mkdir(path.dirname(virtualRegistryPath), { recursive: true }),
+      fs.mkdir(path.dirname(cliSourceInputPath), { recursive: true }),
       fs.mkdir(path.dirname(sharedPackageInputPath), { recursive: true }),
     ]);
     await fs.writeFile(manifestPath, JSON.stringify({
@@ -443,11 +443,6 @@ describe('build cache input and environment identity', () => {
         cacheable: true,
         buildImports: [
           { plugin: 'provider', export: 'rules', env: 'AW_PLUGIN_IMPORT_RULES' },
-          {
-            plugin: '@aw/cli',
-            export: 'skill-frontmatter-capabilities',
-            env: 'AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES',
-          },
         ],
       },
       scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs' } } },
@@ -460,7 +455,7 @@ describe('build cache input and environment identity', () => {
     }));
     await fs.writeFile(buildScriptPath, 'export const build = 1;\n');
     await fs.writeFile(providerPath, '{"rule":1}\n');
-    await fs.writeFile(virtualRegistryPath, 'export const registry = 1;\n');
+    await fs.writeFile(cliSourceInputPath, 'export const registeredInput = 1;\n');
     await fs.writeFile(sharedPackageInputPath, 'export const sharedContract = 1;\n');
 
     let buildCount = 0;
@@ -490,7 +485,7 @@ describe('build cache input and environment identity', () => {
     for (const [changedPath, contents] of [
       [buildScriptPath, 'export const build = 2;\n'],
       [providerPath, '{"rule":2}\n'],
-      [virtualRegistryPath, 'export const registry = 2;\n'],
+      [cliSourceInputPath, 'export const registeredInput = 2;\n'],
       [sharedPackageInputPath, 'export const sharedContract = 2;\n'],
     ] as const) {
       await fs.writeFile(changedPath, contents);

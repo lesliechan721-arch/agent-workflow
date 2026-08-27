@@ -13,7 +13,6 @@ import type {
   PluginMeta,
 } from '../types.js';
 import { calculateFileDigest } from './bundle-integrity.js';
-import { CLI_RESERVED_IMPORTS } from './manifest.js';
 import { resolveCliPackageRoot } from './paths.js';
 import { resolveSupportedPlatforms } from './platform-support.js';
 
@@ -45,13 +44,6 @@ export interface CatalogRuntimeImportResolver {
   }): Promise<CatalogRuntimeExportResolution>;
 }
 
-export interface CatalogRuntimeImportResolverOptions {
-  /** CLI package root containing src/utils/skill-frontmatter-capabilities.json. */
-  cliVirtualExportRoot?: string;
-  /** Explicit provider identity; otherwise read from the selected CLI root package.json. */
-  cliProviderVersion?: string;
-}
-
 export async function resolveRuntimeExportSource(options: {
   plugin: PluginMeta;
   name: string;
@@ -72,68 +64,6 @@ export async function resolveRuntimeExportSource(options: {
     canonicalSource,
     supportedPlatforms: resolveSupportedPlatforms(options.plugin.manifest),
     virtual: false,
-  };
-}
-
-async function resolveCliVirtualExport(
-  reference: BuildConfigImportReference,
-  purpose: CatalogRuntimeImportPurpose,
-  options: CatalogRuntimeImportResolverOptions,
-): Promise<CatalogRuntimeExportResolution> {
-  if (purpose !== 'build') {
-    throw new Error('Invalid catalog runtime import: virtual provider "@aw/cli" is only available to buildImports.');
-  }
-  const virtualExports = {
-    'skill-frontmatter-capabilities': 'skill-frontmatter-capabilities.json',
-    'plugin-authoring-capabilities': 'plugin-authoring-capabilities.json',
-  } as const;
-  const sourceFile = virtualExports[reference.export as keyof typeof virtualExports];
-  if (
-    !sourceFile
-    || !CLI_RESERVED_IMPORTS['@aw/cli'].includes(
-      reference.export as (typeof CLI_RESERVED_IMPORTS)['@aw/cli'][number],
-    )
-  ) {
-    throw new Error(`Invalid catalog runtime import: unknown @aw/cli export "${reference.export}".`);
-  }
-  const packageRoot = options.cliVirtualExportRoot ?? resolveCliPackageRoot();
-  const sourceCandidates = options.cliVirtualExportRoot
-    ? [path.join(packageRoot, 'src', 'utils', sourceFile)]
-    : [
-        path.join(packageRoot, 'src', 'utils', sourceFile),
-        path.join(packageRoot, 'dist', 'src', 'utils', sourceFile),
-      ];
-  const sourceCandidate = sourceCandidates.find((candidate) => fs.existsSync(candidate));
-  if (!sourceCandidate) {
-    const registryName = reference.export === 'skill-frontmatter-capabilities'
-      ? 'skill frontmatter'
-      : reference.export;
-    throw new Error(
-      `Invalid @aw/cli runtime export: canonical ${registryName} registry is missing from ${packageRoot}.`,
-    );
-  }
-  const canonicalSource = await resolveCoreRuntimeSourceIdentity(
-    packageRoot,
-    `./${path.relative(packageRoot, sourceCandidate).split(path.sep).join('/')}`,
-    `@aw/cli runtime export "${reference.export}"`,
-  );
-  const packageJson = options.cliProviderVersion === undefined
-    ? await fs.readJson(path.join(packageRoot, 'package.json')) as { version?: unknown }
-    : undefined;
-  const providerVersion = options.cliProviderVersion ?? packageJson?.version;
-  if (typeof providerVersion !== 'string' || providerVersion.trim() === '') {
-    throw new Error('Invalid @aw/cli runtime export: package version is missing.');
-  }
-  return {
-    provider: '@aw/cli',
-    providerVersion,
-    name: reference.export,
-    source: `./src/utils/${sourceFile}`,
-    sourcePath: canonicalSource.sourceRealPath,
-    sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
-    canonicalSource,
-    supportedPlatforms: new Set<PlatformName>(['claude', 'codex']),
-    virtual: true,
   };
 }
 
@@ -181,17 +111,7 @@ async function resolveEvalVirtualExport(
 
 export function createCatalogRuntimeImportResolver(
   plugins: readonly PluginMeta[],
-  options: CatalogRuntimeImportResolverOptions = {},
 ): CatalogRuntimeImportResolver {
-  if (options.cliVirtualExportRoot && !path.isAbsolute(options.cliVirtualExportRoot)) {
-    throw new Error('Invalid cliVirtualExportRoot: expected an absolute CLI package root.');
-  }
-  const resolverOptions: CatalogRuntimeImportResolverOptions = {
-    ...options,
-    cliVirtualExportRoot: options.cliVirtualExportRoot
-      ? path.normalize(options.cliVirtualExportRoot)
-      : undefined,
-  };
   const pluginsByName = new Map<string, PluginMeta[]>();
   for (const plugin of plugins) {
     const matches = pluginsByName.get(plugin.manifest.name) ?? [];
@@ -205,10 +125,7 @@ export function createCatalogRuntimeImportResolver(
         if (reference.plugin === '@aw/agent-skill-eval') {
           return resolveEvalVirtualExport(reference, purpose);
         }
-        if (!Object.hasOwn(CLI_RESERVED_IMPORTS, reference.plugin)) {
-          throw new Error(`Invalid catalog runtime import: unknown reserved provider "${reference.plugin}".`);
-        }
-        return resolveCliVirtualExport(reference, purpose, resolverOptions);
+        throw new Error(`Invalid catalog runtime import: unknown reserved provider "${reference.plugin}".`);
       }
       if (reference.plugin === consumer.manifest.name) {
         throw new Error(`Invalid catalog runtime import: plugin "${consumer.manifest.name}" cannot import itself.`);

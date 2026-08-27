@@ -419,8 +419,15 @@ describe('pack smoke', () => {
       cwd: standaloneWorkspace,
       env: process.env,
     });
+    const packedPreflight = await execFileAsync(awBin, [
+      'catalog', 'status', '--workspace-root', standaloneWorkspace,
+      '--preflight', '--remote', 'origin', '--branch', 'catalog', '--json',
+    ], { cwd: standaloneWorkspace, env: process.env });
+    const packedDescriptorDigest = JSON.parse(packedPreflight.stdout).publication.descriptorDigest;
     const packedPublish = await execFileAsync(awBin, [
-      'catalog', 'publish', '--workspace-root', standaloneWorkspace, '--yes', '--json',
+      'catalog', 'publish', '--workspace-root', standaloneWorkspace,
+      '--remote', 'origin', '--branch', 'catalog',
+      '--expected-descriptor-digest', packedDescriptorDigest, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: process.env });
     const packedPublishReceipt = JSON.parse(packedPublish.stdout) as { ok: boolean; commit: string };
     expect(packedPublishReceipt.ok).toBe(true);
@@ -447,6 +454,21 @@ describe('pack smoke', () => {
       catalog: { sources: expect.arrayContaining([expect.objectContaining({ id: 'packed' })]) },
       targets: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
     });
+    const packedRemoval = await execFileAsync(awBin, [
+      'plugin', 'remove', 'packed-build',
+      '--workspace-root', standaloneWorkspace, '--yes', '--json',
+    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    expect(JSON.parse(packedRemoval.stdout)).toMatchObject({
+      schemaVersion: 1,
+      command: 'plugin:remove',
+      ok: true,
+      plugin: { name: 'packed-build', version: '0.1.0' },
+      removed: true,
+      errors: [],
+    });
+    expect(packedRemoval.stderr).toBe('');
+    await expect(fs.pathExists(path.join(standaloneWorkspace, 'plugins', 'packed-build')))
+      .resolves.toBe(false);
 
     const authorRepo = path.join(tempRoot, 'author-repo');
     registerSmokeWritableRoot(authorRepo, 'pack smoke plugin author repository');
@@ -654,6 +676,13 @@ describe('pack smoke', () => {
       'authoring',
       'scripts',
       'validate-plugin.mjs',
+    ))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      unpackedPackageRoot,
+      'dist',
+      'authoring',
+      'scripts',
+      'remove-plugin.mjs',
     ))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(
       unpackedPackageRoot,

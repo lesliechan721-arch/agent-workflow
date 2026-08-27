@@ -1,0 +1,53 @@
+{
+  "skill_name": "author-aw-catalog",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "Catalog Author 必须保留插件内部 owner 和聚合验证顺序。"
+  },
+  "evals": [
+    {
+      "id": "add-plugin-delegate-then-aggregate",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "catalog-plugin-addition",
+      "unit_under_test": "full-skill",
+      "preconditions": { "workspace_valid": true, "new_plugin_requested": true },
+      "oracle": {
+        "rationale": "Catalog Author 拥有 inventory 和聚合验证，但插件 source 必须由 Plugin Author 修改。",
+        "rule_refs": ["SKILL.md#工作流"],
+        "confidence": "high",
+        "allowed_variance": "实现细节可不同；必须先委托 author-aw-plugin，再执行逐插件和 Catalog 聚合验证，不得 publish。"
+      },
+      "prompt": "使用 $author-aw-catalog 在现有合法 Catalog Workspace 中新增 plugins/status-tools。插件包含一个 status-report Skill，并依赖 shared-rules。把插件内部文件交给 author-aw-plugin；返回后完成 inventory、依赖图、逐插件 validate/test 和 Catalog build/validate。不要发布。",
+      "scripted_replies": [],
+      "expected_output": "插件内部修改由 author-aw-plugin 完成；Catalog Author 重新检查 inventory/依赖并完成聚合验证；没有 publish。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"fixture-catalog\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture\"},\"interface\":{\"displayName\":\"Fixture Catalog\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+        "plugins/shared-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":1,\"name\":\"shared-rules\",\"version\":\"0.1.0\",\"description\":\"Shared rules.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
+        "plugins/shared-rules/skills/shared/SKILL.md": "---\nname: shared\ndescription: Provide shared rules.\n---\n\nProvide rules.\n",
+        "plugins/shared-rules/skills/shared/README.md": "# shared\n\nProvide rules.\n",
+        "AGENTS.md": "# Rules\nOnly change plugins/status-tools and Catalog metadata when required. Do not publish.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/status-tools/**", ".aw/**"],
+        "artifacts": [
+          { "path": "plugins/status-tools/.agents-plugin/plugin.json", "exists": true }
+        ],
+        "checks": [
+          "trace 把 plugins/status-tools 的 manifest、Skill 和 README 交给 author-aw-plugin",
+          "依赖只从 status-tools 指向 shared-rules，没有反向依赖",
+          "author-aw-plugin 返回后运行逐插件 validate/test，再运行 catalog build/validate",
+          "没有调用 catalog publish"
+        ]
+      },
+      "sandbox": "workspace-write"
+    }
+  ]
+}

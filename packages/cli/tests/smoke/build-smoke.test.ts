@@ -32,6 +32,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'aw-skill-eval-runner': ['claude', 'codex'],
   'agent-skill-toolkit': ['claude', 'codex'],
   'ask-me': ['claude', 'codex'],
+  'aw-catalog-development': ['claude', 'codex'],
   'aw-plugin-development': ['claude', 'codex'],
   'codex-enhance': ['codex'],
   'dev-workflow': ['claude', 'codex'],
@@ -188,7 +189,11 @@ describe('build smoke', () => {
   it('ensures the build and produces plugins-dist through the compiled bundle script', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
-    const cliPackageJson = await fs.readJson(path.join(snapshot.cliPackageRoot, 'package.json'));
+    const sourceMetadata = await fs.readJson(path.join(
+      root,
+      'plugins',
+      'marketplace-source.json',
+    ));
 
     expect(outputRoot).toBe(path.join(snapshot.root, 'packages', 'cli', 'plugins-dist'));
     await expect(fs.readJson(path.join(root, '.release', 'cache', 'build-stamp.json')))
@@ -292,6 +297,7 @@ describe('build smoke', () => {
       'agent-content-toolkit',
       'agent-skill-toolkit',
       'ask-me',
+      'aw-catalog-development',
       'aw-plugin-development',
       'aw-skill-eval-runner',
       'dev-workflow',
@@ -301,6 +307,7 @@ describe('build smoke', () => {
       'agent-content-toolkit',
       'agent-skill-toolkit',
       'ask-me',
+      'aw-catalog-development',
       'aw-plugin-development',
       'aw-skill-eval-runner',
       'codex-enhance',
@@ -478,8 +485,8 @@ describe('build smoke', () => {
     ).resolves.toBe(false);
     expect(catalogManifest).toMatchObject({
       schemaVersion: 4,
-      catalogVersion: cliPackageJson.version,
-      channel: String(cliPackageJson.version).includes('-') ? 'beta' : 'latest',
+      catalogVersion: sourceMetadata.catalog.version,
+      channel: String(sourceMetadata.catalog.version).includes('-') ? 'beta' : 'latest',
       release: { state: 'development' },
       entries: expect.arrayContaining(Object.keys(EXPECTED_PLUGIN_PLATFORMS).map((pluginName) =>
         expect.objectContaining({

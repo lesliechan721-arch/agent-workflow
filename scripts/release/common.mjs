@@ -1010,6 +1010,12 @@ export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
   if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
     throw new Error('release/version-targets.json must contain an object.');
   }
+  if (
+    targets.schemaVersion !== 2
+    || Object.keys(targets).sort().join('\n') !== ['cli', 'schemaVersion'].join('\n')
+  ) {
+    throw new Error('release/version-targets.json must use schemaVersion 2 with only the CLI target.');
+  }
   const targetVersion = assertValidVersion(targets.cli);
   assertVersionKind(targetVersion, 'stable');
   const evalVersion = assertValidVersion(evalPackageJson.version);

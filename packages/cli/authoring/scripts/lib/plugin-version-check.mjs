@@ -14,12 +14,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_MANIFEST_CONTRACT_VERSION = 7;
-const CLI_PACKAGE_NAME = '@lesliechan721/aw';
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const CLI_REGISTRY_RELATIVE_PATHS = [
-  'src/utils/skill-frontmatter-capabilities.json',
-  'src/utils/plugin-authoring-capabilities.json',
-];
 const CLI_PACKAGE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -40,7 +35,7 @@ function codedError(code, message) {
   return new PluginVersionCheckError(code, message);
 }
 
-function parseStablePluginVersion(version, fieldName) {
+export function parseStablePluginVersion(version, fieldName) {
   const parsed = parseStrictSemVer(version, fieldName);
   if (parsed.prerelease.length > 0 || parsed.build.length > 0) {
     throw codedError(
@@ -51,7 +46,7 @@ function parseStablePluginVersion(version, fieldName) {
   return parsed;
 }
 
-async function runGit(repoRoot, args, options = {}) {
+export async function runGit(repoRoot, args, options = {}) {
   try {
     const result = await execFileAsync('git', args, {
       cwd: repoRoot,
@@ -70,7 +65,7 @@ async function runGit(repoRoot, args, options = {}) {
   }
 }
 
-async function resolveBaseCommit(repoRoot, base) {
+export async function resolveBaseCommit(repoRoot, base) {
   await runGit(repoRoot, ['rev-parse', '--show-toplevel'], {
     code: 'gitUnavailable',
     label: 'Git repository discovery',
@@ -179,9 +174,6 @@ function parseTreeRecord(record) {
 async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoot, pluginRootPath) {
   const sourcePaths = [
     'plugins',
-    'packages/cli/package.json',
-    'packages/cli/src/utils/skill-frontmatter-capabilities.json',
-    'packages/cli/src/utils/plugin-authoring-capabilities.json',
   ];
   if (pluginRootPath && !sourcePaths.includes(pluginRootPath)) sourcePaths.push(pluginRootPath);
   const output = await runGit(
@@ -225,262 +217,9 @@ async function lstatOrNull(filePath) {
   });
 }
 
-async function assertRegularFilePath(rootDir, relativePath, label) {
-  const rootStat = await lstatOrNull(rootDir);
-  if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-    throw codedError('invalidPlugin', `${label} root must be a non-symbolic-link directory.`);
-  }
-  let currentPath = rootDir;
-  const segments = relativePath.split('/');
-  for (const [index, segment] of segments.entries()) {
-    currentPath = path.join(currentPath, segment);
-    const stat = await lstatOrNull(currentPath);
-    if (!stat) {
-      throw codedError('invalidPlugin', `${label} is missing ${JSON.stringify(relativePath)}.`);
-    }
-    if (stat.isSymbolicLink()) {
-      throw codedError('invalidPlugin', `${label} contains a symbolic-link node: ${currentPath}`);
-    }
-    if (index < segments.length - 1 && !stat.isDirectory()) {
-      throw codedError('invalidPlugin', `${label} contains a non-directory path node: ${currentPath}`);
-    }
-    if (index === segments.length - 1 && !stat.isFile()) {
-      throw codedError('invalidPlugin', `${label} must use a regular file: ${currentPath}`);
-    }
-  }
-  return currentPath;
-}
 
-async function assertDirectoryPathChain(boundaryRoot, targetRoot, label) {
-  const relative = path.relative(boundaryRoot, targetRoot);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw codedError('invalidPlugin', `${label} source root must stay inside its workspace.`);
-  }
-  let currentPath = boundaryRoot;
-  for (const segment of relative.split(path.sep).filter(Boolean)) {
-    currentPath = path.join(currentPath, segment);
-    const stat = await lstatOrNull(currentPath);
-    if (!stat) return;
-    if (stat.isSymbolicLink()) {
-      throw codedError('invalidPlugin', `${label} contains a symbolic-link path node: ${currentPath}`);
-    }
-    if (!stat.isDirectory()) {
-      throw codedError('invalidPlugin', `${label} contains a non-directory path node: ${currentPath}`);
-    }
-  }
-}
 
-function calculateCliSourceSetDigest(packageBytes, registryEntries) {
-  const hash = crypto.createHash('sha256').update('package.json\0').update(packageBytes);
-  for (const [relativePath, bytes] of registryEntries) {
-    hash.update(`\0${relativePath}\0`).update(bytes);
-  }
-  return `sha256:${hash.digest('hex')}`;
-}
-
-async function inspectWorkspaceCliSourceSet(cliRoot, label, boundaryRoot) {
-  if (boundaryRoot) await assertDirectoryPathChain(boundaryRoot, cliRoot, label);
-  const packagePath = path.join(cliRoot, 'package.json');
-  const registryPaths = CLI_REGISTRY_RELATIVE_PATHS.map((relativePath) =>
-    path.join(cliRoot, ...relativePath.split('/')));
-  const [packageStat, ...registryStats] = await Promise.all([
-    lstatOrNull(packagePath),
-    ...registryPaths.map((registryPath) => lstatOrNull(registryPath)),
-  ]);
-  if (!packageStat && registryStats.every((stat) => !stat)) {
-    const cliRootStat = await lstatOrNull(cliRoot);
-    if (cliRootStat?.isSymbolicLink() || (cliRootStat && !cliRootStat.isDirectory())) {
-      throw codedError('invalidPlugin', `${label} @aw/cli source root has an invalid node: ${cliRoot}`);
-    }
-    return { state: 'none', root: cliRoot };
-  }
-  if (!packageStat || !registryStats[0]) {
-    return { state: 'partial', root: cliRoot };
-  }
-
-  const availableRegistryRelativePaths = CLI_REGISTRY_RELATIVE_PATHS
-    .filter((_relativePath, index) => registryStats[index]);
-
-  await Promise.all([
-    assertRegularFilePath(cliRoot, 'package.json', `${label} @aw/cli source set`),
-    ...availableRegistryRelativePaths.map((relativePath) => assertRegularFilePath(
-      cliRoot,
-      relativePath,
-      `${label} @aw/cli source set`,
-    )),
-  ]);
-  const availableRegistryPaths = availableRegistryRelativePaths.map((relativePath) =>
-    path.join(cliRoot, ...relativePath.split('/')));
-  const [packageBytes, ...registryBytes] = await Promise.all([
-    fs.readFile(packagePath),
-    ...availableRegistryPaths.map((registryPath) => fs.readFile(registryPath)),
-  ]);
-  let packageDocument;
-  try {
-    packageDocument = JSON.parse(packageBytes.toString('utf8'));
-    for (const bytes of registryBytes) JSON.parse(bytes.toString('utf8'));
-  } catch (error) {
-    throw codedError('invalidPlugin', `${label} @aw/cli source set contains invalid JSON: ${error.message}`);
-  }
-  if (typeof packageDocument?.name !== 'string' || packageDocument.name.trim() === '') {
-    throw codedError('invalidPlugin', `${label} @aw/cli package name is missing.`);
-  }
-  parseStrictSemVer(packageDocument.version, `${label} @aw/cli package version`);
-  return {
-    state: 'complete',
-    root: cliRoot,
-    packageName: packageDocument.name,
-    providerVersion: packageDocument.version,
-    digest: calculateCliSourceSetDigest(
-      packageBytes,
-      availableRegistryRelativePaths.map((relativePath, index) => [relativePath, registryBytes[index]]),
-    ),
-    registryRelativePaths: availableRegistryRelativePaths,
-  };
-}
-
-async function materializeCliSourceSet(source, outputRoot, label) {
-  await fs.mkdir(path.join(outputRoot, 'src', 'utils'), { recursive: true });
-  await Promise.all([
-    fs.copyFile(path.join(source.root, 'package.json'), path.join(outputRoot, 'package.json')),
-    ...source.registryRelativePaths.map((relativePath) => fs.copyFile(
-      path.join(source.root, ...relativePath.split('/')),
-      path.join(outputRoot, ...relativePath.split('/')),
-    )),
-  ]);
-  const materialized = await inspectWorkspaceCliSourceSet(outputRoot, label);
-  if (
-    materialized.state !== 'complete'
-    || materialized.packageName !== source.packageName
-    || materialized.providerVersion !== source.providerVersion
-    || materialized.digest !== source.digest
-  ) {
-    throw codedError('invalidPlugin', `${label} @aw/cli source identity changed during materialization.`);
-  }
-  return materialized;
-}
-
-async function inspectExternalCliProvider(cliPackageRoot) {
-  const canonicalRoot = await fs.realpath(cliPackageRoot).catch(() => null);
-  if (!canonicalRoot) {
-    throw codedError('bundlerUnavailable', 'Plugin version checking cannot resolve the installed CLI package root.');
-  }
-  const packagePath = await assertRegularFilePath(
-    canonicalRoot,
-    'package.json',
-    'Installed CLI provider',
-  );
-  const registryPaths = await Promise.all(CLI_REGISTRY_RELATIVE_PATHS.map((relativePath) =>
-    assertRegularFilePath(
-      canonicalRoot,
-      `dist/${relativePath}`,
-      'Installed CLI provider',
-    )));
-  const [packageBytes, ...registryBytes] = await Promise.all([
-    fs.readFile(packagePath),
-    ...registryPaths.map((registryPath) => fs.readFile(registryPath)),
-  ]);
-  let packageDocument;
-  try {
-    packageDocument = JSON.parse(packageBytes.toString('utf8'));
-    for (const bytes of registryBytes) JSON.parse(bytes.toString('utf8'));
-  } catch (error) {
-    throw codedError('bundlerUnavailable', `Installed CLI provider contains invalid JSON: ${error.message}`);
-  }
-  if (packageDocument?.name !== CLI_PACKAGE_NAME) {
-    throw codedError('bundlerUnavailable', `Installed CLI provider package name must be ${JSON.stringify(CLI_PACKAGE_NAME)}.`);
-  }
-  parseStrictSemVer(packageDocument.version, 'installed CLI provider version');
-  return {
-    root: canonicalRoot,
-    packagePath,
-    registryPaths,
-    packageName: packageDocument.name,
-    providerVersion: packageDocument.version,
-    digest: calculateCliSourceSetDigest(
-      packageBytes,
-      CLI_REGISTRY_RELATIVE_PATHS.map((relativePath, index) => [relativePath, registryBytes[index]]),
-    ),
-  };
-}
-
-async function materializeExternalCliProvider(provider, outputRoot, label) {
-  await fs.mkdir(path.join(outputRoot, 'src', 'utils'), { recursive: true });
-  await Promise.all([
-    fs.copyFile(provider.packagePath, path.join(outputRoot, 'package.json')),
-    ...CLI_REGISTRY_RELATIVE_PATHS.map((relativePath, index) => fs.copyFile(
-      provider.registryPaths[index],
-      path.join(outputRoot, ...relativePath.split('/')),
-    )),
-  ]);
-  return inspectWorkspaceCliSourceSet(outputRoot, label);
-}
-
-async function resolveCliVirtualSourceSets(options) {
-  const baseSource = await inspectWorkspaceCliSourceSet(
-    path.join(options.baseSourceRoot, 'packages', 'cli'),
-    'Git base',
-    options.baseSourceRoot,
-  );
-  const currentSource = await inspectWorkspaceCliSourceSet(
-    path.join(options.repoRoot, 'packages', 'cli'),
-    'current workspace',
-    options.repoRoot,
-  );
-  if (baseSource.state === 'partial') {
-    throw codedError('invalidPlugin', 'Git base contains an incomplete @aw/cli virtual authoring source set.');
-  }
-  if (currentSource.state === 'partial') {
-    throw codedError('invalidPlugin', 'Found an incomplete current workspace @aw/cli source set.');
-  }
-  if (baseSource.state !== currentSource.state) {
-    throw codedError(
-      'invalidPlugin',
-      'Git base and current workspace CLI source ownership differs; version checking cannot mix workspace and external providers.',
-    );
-  }
-  if (baseSource.state === 'complete') {
-    const currentMaterialized = await materializeCliSourceSet(
-      currentSource,
-      path.join(options.tempRoot, 'current-cli-workspace'),
-      'current workspace materialization',
-    );
-    return {
-      base: baseSource,
-      current: currentMaterialized,
-    };
-  }
-
-  const externalProvider = await inspectExternalCliProvider(options.cliPackageRoot);
-  const [baseExternal, currentExternal] = await Promise.all([
-    materializeExternalCliProvider(
-      externalProvider,
-      path.join(options.tempRoot, 'base-cli-external'),
-      'base external CLI provider',
-    ),
-    materializeExternalCliProvider(
-      externalProvider,
-      path.join(options.tempRoot, 'current-cli-external'),
-      'current external CLI provider',
-    ),
-  ]);
-  for (const materialized of [baseExternal, currentExternal]) {
-    if (
-      materialized.state !== 'complete'
-      || materialized.packageName !== externalProvider.packageName
-      || materialized.providerVersion !== externalProvider.providerVersion
-      || materialized.digest !== externalProvider.digest
-    ) {
-      throw codedError('invalidPlugin', 'External CLI provider identity changed during independent materialization.');
-    }
-  }
-  if (baseExternal.root === currentExternal.root || baseExternal.digest !== currentExternal.digest) {
-    throw codedError('invalidPlugin', 'External CLI provider materializations are not independent and identical.');
-  }
-  return { base: baseExternal, current: currentExternal };
-}
-
-async function readManifestDocument(pluginRoot) {
+export async function readManifestDocument(pluginRoot) {
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   let manifest;
   try {
@@ -526,8 +265,6 @@ function compareBundleEntries(baseEntries, currentEntries) {
 async function bundlePlugin(
   bundler,
   sourceSetRoot,
-  cliVirtualExportRoot,
-  cliProviderVersion,
   pluginRoot,
   outputRoot,
   runtimeSkillClosureValidation = 'current',
@@ -537,10 +274,7 @@ async function bundlePlugin(
   if (!sourceSetPlugins.some((candidate) => candidate.manifest.name === plugin.manifest.name)) {
     sourceSetPlugins.push(plugin);
   }
-  const runtimeResolver = bundler.createRuntimeResolver(sourceSetPlugins, {
-    cliVirtualExportRoot,
-    cliProviderVersion,
-  });
+  const runtimeResolver = bundler.createRuntimeResolver(sourceSetPlugins);
   await bundler.bundleLocalPlugin(plugin, outputRoot, {
     buildMode: 'staging',
     runtimeResolver,
@@ -577,7 +311,6 @@ async function checkOnePlugin(options) {
     bundler,
     tempRoot,
     baseSourceRoot,
-    cliVirtualSources,
     currentRoot,
     baseRoot,
   } = options;
@@ -623,8 +356,6 @@ async function checkOnePlugin(options) {
       currentBundle = await bundlePlugin(
         bundler,
         repoRoot,
-        cliVirtualSources.current.root,
-        cliVirtualSources.current.providerVersion,
         currentRoot,
         path.join(tempRoot, 'bundles', pluginName, 'current'),
       );
@@ -682,8 +413,6 @@ async function checkOnePlugin(options) {
       bundlePlugin(
         bundler,
         baseSourceRoot,
-        cliVirtualSources.base.root,
-        cliVirtualSources.base.providerVersion,
         baseRoot,
         path.join(tempRoot, 'bundles', pluginName, 'base'),
         'historical',
@@ -691,8 +420,6 @@ async function checkOnePlugin(options) {
       bundlePlugin(
         bundler,
         repoRoot,
-        cliVirtualSources.current.root,
-        cliVirtualSources.current.providerVersion,
         currentRoot,
         path.join(tempRoot, 'bundles', pluginName, 'current'),
       ),
@@ -886,12 +613,6 @@ export async function checkPluginVersions(options = {}) {
       }
       currentRoots.set(pluginName, currentRoot);
     }
-    const cliVirtualSources = await resolveCliVirtualSourceSets({
-      baseSourceRoot,
-      repoRoot,
-      cliPackageRoot,
-      tempRoot,
-    });
     const checks = [];
     for (const pluginName of pluginNames) {
       const currentRoot = currentRoots.get(pluginName);
@@ -914,7 +635,6 @@ export async function checkPluginVersions(options = {}) {
         bundler,
         tempRoot,
         baseSourceRoot,
-        cliVirtualSources,
         currentRoot,
         baseRoot,
       }));

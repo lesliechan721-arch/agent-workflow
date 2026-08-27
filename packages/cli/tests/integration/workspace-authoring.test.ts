@@ -12,6 +12,7 @@ import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provid
 
 const roots: string[] = [];
 const execFileAsync = promisify(execFile);
+const placeholderDescriptorDigest = `sha256:${'0'.repeat(64)}`;
 
 async function createRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-workspace-'));
@@ -36,6 +37,19 @@ function capture() {
   };
 }
 
+async function authorizedDescriptorDigest(root: string, branch = 'catalog'): Promise<string> {
+  const output = capture();
+  await runCli([
+    'catalog', 'status', '--workspace-root', root,
+    '--preflight', '--remote', 'origin', '--branch', branch, '--json',
+  ], { cwd: root, io: output.io });
+  const descriptorDigest = JSON.parse(output.stdout()).publication?.descriptorDigest;
+  if (typeof descriptorDigest !== 'string') {
+    throw new Error(`Catalog preflight did not return a descriptor digest: ${output.stderr()}`);
+  }
+  return descriptorDigest;
+}
+
 async function createPublishWorkspace(root: string, pluginName: string): Promise<void> {
   await execFileAsync('git', ['init'], { cwd: root });
   await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
@@ -50,7 +64,7 @@ async function createPublishWorkspace(root: string, pluginName: string): Promise
   ], { cwd: root });
 }
 
-describe('public workspace authoring commands', () => {
+describe('public Catalog Workspace authoring commands', () => {
   it('creates context for an absent canonical root before public plugin init', async () => {
     const root = await createRoot();
     await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
@@ -294,6 +308,38 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       catalogVersion: '1.0.0-beta.1',
     });
 
+    const bumpOutput = capture();
+    expect(await runCli(['catalog', 'version', '--bump', 'patch', '--workspace-root', root, '--json'], {
+      cwd: root,
+      io: bumpOutput.io,
+    })).toBe(0);
+    expect(JSON.parse(bumpOutput.stdout())).toMatchObject({
+      command: 'catalog:version',
+      ok: true,
+      catalogVersion: '1.0.1',
+      changed: true,
+    });
+
+    const conflictingOutput = capture();
+    expect(await runCli([
+      'catalog', 'version', '1.0.2', '--bump', 'minor', '--workspace-root', root, '--json',
+    ], { cwd: root, io: conflictingOutput.io })).toBe(1);
+    expect(JSON.parse(conflictingOutput.stdout())).toMatchObject({
+      command: 'catalog:version',
+      ok: false,
+    });
+    expect(conflictingOutput.stderr()).toContain('not both');
+
+    const invalidBumpOutput = capture();
+    expect(await runCli([
+      'catalog', 'version', '--bump', 'prerelease', '--workspace-root', root, '--json',
+    ], { cwd: root, io: invalidBumpOutput.io })).toBe(1);
+    expect(JSON.parse(invalidBumpOutput.stdout())).toMatchObject({
+      command: 'catalog:version',
+      ok: false,
+    });
+    expect(invalidBumpOutput.stderr()).toContain('major, minor, or patch');
+
     for (const version of ['1.0.0-rc.1', '1.0.0+build.1']) {
       const invalidOutput = capture();
       expect(await runCli(['catalog', 'version', version, '--workspace-root', root, '--json'], {
@@ -308,30 +354,13 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     }
   });
 
-  it('reads and writes Catalog versions in a workspace with the reserved CLI import', async () => {
+  it('reads and writes Catalog versions without a CLI capability build import', async () => {
     const root = await createRoot();
     await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
     await runCli([
       'plugin', 'init', 'reserved-import', '--description', 'Reserved import fixture.',
       '--no-skills', '--workspace-root', root,
     ], { cwd: root, io: capture().io });
-    const pluginRoot = path.join(root, 'plugins', 'reserved-import');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    manifest.scripts = { node: { build: { runner: 'node', path: './build.mjs' } } };
-    manifest.buildConfig = {
-      cacheable: true,
-      buildImports: [{
-        plugin: '@aw/cli',
-        export: 'skill-frontmatter-capabilities',
-        env: 'AW_PLUGIN_IMPORT_FRONTMATTER',
-      }],
-    };
-    await Promise.all([
-      fs.writeJson(manifestPath, manifest, { spaces: 2 }),
-      fs.writeFile(path.join(pluginRoot, 'build.mjs'), 'export {};\n'),
-    ]);
-
     const readOutput = capture();
     expect(await runCli(['catalog', 'version', '--workspace-root', root, '--json'], {
       cwd: root,
@@ -480,9 +509,13 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await execFileAsync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'initial'], { cwd: root });
     await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
     const sourceBranch = (await execFileAsync('git', ['branch', '--show-current'], { cwd: root })).stdout.trim();
+    const firstDescriptorDigest = await authorizedDescriptorDigest(root);
 
     const firstOutput = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', firstDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: firstOutput.io,
@@ -514,8 +547,12 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     expect(await runCli(['catalog', 'version', '0.2.0', '--workspace-root', root], { cwd: root, io: capture().io })).toBe(0);
     await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], { cwd: root });
     await execFileAsync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'next'], { cwd: root });
+    const secondDescriptorDigest = await authorizedDescriptorDigest(root);
     const cancelled = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', secondDescriptorDigest,
+    ], {
       cwd: root,
       interactive: true,
       prompt: { confirm: async () => ({ cancelled: false, value: false }) },
@@ -526,9 +563,25 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       .toBe(first.commit);
     await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json'))).resolves.toBe(true);
     await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
-      .resolves.toMatchObject({ catalogVersion: '0.1.0', state: 'published' });
+      .resolves.toMatchObject({
+        schemaVersion: 1,
+        catalogVersion: '0.1.0',
+        state: 'published',
+        sourceHead: expect.stringMatching(/^[0-9a-f]{40}$/u),
+        remote: { name: 'origin', identityDigest: expect.stringMatching(/^sha256:/u) },
+        branch: 'catalog',
+        parent: null,
+        tag: 'catalog-v0.1.0',
+        snapshotDigest: expect.stringMatching(/^sha256:/u),
+        planId: expect.stringMatching(/^sha256:/u),
+        descriptorDigest: firstDescriptorDigest,
+        attemptedAt: expect.any(String),
+      });
     const secondOutput = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', secondDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: secondOutput.io,
@@ -540,7 +593,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     expect((await execFileAsync('git', ['status', '--porcelain=v1'], { cwd: root })).stdout).toBe('');
 
     const retry = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', secondDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: retry.io,
@@ -594,9 +650,13 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       'status', '--porcelain=v1', '--untracked-files=all',
     ], { cwd: root })).stdout).toBe('');
     await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    const descriptorDigest = await authorizedDescriptorDigest(root);
 
     const output = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: output.io,
@@ -639,7 +699,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     ], { cwd: root, io: invalidValidation.io })).toBe(1);
     expect(invalidValidation.stdout()).toContain('TODO placeholders');
     const failed = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', placeholderDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: failed.io,
@@ -661,7 +724,11 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       'plugin', 'validate', path.join(root, 'plugins', 'invalid-publish'),
       '--workspace-root', root, '--json',
     ], { cwd: root, io: validValidation.io })).toBe(0);
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    const descriptorDigest = await authorizedDescriptorDigest(root);
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: capture().io,
@@ -683,9 +750,13 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
     const hook = path.join(remote, 'hooks', 'pre-receive');
     await fs.writeFile(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const firstDescriptorDigest = await authorizedDescriptorDigest(root);
 
     const failed = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', firstDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: failed.io,
@@ -695,9 +766,16 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       errors: [{ message: expect.stringContaining('result is uncertain') }],
     });
     await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
-      .resolves.toMatchObject({ state: 'attempted', catalogVersion: '0.1.0' });
+      .resolves.toMatchObject({
+        state: 'attempted',
+        catalogVersion: '0.1.0',
+        descriptorDigest: firstDescriptorDigest,
+      });
     const retry = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', firstDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: retry.io,
@@ -708,11 +786,52 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], { cwd: root });
     await execFileAsync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'bump'], { cwd: root });
     await fs.remove(hook);
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    const secondDescriptorDigest = await authorizedDescriptorDigest(root);
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', secondDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: capture().io,
     })).toBe(0);
+  });
+
+  it('retains the unified attempt when post-publication verification is uncertain', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createPublishWorkspace(root, 'postverify-demo');
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    await fs.writeFile(path.join(remote, 'hooks', 'post-receive'), [
+      '#!/bin/sh',
+      'git update-ref -d refs/heads/catalog',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const descriptorDigest = await authorizedDescriptorDigest(root);
+
+    const failed = capture();
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
+    ], {
+      cwd: root,
+      interactive: false,
+      io: failed.io,
+    })).toBe(1);
+    expect(failed.stderr()).toContain('result is uncertain');
+    await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
+      .resolves.toMatchObject({ state: 'attempted', catalogVersion: '0.1.0', descriptorDigest });
+    const retry = capture();
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
+    ], {
+      cwd: root,
+      interactive: false,
+      io: retry.io,
+    })).toBe(1);
+    expect(retry.stderr()).toContain('version <higher>');
   });
 
   it('uses the push endpoint for all publication history and the fetch endpoint for source guidance', async () => {
@@ -726,9 +845,13 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await createPublishWorkspace(root, 'split-remote-demo');
     await execFileAsync('git', ['remote', 'add', 'origin', fetchRemote], { cwd: root });
     await execFileAsync('git', ['remote', 'set-url', '--push', 'origin', pushRemote], { cwd: root });
+    const descriptorDigest = await authorizedDescriptorDigest(root);
 
     const output = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', descriptorDigest, '--yes',
+    ], {
       cwd: root,
       interactive: false,
       io: output.io,
@@ -756,16 +879,23 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       const unsafeFetch = 'https://author:user-secret@example.invalid/catalog.git?token=query-secret#fragment-secret';
       await execFileAsync('git', ['remote', 'add', 'origin', unsafeFetch], { cwd: root });
       await execFileAsync('git', ['remote', 'set-url', '--push', 'origin', pushRemote], { cwd: root });
+      const descriptorDigest = await authorizedDescriptorDigest(root);
       const output = capture();
       if (!json) {
-        expect(await runCli(['catalog', 'publish', '--workspace-root', root], {
+        expect(await runCli([
+          'catalog', 'publish', '--workspace-root', root,
+          '--expected-descriptor-digest', descriptorDigest,
+        ], {
           cwd: root,
           interactive: true,
           prompt: { confirm: async () => ({ cancelled: false, value: true }) },
           io: output.io,
         })).toBe(0);
       } else {
-        expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+        expect(await runCli([
+          'catalog', 'publish', '--workspace-root', root,
+          '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
+        ], {
           cwd: root,
           interactive: false,
           io: output.io,
@@ -809,7 +939,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await fs.writeFile(path.join(root, 'vendor', 'dependency', 'tracked.txt'), 'uncommitted secret bytes\n');
 
     const output = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', placeholderDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: output.io,
@@ -826,10 +959,14 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await createPublishWorkspace(root, 'attempt-history-demo');
     await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
     const oldAttempt = path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json');
-    await fs.outputFile(path.join(root, '.aw', 'publish', 'attempted.json'), '{ corrupt attempt');
+    await fs.outputFile(oldAttempt, '{ corrupt attempt');
+    const firstDescriptorDigest = await authorizedDescriptorDigest(root);
 
     const corrupt = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', firstDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: corrupt.io,
@@ -843,7 +980,11 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await execFileAsync('git', [
       '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'bump',
     ], { cwd: root });
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    const secondDescriptorDigest = await authorizedDescriptorDigest(root);
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', secondDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: capture().io,
@@ -856,7 +997,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'return old',
     ], { cwd: root });
     const oldRetry = capture();
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root, '--yes', '--json'], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', placeholderDescriptorDigest, '--yes', '--json',
+    ], {
       cwd: root,
       interactive: false,
       io: oldRetry.io,

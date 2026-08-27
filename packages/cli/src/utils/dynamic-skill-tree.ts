@@ -21,7 +21,7 @@ import {
   SKILL_OWNER_MARKER,
 } from './ownership.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
-import { validateSkillFrontmatterCapabilities } from './skill-frontmatter-capabilities.js';
+import { validateSkillFrontmatterCapabilities } from '@lesliechan721/aw-plugin-core/manifest';
 
 export const SKILL_FILE_PATH = 'SKILL.md';
 export const CODEX_OPENAI_YAML_PATH = 'agents/openai.yaml';

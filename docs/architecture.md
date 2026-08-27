@@ -1,6 +1,6 @@
 # Architecture
 
-本文件定义 CLI 的稳定产品合同和模块边界。TypeScript 实现方式见[编码约定](coding-conventions.md)，测试选择见[测试指南](testing.md)，第三方作者工作流见[插件作者指南](plugin-authoring.md)，本仓库维护流程见[插件维护指南](plugin-maintenance.md)。
+本文件定义 CLI 的稳定产品合同和模块边界。TypeScript 实现方式见[编码约定](coding-conventions.md)，测试选择见[测试指南](testing.md)，单 Plugin Source 见[插件作者指南](plugin-authoring.md)，官方与第三方共用的 Catalog Workspace 见[Catalog 作者指南](catalog-authoring.md)，本仓库维护流程见[插件维护指南](plugin-maintenance.md)。
 
 公开包 `@lesliechan721/aw-plugin-core` 拥有 plugin manifest 的版本、JSON Schema 和运行时结构验证合同。CLI 依赖同版本 core，并在该结构合同之上提供平台 adapter、Catalog、作者工具和 transport。Eval、core 与 CLI 使用同一版本发布，顺序为 `Eval → Core → CLI`。
 
@@ -24,10 +24,10 @@
 - `utils/multi-source-catalog.ts` 和 `utils/catalog-source-cache.ts` 解析 schema 1 Git/path source，并管理可重建的本地快照。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
-- `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；只有基于 Git base 的 status 差异检查依赖 Git。
-- `utils/plugin-authoring-capabilities.json` 是插件作者聚焦字段视图的 canonical registry。CLI virtual build export 只投影该真值；复杂规则通过 `verifiedSource` 继续归属 canonical manifest/author validator。
+- `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
+- Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
 
-公开包 `@lesliechan721/aw-plugin-core` 还拥有 AW Plugin Workspace v1 metadata、单插件 bundle 和 schema 4 Catalog snapshot build/validate 的机器合同。固定源码入口是 `plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
+公开包 `@lesliechan721/aw-plugin-core` 还拥有 Catalog Workspace v1 marker 与 metadata、单插件 bundle 和 schema 4 Catalog snapshot build/validate 的机器合同。固定源码入口是 `.aw-workspace.json`、`plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
 
 ### Module Invariants
 
@@ -37,11 +37,13 @@
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
 - live ownership 和实际平台组件是插件存在、清理和 status 的唯一真值。不得新增安装合同存储、第二套安装状态或持久依赖图。
 - 配置写入、生命周期和平台写入各自保留最小的本地恢复；它们不组成跨第三方系统的事务。
+- `aw-plugin-development` 不在构建时绑定 CLI registry，也不分发 capability Markdown。已安装 Author 从当前 PATH 查询 `aw plugin capabilities`，因此旧 development plugin 可以使用较新的 CLI 能力合同。
+- `aw plugin remove <name> --workspace-root <root> --yes` 只删除 canonical `plugins/<name>` source root。Workspace 必须位于有有效 HEAD 的 Git worktree 中；目标必须存在于 HEAD，且当前目标 tree 的 inventory、文件 bytes 和 executable mode 必须与 HEAD 精确相同。命令拒绝目标内 tracked、staged、untracked、ignored、符号链接或额外节点，也拒绝仍由其它当前 manifest 依赖的目标。所有检查在删除前完成；缺少 `--yes` 不写入。成功不修改 Catalog version、不 commit、不 build、不 publish。删除 I/O 失败必须给出从已核验 HEAD 恢复目标的 Git 命令；命令不提供 force、backup、ledger 或补偿状态。
 
 ## Distribution and Runtime State
 
 ```text
-Source Workspace
+Catalog Workspace
   plugins/marketplace-source.json
   plugins/<name>/.agents-plugin/plugin.json
   plugins/<name>/skills/**
@@ -62,11 +64,12 @@ installed plugin
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
 - 第三方 workspace 用 `aw catalog build` 生成 `.aw/catalog` schema 4 snapshot；本仓库维护者的 `pnpm build` 还会生成本地 staging。两种输出都是生成目录，不手工修改。
 - `aw catalog build` 从独立 workspace 生成 `.aw/catalog` development snapshot；`aw plugin build` 默认生成 `.aw/plugins/<name>`。两者先在同父 staging 完整构建和验证，再替换已证明为生成物的旧输出，并拒绝 workspace 外、符号链接及 `.git`、`plugins` 等受保护边界。
-- `aw catalog init` 生成的 workspace marker 提供稳定 ownership identity。source、manifest 或 `catalog.version` 变化不改变该 identity；独立初始化的 workspace identity 不同。生成输出 marker 不进入公开 plugin 或 snapshot digest。
+- `aw catalog init` 生成 `.aw-workspace.json`，唯一合法合同是 schema 1、`kind: "aw-catalog-workspace"` 和稳定非空的 `workspaceIdentity`。marker 必须存在；source、manifest 或 `catalog.version` 变化不改变该 identity，`--force` 也保留已有合法 identity。独立初始化的 Catalog Workspace identity 不同。生成输出 marker 不进入公开 plugin 或 snapshot digest。
 - source plugin 的 authoring 输入树不允许符号链接。Manifest 声明的 source path 不能进入任意深度的 `.git/` 或 `node_modules/`；CLI 在读取 manifest、脚本或静态资源前统一检查该树，并跳过这两类不进入 source bundle 的目录。Catalog 严格校验把每个平台 `plugin.json` 与 bundle source manifest 的完整生成投影逐字段核对，并验证所有生成路径留在 bundle 内且存在。
-- `aw catalog publish` 从干净且已有提交的 Source Workspace 发布到用户配置的 Git remote。CLI 先把已解析的 source HEAD 归档到隔离 workspace，在其中对每个插件执行公开 source validator，并只从该归档构建；ignored 或其它不属于 source HEAD 的工作树字节不能进入 snapshot。Core 准备 schema 4 published snapshot、完整 release ledger 和 release identity；CLI 只负责 Git 前置条件、确认、隔离 commit/tag 和一次 atomic push。第三方 Catalog 使用独立 branch 根和不可变 `catalog-v<version>` 注解 tag，不使用官方 `catalog/latest|beta` refs。首次发布创建 root commit，后续发布只以读取并验证的远端 branch commit 为父提交。
+- `aw catalog publish` 从干净且已有提交的 Source Workspace 发布到用户配置的 Git remote。CLI 先把已解析的 source HEAD 归档到隔离 workspace，在其中对每个插件执行公开 source validator，并只从该归档构建；ignored 或其它不属于 source HEAD 的工作树字节不能进入 snapshot。Core 准备 schema 4 published snapshot、完整 release ledger 和 release identity；CLI 的公共 preparation/publication service 负责 Git 前置条件、隔离 commit/tag、一次 atomic push 和完成后核验。branch 只是调用参数；第三方分支、`catalog/latest` 和 `catalog/beta` 使用同一算法、不可变 `catalog-v<version>` 注解 tag和 Workspace attempt。首次发布创建 root commit，后续发布只以读取并验证的远端 branch commit 为父提交。
+- `aw catalog status --workspace-root <root>` 默认只静态读取 Workspace marker、metadata、插件 source manifest、依赖图和可用的 Git 状态；它不运行插件代码、不构建，也不创建 `.aw`。只有显式 `--preflight` 才从 committed source HEAD 的临时归档运行公开插件 validator 和 build、读取远端 branch/tag/上一 snapshot，并调用与 `aw catalog publish` 相同的 Core publication preparation。preflight 不写 attempt、不 push，也不形成后续 publish 的持久授权；显式发布把用户授权的 descriptor digest 传回 CLI，publisher 在 attempt 和远端写入前核验该 digest 以及当前 source、remote、tag 和 plan identity。
 - 第三方发布在第一次远端写入前保存 gitignored `.aw/publish/attempts/<version>.json`。每个版本文件独立保留；文件损坏或发布结果不确定时只阻止该版本，作者用 `aw catalog version <higher>` 恢复。该恢复合同不增加 force、补偿 push 或平台专用发布路径。
-- Catalog manifest 保存规范化 marketplace owner/interface，验证器以它为唯一根 metadata 真值核对 Codex 和 Claude projection。`release.state=published` 的 snapshot 必须包含并完整验证 `plugin-release-ledger.json`；development snapshot 不包含 ledger。插件作者合同由[插件维护指南](plugin-maintenance.md)定义。
+- Catalog manifest 保存规范化 marketplace owner/interface，验证器以它为唯一根 metadata 真值核对 Codex 和 Claude projection。`release.state=published` 的 snapshot 必须包含并完整验证 `plugin-release-ledger.json`；development snapshot 不包含 ledger。公开 Catalog 作者合同见[Catalog 作者指南](catalog-authoring.md)。
 - `<AW_HOME>/catalog-sources.json` 缺失时读取内置 `official` source；第一次来源修改才物化该文件。稳定版 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。
 
 ### Portable Agent Skills Distribution
@@ -144,6 +147,8 @@ Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始�
 
 `status --json` 保持 schema 4。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。
 
+TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理 AW-owned live 内容、保留 plugin config 且不运行 uninstall lifecycle，并显示不含 `--force` 的等价命令。普通 cleanup 继续执行 dependent 保护；成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
+
 target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v4 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
 
 配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
@@ -207,15 +212,17 @@ leaf `skill` 使用静态 Skill 或 `plugin/skill` id，`aw-plugin` 使用插件
 
 根级正常发布入口只有 `pnpm release`。它要求 `beta|release` 渠道和 `--cli|--catalog|--all` 中一个显式发布轴。
 
-- `--cli-bump`、`--catalog-bump` 和可重复的 `--plugin <name>=major|minor|patch` 只提升所选轴的稳定 target。命令只提交这些白名单元数据，不提交其它工作树内容，也不推当前分支。
-- 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取；Catalog-only 仍要求对应渠道已有兼容且一致的三个 CLI train npm 包。
-- 元数据 commit 后运行所选轴的完整 release verify，再从干净 source HEAD 生成 `.release/prepared/descriptor.json`。
+- `release/version-targets.json` 使用 schema 2，且只保存 CLI 稳定 target。`plugins/marketplace-source.json.catalog.version` 是唯一可写 Catalog version 真值，并表示下一次精确候选。`aw catalog version <exact>` 和 `aw catalog version --bump major|minor|patch` 是唯一公开 Catalog version mutation；bump 以当前 stable SemVer base 为输入。
+- `--cli-bump` 更新 CLI target 和三个 public package；`--catalog-bump` 只编排公共 Catalog version mutation；可重复的 `--plugin <name>=major|minor|patch` 更新所选插件。CLI/plugin metadata 和自动 Catalog metadata 使用独立白名单 commit；Catalog commit 精确只包含 `plugins/marketplace-source.json`。没有版本变化时不创建空 commit。
+- Catalog 候选只读取 source metadata、immutable `catalog-v<version>` tag 和 Workspace attempt。当前 exact candidate 未发布且未尝试时复用。beta 已使用时在同一 base 选择下一个未使用的 `beta.N`；stable metadata 在 beta 渠道选择该 base 的 beta。stable 发布可以把 beta metadata 提升为同 base stable；若 exact stable 已发布或已尝试，必须显式 bump。任何存在的 attempt 文件（包括损坏文件）都占用其 exact version。
+- 所选轴无候选时在远端写入前失败。CLI 和 Catalog 远端状态独立读取。Catalog-only 不查询或发布 npm package，不要求 CLI tag，也不执行 provider-side CLI compatibility gate。
+- 元数据 commit 后运行所选轴的完整 release verify，再从更新后的干净 source HEAD 生成 `.release/prepared/descriptor.json`。Catalog snapshot 和 publication descriptor 只读取已提交的 Workspace metadata，并由与 `aw catalog publish` 相同的公共 preparation service 生成；publication 不接受独立 Catalog version override。
 - 发布顺序是 `Eval → Core → CLI → CLI tag → Catalog`。CLI tag 是 `origin` 上指向 prepared source commit 的注解 `cli-v<version>`；Catalog 继续使用独立 channel ref 和 `catalog-v<version>` tag。
 - beta CLI 选择候选时，把 registry 中三个包已出现的最高 beta 和本地已尝试 beta 都视为已占用。部分发布或第一次写入结果不确定后，普通发布保留稳定 target 并选择下一个 beta，再以新 beta 重新发布三个包。稳定 CLI 失败仍要求提升稳定 target。
 - `pnpm release -- --repair-cli` 是同一 CLI 候选的显式补发入口。它只接受与 `attempted.json` 精确绑定且未变化的 prepared descriptor、source commit、build 和 tarball；逐包核验已存在的远端 tarball，只发布 registry 明确缺失的包，最后重新核验整组三包并补 CLI tag。内容冲突或查询不确定时停止；它不发布 Catalog。
 - `pnpm release -- --repair-cli-tag` 只从有效 prepared descriptor 核验并补发 CLI tag。它不准备新候选或修改分支。
 
-`.release/prepared/` 在 gitignore 下，是可删除的弱状态；删除后重新 prepare。`attempted.json` 是 gitignored 的本地安全门禁，不得手动删除。任何远端尝试前写入该 marker；普通发布不得重跑已尝试的同一候选。beta CLI 自动提升 beta 序号；稳定 CLI 和 Catalog 必须提升相关 target。只有上述显式 CLI repair 可以在完整绑定与逐包内容核验后补发同一候选。
+`.release/prepared/` 在 gitignore 下，是可删除的弱状态；删除后重新 prepare。`.release/attempted.json` 只服务 CLI/npm 安全门禁。Catalog 的唯一门禁是 Workspace `.aw/publish/attempts/<catalogVersion>.json`；公开命令和官方 release 在任何可能的远端写入前原子创建同一文件，失败后保留。普通 Catalog 发布不得重跑已尝试的同一版本，且不提供 repair。
 
 Catalog publisher 使用 prepared snapshot 写入相应 channel 和版本 tag。远端原子写失败或结果不确定时，同样必须提升 Catalog 版本后重发。CLI tag 推送异常时先读取远端；预期 tag 已指向 source commit 即成功，缺失时用 tag repair 补发，冲突时停止。
 
@@ -226,5 +233,5 @@ Catalog publisher 使用 prepared snapshot 写入相应 channel 和版本 tag。
 - `scripts/release/prepared-release.mjs`：生成、验证和消费本地 prepared release。
 - `scripts/release/release.mjs`：一键发布公共编排入口。
 - `scripts/release/cli-git-tag.mjs`：CLI source tag 检查、发布和恢复。
-- `scripts/release/git-catalog-publisher.mjs`：发布 prepared Catalog snapshot。
+- `scripts/release/catalog-publication.mjs`：把官方 channel/remote 参数交给 CLI 公共 Catalog publisher。
 - `packages/cli/authoring/`：随 CLI 发布的确定性插件作者实现。

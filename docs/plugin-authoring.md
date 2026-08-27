@@ -1,131 +1,99 @@
-# 第三方 AW 插件作者指南
+# AW Plugin Source 作者指南
 
-本指南面向独立插件作者。`aw` CLI 和 `@lesliechan721/aw-plugin-core` 是机器合同和确定性工具链；Catalog 是分发边界。`aw-plugin-development` 只是一组帮助 Agent 使用这些公开合同的开发助手，不是 SDK，也不是规范真值。
+本指南面向在既有合法 [Catalog Workspace](catalog-authoring.md) 中维护单个 Plugin Source 的作者。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是 manifest、bundle 和 validator 的机器真值；`aw-plugin-development` 只帮助 Agent 使用这些公开合同。
 
-## 三层模型
+## Plugin Source 边界
 
-```text
-Source Workspace
-  plugins/marketplace-source.json + plugins/<name>/
-             ↓ aw catalog build
-generated Catalog Snapshot
-  .aw/catalog/ (catalog-manifest.json + digest + bundles)
-             ↓ path source 或 Git source
-installed plugin
-  <AW_HOME> 和目标 Codex / Claude Code 范围内的 AW-owned 输出
-```
-
-只手动维护第一层的 source 文件。`catalog-manifest.json`、各 digest、`.aw/` 生成输出，以及 `.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json` 两份 marketplace 都由 CLI 生成，禁止手写。`--force` 只能替换 CLI 能证明属于同一 workspace 的生成输出；它不授权覆盖 source、foreign 或 shared 内容。
-
-path source 用本地 snapshot，适合开发和离线验证。Git source 消费已发布的 snapshot，适合分发给其它用户。两者都解析相同的 Catalog 合同。
-
-## Workspace v1 和 manifest
-
-Workspace v1 的固定根布局如下：
+一个插件的 canonical root 固定为：
 
 ```text
-<workspace>/
-  plugins/
-    marketplace-source.json
-    <plugin-name>/
-      .agents-plugin/plugin.json
+<workspace>/plugins/<plugin-name>/
+  .agents-plugin/plugin.json
+  README.md
+  skills/**
+  scripts/**
 ```
 
-先用 `aw catalog init --workspace-root <workspace>` 创建 workspace。它写入 `plugins/marketplace-source.json`，其中必须有 `owner`、`interface.displayName` 和 `catalog.version`。该版本只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。插件 source 只放在 `plugins/<name>/`。
+具体目录由 manifest 声明。所有 source path 必须留在插件根内，不能进入任意深度的 `.git` 或 `node_modules`。只维护 source 文件；`.aw/plugins/`、Catalog snapshot、digest 和 platform marketplace 是生成物，不手改。
 
-Manifest 中所有 source path 必须留在插件根内，并且任何路径 segment 都不能是 `.git` 或 `node_modules`。这包括 Skill、MCP、App、脚本、package root、runtime export 和 artifact source。
+每个 manifest 使用 `schemaVersion: 1`。不要混淆：
 
-每个插件的 `.agents-plugin/plugin.json` 使用 `schemaVersion: 1`。缺失 `schemaVersion` 的历史 manifest 按 legacy v1 读取；其它 schema 版本会被拒绝。不要混淆三个版本：
+- `schemaVersion`：manifest 结构版本。
+- `version`：单插件稳定 artifact 版本。
+- `compatibility.aw.minVersion`：插件要求的最低 AW 版本。
 
-- `schemaVersion` 是 manifest 结构版本，当前固定为 `1`。
-- `version` 是单个插件的稳定 artifact 版本。
-- `compatibility.aw.minVersion` 是运行该插件所需的最低 AW CLI 版本。
+字段、类型、required 条件和 accepted values 通过当前 CLI 查询：
 
-`catalog.version` 是整个 workspace snapshot 的版本，独立于插件 `version`。日常 source 修改不要为了 build 而提高插件 `version`。但在发布 production artifact 内容已变化、且当前稳定 plugin `version` 已进入 release ledger 的插件前，必须按作者的 release policy 提高该插件的稳定 `version`。发布新 Catalog 时用 `aw catalog version <higher>` 设置新的 Catalog 版本；只提高 `catalog.version` 不能解决同一 plugin `version` 对应不同 production 内容的问题。
+```bash
+aw plugin capabilities --surface manifest --json
+```
 
-同一 source 内的运行时依赖只在 manifest `dependencies` 中声明，值是裸插件名，例如 `"dependencies": ["shared-rules"]`。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。安装选择器 `source/plugin` 用于精确指定插件并固定 trust source。裸插件名必须在当前命令所需和已配置的 Catalog source 集合中唯一匹配；零匹配会失败，多个 source 有同名插件会以歧义失败。需要固定 source 或消除歧义时，使用精确选择器。
+其它 surface 以 `aw plugin capabilities --help` 为准。不要从 development plugin 文档缓存字段表。
 
-## 作者闭环
+同一 Catalog source 内的运行时依赖只在 manifest `dependencies` 中声明，值为裸插件名。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。依赖集合、缺失节点和环由 Catalog 作者聚合验证；本指南只定义单插件声明。
 
-每次先运行对应的 `--help`。下面的参数表与公开 CLI 一致；所有能接受 workspace 根的作者命令都显式使用 `--workspace-root`。不要使用 `--repo-root`。
+## 单插件作者闭环
+
+开始前确认 `<workspace-root>` 已有合法 `.aw-workspace.json` 和 `plugins/marketplace-source.json`。没有合法 Workspace 时停止，并使用 [Catalog 作者指南](catalog-authoring.md)初始化，不要由 Plugin Author 隐式创建。
+
+每次先运行对应的 `--help`：
 
 ```bash
 workspace=/absolute/path/to/workspace
 plugin=example-plugin
 
-aw catalog init --workspace-root "$workspace"
-
 aw plugin init "$plugin" \
   --description "Describe the plugin." \
   --skill-description "Describe the first Skill." \
   --workspace-root "$workspace"
+
 aw plugin add-skill "$plugin" \
   --skill-name second-skill \
   --skill-description "Describe the Skill." \
   --workspace-root "$workspace"
 
+aw plugin capabilities --surface manifest --json
 aw plugin validate "plugins/$plugin" --workspace-root "$workspace" --json
 aw plugin test "plugins/$plugin" --workspace-root "$workspace" --json
 aw plugin build "plugins/$plugin" --workspace-root "$workspace" --json
-
-aw catalog build --workspace-root "$workspace" --json
-aw catalog validate "$workspace/.aw/catalog" --json
+aw plugin status "$plugin" --workspace-root "$workspace" --json
 ```
 
-`aw plugin build` materializes one plugin bundle. `aw catalog build` materializes the complete development snapshot. Run either when its output is needed; then validate the result. `aw plugin test` runs the deterministic Node tests declared by that plugin. `aw plugin status <plugin> --workspace-root "$workspace"` is a development status check and does not require Git. Only an explicit `--base <git-ref>` comparison requires Git.
+`validate` 检查 source contract，`test` 运行 manifest 声明的确定性 Node tests，`build` 生成一个插件 bundle。`status` 默认不要求 Git；只有显式传 `--base <git-ref>` 时才做 Git comparison。
 
-To consume the generated path snapshot, use a separate isolated AW home when testing:
+`author-aw-plugin` 修改插件内 Skill 时调用 `author-agent-skill`，返回后运行 `aw skill validate <skill-root>`。它只负责一个 Plugin Source，不维护 Catalog metadata、inventory、精确 Catalog version、聚合 snapshot 或远端 publication。
+
+## 安全删除命令
+
+公开删除入口要求显式确认：
 
 ```bash
-export AW_HOME=/tmp/aw-home
-export AW_CODEX_HOME=/tmp/aw-codex-home
-export AW_CLAUDE_HOME=/tmp/aw-claude-home
-
-aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json
-aw install local-example/example-plugin -p both --json
+aw plugin remove "$plugin" --workspace-root "$workspace" --yes --json
 ```
 
-The install command writes platform output. Treat each Catalog as executable software, and inspect its content before adding or installing it.
+Workspace 必须位于有有效 HEAD 的 Git worktree 中，也可以是仓库子目录。命令只接受 canonical `<workspace>/plugins/<plugin-name>`。目标必须已提交，当前目标 tree 必须在 inventory、文件 bytes 和 executable mode 上与 HEAD 精确相同。任何 staged、unstaged、untracked、ignored、额外或符号链接节点都会阻止删除。Workspace 其它位置的无关修改不阻止命令。
 
-## Git publication and recovery
+若其它当前 plugin manifest 的 `dependencies` 包含目标，命令列出反向依赖者并停止。所有检查在删除前完成；缺少 `--yes` 时不修改文件。成功只删除 plugin root，不修改 `catalog.version`，也不 commit、build 或 publish。命令没有 `--force`。删除阶段发生 I/O 失败时，诊断会给出从已核验 HEAD 恢复目标的 Git 命令。
 
-`aw catalog publish` is optional and is never an automatic author step. Run it only after the user has explicitly authorized publication.
+Agent 删除由 Catalog Author 编排：普通用户删除请求先进入 Catalog Author；它先确认用户明确给出的 Workspace 和插件名、当前 inventory 与反向依赖，再明确交接这一个命令给 Plugin Author。没有该 handoff 时 Plugin Author 停止并指向 Catalog Author。Plugin Author 先查询 `aw --version` 和 `aw plugin remove --help`，只执行公开参数的删除命令并返回 JSON receipt；成功后不对已删除对象运行 validate、test、build 或 status。Catalog Author 重新读取 inventory 和依赖，并验证剩余插件。
 
-```bash
-aw catalog version 0.2.0 --workspace-root "$workspace"
-aw catalog publish \
-  --workspace-root "$workspace" \
-  --remote origin \
-  --branch catalog \
-  --yes \
-  --json
-```
+## Build、Portable 和信任边界
 
-Publication requires a clean source Git worktree, an existing Git commit, a configured remote, and a valid branch. In non-TTY or JSON use, `--yes` is required. The CLI archives the resolved source HEAD into an isolated workspace, runs the public source validator for every plugin there, and builds only from those committed bytes. Ignored or untracked working-tree bytes are never publication inputs. It then creates an immutable annotated `catalog-v<version>` tag and atomically pushes the dedicated branch and tag. It does not use the official `catalog/latest` or `catalog/beta` release train.
+Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输入。不要隐式安装工具或读取真实用户配置。`buildConfig.runtimeExports`、`buildImports`、`skillRuntimeFiles.import` 和 artifact `runtimeImports` 是 typed build-time reuse edge；它们不自动形成 manifest dependency。
 
-Before the first remote write, the CLI records a version-specific publish attempt. A failed or uncertain push permanently blocks that Catalog version. Do not retry it and do not delete the attempt file: increase `catalog.version` with `aw catalog version <higher>`, then publish the new Catalog candidate. This recovery does not change a plugin artifact identity. If an already-ledgered stable plugin `version` would publish different production content, first increase that plugin `version` under the author release policy; only increasing `catalog.version` is not valid recovery for same-version different-content. A consumer can add the published source with:
+Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
 
-```bash
-aw catalog source add example \
-  --git <git-url> \
-  --ref refs/heads/catalog \
-  --primary \
-  --json
-aw install example/example-plugin -p both --json
-```
+插件可以声明 executable build/test/lifecycle code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership，但不承诺独立的 permission UI 或 sandbox。安装或执行前必须评审 source 和 trust boundary。
 
-Third-party Catalog publication is independent from this repository's official CLI and Catalog release train. Do not use this repository's `pnpm release` commands for a third-party workspace.
+## 版本与恢复
 
-## Trust and recovery boundaries
+日常 source 修改是否改变 plugin `version`，由目标 workspace 的版本策略和 `aw plugin status` 证据决定。不要为生成 bundle 自动提高版本。Catalog candidate、release ledger、remote branch、tag、attempt 和 publication recovery 由 [Catalog 作者指南](catalog-authoring.md)定义。
 
-A third-party Catalog can contain executable plugin software. Its manifests and bundles can declare lifecycle scripts, Node build or test scripts, artifacts, hooks, MCP servers, Apps, configuration schema, and sensitive configuration. AW validates declared structure and applies its ownership rules, but this is not a promise of a separate permission UI or sandbox for plugin code. Review the source, transport, and trust decision before installation.
-
-Use `--json` for CI and parse the single JSON receipt from stdout. Keep diagnostics on stderr. A minimal CI job can run the authoring commands above with isolated `AW_HOME`, `AW_CODEX_HOME`, and `AW_CLAUDE_HOME`; it must not rely on a repository `node_modules`, `NODE_PATH`, or a workspace symlink.
-
-Generated Catalog output is weak state: rebuild it with `aw plugin build` or `aw catalog build`. Source configuration is strong state: source mutations are committed atomically, but refresh and platform installation can still report partial failure. For installed output, use the receipt and `aw status`; retry a recoverable operation with `aw reinstall`, `aw cleanup`, `aw cleanup --force` only for exclusively owned damaged output, or refresh the source. AW never uses force to delete foreign or shared content.
+单插件生成输出是弱状态，可重新运行 `aw plugin build`。安装结果失败时使用 receipt、`aw status`、`aw reinstall` 或安全的 `aw cleanup` 恢复；`cleanup --force` 只用于可证明为专属 AW-owned 的损坏输出，不删除 foreign/shared 内容。
 
 ## Related documents
 
-- [Architecture](architecture.md) defines the product and runtime boundaries.
-- [Plugin maintenance](plugin-maintenance.md) defines this repository's maintainer workflow.
-- [Testing guide](testing.md) lists the external authoring smoke that exercises this contract from packed tarballs.
+- [Catalog authoring](catalog-authoring.md) defines Workspace composition, aggregate validation, publication, and recovery.
+- [Architecture](architecture.md) defines product and runtime boundaries.
+- [Plugin maintenance](plugin-maintenance.md) defines this monorepo's maintainer workflow.
+- [Testing guide](testing.md) defines verification levels.

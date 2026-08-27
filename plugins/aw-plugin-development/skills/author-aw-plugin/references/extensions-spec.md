@@ -1,6 +1,6 @@
 # Extensions 作者策略
 
-字段与事件读取 [CLI 生成的能力视图](extensions-capabilities.generated.md)。选择能表达需求的最小 extension；平台专属事件只写对应 `nativeHooks`，公共条目用 `agentOverrides` 做有限差异。
+字段与事件运行 `aw plugin capabilities --surface extensions --json` 查询。选择能表达需求的最小 extension；平台专属事件只写对应 `nativeHooks`，公共条目用 `agentOverrides` 做有限差异。
 
 静态规则使用 extensions。配置驱动或需要 stale/refresh 状态的输出使用 [Config](aw-config-and-helper.md)、[Lifecycle](aw-lifecycle.md) 和 [Dynamic Artifact](aw-artifact-renderer.md) 合同；renderer 只返回 plan，lifecycle 不直接写 AW 管理的输出。
 

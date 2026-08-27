@@ -8,6 +8,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  getPluginAuthoringAcceptedValues as getCorePluginAuthoringAcceptedValues,
+  getSkillFrontmatterCapabilityRegistry,
+} from '@lesliechan721/aw-plugin-core/manifest';
+
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
 import { scanJavaScriptImportSpecifiers } from './lib/javascript-import-scanner.mjs';
 import {
@@ -24,7 +29,6 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-let pluginAuthoringCapabilityRegistry = null;
 const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 7;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
@@ -58,15 +62,15 @@ const CODEX_POLICY_PRODUCTS = new Set([
   'CODEX',
 ]);
 const MANIFEST_POLICY_PRODUCTS = new Set(getPluginAuthoringAcceptedValues(
-  'plugin-manifest',
+  'manifest',
   'marketplace.policy.products',
 ));
 const MARKETPLACE_AUTHENTICATION_POLICIES = new Set(getPluginAuthoringAcceptedValues(
-  'plugin-manifest',
+  'manifest',
   'marketplace.policy.authentication',
 ));
 const MARKETPLACE_INSTALLATION_POLICIES = new Set(getPluginAuthoringAcceptedValues(
-  'plugin-manifest',
+  'manifest',
   'marketplace.policy.installation',
 ));
 const PUBLIC_HOOK_EVENTS = new Set(['before_tool', 'after_tool', 'session_start']);
@@ -147,16 +151,16 @@ const SCRIPT_LIFECYCLE_EVENTS = new Set(['install', 'upgrade', 'uninstall']);
 const SCRIPT_TIMEOUT_MIN_MS = 1000;
 const SCRIPT_TIMEOUT_MAX_MS = 300000;
 const CONFIG_FIELD_TYPES = new Set(getPluginAuthoringAcceptedValues(
-  'config-lifecycle-artifact',
+  'config',
   'config.schema.<key>.type',
 ));
 const ARTIFACT_TARGETS = new Set(getPluginAuthoringAcceptedValues(
-  'config-lifecycle-artifact',
+  'artifacts',
   'artifacts.targets[].target',
 ));
 const ARTIFACT_STATES = new Set(getPluginAuthoringAcceptedValues(
-  'config-lifecycle-artifact',
-  'ArtifactPlan.artifacts[].state',
+  'artifacts',
+  'artifacts.targets[].states',
 ));
 const ARTIFACT_SCOPES = new Set(['user', 'project']);
 const ARTIFACT_KINDS = new Set(['instruction', 'codexRole', 'skill']);
@@ -189,7 +193,6 @@ const PLUGIN_EVAL_COMMAND_SUPPORTS = new Set([
   'allowEnvironmentSkips',
 ]);
 let yamlParser = null;
-let skillFrontmatterCapabilityRegistry = null;
 let pluginVersionCheckResult = null;
 
 function error(msg) {
@@ -383,57 +386,12 @@ function parseFrontmatter(content, sourceName) {
   return parseYaml(match[1], sourceName);
 }
 
-function loadPluginAuthoringCapabilityRegistry() {
-  if (pluginAuthoringCapabilityRegistry) return pluginAuthoringCapabilityRegistry;
-  const registryPath = [
-    path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
-    path.resolve(__dirname, '..', '..', 'dist', 'src', 'utils', 'plugin-authoring-capabilities.json'),
-  ].find((candidate) => fs.existsSync(candidate));
-  if (!registryPath) {
-    throw new Error('Plugin authoring capability registry not found in the built CLI.');
-  }
-  const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-  if (!registry || registry.schemaVersion !== 1 || !registry.surfaces) {
-    throw new Error(`Invalid plugin authoring capability registry: ${registryPath}`);
-  }
-  pluginAuthoringCapabilityRegistry = registry;
-  return registry;
-}
-
 function getPluginAuthoringAcceptedValues(surface, field) {
-  const entry = loadPluginAuthoringCapabilityRegistry().surfaces[surface]?.entries
-    ?.find((candidate) => candidate.field === field);
-  if (!entry || !Array.isArray(entry.acceptedValues)) {
-    throw new Error(`Plugin authoring capability ${surface}.${field} has no accepted values.`);
-  }
-  return entry.acceptedValues;
+  return getCorePluginAuthoringAcceptedValues(surface, field);
 }
 
 function loadSkillFrontmatterCapabilityRegistry() {
-  if (skillFrontmatterCapabilityRegistry) return skillFrontmatterCapabilityRegistry;
-  const registryPath = path.join(
-    CLI_PACKAGE_ROOT,
-    'dist',
-    'src',
-    'utils',
-    'skill-frontmatter-capabilities.json',
-  );
-  if (!fs.existsSync(registryPath)) {
-    throw new Error(
-      `Skill frontmatter capability registry not found: ${registryPath}`,
-    );
-  }
-  const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-  if (
-    !registry ||
-    registry.schemaVersion !== 1 ||
-    !registry.profiles ||
-    !registry.fields
-  ) {
-    throw new Error(`Invalid Skill frontmatter capability registry: ${registryPath}`);
-  }
-  skillFrontmatterCapabilityRegistry = registry;
-  return registry;
+  return getSkillFrontmatterCapabilityRegistry();
 }
 
 async function tryLoadCliManifestTools() {

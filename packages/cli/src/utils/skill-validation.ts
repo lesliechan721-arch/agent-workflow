@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import {
   validateSkillFrontmatterCapabilities,
   type SkillFrontmatterProfile,
-} from './skill-frontmatter-capabilities.js';
+} from '@lesliechan721/aw-plugin-core/manifest';
 
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_SKILL_NAME_LENGTH = 64;

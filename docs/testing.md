@@ -1,6 +1,6 @@
 # Testing Guidelines
 
-本文件面向仓库维护者，负责测试书写、测试层级选择和验证命令。产品行为以[架构说明](architecture.md)为准；插件模型 Eval 和评审流程以[插件维护指南](plugin-maintenance.md)指向的专用 Skill 为准。
+本文件面向仓库维护者，负责测试书写、测试层级选择和验证命令。产品行为以[架构说明](architecture.md)为准；单插件作者合同见[插件作者指南](plugin-authoring.md)，Catalog 聚合与发布合同见[Catalog 作者指南](catalog-authoring.md)。
 
 `pnpm test` 使用默认 Vitest 配置，只运行 unit 和 integration 测试。Performance 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
 
@@ -25,7 +25,6 @@
 | `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
-| `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
@@ -87,6 +86,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Offline cleanup 或 `cleanup --force` 恢复 | Unit + Integration | 对应 ownership/rebuild 定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
+| Catalog 作者与 Publisher 合同 | Plugin test + Smoke | `pnpm plugin:test aw-catalog-development`、Catalog build/publish smoke 和 [Catalog 作者指南](catalog-authoring.md)要求的隔离验证；删除分支的 Agent-facing command/return boundary 与 empty inventory 指令只在已安装 Skill 的静态合同测试中覆盖，CLI 删除行为由 integration 覆盖 |
 | 第三方作者公开闭环与 tarball dependency closure | Smoke | `pnpm test:smoke:authoring:external`；它不得通过 monorepo cwd、`NODE_PATH` 或 workspace symlink 取得依赖 |
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
@@ -97,14 +97,14 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
-Release unit/integration 覆盖 CLI target 更新的 package 同步、local prepared artifacts、attempted marker、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序和 Catalog-only compatibility。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Workspace Catalog attempt、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
 
 | 发布风险 | 最低证据 |
 |---|---|
 | CLI target 同步两个 public package 与 workspace dependency | prepared release unit |
-| beta/release 独立选择 CLI 和 Catalog 候选 | prepared release unit |
+| beta/release 独立选择 CLI target 和 Catalog metadata 候选 | prepared release unit |
 | CLI tag 指向 prepared source commit | CLI tag integration |
 | npm 成功后 tag 可补发 | release entry unit + CLI tag integration |
 | CLI 成功后 Catalog 失败保留部分成功 | release publish smoke |

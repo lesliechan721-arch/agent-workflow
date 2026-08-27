@@ -27,7 +27,7 @@ import {
   CLAUDE_NATIVE_HOOK_EVENTS,
   NATIVE_HOOK_EVENT_CONTRACTS,
 } from '../../src/utils/hooks-contract.js';
-import { getPluginAuthoringAcceptedValues } from '../../src/utils/plugin-authoring-capabilities.js';
+import { getPluginAuthoringAcceptedValues } from '@lesliechan721/aw-plugin-core/manifest';
 
 const tempDirs: string[] = [];
 
@@ -113,7 +113,7 @@ describe('manifest utils', () => {
     const repoRoot = await makeTempRepo();
     const rawManifest = await readFixturePluginManifest(repoRoot);
     const accepted = getPluginAuthoringAcceptedValues(
-      'plugin-manifest',
+      'manifest',
       'marketplace.policy.installation',
     );
 

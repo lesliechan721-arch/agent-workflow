@@ -158,16 +158,14 @@ test('AW workflow inventory keeps manifest dependencies separate from typed impo
   }
 });
 
-test('AW workflow inventory accepts the canonical reserved provider matrix', async () => {
+test('AW workflow inventory rejects removed CLI capability exports', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-cli-import-'));
   temps.push(temp);
   const a = path.join(temp, 'a');
   const b = path.join(temp, 'b');
   await plugin(a, 'a', [
     { plugin: '@aw/cli', export: 'skill-frontmatter-capabilities' },
-    { plugin: '@aw/cli', export: 'plugin-authoring-capabilities' },
     { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
-    { plugin: '@aw/cli', export: 'unknown-export' },
   ], ['a-export'], { dependencies: [] });
   await plugin(b, 'b');
   const manifestPath = path.join(a, '.agents-plugin', 'plugin.json');
@@ -189,11 +187,11 @@ test('AW workflow inventory accepts the canonical reserved provider matrix', asy
     discover, '--entry', 'a', '--plugin', a, '--plugin', b, '--format', 'json',
   ], { encoding: 'utf8' });
   const result = JSON.parse(stdout);
-  assert.deepEqual(result.unresolved.buildImportEdges.map(({ export: exportName, reason }) => ({ export: exportName, reason })), [
-    { export: 'unknown-export', reason: 'missing-export' },
+  assert.deepEqual(result.unresolved.buildImportEdges.map(({ to, reason }) => ({ to, reason })), [
+    { to: '@aw/cli', reason: 'missing-provider' },
   ]);
-  assert.deepEqual(result.unresolved.skillRuntimeFileImportEdges.map(({ reason }) => reason), [
-    'unsupported-virtual-import-kind',
+  assert.deepEqual(result.unresolved.skillRuntimeFileImportEdges.map(({ to, reason }) => ({ to, reason })), [
+    { to: '@aw/cli', reason: 'missing-provider' },
   ]);
 });
 

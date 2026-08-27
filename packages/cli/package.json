@@ -28,7 +28,6 @@
     "test:smoke:build": "vitest run --config vitest.smoke.config.ts tests/smoke/build-smoke.test.ts",
     "test:smoke:pack:cli": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
     "test:smoke:authoring:external": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts -t \"external authoring workflow\"",
-    "test:smoke:stage:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-stage-smoke.test.ts",
     "test:smoke:publish:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-publish-smoke.test.ts",
     "test:smoke:publish:release": "vitest run --config vitest.smoke.config.ts tests/smoke/release-publish-entry-smoke.test.ts",
     "test:smoke:bootstrap:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-bootstrap-smoke.test.ts",

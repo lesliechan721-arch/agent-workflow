@@ -284,7 +284,7 @@
         "rationale": "构建修复改变 production bundle，必须修复直接根因、保持开发期稳定目标不变，并重新运行发现的构建与开发状态检查。",
         "rule_refs": [
           "SKILL.md#工作流",
-          "references/aw-validation-and-version.md",
+          "references/aw-validation.md",
           "references/aw-script-testing.md"
         ],
         "confidence": "high",
@@ -417,18 +417,16 @@
         "review_not_requested": true
       },
       "oracle": {
-        "rationale": "Portable static Skill、portable-only runtime projection 与 dynamic agent-skills.skill 使用三个相连但不同的公开 manifest 合同。workspace 预置一个独立且只读的 status-registry-provider；Author 只修改 portable-observer，并从 canonical generated views 选择字段，由公开 validator 证明最小源码合同和跨插件 runtime import 有效。",
+        "rationale": "Portable static Skill、portable-only runtime projection 与 dynamic agent-skills.skill 使用三个相连但不同的公开 manifest 合同。workspace 预置一个独立且只读的 status-registry-provider；Author 只修改 portable-observer，并从当前 PATH 的 capability 查询选择字段，由公开 validator 证明最小源码合同和跨插件 runtime import 有效。",
         "rule_refs": [
           "SKILL.md#Reference-路由",
-          "references/plugin-manifest-capabilities.generated.md",
-          "references/build-config-capabilities.generated.md",
-          "references/config-lifecycle-artifact-capabilities.generated.md"
+          "SKILL.md#工作流"
         ],
         "confidence": "high",
         "allowed_variance": "说明文字和 renderer 内部逻辑可不同；portable root 固定为 portable-skills，static Skill 路径固定为 portable-skills/observe-status，renderer 路径固定为 scripts/render-artifacts.mjs，均为交付合同。static distribution、agent-skills-only projection、dynamic distribution identity、指向只读 status-registry-provider 的 runtimeImports 和公开 validator 成功必须完整。provider fixture 保持不变。",
         "minimal_counterexample": "若内容只需 native Skill，则不得添加 distributions.agentSkills、portable projection 或 agent-skills.skill target。"
       },
-      "prompt": "维护 plugins/portable-observer：保留现有 native Skill；portable root 必须为 portable-skills，新增的 portable static observe-status Skill 必须位于 portable-skills/observe-status，并把 runtime/status-fields.json 只投影到该 portable Skill；build 再生成 observe-status/references/status-fields.generated.md，且只声明给 Portable surface；再新增 dynamic portable observe-project Skill，renderer 必须位于 scripts/render-artifacts.mjs，并使用 workspace 中预置且只读的 plugins/status-registry-provider runtime export status-registry。请读取安装后 Author 的 canonical generated reference，写最小公开合同，并运行 aw plugin validate。只修改 plugins/portable-observer；不要修改 provider，也不要做 Review、Audit、模型 Eval 或发布。",
+      "prompt": "维护 plugins/portable-observer：保留现有 native Skill；portable root 必须为 portable-skills，新增的 portable static observe-status Skill 必须位于 portable-skills/observe-status，并把 runtime/status-fields.json 只投影到该 portable Skill；build 再生成 observe-status/references/status-fields.generated.md，且只声明给 Portable surface；再新增 dynamic portable observe-project Skill，renderer 必须位于 scripts/render-artifacts.mjs，并使用 workspace 中预置且只读的 plugins/status-registry-provider runtime export status-registry。请查询当前 PATH 的 aw plugin capabilities，写最小公开合同，并运行 aw plugin validate。只修改 plugins/portable-observer；不要修改 provider，也不要做 Review、Audit、模型 Eval 或发布。",
       "scripted_replies": [],
       "expected_output": "交付能通过公开 validator 的最小 Portable Agent Skills manifest、static Skill、portable-only projection、对只读 status-registry-provider 的 runtime import 和 dynamic renderer；保持 native V1 门禁且不增加完成门禁。",
       "sandbox": "workspace-write",
@@ -470,7 +468,7 @@
           }
         ],
         "checks": [
-          "trace 读取 plugin-manifest、build-config 和 config-lifecycle-artifact 三个 canonical generated views，并据此选择 Portable 字段；不复制完整 schema 或 release 内核",
+          "trace 从当前 PATH 查询 aw plugin capabilities 的 manifest、build-config 和 artifacts surface，并据此选择 Portable 字段；不缓存字段表，也不复制完整 schema 或 release 内核",
           "manifest 保留非空 native Skill，并声明 distributions.agentSkills.skills 指向独立 portable root；observe-status 是含 production README.md 的有效 portable static Skill",
           "buildConfig.skillRuntimeFiles 对 observe-status 使用 distributions=[agent-skills] 和 source runtime/status-fields.json；generatedSkillRuntimeFiles 对 observe-status/references/status-fields.generated.md 也使用 distributions=[agent-skills]；两者都不隐式投影到 native surface",
           "manifest 的 dynamic agent-skills.skill target 通过 runtimeImports 指向只读 provider plugins/status-registry-provider 的 status-registry export；这是 typed build-time reuse edge，不声明或推断 manifest dependencies，portable-observer 不得添加 dependencies: [status-registry-provider]；consumer 不声明不可执行的 self-import，也不修改 provider fixture",

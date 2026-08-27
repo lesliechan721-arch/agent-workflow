@@ -41,20 +41,18 @@ export function serializeVersionTargets(targets) {
   return `${JSON.stringify({
     schemaVersion: targets.schemaVersion,
     cli: targets.cli,
-    catalog: targets.catalog,
   }, null, 2)}\n`;
 }
 
 export function normalizeVersionTargets(raw) {
   const value = assertObject(raw, 'release version targets');
-  assertKeys(value, 'release version targets', ['schemaVersion', 'cli', 'catalog']);
-  if (value.schemaVersion !== 1) {
-    throw new Error('Invalid release version targets.schemaVersion: expected 1.');
+  assertKeys(value, 'release version targets', ['schemaVersion', 'cli']);
+  if (value.schemaVersion !== 2) {
+    throw new Error('Invalid release version targets.schemaVersion: expected 2.');
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     cli: normalizeStableTargetVersion(value.cli, 'release version targets.cli'),
-    catalog: normalizeStableTargetVersion(value.catalog, 'release version targets.catalog'),
   };
 }
 
@@ -98,15 +96,14 @@ export function bumpStableVersion(version, bump) {
 export function parseTargetArgs(argv) {
   const args = [...argv];
   while (args[0] === '--') args.shift();
-  const changes = { cli: null, catalog: null, plugins: new Map() };
+  const changes = { cli: null, plugins: new Map() };
   while (args.length > 0) {
     const token = args.shift();
-    if (token === '--cli' || token === '--catalog') {
-      const axis = token.slice(2);
-      if (changes[axis] !== null) throw new Error(`Duplicate release target axis ${token}.`);
+    if (token === '--cli') {
+      if (changes.cli !== null) throw new Error(`Duplicate release target axis ${token}.`);
       const bump = args.shift();
       if (!BUMPS.has(bump)) throw new Error(`${token} requires major, minor, or patch.`);
-      changes[axis] = bump;
+      changes.cli = bump;
       continue;
     }
     if (token === '--plugin') {
@@ -123,7 +120,7 @@ export function parseTargetArgs(argv) {
     }
     throw new Error(`Unknown release target argument ${JSON.stringify(token)}.`);
   }
-  if (changes.cli === null && changes.catalog === null && changes.plugins.size === 0) {
+  if (changes.cli === null && changes.plugins.size === 0) {
     throw new Error('Release target requires at least one version bump.');
   }
   return changes;
@@ -209,7 +206,7 @@ async function writeAtomically(changes, fileSystem = fs) {
 export async function updateReleaseTargets(argv, options = {}) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const requested = parseTargetArgs(argv);
-  const current = await readVersionTargets(repoRoot);
+  const current = requested.cli ? await readVersionTargets(repoRoot) : null;
   const cliPackages = requested.cli ? await Promise.all([
     readCliPackage(
       repoRoot,
@@ -250,10 +247,9 @@ export async function updateReleaseTargets(argv, options = {}) {
       `@lesliechan721/aw-plugin-core@workspace:${current.cli}.`,
     );
   }
-  const next = {
+  const next = current === null ? null : {
     ...current,
-    cli: requested.cli ? bumpStableVersion(current.cli, requested.cli) : current.cli,
-    catalog: requested.catalog ? bumpStableVersion(current.catalog, requested.catalog) : current.catalog,
+    cli: bumpStableVersion(current.cli, requested.cli),
   };
   const pluginChanges = await Promise.all([...requested.plugins].map(async ([name, bump]) => {
     const plugin = await readPluginManifest(repoRoot, name);
@@ -267,7 +263,7 @@ export async function updateReleaseTargets(argv, options = {}) {
     };
   }));
   const changes = [];
-  if (requested.cli || requested.catalog) {
+  if (requested.cli) {
     const targetsPath = path.join(repoRoot, 'release', 'version-targets.json');
     changes.push({
       path: targetsPath,
@@ -311,6 +307,6 @@ export async function updateReleaseTargets(argv, options = {}) {
   return {
     targets: next,
     plugins: pluginChanges.map(({ name, version }) => ({ name, version })),
-    targetsDigest: calculateCanonicalDigest(next),
+    targetsDigest: next === null ? null : calculateCanonicalDigest(next),
   };
 }

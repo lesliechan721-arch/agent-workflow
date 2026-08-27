@@ -17,7 +17,6 @@ export * from '@lesliechan721/aw-plugin-core/manifest';
 export type * from '@lesliechan721/aw-plugin-core/manifest';
 
 export const CLI_RESERVED_IMPORTS = {
-  '@aw/cli': ['skill-frontmatter-capabilities', 'plugin-authoring-capabilities'],
   '@aw/agent-skill-eval': ['case-corpus-digest'],
 } as const satisfies ReservedImportRegistry;
 

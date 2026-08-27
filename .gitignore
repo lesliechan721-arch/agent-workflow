@@ -15,5 +15,6 @@ packages/cli/plugins-dist
 .agent-workflows/plugin-config.local/
 .worktrees
 .tmp/
+.aw/
 # Skill report roots only track a published human report and compact summary.
 .agents

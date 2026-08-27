@@ -9,33 +9,11 @@
   ],
   "compatibility": {
     "aw": {
-      "minVersion": "0.0.0"
+      "minVersion": "0.1.0"
     }
   },
   "skills": "./skills",
   "buildConfig": {
-    "cacheable": true,
-    "buildImports": [
-      {
-        "plugin": "@aw/cli",
-        "export": "skill-frontmatter-capabilities",
-        "env": "AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES"
-      },
-      {
-        "plugin": "@aw/cli",
-        "export": "plugin-authoring-capabilities",
-        "env": "AW_PLUGIN_IMPORT_PLUGIN_AUTHORING_CAPABILITIES"
-      }
-    ],
-    "generatedSkillRuntimeFiles": [
-      { "skill": "author-aw-plugin", "target": "references/skill-frontmatter-capabilities.md" },
-      { "skill": "author-aw-plugin", "target": "references/plugin-manifest-capabilities.generated.md" },
-      { "skill": "author-aw-plugin", "target": "references/build-config-capabilities.generated.md" },
-      { "skill": "author-aw-plugin", "target": "references/extensions-capabilities.generated.md" },
-      { "skill": "author-aw-plugin", "target": "references/slash-command-capabilities.generated.md" },
-      { "skill": "author-aw-plugin", "target": "references/mcp-app-capabilities.generated.md" },
-      { "skill": "author-aw-plugin", "target": "references/config-lifecycle-artifact-capabilities.generated.md" }
-    ],
     "skillRuntimeFiles": [
       {
         "skill": "author-aw-plugin",
@@ -172,13 +150,6 @@
     ]
   },
   "scripts": {
-    "node": {
-      "build": {
-        "runner": "node",
-        "path": "./scripts/build-runtime-assets.mjs",
-        "args": []
-      }
-    },
     "tests": {
       "node": [
         "./scripts/contract.test.mjs",

@@ -269,6 +269,13 @@ async function assertTypedIssueOrigin(
     }
     return;
   }
+  else if (intent.originIssue.category === 'sourceUnavailable') {
+    if (intent.originIssue.actionId !== 'cleanup' || intent.action !== 'cleanup'
+      || !selected || !selected.errors.some((error) => error.code === 'bundleUnavailable')) {
+      stale('原 Catalog 缺失插件问题已变化。');
+    }
+    return;
+  }
   else if (intent.originIssue.category === 'scopeConflict') {
     const installedScopes = new Set(targets.filter((target) =>
       target.pluginId === intent.pluginId
@@ -711,7 +718,29 @@ export function createTuiControllerDependencies(
     }
     let dependencyPlan: DependencyOperationPlan | undefined;
     await preparation?.reporter.emit('catalog');
-    const selected = await withResolvedCatalogPlugin({
+    const bundleUnavailableCleanupTarget = intent.kind === 'pluginWrite'
+      && intent.action === 'cleanup'
+      && intent.originIssue?.category === 'sourceUnavailable'
+      && intent.originIssue.actionId === 'cleanup'
+      ? status.payload.targets.find((target) => target.pluginId === intent.pluginId
+        && target.platform === intent.platform
+        && target.scope === intent.scope
+        && target.errors.some((error) => error.code === 'bundleUnavailable'))
+      : undefined;
+    const catalogSource = bundleUnavailableCleanupTarget
+      ? status.payload.catalog.sources.find((source) => source.id === bundleUnavailableCleanupTarget.sourceId)
+      : undefined;
+    const selected = bundleUnavailableCleanupTarget
+      ? {
+          pluginName: bundleUnavailableCleanupTarget.pluginName,
+          source: {
+            sourceId: bundleUnavailableCleanupTarget.sourceId,
+            sourceIdentity: bundleUnavailableCleanupTarget.sourceIdentity,
+            ...(catalogSource?.requestedRef ? { requestedRef: catalogSource.requestedRef } : {}),
+            ...(catalogSource?.resolvedCommit ? { resolvedCommit: catalogSource.resolvedCommit } : {}),
+          },
+        }
+      : await withResolvedCatalogPlugin({
           selector: intent.pluginId,
           cliVersion: packageInfo.version,
           freshnessPolicy,

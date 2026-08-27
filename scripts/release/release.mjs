@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   assertPublishedCliArtifactsMatch,
@@ -7,10 +7,12 @@ import {
   ensureCliTag,
 } from './cli-git-tag.mjs';
 import {
+  cliDistRoot,
   repoRoot as defaultRepoRoot,
   runCommand,
   runReleaseGit,
 } from './common.mjs';
+import { readCatalogSourceVersion } from './catalog-publication.mjs';
 import {
   assertPreparedCliArtifacts,
   assertPreparedCliAttempt,
@@ -20,6 +22,7 @@ import {
   publishPreparedRelease,
   readPreparedDescriptor,
   repairPreparedCliRelease,
+  resolveCatalogReleaseCandidate,
   resolvePreparedCandidates,
 } from './prepared-release.mjs';
 import {
@@ -115,14 +118,13 @@ export function parseReleaseArgs(argv) {
 function targetArgs(parsed) {
   const args = [];
   if (parsed.cliBump) args.push('--cli', parsed.cliBump);
-  if (parsed.catalogBump) args.push('--catalog', parsed.catalogBump);
   for (const [name, bump] of parsed.plugins) args.push('--plugin', `${name}=${bump}`);
   return args;
 }
 
 function releaseMetadataPaths(parsed) {
   const paths = new Set();
-  if (parsed.cliBump || parsed.catalogBump) paths.add('release/version-targets.json');
+  if (parsed.cliBump) paths.add('release/version-targets.json');
   if (parsed.cliBump) {
     paths.add('packages/cli/package.json');
     paths.add('packages/agent-skill-eval/package.json');
@@ -153,6 +155,90 @@ export async function commitReleaseMetadata(parsed, options = {}) {
     cwd: repoRoot,
   });
   return result;
+}
+
+async function runCatalogVersionMutation(mutation, options = {}) {
+  const distRoot = path.resolve(options.cliDistRoot ?? cliDistRoot);
+  const service = options.catalogVersionService ?? await import(pathToFileURL(path.join(
+    distRoot,
+    'src',
+    'authoring',
+    'workspace-commands.js',
+  )).href).catch((error) => {
+    throw new Error('Catalog version mutation requires compiled CLI artifacts.', { cause: error });
+  });
+  return service.runCatalogVersionCommand({
+    workspaceRoot: options.repoRoot ?? defaultRepoRoot,
+    ...mutation,
+    io: { stdout: () => undefined, stderr: () => undefined },
+  });
+}
+
+export async function commitCatalogVersionMetadata(options = {}) {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const relativePath = 'plugins/marketplace-source.json';
+  const runGit = options.runGit ?? runReleaseGit;
+  await runGit(['add', '--', relativePath], { ...options, cwd: repoRoot });
+  const staged = (await runGit([
+    'diff', '--cached', '--name-only', '-z',
+  ], { ...options, cwd: repoRoot })).stdout.split('\0').filter(Boolean);
+  if (staged.length === 0) return null;
+  if (staged.length !== 1 || staged[0] !== relativePath) {
+    throw new Error('Catalog version commit contains unexpected paths.');
+  }
+  await runGit(['commit', '-m', 'chore(release): set Catalog version'], {
+    ...options,
+    cwd: repoRoot,
+  });
+  return relativePath;
+}
+
+export async function prepareCatalogReleaseMetadata(parsed, options = {}) {
+  if (!parsed.axes.catalog) return null;
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  let serviceReady = options.mutateCatalogVersion !== undefined
+    || options.catalogVersionService !== undefined;
+  const mutate = async (mutation) => {
+    if (!serviceReady) {
+      await (options.ensureCatalogVersionService ?? runCommand)('pnpm', ['build'], { cwd: repoRoot });
+      serviceReady = true;
+    }
+    return (options.mutateCatalogVersion ?? runCatalogVersionMutation)(mutation, {
+      ...options,
+      repoRoot,
+    });
+  };
+
+  let currentVersion = await (options.readCatalogVersion ?? readCatalogSourceVersion)({
+    ...options,
+    repoRoot,
+  });
+  let mutated = false;
+  if (parsed.catalogBump !== null) {
+    const receipt = await mutate({ bump: parsed.catalogBump });
+    currentVersion = receipt.catalogVersion;
+    mutated = receipt.changed || mutated;
+  }
+  const candidate = await (options.resolveCatalogCandidate ?? resolveCatalogReleaseCandidate)(
+    parsed.channel,
+    {
+      ...options,
+      repoRoot,
+      readCatalogVersion: async () => currentVersion,
+    },
+  );
+  if (candidate !== null && candidate !== currentVersion) {
+    const receipt = await mutate({ version: candidate });
+    currentVersion = receipt.catalogVersion;
+    mutated = receipt.changed || mutated;
+  }
+  const commit = mutated
+    ? await (options.commitCatalogMetadata ?? commitCatalogVersionMetadata)({
+        ...options,
+        repoRoot,
+      })
+    : null;
+  return { candidate, version: currentVersion, commit };
 }
 
 async function runReleaseVerification(axes, options = {}) {
@@ -194,14 +280,23 @@ export async function runRelease(argv = process.argv.slice(2), options = {}) {
 
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
-  await (options.assertTargetsMatchHead ?? assertVersionTargetsMatchHead)(repoRoot, options);
+  if (parsed.axes.cli) {
+    await (options.assertTargetsMatchHead ?? assertVersionTargetsMatchHead)(repoRoot, options);
+  }
   const metadata = await (options.commitMetadata ?? commitReleaseMetadata)(parsed, {
     ...options,
     repoRoot,
   });
   await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
 
-  const targets = await (options.readTargets ?? readVersionTargets)(repoRoot);
+  const catalogMetadata = await (
+    options.prepareCatalogMetadata ?? prepareCatalogReleaseMetadata
+  )(parsed, { ...options, repoRoot });
+  await (options.assertClean ?? assertTrackedHeadClean)(repoRoot, options);
+
+  const targets = parsed.axes.cli
+    ? await (options.readTargets ?? readVersionTargets)(repoRoot)
+    : null;
   const candidates = await (options.resolveCandidates ?? resolvePreparedCandidates)(
     parsed.channel,
     targets,
@@ -222,7 +317,7 @@ export async function runRelease(argv = process.argv.slice(2), options = {}) {
     axes: parsed.axes,
   });
   const published = await (options.publish ?? publishPreparedRelease)({ ...options, repoRoot });
-  return { metadata, verification, candidates, descriptor, published };
+  return { metadata, catalogMetadata, verification, candidates, descriptor, published };
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -139,10 +139,6 @@ function supportedPlatforms(manifest) {
 }
 
 const RESERVED_RUNTIME_IMPORTS = new Map([
-  ['@aw/cli', new Map([
-    ['skill-frontmatter-capabilities', new Set(['buildImportEdges'])],
-    ['plugin-authoring-capabilities', new Set(['buildImportEdges'])],
-  ])],
   ['@aw/agent-skill-eval', new Map([
     ['case-corpus-digest', new Set(['buildImportEdges', 'skillRuntimeFileImportEdges'])],
   ])],

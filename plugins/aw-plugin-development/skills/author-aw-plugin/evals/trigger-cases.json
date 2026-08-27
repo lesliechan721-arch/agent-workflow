@@ -99,7 +99,7 @@
     {
       "id": "external",
       "split": "validation",
-      "query": "维护另一个项目 packages/acme-aw 的 manifest、Skill、构建和物化。",
+      "query": "在另一个项目的既有合法 Catalog Workspace 中维护 canonical plugins/acme-aw 的 manifest、Skill、构建和物化。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "boundary",

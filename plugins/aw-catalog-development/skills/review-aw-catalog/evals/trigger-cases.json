@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "skill": "review-aw-catalog",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "Catalog composition Review 必须与单插件和业务 workflow Review 分离。"
+  },
+  "cases": [
+    {
+      "id": "catalog_composition_review",
+      "split": "train",
+      "query": "只读评审这个 AW Catalog 的 Workspace identity、metadata、inventory、依赖图和版本一致性。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "catalog-review",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "请求只读评审 Catalog composition。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以按需委托单插件 Reviewer，但不得 build。"
+      }
+    },
+    {
+      "id": "catalog_dependency_consistency_review",
+      "split": "validation",
+      "query": "只读检查当前 Catalog 中所有插件的 inventory、版本约束和依赖图是否一致；不要评价单个 Skill 的 prompt。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "catalog-review",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "请求的评审对象是 Catalog 级 inventory、版本和跨插件依赖 composition。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "必须保持只读，并把单插件内部质量留给 review-aw-plugin。",
+        "minimal_counterexample": "若只评审一个插件的 Skill prompt 或 lifecycle，则不应加载 Catalog Reviewer。"
+      }
+    },
+    {
+      "id": "single_plugin_review",
+      "split": "validation",
+      "query": "只读评审 plugins/status-tools 的 Skill prompt 和 lifecycle 设计。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "plugin-review",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "单插件内部质量由 review-aw-plugin 拥有。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "不得把插件内部 finding 提升为 Catalog finding。"
+      }
+    },
+    {
+      "id": "business_workflow_review",
+      "split": "validation",
+      "query": "评审 plugin-a 到 plugin-b 的用户 handoff、失败传播和业务 owner。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "workflow-review",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "跨插件业务 workflow 由 review-aw-workflow 拥有。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "不得用 Catalog composition Review 替代业务 workflow Review。"
+      }
+    },
+    {
+      "id": "write_catalog",
+      "split": "validation",
+      "query": "修复 Catalog inventory 和依赖环。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "catalog-authoring",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "写请求由 author-aw-catalog 拥有。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "Reviewer 必须保持只读。"
+      }
+    }
+  ]
+}

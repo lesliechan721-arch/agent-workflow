@@ -224,6 +224,7 @@ export type UserIssueCategory =
 
 export type UserIssueActionId =
   | 'reinstall'
+  | 'cleanup'
   | 'remove'
   | 'refreshSource'
   | 'continueWithCache'
@@ -249,7 +250,7 @@ export interface UserIssueActionViewModel {
   platform?: PlatformName;
   scope?: Scope;
   project?: 'current' | 'other' | null;
-  writeAction?: 'install' | 'upgrade' | 'reinstall';
+  writeAction?: 'install' | 'upgrade' | 'reinstall' | 'cleanup';
 }
 
 export type TargetIssueRootCode =
@@ -638,7 +639,13 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
               ]
             : root.category === 'sourceUnavailable'
               ? [
-                  { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable' ? '检查这个插件包或稍后重试' : '修复来源配置或稍后重试' },
+                  ...(root.code === 'bundleUnavailable' ? [{
+                    id: 'cleanup' as const,
+                    label: '清理已安装内容',
+                    description: '只清理 AW 管理的现场内容；保留插件设置',
+                    writeAction: 'cleanup' as const,
+                  }] : []),
+                  { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable' ? '检查当前 Catalog 或稍后重试' : '修复来源配置或稍后重试' },
                   { id: 'viewTechnical', label: '技术详情' },
                 ]
               : [{ id: 'viewTechnical', label: '技术详情' }, { id: 'retryLater', label: '稍后重试' }];
@@ -655,7 +662,7 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
           dependencyTargetUnsupported: '依赖目标不兼容',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
-        }[root.category as Exclude<UserIssueCategory, 'incompleteInstallation' | 'sourceDegraded' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '插件包不可用' : '检查失败'}`,
+        }[root.category as Exclude<UserIssueCategory, 'incompleteInstallation' | 'sourceDegraded' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
         explanation: dependencyCategory
           ? dependencyPluginId
             ? `${dependencyPluginId} 导致当前依赖检查不能通过。`
@@ -663,10 +670,10 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
           : target.state === 'partial'
           ? '必要内容缺失，插件可能不能稳定运行。'
           : bundleUnavailable
-            ? '当前来源中无法取得这个插件的可信 bundle。'
+            ? '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。'
             : '当前目标不能安全分类为正常安装。',
         impact: [bundleUnavailable
-          ? '当前目标不能使用这个插件包；这不表示来源缓存整体不可用。'
+          ? '可以清理可信的 AW 现场；这不表示来源缓存整体不可用。'
           : '写操作前需要重新检查这个目标。'],
         entity: { kind: 'plugin', id: target.pluginId },
         pluginId: target.pluginId,

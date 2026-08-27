@@ -5,5 +5,8 @@
   },
   "interface": {
     "displayName": "Codex Project Repo-Managed Fixtures"
+  },
+  "catalog": {
+    "version": "0.1.0"
   }
 }

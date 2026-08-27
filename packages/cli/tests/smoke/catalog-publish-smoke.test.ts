@@ -1,24 +1,13 @@
 import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, expect, it } from 'vitest';
 
-import {
-  buildCacheContract,
-  createBuildSnapshot,
-} from '../../../../scripts/build/build-cache.mjs';
-import {
-  publishStagedCatalog,
-} from '../../../../scripts/release/git-catalog-publisher.mjs';
-import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
-import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
-import * as pluginStaging from '../../scripts/plugin-staging.js';
-import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const execFileAsync = promisify(execFile);
@@ -29,169 +18,80 @@ afterEach(async () => {
   temporaryRoot = null;
 });
 
-async function writeSyntheticPackageBuildOutputs(sourceRoot: string): Promise<void> {
-  const packageOutputs = buildCacheContract.requiredOutputs.filter((relativePath: string) =>
-    relativePath.startsWith('packages/agent-skill-eval/dist/')
-    || relativePath.startsWith('packages/plugin-core/dist/')
-  );
-  await Promise.all(packageOutputs.map(async (relativePath: string) => {
-    const outputPath = path.join(sourceRoot, relativePath);
-    if (await fs.pathExists(outputPath)) return;
-    await fs.outputFile(
-      outputPath,
-      relativePath.endsWith('.json') ? '{}\n' : 'export {};\n',
-    );
-  }));
+async function runAw(cliEntry: string, workspaceRoot: string, args: string[]) {
+  return execFileAsync(process.execPath, [cliEntry, ...args], {
+    cwd: workspaceRoot,
+    env: getCurrentSourceTestIsolation().env,
+    encoding: 'utf8',
+    maxBuffer: 20 * 1024 * 1024,
+  });
 }
 
-it('stages, publishes, fetches, and validates a release catalog through the Git provider', async () => {
-  temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-publish-smoke-'));
+it('publishes the built public CLI Catalog through an arbitrary branch and Git provider', async () => {
+  temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-public-catalog-smoke-'));
+  const workspaceRoot = path.join(temporaryRoot, 'workspace');
   const remoteUrl = path.join(temporaryRoot, 'catalog.git');
-  await execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]);
-  const globalConfigPath = path.join(temporaryRoot, 'global.gitconfig');
-  const systemConfigPath = path.join(temporaryRoot, 'system.gitconfig');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
   await Promise.all([
-    fs.outputFile(globalConfigPath, '[core]\n\tsymlinks = false\n'),
-    fs.outputFile(systemConfigPath, '[core]\n\tsymlinks = false\n'),
+    fs.ensureDir(workspaceRoot),
+    execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]),
   ]);
-  const publisherEnv = {
-    ...process.env,
-    GIT_CONFIG_GLOBAL: globalConfigPath,
-    GIT_CONFIG_SYSTEM: systemConfigPath,
-  };
-  const publicationRoot = path.join(temporaryRoot, 'publication');
-  await fs.ensureDir(publicationRoot);
-  const outputRoot = path.join(publicationRoot, '.release', 'catalog-staging', 'catalog');
-  const catalogModules = { pluginStaging, catalogSnapshot };
-  const sourceRoot = path.join(temporaryRoot, 'source');
-  const sourceCatalogRoot = path.join(sourceRoot, 'packages', 'cli', 'plugins-dist');
-  const runtimeSource = 'export {}\n';
-  await Promise.all([
-    fs.outputJson(path.join(sourceRoot, 'package.json'), {
-      version: '1.0.0',
-      packageManager: 'pnpm@10.33.0',
-    }),
-    fs.outputJson(path.join(sourceRoot, 'packages', 'cli', 'package.json'), {
-      name: '@lesliechan721/aw',
-      version: '1.0.0',
-      type: 'module',
-      files: ['dist/'],
-    }),
-    fs.outputJson(path.join(sourceRoot, 'packages', 'agent-skill-eval', 'package.json'), {
-      name: '@lesliechan721/agent-skill-eval',
-      version: '1.0.0',
-      type: 'module',
-      files: ['dist/'],
-      exports: './dist/index.js',
-      bin: {
-        'aw-skill-eval': './dist/bin.js',
-      },
-    }),
-    fs.outputJson(path.join(sourceRoot, 'packages', 'plugin-core', 'package.json'), {
-      name: '@lesliechan721/aw-plugin-core',
-      version: '1.0.0',
-      type: 'module',
-      files: ['dist/', 'schemas/'],
-      exports: './dist/index.js',
-    }),
-    fs.ensureDir(path.join(sourceRoot, 'packages', 'cli', 'node_modules')),
-    fs.ensureDir(path.join(sourceRoot, 'packages', 'agent-skill-eval', 'node_modules')),
-    fs.ensureDir(path.join(sourceRoot, 'packages', 'plugin-core', 'node_modules')),
-    fs.ensureDir(path.join(sourceRoot, 'packages', 'plugin-core', 'schemas')),
+  await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
+  await runAw(cliEntry, workspaceRoot, [
+    'catalog', 'init', '--workspace-root', workspaceRoot, '--catalog-version', '91.0.0',
   ]);
-  const build = async () => {
-    await fs.remove(path.join(sourceRoot, 'packages', 'cli', 'dist'));
-    await fs.remove(sourceCatalogRoot);
-    await Promise.all([
-      fs.outputFile(
-        path.join(sourceRoot, 'packages', 'cli', 'dist', 'index.js'),
-        'export {};\n',
-      ),
-      fs.outputFile(
-        path.join(sourceRoot, 'packages', 'cli', 'dist', 'scripts', 'bundle-plugins.js'),
-        'export {};\n',
-      ),
-      createCatalogSnapshotFixture(sourceCatalogRoot),
-    ]);
-    const pluginRuntimeRoot = path.join(sourceCatalogRoot, 'plugins', 'demo', 'runtime');
-    await fs.outputFile(path.join(pluginRuntimeRoot, 'current.js'), runtimeSource);
-    await pluginStaging.stageCatalogArtifacts({
-      repoRoot: sourceRoot,
-      outputRoot: sourceCatalogRoot,
-      phase: 'development',
-      catalogVersion: '1.0.0',
-    });
-    await writeSyntheticPackageBuildOutputs(sourceRoot);
-  };
-  const snapshot = await createBuildSnapshot(sourceRoot, { build });
-  const sourceValidation = await catalogSnapshot.validateCatalogSnapshot(snapshot.catalogOutputRoot);
-  const marketplace = await fs.readJson(path.join(
-    snapshot.catalogOutputRoot, '.agents', 'plugins', 'marketplace.json',
-  ));
-  const catalogContentDigest = calculateCatalogContentDigest({
-    schemaIdentity: { schemaVersion: 4 },
-    marketplaceMetadata: {
-      name: marketplace.name,
-      owner: marketplace.owner,
-      interface: marketplace.interface,
-    },
-    compatibility: sourceValidation.manifest.compatibility,
-    plugins: sourceValidation.manifest.entries.map((entry) => ({
-      name: entry.name,
-      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
-      contentDigest: entry.contentDigest,
-    })),
-  });
-  const staged = await stageCatalogRelease(
-    ['--catalog-version', '91.0.0'],
-    {
-      internalOutputRoot: outputRoot,
-      snapshot,
-      catalogModules,
-      catalogRelease: {
-        state: 'published',
-        targetVersion: '91.0.0',
-        planId: `sha256:${'1'.repeat(64)}`,
-        sourceHead: '2'.repeat(40),
-        contentDigest: catalogContentDigest,
-      },
-    },
-  );
-  await snapshot.cleanup();
-  const published = await publishStagedCatalog({
-    mode: 'latest',
-    catalogVersion: '91.0.0',
-    stagedRoot: staged.outputRoot,
-  }, {
-    remoteUrl,
-    catalogModules,
-    env: publisherEnv,
-  });
+  await runAw(cliEntry, workspaceRoot, [
+    'plugin', 'init', 'smoke-demo', '--description', 'Smoke demo.', '--no-skills',
+    '--workspace-root', workspaceRoot,
+  ]);
+  await execFileAsync('git', ['add', '.'], { cwd: workspaceRoot });
+  await execFileAsync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    'commit', '--quiet', '-m', 'source',
+  ], { cwd: workspaceRoot });
+  await execFileAsync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: workspaceRoot });
+
+  const preflight = await runAw(cliEntry, workspaceRoot, [
+    'catalog', 'status', '--workspace-root', workspaceRoot,
+    '--preflight', '--remote', 'origin', '--branch', 'catalog/smoke', '--json',
+  ]);
+  const descriptorDigest = JSON.parse(preflight.stdout).publication.descriptorDigest;
+  const result = await runAw(cliEntry, workspaceRoot, [
+    'catalog', 'publish', '--workspace-root', workspaceRoot,
+    '--remote', 'origin', '--branch', 'catalog/smoke',
+    '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
+  ]);
+  const receipt = JSON.parse(result.stdout) as { commit: string; snapshotDigest: string };
+  expect((await execFileAsync('git', [
+    '--git-dir', remoteUrl, 'rev-parse', 'refs/heads/catalog/smoke',
+  ])).stdout.trim()).toBe(receipt.commit);
+  expect((await execFileAsync('git', [
+    '--git-dir', remoteUrl, 'cat-file', '-t', 'refs/tags/catalog-v91.0.0',
+  ])).stdout.trim()).toBe('tag');
 
   const resolved = await catalogGitProviderInternal.resolve({
     id: 'smoke',
     type: 'git',
     primary: true,
     url: remoteUrl,
-    refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+    refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/smoke' },
   }, {
     cliVersion: '99.0.0',
     freshnessPolicy: 'forceRemote',
     env: getCurrentSourceTestIsolation().env,
   });
-
-  expect(resolved.resolvedCommit).toBe(published.commit);
+  expect(resolved.resolvedCommit).toBe(receipt.commit);
   expect(resolved.manifest.catalogVersion).toBe('91.0.0');
-  expect(resolved.manifest.channel).toBe('latest');
-  const resolvedRuntimePath = path.join(
-    resolved.rootDir,
-    'plugins',
-    'demo',
-    'runtime',
-    'current.js',
-  );
-  expect((await fs.lstat(resolvedRuntimePath)).isFile()).toBe(true);
-  expect(await fs.readFile(resolvedRuntimePath, 'utf8')).toBe(runtimeSource);
-  await expect(catalogSnapshot.validateCatalogSnapshot(resolved.rootDir))
-    .resolves.toMatchObject({ manifest: { catalogVersion: '91.0.0' } });
+  await expect(fs.readJson(path.join(
+    workspaceRoot,
+    '.aw',
+    'publish',
+    'attempts',
+    '91.0.0.json',
+  ))).resolves.toMatchObject({
+    state: 'published',
+    branch: 'catalog/smoke',
+    snapshotDigest: receipt.snapshotDigest,
+  });
 });

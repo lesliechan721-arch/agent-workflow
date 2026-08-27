@@ -62,6 +62,24 @@ afterEach(async () => {
 });
 
 describe('CLI JSON v4 harness', () => {
+  it('publishes the runtime plugin capability contract with isolated stdout', async () => {
+    const result = await runCliEntry([
+      'plugin', 'capabilities', '--surface', 'artifacts', '--json',
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.parseJsonStdout()).toMatchObject({
+      command: 'plugin:capabilities',
+      schemaVersion: 1,
+      surface: 'artifacts',
+      capabilities: {
+        artifacts: expect.arrayContaining([
+          expect.objectContaining({ field: 'artifacts.targets[].target', owner: 'core' }),
+        ]),
+      },
+    });
+  });
+
   it('keeps status v4 JSON on stdout', async () => {
     vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
