@@ -208,6 +208,7 @@ export type OperationExecuteResult =
       originIssue?: IssueOrigin;
       writeMayHaveCompleted?: boolean;
       verification?: 'issueStillPresent' | 'verificationFailed';
+      summary?: OperationResultSummary;
     };
 
 export interface OperationResultSummary {
@@ -1775,19 +1776,25 @@ export class TuiController {
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
         ? operationResultSummary(ticket.intent, execution)
         : undefined;
+      const hasFailedDependencyTarget = pluginSummary?.targets?.some((target) =>
+        target.relation !== undefined && (target.state === 'failed' || target.state === 'skipped'));
+      const hasPreservedTarget = pluginSummary?.targets?.some((target) =>
+        target.state === 'completed' || target.state === 'kept');
+      const dependencyPartial = pluginSummary?.code === 'operationPartial'
+        && Boolean(hasFailedDependencyTarget && hasPreservedTarget);
       const dependencyFailure = pluginSummary?.code === 'operationFailed'
-        && pluginSummary.targets?.some((target) => target.relation !== undefined
-          && (target.state === 'failed' || target.state === 'skipped'));
-      if (pluginSummary?.code === 'operationFailed' && !dependencyFailure) {
+        && Boolean(hasFailedDependencyTarget);
+      if (pluginSummary?.code === 'operationFailed') {
         return this.#setBlocked(operationId, 'operationFailed', {
           intent: ticket.intent,
           navigation: 'result',
           returnRoute: ticket.returnRoute,
-          writeMayHaveCompleted: true,
+          ...(dependencyFailure ? { summary: pluginSummary } : {}),
+          ...(!dependencyFailure ? { writeMayHaveCompleted: true } : {}),
         });
       }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
-      if (originIssue && !dependencyFailure
+      if (originIssue && !dependencyPartial
         && this.#viewModel?.issues.some((issue) => userIssueKey(issue) === originIssue.issueKey)) {
         return this.#setBlocked(operationId, 'issueStillPresent', {
           intent: ticket.intent,
@@ -1808,7 +1815,7 @@ export class TuiController {
           });
         }
       }
-      const baseSummary = dependencyFailure && pluginSummary
+      const baseSummary = dependencyPartial && pluginSummary
         ? { ...pluginSummary, code: 'operationPartial' as const, message: '依赖安装没有全部完成。' }
         : pluginSummary ?? operationResultSummary(ticket.intent, execution);
       const summary: OperationResultSummary = {
@@ -2003,6 +2010,7 @@ export class TuiController {
       returnRoute?: TuiRoute;
       writeMayHaveCompleted?: boolean;
       verification?: 'issueStillPresent' | 'verificationFailed';
+      summary?: OperationResultSummary;
     },
   ): OperationExecuteResult {
     const message = code === 'portableSkillsCliInstallFailed'
@@ -2023,6 +2031,7 @@ export class TuiController {
       ...(options?.returnRoute ? { returnRoute: structuredClone(this.#normalizeRoute(options.returnRoute)) } : {}),
       ...(options?.writeMayHaveCompleted ? { writeMayHaveCompleted: true } : {}),
       ...(options?.verification ? { verification: options.verification } : {}),
+      ...(options?.summary ? { summary: structuredClone(options.summary) } : {}),
     };
     this.#result = structuredClone(result);
     this.#activeReview = undefined;
