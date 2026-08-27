@@ -1160,11 +1160,15 @@ describe('TUI v4 Review safety', () => {
     const dependencyPlan = {
       dependencyPlanSchemaVersion: 1 as const,
       requestedPluginIds: ['official/root'],
-      resolvedPluginIds: ['official/toolkit', 'official/root'],
-      dependencyEdges: [{ from: 'official/root', to: 'official/toolkit' }],
+      resolvedPluginIds: ['official/base', 'official/toolkit', 'official/root'],
+      dependencyEdges: [
+        { from: 'official/root', to: 'official/toolkit' },
+        { from: 'official/toolkit', to: 'official/base' },
+      ],
       targets: [
-        { pluginId: 'official/toolkit', pluginName: 'toolkit', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/root'], state: 'present' as const, action: 'keep' as const, order: 0 },
-        { pluginId: 'official/root', pluginName: 'root', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'absent' as const, action: 'install' as const, order: 1 },
+        { pluginId: 'official/base', pluginName: 'base', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/toolkit'], state: 'absent' as const, action: 'install' as const, order: 0 },
+        { pluginId: 'official/toolkit', pluginName: 'toolkit', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/root'], state: 'present' as const, action: 'keep' as const, order: 1 },
+        { pluginId: 'official/root', pluginName: 'root', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'absent' as const, action: 'install' as const, order: 2 },
       ],
     };
     const evidence = { ...baseEvidence, dependencyPlan };
@@ -1174,6 +1178,7 @@ describe('TUI v4 Review safety', () => {
         overallState: 'failed',
         dependencyPlan,
         targetResults: [
+          { target: { pluginId: 'official/base', platform: 'codex', scope: 'user' }, action: 'install', state: 'failed' },
           { target: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }, action: 'keep', state: 'completed' },
           { target: { pluginId: 'official/root', platform: 'codex', scope: 'user' }, action: 'skipped', state: 'failed' },
         ],
@@ -1184,7 +1189,7 @@ describe('TUI v4 Review safety', () => {
       kind: 'pluginWrite', action: 'install', pluginId: 'official/root', platform: 'codex', scope: 'user',
     });
 
-    expect(review.primaryLabel).toContain('2 个插件');
+    expect(review.primaryLabel).toContain('3 个插件');
     expect(review.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({ pluginId: 'official/root', group: 'requested', relation: 'requested', kind: 'add' }),
       expect.objectContaining({ pluginId: 'official/toolkit', group: 'dependencies', relation: 'direct', kind: 'keep' }),
@@ -1193,6 +1198,7 @@ describe('TUI v4 Review safety', () => {
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
       state: 'partial',
       summary: { targets: expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'official/base', relation: 'transitive', state: 'failed' }),
         expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'kept', requiredBy: ['official/root'] }),
         expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
       ]) },
@@ -1201,6 +1207,51 @@ describe('TUI v4 Review safety', () => {
       expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'kept' }),
       expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
     ]));
+  });
+
+  it('keeps a failed dependency execution failed when no target completed or was kept', async () => {
+    const dependencyPlan = {
+      dependencyPlanSchemaVersion: 1 as const,
+      requestedPluginIds: ['official/root'],
+      resolvedPluginIds: ['official/toolkit', 'official/root'],
+      dependencyEdges: [{ from: 'official/root', to: 'official/toolkit' }],
+      targets: [
+        { pluginId: 'official/toolkit', pluginName: 'toolkit', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/root'], state: 'absent' as const, action: 'install' as const, order: 0 },
+        { pluginId: 'official/root', pluginName: 'root', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'absent' as const, action: 'install' as const, order: 1 },
+      ],
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue({ ...baseEvidence, dependencyPlan }),
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'failed',
+        dependencyPlan,
+        targetResults: [
+          { target: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }, action: 'install', state: 'failed' },
+          { target: { pluginId: 'official/root', platform: 'codex', scope: 'user' }, action: 'skipped', state: 'failed' },
+        ],
+      }),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/root', platform: 'codex', scope: 'user',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+    expect(result).toMatchObject({
+      state: 'blocked',
+      code: 'operationFailed',
+      summary: {
+        code: 'operationFailed',
+        targets: [
+          expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'failed' }),
+          expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
+        ],
+      },
+    });
+    expect(result).not.toHaveProperty('writeMayHaveCompleted');
+    expect(controller.snapshot.result).toMatchObject({
+      state: 'blocked', code: 'operationFailed', summary: { code: 'operationFailed' },
+    });
   });
 
   it('single-flights repeated execution while validation and evidence capture are delayed', async () => {
@@ -1532,6 +1583,63 @@ describe('TUI v4 Review safety', () => {
     expect(fixture.value.snapshot.phase).toBe('ready');
   });
 
+  it('keeps an issue-origin dependency partial result when the origin issue remains', async () => {
+    const dependencyPlan = {
+      dependencyPlanSchemaVersion: 1 as const,
+      requestedPluginIds: ['official/demo'],
+      resolvedPluginIds: ['official/base', 'official/toolkit', 'official/demo'],
+      dependencyEdges: [
+        { from: 'official/demo', to: 'official/toolkit' },
+        { from: 'official/toolkit', to: 'official/base' },
+      ],
+      targets: [
+        { pluginId: 'official/base', pluginName: 'base', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/toolkit'], state: 'present' as const, action: 'keep' as const, order: 0 },
+        { pluginId: 'official/toolkit', pluginName: 'toolkit', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/demo'], state: 'absent' as const, action: 'install' as const, order: 1 },
+        { pluginId: 'official/demo', pluginName: 'demo', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'partial' as const, action: 'install' as const, order: 2 },
+      ],
+    };
+    const loaded: TuiStatusLoadResult = {
+      payload: status({
+        sources: [source('official', { type: 'path', freshness: 'path' })],
+        targets: [target({ scope: 'user', state: 'partial' })],
+      }),
+      pluginSummaries: summaries(['official', 'base'], ['official', 'toolkit'], ['official', 'demo']),
+    };
+    const value = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn().mockResolvedValue({ ...baseEvidence, dependencyPlan }),
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'failed',
+        dependencyPlan,
+        targetResults: [
+          { target: { pluginId: 'official/base', platform: 'codex', scope: 'user' }, action: 'keep', state: 'completed' },
+          { target: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }, action: 'install', state: 'failed' },
+          { target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' }, action: 'skipped', state: 'failed' },
+        ],
+      }),
+    }));
+    const review = await buildIssueReview(value);
+
+    const result = await value.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'partial',
+      summary: {
+        code: 'operationPartial',
+        targets: [
+          expect.objectContaining({ pluginId: 'official/base', relation: 'transitive', state: 'kept' }),
+          expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'failed' }),
+          expect.objectContaining({ pluginId: 'official/demo', relation: 'requested', state: 'skipped' }),
+        ],
+      },
+      originIssue: expect.objectContaining({ category: 'incompleteInstallation', actionId: 'reinstall' }),
+    });
+    expect(result).not.toHaveProperty('code', 'issueStillPresent');
+    expect(value.listUserIssues()).toContainEqual(expect.objectContaining({
+      category: 'incompleteInstallation', pluginId: 'official/demo', scope: 'user',
+    }));
+  });
+
   it('reports issueVerificationFailed without claiming no write when post-write reload fails', async () => {
     const fixture = issueWriteFixture(new Error('/Users/private/reload failure'));
     const review = await buildIssueReview(fixture.value);
@@ -1600,6 +1708,7 @@ describe('TUI v4 Review safety', () => {
       operationKind: 'pluginWrite', pluginId: 'official/demo',
       returnRoute: { name: 'pluginDetail', pluginId: 'official/demo' },
     });
+    expect(result).not.toHaveProperty('summary');
     expect(loadStatus).toHaveBeenCalledTimes(2);
     expect(controller.getTargetState('official/demo', 'codex', 'user')).toBe('partial');
   });

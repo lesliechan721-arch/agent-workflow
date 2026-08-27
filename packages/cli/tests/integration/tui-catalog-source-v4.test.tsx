@@ -51,8 +51,7 @@ async function confirmReview(
   instance: ReturnType<typeof render>,
   controller: TuiController,
 ): Promise<void> {
-  const changes = controller.snapshot.activeReview?.changes.length ?? 0;
-  await input(instance, ...Array.from({ length: changes }, () => '\u001B[B'), '\r');
+  await input(instance, '\r');
   await waitFor(
     () => controller.snapshot.result !== undefined,
     'operation result',
