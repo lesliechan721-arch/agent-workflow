@@ -29,7 +29,7 @@ export type TuiRoute =
     }
   | { name: 'installPlacement'; pluginId: string }
   | {
-      name: 'installTools';
+      name: 'installTargets';
       pluginId: string;
       view?: 'selection' | 'blocked';
     }

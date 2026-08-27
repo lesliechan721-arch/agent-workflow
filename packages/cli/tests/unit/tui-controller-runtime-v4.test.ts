@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { StatusV4Payload } from '../../src/commands/status-v4.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
-import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
+import {
+  createTuiControllerDependencies,
+  statusTargetFingerprint,
+} from '../../src/tui/controller-runtime.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const runtimeMocks = vi.hoisted(() => ({
@@ -112,6 +115,71 @@ describe('TUI controller runtime scope conflict validation', () => {
         category: 'scopeConflict',
         actionId: 'keepUserScope',
       },
+    }, new AbortController().signal)).resolves.toBeUndefined();
+  });
+
+  it('includes the private revision sidecar in the target review fingerprint', () => {
+    const targets = [target('user', 'present')];
+    const current = [{
+      pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
+      revision: { state: 'current' as const, availableVersion: '1.0.0', installedVersion: '1.0.0' },
+    }];
+    const upgradeAvailable = [{
+      pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
+      revision: { state: 'upgradeAvailable' as const, availableVersion: '2.0.0', installedVersion: '1.0.0' },
+    }];
+
+    expect(statusTargetFingerprint(targets, current))
+      .not.toBe(statusTargetFingerprint(targets, upgradeAvailable));
+  });
+
+  it.each([
+    ['current', 'present'],
+    ['unknown', 'present'],
+    ['upgradeAvailable', 'partial'],
+  ] as const)('rejects upgrade when revision is %s and placement is %s', async (revisionState, placementState) => {
+    runtimeMocks.statusCommandV4.mockResolvedValue({
+      payload: { targets: [target('user', placementState)] },
+      targetRevisions: [{
+        pluginId: 'official/demo', platform: 'codex', scope: 'user',
+        revision: revisionState === 'unknown'
+          ? { state: 'unknown', availableVersion: '1.0.0' }
+          : {
+              state: revisionState,
+              availableVersion: revisionState === 'current' ? '1.0.0' : '2.0.0',
+              installedVersion: '1.0.0',
+            },
+      }],
+    });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+
+    await expect(dependencies.validateIntent!({
+      kind: 'pluginWrite', action: 'upgrade', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    }, new AbortController().signal)).rejects.toMatchObject({ code: 'targetStateChanged' });
+  });
+
+  it('accepts upgrade only for a present placement with upgradeAvailable evidence', async () => {
+    runtimeMocks.statusCommandV4.mockResolvedValue({
+      payload: { targets: [target('user', 'present')] },
+      targetRevisions: [{
+        pluginId: 'official/demo', platform: 'codex', scope: 'user',
+        revision: { state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0' },
+      }],
+    });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+
+    await expect(dependencies.validateIntent!({
+      kind: 'pluginWrite', action: 'upgrade', pluginId: 'official/demo', platform: 'codex', scope: 'user',
     }, new AbortController().signal)).resolves.toBeUndefined();
   });
 });

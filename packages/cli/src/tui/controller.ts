@@ -6,6 +6,7 @@ import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import type {
   StatusV4Payload,
   StatusV4PluginSummary,
+  StatusTargetRevision,
 } from '../commands/status-v4.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
@@ -253,9 +254,16 @@ export interface PluginOperationProgressLine {
 export interface TuiStatusLoadResult {
   payload: StatusV4Payload;
   pluginSummaries: StatusV4PluginSummary[];
+  targetRevisions?: StatusTargetRevision[];
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
+}
+
+export interface InstallTargetOption {
+  platform: PlatformName;
+  compatible: boolean;
+  disabled?: string;
 }
 
 export interface SourceReferenceSummaryViewModel {
@@ -800,6 +808,7 @@ export class TuiController {
     this.#viewModel = buildTuiViewModel({
       status: this.#status.payload,
       pluginSummaries: this.#status.pluginSummaries,
+      targetRevisions: this.#status.targetRevisions,
       sourceHealth: this.#health,
       sourceDetails: this.#status.sourceDetails,
       dependencyOverviews: this.#status.dependencyOverviews,
@@ -821,7 +830,7 @@ export class TuiController {
       || route.name === 'portableBlocker'
       || route.name === 'pluginDependencies'
       || route.name === 'installPlacement'
-      || route.name === 'installTools'
+      || route.name === 'installTargets'
       || route.name === 'pluginDetail'
       || route.name === 'platform'
       || route.name === 'pluginAbout'
@@ -835,7 +844,7 @@ export class TuiController {
       return {
         name: 'pluginList',
         mode: route.name === 'pluginPreview' || route.name === 'pluginDependencies'
-          || route.name === 'installPlacement' || route.name === 'installTools'
+          || route.name === 'installPlacement' || route.name === 'installTargets'
           ? 'browse'
           : 'installed',
       };
@@ -1435,6 +1444,65 @@ export class TuiController {
   getPlatformPlacement(pluginId: string, platform: PlatformName): PluginListItemViewModel['installedPlacements'][number] | undefined {
     return this.getPluginOverview(pluginId)?.installedPlacements.find((placement) =>
       placement.platform === platform);
+  }
+
+  listInstallTargets(pluginId: string, scope: Scope): InstallTargetOption[] {
+    const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
+    if (!plugin) return [];
+    if (plugin.aggregateStatus === 'unavailable') {
+      return plugin.supportedPlatforms.map((platform) => ({
+        platform,
+        compatible: false,
+        disabled: '插件来源不可用',
+      }));
+    }
+    return plugin.supportedPlatforms.map((platform): InstallTargetOption => {
+      const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
+      if (!placement) return { platform, compatible: false, disabled: '当前没有可信的平台能力信息' };
+      if (placement.state === 'scopeConflict') {
+        return { platform, compatible: false, disabled: '安装位置冲突；请先处理问题' };
+      }
+      if (placement.state === 'installed') {
+        return {
+          platform,
+          compatible: false,
+          disabled: `已安装到${placement.scope === 'user' ? '所有项目' : '当前项目'}；请先移除现有安装`,
+        };
+      }
+      if (!placement.supportedScopes.includes(scope)) {
+        return { platform, compatible: false, disabled: '不支持所选位置' };
+      }
+      const overview = this.#viewModel?.dependencyOverviews.find((entry) => entry.pluginId === pluginId);
+      for (const dependency of overview?.dependencies ?? []) {
+        const dependentPlugin = this.#viewModel?.plugins.find((entry) =>
+          entry.pluginId === dependency.pluginId);
+        if (!dependentPlugin || !dependentPlugin.supportedPlatforms.includes(platform)) {
+          return {
+            platform,
+            compatible: false,
+            disabled: `${dependency.displayName} 不支持${platform === 'codex' ? 'Codex' : 'Claude Code'}`,
+          };
+        }
+        const dependencyPlacement = dependentPlugin.installedPlacements.find((entry) =>
+          entry.platform === platform);
+        if (dependencyPlacement?.state === 'scopeConflict') {
+          return { platform, compatible: false, disabled: `${dependency.displayName} 的安装位置冲突` };
+        }
+        if (dependencyPlacement?.state === 'installed') {
+          if (dependencyPlacement.health !== 'ready') {
+            return { platform, compatible: false, disabled: `${dependency.displayName} 需要先处理` };
+          }
+          if (scope === 'user' && dependencyPlacement.scope === 'project') {
+            return { platform, compatible: false, disabled: `${dependency.displayName} 只在当前项目可用` };
+          }
+        }
+        if (dependencyPlacement?.state === 'notInstalled'
+          && !dependencyPlacement.supportedScopes.includes(scope)) {
+          return { platform, compatible: false, disabled: `${dependency.displayName} 不支持所选位置` };
+        }
+      }
+      return { platform, compatible: true };
+    });
   }
 
   getTargetState(

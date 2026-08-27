@@ -174,6 +174,13 @@ describe('multi-source read commands', () => {
         state: 'absent',
       }),
     ]));
+    expect(result.targetRevisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'good/demo',
+        revision: expect.objectContaining({ state: 'unknown', availableVersion: '1.0.0' }),
+      }),
+    ]));
+    expect(JSON.parse(result.output)).not.toHaveProperty('targetRevisions');
   });
 
   it('keeps typed config preflight details internal and isolates a safe read diagnostic', async () => {

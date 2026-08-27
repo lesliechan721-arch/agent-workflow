@@ -45,8 +45,14 @@ import type {
   PluginListItemViewModel,
   UserIssueActionViewModel,
   UserIssueViewModel,
+  PluginMenuAction,
 } from './model.js';
-import { hasInstalledPlacement } from './model.js';
+import {
+  buildPlatformActions,
+  buildPluginDetailActions,
+  buildPluginPreviewActions,
+  hasInstalledPlacement,
+} from './model.js';
 import type { PluginInstallFilter, TuiRoute } from './router.js';
 import { tuiTheme } from './theme.js';
 import { contentRowBudget, rowViewport, type RowViewport } from './viewport.js';
@@ -78,6 +84,18 @@ interface ActionItem {
   run?: () => void | Promise<void>;
   configKey?: string;
   selected?: boolean;
+}
+
+interface DynamicMenuFocus {
+  routeKey: string;
+  actionIds: string;
+  focusedActionId?: string;
+}
+
+function pluginMenuActionId(action: PluginMenuAction): string {
+  return action.id === 'platform' || action.id === 'scopeConflict'
+    ? `${action.id}:${action.platform}`
+    : action.id;
 }
 
 interface PluginListRowViewModel {
@@ -131,8 +149,8 @@ function helpRowsForRoute(
     rows.push(['Space', '切换当前 Skill']);
     rows.push(['a', '全选 Skills']);
   }
-  if (route.name === 'installTools' && route.view !== 'blocked') {
-    rows.push(['Space', '切换工具选择']);
+  if (route.name === 'installTargets' && route.view !== 'blocked') {
+    rows.push(['Space', '切换目标平台选择']);
   }
   if (route.name === 'configFields' && route.layer.scope !== 'effective') {
     rows.push(['s', '保存设置']);
@@ -593,7 +611,7 @@ export function resolveConsoleV4ScreenId(
   if (route.name === 'installPlacement') {
     return controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D03' : 'P05';
   }
-  if (route.name === 'installTools') {
+  if (route.name === 'installTargets') {
     if (route.view === 'blocked') return 'D16';
     return controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D04' : 'P06';
   }
@@ -727,7 +745,9 @@ export function ConsoleAppV4(props: {
     props.controller.snapshot.router.current.context.installFilter ?? 'all',
   );
   const [scope, setScope] = useState<Scope>('user');
-  const [tools, setTools] = useState<PlatformName[]>([]);
+  const [selectedTargets, setSelectedTargets] = useState<PlatformName[]>([]);
+  const [targetSelections, setTargetSelections] = useState<Partial<Record<Scope, PlatformName[]>>>({});
+  const [preferredTarget, setPreferredTarget] = useState<PlatformName>();
   const [technicalRouteKey, setTechnicalRouteKey] = useState<string>();
   const [exitAfterBusy, setExitAfterBusy] = useState(false);
   const [, setClockTick] = useState(0);
@@ -749,6 +769,7 @@ export function ConsoleAppV4(props: {
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [portableAgentInput, setPortableAgentInput] = useState('');
   const [draftOwner, setDraftOwner] = useState<string>();
+  const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
   const route = snapshot.router.current.route;
@@ -983,51 +1004,17 @@ export function ConsoleAppV4(props: {
     props.onScreenChange?.(screenId);
   }, [props.onScreenChange, screenId]);
 
-  const selectedPlatforms = (candidate: PluginListItemViewModel | undefined, selectedScope: Scope): Array<{
-    platform: PlatformName;
-    disabled?: string;
-  }> => (candidate?.supportedPlatforms ?? []).map((platform) => {
-    const placement = props.controller.getPlatformPlacement(candidate!.pluginId, platform);
-    if (!placement) return { platform, disabled: '当前没有可信的平台能力信息' };
-    if (placement.state === 'scopeConflict') return { platform, disabled: '安装位置冲突；请先处理问题' };
-    if (placement.state === 'installed') {
-      return { platform, disabled: `已安装到${scopeLabel(placement.scope)}；请先移除现有安装` };
-    }
-    if (!placement.supportedScopes.includes(selectedScope)) return { platform, disabled: '不支持所选位置' };
-    const overview = props.controller.getPluginDependencyOverview(candidate!.pluginId);
-    for (const dependency of overview?.dependencies ?? []) {
-      const dependentPlugin = props.controller.getPluginOverview(dependency.pluginId);
-      if (!dependentPlugin || !dependentPlugin.supportedPlatforms.includes(platform)) {
-        return { platform, disabled: `${dependency.displayName} 不支持${platformLabel(platform)}` };
-      }
-      const dependencyPlacement = props.controller.getPlatformPlacement(dependency.pluginId, platform);
-      if (dependencyPlacement?.state === 'scopeConflict') {
-        return { platform, disabled: `${dependency.displayName} 的安装位置冲突` };
-      }
-      if (dependencyPlacement?.state === 'installed') {
-        if (dependencyPlacement.health !== 'ready') {
-          return { platform, disabled: `${dependency.displayName} 需要先处理` };
-        }
-        if (selectedScope === 'user' && dependencyPlacement.scope === 'project') {
-          return { platform, disabled: `${dependency.displayName} 只在当前项目可用` };
-        }
-      }
-      if (dependencyPlacement?.state === 'notInstalled'
-        && !dependencyPlacement.supportedScopes.includes(selectedScope)) {
-        return { platform, disabled: `${dependency.displayName} 不支持所选位置` };
-      }
-    }
-    return { platform };
-  });
-
   const dependencyOverview = (candidate: PluginListItemViewModel | undefined): PluginDependencyOverviewViewModel | undefined =>
     candidate ? props.controller.getPluginDependencyOverview(candidate.pluginId) : undefined;
 
-  const installIntent = (candidate: PluginListItemViewModel): OperationIntent => ({
+  const installIntent = (
+    candidate: PluginListItemViewModel,
+    targets: PlatformName[] = selectedTargets,
+  ): OperationIntent => ({
     kind: 'pluginWrite',
     action: 'install',
     pluginId: candidate.pluginId,
-    platform: tools.length === 2 ? 'both' : tools[0]!,
+    platform: targets.length === 2 ? 'both' : targets[0]!,
     scope,
   });
 
@@ -1039,6 +1026,27 @@ export function ConsoleAppV4(props: {
   let content: React.ReactNode;
   let actions: ActionItem[] = [];
   let pluginRows: PluginListRowViewModel[] = [];
+  const dynamicMenu = plugin && route.name === 'pluginPreview'
+    ? buildPluginPreviewActions(plugin)
+    : plugin && route.name === 'pluginDetail'
+      ? buildPluginDetailActions(plugin)
+      : plugin && route.name === 'platform'
+        ? buildPlatformActions(plugin, route.platform)
+        : undefined;
+  const dynamicActionIds = dynamicMenu?.map(pluginMenuActionId);
+  const dynamicActionSignature = dynamicActionIds?.join('\0');
+  const previousDynamicFocus = dynamicMenuFocus.current;
+  const retainedDynamicFocus = dynamicActionIds
+    && previousDynamicFocus?.routeKey === routeKey
+    && previousDynamicFocus.actionIds !== dynamicActionSignature
+    && previousDynamicFocus.focusedActionId !== undefined
+    ? dynamicActionIds.indexOf(previousDynamicFocus.focusedActionId)
+    : -1;
+  const effectiveFocus = dynamicActionIds
+    && previousDynamicFocus?.routeKey === routeKey
+    && previousDynamicFocus.actionIds !== dynamicActionSignature
+    ? retainedDynamicFocus >= 0 ? retainedDynamicFocus : 0
+    : focus;
   const pageActionBudget = (staticRows = 0): number => contentRowBudget({
     terminalRows: size.rows,
     description: Boolean(description),
@@ -1456,32 +1464,35 @@ export function ConsoleAppV4(props: {
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     const beginInstall = (): void => {
       const initialScope = (['user', 'project'] as const).find((candidateScope) =>
-        selectedPlatforms(plugin, candidateScope).some((entry) => !entry.disabled)) ?? scope;
-      const available = selectedPlatforms(plugin, initialScope)
-        .filter((entry) => !entry.disabled).map((entry) => entry.platform);
+        props.controller.listInstallTargets(plugin.pluginId, candidateScope)
+          .some((entry) => entry.compatible)) ?? scope;
+      const available = props.controller.listInstallTargets(plugin.pluginId, initialScope)
+        .filter((entry) => entry.compatible).map((entry) => entry.platform);
       setScope(initialScope);
-      setTools(available);
+      setSelectedTargets([]);
+      setTargetSelections({});
+      setPreferredTarget(undefined);
       if (available.length > 0) go({ name: 'installPlacement', pluginId: plugin.pluginId });
-      else go({ name: 'installTools', pluginId: plugin.pluginId, view: 'blocked' });
+      else go({ name: 'installTargets', pluginId: plugin.pluginId, view: 'blocked' });
     };
-    const portableAction: ActionItem[] = plugin.portableSkills
-      ? [{ label: '安装通用 Skills…', description: '选择 Skill 和 Agent 后交给 Skills CLI 安装', run: () => beginPortable(plugin.pluginId) }]
-      : [];
-    actions = hasDependencies && (overview?.blockers.length ?? 0) > 0
-      ? [
-          { label: '查看依赖问题', description: overview!.blockers[0]!.explanation, status: 'warning', run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }) },
-          ...portableAction,
-          { label: '查看依赖关系', description: '查看直接、间接依赖和当前状态', run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }) },
-          { label: '查看插件设置定义', description: `${plugin.configFieldCount} 个配置字段`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) },
-        ]
-      : [
-          { label: '添加插件', description: '选择使用位置并确认变化', run: beginInstall },
-          ...portableAction,
-          ...(hasDependencies ? [{ label: '查看依赖关系', description: '查看直接、间接依赖和当前状态', run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }) }] : []),
-          { label: '查看插件设置定义', description: `${plugin.configFieldCount} 个配置字段`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) },
-          { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) },
-        ];
-    const previewViewport = actionViewport(actions, true, focus, scrollOffset, responsiveBudget(4, 2));
+    const previewAction = (action: PluginMenuAction): ActionItem => {
+      if (action.id === 'add') return { label: '添加插件', description: '选择使用位置并确认变化', run: beginInstall };
+      if (action.id === 'manage') return { label: '管理插件', description: '查看已安装目标平台', run: () => go({ name: 'pluginDetail', pluginId: plugin.pluginId }) };
+      if (action.id === 'repair') return { label: '管理并修复', description: '查看需要处理的安装位置', status: 'warning', run: () => go({ name: 'pluginDetail', pluginId: plugin.pluginId }) };
+      if (action.id === 'portableSkills') return { label: '安装通用 Skills…', description: '选择 Skill 和 Agent 后交给 Skills CLI 安装', run: () => beginPortable(plugin.pluginId) };
+      if (action.id === 'dependencies') return {
+        label: (overview?.blockers.length ?? 0) > 0 ? '查看依赖问题' : '查看依赖关系',
+        description: overview?.blockers[0]?.explanation ?? '查看直接、间接依赖和当前状态',
+        ...((overview?.blockers.length ?? 0) > 0 ? { status: 'warning' as const } : {}),
+        run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
+      };
+      if (action.id === 'settings') return { label: '查看插件设置定义', description: `${plugin.configFieldCount} 个配置字段`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) };
+      if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
+      return { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
+    };
+    const previewMenu = dynamicMenu!;
+    actions = previewMenu.map(previewAction);
+    const previewViewport = actionViewport(actions, true, effectiveFocus, scrollOffset, responsiveBudget(4, 2));
     const dependencyGroups = (['direct', 'transitive'] as const).map((relation) => ({
       relation,
       dependencies: (overview?.dependencies.filter((entry) => entry.relation === relation) ?? [])
@@ -1560,9 +1571,9 @@ export function ConsoleAppV4(props: {
             {policy.mode === 'compact' && (overview?.dependencies.length ?? 0) > compactDependencyRows.length ? <StaticRow title={`另有 ${(overview?.dependencies.length ?? 0) - compactDependencyRows.length} 个依赖`} status="muted" compact /> : null}
             {policy.mode !== 'compact' ? <StaticRow title={`${plugin.dependencySummary!.totalCount + 1} 个插件将作为一个安装计划检查`} description="依赖从同一个来源快照解析。" /> : null}
           </SectionCard>
-          <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact' || previewViewport.limit !== undefined} offset={previewViewport.offset} limit={previewViewport.limit} />
+          <SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact' || previewViewport.limit !== undefined} offset={previewViewport.offset} limit={previewViewport.limit} />
         </Box>
-      : <Box flexDirection="column"><SectionCard title="可用工具"><StaticRow title={plugin.supportedPlatforms.map(platformLabel).join(' · ') || '暂无可用工具'} />{plugin.portableSkills ? <StaticRow title="通用 Skills" meta="可安装" description="选择 Skill 和 Agent 后交给 Skills CLI 安装" compact={policy.mode === 'compact'} /> : null}</SectionCard><SectionCard title="使用说明"><StaticRow title="在 Agent 会话中提供能力" status="success" description="安装不会自动修改项目源码。" /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={previewViewport.offset} limit={previewViewport.limit} /></Box>;
+      : <Box flexDirection="column"><SectionCard title="可用目标平台"><StaticRow title={plugin.supportedPlatforms.map(platformLabel).join(' · ') || '暂无可用目标平台'} />{plugin.portableSkills ? <StaticRow title="通用 Skills" meta="可安装" description="选择 Skill 和 Agent 后交给 Skills CLI 安装" compact={policy.mode === 'compact'} /> : null}</SectionCard><SectionCard title="使用说明"><StaticRow title="在 Agent 会话中提供能力" status="success" description="安装不会自动修改项目源码。" /></SectionCard><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} offset={previewViewport.offset} limit={previewViewport.limit} /></Box>;
   } else if (route.name === 'portableSkillSelect' && plugin && snapshot.portableDraft) {
     const draft = snapshot.portableDraft;
     breadcrumb = `${plugin.displayName} / 通用 Skills`;
@@ -1903,9 +1914,10 @@ export function ConsoleAppV4(props: {
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
       ? '根插件和缺失依赖使用同一个位置；健康的所有项目依赖可在当前项目复用。'
-      : '工具已根据插件能力自动选择；需要时可以调整。';
+      : '选择位置后，再选择一个或多个目标平台。';
     const availableScopes = (['user', 'project'] as const).filter((candidateScope) =>
-      selectedPlatforms(plugin, candidateScope).some((entry) => !entry.disabled));
+      props.controller.listInstallTargets(plugin.pluginId, candidateScope)
+        .some((entry) => entry.compatible));
     const reusableDependencies = overview?.dependencies.filter((dependency) => dependency.placements.some((placement) =>
       placement.state === 'installed' && placement.health === 'ready'
         && (scope === 'project' || placement.scope === 'user'))).length ?? 0;
@@ -1919,58 +1931,70 @@ export function ConsoleAppV4(props: {
           : hasDependencies ? '缺失依赖添加到当前项目；已有所有项目依赖会复用' : '仅在当前项目中使用，适合团队共享',
         meta: candidateScope === 'user' ? '推荐' : undefined,
         run: () => {
+          const choices = props.controller.listInstallTargets(plugin.pluginId, candidateScope);
+          const compatible = choices.filter((entry) => entry.compatible).map((entry) => entry.platform);
+          const previous = targetSelections[candidateScope];
+          const next = previous
+            ? previous.filter((platform) => compatible.includes(platform))
+            : preferredTarget && compatible.includes(preferredTarget)
+              ? [preferredTarget]
+              : compatible.length === 1 ? compatible : [];
           setScope(candidateScope);
-          setTools(selectedPlatforms(plugin, candidateScope).filter((entry) => !entry.disabled).map((entry) => entry.platform));
+          setSelectedTargets(next);
+          setTargetSelections((current) => ({ ...current, [candidateScope]: next }));
+          go({
+            name: 'installTargets',
+            pluginId: plugin.pluginId,
+            ...(compatible.length === 0 ? { view: 'blocked' as const } : {}),
+          });
         },
       })),
-      { label: '继续', disabled: tools.length === 0 ? '没有可安装的工具' : undefined, run: async () => beginReview(installIntent(plugin)) },
-      { label: '调整工具…', run: () => {
-        const choices = selectedPlatforms(plugin, scope);
-        go({ name: 'installTools', pluginId: plugin.pluginId,
-          ...(choices.every((choice) => choice.disabled) ? { view: 'blocked' as const } : {}) });
-      } },
     ];
     content = <Box flexDirection="column">
-      <SemanticRows actions={actions.slice(0, availableScopes.length)} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
+      <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
       {hasDependencies ? <SectionCard title="依赖处理"><StaticRow title={`${reusableDependencies} 个依赖会复用现有安装`} status={reusableDependencies > 0 ? 'success' : 'muted'} /><StaticRow title={`${missingDependencies} 个依赖将安装到所选位置`} status={missingDependencies > 0 ? 'info' : 'muted'} /></SectionCard> : null}
-      <SectionCard title="可用工具"><StaticRow title={tools.map(platformLabel).join('、') || '当前没有可用工具'} meta="已自动选择" /></SectionCard>
-      <SemanticRows actions={actions.slice(availableScopes.length)} focus={focus - availableScopes.length} kind="action" compact={policy.mode === 'compact'} />
     </Box>;
-  } else if (route.name === 'installTools' && plugin) {
-    breadcrumb = `${plugin.displayName} / 添加 / 工具`;
-    context = '可选';
-    title = '选择要添加到哪些工具';
+  } else if (route.name === 'installTargets' && plugin) {
+    breadcrumb = `${plugin.displayName} / 添加 / 目标平台`;
+    context = '第 2 步，共 2 步';
+    title = '选择目标平台';
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
-      ? '只有根插件和所有依赖都支持所选位置的工具才可选择。'
+      ? '只有根插件和所有依赖都支持所选位置的目标平台才可选择。'
       : '同一插件、同一平台只能安装到一个位置。';
-    const choices = selectedPlatforms(plugin, scope);
-    const allUnavailable = choices.length > 0 && choices.every((choice) => choice.disabled);
+    const choices = props.controller.listInstallTargets(plugin.pluginId, scope);
+    const validSelectedTargets = selectedTargets.filter((platform) =>
+      choices.some((choice) => choice.platform === platform && choice.compatible));
+    const allUnavailable = choices.length > 0 && choices.every((choice) => !choice.compatible);
     if (route.view === 'blocked' || allUnavailable) {
       context = '依赖限制';
-      title = '无法添加到所选工具';
-      description = '根插件或必需依赖不支持当前工具组合，因此不会进入确认页。';
+      title = '无法添加到所选目标平台';
+      description = '根插件或必需依赖不支持当前目标平台组合，因此不会进入确认页。';
       actions = [
         { label: '查看依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }) },
         { label: '返回调整位置', run: back },
       ];
-      content = <Box flexDirection="column"><StatusCard status="warning" title="所选工具不可用">{choices.map((choice) => <StaticRow key={choice.platform} title={platformLabel(choice.platform)} description={choice.disabled ? `不可选 · ${choice.disabled}` : '不可选'} status="muted" compact={policy.mode === 'compact'} />)}</StatusCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      content = <Box flexDirection="column"><StatusCard status="warning" title="所选目标平台不可用">{choices.map((choice) => <StaticRow key={choice.platform} title={platformLabel(choice.platform)} description={choice.disabled ? `不可选 · ${choice.disabled}` : '不可选'} status="muted" compact={policy.mode === 'compact'} />)}</StatusCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
       actions = choices.map((choice) => ({
         label: platformLabel(choice.platform),
-        selected: tools.includes(choice.platform),
+        selected: validSelectedTargets.includes(choice.platform),
         description: choice.disabled ?? '当前未安装，支持所选位置',
-        meta: tools.includes(choice.platform) ? '已选择' : undefined,
+        meta: validSelectedTargets.includes(choice.platform) ? '已选择' : undefined,
         disabled: choice.disabled,
         run: () => {
-          setDirty(true);
-          setTools((current) => current.includes(choice.platform)
-            ? current.filter((platform) => platform !== choice.platform)
-            : [...current, choice.platform]);
+          if (!choice.compatible) return;
+          setSelectedTargets((current) => {
+            const next = current.includes(choice.platform)
+              ? current.filter((platform) => platform !== choice.platform)
+              : [...current, choice.platform];
+            setTargetSelections((selections) => ({ ...selections, [scope]: next }));
+            return next;
+          });
         },
       }));
-      help = '↑↓ 移动 · Space 切换 · Enter 完成 · Esc 返回';
-      content = <Box flexDirection="column"><SemanticRows actions={actions} focus={focus} kind="toggle" compact={policy.mode === 'compact'} />{hasDependencies ? <Callout title="工具兼容性" description="不兼容的工具不能选择；请查看依赖关系了解原因。" /> : null}<Callout status={tools.length > 0 ? 'info' : 'warning'} title={tools.length > 0 ? 'Enter 完成选择' : '至少选择一个工具'} /></Box>;
+      help = '↑↓ 移动 · Space 切换 · Enter 继续 · Esc 返回';
+      content = <Box flexDirection="column"><SemanticRows actions={actions} focus={focus} kind="toggle" compact={policy.mode === 'compact'} />{hasDependencies ? <Callout title="目标平台兼容性" description="不兼容的目标平台不能选择；请查看依赖关系了解原因。" /> : null}<Callout status={validSelectedTargets.length > 0 ? 'info' : 'warning'} title={validSelectedTargets.length > 0 ? 'Enter 继续' : '至少选择一个目标平台'} /></Box>;
     }
   } else if (route.name === 'pluginDetail' && plugin) {
     breadcrumb = `我的插件 / ${plugin.displayName}`;
@@ -1978,97 +2002,104 @@ export function ConsoleAppV4(props: {
     title = plugin.displayName;
     description = plugin.description;
     const dependencySummary = plugin.dependencySummary;
-    const placementActions = plugin.installedPlacements.map((placement) => {
-      const projected = placementStatus(placement);
-      return {
-        label: platformLabel(placement.platform),
-        description: projected.description,
-        meta: projected.value,
-        status: projected.status,
-        run: () => placement.state === 'scopeConflict'
-          ? go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${placement.platform}` })
-          : go({ name: 'platform', pluginId: plugin.pluginId, platform: placement.platform }),
+    const detailMenu = dynamicMenu!;
+    actions = detailMenu.map((action): ActionItem => {
+      if (action.id === 'platform' || action.id === 'scopeConflict') {
+        const placement = plugin.installedPlacements.find((entry) => entry.platform === action.platform)!;
+        const projected = placementStatus(placement);
+        return {
+          label: platformLabel(action.platform),
+          description: projected.description,
+          meta: projected.value,
+          status: projected.status,
+          run: () => action.id === 'scopeConflict'
+            ? go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${action.platform}` })
+            : go({ name: 'platform', pluginId: plugin.pluginId, platform: action.platform }),
+        };
+      }
+      if (action.id === 'dependencies') return {
+        label: '必需依赖',
+        description: dependencySummary!.issueCount > 0 ? `${dependencySummary!.issueCount} 项需要处理` : '查看直接、间接依赖和被使用情况',
+        meta: dependencySummaryText(dependencySummary!),
+        status: dependencySummary!.issueCount > 0 ? 'warning' : undefined,
+        run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
       };
+      if (action.id === 'portableSkills') return {
+        label: '通用 Skills',
+        description: '选择 Skill 和 Agent 后交给 Skills CLI 安装',
+        meta: dependencySummary ? `可安装 · ${dependencySummary.totalCount} 个插件依赖` : '可安装',
+        run: () => beginPortable(plugin.pluginId),
+      };
+      if (action.id === 'settings') return { label: '设置', description: '个人默认、当前项目和本机覆盖', meta: `${plugin.configFieldCount} 项配置`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) };
+      if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
+      return { label: '关于与技术详情', description: '版本、来源和受管内容', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
     });
-    const dependencyActions = dependencySummary ? [{
-      label: '必需依赖',
-      description: dependencySummary.issueCount > 0 ? `${dependencySummary.issueCount} 项需要处理` : '查看直接、间接依赖和被使用情况',
-      meta: dependencySummaryText(dependencySummary),
-      status: dependencySummary.issueCount > 0 ? 'warning' as const : undefined,
-      run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
-    }] : [];
-    const portableActions = plugin.portableSkills ? [{
-      label: '通用 Skills',
-      description: '选择 Skill 和 Agent 后交给 Skills CLI 安装',
-      meta: dependencySummary ? `可安装 · ${dependencySummary.totalCount} 个插件依赖` : '可安装',
-      run: () => beginPortable(plugin.pluginId),
-    }] : [];
-    actions = [
-      ...placementActions,
-      ...dependencyActions,
-      ...portableActions,
-      { label: '设置', description: '个人默认、当前项目和本机覆盖', meta: `${plugin.configFieldCount} 项配置`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) },
-      { label: '关于与技术详情', description: '版本、来源和受管内容', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) },
-    ];
-    const detailViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(4));
-    content = <SectionCard title="插件操作"><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>;
+    const detailViewport = actionViewport(actions, policy.mode === 'compact', effectiveFocus, scrollOffset, pageActionBudget(4));
+    content = <SectionCard title="插件操作"><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>;
   } else if (route.name === 'platform' && plugin) {
     const placement = props.controller.getPlatformPlacement(plugin.pluginId, route.platform);
-    breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
-    if (plugin.aggregateStatus === 'unavailable') {
-      title = `暂时无法管理 ${platformLabel(route.platform)}`;
-      description = '插件来源不可用，当前状态不能安全确认。';
-      actions = [{ label: '查看来源问题', description: `${plugin.sourceId} 无可用缓存`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) }, { label: '重新检查状态', description: '不会修改现场内容', run: () => props.controller.refreshSource(plugin.sourceId) }];
-      content = <Box flexDirection="column"><StatusCard status="error" title="来源不可用" description="插件设置保持不变" /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
-    } else if (!placement || placement.state === 'notInstalled') {
-      title = `尚未添加到 ${platformLabel(route.platform)}`;
-      description = '此插件支持所列使用位置。';
-      actions = [{ label: `添加到 ${platformLabel(route.platform)}…`, description: '选择使用位置', run: () => {
+    const platformMenu = dynamicMenu!;
+    const typedIssue = placement?.state === 'installed' && placement.health === 'error'
+      ? props.controller.listUserIssues().find((candidate) =>
+          candidate.pluginId === plugin.pluginId
+          && candidate.platform === route.platform
+          && candidate.scope === placement.scope)
+      : undefined;
+    const platformAction = (action: PluginMenuAction): ActionItem => {
+      if (action.id === 'sourceProblem') return { label: '查看来源问题', description: `${plugin.sourceId} 无可用缓存`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) };
+      if (action.id === 'refreshSource') return { label: '重新检查状态', description: '不会修改现场内容', run: () => props.controller.refreshSource(plugin.sourceId) };
+      if (action.id === 'add') return { label: `添加到 ${platformLabel(route.platform)}…`, description: '选择使用位置', run: () => {
         const initialScope = placement?.state === 'notInstalled'
           ? placement.supportedScopes[0] ?? scope
           : scope;
         setScope(initialScope);
-        setTools([route.platform]);
+        setSelectedTargets([]);
+        setTargetSelections({});
+        setPreferredTarget(route.platform);
         go({ name: 'installPlacement', pluginId: plugin.pluginId });
-      } }, { label: '查看支持信息', description: 'manifest 与平台能力', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) }];
-      content = <Box flexDirection="column"><StatusCard status="muted" title="未添加" description="插件设置保持不变" /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      } };
+      if (action.id === 'about') return { label: '查看支持信息', description: 'manifest 与平台能力', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
+      if (action.id === 'scopeConflict') return { label: '查看位置冲突问题', run: () => go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${route.platform}` }) };
+      if (action.id === 'upgrade') return { label: `升级到 ${action.availableVersion}…`, description: '使用当前来源中的版本重建', run: () => beginReview({ kind: 'pluginWrite', action: 'upgrade', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'reinstall') return { label: placement?.state === 'installed' && placement.health === 'incomplete' ? '重新连接缺失内容…' : '重新安装…', description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'remove') return { label: `从${scopeLabel(action.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, action.platform, action.scope) };
+      if (action.id === 'technical') return typedIssue
+        ? { label: '查看对应问题', description: typedIssue.explanation, run: () => go({ name: 'issueDetail', issueId: typedIssue.issueId }) }
+        : { label: placement?.state === 'installed' && placement.health === 'error' ? '查看安全技术详情' : placement?.state === 'installed' && placement.health === 'incomplete' ? '查看影响' : '查看安装详情', description: '组件与诊断信息', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) };
+      return { label: '返回插件', run: back };
+    };
+    breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
+    if (plugin.aggregateStatus === 'unavailable') {
+      title = `暂时无法管理 ${platformLabel(route.platform)}`;
+      description = '插件来源不可用，当前状态不能安全确认。';
+      actions = platformMenu.map(platformAction);
+      content = <Box flexDirection="column"><StatusCard status="error" title="来源不可用" description="插件设置保持不变" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    } else if (!placement || placement.state === 'notInstalled') {
+      title = `尚未添加到 ${platformLabel(route.platform)}`;
+      description = '此插件支持所列使用位置。';
+      actions = platformMenu.map(platformAction);
+      content = <Box flexDirection="column"><StatusCard status="muted" title="未添加" description="插件设置保持不变" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (placement.state === 'scopeConflict') {
       title = '安装位置冲突';
       description = '正常状态只能保留一个位置。';
-      actions = [{ label: '查看位置冲突问题', run: () => go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${route.platform}` }) }];
-      content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />;
+      actions = platformMenu.map(platformAction);
+      content = <SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} />;
     } else if (placement.health === 'error') {
-      const typedIssue = props.controller.listUserIssues().find((candidate) =>
-        candidate.pluginId === plugin.pluginId
-        && candidate.platform === route.platform
-        && candidate.scope === placement.scope);
       title = `${platformLabel(route.platform)} 暂时不可管理`;
       description = typedIssue?.explanation ?? '平台状态检查失败，当前不能安全选择写操作。';
-      actions = [
-        ...(typedIssue ? [{ label: '查看对应问题', description: typedIssue.title, run: () => go({ name: 'issueDetail', issueId: typedIssue.issueId }) }] : []),
-        { label: '查看安全技术详情', description: '只显示类型化状态和错误码', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) },
-        { label: '返回插件', run: back },
-      ];
-      content = <Box flexDirection="column"><StatusCard status="error" title="状态检查失败" description="当前只提供只读操作" /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      actions = platformMenu.map(platformAction);
+      content = <Box flexDirection="column"><StatusCard status="error" title="状态检查失败" description="当前只提供只读操作" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (placement.health === 'incomplete') {
       title = `${platformLabel(route.platform)} ${placement.health === 'incomplete' ? '安装不完整' : '暂时不可用'}`;
       description = '缺少一项必要内容，插件可能无法稳定启动。';
-      actions = [
-        { label: '重新连接缺失内容…', description: '保留现有设置', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: route.platform, scope: placement.scope }) },
-        { label: '查看影响', description: '缺少的内容和范围', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) },
-        { label: `从${scopeLabel(placement.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, route.platform, placement.scope) },
-      ];
-      content = <Box flexDirection="column"><StatusCard status="warning" title="需要处理" description={`${scopeLabel(placement.scope)} · ${plugin.sourceLabel}`} /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      actions = platformMenu.map(platformAction);
+      content = <Box flexDirection="column"><StatusCard status="warning" title="需要处理" description={`${scopeLabel(placement.scope)} · ${plugin.sourceLabel}`} /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
       title = `已安装到${scopeLabel(placement.scope)}`;
-      description = `当前检查正常${plugin.version ? `；版本 ${plugin.version}` : ''}。`;
-      actions = [
-        { label: '运行升级…', description: '使用当前来源中的版本重建', run: () => beginReview({ kind: 'pluginWrite', action: 'upgrade', pluginId: plugin.pluginId, platform: route.platform, scope: placement.scope }) },
-        { label: '重新安装…', description: '重新生成并验证受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: route.platform, scope: placement.scope }) },
-        { label: `从${scopeLabel(placement.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, route.platform, placement.scope) },
-        { label: '查看安装详情', description: '组件与诊断信息', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) },
-      ];
-      content = <Box flexDirection="column"><StatusCard status="success" title="状态正常" description={`${scopeLabel(placement.scope)}${plugin.version ? ` · 当前版本 ${plugin.version}` : ''}`} /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      const installedVersion = placement.revision.installedVersion;
+      description = `当前检查正常${installedVersion ? `；已安装版本 ${installedVersion}` : ''}。`;
+      actions = platformMenu.map(platformAction);
+      content = <Box flexDirection="column"><StatusCard status="success" title="状态正常" description={`${scopeLabel(placement.scope)}${installedVersion ? ` · 已安装版本 ${installedVersion}` : ''}`} /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     }
   } else if (route.name === 'configLayer' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;
@@ -2459,25 +2490,33 @@ export function ConsoleAppV4(props: {
         {issueTechnicalDetails}
       </Box>;
     } else if (issue.category === 'dependencyTargetUnsupported' && issuePlugin) {
-      const compatible = selectedPlatforms(issuePlugin, issue.scope ?? scope).filter((entry) => !entry.disabled);
-      title = `无法添加到 ${issue.platform ? platformLabel(issue.platform) : '所选工具'}`;
+      const issueScope = issue.scope ?? scope;
+      const compatible = props.controller.listInstallTargets(issuePlugin.pluginId, issueScope)
+        .filter((entry) => entry.compatible);
+      title = `无法添加到 ${issue.platform ? platformLabel(issue.platform) : '所选目标平台'}`;
       description = issue.dependencyPluginId
-        ? `${props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId} 不支持所选工具，因此完整插件计划不能运行。`
-        : '完整插件计划不支持所选工具。';
+        ? `${props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId} 不支持所选目标平台，因此完整插件计划不能运行。`
+        : '完整插件计划不支持所选目标平台。';
       actions = [
-        ...compatible.map((entry) => ({ label: `只添加到 ${platformLabel(entry.platform)}`, description: '返回位置页并使用完整依赖检查', run: () => {
-          setScope(issue.scope ?? scope);
-          setTools([entry.platform]);
-          go({ name: 'installPlacement', pluginId: issuePlugin.pluginId });
+        ...compatible.map((entry) => ({ label: `只添加到 ${platformLabel(entry.platform)}`, description: '返回目标平台页并使用完整依赖检查', run: () => {
+          setScope(issueScope);
+          setSelectedTargets([entry.platform]);
+          setTargetSelections((current) => ({ ...current, [issueScope]: [entry.platform] }));
+          go({ name: 'installTargets', pluginId: issuePlugin.pluginId });
         } })),
-        { label: '返回调整工具', run: () => go({ name: 'installTools', pluginId: issuePlugin.pluginId }) },
+        { label: '返回调整目标平台', run: () => {
+          setScope(issueScope);
+          setSelectedTargets([]);
+          setTargetSelections((current) => ({ ...current, [issueScope]: [] }));
+          go({ name: 'installTargets', pluginId: issuePlugin.pluginId });
+        } },
         { label: '查看依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: issuePlugin.pluginId }) },
         ...(issueHasTechnicalDetails ? [{ label: showTechnical ? '隐藏技术详情' : '技术详情', run: () => setShowTechnical((value) => !value) }] : []),
       ];
       const unsupportedTargetViewport = policy.mode === 'compact' && showTechnical
         ? { offset: Math.min(Math.max(0, focus - 1), Math.max(0, actions.length - 2)), limit: 2 }
         : actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(6));
-      content = <Box flexDirection="column"><Callout status="error" title={issue.dependencyPluginId ? `${props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId} 不支持所选工具` : '工具不兼容'} description="可用工具仍保持可选，不兼容工具不会进入确认页。" /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={unsupportedTargetViewport.offset} limit={unsupportedTargetViewport.limit} />{issueTechnicalDetails}</Box>;
+      content = <Box flexDirection="column"><Callout status="error" title={issue.dependencyPluginId ? `${props.controller.getPluginOverview(issue.dependencyPluginId)?.displayName ?? issue.dependencyPluginId} 不支持所选目标平台` : '目标平台不兼容'} description="可用目标平台仍保持可选，不兼容目标平台不会进入确认页。" /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={unsupportedTargetViewport.offset} limit={unsupportedTargetViewport.limit} />{issueTechnicalDetails}</Box>;
     } else if (issue.category === 'dependencyGraphInvalid') {
       title = `暂时无法添加 ${issuePlugin?.displayName ?? issue.pluginId ?? '插件'}`;
       description = '来源中的依赖关系无效或安装记录不能安全验证。没有修改任何安装。';
@@ -2736,7 +2775,7 @@ export function ConsoleAppV4(props: {
         <ProgressRow title="验证完整结果" state={verificationStep} />
       </> : <>
         <ProgressRow title={sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : '检查兼容性'} state={!currentPhase ? 'pending' : preflightActive ? 'active' : 'complete'} />
-        <ProgressRow title={progress.current?.phase || (sourceOperation ? '保存来源配置并刷新' : configOperation ? '保存设置层并重新应用' : '连接到所选工具')} description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={failedProgress ? 'error' : executionActive ? 'active' : validationActive ? 'complete' : 'pending'} compact={policy.mode === 'compact'} />
+        <ProgressRow title={progress.current?.phase || (sourceOperation ? '保存来源配置并刷新' : configOperation ? '保存设置层并重新应用' : '连接到所选目标平台')} description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={failedProgress ? 'error' : executionActive ? 'active' : validationActive ? 'complete' : 'pending'} compact={policy.mode === 'compact'} />
         <ProgressRow title="验证结果" state={failedProgress ? 'error' : validationActive ? 'active' : 'pending'} />
       </>}
       {dependencyProgress ? <SectionCard title="执行目标" meta={`${snapshot.progressTargets.length} 个目标`}>{visibleProgressTargets.map((entry) => {
@@ -3062,7 +3101,7 @@ export function ConsoleAppV4(props: {
     title = plugin.displayName;
     description = plugin.description;
     actions = [{ label: '查看技术详情', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) }, { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) }];
-    content = <Box flexDirection="column"><SectionCard><StaticRow title="版本" meta={plugin.version ?? '未知'} /><StaticRow title="来源" meta={plugin.sourceLabel} /><StaticRow title="可用工具" meta={plugin.supportedPlatforms.map(platformLabel).join('、')} /><StaticRow title="配置" meta={`${plugin.configFieldCount} 个字段`} /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><SectionCard><StaticRow title="版本" meta={plugin.version ?? '未知'} /><StaticRow title="来源" meta={plugin.sourceLabel} /><StaticRow title="可用目标平台" meta={plugin.supportedPlatforms.map(platformLabel).join('、')} /><StaticRow title="配置" meta={`${plugin.configFieldCount} 个字段`} /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'pluginTechnical' && plugin) {
     breadcrumb = `${plugin.displayName} / 技术详情`;
     context = '只读';
@@ -3098,6 +3137,22 @@ export function ConsoleAppV4(props: {
   } else if (canOpenHelp && !help.includes('? 帮助')) {
     help = `? 帮助 · ${help}`;
   }
+
+  useEffect(() => {
+    if (!dynamicActionIds || dynamicActionSignature === undefined) {
+      dynamicMenuFocus.current = undefined;
+      return;
+    }
+    if (effectiveFocus !== focus) {
+      setFocus(effectiveFocus);
+      setScrollOffset(0);
+    }
+    dynamicMenuFocus.current = {
+      routeKey,
+      actionIds: dynamicActionSignature,
+      focusedActionId: dynamicActionIds[effectiveFocus],
+    };
+  }, [dynamicActionSignature, routeKey]);
 
   const runAction = (action: ActionItem | undefined): void => {
     if (!action || action.disabled) return;
@@ -3387,7 +3442,15 @@ export function ConsoleAppV4(props: {
       if (candidate) props.controller.togglePortableSkill(candidate.name);
     } else if (key.upArrow || input.toLowerCase() === 'k') {
       setFocus((value) => {
-        const next = pluginRows.length > 0 ? moveIndex(pluginRows.length, value, -1) : moveFocus(actions, value, -1);
+        const current = dynamicActionIds ? effectiveFocus : value;
+        const next = pluginRows.length > 0 ? moveIndex(pluginRows.length, current, -1) : moveFocus(actions, current, -1);
+        if (dynamicActionIds && dynamicActionSignature !== undefined) {
+          dynamicMenuFocus.current = {
+            routeKey,
+            actionIds: dynamicActionSignature,
+            focusedActionId: dynamicActionIds[next],
+          };
+        }
         const viewport = route.name === 'portableSkillSelect' && snapshot.portableDraft
           ? portableSkillCandidateViewport(
               actions.slice(0, snapshot.portableDraft.candidates.length),
@@ -3406,7 +3469,15 @@ export function ConsoleAppV4(props: {
       });
     } else if (key.downArrow || input.toLowerCase() === 'j') {
       setFocus((value) => {
-        const next = pluginRows.length > 0 ? moveIndex(pluginRows.length, value, 1) : moveFocus(actions, value, 1);
+        const current = dynamicActionIds ? effectiveFocus : value;
+        const next = pluginRows.length > 0 ? moveIndex(pluginRows.length, current, 1) : moveFocus(actions, current, 1);
+        if (dynamicActionIds && dynamicActionSignature !== undefined) {
+          dynamicMenuFocus.current = {
+            routeKey,
+            actionIds: dynamicActionSignature,
+            focusedActionId: dynamicActionIds[next],
+          };
+        }
         const viewport = route.name === 'portableSkillSelect' && snapshot.portableDraft
           ? portableSkillCandidateViewport(
               actions.slice(0, snapshot.portableDraft.candidates.length),
@@ -3423,19 +3494,22 @@ export function ConsoleAppV4(props: {
         setScrollOffset(viewport.offset);
         return next;
       });
-    } else if (input === ' ' && route.name === 'installTools' && route.view !== 'blocked') {
-      runAction(actions[focus]);
-    } else if (key.return && route.name === 'installTools' && route.view !== 'blocked') {
-      if (!actions[focus]?.disabled && tools.length > 0) {
+    } else if (input === ' ' && route.name === 'installTargets' && route.view !== 'blocked') {
+      runAction(actions[effectiveFocus]);
+    } else if (key.return && route.name === 'installTargets' && route.view !== 'blocked') {
+      const validSelectedTargets = selectedTargets.filter((platform) =>
+        props.controller.listInstallTargets(plugin!.pluginId, scope)
+          .some((choice) => choice.platform === platform && choice.compatible));
+      if (validSelectedTargets.length > 0) {
         setDirty(false);
-        back();
+        void beginReview(installIntent(plugin!, validSelectedTargets));
       }
     } else if (key.return && route.name === 'pluginList' && pluginRows[focus]) {
       go(route.mode === 'browse'
         ? { name: 'pluginPreview', pluginId: pluginRows[focus]!.pluginId }
         : { name: 'pluginDetail', pluginId: pluginRows[focus]!.pluginId });
     } else if (key.return) {
-      runAction(actions[focus]);
+      runAction(actions[effectiveFocus]);
     }
   });
 

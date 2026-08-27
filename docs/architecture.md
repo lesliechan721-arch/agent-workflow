@@ -140,6 +140,8 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
 
 `status --json` 保持 schema 4。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。
 
+target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v4 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
+
 配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
 ## Platform Boundaries

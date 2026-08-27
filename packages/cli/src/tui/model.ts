@@ -10,6 +10,8 @@ import type {
   StatusV4PluginSummary,
   StatusV4Target,
   StatusV4Component,
+  StatusTargetRevision,
+  TargetRevisionState,
 } from '../commands/status-v4.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 
@@ -29,12 +31,24 @@ export type PlatformPlacementSummary =
       state: 'installed';
       scope: Scope;
       health: 'ready' | 'incomplete' | 'error';
+      revision: TargetRevisionState;
     }
   | {
       platform: PlatformName;
       state: 'scopeConflict';
-      placements: Array<{ scope: Scope; health: 'ready' | 'incomplete' | 'error' }>;
+      placements: Array<{
+        scope: Scope;
+        health: 'ready' | 'incomplete' | 'error';
+        revision: TargetRevisionState;
+      }>;
     };
+
+export type PluginMenuAction =
+  | { id: 'add' | 'manage' | 'repair' | 'portableSkills' | 'dependencies' | 'settings'
+      | 'source' | 'sourceProblem' | 'about' | 'refreshSource' | 'technical' | 'back' }
+  | { id: 'platform' | 'scopeConflict'; platform: PlatformName }
+  | { id: 'upgrade'; platform: PlatformName; scope: Scope; availableVersion: string }
+  | { id: 'reinstall' | 'remove'; platform: PlatformName; scope: Scope };
 
 export interface PluginListItemViewModel {
   pluginId: string;
@@ -334,17 +348,35 @@ function dependencyPluginIdFromMessage(message: string): string | undefined {
 export function projectPlatformPlacement(
   platform: PlatformName,
   targets: StatusV4Target[],
+  revisions: StatusTargetRevision[] = [],
 ): PlatformPlacementSummary {
+  const revisionFor = (target: StatusV4Target): TargetRevisionState =>
+    revisions.find((entry) => entry.pluginId === target.pluginId
+      && entry.platform === target.platform
+      && entry.scope === target.scope)?.revision
+      ?? { state: 'unknown', ...(target.version ? { availableVersion: target.version } : {}) };
   const supportedScopes = [...new Set(targets.map((target) => target.scope))];
   const installed = targets.filter(isInstalledScopeEvidence);
   if (installed.length === 0) {
     const errorTarget = targets.find((target) => target.state === 'error');
     if (!errorTarget) return { platform, state: 'notInstalled', supportedScopes };
-    return { platform, state: 'installed', scope: errorTarget.scope, health: 'error' };
+    return {
+      platform,
+      state: 'installed',
+      scope: errorTarget.scope,
+      health: 'error',
+      revision: revisionFor(errorTarget),
+    };
   }
   if (installed.length === 1) {
     const target = installed[0]!;
-    return { platform, state: 'installed', scope: target.scope, health: targetHealth(target) };
+    return {
+      platform,
+      state: 'installed',
+      scope: target.scope,
+      health: targetHealth(target),
+      revision: revisionFor(target),
+    };
   }
   return {
     platform,
@@ -352,8 +384,96 @@ export function projectPlatformPlacement(
     placements: installed.map((target) => ({
       scope: target.scope,
       health: targetHealth(target),
+      revision: revisionFor(target),
     })).sort((left, right) => compareText(left.scope, right.scope)),
   };
+}
+
+function hasIncompletePlacement(plugin: PluginListItemViewModel): boolean {
+  return plugin.installedPlacements.some((placement) =>
+    placement.state === 'scopeConflict'
+    || placement.state === 'installed' && placement.health !== 'ready');
+}
+
+function hasMissingPlatform(plugin: PluginListItemViewModel): boolean {
+  return plugin.supportedPlatforms.some((platform) =>
+    plugin.installedPlacements.find((placement) => placement.platform === platform)?.state === 'notInstalled');
+}
+
+function capabilityActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
+  return [
+    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
+    ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
+    ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
+  ];
+}
+
+export function buildPluginPreviewActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
+  const installed = hasInstalledPlacement(plugin);
+  if (plugin.aggregateStatus === 'unavailable') {
+    return [{ id: 'sourceProblem' }, ...(installed ? [{ id: 'manage' as const }] : [])];
+  }
+  const primary: PluginMenuAction = hasIncompletePlacement(plugin)
+    || (plugin.dependencySummary?.issueCount ?? 0) > 0
+    ? { id: 'repair' }
+    : installed && !hasMissingPlatform(plugin)
+      ? { id: 'manage' }
+      : { id: 'add' };
+  return [primary, ...capabilityActions(plugin), { id: 'source' }];
+}
+
+export function buildPluginDetailActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
+  if (plugin.aggregateStatus === 'unavailable') {
+    return [
+      ...plugin.installedPlacements.flatMap((placement) => placement.state === 'notInstalled'
+        ? []
+        : [{ id: 'platform' as const, platform: placement.platform }]),
+      { id: 'sourceProblem' },
+      { id: 'about' },
+    ];
+  }
+  return [
+    ...plugin.installedPlacements.map((placement): PluginMenuAction => placement.state === 'scopeConflict'
+      ? { id: 'scopeConflict', platform: placement.platform }
+      : { id: 'platform', platform: placement.platform }),
+    ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
+    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
+    ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
+    { id: 'about' },
+  ];
+}
+
+export function buildPlatformActions(
+  plugin: PluginListItemViewModel,
+  platform: PlatformName,
+): PluginMenuAction[] {
+  if (plugin.aggregateStatus === 'unavailable') {
+    return [{ id: 'sourceProblem' }, { id: 'refreshSource' }];
+  }
+  const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
+  if (!placement || placement.state === 'notInstalled') return [{ id: 'add' }, { id: 'about' }];
+  if (placement.state === 'scopeConflict') return [{ id: 'scopeConflict', platform }];
+  if (placement.health === 'error') return [{ id: 'technical' }, { id: 'back' }];
+  if (placement.health === 'incomplete') {
+    return [
+      { id: 'reinstall', platform, scope: placement.scope },
+      { id: 'technical' },
+      { id: 'remove', platform, scope: placement.scope },
+    ];
+  }
+  return [
+    ...(placement.revision.state === 'upgradeAvailable'
+      ? [{
+          id: 'upgrade' as const,
+          platform,
+          scope: placement.scope,
+          availableVersion: placement.revision.availableVersion,
+        }]
+      : []),
+    { id: 'reinstall', platform, scope: placement.scope },
+    { id: 'remove', platform, scope: placement.scope },
+    { id: 'technical' },
+  ];
 }
 
 export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean {
@@ -735,6 +855,7 @@ function enrichDependencyIssuePlacements(
 export function buildTuiViewModel(options: {
   status: StatusV4Payload;
   pluginSummaries: StatusV4PluginSummary[];
+  targetRevisions?: StatusTargetRevision[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
@@ -754,7 +875,9 @@ export function buildTuiViewModel(options: {
     const sourceId = targets[0]?.sourceId ?? pluginId.slice(0, pluginId.indexOf('/'));
     const placements = (['codex', 'claude'] as const).flatMap((platform) => {
       const platformTargets = targets.filter((target) => target.platform === platform);
-      return platformTargets.length > 0 ? [projectPlatformPlacement(platform, platformTargets)] : [];
+      return platformTargets.length > 0
+        ? [projectPlatformPlacement(platform, platformTargets, options.targetRevisions)]
+        : [];
     });
     const attention = placements.some((placement) => placement.state === 'scopeConflict'
       || (placement.state === 'installed' && placement.health !== 'ready'));

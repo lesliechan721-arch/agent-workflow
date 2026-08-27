@@ -2,7 +2,11 @@ import crypto from 'node:crypto';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { CatalogFreshnessPolicy, CatalogSourceResolution, PlatformName } from '../types.js';
-import { statusCommandV4 } from '../commands/status-v4.js';
+import {
+  statusCommandV4,
+  type StatusTargetRevision,
+  type StatusV4Target,
+} from '../commands/status-v4.js';
 import {
   addCatalogSourceCommand,
   listCatalogSources,
@@ -107,6 +111,32 @@ function digest(value: unknown): string {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }
 
+export function statusTargetFingerprint(
+  targets: StatusV4Target[],
+  revisions: StatusTargetRevision[] = [],
+): string {
+  return digest({
+    targets: targets.map((target) => ({
+      pluginId: target.pluginId,
+      sourceIdentity: target.sourceIdentity,
+      platform: target.platform,
+      scope: target.scope,
+      state: target.state,
+      errors: target.errors.map((error) => error.code).sort(),
+      components: target.components.map((component) => [component.key, component.state])
+        .sort(([left], [right]) => left!.localeCompare(right!, 'en')),
+    })).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+      .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en')),
+    revisions: revisions.map((entry) => ({
+      pluginId: entry.pluginId,
+      platform: entry.platform,
+      scope: entry.scope,
+      revision: entry.revision,
+    })).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+      .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en')),
+  });
+}
+
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
 
 function operationReviewStale(message: string): TuiOperationBlockedError {
@@ -169,12 +199,14 @@ function pluginIntent(intent: OperationIntent): intent is Extract<OperationInten
 function assertIntentIsLegal(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
   targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
+  revisions: StatusTargetRevision[] = [],
 ): void {
   const platforms: PlatformName[] = intent.platform === 'both'
     ? ['codex', 'claude']
     : [intent.platform];
   for (const platform of platforms) {
-    const selected = targets.find((target) => target.platform === platform && target.scope === intent.scope);
+    const selected = targets.find((target) => target.pluginId === intent.pluginId
+      && target.platform === platform && target.scope === intent.scope);
     if (!selected || selected.errors.some((error) => error.code === 'unsupportedTarget')) {
       throw new TuiOperationBlockedError('unsupportedTarget', '所选插件不支持这个平台和使用位置。');
     }
@@ -188,7 +220,10 @@ function assertIntentIsLegal(
     if (intent.action === 'install' && selected.state !== 'absent') {
       throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
     }
-    if (intent.action === 'upgrade' && selected.state !== 'present') {
+    const revision = revisions.find((entry) => entry.pluginId === intent.pluginId
+      && entry.platform === platform && entry.scope === intent.scope)?.revision;
+    if (intent.action === 'upgrade'
+      && (selected.state !== 'present' || revision?.state !== 'upgradeAvailable')) {
       throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
     }
     if (intent.action === 'uninstall' && !targetCanBeUninstalled(selected.state)) {
@@ -506,6 +541,7 @@ export function createTuiControllerDependencies(
       return {
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
+        targetRevisions: result.targetRevisions,
         dependencyOverviews,
         portablePluginIds,
         sourceDetails: configured.sources.map((source) => {
@@ -665,17 +701,10 @@ export function createTuiControllerDependencies(
       },
       source: selected.source,
       ...(dependencyPlan ? { dependencyPlan } : {}),
-      targetFingerprint: digest(status.payload.targets.map((target) => ({
-        pluginId: target.pluginId,
-        sourceIdentity: target.sourceIdentity,
-        platform: target.platform,
-        scope: target.scope,
-        state: target.state,
-        errors: target.errors.map((error) => error.code).sort(),
-        components: target.components.map((component) => [component.key, component.state])
-          .sort(([left], [right]) => left!.localeCompare(right!, 'en')),
-      })).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
-        .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'))),
+      targetFingerprint: statusTargetFingerprint(
+        status.payload.targets,
+        status.targetRevisions ?? [],
+      ),
     };
     if (intent.kind === 'configSave' || intent.kind === 'configReset') {
       const store = await readPluginConfigStore({
@@ -758,7 +787,7 @@ export function createTuiControllerDependencies(
       });
       signal.throwIfAborted();
       await assertTypedIssueOrigin(intent, status.payload.targets);
-      assertIntentIsLegal(intent, status.payload.targets);
+      assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);
     },
     async checkSource(sourceId, signal) {
       const packageInfo = await readCliPackageInfo();

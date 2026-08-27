@@ -2075,6 +2075,8 @@ async function inspectCodexNativeResidue(options: {
   state: 'present' | 'absent' | 'foreign';
   labels: string[];
   versions: string[];
+  installedVersions: string[];
+  cacheVersions: string[];
   enabled: boolean;
 }> {
   const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
@@ -2105,11 +2107,17 @@ async function inspectCodexNativeResidue(options: {
   const labels: string[] = [];
   const foreignLabels: string[] = [];
   const versions = new Set<string>();
+  const installedVersions = new Set<string>();
+  const cacheVersions = new Set<string>();
   const configEntry = config.snapshot.plugins[pluginId];
   if (configEntry) {
     (canonicalMarketplace ? labels : foreignLabels).push(`${configPath}#plugins.${pluginId}`);
   }
-  const inspectManifest = async (manifestPath: string, directoryVersion?: string): Promise<void> => {
+  const inspectManifest = async (
+    manifestPath: string,
+    kind: 'installed' | 'cache',
+    directoryVersion?: string,
+  ): Promise<void> => {
     const stats = await lstatCodexResidueIfPresent(manifestPath);
     if (!stats) return;
     if (!stats.isFile() || stats.isSymbolicLink()) {
@@ -2130,6 +2138,7 @@ async function inspectCodexNativeResidue(options: {
     }
     labels.push(manifestPath);
     versions.add(version);
+    (kind === 'installed' ? installedVersions : cacheVersions).add(version);
   };
   for (const entry of await readdirCodexResidueIfPresent(cacheRoot)) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) {
@@ -2146,22 +2155,30 @@ async function inspectCodexNativeResidue(options: {
       if (await lstatCodexResidueIfPresent(candidate)) existing.push(candidate);
     }
     if (existing.length === 0) foreignLabels.push(versionRoot);
-    for (const candidate of existing) await inspectManifest(candidate, entry.name);
+    for (const candidate of existing) await inspectManifest(candidate, 'cache', entry.name);
   }
   const installedStats = await lstatCodexResidueIfPresent(installedRoot);
   if (installedStats && (!installedStats.isDirectory() || installedStats.isSymbolicLink())) {
     foreignLabels.push(installedRoot);
   } else if (installedStats) {
-    await inspectManifest(installedManifest);
+    await inspectManifest(installedManifest, 'installed');
   }
   return foreignLabels.length > 0
     ? {
         state: 'foreign', labels: [...labels, ...foreignLabels], versions: [...versions],
+        installedVersions: [...installedVersions], cacheVersions: [...cacheVersions],
         enabled: configEntry?.enabled === true,
       }
     : labels.length > 0
-      ? { state: 'present', labels, versions: [...versions], enabled: configEntry?.enabled === true }
-      : { state: 'absent', labels: [], versions: [], enabled: false };
+      ? {
+          state: 'present', labels, versions: [...versions],
+          installedVersions: [...installedVersions], cacheVersions: [...cacheVersions],
+          enabled: configEntry?.enabled === true,
+        }
+      : {
+          state: 'absent', labels: [], versions: [],
+          installedVersions: [], cacheVersions: [], enabled: false,
+        };
 }
 
 export async function discoverCodexNativeResidueNames(options: {
@@ -3012,55 +3029,6 @@ function createClaudeMarketplaceComponent(options: {
   };
 }
 
-function createNativeVersionComponent(options: {
-  pluginName: string;
-  pluginVersion: string;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  marketplaceName?: string;
-  marketplaceRoot?: string;
-}): OwnedComponent {
-  return {
-    kind: 'shared-config',
-    identity: ownerIdentity(
-      options.pluginName,
-      internalArtifactKey('native-version', options.pluginVersion),
-      options.platform,
-      options.scope,
-    ),
-    label: `${options.pluginName}@${options.marketplaceName ?? MARKETPLACE_NAME}#version=${options.pluginVersion}`,
-    inspect: async () => {
-      let versions: string[];
-      if (options.platform === 'codex') {
-        const residue = await inspectCodexNativeResidue({
-          pluginName: options.pluginName,
-          cwd: options.cwd,
-          env: options.env,
-          marketplaceName: options.marketplaceName,
-          marketplaceRoot: options.marketplaceRoot,
-        });
-        versions = residue.enabled && residue.state === 'present' ? residue.versions : [];
-      } else {
-        const state = await readClaudeNativeState({
-          pluginName: options.pluginName,
-          scope: options.scope,
-          cwd: options.cwd,
-          env: options.env,
-          marketplaceName: options.marketplaceName,
-          marketplaceRoot: options.marketplaceRoot,
-        });
-        versions = state.pluginEnabled && state.pluginState === 'present'
-          ? state.pluginVersions
-          : [];
-      }
-      return versions.includes(options.pluginVersion) ? 'present' : 'absent';
-    },
-    remove: async () => undefined,
-  };
-}
-
 async function mirrorCatalog(
   catalog: CatalogResolution,
   env: NodeJS.ProcessEnv,
@@ -3802,25 +3770,11 @@ export function createRebuildIntegration(options: {
               desired: marketplaceDesired,
             })]
           : [];
-      const nativeVersion = nativeRequired
-        && input.command !== 'cleanup'
-        && input.command !== 'uninstall'
-        ? [createNativeVersionComponent({
-            pluginName: input.plugin.manifest.name,
-            pluginVersion: input.plugin.manifest.version,
-            platform: input.platform,
-            scope: input.scope,
-            cwd: input.cwd,
-            env: options.context.env,
-            marketplaceName: input.marketplaceName,
-            marketplaceRoot: input.marketplaceRoot,
-          })]
-        : [];
       if (
         nativeRequired
         && input.command !== 'cleanup'
         && input.command !== 'uninstall'
-      ) desiredComponents.push(...nativePlugin, ...marketplace, ...nativeVersion);
+      ) desiredComponents.push(...nativePlugin, ...marketplace);
       const allComponents = dedupeComponents([
         ...desiredComponents,
         ...optionalComponents,
@@ -3831,7 +3785,6 @@ export function createRebuildIntegration(options: {
         ...(input.platform === 'claude' ? sharedComponents : []),
         ...nativePlugin,
         ...marketplace,
-        ...nativeVersion,
       ]);
       bindNamespacedOwnerIdentity(allComponents, input);
       const desiredKeys = new Set(desiredComponents.map(componentIdentityKey));
@@ -3888,6 +3841,7 @@ export async function inspectRebuildTarget(options: {
 }): Promise<{
   target: DesiredTarget;
   inspection: OwnershipInspection;
+  installedVersion?: string;
 }> {
   const integration = createRebuildIntegration({ context: options.context });
   const target = await integration.buildTarget({
@@ -3912,7 +3866,42 @@ export async function inspectRebuildTarget(options: {
     nativeProbe: integration.driver.probeNativeHealth ?? integration.driver.probeNative,
     verifyHealth: true,
   });
-  return { target, inspection };
+  if (!target.requiresNative) return { target, inspection };
+  if (target.identity.platform === 'codex') {
+    const residue = await inspectCodexNativeResidue({
+      pluginName: target.identity.pluginName,
+      cwd: target.identity.cwd,
+      env: options.context.env,
+      marketplaceName: target.identity.marketplaceName,
+      marketplaceRoot: target.identity.marketplaceRoot,
+    });
+    if (residue.state !== 'present' || !residue.enabled) return { target, inspection };
+    const installed = [...new Set(residue.installedVersions)];
+    if (installed.length > 0) {
+      return installed.length === 1
+        ? { target, inspection, installedVersion: installed[0] }
+        : { target, inspection };
+    }
+    const cached = [...new Set(residue.cacheVersions)];
+    return cached.length === 1
+      ? { target, inspection, installedVersion: cached[0] }
+      : { target, inspection };
+  }
+  const native = await readClaudeNativeState({
+    pluginName: target.identity.pluginName,
+    scope: target.identity.scope,
+    cwd: target.identity.cwd,
+    env: options.context.env,
+    marketplaceName: target.identity.marketplaceName,
+    marketplaceRoot: target.identity.marketplaceRoot,
+  });
+  const versions = [...new Set(native.pluginVersions)];
+  return native.marketplaceState === 'canonical'
+    && native.pluginState === 'present'
+    && native.pluginEnabled
+    && versions.length === 1
+    ? { target, inspection, installedVersion: versions[0] }
+    : { target, inspection };
 }
 
 async function discoverOwnerNamesInTextRoot(

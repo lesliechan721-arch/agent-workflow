@@ -9,7 +9,14 @@ import {
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import { buildConfigPage, buildTuiViewModel } from '../../src/tui/model.js';
+import {
+  buildConfigPage,
+  buildPlatformActions,
+  buildPluginDetailActions,
+  buildPluginPreviewActions,
+  buildTuiViewModel,
+  type PluginListItemViewModel,
+} from '../../src/tui/model.js';
 import { TuiRouter } from '../../src/tui/router.js';
 
 function source(
@@ -116,6 +123,28 @@ function dependencies(overrides: Partial<TuiControllerDependencies> = {}): TuiCo
   };
 }
 
+function menuPlugin(overrides: Partial<PluginListItemViewModel> = {}): PluginListItemViewModel {
+  return {
+    pluginId: 'official/demo',
+    sourceId: 'official',
+    displayName: 'Demo',
+    description: 'Demo plugin',
+    version: '2.0.0',
+    configFieldCount: 0,
+    sourceLabel: 'Official',
+    supportedPlatforms: ['codex'],
+    installedPlacements: [{ platform: 'codex', state: 'notInstalled', supportedScopes: ['user', 'project'] }],
+    aggregateStatus: 'available',
+    portableSkills: false,
+    dependencySummary: {
+      directCount: 0, transitiveCount: 0, totalCount: 0,
+      readyCount: 0, missingCount: 0, issueCount: 0,
+    },
+    technicalComponents: [],
+    ...overrides,
+  };
+}
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -135,6 +164,144 @@ async function nextTurn(): Promise<void> {
 }
 
 describe('TUI v4 router and ViewModel', () => {
+  it('builds capability actions only for capabilities with live content', () => {
+    const empty = menuPlugin();
+    expect(buildPluginPreviewActions(empty).map((action) => action.id)).toEqual(['add', 'source']);
+    expect(buildPluginDetailActions(empty).map((action) => action.id)).toEqual(['platform', 'about']);
+
+    const capable = menuPlugin({
+      portableSkills: true,
+      configFieldCount: 2,
+      dependencySummary: {
+        directCount: 1, transitiveCount: 1, totalCount: 2,
+        readyCount: 2, missingCount: 0, issueCount: 0,
+      },
+    });
+    expect(buildPluginPreviewActions(capable).map((action) => action.id)).toEqual([
+      'add', 'portableSkills', 'dependencies', 'settings', 'source',
+    ]);
+    expect(buildPluginDetailActions(capable).map((action) => action.id)).toEqual([
+      'platform', 'dependencies', 'portableSkills', 'settings', 'about',
+    ]);
+  });
+
+  it('builds preview primary actions from live placement health and availability', () => {
+    const incomplete = menuPlugin({
+      aggregateStatus: 'needsAttention',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'incomplete',
+        revision: { state: 'unknown', availableVersion: '2.0.0' },
+      }],
+    });
+    const healthyWithMissingPlatform = menuPlugin({
+      aggregateStatus: 'installed',
+      supportedPlatforms: ['codex', 'claude'],
+      installedPlacements: [
+        {
+          platform: 'codex', state: 'installed', scope: 'user', health: 'ready',
+          revision: { state: 'current', availableVersion: '2.0.0', installedVersion: '2.0.0' },
+        },
+        { platform: 'claude', state: 'notInstalled', supportedScopes: ['user'] },
+      ],
+    });
+    const healthyEverywhere = menuPlugin({
+      aggregateStatus: 'installed',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'ready',
+        revision: { state: 'current', availableVersion: '2.0.0', installedVersion: '2.0.0' },
+      }],
+    });
+
+    expect(buildPluginPreviewActions(incomplete)[0]?.id).toBe('repair');
+    expect(buildPluginPreviewActions(healthyWithMissingPlatform)[0]?.id).toBe('add');
+    expect(buildPluginPreviewActions(healthyEverywhere)[0]?.id).toBe('manage');
+  });
+
+  it('shows upgrade only with reliable upgradeAvailable revision evidence', () => {
+    const ready = (revision: Extract<PluginListItemViewModel['installedPlacements'][number], {
+      state: 'installed';
+    }>['revision']): PluginListItemViewModel => menuPlugin({
+      aggregateStatus: 'installed',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'ready', revision,
+      }],
+    });
+
+    expect(buildPlatformActions(ready({
+      state: 'current', availableVersion: '2.0.0', installedVersion: '2.0.0',
+    }), 'codex').map((action) => action.id)).not.toContain('upgrade');
+    expect(buildPlatformActions(ready({ state: 'unknown', availableVersion: '2.0.0' }), 'codex')
+      .map((action) => action.id)).not.toContain('upgrade');
+    expect(buildPlatformActions(ready({
+      state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0',
+    }), 'codex')).toContainEqual(expect.objectContaining({ id: 'upgrade', availableVersion: '2.0.0' }));
+  });
+
+  it('limits unavailable source menus to source and safe recovery actions', () => {
+    const unavailable = menuPlugin({ aggregateStatus: 'unavailable' });
+    expect(buildPluginPreviewActions(unavailable).map((action) => action.id)).toEqual(['sourceProblem']);
+    expect(buildPluginDetailActions(unavailable).map((action) => action.id)).toEqual([
+      'sourceProblem', 'about',
+    ]);
+    expect(buildPlatformActions(unavailable, 'codex').map((action) => action.id)).toEqual([
+      'sourceProblem', 'refreshSource',
+    ]);
+
+    const installed = menuPlugin({
+      aggregateStatus: 'unavailable',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'user', health: 'ready',
+        revision: { state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0' },
+      }],
+    });
+    expect(buildPluginPreviewActions(installed).map((action) => action.id)).toEqual([
+      'sourceProblem', 'manage',
+    ]);
+    expect(buildPluginDetailActions(installed).map((action) => action.id)).toEqual([
+      'platform', 'sourceProblem', 'about',
+    ]);
+    expect(buildPlatformActions(installed, 'codex').map((action) => action.id)).toEqual([
+      'sourceProblem', 'refreshSource',
+    ]);
+  });
+
+  it('uses add for absent and reinstall for incomplete platform placement', () => {
+    expect(buildPlatformActions(menuPlugin(), 'codex')[0]?.id).toBe('add');
+    expect(buildPlatformActions(menuPlugin({
+      aggregateStatus: 'needsAttention',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'project', health: 'incomplete',
+        revision: { state: 'unknown', availableVersion: '2.0.0' },
+      }],
+    }), 'codex')[0]?.id).toBe('reinstall');
+  });
+
+  it('centralizes install target compatibility and recomputes it for the selected scope', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ targets: [
+          target({ platform: 'codex', scope: 'user', state: 'absent' }),
+          target({ platform: 'codex', scope: 'project', state: 'absent' }),
+          target({ platform: 'claude', scope: 'project', state: 'absent' }),
+        ] }),
+        pluginSummaries: [{
+          ...summaries(['official', 'demo'])[0]!,
+          supportedTargets: { codex: ['user', 'project'], claude: ['project'] },
+        }],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listInstallTargets('official/demo', 'user')).toEqual([
+      { platform: 'codex', compatible: true },
+      { platform: 'claude', compatible: false, disabled: '不支持所选位置' },
+    ]);
+    expect(controller.listInstallTargets('official/demo', 'project')).toEqual([
+      { platform: 'codex', compatible: true },
+      { platform: 'claude', compatible: true },
+    ]);
+  });
+
   it('projects manifest order, presentation groups, fallback fields, presets, and private values safely', () => {
     const fields = [
       { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
@@ -434,8 +601,8 @@ describe('TUI v4 router and ViewModel', () => {
       platform: 'codex',
       state: 'scopeConflict',
       placements: [
-        { scope: 'project', health: 'incomplete' },
-        { scope: 'user', health: 'ready' },
+        { scope: 'project', health: 'incomplete', revision: { state: 'unknown', availableVersion: '1.0.0' } },
+        { scope: 'user', health: 'ready', revision: { state: 'unknown', availableVersion: '1.0.0' } },
       ],
     }]);
     expect(view.issues).toEqual(expect.arrayContaining([
@@ -471,6 +638,7 @@ describe('TUI v4 router and ViewModel', () => {
       state: 'installed',
       scope: userState === 'present' ? 'user' : 'project',
       health: 'ready',
+      revision: { state: 'unknown', availableVersion: '1.0.0' },
     }]);
     expect(view.issues.some((issue) => issue.category === 'scopeConflict')).toBe(false);
     expect(view.issues.some((issue) => issue.category === 'diagnostic')).toBe(true);
