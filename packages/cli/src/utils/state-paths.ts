@@ -156,3 +156,14 @@ export async function resolveClaudeProjectKey(cwd: string): Promise<string> {
 export async function resolveCodexProjectKey(cwd: string): Promise<string> {
   return canonicalizePathThroughExistingAncestor(await resolveRepoRoot(cwd));
 }
+
+export function codexProjectConfigAliasesUserHome(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const projectConfig = canonicalizePathThroughExistingAncestorSync(
+    path.join(resolveRepoRootSync(cwd), '.codex'),
+  );
+  const userConfig = canonicalizePathThroughExistingAncestorSync(getCodexHome(env));
+  return projectConfig === userConfig;
+}

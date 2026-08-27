@@ -69,6 +69,40 @@ async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTes
   return isolation;
 }
 
+async function configureCodexAliasCatalog(options: {
+  cwd: string;
+  userConfig: string;
+  sourceName: string;
+}) {
+  const isolation = getCurrentSourceTestIsolation();
+  const env = { ...isolation.env, AW_CODEX_HOME: options.userConfig };
+  const sourceRoot = path.join(isolation.layout.fixtureCwd, options.sourceName);
+  await fs.ensureDir(options.cwd);
+  await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    manifest.marketplace.policy.products = ['CODEX'];
+    manifest.extensions = {
+      instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
+    };
+  });
+  const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  await replaceCatalogSourcesConfig({
+    config: {
+      schemaVersion: 1,
+      sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+    },
+    expectedDigest: snapshot.digest,
+    env,
+  });
+  return {
+    env,
+    nativeCliRunner: vi.fn(async (_invocation: NativeCliInvocation) => ({
+      exitCode: 0,
+      stdout: 'codex-cli 99.0.0',
+      stderr: '',
+    })),
+  };
+}
+
 async function writeDynamicSkillRenderer(options: {
   pluginRoot: string;
   skillKey: string;
@@ -94,6 +128,123 @@ async function writeDynamicSkillRenderer(options: {
 }
 
 describe('five namespaced write commands', () => {
+  it('keeps a Codex user install healthy when the project config aliases the user home', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = path.join(isolation.layout.fixtureCwd, 'codex-scope-alias-home');
+    const { env, nativeCliRunner } = await configureCodexAliasCatalog({
+      cwd,
+      userConfig: path.join(cwd, '.codex'),
+      sourceName: 'codex-scope-alias-source',
+    });
+
+    const installed = await installWriteCommand(['team/demo'], {
+      cwd,
+      platform: 'codex',
+      scope: 'user',
+    }, { env, nativeCliRunner });
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+
+    const status = await statusCommandV4({
+      plugins: ['team/demo'],
+      cwd,
+      env,
+      cliVersion: '1.0.0',
+      platform: 'codex',
+      json: true,
+      verbose: true,
+    });
+    expect(status.payload.targets).toEqual([
+      expect.objectContaining({ pluginId: 'team/demo', scope: 'user', state: 'present' }),
+    ]);
+    await expect(statusCommandV4({
+      plugins: ['team/demo'],
+      cwd,
+      env,
+      cliVersion: '1.0.0',
+      platform: 'codex',
+      scope: 'project',
+      json: true,
+    })).resolves.toMatchObject({
+      payload: {
+        targets: [expect.objectContaining({
+          scope: 'project',
+          state: 'error',
+          errors: [expect.objectContaining({ code: 'codexScopePathAlias' })],
+        })],
+      },
+    });
+
+    const reinstalled = await reinstallWriteCommand(['team/demo'], {
+      cwd,
+      platform: 'codex',
+      scope: 'user',
+    }, { env, nativeCliRunner });
+    expect(reinstalled.overallState, JSON.stringify(reinstalled.rebuildResults)).toBe('succeeded');
+  });
+
+  it.each(['direct', 'symlink'] as const)(
+    'blocks Codex project writes when its config has a %s alias to the user home',
+    async (alias) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const cwd = path.join(isolation.layout.fixtureCwd, `codex-project-${alias}-alias`);
+      const projectConfig = path.join(cwd, '.codex');
+      await fs.ensureDir(projectConfig);
+      const userConfig = alias === 'direct'
+        ? projectConfig
+        : path.join(isolation.layout.fixtureCwd, 'codex-user-home-link');
+      if (alias === 'symlink') await fs.symlink(projectConfig, userConfig);
+      const { env, nativeCliRunner } = await configureCodexAliasCatalog({
+        cwd,
+        userConfig,
+        sourceName: `codex-project-${alias}-source`,
+      });
+
+      const result = await installWriteCommand(['team/demo'], {
+        cwd,
+        platform: 'codex',
+        scope: 'project',
+      }, { env, nativeCliRunner });
+
+      expect(result.overallState).toBe('failed');
+      expect(result.targetResults).toEqual([
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginId: 'team/demo', scope: 'project' }),
+          errorCode: 'codexScopePathAlias',
+        }),
+      ]);
+      expect(nativeCliRunner.mock.calls.map(([invocation]) => invocation.args.join(' ')).join('\n'))
+        .not.toMatch(/(?:marketplace|plugin) add/u);
+    },
+  );
+
+  it('keeps cleanup available for a project owner after Codex config paths become aliases', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = path.join(isolation.layout.fixtureCwd, 'codex-project-alias-cleanup');
+    const { env: initialEnv, nativeCliRunner } = await configureCodexAliasCatalog({
+      cwd,
+      userConfig: path.join(isolation.layout.fixtureCwd, 'separate-codex-user-home'),
+      sourceName: 'codex-project-alias-cleanup-source',
+    });
+    const installed = await installWriteCommand(['team/demo'], {
+      cwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: initialEnv, nativeCliRunner });
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+
+    const aliasEnv = { ...initialEnv, AW_CODEX_HOME: path.join(cwd, '.codex') };
+    const cleaned = await cleanupWriteCommand(['team/demo'], {
+      cwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: aliasEnv, nativeCliRunner });
+
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    expect(cleaned.receiptTargets).toEqual([
+      expect.objectContaining({ pluginId: 'team/demo', scope: 'project' }),
+    ]);
+  });
+
   it('rejects a symlinked marketplace parent before first install writes external or native state', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'symlinked-marketplace-source');

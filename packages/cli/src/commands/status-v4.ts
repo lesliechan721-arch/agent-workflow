@@ -38,6 +38,7 @@ import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import type { OwnedComponent, OwnershipInspection } from '../utils/ownership.js';
 import {
+  codexProjectConfigAliasesUserHome,
   createProjectLocationKey,
   getClaudeHome,
   getCodexHome,
@@ -299,6 +300,7 @@ export async function statusCommandV4(options: {
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   const currentProjectKey = await resolveCanonicalRepoProjectKey(options.cwd);
   const currentProjectLocationKey = createProjectLocationKey(currentProjectKey);
+  const codexScopePathsAlias = codexProjectConfigAliasesUserHome(options.cwd, env);
   const inventoryErrors: StatusInventoryError[] = [];
   const ownerInventory = await inventoryCatalogSourceReferences({ cwd: options.cwd, env }).catch(async (error) => {
     inventoryErrors.push(projectStateInventoryError(error, env, options.cwd));
@@ -315,6 +317,14 @@ export async function statusCommandV4(options: {
       relevance: error.relevance,
     });
   }
+  const hasCurrentCodexProjectOwner = (sourceId: string, pluginName: string): boolean =>
+    ownerInventory.references.some((reference) =>
+      reference.kind === 'namespacedOwner'
+      && reference.sourceId === sourceId
+      && reference.pluginName === pluginName
+      && reference.platform === 'codex'
+      && reference.scope === 'project'
+      && reference.projectKey === currentProjectKey);
   const configured = new Map(snapshot.config.sources.map((source) => [source.id, source]));
   const requested = options.plugins ?? [];
   const platforms = selectedPlatforms(options.platform);
@@ -485,6 +495,10 @@ export async function statusCommandV4(options: {
               for (const platform of ['codex', 'claude'] as const) {
                 states[platform] = {};
                 for (const scope of ['user', 'project'] as const) {
+                  if (platform === 'codex'
+                    && scope === 'project'
+                    && codexScopePathsAlias
+                    && !hasCurrentCodexProjectOwner(item.resolution!.sourceId, entry.name)) continue;
                   const supported = platform === 'claude'
                     ? claude
                     : codex && (scope === 'user' || hasCodexProjectManagedArtifacts(plugin));
@@ -796,6 +810,20 @@ export async function statusCommandV4(options: {
         cwd: path.resolve(options.cwd),
         components: [] as StatusV4Component[],
       };
+      if (platform === 'codex'
+        && scope === 'project'
+        && codexScopePathsAlias
+        && !hasCurrentCodexProjectOwner(entry.source.id, entry.name)) {
+        if (options.scope !== 'project') return [];
+        return [{
+          ...target,
+          state: 'error',
+          errors: [{
+            code: 'codexScopePathAlias',
+            message: 'codexScopePathAlias: Codex project config resolves to the user config directory. Run this command from an actual project directory.',
+          }],
+        }];
+      }
       if (entry.targets[platform][scope]) {
         const live = entry.states[platform]?.[scope];
         const dependencyIssueCount = (live?.errors ?? []).filter((error) =>

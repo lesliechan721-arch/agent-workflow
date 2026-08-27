@@ -61,6 +61,7 @@ import {
   type CleanupResult,
 } from '../utils/ownership.js';
 import {
+  codexProjectConfigAliasesUserHome,
   getClaudeHome,
   getCodexHome,
   resolveCanonicalRepoProjectKey,
@@ -465,6 +466,21 @@ async function runSingleSourceRebuildCommand(options: {
           options.command === 'upgrade'
             ? `${pluginName} 当前 catalog 不再支持 ${platform}，不能升级这个可见目标。请运行 \`aw cleanup ${pluginName} -p ${platform} -s ${options.commandOptions.scope}\`。`
             : `${pluginName} 当前 catalog 不支持 ${platform}。`,
+        ));
+        continue;
+      }
+      if (
+        currentPlugin
+        && platform === 'codex'
+        && options.commandOptions.scope === 'project'
+        && options.command !== 'cleanup'
+        && options.command !== 'uninstall'
+        && codexProjectConfigAliasesUserHome(options.commandOptions.cwd, env)
+      ) {
+        results.push(failedResult(
+          options.command,
+          identity,
+          'codexScopePathAlias: Codex project config 与用户配置目录相同。请进入实际项目目录后重试。',
         ));
         continue;
       }
@@ -1367,6 +1383,10 @@ export async function runRebuildCommand(options: {
       });
       if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(stateInventory);
       const commandProjectKey = await resolveCanonicalRepoProjectKey(options.commandOptions.cwd);
+      const codexScopePathsAlias = codexProjectConfigAliasesUserHome(
+        options.commandOptions.cwd,
+        runtimeEnv,
+      );
       const selectedLegacy = selectedLegacyLiveReferences(
         stateInventory.references,
         new Set(executionSelections.map((selection) => selection.platform)),
@@ -1535,9 +1555,12 @@ export async function runRebuildCommand(options: {
                 : hasAnyPresent ? 'present' : 'absent';
             return { ...result, state };
           };
+          const otherScope = resolvedScope === 'user' ? 'project' : 'user';
           const [requestedInspection, otherInspection] = await Promise.all([
             inspectScope(resolvedScope),
-            inspectScope(resolvedScope === 'user' ? 'project' : 'user'),
+            platform === 'codex' && codexScopePathsAlias && resolvedScope === 'user'
+              ? Promise.resolve({ state: 'absent' as const, components: [], errors: [] })
+              : inspectScope(otherScope),
           ]);
           let state: 'absent' | 'present' | 'partial' | 'error' = requestedInspection.state;
           let action: 'install' | 'upgrade' | 'reinstall' | 'keep' | 'block' = relation === 'requested'
@@ -1616,6 +1639,13 @@ export async function runRebuildCommand(options: {
               action = 'block';
               errorCode = 'invalidConfig';
             }
+          }
+          if (dependencyEnabled
+            && platform === 'codex'
+            && resolvedScope === 'project'
+            && codexScopePathsAlias) {
+            action = 'block';
+            errorCode = 'codexScopePathAlias';
           }
           targets.push({
             pluginId: entry.pluginId,
