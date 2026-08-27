@@ -52,9 +52,15 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
   ], { cwd: workspaceRoot });
   await execFileAsync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: workspaceRoot });
 
+  const preflight = await runAw(cliEntry, workspaceRoot, [
+    'catalog', 'status', '--workspace-root', workspaceRoot,
+    '--preflight', '--remote', 'origin', '--branch', 'catalog/smoke', '--json',
+  ]);
+  const descriptorDigest = JSON.parse(preflight.stdout).publication.descriptorDigest;
   const result = await runAw(cliEntry, workspaceRoot, [
     'catalog', 'publish', '--workspace-root', workspaceRoot,
-    '--branch', 'catalog/smoke', '--yes', '--json',
+    '--remote', 'origin', '--branch', 'catalog/smoke',
+    '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
   ]);
   const receipt = JSON.parse(result.stdout) as { commit: string; snapshotDigest: string };
   expect((await execFileAsync('git', [

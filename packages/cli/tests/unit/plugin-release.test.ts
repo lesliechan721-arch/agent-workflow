@@ -113,17 +113,16 @@ describe('plugin release workflow', () => {
     await fs.writeJson(sourceManifestPath, { ...sourceManifest, version: '0.2.0' }, { spaces: 2 });
     const outputRoot = path.join(repoRoot, 'output');
     await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
-    const cliPackage = await fs.readJson(path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      '..',
-      '..',
-      'package.json',
+    const sourceMetadata = await fs.readJson(path.join(
+      repoRoot,
+      'plugins',
+      'marketplace-source.json',
     ));
     const developmentManifest = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json'));
     expect(developmentManifest).toMatchObject({
       schemaVersion: 4,
-      catalogVersion: cliPackage.version,
-      channel: String(cliPackage.version).includes('-') ? 'beta' : 'latest',
+      catalogVersion: sourceMetadata.catalog.version,
+      channel: String(sourceMetadata.catalog.version).includes('-') ? 'beta' : 'latest',
       compatibility: { aw: { minVersion: '0.0.0' } },
       release: { state: 'development' },
     });

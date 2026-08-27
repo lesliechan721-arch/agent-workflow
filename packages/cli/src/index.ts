@@ -1651,12 +1651,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--remote <name>', 'configured Git remote name (default: origin)')
     .option('--branch <name>', 'dedicated Catalog branch (default: catalog)')
+    .option('--expected-descriptor-digest <digest>', 'required exact descriptor returned by publication preflight')
     .option('-y, --yes', 'confirm publication without a prompt', false)
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (rawOptions: {
       workspaceRoot?: string;
       remote?: string;
       branch?: string;
+      expectedDescriptorDigest?: string;
       yes?: boolean;
       json?: boolean;
     }) => {
@@ -1666,6 +1668,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
           remote: rawOptions.remote,
           branch: rawOptions.branch,
+          expectedDescriptorDigest: rawOptions.expectedDescriptorDigest,
           yes: rawOptions.yes,
           json: rawOptions.json,
           env,

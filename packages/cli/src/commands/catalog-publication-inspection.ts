@@ -411,7 +411,7 @@ export async function prepareCatalogPublicationInspection(options: {
       'ls-remote', 'publish', branchRef, tagRef, `${tagRef}^{}`,
     ], env, 'remoteReadFailed', 'Could not inspect the Catalog publication remote.'));
     const tagAvailable = !initialRefs.has(tagRef) && !initialRefs.has(`${tagRef}^{}`);
-    if (!tagAvailable) {
+    if (!tagAvailable && options.failOnUnavailable) {
       throw new CatalogPublicationInspectionError(
         'tagUnavailable',
         `Remote Catalog tag ${tag} already exists. Increase the Catalog version.`,

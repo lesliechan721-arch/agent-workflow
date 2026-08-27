@@ -419,8 +419,15 @@ describe('pack smoke', () => {
       cwd: standaloneWorkspace,
       env: process.env,
     });
+    const packedPreflight = await execFileAsync(awBin, [
+      'catalog', 'status', '--workspace-root', standaloneWorkspace,
+      '--preflight', '--remote', 'origin', '--branch', 'catalog', '--json',
+    ], { cwd: standaloneWorkspace, env: process.env });
+    const packedDescriptorDigest = JSON.parse(packedPreflight.stdout).publication.descriptorDigest;
     const packedPublish = await execFileAsync(awBin, [
-      'catalog', 'publish', '--workspace-root', standaloneWorkspace, '--yes', '--json',
+      'catalog', 'publish', '--workspace-root', standaloneWorkspace,
+      '--remote', 'origin', '--branch', 'catalog',
+      '--expected-descriptor-digest', packedDescriptorDigest, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: process.env });
     const packedPublishReceipt = JSON.parse(packedPublish.stdout) as { ok: boolean; commit: string };
     expect(packedPublishReceipt.ok).toBe(true);

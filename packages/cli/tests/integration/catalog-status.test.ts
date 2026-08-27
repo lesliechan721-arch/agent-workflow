@@ -10,6 +10,7 @@ import { runCli } from '../../src/index.js';
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
+const placeholderDescriptorDigest = `sha256:${'0'.repeat(64)}`;
 
 async function createRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-status-'));
@@ -151,10 +152,15 @@ describe('Catalog publication status CLI', () => {
 
   it('prepares from committed HEAD without an attempt, persistent build output, or remote write', async () => {
     const root = await createRoot();
-    const remote = await createRoot();
-    await execFileAsync('git', ['init', '--bare', remote]);
+    const fetchRemote = await createRoot();
+    const pushRemote = await createRoot();
+    await Promise.all([
+      execFileAsync('git', ['init', '--bare', fetchRemote]),
+      execFileAsync('git', ['init', '--bare', pushRemote]),
+    ]);
     await createCommittedWorkspace(root, 'preflight-demo');
-    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    await execFileAsync('git', ['remote', 'add', 'origin', fetchRemote], { cwd: root });
+    await execFileAsync('git', ['remote', 'set-url', '--push', 'origin', pushRemote], { cwd: root });
     const output = capture();
 
     expect(await runCli([
@@ -166,7 +172,9 @@ describe('Catalog publication status CLI', () => {
       publication: {
         checked: true,
         remote: 'origin',
-        remoteUrl: remote,
+        remoteUrl: fetchRemote,
+        fetchUrl: fetchRemote,
+        pushUrl: pushRemote,
         branch: 'catalog',
         publishedVersion: null,
         parent: null,
@@ -186,7 +194,8 @@ describe('Catalog publication status CLI', () => {
     expect(human.stdout()).toContain('Publication preflight: checked');
     expect(human.stdout()).toContain('Publishable: yes');
     await expect(fs.pathExists(path.join(root, '.aw'))).resolves.toBe(false);
-    expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
+    expect((await execFileAsync('git', ['ls-remote', fetchRemote])).stdout).toBe('');
+    expect((await execFileAsync('git', ['ls-remote', pushRemote])).stdout).toBe('');
   });
 
   it('reports committed-HEAD inventory when ignored live plugins are present', async () => {
@@ -234,23 +243,112 @@ describe('Catalog publication status CLI', () => {
     expect(await runCli([
       'catalog', 'status', '--workspace-root', root, '--preflight', '--json',
     ], { cwd: root, io: statusOutput.io })).toBe(0);
+    const status = JSON.parse(statusOutput.stdout());
     const publishOutput = capture();
     expect(await runCli([
-      'catalog', 'publish', '--workspace-root', root, '--yes', '--json',
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', status.publication.descriptorDigest,
+      '--yes', '--json',
     ], { cwd: root, interactive: false, io: publishOutput.io })).toBe(0);
 
-    const status = JSON.parse(statusOutput.stdout());
     expect(JSON.parse(publishOutput.stdout())).toMatchObject({
       workspaceIdentity: status.workspace.identity,
       catalogVersion: status.catalog.version,
       sourceHead: status.git.sourceHead,
       remote: status.publication.remote,
+      fetchUrl: status.publication.fetchUrl,
+      pushUrl: status.publication.pushUrl,
       branch: status.publication.branch,
       parent: status.publication.parent,
       tag: status.publication.tag,
       snapshotDigest: status.publication.snapshotDigest,
       planId: status.publication.planId,
+      descriptorDigest: status.publication.descriptorDigest,
     });
+  });
+
+  it('rejects publication without an authorized preflight descriptor before attempt or remote write', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createCommittedWorkspace(root, 'missing-authorization-demo');
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    const output = capture();
+
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root, '--yes', '--json',
+    ], { cwd: root, interactive: false, io: output.io })).toBe(1);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      command: 'catalog:publish',
+      ok: false,
+      errors: [{ message: expect.stringContaining('--expected-descriptor-digest') }],
+    });
+    await expect(fs.pathExists(path.join(root, '.aw'))).resolves.toBe(false);
+    expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
+  });
+
+  it('rejects publication when the current descriptor differs from the authorized preflight', async () => {
+    const root = await createRoot();
+    const authorizedRemote = await createRoot();
+    const replacementRemote = await createRoot();
+    await Promise.all([
+      execFileAsync('git', ['init', '--bare', authorizedRemote]),
+      execFileAsync('git', ['init', '--bare', replacementRemote]),
+    ]);
+    await createCommittedWorkspace(root, 'authorized-descriptor-demo');
+    await execFileAsync('git', ['remote', 'add', 'origin', authorizedRemote], { cwd: root });
+    const statusOutput = capture();
+    expect(await runCli([
+      'catalog', 'status', '--workspace-root', root, '--preflight', '--json',
+    ], { cwd: root, io: statusOutput.io })).toBe(0);
+    const status = JSON.parse(statusOutput.stdout());
+    await execFileAsync('git', ['remote', 'set-url', '--push', 'origin', replacementRemote], { cwd: root });
+    const publishOutput = capture();
+
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', status.publication.descriptorDigest,
+      '--yes', '--json',
+    ], { cwd: root, interactive: false, io: publishOutput.io })).toBe(1);
+    expect(JSON.parse(publishOutput.stdout())).toMatchObject({
+      command: 'catalog:publish',
+      ok: false,
+      errors: [{ message: expect.stringContaining('does not match the authorized preflight') }],
+    });
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
+      .resolves.toBe(false);
+    expect((await execFileAsync('git', ['ls-remote', authorizedRemote])).stdout).toBe('');
+    expect((await execFileAsync('git', ['ls-remote', replacementRemote])).stdout).toBe('');
+  });
+
+  it('completes temporary preparation before reporting an unavailable immutable tag', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createCommittedWorkspace(root, 'tag-preflight-demo');
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'tag', '--annotate', 'catalog-v0.1.0', '--message', 'collision',
+    ], { cwd: root });
+    await execFileAsync('git', ['push', '--quiet', 'origin', 'refs/tags/catalog-v0.1.0'], { cwd: root });
+    const output = capture();
+
+    expect(await runCli([
+      'catalog', 'status', '--workspace-root', root, '--preflight', '--json',
+    ], { cwd: root, io: output.io })).toBe(1);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      publication: {
+        checked: true,
+        tagAvailable: false,
+        attemptAvailable: true,
+        snapshotDigest: expect.stringMatching(/^sha256:/u),
+        planId: expect.stringMatching(/^sha256:/u),
+        publishable: false,
+      },
+      issues: [{ code: 'tagUnavailable', message: expect.any(String) }],
+    });
+    await expect(fs.pathExists(path.join(root, '.aw'))).resolves.toBe(false);
   });
 
   it('rejects a selected remote identity change before writing an attempt or pushing', async () => {
@@ -263,10 +361,16 @@ describe('Catalog publication status CLI', () => {
     ]);
     await createCommittedWorkspace(root, 'remote-drift-demo');
     await execFileAsync('git', ['remote', 'add', 'origin', initialRemote], { cwd: root });
+    const preflight = capture();
+    expect(await runCli([
+      'catalog', 'status', '--workspace-root', root, '--preflight', '--json',
+    ], { cwd: root, io: preflight.io })).toBe(0);
+    const descriptorDigest = JSON.parse(preflight.stdout()).publication.descriptorDigest;
     const output = capture();
 
     expect(await runCli([
       'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', descriptorDigest,
     ], {
       cwd: root,
       interactive: true,
@@ -292,6 +396,11 @@ describe('Catalog publication status CLI', () => {
     await execFileAsync('git', ['init', '--bare', remote]);
     await createCommittedWorkspace(root, 'branch-drift-demo');
     await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+    const preflight = capture();
+    expect(await runCli([
+      'catalog', 'status', '--workspace-root', root, '--preflight', '--json',
+    ], { cwd: root, io: preflight.io })).toBe(0);
+    const descriptorDigest = JSON.parse(preflight.stdout()).publication.descriptorDigest;
     await execFileAsync('git', ['init', '--quiet'], { cwd: contender });
     await fs.outputFile(path.join(contender, 'contender.txt'), 'contender\n');
     await execFileAsync('git', ['add', '.'], { cwd: contender });
@@ -301,7 +410,10 @@ describe('Catalog publication status CLI', () => {
     ], { cwd: contender });
     const output = capture();
 
-    expect(await runCli(['catalog', 'publish', '--workspace-root', root], {
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', descriptorDigest,
+    ], {
       cwd: root,
       interactive: true,
       prompt: {
@@ -333,7 +445,9 @@ describe('Catalog publication status CLI', () => {
     const output = capture();
 
     expect(await runCli([
-      'catalog', 'publish', '--workspace-root', root, '--yes', '--json',
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', placeholderDescriptorDigest,
+      '--yes', '--json',
     ], { cwd: root, interactive: false, io: output.io })).toBe(1);
     expect(output.stderr()).toContain('already exists');
     await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))

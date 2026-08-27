@@ -39,6 +39,7 @@ export interface CatalogPublishReceipt {
   pluginCount: number;
   snapshotDigest: string;
   planId: string;
+  descriptorDigest: string;
 }
 
 function digest(value: string | Buffer): string {
@@ -55,7 +56,7 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function descriptorDigest(descriptor: CatalogPublicationDescriptor): string {
+export function catalogPublicationDescriptorDigest(descriptor: CatalogPublicationDescriptor): string {
   return digest(canonicalJson(descriptor));
 }
 
@@ -146,7 +147,10 @@ async function publishCatalogPublicationPreparation(options: {
     attemptPath,
     env,
   } = inspection;
-  if (descriptorDigest(inspection.descriptor) !== descriptorDigest(descriptor)) {
+  if (
+    catalogPublicationDescriptorDigest(inspection.descriptor)
+    !== catalogPublicationDescriptorDigest(descriptor)
+  ) {
     throw new Error('Catalog publication descriptor changed after preparation.');
   }
   if (!inspection.tagAvailable) {
@@ -264,6 +268,7 @@ async function publishCatalogPublicationPreparation(options: {
     snapshotDigest: descriptor.snapshotDigest,
     contentDigest: descriptor.contentDigest,
     planId: descriptor.planId,
+    descriptorDigest: catalogPublicationDescriptorDigest(descriptor),
     attemptedAt: new Date().toISOString(),
   };
   try {
@@ -315,6 +320,7 @@ async function publishCatalogPublicationPreparation(options: {
     pluginCount: descriptor.pluginNames.length,
     snapshotDigest: descriptor.snapshotDigest,
     planId: descriptor.planId,
+    descriptorDigest: catalogPublicationDescriptorDigest(descriptor),
   };
 }
 
@@ -352,6 +358,7 @@ export async function runCatalogPublishCommand(options: {
   workspaceRoot: string;
   remote?: string;
   branch?: string;
+  expectedDescriptorDigest?: string;
   yes?: boolean;
   json?: boolean;
   env: NodeJS.ProcessEnv;
@@ -361,21 +368,39 @@ export async function runCatalogPublishCommand(options: {
 }): Promise<CatalogPublishReceipt | null> {
   if (options.json && !options.yes) throw new Error('Catalog publish with --json requires --yes.');
   if (!options.interactive && !options.yes) throw new Error('Non-interactive Catalog publish requires --yes.');
+  if (!/^sha256:[0-9a-f]{64}$/u.test(options.expectedDescriptorDigest ?? '')) {
+    throw new Error(
+      'Catalog publish requires --expected-descriptor-digest from a successful publication preflight.',
+    );
+  }
   const inspection = await prepareCatalogPublicationInspection({
     ...options,
     failOnUnavailable: true,
   });
   try {
+    const preparedDescriptorDigest = catalogPublicationDescriptorDigest(inspection.descriptor);
+    if (options.expectedDescriptorDigest !== preparedDescriptorDigest) {
+      throw new Error(
+        'Catalog publication descriptor does not match the authorized preflight. Run preflight and authorize the current exact identity.',
+      );
+    }
     if (!(await publicationGitExit(inspection.repoRoot, ['check-ignore', '-q', inspection.attemptPath], inspection.env))) {
       throw new Error('Catalog publish state under .aw/publish must be ignored by Git. Add .aw/ to .gitignore.');
     }
     if (!options.yes) {
       options.io.stderr([
+        `Workspace identity: ${inspection.descriptor.workspaceIdentity}`,
         `Source HEAD: ${inspection.sourceHead}`,
         `Catalog: ${inspection.descriptor.catalogVersion} (${inspection.descriptor.channel})`,
-        `Push remote: ${inspection.remote} (${inspection.safePushUrl})`,
+        `Remote: ${inspection.remote}`,
+        `Fetch URL: ${inspection.safeFetchUrl}`,
+        `Push URL: ${inspection.safePushUrl}`,
         `Branch: ${inspection.branchRef}`,
+        `Parent: ${inspection.parent ?? '<root>'}`,
         `Tag: ${inspection.tagRef}`,
+        `Snapshot digest: ${inspection.descriptor.snapshotDigest}`,
+        `Plan ID: ${inspection.descriptor.planId}`,
+        `Descriptor digest: ${preparedDescriptorDigest}`,
         `Plugins: ${inspection.descriptor.pluginNames.length}`,
         'One atomic push will publish the branch and annotated tag.',
       ].join('\n') + '\n');

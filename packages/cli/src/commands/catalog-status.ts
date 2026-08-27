@@ -15,6 +15,7 @@ import {
   sanitizedGitEnvironment,
   type CatalogPublicationIssue,
 } from './catalog-publication-inspection.js';
+import { catalogPublicationDescriptorDigest } from './catalog-publish.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 
 const execFileAsync = promisify(execFile);
@@ -55,6 +56,8 @@ export interface CatalogStatusReceipt {
     checked: boolean;
     remote: string | null;
     remoteUrl: string | null;
+    fetchUrl: string | null;
+    pushUrl: string | null;
     branch: string | null;
     publishedVersion: string | null;
     parent: string | null;
@@ -63,6 +66,7 @@ export interface CatalogStatusReceipt {
     attemptAvailable: boolean | null;
     snapshotDigest: string | null;
     planId: string | null;
+    descriptorDigest: string | null;
     publishable: boolean | null;
   };
   issues: CatalogPublicationIssue[];
@@ -184,6 +188,8 @@ function emptyReceipt(workspaceRoot: string, preflight: boolean): CatalogStatusR
       checked: preflight,
       remote: null,
       remoteUrl: null,
+      fetchUrl: null,
+      pushUrl: null,
       branch: null,
       publishedVersion: null,
       parent: null,
@@ -192,6 +198,7 @@ function emptyReceipt(workspaceRoot: string, preflight: boolean): CatalogStatusR
       attemptAvailable: null,
       snapshotDigest: null,
       planId: null,
+      descriptorDigest: null,
       publishable: preflight ? false : null,
     },
     issues: [],
@@ -245,7 +252,9 @@ export async function getCatalogStatus(options: {
       receipt.publication = {
         checked: true,
         remote: inspection.remote,
-        remoteUrl: inspection.safePushUrl,
+        remoteUrl: inspection.safeFetchUrl,
+        fetchUrl: inspection.safeFetchUrl,
+        pushUrl: inspection.safePushUrl,
         branch: inspection.branch,
         publishedVersion: inspection.publishedVersion,
         parent: inspection.parent,
@@ -254,6 +263,7 @@ export async function getCatalogStatus(options: {
         attemptAvailable: inspection.attemptAvailable,
         snapshotDigest: inspection.prepared.snapshotDigest,
         planId: inspection.prepared.planId,
+        descriptorDigest: catalogPublicationDescriptorDigest(inspection.descriptor),
         publishable: inspection.tagAvailable && inspection.attemptAvailable,
       };
       if (!inspection.tagAvailable) {

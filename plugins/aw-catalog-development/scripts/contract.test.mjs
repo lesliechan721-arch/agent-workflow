@@ -43,7 +43,8 @@ test('three Skills keep distinct routing and side-effect boundaries', async () =
   assert.match(publisher, /^disable-model-invocation: true$/mu);
   assert.match(publishMetadata, /^\s*allow_implicit_invocation: false$/mu);
   assert.match(publisher, /--preflight --remote <remote> --branch <branch> --json/u);
-  assert.match(publisher, /publication\.remote`、`branch`、`parent`、`tag`、`snapshotDigest` 和 `planId`/u);
+  assert.match(publisher, /publication\.remote`、`fetchUrl`、`pushUrl`、`branch`、`parent`、`tag`、`snapshotDigest`、`planId` 和 `descriptorDigest`/u);
+  assert.match(publisher, /--expected-descriptor-digest <descriptorDigest> --yes --json/u);
   assert.match(publisher, /明确授权这一个 exact identity/u);
   assert.match(publisher, /不重试同一 Catalog version/u);
 });

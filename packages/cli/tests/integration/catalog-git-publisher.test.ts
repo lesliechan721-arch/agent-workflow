@@ -19,6 +19,7 @@ import { runCli } from '../../src/index.js';
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 const service = { ...inspectionService, ...publicationService };
+const placeholderDescriptorDigest = `sha256:${'0'.repeat(64)}`;
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
@@ -125,6 +126,7 @@ describe('common Catalog publisher used by official release', () => {
       const blocked = quietIo();
       expect(await runCli([
         'catalog', 'publish', '--workspace-root', root, '--branch', 'catalog/latest',
+        '--expected-descriptor-digest', placeholderDescriptorDigest,
         '--yes', '--json',
       ], { cwd: root, interactive: false, io: blocked })).toBe(1);
 
@@ -194,10 +196,22 @@ describe('common Catalog publisher used by official release', () => {
       mode: 0o755,
     });
 
-    expect(await runCli([
-      'catalog', 'publish', '--workspace-root', root, '--branch', 'catalog/latest',
-      '--yes', '--json',
-    ], { cwd: root, interactive: false, io: quietIo() })).toBe(1);
+    const inspection = await inspectionService.prepareCatalogPublicationInspection({
+      workspaceRoot: root,
+      branch: 'catalog/latest',
+      env: process.env,
+    });
+    try {
+      expect(await runCli([
+        'catalog', 'publish', '--workspace-root', root, '--branch', 'catalog/latest',
+        '--expected-descriptor-digest', publicationService.catalogPublicationDescriptorDigest(
+          inspection.descriptor,
+        ),
+        '--yes', '--json',
+      ], { cwd: root, interactive: false, io: quietIo() })).toBe(1);
+    } finally {
+      await inspectionService.disposeCatalogPublicationInspection(inspection);
+    }
     await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '3.2.0.json')))
       .resolves.toMatchObject({ state: 'attempted', branch: 'catalog/latest' });
     await expect(prepareCatalogRelease('latest', {

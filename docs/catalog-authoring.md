@@ -59,11 +59,12 @@ aw catalog status --workspace-root "$workspace" \
   --preflight --remote <remote> --branch <branch> --json
 ```
 
-Preflight 从 committed HEAD 的隔离 archive 准备与 publisher 相同的 plan，但不写 attempt、不 push，也不形成持久授权。向用户展示 CLI 返回的 Workspace identity、source HEAD、Catalog version、remote、branch、parent、tag、snapshot digest 和 plan ID。只有用户明确授权这一组 exact identity 后，才能执行：
+Preflight 从 committed HEAD 的隔离 archive 准备与 publisher 相同的 plan，但不写 attempt、不 push，也不形成持久授权。向用户展示 CLI 返回的 Workspace identity、source HEAD、Catalog version、remote、fetch URL、push URL、branch、parent、tag、snapshot digest、plan ID 和 descriptor digest。只有用户明确授权这一组 exact identity 后，才能执行：
 
 ```bash
 aw catalog publish --workspace-root "$workspace" \
-  --remote <remote> --branch <branch> --yes --json
+  --remote <remote> --branch <branch> \
+  --expected-descriptor-digest <descriptorDigest> --yes --json
 ```
 
 Publisher 在远端写入前重新核验 source、remote、tag 和 plan identity。完成后核对 receipt，并验证 remote branch 和 immutable tag。不要在 Agent 内复制 parent、ledger、digest、tag 或 push 算法。

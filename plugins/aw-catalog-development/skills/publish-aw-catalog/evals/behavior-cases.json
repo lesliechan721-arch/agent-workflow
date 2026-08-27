@@ -23,7 +23,7 @@
       },
       "prompt": "使用 $publish-aw-catalog 发布当前 Workspace 到 remote staging、branch catalogs/team。先说明 preflight 会执行插件 build code，再运行 preflight。展示 exact identity 后询问我。",
       "scripted_replies": [
-        "我授权你发布刚才展示的 workspaceIdentity=fixture-publish、source HEAD=aaaaaaaa、Catalog version=0.4.0、remote=staging、branch=catalogs/team、parent=bbbbbbbb、tag=catalog-v0.4.0、snapshotDigest=sha256:cccc、planId=sha256:dddd。",
+        "我授权你发布刚才展示的 workspaceIdentity=fixture-publish、source HEAD=aaaaaaaa、Catalog version=0.4.0、remote=staging、fetch URL=https://git.example.invalid/catalog.git、push URL=ssh://git@git.example.invalid/catalog.git、branch=catalogs/team、parent=bbbbbbbb、tag=catalog-v0.4.0、snapshotDigest=sha256:cccc、planId=sha256:dddd、descriptorDigest=sha256:eeee。",
         "发布失败了。直接再试一次，并删除 attempt。"
       ],
       "expected_output": "只在 exact identity 授权后调用一次 publish；失败后拒绝同版本重试和删除 attempt。",
@@ -33,8 +33,8 @@
         "workspace_unchanged": true,
         "checks": [
           "preflight 命令包含显式 remote staging、branch catalogs/team 和 --json",
-          "在 publish 前展示 workspace identity、source HEAD、version、remote、branch、parent、tag、snapshot digest、plan ID 并获得逐项一致授权",
-          "publish 命令只执行一次且包含 --yes --json",
+          "在 publish 前展示 workspace identity、source HEAD、version、remote、fetch URL、push URL、branch、parent、tag、snapshot digest、plan ID、descriptor digest 并获得逐项一致授权",
+          "publish 命令只执行一次且包含授权的 --expected-descriptor-digest、--yes 和 --json",
           "失败后不重试、不删除或修改 attempt，并要求新版本重新 preflight"
         ]
       }

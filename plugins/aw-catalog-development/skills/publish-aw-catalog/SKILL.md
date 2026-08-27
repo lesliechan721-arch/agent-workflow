@@ -23,16 +23,17 @@ metadata:
      --preflight --remote <remote> --branch <branch> --json
    ```
 
-3. Preflight 必须成功。直接从 CLI JSON 展示 `workspace.identity`、`git.sourceHead`、`catalog.version`，以及 `publication.remote`、`branch`、`parent`、`tag`、`snapshotDigest` 和 `planId`。任一字段缺失时停止；不得猜测、重算或省略身份字段。
+3. Preflight 必须成功。直接从 CLI JSON 展示 `workspace.identity`、`git.sourceHead`、`catalog.version`，以及 `publication.remote`、`fetchUrl`、`pushUrl`、`branch`、`parent`、`tag`、`snapshotDigest`、`planId` 和 `descriptorDigest`。任一字段缺失时停止；不得猜测、重算或省略身份字段。
 4. 请求用户明确授权这一个 exact identity。授权必须在本次成功 preflight 之后，并与展示的全部身份相同。旧授权、笼统的“发布最新版”或只授权 remote 不足以继续。
 5. 只有精确授权后才运行：
 
    ```bash
    aw catalog publish --workspace-root <workspace-root> \
-     --remote <remote> --branch <branch> --yes --json
+     --remote <remote> --branch <branch> \
+     --expected-descriptor-digest <descriptorDigest> --yes --json
    ```
 
-6. 核对 receipt 的 `workspaceIdentity`、`sourceHead`、`catalogVersion`、`remote`、`branch`、`parent`、`tag`、`snapshotDigest` 和 `planId` 与授权身份，并使用当前公开的只读 Git/CLI 入口验证 remote branch 和 immutable tag。证据不一致时报告失败，不修改或删除 attempt。
+6. 核对 receipt 的 `workspaceIdentity`、`sourceHead`、`catalogVersion`、`remote`、`fetchUrl`、`pushUrl`、`branch`、`parent`、`tag`、`snapshotDigest`、`planId` 和 `descriptorDigest` 与授权身份，并使用当前公开的只读 Git/CLI 入口验证 remote branch 和 immutable tag。证据不一致时报告失败，不修改或删除 attempt。
 
 ## 失败边界
 
