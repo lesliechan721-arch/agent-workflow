@@ -22,6 +22,7 @@ import {
 } from './native-cli.js';
 
 export interface ProbeAgentVersionOptions {
+  cache?: boolean;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   runner?: NativeCliRunner;
@@ -132,6 +133,9 @@ export async function probeAgentVersion(
 ): Promise<AgentVersionProbeResult> {
   const requirement = getAgentVersionRequirement(platform);
   const runner = options.runner ?? getDefaultNativeCliRunner();
+  if (options.cache === false) {
+    return probeAgentVersionUncached(requirement, runner, options);
+  }
   const cacheKey = buildProbeCacheKey(platform, requirement, options);
   let runnerCache = probeCacheByRunner.get(runner);
   if (!runnerCache) {
