@@ -25,7 +25,6 @@ import { hasCodexProjectManagedArtifacts } from '../utils/codex-project-surface.
 import {
   createRebuildActiveStore,
   executeRebuildOperation,
-  releaseRebuildOperationLease,
   type RebuildCommand,
   type RebuildFailure,
   type RebuildResult,
@@ -89,7 +88,6 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     string,
     Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>
   >;
-  operationLeaseHeld?: boolean;
   bypassDependencyPlan?: boolean;
   dependencyReviewPreflightHandled?: boolean;
   previewDependencyPlanOnly?: boolean;
@@ -137,10 +135,6 @@ export interface RebuildCommandResult {
 }
 
 export interface RebuildCommandTestHooks {
-  beforeOperationLockAcquire?: (options: {
-    command: RebuildCommand;
-    identity: RebuildTargetIdentity;
-  }) => Promise<void>;
   afterTargetBuilt?: (options: {
     command: RebuildCommand;
     identity: RebuildTargetIdentity;
@@ -157,55 +151,6 @@ async function emitRebuildActionEvent(
     Promise.resolve().then(() => runtime.reporter.event(event)),
     Promise.resolve().then(() => runtime.debugLogger.log(event)),
   ]);
-}
-
-async function withRebuildActionEvent<T>(options: {
-  runtime: RebuildExecutionContext;
-  command: RebuildCommand;
-  identity: RebuildTargetIdentity;
-  name: 'operation.lock' | 'operation.release';
-  operation: () => Promise<T>;
-}): Promise<T> {
-  const source = {
-    plugin: options.identity.pluginName,
-    platform: options.identity.platform,
-    scope: options.identity.scope,
-    action: options.command,
-  };
-  const startedAt = Date.now();
-  await emitRebuildActionEvent(options.runtime, {
-    type: 'rebuild:action',
-    source,
-    data: { name: options.name, phase: 'start' },
-  });
-  let result: T;
-  try {
-    result = await options.operation();
-  } catch (error) {
-    await emitRebuildActionEvent(options.runtime, {
-      type: 'rebuild:action',
-      source,
-      data: {
-        name: options.name,
-        phase: 'failure',
-        durationMs: Math.max(0, Date.now() - startedAt),
-        message: options.name === 'operation.lock'
-          ? '获取操作锁失败。'
-          : '释放操作锁失败。',
-      },
-    });
-    throw error;
-  }
-  await emitRebuildActionEvent(options.runtime, {
-    type: 'rebuild:action',
-    source,
-    data: {
-      name: options.name,
-      phase: 'success',
-      durationMs: Math.max(0, Date.now() - startedAt),
-    },
-  });
-  return result;
 }
 
 export function setRebuildCommandTestHooksForTests(
@@ -256,20 +201,6 @@ function failedResult(
     quarantined: [],
     failures: [{ phase, message }],
     error: { phase, message },
-  };
-}
-
-function appendOperationReleaseFailure(
-  result: RebuildResult,
-  message: string,
-): RebuildResult {
-  result.actions.push({ name: 'operation.release', status: 'failed' });
-  result.failures.push({ phase: 'operation.release', message });
-  if (result.status === 'failed') return result;
-  return {
-    ...result,
-    status: 'failed',
-    error: { phase: 'operation.release', message },
   };
 }
 
@@ -352,8 +283,6 @@ async function runSingleSourceRebuildCommand(options: {
     nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
     reporter: options.runtime?.reporter ?? createNoopReporter(),
     debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
-    runtimeLeaseHeld: options.runtime?.runtimeLeaseHeld,
-    lifecycleLeaseHeld: options.runtime?.lifecycleLeaseHeld,
     expectedCatalogConfigDigest: options.runtime?.expectedCatalogConfigDigest,
   };
   const env = runtime.env;
@@ -418,7 +347,6 @@ async function runSingleSourceRebuildCommand(options: {
   const activeStore = createRebuildActiveStore({
     env,
     loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-    isLifecycleLeaseHeld: () => runtime.lifecycleLeaseHeld === true,
   });
   const targets = [];
   const results: RebuildResult[] = [];
@@ -516,30 +444,6 @@ async function runSingleSourceRebuildCommand(options: {
         ));
         continue;
       }
-      let operationLock;
-      if (!options.runtime?.operationLeaseHeld) {
-        try {
-          await rebuildCommandTestHooks?.beforeOperationLockAcquire?.({
-            command: options.command,
-            identity,
-          });
-          operationLock = await withRebuildActionEvent({
-            runtime,
-            command: options.command,
-            identity,
-            name: 'operation.lock',
-            operation: () => activeStore.acquireOperation!(identity),
-          });
-        } catch (error) {
-          results.push(failedResult(
-            options.command,
-            identity,
-            error instanceof Error ? error.message : String(error),
-            'operation.lock',
-          ));
-          continue;
-        }
-      }
       let result: RebuildResult;
       try {
         if (options.runtime?.preparedTargetError) throw options.runtime.preparedTargetError;
@@ -573,12 +477,11 @@ async function runSingleSourceRebuildCommand(options: {
             ...options.runtime.resolvedReviewEvidenceByPlugin?.[pluginName],
           });
         }
-        const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
         result = await executeRebuildOperation({
           command: options.command,
           target,
           driver: integration.driver,
-          activeStore: operationHeldStore,
+          activeStore,
           onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
         });
       } catch (error) {
@@ -588,24 +491,6 @@ async function runSingleSourceRebuildCommand(options: {
             error instanceof Error ? error.message : String(error),
             'preflight',
           );
-      }
-      result.actions.unshift({ name: 'operation.lock', status: 'succeeded' });
-      if (operationLock) {
-        try {
-          await withRebuildActionEvent({
-            runtime,
-            command: options.command,
-            identity,
-            name: 'operation.release',
-            operation: () => releaseRebuildOperationLease(operationLock),
-          });
-          result.actions.push({ name: 'operation.release', status: 'succeeded' });
-        } catch (error) {
-          result = appendOperationReleaseFailure(
-            result,
-            error instanceof Error ? error.message : String(error),
-          );
-        }
       }
       results.push(result);
     }
@@ -932,7 +817,6 @@ async function cleanupOfflineOwnedComponents(options: {
   const activeStore = createRebuildActiveStore({
     env: options.env,
     loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-    isLifecycleLeaseHeld: () => context.lifecycleLeaseHeld === true,
   });
   for (const target of options.targets) {
     const exclusiveRecovery: CleanupResult = {
@@ -1005,19 +889,12 @@ async function cleanupOfflineOwnedComponents(options: {
       },
       includeHistoricalLifecycleArtifacts: false,
     });
-    let result: RebuildResult;
-    const operationLock = await activeStore.acquireOperation!(desired.identity);
-    try {
-      const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
-      result = await executeRebuildOperation({
-        command: 'cleanup',
-        target: desired,
-        driver: integration.driver,
-        activeStore: operationHeldStore,
-      });
-    } finally {
-      await releaseRebuildOperationLease(operationLock);
-    }
+    let result = await executeRebuildOperation({
+      command: 'cleanup',
+      target: desired,
+      driver: integration.driver,
+      activeStore,
+    });
     const exclusiveResidual = (await Promise.all(exclusiveRecovery.residual.map(async (entry) =>
       await fs.pathExists(entry) ? entry : null))).filter((entry): entry is string => entry !== null);
     const exclusiveQuarantined = (await Promise.all(exclusiveRecovery.quarantined.map(async (entry) =>
@@ -1506,8 +1383,6 @@ export async function runRebuildCommand(options: {
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
         reporter: options.runtime?.reporter ?? createNoopReporter(),
         debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
-        runtimeLeaseHeld: options.runtime?.runtimeLeaseHeld,
-        lifecycleLeaseHeld: options.runtime?.lifecycleLeaseHeld,
         expectedCatalogConfigDigest: catalog.configDigest,
       };
       const inspection = createRebuildIntegration({
@@ -2047,7 +1922,6 @@ export async function runRebuildCommand(options: {
             env: runtimeEnv,
             catalogResolution: toCatalogResolution(entry.source),
             namespacedSource,
-            operationLeaseHeld: true,
             dependencyReviewPreflightHandled: true,
             targetBuiltHookHandled: true,
             preparedTarget: preparedTargets.get(`${entry.pluginId}\0${platform}`),

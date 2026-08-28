@@ -93,12 +93,8 @@ import { runLifecycleScript } from '../utils/plugin-scripts.js';
 import {
   atomicRemoveConfigFile,
   atomicReplaceConfigFile,
-  withConfigFileLock,
+  withConfigFileMutation,
 } from '../utils/plugin-config.js';
-import {
-  withActiveMarketplaceLifecycleLease,
-  withActiveMarketplaceRuntimeLease,
-} from '../utils/active-marketplace-runtime-lock.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import {
   getNamespacedMarketplaceName,
@@ -170,8 +166,6 @@ export interface RebuildExecutionContext {
   nativeCliRunner: NativeCliRunner;
   reporter: CommandReporter;
   debugLogger: DebugLogger;
-  runtimeLeaseHeld?: boolean;
-  lifecycleLeaseHeld?: boolean;
   expectedCatalogConfigDigest?: string;
 }
 
@@ -525,7 +519,7 @@ export async function applyCodexHookGroupsTransactionFile(
   ) => CodexSharedHookGroup[] | null,
   testHooks?: { beforeCommit?: () => Promise<void> },
 ): Promise<boolean> {
-  return withConfigFileLock({
+  return withConfigFileMutation({
     filePath: hooksPath,
     allowedRoot: path.dirname(hooksPath),
     action: async () => {
@@ -3175,7 +3169,6 @@ function createNativeDriver(options: {
   scriptTimeoutMs?: number;
 }): RebuildTargetDriver {
   const runner = options.context.nativeCliRunner;
-  const materializeLeaseHeld = new WeakSet<DesiredTarget>();
   const mirrorTransactions = new WeakMap<DesiredTarget, Awaited<ReturnType<typeof mirrorCatalog>>>();
   const finalizeNamespacedCleanup = async (target: DesiredTarget): Promise<void> => {
     const { sourceId, sourceIdentity, marketplaceRoot, marketplaceName } = target.identity;
@@ -3189,51 +3182,13 @@ function createNativeDriver(options: {
     });
   };
   return {
-    withOwnershipLease: (target, operation) => (
-      !options.context.runtimeLeaseHeld
-        && target.identity.platform === 'codex'
-        && target.identity.scope === 'user'
-        && !materializeLeaseHeld.has(target)
-        ? withActiveMarketplaceRuntimeLease(options.context.env, operation)
-        : operation()
-    ),
-    withMaterializeLease: (target, operation) => {
-      if (!target.identity.sourceId) return operation();
-      if (options.context.runtimeLeaseHeld && !options.context.lifecycleLeaseHeld) {
-        throw new Error('lockOrderViolation: namespaced materialization cannot acquire lifecycle after runtime.');
-      }
-      const runOperation = async () => {
-        const previousRuntimeHeld = options.context.runtimeLeaseHeld;
-        options.context.runtimeLeaseHeld = true;
-        materializeLeaseHeld.add(target);
-        try {
-          if (options.context.expectedCatalogConfigDigest) {
-            const current = await readCatalogSourcesConfigSnapshot(options.context.env);
-            if (current.digest !== options.context.expectedCatalogConfigDigest) {
-              throw new Error('catalogSourceConflict: catalog source config changed before owner publication.');
-            }
-          }
-          return await operation();
-        } finally {
-          materializeLeaseHeld.delete(target);
-          options.context.runtimeLeaseHeld = previousRuntimeHeld;
-        }
-      };
-      const withRuntime = () => options.context.runtimeLeaseHeld
-        ? runOperation()
-        : withActiveMarketplaceRuntimeLease(options.context.env, runOperation);
-      if (options.context.lifecycleLeaseHeld) return withRuntime();
-      return withActiveMarketplaceLifecycleLease(options.context.env, async () => {
-        const previousLifecycleHeld = options.context.lifecycleLeaseHeld;
-        options.context.lifecycleLeaseHeld = true;
-        try {
-          return await withRuntime();
-        } finally {
-          options.context.lifecycleLeaseHeld = previousLifecycleHeld;
-        }
-      });
-    },
     preflightMaterialize: async (target) => {
+      if (target.identity.sourceId && options.context.expectedCatalogConfigDigest) {
+        const current = await readCatalogSourcesConfigSnapshot(options.context.env);
+        if (current.digest !== options.context.expectedCatalogConfigDigest) {
+          throw new Error('catalogSourceConflict: catalog source config changed before owner publication.');
+        }
+      }
       if (target.identity.platform === 'claude') {
         await assertNoClaudeUnboundNativeNameCollision({
           pluginName: target.identity.pluginName,
@@ -3523,11 +3478,7 @@ function createNativeDriver(options: {
           }
         }
       };
-      await (target.identity.sourceId
-        && !options.context.runtimeLeaseHeld
-        && !materializeLeaseHeld.has(target)
-        ? withActiveMarketplaceRuntimeLease(options.context.env, writeGeneration)
-        : writeGeneration());
+      await writeGeneration();
     },
     writeArtifacts: async (target) => {
       const plan = options.plans.get(target);
@@ -3536,11 +3487,7 @@ function createNativeDriver(options: {
         for (const write of plan.writes) await write.write();
         return plan.writes.map((write) => write.artifact);
       };
-      return !options.context.runtimeLeaseHeld
-        && !materializeLeaseHeld.has(target)
-        && target.identity.platform === 'codex' && target.identity.scope === 'user'
-        ? withActiveMarketplaceRuntimeLease(options.context.env, writeAll)
-        : writeAll();
+      return writeAll();
     },
     runLifecycle: async (invocation: RebuildLifecycleInvocation) => {
       await runLifecycleScript({
@@ -3694,13 +3641,7 @@ export function createRebuildIntegration(options: {
         platform: input.platform,
         scope: input.scope,
       })));
-      const scannedSkills = (await (
-        input.platform === 'codex'
-          && input.scope === 'user'
-          && input.readOnlyInspectionPlan !== true
-          ? withActiveMarketplaceRuntimeLease(options.context.env, scanSkills)
-          : scanSkills()
-      )).flat();
+      const scannedSkills = (await scanSkills()).flat();
       const historicalComponents = await buildHistoricalComponents({
         sourceId: input.sourceId,
         sourceIdentity: input.sourceIdentity,

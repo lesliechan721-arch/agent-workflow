@@ -45,10 +45,6 @@ import {
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import {
-  resolveActiveMarketplaceRuntimeCoordinationRoot,
-  setActiveMarketplaceLifecycleBeforeAcquireHookForTests,
-} from '../../src/utils/active-marketplace-runtime-lock.js';
 
 const SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
@@ -2332,52 +2328,6 @@ describe('phase 3B namespaced runtime stores', () => {
       resumeInstall.resolve();
       await Promise.allSettled([installing, mutation].filter((value) => value !== undefined));
       setRebuildCommandTestHooksForTests(undefined);
-    }
-  });
-
-  it('acquires lifecycle before runtime for namespaced materialization', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'lock-order-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
-      manifest.extensions = {
-        instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
-      };
-      manifest.marketplace.policy.products = ['CODEX'];
-    });
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 1,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const runtimeLockPath = path.join(
-      resolveActiveMarketplaceRuntimeCoordinationRoot(isolation.env),
-      'runtime-state.lock',
-    );
-    const runtimeHeldAtLifecycleAcquire: boolean[] = [];
-    setActiveMarketplaceLifecycleBeforeAcquireHookForTests(async () => {
-      runtimeHeldAtLifecycleAcquire.push(await fs.pathExists(runtimeLockPath));
-    });
-    try {
-      const result = await installWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
-        scope: 'project',
-      }, {
-        env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
-      });
-      expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-      expect(runtimeHeldAtLifecycleAcquire.length).toBeGreaterThan(0);
-      expect(runtimeHeldAtLifecycleAcquire.every((held) => !held)).toBe(true);
-      const marketplaceParent = path.join(isolation.env.AW_HOME!, 'marketplaces');
-      expect((await fs.readdir(marketplaceParent).catch(() => [])).filter((entry) =>
-        entry.startsWith('team.backup-'))).toEqual([]);
-    } finally {
-      setActiveMarketplaceLifecycleBeforeAcquireHookForTests(undefined);
     }
   });
 

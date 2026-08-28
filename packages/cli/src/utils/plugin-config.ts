@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import * as nodeFs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -24,37 +23,16 @@ import {
   assertTestWritablePath,
 } from './test-path-fence.js';
 import {
-  markActiveMarketplaceDurableCommit,
-  withActiveMarketplaceRuntimeLease,
-} from './active-marketplace-runtime-lock.js';
-import {
   canonicalizePathThroughExistingAncestor,
   resolveAwHome,
   resolveRepoRootSync,
 } from './paths.js';
-import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
 
 export type PluginConfigValue = string | number | boolean;
 export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
 export type PluginConfigIssueType = 'missing-required' | 'invalid-config';
 export type ProjectConfigStoreLayer = 'shared' | 'local';
 type PluginConfigStorePathAccess = 'read' | 'write';
-
-interface ConfigCommitContext {
-  parent?: ConfigCommitContext;
-  durableCommit: boolean;
-}
-
-const configCommitStorage = new AsyncLocalStorage<ConfigCommitContext>();
-
-function markConfigDurableCommit(): void {
-  let context = configCommitStorage.getStore();
-  while (context) {
-    context.durableCommit = true;
-    context = context.parent;
-  }
-  markActiveMarketplaceDurableCommit();
-}
 
 export interface PluginConfigIssue {
   type: PluginConfigIssueType;
@@ -272,9 +250,6 @@ let atomicConfigBeforeRenameHookForTests:
 let atomicConfigAfterRenameHookForTests:
   | ((targetPath: string) => Promise<void>)
   | undefined;
-let configFileLockBeforeReleaseHookForTests:
-  | ((lockPath: string, attempt: number) => Promise<void>)
-  | undefined;
 
 export function setAtomicConfigBeforeRenameHookForTests(
   hook: ((targetPath: string, temporaryPath: string) => Promise<void>) | undefined,
@@ -286,12 +261,6 @@ export function setAtomicConfigAfterRenameHookForTests(
   hook: ((targetPath: string) => Promise<void>) | undefined,
 ): void {
   atomicConfigAfterRenameHookForTests = hook;
-}
-
-export function setConfigFileLockBeforeReleaseHookForTests(
-  hook: ((lockPath: string, attempt: number) => Promise<void>) | undefined,
-): void {
-  configFileLockBeforeReleaseHookForTests = hook;
 }
 
 function assertConfigPathBoundary(allowedRoot: string, candidatePath: string): {
@@ -418,106 +387,14 @@ async function prepareConfigFileParent(filePath: string, allowedRoot: string): P
   await assertNoConfigSymlink(allowedRoot, filePath);
 }
 
-export function resolveConfigFileLockPath(filePath: string): string {
-  return path.join(path.dirname(filePath), `.${path.basename(filePath)}.aw.lock`);
-}
-
-async function releaseConfigFileLock(
-  lease: ProcessLockLease,
-): Promise<unknown | null> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      await configFileLockBeforeReleaseHookForTests?.(lease.lockPath, attempt);
-      await lease.release();
-      return null;
-    } catch (error) {
-      lastError = error;
-      if (attempt < 3) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      }
-    }
-  }
-  try {
-    await lease.release();
-  } catch {
-    // Preserve the first release diagnostic. A final direct retry avoids a hook-created self-lock.
-  }
-  return lastError;
-}
-
-function emitConfigReleaseWarning(message: string): void {
-  try {
-    process.emitWarning(message, { code: 'AW_CONFIG_LOCK_RELEASE_FAILED' });
-  } catch {
-    // Diagnostics cannot replace the primary action result or error.
-  }
-}
-
-export async function withConfigFileLock<T>(options: {
+export async function withConfigFileMutation<T>(options: {
   filePath: string;
   allowedRoot: string;
   action: () => Promise<T>;
 }): Promise<T> {
   await prepareConfigFileParent(options.filePath, options.allowedRoot);
-  const lockPath = resolveConfigFileLockPath(options.filePath);
-  await assertNoConfigSymlink(options.allowedRoot, lockPath);
-  const lease = await acquireProcessLock({ lockPath });
-  let result: T | undefined;
-  let actionError: unknown;
-  let actionSucceeded = false;
-  const commitContext: ConfigCommitContext = {
-    parent: configCommitStorage.getStore(),
-    durableCommit: false,
-  };
-  try {
-    await assertNoConfigSymlink(options.allowedRoot, options.filePath);
-    result = await configCommitStorage.run(commitContext, options.action);
-    actionSucceeded = true;
-  } catch (error) {
-    actionError = error;
-  }
-
-  const releaseError = await releaseConfigFileLock(lease);
-  if (!actionSucceeded) {
-    if (releaseError) {
-      emitConfigReleaseWarning(
-        'Config action failed, and its process lock release also failed.',
-      );
-    }
-    throw actionError;
-  }
-  if (releaseError) {
-    if (commitContext.durableCommit) {
-      emitConfigReleaseWarning(
-        'Config action completed successfully, but its process lock could not be released after 3 attempts. The committed result remains successful; the lock can require process exit or manual recovery before another update.',
-      );
-    } else {
-      throw releaseError;
-    }
-  }
-  return result as T;
-}
-
-export async function withPluginConfigTransactionLease<T>(options: {
-  sourceId?: string;
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  projectLayer?: ProjectConfigStoreLayer;
-  action: () => Promise<T>;
-}): Promise<T> {
-  const storePath = resolvePluginConfigStorePath({
-    ...options,
-    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
-  });
-  const allowedRoot = resolvePluginConfigAllowedRoot(options);
-  return withConfigFileLock({
-    filePath: `${storePath}.transaction`,
-    allowedRoot,
-    action: options.action,
-  });
+  await assertNoConfigSymlink(options.allowedRoot, options.filePath);
+  return options.action();
 }
 
 export async function atomicReplaceConfigFile(options: {
@@ -567,7 +444,6 @@ export async function atomicReplaceConfigFile(options: {
     }
 
     await nodeFs.rename(temporaryPath, options.filePath);
-    markConfigDurableCommit();
     // rename is the commit point. Diagnostics and durability work after it are best effort,
     // because reporting failure here would leave the new generation on disk without giving
     // the caller a safe way to restore the old generation.
@@ -620,7 +496,6 @@ export async function atomicRemoveConfigFile(options: {
   }
 
   await nodeFs.unlink(options.filePath);
-  markConfigDurableCommit();
   await atomicConfigAfterRenameHookForTests?.(options.filePath).catch(() => undefined);
   const directoryHandle = await nodeFs.open(parentPath, 'r').catch(() => null);
   await directoryHandle?.sync().catch(() => undefined);
@@ -854,16 +729,6 @@ async function assertNoLegacyConfigCoexistence(options: {
   }
 }
 
-async function withUserPluginConfigRuntimeLease<T>(options: {
-  sourceId?: string;
-  scope: Scope;
-  env?: NodeJS.ProcessEnv;
-}, action: () => Promise<T>): Promise<T> {
-  return options.scope === 'user' || options.sourceId !== undefined
-    ? withActiveMarketplaceRuntimeLease(options.env, action)
-    : action();
-}
-
 export async function readPluginConfigStore(options: {
   sourceId?: string;
   sourceIdentity?: string;
@@ -1075,17 +940,15 @@ export async function writePluginConfigStore(options: {
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
-  await withUserPluginConfigRuntimeLease(options, async () => {
-    await withConfigFileLock({
+  await withConfigFileMutation({
+    filePath,
+    allowedRoot,
+    action: async () => atomicReplaceConfigFile({
       filePath,
       allowedRoot,
-      action: async () => atomicReplaceConfigFile({
-        filePath,
-        allowedRoot,
-        content: namespacedConfigContent(options),
-        mode: 0o600,
-      }),
-    });
+      content: namespacedConfigContent(options),
+      mode: 0o600,
+    }),
   });
 
   return {
@@ -1115,41 +978,39 @@ export async function patchPluginConfigStore(options: {
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
   const removedKeys = options.removeKeys ?? [];
-  await withUserPluginConfigRuntimeLease(options, async () => {
-    await withConfigFileLock({
-      filePath,
-      allowedRoot,
-      action: async () => {
-        await options.reviewPreflight?.();
-        const current = (await lstatIfExists(filePath))
-          ? options.sourceId
-            ? await readNamespacedStoreFile({
-                filePath,
-                sourceId: options.sourceId,
-                sourceIdentity: options.sourceIdentity!,
-                pluginName: options.pluginName,
-              })
-            : await readStoreFile(filePath)
-          : {};
-        if (options.requireExistingRemoveKeys) {
-          const missingKey = removedKeys.find((key) => !Object.hasOwn(current, key));
-          if (missingKey) throw new Error(`Unknown config key "${missingKey}".`);
-        }
-        const next = { ...current };
-        for (const key of removedKeys) {
-          delete next[key];
-        }
-        for (const [key, value] of Object.entries(options.updates)) {
-          next[key] = value;
-        }
-        await atomicReplaceConfigFile({
-          filePath,
-          allowedRoot,
-          content: namespacedConfigContent({ ...options, values: next }),
-          mode: 0o600,
-        });
-      },
-    });
+  await withConfigFileMutation({
+    filePath,
+    allowedRoot,
+    action: async () => {
+      await options.reviewPreflight?.();
+      const current = (await lstatIfExists(filePath))
+        ? options.sourceId
+          ? await readNamespacedStoreFile({
+              filePath,
+              sourceId: options.sourceId,
+              sourceIdentity: options.sourceIdentity!,
+              pluginName: options.pluginName,
+            })
+          : await readStoreFile(filePath)
+        : {};
+      if (options.requireExistingRemoveKeys) {
+        const missingKey = removedKeys.find((key) => !Object.hasOwn(current, key));
+        if (missingKey) throw new Error(`Unknown config key "${missingKey}".`);
+      }
+      const next = { ...current };
+      for (const key of removedKeys) {
+        delete next[key];
+      }
+      for (const [key, value] of Object.entries(options.updates)) {
+        next[key] = value;
+      }
+      await atomicReplaceConfigFile({
+        filePath,
+        allowedRoot,
+        content: namespacedConfigContent({ ...options, values: next }),
+        mode: 0o600,
+      });
+    },
   });
 
   return {
@@ -1177,33 +1038,31 @@ export async function resetPluginConfigStore(options: {
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
-  const existed = await withUserPluginConfigRuntimeLease(options, async () => {
-    return withConfigFileLock({
-      filePath,
-      allowedRoot,
-      action: async () => {
-        await options.reviewPreflight?.();
-        const target = await lstatIfExists(filePath);
-        if (!target) return false;
-        if (!target.isFile() || target.isSymbolicLink()) {
-          throw new Error(`Config target must be a regular file: ${filePath}`);
+  const existed = await withConfigFileMutation({
+    filePath,
+    allowedRoot,
+    action: async () => {
+      await options.reviewPreflight?.();
+      const target = await lstatIfExists(filePath);
+      if (!target) return false;
+      if (!target.isFile() || target.isSymbolicLink()) {
+        throw new Error(`Config target must be a regular file: ${filePath}`);
+      }
+      if (options.sourceId) {
+        if (!options.sourceIdentity) {
+          throw new Error('sourceIdentity is required for namespaced plugin config.');
         }
-        if (options.sourceId) {
-          if (!options.sourceIdentity) {
-            throw new Error('sourceIdentity is required for namespaced plugin config.');
-          }
-          await readNamespacedStoreFile({
-            filePath,
-            sourceId: options.sourceId,
-            sourceIdentity: options.sourceIdentity,
-            pluginName: options.pluginName,
-          });
-        } else {
-          await readStoreFile(filePath);
-        }
-        return atomicRemoveConfigFile({ filePath, allowedRoot });
-      },
-    });
+        await readNamespacedStoreFile({
+          filePath,
+          sourceId: options.sourceId,
+          sourceIdentity: options.sourceIdentity,
+          pluginName: options.pluginName,
+        });
+      } else {
+        await readStoreFile(filePath);
+      }
+      return atomicRemoveConfigFile({ filePath, allowedRoot });
+    },
   });
 
   return {
@@ -1235,55 +1094,44 @@ export async function resetPluginConfigStores(options: {
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
   const receipts: ResetPluginConfigStoreReceipt[] = [];
-  await withUserPluginConfigRuntimeLease(options, async () => {
-    const withTargetLocks = async (index: number, action: () => Promise<void>): Promise<void> => {
-      const target = targets[index];
-      if (!target) return action();
-      return withConfigFileLock({
+  const existing: boolean[] = [];
+  for (const target of targets) {
+    await prepareConfigFileParent(target.path, allowedRoot);
+    await assertNoConfigSymlink(allowedRoot, target.path);
+    const stats = await lstatIfExists(target.path);
+    existing.push(stats !== null);
+    if (!stats) continue;
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      throw new Error(`Config target must be a regular file: ${target.path}`);
+    }
+    if (options.sourceId) {
+      if (!options.sourceIdentity) {
+        throw new Error('sourceIdentity is required for namespaced plugin config.');
+      }
+      await readNamespacedStoreFile({
         filePath: target.path,
-        allowedRoot,
-        action: () => withTargetLocks(index + 1, action),
+        sourceId: options.sourceId,
+        sourceIdentity: options.sourceIdentity,
+        pluginName: options.pluginName,
       });
-    };
-    await withTargetLocks(0, async () => {
-      const existing: boolean[] = [];
-      for (const target of targets) {
-        const stats = await lstatIfExists(target.path);
-        existing.push(stats !== null);
-        if (!stats) continue;
-        if (!stats.isFile() || stats.isSymbolicLink()) {
-          throw new Error(`Config target must be a regular file: ${target.path}`);
-        }
-        if (options.sourceId) {
-          if (!options.sourceIdentity) {
-            throw new Error('sourceIdentity is required for namespaced plugin config.');
-          }
-          await readNamespacedStoreFile({
-            filePath: target.path,
-            sourceId: options.sourceId,
-            sourceIdentity: options.sourceIdentity,
-            pluginName: options.pluginName,
-          });
-        } else {
-          await readStoreFile(target.path);
-        }
-      }
-      for (const [index, target] of targets.entries()) {
-        const deleted = await atomicRemoveConfigFile({
-          filePath: target.path,
-          allowedRoot,
-        });
-        receipts.push({
-          pluginName: options.pluginName,
-          scope: options.scope,
-          storeKind: target.storeKind,
-          path: target.path,
-          existed: existing[index]!,
-          deleted,
-        });
-      }
+    } else {
+      await readStoreFile(target.path);
+    }
+  }
+  for (const [index, target] of targets.entries()) {
+    const deleted = await atomicRemoveConfigFile({
+      filePath: target.path,
+      allowedRoot,
     });
-  });
+    receipts.push({
+      pluginName: options.pluginName,
+      scope: options.scope,
+      storeKind: target.storeKind,
+      path: target.path,
+      existed: existing[index]!,
+      deleted,
+    });
+  }
   return receipts;
 }
 

@@ -644,89 +644,94 @@ export async function materializePortableSkillsToDirectory(options: {
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<PortableMaterializeReceipt> {
-  assertScope(options.scope);
-  const scope = options.scope;
-  const rawTarget = path.resolve(options.cwd, options.out);
-  const rawTargetStats = await fs.lstat(rawTarget).catch(() => undefined);
-  if (rawTargetStats?.isSymbolicLink()) {
-    throw new PortableCommandError('portableOutputConflict', '输出目标不能是符号链接。');
-  }
-  const target = await canonicalizePathThroughExistingAncestor(rawTarget);
-  await assertSafeOutputPath(target, options);
-  const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
-  const materialized = await createMaterialization({ ...options, scope, configSnapshot });
-  try {
-    const selected = selectCandidates(materialized.candidates, options.requestedSkills);
-    await prepareExistingOutput(
-      target,
-      materialized.pluginId,
-      materialized.sourceIdentity,
-      options.scope,
-    );
-    try {
-      await ensureRegularDirectoryPath(path.dirname(target), 'portable output parent');
-    } catch {
-      throw new PortableCommandError('portableOutputConflict', '输出目标的父目录不是安全的普通目录。');
-    }
-    const staging = await fs.mkdtemp(path.join(path.dirname(target), `.${path.basename(target)}.aw-stage-`));
-    let committed = false;
-    try {
-      for (const candidate of selected) {
-        await fs.copy(
-          path.join(materialized.rootDir, 'skills', candidate.name),
-          path.join(staging, 'skills', candidate.name),
-          { dereference: false, errorOnExist: true },
-        );
+  return withAwHomeMutationLock({
+    env: options.env,
+    action: async () => {
+      assertScope(options.scope);
+      const scope = options.scope;
+      const rawTarget = path.resolve(options.cwd, options.out);
+      const rawTargetStats = await fs.lstat(rawTarget).catch(() => undefined);
+      if (rawTargetStats?.isSymbolicLink()) {
+        throw new PortableCommandError('portableOutputConflict', '输出目标不能是符号链接。');
       }
-      await assertNoSymlinks(staging);
-      const outputDigest = digest(selected.map((entry) => [entry.name, entry.filesDigest]));
-      const configDigest = digest({
-        catalogSources: configSnapshot.digest,
-        pluginConfig: materialized.configDigest,
-      });
-      const receipt: PortableMaterializeReceipt = {
-        receiptSchemaVersion: 4,
-        command: 'skill:materialize',
-        ok: true,
-        plugin: {
-          id: materialized.pluginId,
-          ...(materialized.sourceId ? { sourceId: materialized.sourceId } : {}),
-          ...(materialized.sourceIdentity ? { sourceIdentity: materialized.sourceIdentity } : {}),
-          ...(materialized.pluginVersion ? { version: materialized.pluginVersion } : {}),
-        },
-        scope: options.scope,
-        out: target,
-        selectedSkills: selected,
-        ...(options.requestedSkills ? { requestedSkills: options.requestedSkills } : {}),
-        dependencies: materialized.dependencyPluginIds,
-        configDigest,
-        materializationDigest: materialized.digest,
-        outputDigest,
-      };
-      const marker: PortableMarker & {
-        config: { digest: string; catalogSourcesDigest: string; pluginConfigDigest: string };
-      } = {
-        schemaVersion: 1,
-        ...receipt,
-        config: {
-          digest: configDigest,
-          catalogSourcesDigest: configSnapshot.digest,
-          pluginConfigDigest: materialized.configDigest,
-        },
-      };
-      await fs.writeJson(path.join(staging, '.aw-materialization.json'), marker, { spaces: 2 });
-      await portableCommandTestHooks?.beforeMaterializeOutputCommit?.(target);
-      await commitOutput(staging, target, {
-        pluginId: materialized.pluginId,
-        sourceIdentity: materialized.sourceIdentity,
-        scope: options.scope,
-      });
-      committed = true;
-      return receipt;
-    } finally {
-      if (!committed) await fs.remove(staging);
-    }
-  } finally {
-    await materialized.cleanup();
-  }
+      const target = await canonicalizePathThroughExistingAncestor(rawTarget);
+      await assertSafeOutputPath(target, options);
+      const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+      const materialized = await createMaterialization({ ...options, scope, configSnapshot });
+      try {
+        const selected = selectCandidates(materialized.candidates, options.requestedSkills);
+        await prepareExistingOutput(
+          target,
+          materialized.pluginId,
+          materialized.sourceIdentity,
+          options.scope,
+        );
+        try {
+          await ensureRegularDirectoryPath(path.dirname(target), 'portable output parent');
+        } catch {
+          throw new PortableCommandError('portableOutputConflict', '输出目标的父目录不是安全的普通目录。');
+        }
+        const staging = await fs.mkdtemp(path.join(path.dirname(target), `.${path.basename(target)}.aw-stage-`));
+        let committed = false;
+        try {
+          for (const candidate of selected) {
+            await fs.copy(
+              path.join(materialized.rootDir, 'skills', candidate.name),
+              path.join(staging, 'skills', candidate.name),
+              { dereference: false, errorOnExist: true },
+            );
+          }
+          await assertNoSymlinks(staging);
+          const outputDigest = digest(selected.map((entry) => [entry.name, entry.filesDigest]));
+          const configDigest = digest({
+            catalogSources: configSnapshot.digest,
+            pluginConfig: materialized.configDigest,
+          });
+          const receipt: PortableMaterializeReceipt = {
+            receiptSchemaVersion: 4,
+            command: 'skill:materialize',
+            ok: true,
+            plugin: {
+              id: materialized.pluginId,
+              ...(materialized.sourceId ? { sourceId: materialized.sourceId } : {}),
+              ...(materialized.sourceIdentity ? { sourceIdentity: materialized.sourceIdentity } : {}),
+              ...(materialized.pluginVersion ? { version: materialized.pluginVersion } : {}),
+            },
+            scope: options.scope,
+            out: target,
+            selectedSkills: selected,
+            ...(options.requestedSkills ? { requestedSkills: options.requestedSkills } : {}),
+            dependencies: materialized.dependencyPluginIds,
+            configDigest,
+            materializationDigest: materialized.digest,
+            outputDigest,
+          };
+          const marker: PortableMarker & {
+            config: { digest: string; catalogSourcesDigest: string; pluginConfigDigest: string };
+          } = {
+            schemaVersion: 1,
+            ...receipt,
+            config: {
+              digest: configDigest,
+              catalogSourcesDigest: configSnapshot.digest,
+              pluginConfigDigest: materialized.configDigest,
+            },
+          };
+          await fs.writeJson(path.join(staging, '.aw-materialization.json'), marker, { spaces: 2 });
+          await portableCommandTestHooks?.beforeMaterializeOutputCommit?.(target);
+          await commitOutput(staging, target, {
+            pluginId: materialized.pluginId,
+            sourceIdentity: materialized.sourceIdentity,
+            scope: options.scope,
+          });
+          committed = true;
+          return receipt;
+        } finally {
+          if (!committed) await fs.remove(staging);
+        }
+      } finally {
+        await materialized.cleanup();
+      }
+    },
+  });
 }

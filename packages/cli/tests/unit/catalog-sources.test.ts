@@ -31,9 +31,7 @@ import {
   type CatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import {
-  resolveConfigFileLockPath,
   setAtomicConfigBeforeRenameHookForTests,
-  setConfigFileLockBeforeReleaseHookForTests,
 } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -56,7 +54,6 @@ async function createTwoSourceConfig(pathSourceRoot: string): Promise<CatalogSou
 
 afterEach(async () => {
   setAtomicConfigBeforeRenameHookForTests(undefined);
-  setConfigFileLockBeforeReleaseHookForTests(undefined);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
@@ -277,41 +274,7 @@ describe('catalog sources config v1', () => {
     });
     const entries = await fs.readdir(isolation.layout.awHomeDir);
     expect(entries.filter((entry) => entry.includes('.tmp-'))).toEqual([]);
-    await expect(fs.pathExists(resolveConfigFileLockPath(
-      resolveCatalogSourcesConfigPath(isolation.env),
-    ))).resolves.toBe(false);
   });
-
-  it.each([1, 2])(
-    'returns the committed source config after %s transient lock release failures',
-    async (failures) => {
-      const isolation = getCurrentSourceTestIsolation();
-      const sourceRoot = path.join(isolation.layout.fixtureCwd, `source-release-${failures}`);
-      await fs.ensureDir(sourceRoot);
-      const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-      const nextConfig = await createTwoSourceConfig(sourceRoot);
-      const attempts: number[] = [];
-      setConfigFileLockBeforeReleaseHookForTests(async (_lockPath, attempt) => {
-        attempts.push(attempt);
-        if (attempt <= failures) {
-          throw Object.assign(new Error('transient source lock release'), {
-            code: failures === 1 ? 'EBUSY' : 'EPERM',
-          });
-        }
-      });
-
-      await expect(replaceCatalogSourcesConfig({
-        config: nextConfig,
-        expectedDigest: initial.digest,
-        env: isolation.env,
-      })).resolves.toMatchObject({ config: nextConfig, materialized: true });
-      expect(attempts).toEqual(Array.from({ length: failures + 1 }, (_, index) => index + 1));
-      await expect(readCatalogSourcesConfigSnapshot(isolation.env)).resolves.toMatchObject({
-        config: nextConfig,
-        materialized: true,
-      });
-    },
-  );
 });
 
 describe('catalog source identity v1', () => {

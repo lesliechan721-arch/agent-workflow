@@ -32,7 +32,6 @@ import {
   resolveEffectivePluginConfig,
   resolvePluginConfigSchemaAccess,
   summarizeEffectivePluginConfig,
-  withPluginConfigTransactionLease,
 } from './plugin-config.js';
 import {
   assertProjectSharedConfigPathVisible,
@@ -545,26 +544,18 @@ export async function applyPluginConfigWrite(
 ): Promise<PluginConfigWriteReceipt> {
   const requestedPluginName = options.pluginName ?? options.plugin?.manifest.name;
   if (!requestedPluginName) throw new Error('Plugin name is required for config write.');
-  const pluginName = assertSafePluginConfigSegment(requestedPluginName);
+  assertSafePluginConfigSegment(requestedPluginName);
   return withAwHomeMutationLock({
     env: options.env,
     token: options.awHomeMutationToken,
-    action: (awHomeMutationToken) => withPluginConfigTransactionLease({
-      ...(options.plugin?.sourceId ? { sourceId: options.plugin.sourceId } : {}),
-      pluginName,
-      scope: options.scope,
-      projectLayer: options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared',
-      cwd: options.cwd,
-      env: options.env,
-      action: async () => {
-        await options.reviewPreflight?.();
-        return applyPluginConfigWriteUnlocked({
-          ...options,
-          awHomeMutationToken,
-          rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken },
-        });
-      },
-    }),
+    action: async (awHomeMutationToken) => {
+      await options.reviewPreflight?.();
+      return applyPluginConfigWriteUnlocked({
+        ...options,
+        awHomeMutationToken,
+        rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken },
+      });
+    },
   });
 }
 
@@ -692,26 +683,17 @@ export async function resetPluginConfigWithHelper(
   if (!options.plugin) {
     throw new Error(`sourceMissing: Plugin "${pluginName}" is unavailable; config reset was not applied.`);
   }
-  const sourceId = options.plugin.sourceId;
   return withAwHomeMutationLock({
     env: options.env,
     token: options.awHomeMutationToken,
-    action: (awHomeMutationToken) => withPluginConfigTransactionLease({
-      ...(sourceId ? { sourceId } : {}),
-      pluginName,
-      scope: options.scope,
-      projectLayer: options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared',
-      cwd: options.cwd,
-      env: options.env,
-      action: async () => {
-        await options.reviewPreflight?.();
-        return resetPluginConfigWithHelperUnlocked({
-          ...options,
-          awHomeMutationToken,
-          rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken },
-        });
-      },
-    }),
+    action: async (awHomeMutationToken) => {
+      await options.reviewPreflight?.();
+      return resetPluginConfigWithHelperUnlocked({
+        ...options,
+        awHomeMutationToken,
+        rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken },
+      });
+    },
   });
 }
 

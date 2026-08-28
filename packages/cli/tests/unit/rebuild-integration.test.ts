@@ -46,9 +46,6 @@ import {
 } from '../../src/utils/paths.js';
 import { requiresCodexNativePlugin } from '../../src/utils/codex-project-surface.js';
 import {
-  resolveConfigFileLockPath,
-} from '../../src/utils/plugin-config.js';
-import {
   applyCodexConfigTransactionFile,
   readCodexConfigFile,
 } from '../../src/utils/codex-config.js';
@@ -3286,84 +3283,6 @@ describe('rebuild adapter integration', () => {
     expect((await fs.readdir(path.join(isolation.layout.fixtureCwd, '.codex', 'agents'))).length).toBeGreaterThan(0);
   });
 
-  it('serializes a hook removal with another plugin hook addition', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = isolation.layout.fixtureCwd;
-    const integration = createRebuildIntegration({
-      context: createCommandExecutionContext({
-        env: isolation.env,
-        nativeCliRunner: async () => { throw new Error('project must not call native CLI'); },
-      }),
-    });
-    const catalog = { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution;
-    const pluginA = await createCodexSharedConfigPlugin({
-      root: isolation.layout.rootDir,
-      name: 'hook-atomic-a',
-      hookCommand: 'echo hook-a',
-    });
-    const pluginB = await createCodexSharedConfigPlugin({
-      root: isolation.layout.rootDir,
-      name: 'hook-atomic-b',
-      hookCommand: 'echo hook-b',
-    });
-    const installedA = await integration.buildTarget({
-      plugin: pluginA, platform: 'codex', scope: 'project', cwd,
-      command: 'install', catalog, includeHistoricalLifecycleArtifacts: false,
-    });
-    await integration.driver.writeArtifacts(installedA);
-    const cleanupA = await integration.buildTarget({
-      plugin: { ...pluginA, manifest: { ...pluginA.manifest, extensions: undefined } },
-      platform: 'codex', scope: 'project', cwd,
-      command: 'cleanup', catalog, includeHistoricalLifecycleArtifacts: false,
-    });
-    const installingB = await integration.buildTarget({
-      plugin: pluginB, platform: 'codex', scope: 'project', cwd,
-      command: 'install', catalog, includeHistoricalLifecycleArtifacts: false,
-    });
-    const hookComponent = cleanupA.ownedComponents.find((component) =>
-      component.kind === 'shared-config' && component.label.includes('hooks.json#'));
-    if (!hookComponent || hookComponent.kind !== 'shared-config') {
-      throw new Error('Expected the installed hook component.');
-    }
-    const hooksPath = resolveCodexPaths(cwd, 'project', isolation.env).hooksPath;
-    const bIdentity = installingB.artifacts.find((artifact) => artifact.kind === 'hook')
-      ?.hookGroups?.[0];
-    if (!bIdentity) throw new Error('Expected plugin B hook identity.');
-    const renderedB = renderTrackedHookGroupIdentity(bIdentity);
-    const bGroup: CodexSharedHookGroup = {
-      event: renderedB.event,
-      ...(renderedB.matcher === undefined ? {} : { matcher: renderedB.matcher }),
-      hooks: renderedB.hooks as unknown as Record<string, unknown>[],
-      rawGroup: {
-        ...(renderedB.matcher === undefined ? {} : { matcher: renderedB.matcher }),
-        hooks: renderedB.hooks as unknown as Record<string, unknown>[],
-      },
-    };
-    let releaseAddition!: () => void;
-    const additionCanFinish = new Promise<void>((resolve) => { releaseAddition = resolve; });
-    let additionReachedCommit!: () => void;
-    const additionAtCommit = new Promise<void>((resolve) => { additionReachedCommit = resolve; });
-    const adding = applyCodexHookGroupsTransactionFile(
-      hooksPath,
-      (parsed) => [...parsed.rawGroups, bGroup],
-      { beforeCommit: async () => {
-        additionReachedCommit();
-        await additionCanFinish;
-      } },
-    );
-    await additionAtCommit;
-    const removing = hookComponent.remove();
-    releaseAddition();
-    await Promise.all([removing, adding]);
-
-    const raw = await fs.readFile(hooksPath, 'utf8');
-    expect(raw).toContain('hook-atomic-b');
-    expect(raw).not.toContain('hook-atomic-a');
-    expect(await fs.pathExists(resolveConfigFileLockPath(hooksPath))).toBe(false);
-    expect((await fs.readdir(path.dirname(hooksPath))).filter((entry) => entry.includes('.tmp-')))
-      .toEqual([]);
-  });
-
   it('rejects a hooks target symlink swap without writing the external file', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
@@ -3410,44 +3329,7 @@ describe('rebuild adapter integration', () => {
       } },
     )).rejects.toThrow('symbolic link');
     await expect(fs.readFile(externalPath, 'utf8')).resolves.toBe('{"external":true}\n');
-    expect(await fs.pathExists(resolveConfigFileLockPath(hooksPath))).toBe(false);
     expect((await fs.readdir(path.dirname(hooksPath))).filter((entry) => entry.includes('.tmp-')))
-      .toEqual([]);
-  });
-
-  it('allows only one concurrent plugin to claim the same MCP server key', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = isolation.layout.fixtureCwd;
-    const integration = createRebuildIntegration({
-      context: createCommandExecutionContext({
-        env: isolation.env,
-        nativeCliRunner: async () => { throw new Error('project must not call native CLI'); },
-      }),
-    });
-    const catalog = { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution;
-    const plugins = await Promise.all(['mcp-owner-a', 'mcp-owner-b'].map((name) =>
-      createCodexSharedConfigPlugin({
-        root: isolation.layout.rootDir,
-        name,
-        mcpServerKey: 'shared-server',
-      })));
-    const targets = await Promise.all(plugins.map((plugin) => integration.buildTarget({
-      plugin, platform: 'codex', scope: 'project', cwd,
-      command: 'install', catalog, includeHistoricalLifecycleArtifacts: false,
-    })));
-
-    const outcomes = await Promise.allSettled(
-      targets.map((target) => integration.driver.writeArtifacts(target)),
-    );
-    expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(['fulfilled', 'rejected']);
-    expect(String(outcomes.find((outcome) => outcome.status === 'rejected')?.reason))
-      .toContain('is foreign and cannot be overwritten');
-    const configPath = resolveCodexPaths(cwd, 'project', isolation.env).configTomlPath;
-    const config = await readCodexConfigFile(configPath);
-    const env = config.snapshot.mcpServers['shared-server']?.value?.env as Record<string, unknown>;
-    expect(['mcp-owner-a', 'mcp-owner-b']).toContain(env.AW_AGENT_WORKFLOWS_OWNER);
-    expect(await fs.pathExists(resolveConfigFileLockPath(configPath))).toBe(false);
-    expect((await fs.readdir(path.dirname(configPath))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
   });
 
@@ -3518,7 +3400,7 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: plugin.rootDir, source: 'local' },
       includeHistoricalLifecycleArtifacts: false,
     })));
-    await Promise.all(instructionTargets.map((target) => integration.driver.writeArtifacts(target)));
+    for (const target of instructionTargets) await integration.driver.writeArtifacts(target);
 
     const configPath = resolveCodexPaths(cwd, 'project', isolation.env).configTomlPath;
     const config = await readCodexConfigFile(configPath);
@@ -3580,7 +3462,7 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: plugin.rootDir, source: 'local' },
       includeHistoricalLifecycleArtifacts: false,
     })));
-    await Promise.all(claudeTargets.map((target) => integration.driver.writeArtifacts(target)));
+    for (const target of claudeTargets) await integration.driver.writeArtifacts(target);
     const claudePaths = resolveClaudePaths(cwd, 'project', isolation.env);
     const settings = await fs.readJson(claudePaths.settingsPath) as {
       awGenerated: { permissions: Record<string, unknown> };
@@ -3612,60 +3494,6 @@ describe('rebuild adapter integration', () => {
     };
     expect(Object.keys(afterClaudeCleanup.awGenerated.permissions)
       .map((key) => parseSharedOwnerToken(key)?.pluginId)).toEqual(['second/same-shared']);
-  });
-
-  it('allows only one concurrent plugin to claim the same agent role key', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = isolation.layout.fixtureCwd;
-    const integration = createRebuildIntegration({
-      context: createCommandExecutionContext({
-        env: isolation.env,
-        nativeCliRunner: async () => { throw new Error('project must not call native CLI'); },
-      }),
-    });
-    const catalog = { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution;
-    const plugins = await Promise.all(['role-owner-a', 'role-owner-b'].map((name) =>
-      createCodexSharedConfigPlugin({
-        root: isolation.layout.rootDir,
-        name,
-        roleKey: 'shared-role',
-      })));
-    const targets = await Promise.all(plugins.map((plugin) => integration.buildTarget({
-      plugin, platform: 'codex', scope: 'project', cwd,
-      command: 'install', catalog, includeHistoricalLifecycleArtifacts: false,
-    })));
-
-    const outcomes = await Promise.allSettled(
-      targets.map((target) => integration.driver.writeArtifacts(target)),
-    );
-    expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(['fulfilled', 'rejected']);
-    expect(String(outcomes.find((outcome) => outcome.status === 'rejected')?.reason))
-      .toContain('is foreign and cannot be overwritten');
-    const configPath = resolveCodexPaths(cwd, 'project', isolation.env).configTomlPath;
-    const config = await readCodexConfigFile(configPath);
-    const registeredPath = config.snapshot.agents['shared-role']?.configFile;
-    expect(registeredPath).toBeTruthy();
-    const roleFile = await fs.readFile(path.resolve(path.dirname(configPath), registeredPath!), 'utf8');
-    const owner = parseOwnedTextHeader(roleFile)?.identity.plugin;
-    expect(['role-owner-a', 'role-owner-b']).toContain(owner);
-    expect(await fs.pathExists(resolveConfigFileLockPath(configPath))).toBe(false);
-
-    const winner = plugins.find((plugin) => plugin.manifest.name === owner)!;
-    const cleanupTarget = await integration.buildTarget({
-      plugin: {
-        ...winner,
-        manifest: { ...winner.manifest, scripts: undefined, artifacts: undefined },
-      },
-      platform: 'codex', scope: 'project', cwd,
-      command: 'cleanup', catalog, includeHistoricalLifecycleArtifacts: false,
-    });
-    const cleanup = await executeRebuildOperation({
-      command: 'cleanup', target: cleanupTarget, driver: integration.driver, activeStore,
-    });
-    expect(cleanup.status, JSON.stringify(cleanup.failures)).toBe('succeeded');
-    expect((await readCodexConfigFile(configPath)).snapshot.agents['shared-role']).toBeUndefined();
-    expect((await fs.readdir(path.dirname(configPath))).filter((entry) => entry.includes('.tmp-')))
-      .toEqual([]);
   });
 
   it('reinstalls a dynamic project role by removing registration before its owner file', async () => {
@@ -3798,7 +3626,6 @@ describe('rebuild adapter integration', () => {
     const env = config.snapshot.mcpServers['conditional-server']?.value?.env as Record<string, unknown>;
     expect(env.AW_AGENT_WORKFLOWS_OWNER).toBe('foreign-mcp');
     expect(config.snapshot.agents['conditional-role']?.configFile).toBe('agents/foreign-role.toml');
-    expect(await fs.pathExists(resolveConfigFileLockPath(configPath))).toBe(false);
     expect((await fs.readdir(path.dirname(configPath))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
   });

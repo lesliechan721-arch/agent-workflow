@@ -42,18 +42,16 @@ export async function initCommand(
   options: InitCommandV4Options,
 ): Promise<InitCommandResult> {
   const env = options.env ?? process.env;
-  if (options.force) {
-    return withAwHomeMutationLock({
-      env,
-      action: async () => {
-        const cleanupWarnings = await (options.runtime?.cleanupLegacyCache
-          ?? cleanupLegacyCatalogSourceCache)(env);
-        const result = await resolveInitCatalog({ ...options, env });
-        return { ...result, warnings: [...cleanupWarnings, ...result.warnings] };
-      },
-    });
-  }
-  return resolveInitCatalog({ ...options, env });
+  return withAwHomeMutationLock({
+    env,
+    action: async () => {
+      const cleanupWarnings = options.force
+        ? await (options.runtime?.cleanupLegacyCache ?? cleanupLegacyCatalogSourceCache)(env)
+        : [];
+      const result = await resolveInitCatalog({ ...options, env });
+      return { ...result, warnings: [...cleanupWarnings, ...result.warnings] };
+    },
+  });
 }
 
 async function resolveInitCatalog(
