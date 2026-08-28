@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import type { AgentVersionProbeResult } from '../types.js';
 import {
   extractStrictSemVerTokenFromVersionOutput,
   probeAgentVersion,
 } from './agent-version.js';
+import { tryParseStrictSemVer } from './manifest.js';
 import {
   getDefaultNativeCliRunner,
   runNativeCli,
@@ -69,6 +72,16 @@ type ManagedRuntimeInspection =
   | { state: 'rebuildable'; diagnostic: string }
   | { state: 'blocked'; diagnostic: string };
 
+interface CanonicalManagedPackagePaths {
+  launcher: string;
+  packageJson: string;
+}
+
+type ManagedPackagePathInspection =
+  | { state: 'complete'; paths: CanonicalManagedPackagePaths }
+  | { state: 'incomplete' }
+  | { state: 'unsafe'; diagnostic: string };
+
 const requireFromCli = createRequire(import.meta.url);
 
 function managedRuntimeRoot(options: CodexManagerOptions): string {
@@ -109,17 +122,86 @@ function managedLauncher(runtimeRoot: string): string {
   return path.join(runtimeRoot, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
 }
 
+function managedPackageRoot(runtimeRoot: string): string {
+  return path.join(runtimeRoot, 'node_modules', '@openai', 'codex');
+}
+
 function managedPackageJson(runtimeRoot: string): string {
   return path.join(runtimeRoot, 'node_modules', '@openai', 'codex', 'package.json');
 }
 
-function managerForRuntime(runtimeRoot: string, execPath: string): CodexManager {
+function managerForRuntime(
+  runtimeRoot: string,
+  launcher: string,
+  execPath: string,
+): CodexManager {
   return {
     kind: 'aw-managed',
     version: MANAGED_CODEX_VERSION,
     command: execPath,
-    argsPrefix: [managedLauncher(runtimeRoot)],
+    argsPrefix: [launcher],
     runtimeRoot,
+  };
+}
+
+function isPathWithin(rootPath: string, targetPath: string): boolean {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`));
+}
+
+async function inspectCanonicalManagedPackagePaths(
+  runtimeRoot: string,
+): Promise<ManagedPackagePathInspection> {
+  const runtimeStats = await lstatOrUndefined(runtimeRoot);
+  if (!runtimeStats?.isDirectory() || runtimeStats.isSymbolicLink()) {
+    return { state: 'unsafe', diagnostic: 'The managed runtime root is not a regular directory.' };
+  }
+
+  let canonicalRuntimeRoot: string;
+  try {
+    canonicalRuntimeRoot = await fs.realpath(runtimeRoot);
+  } catch {
+    return { state: 'incomplete' };
+  }
+
+  const candidates = [
+    ['package root', managedPackageRoot(runtimeRoot), 'directory'],
+    ['package.json', managedPackageJson(runtimeRoot), 'file'],
+    ['launcher', managedLauncher(runtimeRoot), 'file'],
+  ] as const;
+  const canonicalPaths: string[] = [];
+  let canonicalPackageRoot: string | undefined;
+
+  for (const [label, candidatePath, expectedKind] of candidates) {
+    let canonicalPath: string;
+    try {
+      canonicalPath = await fs.realpath(candidatePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'incomplete' };
+      throw error;
+    }
+    const containmentRoot = canonicalPackageRoot ?? canonicalRuntimeRoot;
+    if (!isPathWithin(containmentRoot, canonicalPath)) {
+      return {
+        state: 'unsafe',
+        diagnostic: `The managed Codex ${label} resolves outside its managed ${canonicalPackageRoot ? 'package root' : 'runtime'}.`,
+      };
+    }
+    const stats = await fs.stat(canonicalPath);
+    if (expectedKind === 'directory' ? !stats.isDirectory() : !stats.isFile()) {
+      return { state: 'incomplete' };
+    }
+    if (label === 'package root') canonicalPackageRoot = canonicalPath;
+    canonicalPaths.push(canonicalPath);
+  }
+
+  return {
+    state: 'complete',
+    paths: {
+      packageJson: canonicalPaths[1]!,
+      launcher: canonicalPaths[2]!,
+    },
   };
 }
 
@@ -190,7 +272,7 @@ function isExpectedMarker(value: unknown, expected: ManagedRuntimeMarker): boole
 }
 
 async function runManagedVersionCheck(
-  runtimeRoot: string,
+  launcher: string,
   options: CodexManagerOptions,
 ): Promise<string | undefined> {
   const runner = options.runner ?? getDefaultNativeCliRunner();
@@ -199,7 +281,7 @@ async function runManagedVersionCheck(
   try {
     const result = await runNativeCli({
       command: execPath,
-      args: [managedLauncher(runtimeRoot), '--version'],
+      args: [launcher, '--version'],
       agentKind: 'codex',
       cwd: options.cwd,
       env: { ...env, CODEX_HOME: getCodexHome(env) },
@@ -234,12 +316,14 @@ async function inspectManagedCodexRuntime(
       return { state: 'blocked', diagnostic: 'The managed runtime has an invalid AW owner marker.' };
     }
 
-    const packageStats = await lstatOrUndefined(managedPackageJson(runtimeRoot));
-    const launcherStats = await lstatOrUndefined(managedLauncher(runtimeRoot));
-    if (!packageStats?.isFile() || !launcherStats?.isFile() || launcherStats.isSymbolicLink()) {
+    const packagePaths = await inspectCanonicalManagedPackagePaths(runtimeRoot);
+    if (packagePaths.state === 'incomplete') {
       return { state: 'rebuildable', diagnostic: 'The AW-owned managed runtime is incomplete.' };
     }
-    const packageJson = await fs.readJson(managedPackageJson(runtimeRoot)).catch(() => undefined) as
+    if (packagePaths.state === 'unsafe') {
+      return { state: 'blocked', diagnostic: packagePaths.diagnostic };
+    }
+    const packageJson = await fs.readJson(packagePaths.paths.packageJson).catch(() => undefined) as
       | { name?: unknown; version?: unknown }
       | undefined;
     if (
@@ -248,13 +332,17 @@ async function inspectManagedCodexRuntime(
     ) {
       return { state: 'rebuildable', diagnostic: 'The AW-owned managed runtime package does not match the pinned package.' };
     }
-    const detectedVersion = await runManagedVersionCheck(runtimeRoot, options);
+    const detectedVersion = await runManagedVersionCheck(packagePaths.paths.launcher, options);
     if (detectedVersion !== MANAGED_CODEX_VERSION) {
       return { state: 'rebuildable', diagnostic: 'The AW-owned managed runtime failed its version self-check.' };
     }
     return {
       state: 'valid',
-      manager: managerForRuntime(runtimeRoot, options.execPath ?? process.execPath),
+      manager: managerForRuntime(
+        runtimeRoot,
+        packagePaths.paths.launcher,
+        options.execPath ?? process.execPath,
+      ),
     };
   } catch (error) {
     return {
@@ -315,15 +403,14 @@ async function validateAcquiredRuntime(
   stagingRoot: string,
   options: CodexManagerOptions,
 ): Promise<void> {
-  const packageStats = await lstatOrUndefined(managedPackageJson(stagingRoot));
-  const launcherStats = await lstatOrUndefined(managedLauncher(stagingRoot));
-  const packageJson = await fs.readJson(managedPackageJson(stagingRoot)).catch(() => undefined) as
-    | { name?: unknown; version?: unknown }
-    | undefined;
+  const packagePaths = await inspectCanonicalManagedPackagePaths(stagingRoot);
+  const packageJson = packagePaths.state === 'complete'
+    ? await fs.readJson(packagePaths.paths.packageJson).catch(() => undefined) as
+      | { name?: unknown; version?: unknown }
+      | undefined
+    : undefined;
   if (
-    !packageStats?.isFile()
-    || !launcherStats?.isFile()
-    || launcherStats.isSymbolicLink()
+    packagePaths.state !== 'complete'
     || packageJson?.name !== MANAGED_CODEX_PACKAGE_NAME
     || packageJson.version !== MANAGED_CODEX_VERSION
   ) {
@@ -341,7 +428,7 @@ async function validateAcquiredRuntime(
   };
   const versionResult = await runNativeCli({
     ...invocationBase,
-    args: [managedLauncher(stagingRoot), '--version'],
+    args: [packagePaths.paths.launcher, '--version'],
   }, runner);
   const detectedVersion = extractStrictSemVerTokenFromVersionOutput(
     `${versionResult.stdout}\n${versionResult.stderr}`,
@@ -351,7 +438,7 @@ async function validateAcquiredRuntime(
   }
   const helpResult = await runNativeCli({
     ...invocationBase,
-    args: [managedLauncher(stagingRoot), 'plugin', '--help'],
+    args: [packagePaths.paths.launcher, 'plugin', '--help'],
   }, runner);
   if (helpResult.exitCode !== 0) {
     throw new Error('The installed Codex package failed its plugin help self-check.');
@@ -372,7 +459,15 @@ async function adoptManagedRuntime(
       throw new Error('The managed runtime path changed before adoption.');
     }
     await fs.rename(stagingRoot, runtimeRoot);
-    return managerForRuntime(runtimeRoot, options.execPath ?? process.execPath);
+    const packagePaths = await inspectCanonicalManagedPackagePaths(runtimeRoot);
+    if (packagePaths.state !== 'complete') {
+      throw new Error('The managed runtime changed during adoption.');
+    }
+    return managerForRuntime(
+      runtimeRoot,
+      packagePaths.paths.launcher,
+      options.execPath ?? process.execPath,
+    );
   }
 
   const backupRoot = path.join(path.dirname(runtimeRoot), `.${path.basename(runtimeRoot)}.replaced-${randomUUID()}`);
@@ -387,7 +482,15 @@ async function adoptManagedRuntime(
   }
   await assertAwOwnedRuntimeBeforeReplacement(backupRoot, options);
   await fs.remove(backupRoot).catch(() => undefined);
-  return managerForRuntime(runtimeRoot, options.execPath ?? process.execPath);
+  const packagePaths = await inspectCanonicalManagedPackagePaths(runtimeRoot);
+  if (packagePaths.state !== 'complete') {
+    throw new Error('The managed runtime changed during adoption.');
+  }
+  return managerForRuntime(
+    runtimeRoot,
+    packagePaths.paths.launcher,
+    options.execPath ?? process.execPath,
+  );
 }
 
 async function acquireManagedCodexRuntime(options: CodexManagerOptions): Promise<CodexManager> {
@@ -413,6 +516,7 @@ async function acquireManagedCodexRuntime(options: CodexManagerOptions): Promise
         'install',
         '--prod',
         '--ignore-scripts',
+        '--ignore-workspace',
         `--registry=${MANAGED_CODEX_REGISTRY}`,
         `--store-dir=${storeRoot}`,
         `--config.userconfig=${neutralUserConfig}`,
@@ -435,17 +539,205 @@ async function acquireManagedCodexRuntime(options: CodexManagerOptions): Promise
   }
 }
 
-async function probeSystemCodex(options: CodexManagerOptions) {
-  return probeAgentVersion('codex', {
+function readPathEnvironment(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string | undefined {
+  if (platform !== 'win32') return env.PATH;
+  const pathEntry = Object.entries(env).find(([key]) => key.toLowerCase() === 'path');
+  return pathEntry?.[1];
+}
+
+function executableNames(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string[] {
+  if (platform !== 'win32') return [command];
+  const pathExt = Object.entries(env)
+    .find(([key]) => key.toLowerCase() === 'pathext')?.[1]
+    ?? '.COM;.EXE;.BAT;.CMD';
+  const supportedExtensions = new Set(['.com', '.exe', '.bat', '.cmd']);
+  const extensions = pathExt.split(';')
+    .map((extension) => extension.trim())
+    .filter((extension) => supportedExtensions.has(extension.toLowerCase()));
+  const orderedExtensions = [
+    ...extensions.filter((extension) => ['.com', '.exe'].includes(extension.toLowerCase())),
+    ...extensions.filter((extension) => ['.bat', '.cmd'].includes(extension.toLowerCase())),
+  ];
+  return [...orderedExtensions.map((extension) => `${command}${extension}`), command];
+}
+
+type SystemCommandManagerResolution =
+  | { state: 'supported'; manager: CodexManager; expectedVersion?: string }
+  | { state: 'unsupported'; diagnostic: string };
+
+function unsupportedSystemResolution(reason: string): SystemCommandManagerResolution {
+  return {
+    state: 'unsupported',
+    diagnostic: `The installed system Codex CLI is not supported. ${reason} Install or upgrade the official Codex CLI, or remove the invalid shim and retry; AW does not use managed fallback for this installation.`,
+  };
+}
+
+async function resolveWindowsNpmCodexManager(
+  shimPath: string,
+): Promise<SystemCommandManagerResolution> {
+  try {
+    const shimStats = await fs.lstat(shimPath);
+    if (!shimStats.isFile() || shimStats.isSymbolicLink()) {
+      return unsupportedSystemResolution('The Windows npm shim is not a regular file.');
+    }
+
+    const prefixRoot = path.dirname(shimPath);
+    const packageRoot = path.join(prefixRoot, 'node_modules', '@openai', 'codex');
+    const packageJsonPath = path.join(packageRoot, 'package.json');
+    const launcherPath = path.join(packageRoot, 'bin', 'codex.js');
+    const [packageStats, packageJsonStats, launcherStats] = await Promise.all([
+      fs.lstat(packageRoot),
+      fs.lstat(packageJsonPath),
+      fs.lstat(launcherPath),
+    ]);
+    if (
+      !packageStats.isDirectory()
+      || packageStats.isSymbolicLink()
+      || !packageJsonStats.isFile()
+      || packageJsonStats.isSymbolicLink()
+      || !launcherStats.isFile()
+      || launcherStats.isSymbolicLink()
+    ) {
+      return unsupportedSystemResolution('The npm package or launcher is not a regular file tree.');
+    }
+
+    const [canonicalPrefix, canonicalPackageRoot, canonicalLauncher] = await Promise.all([
+      fs.realpath(prefixRoot),
+      fs.realpath(packageRoot),
+      fs.realpath(launcherPath),
+    ]);
+    if (
+      !isPathWithin(canonicalPrefix, canonicalPackageRoot)
+      || !isPathWithin(canonicalPackageRoot, canonicalLauncher)
+    ) {
+      return unsupportedSystemResolution('The npm package or launcher resolves outside its npm prefix.');
+    }
+
+    const packageJson = await fs.readJson(packageJsonPath).catch(() => undefined) as
+      | { name?: unknown; version?: unknown; bin?: unknown }
+      | undefined;
+    const bin = packageJson?.bin;
+    if (
+      packageJson?.name !== MANAGED_CODEX_PACKAGE_NAME
+      || typeof packageJson.version !== 'string'
+      || !tryParseStrictSemVer(packageJson.version)
+      || !bin
+      || typeof bin !== 'object'
+      || Array.isArray(bin)
+      || (bin as Record<string, unknown>).codex !== 'bin/codex.js'
+    ) {
+      return unsupportedSystemResolution('The npm package identity, version, or launcher contract is invalid.');
+    }
+
+    return {
+      state: 'supported',
+      expectedVersion: packageJson.version,
+      manager: {
+        kind: 'system',
+        version: packageJson.version,
+        command: process.execPath,
+        argsPrefix: [canonicalLauncher],
+      },
+    };
+  } catch {
+    return unsupportedSystemResolution('The Windows npm package is missing or unreadable.');
+  }
+}
+
+async function resolveSystemCommandManager(
+  command: string,
+  options: CodexManagerOptions,
+): Promise<SystemCommandManagerResolution> {
+  const platform = options.platform ?? process.platform;
+  const extension = path.extname(command).toLowerCase();
+  if (platform !== 'win32' || (extension !== '.cmd' && extension !== '.bat')) {
+    return {
+      state: 'supported',
+      manager: {
+        kind: 'system',
+        version: 'unknown',
+        command,
+        argsPrefix: [],
+      },
+    };
+  }
+  if (extension === '.bat') {
+    return unsupportedSystemResolution('Only the official Windows npm .cmd launcher is supported.');
+  }
+  return resolveWindowsNpmCodexManager(command);
+}
+
+async function resolvePathExecutable(
+  command: string,
+  options: CodexManagerOptions,
+): Promise<string | undefined> {
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const cwd = options.cwd ?? process.cwd();
+  const delimiter = platform === 'win32' ? ';' : ':';
+  const pathEnvironment = readPathEnvironment(env, platform);
+  if (pathEnvironment === undefined) return undefined;
+  for (const rawEntry of pathEnvironment.split(delimiter)) {
+    const entry = rawEntry.replace(/^"|"$/gu, '');
+    const directory = path.resolve(cwd, entry || '.');
+    for (const executableName of executableNames(command, env, platform)) {
+      const candidate = path.join(directory, executableName);
+      try {
+        if (!(await fs.stat(candidate)).isFile()) continue;
+        if (platform === 'win32') return candidate;
+        await fs.access(candidate, fsConstants.X_OK);
+        return await fs.realpath(candidate);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'EACCES' || code === 'ENOTDIR') continue;
+        throw error;
+      }
+    }
+  }
+  return undefined;
+}
+
+type SystemCodexProbe =
+  | { state: 'missing' }
+  | { state: 'unsupported'; diagnostic: string }
+  | { state: 'probed'; manager: CodexManager; result: AgentVersionProbeResult };
+
+async function probeSystemCodex(options: CodexManagerOptions): Promise<SystemCodexProbe> {
+  const command = await resolvePathExecutable('codex', options);
+  if (!command) return { state: 'missing' };
+  const resolution = await resolveSystemCommandManager(command, options);
+  if (resolution.state === 'unsupported') return resolution;
+  const { manager } = resolution;
+  const result = await probeAgentVersion('codex', {
+    argsPrefix: manager.argsPrefix,
     cache: false,
+    command: manager.command,
     cwd: options.cwd,
     env: options.env,
     runner: options.runner,
   });
+  if (
+    resolution.expectedVersion
+    && result.status === 'supported'
+    && result.detectedVersion !== resolution.expectedVersion
+  ) {
+    return {
+      state: 'unsupported',
+      diagnostic: 'The installed system Codex CLI is not supported. The npm package version does not match its launcher output. Reinstall or upgrade the official Codex CLI and retry; AW does not use managed fallback for this installation.',
+    };
+  }
+  return { state: 'probed', manager, result };
 }
 
 function unsupportedSystemDiagnostic(
-  system: Awaited<ReturnType<typeof probeSystemCodex>>,
+  system: AgentVersionProbeResult,
 ): string {
   const detected = system.detectedVersion ? ` Detected ${system.detectedVersion}.` : '';
   return `The installed system Codex CLI is not supported.${detected} Required minimum: ${system.requiredMinVersion}. Upgrade the official Codex CLI and retry; AW does not bypass an installed but unsupported system CLI.`;
@@ -461,22 +753,27 @@ export async function previewCodexManager(
   options: Omit<CodexManagerOptions, 'authorizer' | 'pnpmEntry'> = {},
 ): Promise<CodexManagerPreview> {
   const system = await probeSystemCodex(options);
-  if (system.status === 'supported') {
+  if (system.state === 'probed' && system.result.status === 'supported') {
     return {
       state: 'system',
       manager: {
-        kind: 'system',
-        version: system.detectedVersion!,
-        command: 'codex',
-        argsPrefix: [],
+        ...system.manager,
+        version: system.result.detectedVersion!,
       },
     };
   }
-  if (system.status !== 'missing') {
+  if (system.state === 'unsupported') {
     return {
       state: 'blocked',
       code: 'codexSystemCliUnsupported',
-      diagnostic: unsupportedSystemDiagnostic(system),
+      diagnostic: system.diagnostic,
+    };
+  }
+  if (system.state === 'probed') {
+    return {
+      state: 'blocked',
+      code: 'codexSystemCliUnsupported',
+      diagnostic: unsupportedSystemDiagnostic(system.result),
     };
   }
   const managed = await inspectManagedCodexRuntime(options);
@@ -495,18 +792,19 @@ export async function resolveCodexManager(
   options: CodexManagerOptions = {},
 ): Promise<CodexManager> {
   const system = await probeSystemCodex(options);
-  if (system.status === 'supported') {
+  if (system.state === 'probed' && system.result.status === 'supported') {
     return {
-      kind: 'system',
-      version: system.detectedVersion!,
-      command: 'codex',
-      argsPrefix: [],
+      ...system.manager,
+      version: system.result.detectedVersion!,
     };
   }
-  if (system.status !== 'missing') {
+  if (system.state === 'unsupported') {
+    throw new CodexManagerError('codexSystemCliUnsupported', system.diagnostic);
+  }
+  if (system.state === 'probed') {
     throw new CodexManagerError(
       'codexSystemCliUnsupported',
-      unsupportedSystemDiagnostic(system),
+      unsupportedSystemDiagnostic(system.result),
     );
   }
 

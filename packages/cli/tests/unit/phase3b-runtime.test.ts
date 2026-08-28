@@ -649,7 +649,9 @@ describe('phase 3B namespaced runtime stores', () => {
     }, {
       env: isolation.env,
       nativeCliRunner: async (invocation) => {
-        calls.push([invocation.command, ...invocation.args].join(' '));
+        const command = invocation.agentKind
+          ?? path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '');
+        calls.push([command, ...invocation.args].join(' '));
         if (invocation.args[1] === 'remove') {
           await Promise.all([fs.remove(cacheRoot), fs.remove(installedRoot)]);
           await fs.outputFile(codexConfig, [
@@ -1528,10 +1530,13 @@ describe('phase 3B namespaced runtime stores', () => {
       }
 
       const nativeCliRunner = async (invocation: {
+        agentKind?: 'codex' | 'claude';
         command: string;
         args: string[];
       }) => {
-        if (invocation.command === 'codex'
+        const command = invocation.agentKind
+          ?? path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '');
+        if (command === 'codex'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'marketplace'
           && invocation.args[2] === 'add') {
@@ -1542,7 +1547,7 @@ describe('phase 3B namespaced runtime stores', () => {
             '',
           ].join('\n'));
         }
-        if (invocation.command === 'codex'
+        if (command === 'codex'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'add') {
           await fs.appendFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
@@ -1558,7 +1563,7 @@ describe('phase 3B namespaced runtime stores', () => {
             ),
           );
         }
-        if (invocation.command === 'claude'
+        if (command === 'claude'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'marketplace'
           && invocation.args[2] === 'add') {
@@ -1581,7 +1586,7 @@ describe('phase 3B namespaced runtime stores', () => {
             },
           });
         }
-        if (invocation.command === 'claude'
+        if (command === 'claude'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'install') {
           const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');

@@ -22,7 +22,9 @@ import {
 } from './native-cli.js';
 
 export interface ProbeAgentVersionOptions {
+  argsPrefix?: string[];
   cache?: boolean;
+  command?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   runner?: NativeCliRunner;
@@ -80,8 +82,8 @@ function buildProbeCacheKey(
   const env = options.env ?? process.env;
   return JSON.stringify({
     platform,
-    command: requirement.command,
-    args: VERSION_ARGUMENTS,
+    command: options.command ?? requirement.command,
+    args: [...(options.argsPrefix ?? []), ...VERSION_ARGUMENTS],
     cwd: options.cwd ?? process.cwd(),
     timeoutMs: options.timeoutMs ?? DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
     minVersion: requirement.minVersion,
@@ -166,8 +168,8 @@ async function probeAgentVersionUncached(
     const env = options.env ?? process.env;
     const result = await runNativeCli(
       {
-        command: requirement.command,
-        args: VERSION_ARGUMENTS,
+        command: options.command ?? requirement.command,
+        args: [...(options.argsPrefix ?? []), ...VERSION_ARGUMENTS],
         cwd: options.cwd,
         env: requirement.platform === 'codex'
           ? { ...env, CODEX_HOME: getCodexHome(env) }

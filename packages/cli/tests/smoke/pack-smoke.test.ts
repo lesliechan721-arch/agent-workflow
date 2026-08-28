@@ -230,11 +230,19 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
   ].join('\n');
 
   if (process.platform === 'win32') {
+    const codexPackageRoot = path.join(nativeBin, 'node_modules', '@openai', 'codex');
+    const codexLauncher = path.join(codexPackageRoot, 'bin', 'codex.js');
+    await fs.ensureDir(path.dirname(codexLauncher));
     await Promise.all([
       fs.writeFile(path.join(nativeBin, 'claude.cjs'), claudeScript, 'utf8'),
-      fs.writeFile(path.join(nativeBin, 'codex.cjs'), codexScript, 'utf8'),
       fs.writeFile(path.join(nativeBin, 'claude.cmd'), '@node "%~dp0\\claude.cjs" %*\r\n', 'utf8'),
-      fs.writeFile(path.join(nativeBin, 'codex.cmd'), '@node "%~dp0\\codex.cjs" %*\r\n', 'utf8'),
+      fs.writeFile(path.join(nativeBin, 'codex.cmd'), '@echo off\r\n', 'utf8'),
+      fs.writeJson(path.join(codexPackageRoot, 'package.json'), {
+        name: '@openai/codex',
+        version: '0.145.0',
+        bin: { codex: 'bin/codex.js' },
+      }),
+      fs.writeFile(codexLauncher, `${codexScript}\n`, 'utf8'),
     ]);
     return nativeBin;
   }
@@ -334,10 +342,9 @@ describe('pack smoke', () => {
           'let pnpmEntry;',
           'try {',
           '  await resolveCodexManager({',
-          '    env: { ...process.env, AW_HOME: process.argv[2] },',
+          "    env: { ...process.env, AW_HOME: process.argv[2], PATH: '' },",
           '    authorizer: async () => true,',
           '    runner: async (invocation) => {',
-          "      if (invocation.command === 'codex') { const error = new Error('missing'); error.code = 'ENOENT'; throw error; }",
           '      pnpmEntry = invocation.args[0];',
           "      return { exitCode: 1, stdout: '', stderr: '' };",
           '    },',
@@ -367,6 +374,160 @@ describe('pack smoke', () => {
     expect(path.relative(globalNodeModules, installedPnpmEntry).startsWith(`..${path.sep}`)).toBe(false);
     expect(path.relative(repoRoot(), installedPnpmEntry).startsWith(`..${path.sep}`)).toBe(true);
     expect(installedPnpmEntry).toContain(`${path.sep}pnpm${path.sep}`);
+
+    const parentWorkspace = path.join(tempRoot, 'managed-runtime-parent-workspace');
+    const managedRuntimeHome = path.join(parentWorkspace, 'state', 'aw-home');
+    const localCodexFixture = path.join(tempRoot, 'local-managed-codex');
+    const localCodexPack = path.join(tempRoot, 'local-managed-codex-pack');
+    const parentLockfile = path.join(parentWorkspace, 'pnpm-lock.yaml');
+    const parentMarker = path.join(parentWorkspace, 'workspace.marker');
+    const parentNodeModules = path.join(parentWorkspace, 'node_modules');
+    const workspaceAppNodeModules = path.join(
+      parentWorkspace,
+      'packages',
+      'workspace-app',
+      'node_modules',
+    );
+    await Promise.all([
+      fs.outputJson(path.join(parentWorkspace, 'package.json'), {
+        name: 'managed-runtime-parent-workspace',
+        private: true,
+      }),
+      fs.outputFile(
+        path.join(parentWorkspace, 'pnpm-workspace.yaml'),
+        "packages:\n  - 'packages/*'\n  - 'state/**'\n",
+      ),
+      fs.outputJson(path.join(parentWorkspace, 'packages', 'workspace-app', 'package.json'), {
+        name: 'workspace-app',
+        private: true,
+        dependencies: { 'workspace-marker-package': 'workspace:*' },
+      }),
+      fs.outputJson(path.join(parentWorkspace, 'packages', 'workspace-marker', 'package.json'), {
+        name: 'workspace-marker-package',
+        version: '1.0.0',
+      }),
+      fs.outputJson(path.join(localCodexFixture, 'package.json'), {
+        name: '@openai/codex',
+        version: '0.150.1',
+        bin: { codex: 'bin/codex.js' },
+      }),
+      fs.outputFile(path.join(localCodexFixture, 'bin', 'codex.js'), [
+        "const args = process.argv.slice(2);",
+        "if (args.length === 1 && args[0] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0); }",
+        "if (args[0] === 'plugin' && args[1] === '--help') { console.log('plugin help'); process.exit(0); }",
+        'process.exit(2);',
+      ].join('\n')),
+      fs.outputFile(parentLockfile, [
+        "lockfileVersion: '9.0'",
+        '',
+        'settings:',
+        '  autoInstallPeers: true',
+        '  excludeLinksFromLockfile: false',
+        '',
+        'importers:',
+        '',
+        '  .: {}',
+        '',
+      ].join('\n')),
+      fs.outputFile(parentMarker, 'parent-workspace-marker\n'),
+      fs.outputFile(path.join(parentNodeModules, 'parent-node-modules.marker'), 'unchanged\n'),
+      fs.ensureDir(localCodexPack),
+      fs.ensureDir(path.dirname(managedRuntimeHome)),
+    ]);
+    await execFileAsync('npm', ['pack', '--pack-destination', localCodexPack], {
+      cwd: localCodexFixture,
+      env: envWithoutNodePath,
+    });
+    const localCodexTarball = path.join(
+      localCodexPack,
+      (await fs.readdir(localCodexPack)).find((entry) => entry.endsWith('.tgz'))!,
+    );
+    const parentLockfileBefore = await fs.readFile(parentLockfile, 'utf8');
+    const parentMarkerBefore = await fs.readFile(parentMarker, 'utf8');
+    const parentNodeModulesBefore = await listFilesRecursively(parentNodeModules);
+    const managedRuntimeResult = await execFileAsync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        [
+          "import fs from 'node:fs/promises';",
+          "import { execFile } from 'node:child_process';",
+          "import path from 'node:path';",
+          "import { promisify } from 'node:util';",
+          'const execFileAsync = promisify(execFile);',
+          'const { resolveCodexManager } = await import(process.argv[1]);',
+          'const awHome = process.argv[2];',
+          'const fixtureTarball = process.argv[3];',
+          'let pnpmEntry;',
+          'const runner = async (invocation) => {',
+          "  if (invocation.args[1] === 'install') {",
+          '    pnpmEntry = invocation.args[0];',
+          "    const packageJsonPath = path.join(invocation.cwd, 'package.json');",
+          "    const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));",
+          "    if (packageJson.dependencies?.['@openai/codex'] !== '0.150.1') throw new Error('Unexpected managed Codex dependency.');",
+          "    packageJson.dependencies['@openai/codex'] = `file:${fixtureTarball}`;",
+          "    await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\\n`);",
+          '  }',
+          '  try {',
+          '    const result = await execFileAsync(invocation.command, invocation.args, {',
+          '      cwd: invocation.cwd, env: invocation.env, maxBuffer: 10 * 1024 * 1024,',
+          '    });',
+          "    return { exitCode: 0, stdout: result.stdout, stderr: result.stderr };",
+          '  } catch (error) {',
+          "    return { exitCode: typeof error.code === 'number' ? error.code : 1, stdout: error.stdout ?? '', stderr: error.stderr ?? String(error) };",
+          '  }',
+          '};',
+          'const manager = await resolveCodexManager({',
+          "  env: { ...process.env, AW_HOME: awHome, PATH: '' },",
+          '  authorizer: async () => true,',
+          '  runner,',
+          '});',
+          'console.log(JSON.stringify({ manager, pnpmEntry }));',
+        ].join('\n'),
+        installedCodexManagerImport,
+        managedRuntimeHome,
+        localCodexTarball,
+      ],
+      {
+        cwd: parentWorkspace,
+        env: {
+          ...envWithoutNodePath,
+          HOME: path.join(tempRoot, 'managed-runtime-home'),
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    const managedRuntime = JSON.parse(managedRuntimeResult.stdout) as {
+      manager: { kind: string; runtimeRoot: string };
+      pnpmEntry: string;
+    };
+    const expectedRuntimeRoot = path.join(
+      managedRuntimeHome,
+      'runtimes',
+      'codex',
+      '0.150.1',
+      `${process.platform}-${process.arch}`,
+    );
+    expect(managedRuntime).toEqual({
+      manager: expect.objectContaining({
+        kind: 'aw-managed',
+        runtimeRoot: expectedRuntimeRoot,
+      }),
+      pnpmEntry: installedPnpmEntry,
+    });
+    await expect(fs.readJson(path.join(
+      expectedRuntimeRoot,
+      'node_modules',
+      '@openai',
+      'codex',
+      'package.json',
+    ))).resolves.toMatchObject({ name: '@openai/codex', version: '0.150.1' });
+    await expect(fs.readFile(parentLockfile, 'utf8')).resolves.toBe(parentLockfileBefore);
+    await expect(fs.readFile(parentMarker, 'utf8')).resolves.toBe(parentMarkerBefore);
+    await expect(listFilesRecursively(parentNodeModules)).resolves.toEqual(parentNodeModulesBefore);
+    await expect(fs.pathExists(workspaceAppNodeModules)).resolves.toBe(false);
+
     await expect(execFileAsync(awBin, ['--version'], {
       cwd: tempRoot,
       env: externalAuthoringEnv,

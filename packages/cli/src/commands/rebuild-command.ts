@@ -828,22 +828,34 @@ async function cleanupOfflineOwnedComponents(options: {
   const warnings: string[] = [];
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
   let codexManager = options.codexManager;
-  if (!codexManager && (await Promise.all(options.targets.flatMap((target) =>
-    target.platform === 'codex' && target.scope === 'user'
-      ? [codexNativeRemovalRequired({
+  const codexManagerNeedFailures = new Map<LiveCleanupTarget, Error>();
+  if (!codexManager) {
+    const codexManagerRequired = (await Promise.all(options.targets.map(async (target) => {
+      if (target.platform !== 'codex' || target.scope !== 'user') return false;
+      try {
+        return await codexNativeRemovalRequired({
           pluginName: target.pluginName,
           cwd: options.cwd,
           env: options.env,
           marketplaceName: target.marketplaceName,
           marketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces', target.sourceId),
-        })]
-      : []))).some(Boolean)) {
-    codexManager = await (options.codexManagerResolver ?? resolveCodexManager)({
-      cwd: options.cwd,
-      env: options.env,
-      runner: nativeCliRunner,
-      authorizer: options.managedCodexAuthorizer,
-    });
+        });
+      } catch (error) {
+        codexManagerNeedFailures.set(target, new Error(
+          'codexNativeResidueProbeFailed: Codex native residue was retained because its config or cache evidence could not be read. Repair the damaged Codex weak state, then retry cleanup; you can also upgrade AW or install a compatible official Codex CLI.',
+          { cause: error },
+        ));
+        return false;
+      }
+    }))).some(Boolean);
+    if (codexManagerRequired) {
+      codexManager = await (options.codexManagerResolver ?? resolveCodexManager)({
+        cwd: options.cwd,
+        env: options.env,
+        runner: nativeCliRunner,
+        authorizer: options.managedCodexAuthorizer,
+      });
+    }
   }
   const context: RebuildExecutionContext = {
     env: options.env,
@@ -928,10 +940,19 @@ async function cleanupOfflineOwnedComponents(options: {
       },
       includeHistoricalLifecycleArtifacts: false,
     });
+    const codexManagerNeedFailure = codexManagerNeedFailures.get(target);
+    const driver = codexManagerNeedFailure && integration.driver.probeNative
+      ? {
+          ...integration.driver,
+          probeNative: async () => {
+            throw codexManagerNeedFailure;
+          },
+        }
+      : integration.driver;
     let result = await executeRebuildOperation({
       command: 'cleanup',
       target: desired,
-      driver: integration.driver,
+      driver,
       activeStore,
     });
     const exclusiveResidual = (await Promise.all(exclusiveRecovery.residual.map(async (entry) =>
@@ -991,6 +1012,45 @@ async function cleanupOfflineOwnedComponents(options: {
       scope: result.target.scope,
     })),
   });
+}
+
+async function previewOfflineOwnedComponents(options: {
+  targets: LiveCleanupTarget[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  nativeCliRunner?: NativeCliRunner;
+  codexManagerPreviewer?: typeof previewCodexManager;
+  onPreviewStage?: RebuildCommandRuntime['onPreviewStage'];
+}): Promise<RebuildCommandResult> {
+  if (options.targets.some((target) => target.marketplaceIdentityUnresolved)) {
+    throw namespacedPreflightError(
+      'marketplaceIdentityUnavailable: Cannot uniquely recover the native marketplace name from live inventory or a canonical native registration path.',
+      options.targets,
+    );
+  }
+  await options.onPreviewStage?.('inventory');
+  const preview = mergeRebuildCommandResults([]);
+  const codexManagerRequired = (await Promise.all(options.targets.flatMap((target) =>
+    target.platform === 'codex' && target.scope === 'user'
+      ? [codexNativeRemovalRequired({
+          pluginName: target.pluginName,
+          cwd: options.cwd,
+          env: options.env,
+          marketplaceName: target.marketplaceName,
+          marketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces', target.sourceId),
+        })]
+      : []))).some(Boolean);
+  await options.onPreviewStage?.('dependencyPlan');
+  if (codexManagerRequired) {
+    preview.codexManagerPreview = await (
+      options.codexManagerPreviewer ?? previewCodexManager
+    )({
+      cwd: options.cwd,
+      env: options.env,
+      runner: options.nativeCliRunner,
+    });
+  }
+  return preview;
 }
 
 async function assertOfflineCleanupDependents(options: {
@@ -1094,6 +1154,16 @@ export async function runRebuildCommand(options: {
     liveTargets = cleanupLiveTargets;
   }
   if (cleanupHasDamagedExclusiveTarget) {
+    if (options.runtime?.previewDependencyPlanOnly) {
+      return previewOfflineOwnedComponents({
+        targets: cleanupLiveTargets,
+        cwd: options.commandOptions.cwd,
+        env: runtimeEnv,
+        nativeCliRunner: options.runtime.nativeCliRunner,
+        codexManagerPreviewer: options.runtime.codexManagerPreviewer,
+        onPreviewStage: options.runtime.onPreviewStage,
+      });
+    }
     return cleanupOfflineOwnedComponents({
       targets: cleanupLiveTargets,
       cwd: options.commandOptions.cwd,
@@ -2077,7 +2147,7 @@ export async function runRebuildCommand(options: {
       return leaseSafeRebuildResult(merged);
     },
     });
-    if (cleanupForce) {
+    if (cleanupForce && !options.runtime?.previewDependencyPlanOnly) {
       try {
         await (options.runtime?.removeObsoleteInstallationContracts ?? fs.remove)(
           path.join(resolveAwHome(runtimeEnv), 'installation-contracts'),
@@ -2115,6 +2185,16 @@ export async function runRebuildCommand(options: {
           targets: cleanupLiveTargets,
           cwd: options.commandOptions.cwd,
           env: runtimeEnv,
+        });
+      }
+      if (options.runtime?.previewDependencyPlanOnly) {
+        return previewOfflineOwnedComponents({
+          targets: cleanupLiveTargets,
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+          nativeCliRunner: options.runtime.nativeCliRunner,
+          codexManagerPreviewer: options.runtime.codexManagerPreviewer,
+          onPreviewStage: options.runtime.onPreviewStage,
         });
       }
       return cleanupOfflineOwnedComponents({

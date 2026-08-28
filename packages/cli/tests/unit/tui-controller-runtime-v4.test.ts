@@ -531,6 +531,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       nativePlugins: {},
       repoManagedArtifacts: [],
       receiptTargets: [],
+      codexManagerPreview: { state: 'requires-install' },
     });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
@@ -557,18 +558,15 @@ describe('TUI controller runtime scope conflict validation', () => {
     const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
     expect(evidence).toMatchObject({
       source: { sourceId: 'official', sourceIdentity: 'identity:official', requestedRef: 'path' },
+      codexManager: {
+        state: 'requires-install',
+        packageName: '@openai/codex',
+        version: '0.150.1',
+      },
       targetFingerprint: expect.stringMatching(/^sha256:/u),
     });
 
-    const authorizedEvidence = {
-      ...evidence,
-      codexManager: {
-        state: 'requires-install' as const,
-        packageName: '@openai/codex' as const,
-        version: '0.150.1',
-      },
-    };
-    await expect(dependencies.executeIntent(intent, authorizedEvidence)).resolves.toMatchObject({
+    await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
       overallState: 'succeeded',
     });
     expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledWith(
