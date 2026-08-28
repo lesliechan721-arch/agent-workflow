@@ -2,7 +2,11 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { validatePublishedCatalogSnapshot } from '@lesliechan721/aw-plugin-core';
+import {
+  resolveCatalogWorkspaceRoot,
+  validatePublishedCatalogSnapshot,
+  type CatalogWorkspaceResolvedFrom,
+} from '@lesliechan721/aw-plugin-core';
 
 import {
   disposeCatalogPublicationInspection,
@@ -13,6 +17,11 @@ import {
   type CatalogPublicationDescriptor,
   type CatalogPublicationPreparation,
 } from './catalog-publication-inspection.js';
+import {
+  resolveCatalogPublicationTarget,
+  type CatalogBranchResolvedFrom,
+  type CatalogRemoteResolvedFrom,
+} from './catalog-publication-target.js';
 
 export { safeRemoteIdentity, sanitizedGitEnvironment } from './catalog-publication-inspection.js';
 
@@ -24,14 +33,18 @@ export interface CatalogPublishIo {
 export interface CatalogPublishReceipt {
   command: 'catalog:publish';
   ok: true;
+  workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   workspaceIdentity: string;
   catalogVersion: string;
   channel: 'latest' | 'beta';
   remote: string;
+  remoteResolvedFrom: CatalogRemoteResolvedFrom;
   remoteUrl: string;
   fetchUrl: string;
   pushUrl: string;
   branch: string;
+  branchResolvedFrom: CatalogBranchResolvedFrom;
   parent: string | null;
   tag: string;
   commit: string;
@@ -126,6 +139,9 @@ async function publishCatalogPublicationPreparation(options: {
   descriptor: CatalogPublicationDescriptor;
   snapshotRoot: string;
   beforeRemoteWrite?: () => Promise<void>;
+  workspaceRootResolvedFrom?: CatalogWorkspaceResolvedFrom;
+  remoteResolvedFrom?: CatalogRemoteResolvedFrom;
+  branchResolvedFrom?: CatalogBranchResolvedFrom;
 }): Promise<CatalogPublishReceipt> {
   const { preparation: inspection, descriptor, snapshotRoot } = options;
   const {
@@ -305,14 +321,18 @@ async function publishCatalogPublicationPreparation(options: {
   return {
     command: 'catalog:publish',
     ok: true,
+    workspaceRoot: inspection.catalogWorkspaceRoot,
+    workspaceRootResolvedFrom: options.workspaceRootResolvedFrom ?? 'explicit',
     workspaceIdentity: descriptor.workspaceIdentity,
     catalogVersion: descriptor.catalogVersion,
     channel: descriptor.channel,
     remote,
+    remoteResolvedFrom: options.remoteResolvedFrom ?? 'explicit',
     remoteUrl: safeFetchUrl,
     fetchUrl: safeFetchUrl,
     pushUrl: safePushUrl,
     branch,
+    branchResolvedFrom: options.branchResolvedFrom ?? 'explicit',
     parent,
     tag,
     commit,
@@ -355,7 +375,8 @@ export async function publishPreparedCatalogPublication(options: {
 }
 
 export async function runCatalogPublishCommand(options: {
-  workspaceRoot: string;
+  cwd: string;
+  workspaceRoot?: string;
   remote?: string;
   branch?: string;
   expectedDescriptorDigest?: string;
@@ -373,8 +394,23 @@ export async function runCatalogPublishCommand(options: {
       'Catalog publish requires --expected-descriptor-digest from a successful publication preflight.',
     );
   }
+  const workspace = await resolveCatalogWorkspaceRoot({
+    cwd: options.cwd,
+    ...(options.workspaceRoot === undefined ? {} : { explicitRoot: options.workspaceRoot }),
+    mode: 'existing',
+  });
+  const target = await resolveCatalogPublicationTarget({
+    workspaceRoot: workspace.workspaceRoot,
+    remote: options.remote,
+    branch: options.branch,
+    env: options.env,
+    requireRemote: true,
+  });
   const inspection = await prepareCatalogPublicationInspection({
-    ...options,
+    workspaceRoot: workspace.workspaceRoot,
+    remote: target.remote!,
+    branch: target.branch,
+    env: options.env,
     failOnUnavailable: true,
   });
   try {
@@ -413,6 +449,9 @@ export async function runCatalogPublishCommand(options: {
       preparation: inspection,
       descriptor: inspection.descriptor,
       snapshotRoot: inspection.prepared.outputRoot,
+      workspaceRootResolvedFrom: workspace.workspaceRootResolvedFrom,
+      remoteResolvedFrom: target.remoteResolvedFrom,
+      branchResolvedFrom: target.branchResolvedFrom,
     });
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error))

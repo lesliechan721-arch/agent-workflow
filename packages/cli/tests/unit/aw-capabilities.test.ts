@@ -31,6 +31,7 @@ describe('current AW executable capabilities', () => {
       'aw.skill-validation.v1',
       'aw.plugin-authoring.v1',
       'aw.catalog-authoring.v1',
+      'aw.catalog-context.v1',
       'aw.catalog-publication.v1',
       'aw.catalog-snapshot.v5',
       'aw.self-check.v1',

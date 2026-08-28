@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, Option } from 'commander';
+import { resolveCatalogWorkspaceRoot } from '@lesliechan721/aw-plugin-core';
 
 import { initCommand } from './commands/init.js';
 import {
@@ -142,6 +143,7 @@ import {
 } from './authoring/workspace-commands.js';
 import { runCatalogPublishCommand } from './commands/catalog-publish.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
+import { getCatalogContext } from './commands/catalog-context.js';
 import {
   getPluginCapabilitiesResult,
   parsePluginCapabilitySurface,
@@ -152,6 +154,7 @@ import {
   checkCurrentAw,
   describeCurrentAw,
   inspectPluginRequirements,
+  IMPLEMENTED_AW_CAPABILITIES,
 } from './commands/aw-capabilities.js';
 
 export type { CliIo } from './commands/runtime.js';
@@ -1500,7 +1503,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('remove')
     .description('Remove one committed and unchanged canonical plugin source tree')
     .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
-    .requiredOption('--workspace-root <path>', 'Catalog Workspace root')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor)')
     .option('--yes', 'confirm plugin source deletion', false)
     .option('--json', 'emit one schema 1 JSON object', false);
 
@@ -1525,9 +1528,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       json?: boolean;
     }) => {
       try {
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd: path.resolve(cwd, pluginDirectory),
+          ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: path.resolve(cwd, rawOptions.workspaceRoot) }),
+          mode: 'existing',
+        });
         commandExitState.exitCode = await runPluginTestCommand({
-          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
-          pluginDirectory,
+          ...workspace,
+          pluginDirectory: path.resolve(cwd, pluginDirectory),
           json: rawOptions.json,
           io,
         });
@@ -1554,9 +1562,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       json?: boolean;
     }) => {
       try {
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd: path.resolve(cwd, pluginDirectory),
+          ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: path.resolve(cwd, rawOptions.workspaceRoot) }),
+          mode: 'existing',
+        });
         await runPluginBuildCommand({
-          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
-          pluginDirectory,
+          ...workspace,
+          pluginDirectory: path.resolve(cwd, pluginDirectory),
           out: rawOptions.out,
           force: rawOptions.force,
           json: rawOptions.json,
@@ -1614,9 +1627,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       json?: boolean;
     }) => {
       try {
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd,
+          ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
+          mode: 'initialize',
+        });
         await runCatalogInitCommand({
           ...rawOptions,
-          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          ...workspace,
           io,
         });
       } catch (error) {
@@ -1625,6 +1643,27 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeLine(io.stderr, message);
         commandExitState.exitCode = 1;
       }
+    });
+
+  catalog
+    .command('context')
+    .description('Inspect resolved Catalog Workspace and publication context without network access')
+    .option('--workspace-root <path>', 'explicit Catalog Workspace root')
+    .option('--remote <name>', 'explicit configured Git remote name')
+    .option('--branch <name>', 'explicit Catalog publication branch')
+    .requiredOption('--json', 'emit one schema 1 JSON object')
+    .action(async (rawOptions: { workspaceRoot?: string; remote?: string; branch?: string }) => {
+      const receipt = await getCatalogContext({
+        cwd,
+        workspaceRoot: rawOptions.workspaceRoot,
+        remote: rawOptions.remote,
+        branch: rawOptions.branch,
+        env,
+        awVersion: resolveCliVersion(),
+        capabilities: IMPLEMENTED_AW_CAPABILITIES,
+      });
+      writeJsonReceipt(io.stdout, receipt);
+      if (receipt.issues.some((issue) => issue.blocking)) commandExitState.exitCode = 1;
     });
 
   catalog
@@ -1640,8 +1679,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       json?: boolean;
     }) => {
       try {
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd,
+          ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
+          mode: 'existing',
+        });
         await runCatalogVersionCommand({
-          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          ...workspace,
           version,
           bump: rawOptions.bump,
           json: rawOptions.json,
@@ -1664,8 +1708,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (rawOptions: { workspaceRoot?: string; out?: string; force?: boolean; json?: boolean }) => {
       try {
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd,
+          ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
+          mode: 'existing',
+        });
         await runCatalogBuildCommand({
-          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          ...workspace,
           out: rawOptions.out,
           force: rawOptions.force,
           json: rawOptions.json,
@@ -1715,7 +1764,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       json?: boolean;
     }) => {
       const receipt = await getCatalogStatus({
-        workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+        cwd,
+        workspaceRoot: rawOptions.workspaceRoot,
         remote: rawOptions.remote,
         branch: rawOptions.branch,
         preflight: rawOptions.preflight,
@@ -1746,7 +1796,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         const context = createActionContext('catalog:publish', {});
         const result = await runCatalogPublishCommand({
-          workspaceRoot: path.resolve(cwd, rawOptions.workspaceRoot ?? '.'),
+          cwd,
+          workspaceRoot: rawOptions.workspaceRoot,
           remote: rawOptions.remote,
           branch: rawOptions.branch,
           expectedDescriptorDigest: rawOptions.expectedDescriptorDigest,
@@ -2927,8 +2978,8 @@ export async function runCli(
   };
   const jsonAuthoringCommand = argv.includes('--json')
     && (
-      (argv[0] === 'catalog' && ['init', 'version', 'build', 'validate', 'status', 'publish'].includes(argv[1] ?? ''))
-      || (argv[0] === 'plugin' && ['build', 'test'].includes(argv[1] ?? ''))
+      (argv[0] === 'catalog' && ['init', 'context', 'version', 'build', 'validate', 'status', 'publish'].includes(argv[1] ?? ''))
+      || (argv[0] === 'plugin' && ['build', 'test', 'validate', 'status', 'remove'].includes(argv[1] ?? ''))
     )
     ? `${argv[0]}:${argv[1]}`
     : null;
@@ -2948,18 +2999,51 @@ export async function runCli(
         : undefined;
     if (authoringScript && !argv.includes('--help') && !argv.includes('-h')) {
       const authoringArgs = argv.slice(2);
+      let authoringEnv = options.env ?? process.env;
       if (
         argv[0] === 'plugin'
-        && argv[1] === 'validate'
-        && !authoringArgs.some((token) => token === '--workspace-root' || token.startsWith('--workspace-root='))
+        && !authoringArgs.some((token) => token === '--plugin-root' || token.startsWith('--plugin-root='))
       ) {
-        authoringArgs.push('--workspace-root', options.cwd ?? process.cwd());
+        let explicitRoot: string | undefined;
+        for (let index = 0; index < authoringArgs.length; index += 1) {
+          const token = authoringArgs[index]!;
+          if (token.startsWith('--workspace-root=')) explicitRoot = token.slice('--workspace-root='.length);
+          if (token === '--workspace-root') explicitRoot = authoringArgs[index + 1];
+        }
+        const originalCwd = options.cwd ?? process.cwd();
+        let discoveryCwd = originalCwd;
+        if (argv[1] === 'validate') {
+          const valueOptions = new Set(['--workspace-root', '--claude-skill-profile', '--version-base']);
+          for (let index = 0; index < authoringArgs.length; index += 1) {
+            const token = authoringArgs[index]!;
+            if (valueOptions.has(token)) {
+              index += 1;
+              continue;
+            }
+            if (!token.startsWith('-')) {
+              discoveryCwd = path.resolve(originalCwd, token);
+              authoringArgs[index] = discoveryCwd;
+              break;
+            }
+          }
+        }
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd: discoveryCwd,
+          ...(explicitRoot === undefined ? {} : { explicitRoot: path.resolve(options.cwd ?? process.cwd(), explicitRoot) }),
+          mode: 'existing',
+        });
+        authoringEnv = {
+          ...authoringEnv,
+          AW_AUTHORING_WORKSPACE_ROOT: workspace.workspaceRoot,
+          AW_AUTHORING_WORKSPACE_ROOT_RESOLVED_FROM: workspace.workspaceRootResolvedFrom,
+        };
+        if (explicitRoot === undefined) authoringArgs.push('--workspace-root', workspace.workspaceRoot);
       }
       return runAuthoringScript({
         scriptName: authoringScript,
         args: authoringArgs,
         cwd: options.cwd ?? process.cwd(),
-        env: options.env ?? process.env,
+        env: authoringEnv,
         io,
       });
     }
@@ -3016,6 +3100,50 @@ export async function runCli(
       __awCommandExitState?: { exitCode: number };
     }).__awCommandExitState?.exitCode ?? 0;
   } catch (error) {
+    if (jsonAuthoringCommand && !(error instanceof CommanderError)) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (jsonAuthoringCommand === 'plugin:validate') {
+        writeJsonReceipt(io.stdout, {
+          ok: false,
+          profile: 'unknown',
+          warnings: [],
+          errors: [message],
+        });
+      } else if (jsonAuthoringCommand === 'plugin:status') {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 3,
+          policy: 'development',
+          ok: false,
+          base: null,
+          requestedBase: null,
+          baseCommit: null,
+          checkedPlugins: 0,
+          checks: [],
+          workspaceRoot: null,
+          workspaceRootResolvedFrom: null,
+          errors: [{ code: 'workspaceResolutionFailed', message }],
+        });
+      } else if (jsonAuthoringCommand === 'plugin:remove') {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'plugin:remove',
+          ok: false,
+          workspaceRoot: null,
+          workspaceRootResolvedFrom: null,
+          baseCommit: null,
+          plugin: null,
+          removed: false,
+          errors: [{ code: 'workspaceResolutionFailed', message }],
+        });
+      } else {
+        writeJsonReceipt(io.stdout, {
+          command: jsonAuthoringCommand,
+          ok: false,
+          errors: [{ code: 'workspaceResolutionFailed', message }],
+        });
+      }
+      return 1;
+    }
     if (jsonAuthoringCommand && error instanceof CommanderError) {
       writeJsonReceipt(io.stdout, {
         command: jsonAuthoringCommand,

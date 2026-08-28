@@ -8,6 +8,7 @@ import {
   mutateCatalogWorkspaceVersion,
   readCatalogWorkspace,
   validateCatalogSnapshotComplete,
+  type CatalogWorkspaceResolvedFrom,
   type CatalogVersionBump,
   type CatalogWorkspaceBuildAdapter,
   type CatalogWorkspacePluginBuildAdapter,
@@ -49,6 +50,7 @@ function writeJson(io: AuthoringCommandIo, value: unknown): void {
 
 export async function runCatalogInitCommand(options: {
   workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   force?: boolean;
   json?: boolean;
   ownerName?: string;
@@ -62,6 +64,7 @@ export async function runCatalogInitCommand(options: {
     command: 'catalog:init',
     ok: true,
     workspaceRoot: result.workspaceRoot,
+    workspaceRootResolvedFrom: options.workspaceRootResolvedFrom,
     metadataPath: result.metadataPath,
     catalogVersion: result.metadata.catalog.version,
   };
@@ -71,6 +74,7 @@ export async function runCatalogInitCommand(options: {
 
 export async function runCatalogVersionCommand(options: {
   workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   version?: string;
   bump?: CatalogVersionBump;
   json?: boolean;
@@ -79,6 +83,7 @@ export async function runCatalogVersionCommand(options: {
   command: 'catalog:version';
   ok: true;
   workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   catalogVersion: string;
   changed: boolean;
 }> {
@@ -98,6 +103,7 @@ export async function runCatalogVersionCommand(options: {
     command: 'catalog:version' as const,
     ok: true as const,
     workspaceRoot: path.resolve(options.workspaceRoot),
+    workspaceRootResolvedFrom: options.workspaceRootResolvedFrom,
     catalogVersion: metadata.catalog.version,
     changed: metadata.catalog.version !== current.metadata.catalog.version,
   };
@@ -108,6 +114,7 @@ export async function runCatalogVersionCommand(options: {
 
 export async function runCatalogBuildCommand(options: {
   workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   out?: string;
   force?: boolean;
   json?: boolean;
@@ -120,7 +127,13 @@ export async function runCatalogBuildCommand(options: {
     adapter: catalogBuildAdapter,
     reservedImports: CLI_RESERVED_IMPORTS,
   });
-  const receipt = { command: 'catalog:build', ok: true, ...result };
+  const receipt = {
+    command: 'catalog:build',
+    ok: true,
+    workspaceRoot: path.resolve(options.workspaceRoot),
+    workspaceRootResolvedFrom: options.workspaceRootResolvedFrom,
+    ...result,
+  };
   if (options.json) writeJson(options.io, receipt);
   else options.io.stdout(`Catalog snapshot built at ${result.outputRoot}.\n`);
 }
@@ -145,6 +158,7 @@ export async function runCatalogValidateCommand(options: {
 
 export async function runPluginBuildCommand(options: {
   workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   pluginDirectory: string;
   out?: string;
   force?: boolean;
@@ -159,13 +173,20 @@ export async function runPluginBuildCommand(options: {
     adapter: pluginBuildAdapter,
     reservedImports: CLI_RESERVED_IMPORTS,
   });
-  const receipt = { command: 'plugin:build', ok: true, ...result };
+  const receipt = {
+    command: 'plugin:build',
+    ok: true,
+    workspaceRoot: path.resolve(options.workspaceRoot),
+    workspaceRootResolvedFrom: options.workspaceRootResolvedFrom,
+    ...result,
+  };
   if (options.json) writeJson(options.io, receipt);
   else options.io.stdout(`Plugin bundle built at ${result.outputRoot}.\n`);
 }
 
 export async function runPluginTestCommand(options: {
   workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
   pluginDirectory: string;
   json?: boolean;
   io: AuthoringCommandIo;
@@ -185,6 +206,8 @@ export async function runPluginTestCommand(options: {
     writeJson(options.io, {
       command: 'plugin:test',
       ok: exitCode === 0,
+      workspaceRoot: catalogWorkspace.workspaceRoot,
+      workspaceRootResolvedFrom: options.workspaceRootResolvedFrom,
       pluginName: plugin.manifest.name,
       exitCode,
       stdout,

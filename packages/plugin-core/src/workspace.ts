@@ -525,13 +525,52 @@ function publishedContentDigest(
   }));
 }
 
-function sourceIdentity(metadata: MarketplaceSourceMeta, plugins: readonly PluginMeta[]): string {
-  return sha256(stableStringify({
-    metadata,
-    plugins: [...plugins]
-      .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name))
-      .map((plugin) => plugin.manifest),
-  }));
+const SOURCE_IDENTITY_EXCLUDED_DIRECTORIES = new Set([
+  '.git', '.aw', 'node_modules', 'evals', 'reports',
+]);
+const SOURCE_IDENTITY_EXCLUDED_FILES = new Set([
+  '.DS_Store', 'AGENTS.md', 'CLAUDE.md',
+]);
+
+async function sourceIdentityRecords(root: string, relative = ''): Promise<string[]> {
+  const records: string[] = [];
+  for (const entry of (await fs.readdir(path.join(root, relative), { withFileTypes: true }))
+    .sort((left, right) => left.name.localeCompare(right.name))) {
+    if (SOURCE_IDENTITY_EXCLUDED_DIRECTORIES.has(entry.name) || SOURCE_IDENTITY_EXCLUDED_FILES.has(entry.name)) {
+      continue;
+    }
+    const child = relative ? path.posix.join(relative, entry.name) : entry.name;
+    const filePath = path.join(root, child);
+    const stat = await fs.lstat(filePath);
+    if (stat.isSymbolicLink()) throw new Error(`Catalog source identity does not accept symbolic links: ${filePath}`);
+    if (stat.isDirectory()) records.push(...await sourceIdentityRecords(root, child));
+    else if (stat.isFile()) {
+      const mode = (stat.mode & 0o111) === 0 ? '100644' : '100755';
+      records.push(`${child}\0${mode}\0${sha256(await fs.readFile(filePath))}`);
+    } else {
+      throw new Error(`Catalog source identity only accepts regular files and directories: ${filePath}`);
+    }
+  }
+  return records;
+}
+
+export async function calculateCatalogWorkspaceSourceIdentity(
+  workspace: Pick<CatalogWorkspace, 'workspaceRoot' | 'metadataPath' | 'plugins'>,
+): Promise<string> {
+  const roots = [workspace.metadataPath, ...workspace.plugins.map((plugin) => plugin.rootDir)];
+  const records: string[] = [];
+  for (const sourceRoot of roots.sort((left, right) => left.localeCompare(right))) {
+    const relativeRoot = path.relative(workspace.workspaceRoot, sourceRoot).split(path.sep).join('/');
+    const stat = await fs.lstat(sourceRoot);
+    if (stat.isSymbolicLink()) throw new Error(`Catalog source identity does not accept symbolic links: ${sourceRoot}`);
+    if (stat.isFile()) {
+      const mode = (stat.mode & 0o111) === 0 ? '100644' : '100755';
+      records.push(`${relativeRoot}\0${mode}\0${sha256(await fs.readFile(sourceRoot))}`);
+    } else if (stat.isDirectory()) {
+      for (const record of await sourceIdentityRecords(sourceRoot)) records.push(`${relativeRoot}/${record}`);
+    }
+  }
+  return sha256(records.sort().join('\n'));
 }
 
 function generatedOutputMarker(options: {
@@ -719,7 +758,7 @@ export async function buildCatalogWorkspace(options: {
   const catalogVersion = catalogWorkspace.metadata.catalog.version;
   const channel = deriveCatalogChannel(catalogVersion);
   const pluginNames = plugins.map((plugin) => plugin.manifest.name).sort();
-  const identity = sourceIdentity(catalogWorkspace.metadata, plugins);
+  const identity = await calculateCatalogWorkspaceSourceIdentity(catalogWorkspace);
   const marker = generatedOutputMarker({
     kind: 'catalog',
     workspaceIdentity: catalogWorkspace.workspaceIdentity,

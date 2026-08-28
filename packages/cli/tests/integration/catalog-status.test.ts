@@ -61,7 +61,7 @@ describe('Catalog publication status CLI', () => {
     })).toBe(0);
     const receipt = JSON.parse(output.stdout());
     expect(receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'catalog:status',
       ok: true,
       workspace: { valid: true, identity: expect.any(String) },
@@ -318,13 +318,17 @@ describe('Catalog publication status CLI', () => {
     ], { cwd: root, interactive: false, io: publishOutput.io })).toBe(0);
 
     expect(JSON.parse(publishOutput.stdout())).toMatchObject({
+      workspaceRoot: await fs.realpath(root),
+      workspaceRootResolvedFrom: 'explicit',
       workspaceIdentity: status.workspace.identity,
       catalogVersion: status.catalog.version,
       sourceHead: status.git.sourceHead,
       remote: status.publication.remote,
+      remoteResolvedFrom: status.publication.remoteResolvedFrom,
       fetchUrl: status.publication.fetchUrl,
       pushUrl: status.publication.pushUrl,
       branch: status.publication.branch,
+      branchResolvedFrom: status.publication.branchResolvedFrom,
       parent: status.publication.parent,
       tag: status.publication.tag,
       snapshotDigest: status.publication.snapshotDigest,

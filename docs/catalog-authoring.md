@@ -56,7 +56,7 @@ aw catalog validate "$workspace/.aw/catalog" --json
 
 ## Publication preflight 和授权
 
-远端发布只由用户显式调用 `publish-aw-catalog`。Remote 和 branch 必须由用户明确给出，不能从当前 Git branch、默认 remote 或官方命名自动选择。
+远端发布只由用户显式调用 `publish-aw-catalog`。先用 `aw catalog context --json` 检查 CLI 解析的精确目标。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须显式选择。Branch 使用显式参数或固定默认 `catalog`，绝不从当前 Git branch 推断。
 
 先说明 preflight 会从 committed source HEAD 执行所有插件的公开 validator 和 build code，再运行：
 

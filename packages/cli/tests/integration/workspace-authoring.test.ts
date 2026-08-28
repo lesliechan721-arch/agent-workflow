@@ -422,6 +422,7 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
 
   it('reports current status without Git and requires Git only for an explicit base', async () => {
     const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
     await fs.ensureDir(path.join(root, 'plugins', 'demo', '.agents-plugin'));
     await fs.writeJson(path.join(root, 'plugins', 'demo', '.agents-plugin', 'plugin.json'), {
       schemaVersion: 1,

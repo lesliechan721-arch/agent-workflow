@@ -32,6 +32,7 @@ const INHERITED_GIT_AUTH_ENV = new Set([
 export interface CatalogPublicationIssue {
   code: string;
   message: string;
+  blocking: boolean;
 }
 
 export class CatalogPublicationInspectionError extends Error {

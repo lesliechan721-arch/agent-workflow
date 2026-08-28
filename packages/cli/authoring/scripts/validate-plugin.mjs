@@ -4927,6 +4927,8 @@ async function main() {
       profile: args.strictAgentSkills ? 'agent-skills-portable-core' : 'aw-source',
       claudeSkillProfile: args.claudeSkillProfile,
       pluginDirectory: resolved,
+      workspaceRoot: process.env.AW_AUTHORING_WORKSPACE_ROOT ?? repoRoot,
+      workspaceRootResolvedFrom: process.env.AW_AUTHORING_WORKSPACE_ROOT_RESOLVED_FROM ?? 'explicit',
       versionCheck: pluginVersionCheckResult,
       warnings,
       errors,
