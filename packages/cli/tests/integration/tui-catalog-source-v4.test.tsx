@@ -97,7 +97,7 @@ async function configuredController(): Promise<{
 }
 
 describe('TUI v4 real catalog source boundary', () => {
-  it('moves a real cached local Git source from cache through checking to ready after forceRemote succeeds', async () => {
+  it('refreshes a real cached local Git source after the first frame without replacing session status', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const work = path.join(isolation.layout.fixtureCwd, 'tui-git-work');
     const remote = path.join(isolation.layout.fixtureCwd, 'tui-git-remote.git');
@@ -134,21 +134,26 @@ describe('TUI v4 real catalog source boundary', () => {
     }));
     await dependencies.loadStatus(new AbortController().signal);
     const controller = new TuiController(dependencies);
-    const observed: string[] = [];
+    const observedHealth: string[] = [];
+    const observedRefresh: string[] = [];
     controller.subscribe((snapshot) => {
       const state = snapshot.sourceHealth.find((health) => health.sourceId === 'git-local')?.state;
-      if (state && observed.at(-1) !== state) observed.push(state);
+      if (state && observedHealth.at(-1) !== state) observedHealth.push(state);
+      const refreshState = snapshot.catalogGenerations.find((source) =>
+        source.sourceId === 'git-local')?.refreshState;
+      if (refreshState && observedRefresh.at(-1) !== refreshState) observedRefresh.push(refreshState);
     });
 
     await controller.load();
     await waitFor(
-      () => controller.snapshot.sourceHealth.some((health) =>
-        health.sourceId === 'git-local' && health.state === 'ready'),
-      'Git source ready',
-      () => ({ observed, snapshot: controller.snapshot }),
+      () => controller.getCatalogGeneration('git-local')?.refreshState === 'upToDate',
+      'Git generation up to date',
+      () => ({ observedHealth, observedRefresh, snapshot: controller.snapshot }),
     );
 
-    expect(observed).toEqual(expect.arrayContaining(['cache', 'checking', 'ready']));
+    expect(observedRefresh).toEqual(expect.arrayContaining(['idle', 'checking', 'validating', 'upToDate']));
+    expect(observedHealth).toEqual(['cache']);
+    expect(controller.getPluginOverview('git-local/demo')).toMatchObject({ version: '1.0.0' });
     controller.dispose();
   });
 

@@ -161,6 +161,9 @@ aw skill materialize <source>/<plugin> --scope project --out ./.aw-review/<plugi
 # Review 完整依赖闭包后，通过 PATH 中的兼容 Skills CLI 安装
 aw skill install <source>/<plugin> --scope project
 
+# 选择 Git 来源是否在 TUI 首屏后检查更新
+aw catalog source refresh-policy <id> startup
+
 # 清理 AW 管理的现场组件，再按 catalog 重建
 aw cleanup git -p codex -s project
 aw reinstall git -p codex -s user
@@ -168,7 +171,7 @@ aw reinstall git -p codex -s user
 
 `cleanup`、`uninstall` 和 `reinstall` 不会删除 AW 保存的插件配置；配置只由 `aw config reset` 删除。
 
-普通 install、upgrade、reinstall、uninstall、status、config、TUI 和 Portable 操作只读取本地 Active Catalog generation。只要 Active 已存在，这些操作不会检查远端。某个已配置来源第一次没有 Active 时，普通操作只自动 bootstrap 一次；失败时按提示运行 `aw catalog source refresh <id>`。后续 Git refresh 产生的 Candidate 在执行 `aw catalog source activate-candidate <id>` 前不会影响普通操作。Path 来源的工作区改动也必须显式 refresh。Active 损坏时命令停止并要求手动 refresh，不自动联网修复。Catalog source add、update、refresh 和 activate-candidate 是显式来源管理操作，不受这个远端限制。
+普通 install、upgrade、reinstall、uninstall、status、config、TUI 和 Portable 操作只读取本地 Active Catalog generation。只要 Active 已存在，这些操作不会检查远端。某个已配置来源第一次没有 Active 时，普通操作只自动 bootstrap 一次；失败时按提示运行 `aw catalog source refresh <id>`。TUI 例外地在首屏显示后为 `startup` Git 来源做非阻塞检查；当前会话仍固定使用旧 Active。`aw catalog source refresh-policy <id> <startup|manual>` 只更新策略，不立即联网；Path 固定为 `manual`。后续 Git refresh 产生的 Candidate 在执行 `aw catalog source activate-candidate <id>` 前不会影响普通操作。Path 来源的工作区改动也必须显式 refresh。Active 损坏时命令停止并要求手动 refresh，不自动联网修复。Catalog source add、update、refresh 和 activate-candidate 是显式来源管理操作，不受这个远端限制。
 
 Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使用 PATH 中 `skills >=1.5.23 <2.0.0`：project scope 使用当前项目根，user scope 使用 Skills CLI 的 global 模式。Agent 默认使用 Skills CLI 的自动选择；命令行可传 `--agent <id...>`，TUI 也可改为显式 Agent。`--skill` 只筛选最终安装项；验证仍覆盖完整 plugin dependency closure。外部安装允许部分成功，不做补偿回滚；失败后可重跑命令，或按 receipt 提示使用外部 `skills remove`。
 

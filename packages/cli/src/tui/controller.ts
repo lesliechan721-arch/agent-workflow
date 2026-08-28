@@ -36,11 +36,18 @@ import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
   type PluginInstallFilter,
+  type CatalogActivationBlockReason,
   type PortableBlockerCode,
   type TuiPageContext,
   type TuiRoute,
   type TuiRouterSnapshot,
 } from './router.js';
+import {
+  CatalogRefreshCoordinator,
+  type CatalogRefreshExecutionResult,
+  type CatalogRefreshState,
+  type CatalogSourceGenerationViewModel,
+} from './catalog-generation.js';
 
 export type PluginWriteOperation = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
 export type OperationKind = OperationIntent['kind'];
@@ -106,6 +113,11 @@ export type OperationIntent =
       source?: CatalogSource;
       update?: CatalogSourceUpdate;
       changes?: Array<{ title: string; before?: string; after?: string; private?: boolean }>;
+    }
+  | {
+      kind: 'catalogActivate';
+      sourceId: string;
+      candidateGenerationKey: string;
     };
 
 export interface OperationEvidence {
@@ -122,6 +134,8 @@ export interface OperationEvidence {
     manifestDigest?: string;
     snapshotDigest?: string;
     contentDigest?: string;
+    catalogVersion?: string;
+    channel?: 'latest' | 'beta';
   };
   targetFingerprint?: string;
   offlineCleanup?: OfflineCleanupTargetEvidence;
@@ -141,6 +155,16 @@ export interface OperationEvidence {
     inventoryComplete: boolean;
   };
   portable?: PortableReview;
+  catalogCandidate?: {
+    sourceId: string;
+    activeVersion: string;
+    candidateVersion: string;
+    channel: 'latest' | 'beta';
+    requestedRef: string;
+    candidateGenerationKey: string;
+    digestShort: string;
+    pluginChanges: { added: number; updated: number; removed: number };
+  };
 }
 
 export interface OperationReviewChange {
@@ -173,6 +197,11 @@ export interface OperationReviewModel {
   equivalentCommand?: string;
   primaryLabel: string;
   destructive?: boolean;
+  catalogBinding?: {
+    sourceId: string;
+    catalogVersion: string;
+    generationDigestShort: string;
+  };
 }
 
 export type ReviewPreparationStageId = 'validate' | 'status' | 'catalog' | 'inventory'
@@ -297,6 +326,7 @@ export interface TuiStatusLoadResult {
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
+  catalogGenerations?: CatalogSourceGenerationViewModel[];
 }
 
 export interface InstallTargetOption {
@@ -328,6 +358,15 @@ export interface TuiControllerDependencies {
     sourceIdentity: string;
     requestedRef: string;
   }>;
+  refreshCatalogSource?: (
+    sourceId: string,
+    signal: AbortSignal,
+    onState: (state: Extract<CatalogRefreshState, 'checking' | 'downloading' | 'validating'>) => void,
+  ) => Promise<CatalogRefreshExecutionResult>;
+  setCatalogRefreshPolicy?: (
+    sourceId: string,
+    refreshPolicy: 'startup' | 'manual',
+  ) => Promise<CatalogSourceGenerationViewModel>;
   inspectSourceRemoval?: (sourceId: string, signal: AbortSignal) => Promise<SourceReferenceSummaryViewModel>;
   captureEvidence: (intent: OperationIntent, signal?: AbortSignal) => Promise<OperationEvidence>;
   validateIntent?: (intent: OperationIntent, signal: AbortSignal) => Promise<void>;
@@ -378,6 +417,7 @@ export interface TuiControllerSnapshot {
   router: TuiRouterSnapshot;
   viewModel?: TuiViewModel;
   sourceHealth: SourceHealthViewModel[];
+  catalogGenerations: CatalogSourceGenerationViewModel[];
   progress: RebuildProgressSnapshot;
   progressTargets: PluginOperationProgressLine[];
   activeReview?: OperationReviewModel;
@@ -469,6 +509,14 @@ function operationLabels(intent: OperationIntent): {
       title: '确认安装通用 Skills',
       description: '只安装已选择的 Skills；不会修改原生插件安装。',
       primaryLabel: `开始安装 ${intent.selectedSkills.length} 个 Skills`,
+      destructive: false,
+    };
+  }
+  if (intent.kind === 'catalogActivate') {
+    return {
+      title: '使用 Catalog 更新',
+      description: '切换当前 Catalog generation；不会自动升级已安装插件，也不会修改设置。',
+      primaryLabel: '使用已下载的更新',
       destructive: false,
     };
   }
@@ -575,6 +623,26 @@ function reviewChanges(
         ? `${review.dependencies.length} 个依赖用于生成，不能取消` : '无需插件依赖' },
       ...(review.collisions.length > 0 ? [{ kind: 'warning' as const, group: 'portableWarnings' as const, title: '同名覆盖',
         description: review.collisions.map((collision) => collision.name).join('、') }] : []),
+    ];
+  }
+  if (intent.kind === 'catalogActivate') {
+    const candidate = evidence?.catalogCandidate;
+    if (!candidate) {
+      throw new TuiOperationBlockedError('catalogGenerationCandidateUnavailable', '缺少 Catalog Candidate Review 证据。');
+    }
+    return [
+      {
+        kind: 'change',
+        title: `Catalog ${candidate.activeVersion} → ${candidate.candidateVersion}`,
+        description: `${candidate.channel === 'beta' ? 'Beta' : 'Release'} · ${candidate.requestedRef}`,
+      },
+      {
+        kind: 'change',
+        title: `插件变化 +${candidate.pluginChanges.added}  ~${candidate.pluginChanges.updated}  −${candidate.pluginChanges.removed}`,
+      },
+      { kind: 'keep', title: '已安装插件不会自动升级' },
+      { kind: 'keep', title: '当前设置不会改变' },
+      { kind: 'change', title: '激活后重新加载插件列表和依赖关系' },
     ];
   }
   if (intent.kind === 'pluginWrite') {
@@ -701,34 +769,38 @@ function reviewChanges(
 }
 
 function technicalDetails(evidence: OperationEvidence): string[] {
+  const short = (value: string): string => {
+    const normalized = value.startsWith('sha256:') ? value.slice(7) : value;
+    return normalized.slice(0, 8);
+  };
   const details = [
-    `Catalog 配置：${evidence.catalog.configDigest}`,
-    `Catalog 组合：${evidence.catalog.compositeDigest}`,
+    `Catalog 配置：${short(evidence.catalog.configDigest)}`,
+    `Catalog 组合：${short(evidence.catalog.compositeDigest)}`,
   ];
   if (evidence.catalog.generationSetDigest) {
-    details.push(`Catalog generations：${evidence.catalog.generationSetDigest}`);
+    details.push(`Catalog generation：${short(evidence.catalog.generationSetDigest)}`);
   }
   if (evidence.source) {
     details.push(`来源：${evidence.source.sourceId}`);
-    details.push(`来源身份：${evidence.source.sourceIdentity}`);
-    if (evidence.source.resolvedCommit) details.push(`Snapshot commit：${evidence.source.resolvedCommit}`);
-    if (evidence.source.snapshotDigest) details.push(`Snapshot digest：${evidence.source.snapshotDigest}`);
-    if (evidence.source.contentDigest) details.push(`Content digest：${evidence.source.contentDigest}`);
+    if (evidence.source.sourceIdentity) details.push(`来源身份：${short(evidence.source.sourceIdentity)}`);
+    if (evidence.source.resolvedCommit) details.push(`Snapshot commit：${short(evidence.source.resolvedCommit)}`);
+    if (evidence.source.snapshotDigest) details.push(`Snapshot digest：${short(evidence.source.snapshotDigest)}`);
+    if (evidence.source.contentDigest) details.push(`Content digest：${short(evidence.source.contentDigest)}`);
   }
-  if (evidence.targetFingerprint) details.push(`目标状态：${evidence.targetFingerprint}`);
+  if (evidence.targetFingerprint) details.push(`目标状态：${short(evidence.targetFingerprint)}`);
   if (evidence.offlineCleanup) {
     details.push(`离线清理原因：${evidence.offlineCleanup.reason}`);
-    details.push(`离线清理目标：${evidence.offlineCleanup.targetFingerprint}`);
+    details.push(`离线清理目标：${short(evidence.offlineCleanup.targetFingerprint)}`);
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
-  if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${evidence.config.storeDigest}`);
+  if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${short(evidence.config.storeDigest)}`);
   if (evidence.sourceWrite) {
-    details.push(`候选配置：${evidence.sourceWrite.candidateDigest}`);
-    details.push(`引用清单：${evidence.sourceWrite.inventoryDigest} · ${evidence.sourceWrite.referenceCount} 项`);
+    details.push(`候选配置：${short(evidence.sourceWrite.candidateDigest)}`);
+    details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
   }
   if (evidence.portable) {
     details.push(`Portable 候选：${evidence.portable.selected.length} 个`);
-    details.push(`Materialization：${evidence.portable.materializationDigest}`);
+    details.push(`Materialization：${short(evidence.portable.materializationDigest)}`);
     details.push(`Skills CLI：${evidence.portable.skillsCliVersion}`);
   }
   return details;
@@ -783,10 +855,12 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #abort = new AbortController();
+  readonly #catalogRefreshCoordinator?: CatalogRefreshCoordinator;
   readonly #progressUnsubscribe?: () => void;
   readonly #progressFeed?: RebuildProgressFeed;
   #phase: TuiControllerSnapshot['phase'] = 'idle';
   #status?: TuiStatusLoadResult;
+  readonly #catalogGenerations = new Map<string, CatalogSourceGenerationViewModel>();
   #viewModel?: TuiViewModel;
   #progress: RebuildProgressSnapshot = { messages: [] };
   #progressTargets: PluginOperationProgressLine[] = [];
@@ -809,6 +883,26 @@ export class TuiController {
     readonly dependencies: TuiControllerDependencies,
     progressFeed?: RebuildProgressFeed,
   ) {
+    if (dependencies.refreshCatalogSource) {
+      this.#catalogRefreshCoordinator = new CatalogRefreshCoordinator({
+        maxConcurrency: 2,
+        execute: dependencies.refreshCatalogSource,
+        onUpdate: (sourceId, state, errorCode) => {
+          const current = this.#catalogGenerations.get(sourceId);
+          if (current) {
+            this.#catalogGenerations.set(sourceId, {
+              ...current,
+              refreshState: state,
+              ...(errorCode ? { lastCheckCode: errorCode } : {}),
+            });
+          }
+          this.#publish();
+        },
+        onResult: (source) => {
+          this.#catalogGenerations.set(source.sourceId, structuredClone(source));
+        },
+      });
+    }
     this.#progressFeed = progressFeed;
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
@@ -845,6 +939,8 @@ export class TuiController {
       router: this.#router.snapshot,
       ...(this.#viewModel ? { viewModel: this.#viewModel } : {}),
       sourceHealth: [...this.#health.values()],
+      catalogGenerations: [...this.#catalogGenerations.values()]
+        .sort((left, right) => left.sourceId.localeCompare(right.sourceId, 'en')),
       progress: this.#progress,
       progressTargets: this.#progressTargets,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
@@ -935,6 +1031,14 @@ export class TuiController {
       && !this.#viewModel?.sourceTabs.some((source) => source.id === route.sourceId)) {
       return { name: 'sourceList' };
     }
+    if ((route.name === 'catalogCandidate'
+      || route.name === 'catalogRefreshPolicy'
+      || route.name === 'catalogRefresh'
+      || route.name === 'catalogImmutableViolation'
+      || route.name === 'catalogActivationBlocked')
+      && !this.#catalogGenerations.has(route.sourceId)) {
+      return { name: 'sourceList' };
+    }
     return route;
   }
 
@@ -946,6 +1050,12 @@ export class TuiController {
 
   #applyStatus(status: TuiStatusLoadResult): void {
     this.#status = structuredClone(status);
+    if (status.catalogGenerations) {
+      this.#catalogGenerations.clear();
+      for (const source of status.catalogGenerations) {
+        this.#catalogGenerations.set(source.sourceId, structuredClone(source));
+      }
+    }
     this.#health.clear();
     for (const source of status.payload.catalog.sources) {
       this.#health.set(source.id, {
@@ -1015,6 +1125,10 @@ export class TuiController {
   }
 
   #startGitSourceRefreshes(): void {
+    if (this.#catalogRefreshCoordinator) {
+      this.#catalogRefreshCoordinator.start([...this.#catalogGenerations.values()]);
+      return;
+    }
     for (const source of this.#status?.payload.catalog.sources ?? []) {
       if (source.type === 'git') void this.refreshSource(source.id).catch(() => undefined);
     }
@@ -1048,6 +1162,13 @@ export class TuiController {
 
   async refreshSource(sourceId: string): Promise<void> {
     if (this.#disposed || !this.#status) return;
+    if (this.#catalogRefreshCoordinator) {
+      await this.#catalogRefreshCoordinator.refresh(
+        sourceId,
+        this.#catalogGenerations.get(sourceId)?.refreshState ?? 'idle',
+      );
+      return;
+    }
     this.#sourceAborts.get(sourceId)?.abort();
     const sourceAbort = new AbortController();
     this.#sourceAborts.set(sourceId, sourceAbort);
@@ -1379,9 +1500,11 @@ export class TuiController {
   }
 
   back(): void {
-    this.#cancelReviewPreparation();
-    this.#cancelPortableRequest();
     const route = this.#router.snapshot.current.route;
+    if (route.name !== 'catalogActivationBlocked' || route.reason !== 'reviewPreparation') {
+      this.#cancelReviewPreparation();
+    }
+    this.#cancelPortableRequest();
     if (route.name === 'review' && this.#activeReview?.operationId === route.operationId) {
       this.#tickets.delete(this.#activeReview.reviewToken);
       this.#activeReview = undefined;
@@ -1663,6 +1786,101 @@ export class TuiController {
     });
   }
 
+  listCatalogCandidates(): CatalogSourceGenerationViewModel[] {
+    return cloneFrozen([...this.#catalogGenerations.values()]
+      .filter((source) => source.candidate)
+      .sort((left, right) => left.sourceId.localeCompare(right.sourceId, 'en')));
+  }
+
+  getCatalogGeneration(sourceId: string): CatalogSourceGenerationViewModel | undefined {
+    const source = this.#catalogGenerations.get(sourceId);
+    return source ? cloneFrozen(source) : undefined;
+  }
+
+  getSessionCatalogVersion(sourceId: string): string | undefined {
+    return this.#status?.payload.catalog.sources.find((source) => source.id === sourceId)?.catalogVersion;
+  }
+
+  beginCatalogActivation(options: {
+    sourceId: string;
+    dirtyDraft?: { kind: 'config' | 'source'; label: string };
+  }): ReviewPreparationSnapshot | undefined {
+    const source = this.#catalogGenerations.get(options.sourceId);
+    if (!source?.candidate) {
+      throw new TuiOperationBlockedError(
+        'catalogGenerationCandidateUnavailable',
+        'Catalog Candidate 不再可用。请重新检查来源。',
+      );
+    }
+    let reason: CatalogActivationBlockReason | undefined;
+    let preservedLabel: string | undefined;
+    const refreshingSourceId = this.#catalogRefreshCoordinator?.refreshingSourceIds()[0];
+    if (refreshingSourceId) {
+      reason = 'refreshProgress';
+      preservedLabel = options.dirtyDraft
+        ? `${options.dirtyDraft.label}已保留；${refreshingSourceId} Catalog 来源正在刷新`
+        : `${refreshingSourceId} Catalog 来源刷新`;
+    } else if (options.dirtyDraft) {
+      reason = options.dirtyDraft.kind === 'config' ? 'configDraft' : 'sourceDraft';
+      preservedLabel = options.dirtyDraft.label;
+    } else if (this.#portableDraft) {
+      reason = 'portableDraft';
+      preservedLabel = 'Portable Skills 当前选择';
+    } else if (this.#reviewPreparation) reason = 'reviewPreparation';
+    else if (this.#router.snapshot.current.route.name === 'progress') {
+      reason = this.#activeReview?.operationKind === 'sourceMutation'
+        ? 'sourceMutationProgress' : 'writeProgress';
+    } else if (this.#activeReview) reason = 'activeReview';
+    else {
+      const refreshing = [...this.#catalogGenerations.values()].find((candidate) =>
+        candidate.refreshState === 'checking'
+        || candidate.refreshState === 'downloading'
+        || candidate.refreshState === 'validating');
+      if (refreshing) {
+        reason = 'refreshProgress';
+        preservedLabel = `${refreshing.sourceId} Catalog 来源刷新`;
+      }
+    }
+    if (reason) {
+      this.#router.push({
+        name: 'catalogActivationBlocked',
+        sourceId: options.sourceId,
+        reason,
+        ...(preservedLabel ? { preservedLabel } : {}),
+      });
+      this.#publish();
+      return undefined;
+    }
+    return this.startReviewPreparation({
+      kind: 'catalogActivate',
+      sourceId: options.sourceId,
+      candidateGenerationKey: source.candidate.generationKey,
+    }, { name: 'catalogCandidate', sourceId: options.sourceId });
+  }
+
+  cancelCatalogRefresh(sourceId: string): void {
+    this.#catalogRefreshCoordinator?.cancel(sourceId);
+  }
+
+  async setCatalogRefreshPolicy(
+    sourceId: string,
+    refreshPolicy: 'startup' | 'manual',
+  ): Promise<void> {
+    if (!this.dependencies.setCatalogRefreshPolicy) {
+      throw new TuiOperationBlockedError(
+        'catalogGenerationRefreshPolicyUnavailable',
+        'Catalog 自动刷新设置不可用。',
+      );
+    }
+    const source = await this.dependencies.setCatalogRefreshPolicy(sourceId, refreshPolicy);
+    if (this.#disposed) return;
+    const current = this.#catalogGenerations.get(sourceId);
+    this.#catalogGenerations.set(sourceId, current
+      ? { ...current, refreshPolicy: source.refreshPolicy }
+      : structuredClone(source));
+    this.#publish();
+  }
+
   async inspectSourceRemoval(sourceId: string): Promise<SourceReferenceSummaryViewModel> {
     if (!this.dependencies.inspectSourceRemoval) {
       throw new TuiOperationBlockedError('stateInventoryFailed', '来源引用清单不可用。');
@@ -1815,11 +2033,12 @@ export class TuiController {
 
   #reviewPreparationIsCurrent(token: number): boolean {
     const preparation = this.#reviewPreparation;
+    const route = this.#router.snapshot.current.route;
     return Boolean(preparation && preparation.token === token
       && !preparation.abort.signal.aborted
       && !this.#disposed
-      && this.#router.snapshot.current.route.name === 'reviewPreparing'
-      && this.#router.snapshot.current.route.preparationId === preparation.snapshot.id);
+      && (route.name === 'reviewPreparing' && route.preparationId === preparation.snapshot.id
+        || route.name === 'catalogActivationBlocked' && route.reason === 'reviewPreparation'));
   }
 
   async #runReviewPreparation(token: number): Promise<void> {
@@ -1948,6 +2167,15 @@ export class TuiController {
           ? { version: this.#viewModel.plugins.find((plugin) => plugin.pluginId === intent.pluginId)!.version }
           : {}),
       },
+      ...(evidence.source && 'catalogVersion' in evidence.source
+        && typeof evidence.source.catalogVersion === 'string'
+        && evidence.source.snapshotDigest
+        ? { catalogBinding: {
+            sourceId: evidence.source.sourceId,
+            catalogVersion: evidence.source.catalogVersion,
+            generationDigestShort: evidence.source.snapshotDigest.replace(/^sha256:/u, '').slice(0, 8),
+          } }
+        : {}),
       changes: reviewChanges(
         intent,
         evidence,
@@ -2036,6 +2264,9 @@ export class TuiController {
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      if (code === 'operationReviewStale' && ticket.intent.kind === 'catalogActivate') {
+        return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
+      }
       this.#cancelSourceRefreshes();
       generation = ++this.#generation;
       try {
@@ -2061,6 +2292,9 @@ export class TuiController {
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      if (code === 'operationReviewStale' && ticket.intent.kind === 'catalogActivate') {
+        return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
+      }
       return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
@@ -2086,12 +2320,16 @@ export class TuiController {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#cancelSourceRefreshes();
       generation = ++this.#generation;
-      if (ticket.intent.kind === 'sourceMutation') {
-        this.dependencies.beginCatalogSession?.();
+      if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogActivate') {
+        this.dependencies.beginCatalogSession?.(ticket.intent.kind === 'catalogActivate'
+          ? { bootstrapMissingActive: false }
+          : undefined);
         try {
           this.#progressFeed?.setCurrent(
-            { target: 'Catalog 来源配置', phase: '读取最终状态' },
-            '来源操作：读取最终状态',
+            { target: ticket.intent.kind === 'catalogActivate' ? 'Catalog generation' : 'Catalog 来源配置', phase: '读取最终状态' },
+            ticket.intent.kind === 'catalogActivate'
+              ? 'Catalog 激活：重新加载当前会话'
+              : '来源操作：读取最终状态',
           );
         } catch {
           // Progress diagnostics must not replace the completed source write.
@@ -2228,7 +2466,7 @@ export class TuiController {
       this.#activeReview = undefined;
       this.#router.replace({ name: 'result', operationId });
       this.#publish();
-      this.#startGitSourceRefreshes();
+      if (ticket.intent.kind !== 'catalogActivate') this.#startGitSourceRefreshes();
       return cloneFrozen(result);
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
@@ -2296,20 +2534,28 @@ export class TuiController {
         returnRoute: ticket.returnRoute,
       });
     }
+    const intent: OperationIntent = ticket.intent.kind === 'catalogActivate'
+      ? (() => {
+          const candidate = this.#catalogGenerations.get(ticket.intent.sourceId)?.candidate;
+          return candidate
+            ? { ...ticket.intent, candidateGenerationKey: candidate.generationKey }
+            : ticket.intent;
+        })()
+      : ticket.intent;
     try {
-      this.#assertIssueOrigin(ticket.intent);
-      await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+      this.#assertIssueOrigin(intent);
+      await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
-      await this.#logOperationError(error, code, ticket.intent);
+      await this.#logOperationError(error, code, intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const result: OperationExecuteResult = {
         state: 'blocked',
         operationId,
         code,
         message: '状态已变化，原操作不再安全。请修改选择后重试。',
-        ...this.#operationIdentity(ticket.intent),
+        ...this.#operationIdentity(intent),
         returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
       };
       this.#result = structuredClone(result);
@@ -2323,31 +2569,31 @@ export class TuiController {
     if (!evidence) {
       try {
         evidence = await this.dependencies.captureEvidence(
-          structuredClone(ticket.intent),
+          structuredClone(intent),
           this.#abort.signal,
         );
       } catch (error) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const code = issueCode(error);
-        await this.#logOperationError(error, code, ticket.intent);
+        await this.#logOperationError(error, code, intent);
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-        return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
+        return this.#setBlocked(operationId, code, { intent, returnRoute: ticket.returnRoute });
       }
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (ticket.intent.kind === 'portableInstall') {
+    if (intent.kind === 'portableInstall') {
       try {
-        await this.refreshPortableInstallDraft(ticket.intent.pluginId);
+        await this.refreshPortableInstallDraft(intent.pluginId);
       } catch (error) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const code = issueCode(error);
-        await this.#logOperationError(error, code, ticket.intent);
-        return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
+        await this.#logOperationError(error, code, intent);
+        return this.#setBlocked(operationId, code, { intent, returnRoute: ticket.returnRoute });
       }
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    const review = this.#storeOperationReview(ticket.intent, evidence, 'replace', ticket.returnRoute);
-    const result: OperationExecuteResult = { state: 'stale', operationId, review, ...this.#operationIdentity(ticket.intent) };
+    const review = this.#storeOperationReview(intent, evidence, 'replace', ticket.returnRoute);
+    const result: OperationExecuteResult = { state: 'stale', operationId, review, ...this.#operationIdentity(intent) };
     this.#result = result;
     this.#publish();
     return cloneFrozen(result);
@@ -2474,6 +2720,7 @@ export class TuiController {
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#abort.abort();
+    this.#catalogRefreshCoordinator?.dispose();
     this.#cancelSourceRefreshes();
     this.#progressUnsubscribe?.();
     this.#tickets.clear();
@@ -2483,6 +2730,13 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogActivate') {
+    return {
+      code: 'operationSucceeded',
+      message: 'Catalog 更新已启用；插件列表和依赖关系已重新加载。',
+      messages: ['已安装插件没有自动升级。', '插件设置没有改变。'],
+    };
+  }
   if (intent.kind === 'portableInstall') {
     const receipt = execution as PortableInstallReceipt;
     const verificationUnknown = receipt.failures.some((failure) =>

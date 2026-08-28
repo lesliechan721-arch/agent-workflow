@@ -36,6 +36,10 @@ import { catalogPathProviderInternal } from './path-catalog-provider.js';
 export interface CatalogGenerationServiceRuntime {
   providers?: CatalogSourceProviderSet;
   now?: () => Date;
+  onProgress?: (event: {
+    sourceId: string;
+    state: 'checking' | 'validating';
+  }) => void | Promise<void>;
 }
 
 export interface CatalogGenerationStatusEntry {
@@ -219,6 +223,8 @@ export async function refreshCatalogSourceGeneration(options: {
   const checkedAt = (options.runtime?.now?.() ?? new Date()).toISOString();
   let resolution: CatalogSourceResolution;
   try {
+    await options.runtime?.onProgress?.({ sourceId: source.id, state: 'checking' });
+    options.signal?.throwIfAborted();
     resolution = await resolveSourceForRefresh({
       source,
       cliVersion: options.cliVersion,
@@ -227,6 +233,7 @@ export async function refreshCatalogSourceGeneration(options: {
       providers: options.runtime?.providers,
     });
   } catch (error) {
+    options.signal?.throwIfAborted();
     await recordRefreshFailure({
       sourceId: source.id,
       sourceConfigFingerprint,
@@ -241,13 +248,17 @@ export async function refreshCatalogSourceGeneration(options: {
 
   let prepared: Awaited<ReturnType<typeof prepareCatalogGeneration>>;
   try {
+    await options.runtime?.onProgress?.({ sourceId: source.id, state: 'validating' });
+    options.signal?.throwIfAborted();
     prepared = await prepareCatalogGeneration({
       resolution,
       cliVersion: options.cliVersion,
       env,
       now: options.runtime?.now,
+      signal: options.signal,
     });
   } catch (error) {
+    options.signal?.throwIfAborted();
     await recordRefreshFailure({
       sourceId: source.id,
       sourceConfigFingerprint,
@@ -261,9 +272,12 @@ export async function refreshCatalogSourceGeneration(options: {
   }
 
   try {
+    options.signal?.throwIfAborted();
     const transaction = await withAwHomeMutationLock({
       env,
+      signal: options.signal,
       action: async () => {
+        options.signal?.throwIfAborted();
         const currentConfig = await readCatalogSourcesConfigSnapshot(env);
         const currentConfiguredSource = currentConfig.config.sources
           .find((entry) => entry.id === source.id);
@@ -286,7 +300,9 @@ export async function refreshCatalogSourceGeneration(options: {
         }
         return withCatalogGenerationStateTransaction<RefreshTransactionResult>({
           env,
+          beforeReplace: () => options.signal?.throwIfAborted(),
           action: async (current) => {
+            options.signal?.throwIfAborted();
             const previous = current.sources[source.id];
             if (
               source.type === 'git'
@@ -348,7 +364,9 @@ export async function refreshCatalogSourceGeneration(options: {
               }
             }
 
+            options.signal?.throwIfAborted();
             const published = await publishPreparedCatalogGeneration(prepared);
+            options.signal?.throwIfAborted();
             if (source.type === 'path' || !currentSource?.active) {
               const active = pointerFromGeneration({
                 generation: published,
@@ -519,6 +537,7 @@ async function assertPointerMatchesGeneration(options: {
 
 export async function activateCatalogSourceCandidate(options: {
   sourceId: string;
+  expectedCandidateGenerationKey?: string;
   env?: NodeJS.ProcessEnv;
   awHomeMutationToken?: AwHomeMutationToken;
   runtime?: Pick<CatalogGenerationServiceRuntime, 'now'>;
@@ -547,6 +566,14 @@ export async function activateCatalogSourceCandidate(options: {
               code: 'catalogGenerationCandidateUnavailable',
               sourceId: options.sourceId,
               message: `Catalog source "${options.sourceId}" has no Candidate generation to activate.`,
+            });
+          }
+          if (options.expectedCandidateGenerationKey
+            && source.candidate.generationKey !== options.expectedCandidateGenerationKey) {
+            throw new CatalogGenerationError({
+              code: 'catalogGenerationCandidateChanged',
+              sourceId: options.sourceId,
+              message: `Catalog source "${options.sourceId}" Candidate changed after Review. Review the new Candidate before activation.`,
             });
           }
           await assertPointerMatchesGeneration({
@@ -586,6 +613,59 @@ export async function activateCatalogSourceCandidate(options: {
           };
         },
       });
+    },
+  });
+}
+
+export async function setCatalogSourceRefreshPolicy(options: {
+  sourceId: string;
+  refreshPolicy: 'startup' | 'manual';
+  env?: NodeJS.ProcessEnv;
+}): Promise<CatalogGenerationStatusEntry> {
+  const env = options.env ?? process.env;
+  return withAwHomeMutationLock({
+    env,
+    action: async () => {
+      const config = await readCatalogSourcesConfigSnapshot(env);
+      const configuredSource = config.config.sources.find((source) => source.id === options.sourceId);
+      if (!configuredSource) {
+        throw new CatalogGenerationError({
+          code: 'catalogGenerationSourceMissing',
+          sourceId: options.sourceId,
+          message: `Catalog source "${options.sourceId}" is not configured.`,
+        });
+      }
+      if (configuredSource.type === 'path' && options.refreshPolicy !== 'manual') {
+        throw new CatalogGenerationError({
+          code: 'catalogGenerationRefreshPolicyInvalid',
+          sourceId: options.sourceId,
+          message: `Path Catalog source "${options.sourceId}" only supports manual refresh.`,
+        });
+      }
+      await withCatalogGenerationStateTransaction({
+        env,
+        action: async (current) => {
+          const source = current.sources[options.sourceId];
+          if (!source) {
+            throw new CatalogGenerationError({
+              code: 'catalogGenerationUnavailable',
+              sourceId: options.sourceId,
+              message: `Catalog source "${options.sourceId}" has no generation state. Refresh it before changing refresh policy.`,
+            });
+          }
+          return {
+            state: {
+              ...current,
+              sources: {
+                ...current.sources,
+                [options.sourceId]: { ...source, refreshPolicy: options.refreshPolicy },
+              },
+            },
+            result: undefined,
+          };
+        },
+      });
+      return (await readCatalogGenerationStatus({ sourceId: options.sourceId, env })).sources[0]!;
     },
   });
 }

@@ -9,6 +9,15 @@ export type PortableBlockerCode =
   | 'portableValidationFailed';
 
 export type PluginInstallFilter = 'all' | 'uninstalled';
+export type CatalogActivationBlockReason =
+  | 'configDraft'
+  | 'sourceDraft'
+  | 'portableDraft'
+  | 'activeReview'
+  | 'reviewPreparation'
+  | 'writeProgress'
+  | 'sourceMutationProgress'
+  | 'refreshProgress';
 
 export type TuiRoute =
   | { name: 'home' }
@@ -69,6 +78,16 @@ export type TuiRoute =
   | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string }
   | { name: 'sourceEdit'; sourceId: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
+  | { name: 'catalogCandidate'; sourceId: string }
+  | { name: 'catalogRefreshPolicy'; sourceId: string }
+  | { name: 'catalogRefresh'; sourceId: string }
+  | { name: 'catalogImmutableViolation'; sourceId: string }
+  | {
+      name: 'catalogActivationBlocked';
+      sourceId: string;
+      reason: CatalogActivationBlockReason;
+      preservedLabel?: string;
+    }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
   | { name: 'reviewPreparing'; preparationId: string }

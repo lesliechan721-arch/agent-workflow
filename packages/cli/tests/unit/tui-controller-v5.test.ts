@@ -2777,8 +2777,8 @@ describe('TUI v4 Review safety', () => {
       changes: [{ title: '本地目录', private: true }],
     });
 
-    expect(review.technicalDetails).toContain('候选配置：sha256:candidate');
-    expect(review.technicalDetails).toContain('引用清单：sha256:inventory · 0 项');
+    expect(review.technicalDetails).toContain('候选配置：candidat');
+    expect(review.technicalDetails).toContain('引用清单：inventor · 0 项');
     expect(JSON.stringify(controller.snapshot)).not.toContain(privatePath);
     await controller.executeOperation(review.reviewToken);
     expect(controller.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'sourceMutation' });
@@ -2804,7 +2804,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(result).toMatchObject({ state: 'stale' });
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(controller.snapshot.activeReview?.technicalDetails).toContain('候选配置：sha256:candidate-two');
+    expect(controller.snapshot.activeReview?.technicalDetails).toContain('候选配置：candidat');
   });
 
   it('maps a source config CAS conflict to the same typed stale Review', async () => {

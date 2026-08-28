@@ -1001,7 +1001,7 @@ describe('Portable Skills TUI V1', () => {
       expect(frame).toContain('同名覆盖');
       expect(frame).toContain('安装目标 · ~ Agent');
       expect(frame).toContain('安装目标 · ~ 范围');
-      expect(frame).toContain('Catalog 配置：sha256:config');
+      expect(frame).toContain('Catalog 配置：config');
       expect(frame).toMatch(/另有 \d+ 项/u);
       expect(frame).toContain(`› ${label}`);
       expect(frame).toContain('d 技术详情');

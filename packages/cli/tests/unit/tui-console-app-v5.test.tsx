@@ -382,9 +382,9 @@ async function confirmReview(
 }
 
 describe('ConsoleAppV4', () => {
-  it('keeps the complete 102-state design map free of duplicate route identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(102);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 102);
+  it('keeps the complete 109-state design map free of duplicate route identities', () => {
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(109);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 109);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -398,6 +398,7 @@ describe('ConsoleAppV4', () => {
       'D01', 'D02', 'D03', 'D04', 'D05', 'D06', 'D07', 'D08', 'D09',
       'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
       'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
+      'K01', 'K02', 'K03', 'K04', 'K05', 'K06', 'K07',
     ]);
   });
 

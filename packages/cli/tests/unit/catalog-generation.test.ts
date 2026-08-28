@@ -10,6 +10,10 @@ import {
   removeCatalogSourceCommand,
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
+import {
+  CatalogRefreshCoordinator,
+  loadCatalogGenerationViewModels,
+} from '../../src/tui/catalog-generation.js';
 import type {
   CatalogSource,
   CatalogSourceResolution,
@@ -23,6 +27,7 @@ import {
   activateCatalogSourceCandidate,
   readCatalogGenerationStatus,
   refreshCatalogSourceGeneration,
+  setCatalogSourceRefreshPolicy,
 } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { resolveCatalogGenerationLocation } from '../../src/utils/catalog-generation-store.js';
@@ -42,6 +47,7 @@ import {
   type CatalogSourceProviderSet,
 } from '../../src/utils/multi-source-catalog.js';
 import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
+import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -51,6 +57,14 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+async function waitUntil(check: () => Promise<boolean>, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for ${label}.`);
 }
 
 function fixturePath(name: string): string {
@@ -143,6 +157,126 @@ function providers(options: {
 }
 
 describe('Catalog immutable generations', () => {
+  it('cancels a staged refresh while it waits for the AW_HOME mutation lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('lock-cancel-first');
+    const second = fixturePath('lock-cancel-second');
+    const third = fixturePath('lock-cancel-third');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: first, workspaceIdentity: 'workspace:lock-cancel', catalogVersion: '1.0.0', content: 'first\n',
+      }),
+      createGenerationSnapshot({
+        root: second, workspaceIdentity: 'workspace:lock-cancel', catalogVersion: '1.1.0', content: 'second\n',
+      }),
+      createGenerationSnapshot({
+        root: third, workspaceIdentity: 'workspace:lock-cancel', catalogVersion: '1.2.0', content: 'third\n',
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 1,
+      sources: [{
+        id: 'team', type: 'git', primary: true, url: 'https://example.invalid/team.git',
+        refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+      }],
+    });
+    const roots = new Map([['team', first]]);
+    const commits = new Map([['team', '1'.repeat(40)]]);
+    const runtime = { providers: providers({ roots, commits }) };
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    roots.set('team', second);
+    commits.set('team', '2'.repeat(40));
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-generations.json');
+    const stateBefore = await fs.readFile(statePath);
+    const holderEntered = deferred();
+    const releaseHolder = deferred();
+    let holderCompleted = false;
+    const holder = withAwHomeMutationLock({
+      env: isolation.env,
+      action: async () => {
+        holderEntered.resolve();
+        await releaseHolder.promise;
+        holderCompleted = true;
+      },
+    });
+    await holderEntered.promise;
+    roots.set('team', third);
+    commits.set('team', '3'.repeat(40));
+    let refreshError: unknown;
+    const updates: string[] = [];
+    const coordinator = new CatalogRefreshCoordinator({
+      maxConcurrency: 1,
+      onUpdate: (_sourceId, state) => updates.push(state),
+      execute: async (sourceId, signal, onState) => {
+        try {
+          await refreshCatalogSourceGeneration({
+            sourceId,
+            cliVersion: '1.0.0',
+            env: isolation.env,
+            signal,
+            runtime: {
+              ...runtime,
+              onProgress: (event) => onState(event.state),
+            },
+          });
+        } catch (error) {
+          refreshError = error;
+          throw error;
+        }
+        return {
+          source: (await loadCatalogGenerationViewModels({ env: isolation.env }))[0]!,
+        };
+      },
+    });
+    const refresh = coordinator.refresh('team', 'candidateReady');
+    const generationRoot = path.join(isolation.env.AW_HOME!, 'catalog-generations');
+    try {
+      await waitUntil(async () => {
+        const entries = await fs.readdir(generationRoot).catch(() => []);
+        for (const entry of entries.filter((name) => name.startsWith('.staging-'))) {
+          if (await fs.pathExists(path.join(generationRoot, entry, 'generation.json'))) return true;
+        }
+        return false;
+      }, 'prepared Catalog staging');
+      expect(holderCompleted).toBe(false);
+      coordinator.cancel('team');
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Cancelled refresh did not settle promptly.'));
+        }, 1_000);
+        void refresh.then(() => {
+          clearTimeout(timeout);
+          resolve();
+        }, (error: unknown) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+      expect(refreshError).toMatchObject({ name: 'AbortError' });
+      expect(updates.at(-1)).toBe('candidateReady');
+      expect(updates).not.toContain('failed');
+      expect(await fs.readFile(statePath)).toEqual(stateBefore);
+      expect((await fs.readdir(generationRoot)).filter((name) => name.startsWith('.staging-')))
+        .toEqual([]);
+      expect(holderCompleted).toBe(false);
+    } finally {
+      coordinator.dispose();
+      releaseHolder.resolve();
+      await holder;
+    }
+    let reacquired = false;
+    await withAwHomeMutationLock({
+      env: isolation.env,
+      action: async () => { reacquired = true; },
+    });
+    expect(reacquired).toBe(true);
+  });
+
   it('bootstraps Git Active, no-ops the same generation, and activates a newer Candidate without a provider call', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('git-first');
@@ -197,6 +331,146 @@ describe('Catalog immutable generations', () => {
     const status = await readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env });
     expect(status).toMatchObject({ sources: [{ active: { catalogVersion: '1.1.0' } }] });
     expect(status.sources[0]!.candidate).toBeUndefined();
+  });
+
+  it('persists Git refresh policy without a provider call and keeps Path manual', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const gitRoot = fixturePath('policy-git');
+    const pathRoot = fixturePath('policy-path');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: gitRoot, workspaceIdentity: 'workspace:policy-git', catalogVersion: '1.0.0', content: 'git\n',
+      }),
+      createGenerationSnapshot({
+        root: pathRoot, workspaceIdentity: 'workspace:policy-path', catalogVersion: '1.0.0', content: 'path\n',
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 1,
+      sources: [
+        {
+          id: 'team', type: 'git', primary: true, url: 'https://example.invalid/policy.git',
+          refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+        },
+        { id: 'local', type: 'path', primary: false, path: pathRoot },
+      ],
+    });
+    let providerCalls = 0;
+    const runtime = { providers: providers({
+      roots: new Map([['team', gitRoot], ['local', pathRoot]]),
+      onResolve: () => { providerCalls += 1; },
+    }) };
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'local', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    expect(providerCalls).toBe(2);
+
+    await expect(setCatalogSourceRefreshPolicy({
+      sourceId: 'team', refreshPolicy: 'manual', env: isolation.env,
+    })).resolves.toMatchObject({ sourceId: 'team', refreshPolicy: 'manual' });
+    expect(providerCalls).toBe(2);
+    await expect(readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env }))
+      .resolves.toMatchObject({ sources: [{ refreshPolicy: 'manual' }] });
+    await expect(setCatalogSourceRefreshPolicy({
+      sourceId: 'local', refreshPolicy: 'startup', env: isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogGenerationRefreshPolicyInvalid' });
+    await expect(readCatalogGenerationStatus({ sourceId: 'local', env: isolation.env }))
+      .resolves.toMatchObject({ sources: [{ refreshPolicy: 'manual' }] });
+    expect(providerCalls).toBe(2);
+  });
+
+  it('rejects activation when Candidate changes after Review and preserves the current pointers', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('candidate-drift-first');
+    const second = fixturePath('candidate-drift-second');
+    const third = fixturePath('candidate-drift-third');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: first, workspaceIdentity: 'workspace:candidate-drift', catalogVersion: '1.0.0', content: 'first\n',
+      }),
+      createGenerationSnapshot({
+        root: second, workspaceIdentity: 'workspace:candidate-drift', catalogVersion: '1.1.0', content: 'second\n',
+      }),
+      createGenerationSnapshot({
+        root: third, workspaceIdentity: 'workspace:candidate-drift', catalogVersion: '1.2.0', content: 'third\n',
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 1,
+      sources: [{
+        id: 'team', type: 'git', primary: true, url: 'https://example.invalid/candidate-drift.git',
+        refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+      }],
+    });
+    const roots = new Map([['team', first]]);
+    const runtime = { providers: providers({ roots }) };
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    roots.set('team', second);
+    const reviewed = await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    roots.set('team', third);
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+
+    await expect(activateCatalogSourceCandidate({
+      sourceId: 'team',
+      expectedCandidateGenerationKey: reviewed.candidate!.generationKey,
+      env: isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogGenerationCandidateChanged' });
+    await expect(readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env }))
+      .resolves.toMatchObject({
+        sources: [{
+          active: { catalogVersion: '1.0.0' },
+          candidate: { catalogVersion: '1.2.0' },
+        }],
+      });
+  });
+
+  it('cancels a provider refresh without changing the last successful generation state', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('cancel-refresh');
+    await createGenerationSnapshot({
+      root, workspaceIdentity: 'workspace:cancel-refresh', catalogVersion: '1.0.0', content: 'active\n',
+    });
+    await configureSources({
+      schemaVersion: 1,
+      sources: [{
+        id: 'team', type: 'git', primary: true, url: 'https://example.invalid/cancel-refresh.git',
+        refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+      }],
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      runtime: { providers: providers({ roots: new Map([['team', root]]) }) },
+    });
+    const before = await readCatalogGenerationState(isolation.env);
+    const entered = deferred();
+    const abort = new AbortController();
+    const refresh = refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, signal: abort.signal,
+      runtime: {
+        providers: {
+          path: async () => { throw new Error('unused'); },
+          git: async (_source, context) => {
+            entered.resolve();
+            return new Promise<CatalogSourceResolution>((_resolve, reject) => {
+              context.signal?.addEventListener('abort', () => reject(context.signal?.reason), { once: true });
+            });
+          },
+        },
+      },
+    });
+    await entered.promise;
+    abort.abort(new Error('cancelled by TUI'));
+    await expect(refresh).rejects.toThrow('cancelled by TUI');
+    expect(await readCatalogGenerationState(isolation.env)).toEqual(before);
   });
 
   it('rejects workspace identity drift from an unchanged real Git source', async () => {
@@ -613,6 +887,56 @@ describe('Catalog immutable generations', () => {
     await fs.writeFile(location.metadataPath, validMetadata);
     await expect(readCatalogGenerationStatus({ env: isolation.env }))
       .resolves.toMatchObject({ sources: [{ active: { catalogVersion: '1.0.0' } }] });
+  });
+
+  it('keeps healthy generation view models when another source metadata is damaged', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const healthyRoot = fixturePath('view-model-healthy');
+    const damagedRoot = fixturePath('view-model-damaged');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: healthyRoot, workspaceIdentity: 'workspace:view-model-healthy', catalogVersion: '1.0.0', content: 'healthy\n',
+      }),
+      createGenerationSnapshot({
+        root: damagedRoot, workspaceIdentity: 'workspace:view-model-damaged', catalogVersion: '1.0.0', content: 'damaged\n',
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 1,
+      sources: [
+        { id: 'healthy', type: 'path', primary: true, path: healthyRoot },
+        { id: 'damaged', type: 'path', primary: false, path: damagedRoot },
+      ],
+    });
+    const runtime = { providers: providers({ roots: new Map([
+      ['healthy', healthyRoot], ['damaged', damagedRoot],
+    ]) }) };
+    const [healthy, damaged] = await Promise.all([
+      refreshCatalogSourceGeneration({
+        sourceId: 'healthy', cliVersion: '1.0.0', env: isolation.env, runtime,
+      }),
+      refreshCatalogSourceGeneration({
+        sourceId: 'damaged', cliVersion: '1.0.0', env: isolation.env, runtime,
+      }),
+    ]);
+    const damagedLocation = resolveCatalogGenerationLocation({
+      logicalIdentity: 'workspace:view-model-damaged',
+      snapshotDigest: damaged.active!.snapshotDigest,
+      env: isolation.env,
+    });
+    await fs.writeFile(damagedLocation.metadataPath, '{}\n');
+
+    await expect(loadCatalogGenerationViewModels({ env: isolation.env })).resolves.toEqual([
+      expect.objectContaining({
+        sourceId: 'damaged', refreshState: 'failed',
+        lastCheckCode: 'catalogGenerationMetadataInvalid',
+      }),
+      expect.objectContaining({
+        sourceId: 'healthy', refreshState: 'idle',
+        active: expect.objectContaining({ catalogVersion: '1.0.0' }),
+      }),
+    ]);
+    expect(healthy.active?.catalogVersion).toBe('1.0.0');
   });
 
   it('does not reuse an old source-ID pointer after the configured source identity changes', async () => {

@@ -71,6 +71,38 @@ describe('Catalog generation CLI', () => {
       }],
     });
 
+    const manualPolicy = await runCliEntry([
+      'catalog', 'source', 'refresh-policy', 'local', 'manual', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    });
+    expect(manualPolicy.exitCode).toBe(0);
+    expect(manualPolicy.stderr).toBe('');
+    expect(manualPolicy.parseJsonStdout()).toMatchObject({
+      catalogGenerationSchemaVersion: 1,
+      command: 'catalog:source:refresh-policy',
+      ok: true,
+      sourceId: 'local',
+      refreshPolicy: 'manual',
+    });
+
+    const invalidPolicy = await runCliEntry([
+      'catalog', 'source', 'refresh-policy', 'local', 'startup', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    });
+    expect(invalidPolicy.exitCode).toBe(1);
+    expect(invalidPolicy.parseJsonStdout()).toMatchObject({
+      catalogGenerationSchemaVersion: 1,
+      command: 'catalog:source:refresh-policy',
+      ok: false,
+      errors: [{ code: 'catalogGenerationRefreshPolicyInvalid' }],
+    });
+
     const activation = await runCliEntry([
       'catalog', 'source', 'activate-candidate', 'local', '--json',
     ], {

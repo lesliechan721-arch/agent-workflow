@@ -21,6 +21,7 @@ import {
   activateCatalogSourceCandidateCommand,
   catalogGenerationStatusCommand,
   refreshCatalogSourceGenerationCommand,
+  setCatalogSourceRefreshPolicyCommand,
 } from './commands/catalog-generation.js';
 import {
   cleanupWriteCommand as cleanupCommand,
@@ -1753,7 +1754,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   };
 
   const writeCatalogGenerationFailure = (
-    command: 'catalog:source:refresh' | 'catalog:source:activate-candidate' | 'catalog:source:generation-status',
+    command: 'catalog:source:refresh' | 'catalog:source:activate-candidate'
+      | 'catalog:source:generation-status' | 'catalog:source:refresh-policy',
     sourceId: string | undefined,
     json: boolean,
     error: unknown,
@@ -1941,6 +1943,41 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       } catch (error) {
         writeCatalogGenerationFailure(
           'catalog:source:generation-status',
+          id,
+          rawOptions.json === true,
+          error,
+        );
+      }
+    });
+
+  catalogSource
+    .command('refresh-policy')
+    .argument('<id>')
+    .argument('<policy>', 'startup or manual')
+    .option('-j, --json', 'print Catalog refresh policy result as JSON', false)
+    .action(async (id: string, policy: string, rawOptions: { json?: boolean }) => {
+      try {
+        if (policy !== 'startup' && policy !== 'manual') {
+          throw new Error('Catalog refresh policy must be startup or manual.');
+        }
+        const result = await setCatalogSourceRefreshPolicyCommand({
+          sourceId: id,
+          refreshPolicy: policy,
+          env,
+        });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, {
+            catalogGenerationSchemaVersion: 1,
+            command: 'catalog:source:refresh-policy',
+            ok: true,
+            ...result,
+          });
+        } else {
+          writeLine(io.stdout, `Catalog source ${id} refresh policy: ${result.refreshPolicy}.`);
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:refresh-policy',
           id,
           rawOptions.json === true,
           error,

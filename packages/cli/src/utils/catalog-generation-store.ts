@@ -289,7 +289,9 @@ export async function prepareCatalogGeneration(options: {
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
+  signal?: AbortSignal;
 }): Promise<PreparedCatalogGeneration> {
+  options.signal?.throwIfAborted();
   const awHomeDir = canonicalizePathThroughExistingAncestorSync(
     resolveAwHome(options.env ?? process.env),
   );
@@ -302,8 +304,14 @@ export async function prepareCatalogGeneration(options: {
     await fs.copy(options.resolution.rootDir, snapshotRoot, {
       dereference: false,
       preserveTimestamps: true,
+      filter: () => {
+        options.signal?.throwIfAborted();
+        return true;
+      },
     });
+    options.signal?.throwIfAborted();
     const validation = await validateCatalogSnapshot(snapshotRoot);
+    options.signal?.throwIfAborted();
     if (
       validation.manifestDigest !== options.resolution.manifestDigest
       || validation.snapshotDigest !== options.resolution.snapshotDigest
@@ -348,11 +356,13 @@ export async function prepareCatalogGeneration(options: {
       `${JSON.stringify(metadata, null, 2)}\n`,
       { flag: 'wx', mode: 0o600 },
     );
+    options.signal?.throwIfAborted();
     await validateGenerationDirectory({
       generationDir: stagingDir,
       logicalIdentity,
       snapshotDigest: validation.snapshotDigest,
     });
+    options.signal?.throwIfAborted();
     return { stagingDir, location, metadata };
   } catch (error) {
     await fs.remove(stagingDir).catch(() => undefined);

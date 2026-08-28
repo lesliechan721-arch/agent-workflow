@@ -3,9 +3,11 @@ export type CatalogGenerationErrorCode =
   | 'catalogGenerationMetadataInvalid'
   | 'catalogGenerationUnavailable'
   | 'catalogGenerationCandidateUnavailable'
+  | 'catalogGenerationCandidateChanged'
   | 'catalogGenerationSourceMissing'
   | 'catalogGenerationIdentityMismatch'
   | 'catalogGenerationRefreshFailed'
+  | 'catalogGenerationRefreshPolicyInvalid'
   | 'catalogGenerationPublishFailed'
   | 'catalogImmutableVersionViolation';
 

@@ -30,10 +30,12 @@ function releaseWarning(): void {
 export async function withAwHomeMutationLock<T>(options: {
   env?: NodeJS.ProcessEnv;
   token?: AwHomeMutationToken;
+  signal?: AbortSignal;
   action: (token: AwHomeMutationToken) => Promise<T>;
 }): Promise<T> {
   const coordinationRoot = resolveActiveMarketplaceRuntimeCoordinationRoot(options.env);
   if (options.token !== undefined) {
+    options.signal?.throwIfAborted();
     const tokenRoot = tokenRoots.get(options.token);
     if (tokenRoot === undefined) {
       throw new Error('Invalid AW_HOME mutation token.');
@@ -48,6 +50,7 @@ export async function withAwHomeMutationLock<T>(options: {
   const lease = await acquireProcessLock({
     lockPath: path.join(coordinationRoot, 'aw-home-mutation.lock'),
     timeoutMs: AW_HOME_MUTATION_LOCK_TIMEOUT_MS,
+    signal: options.signal,
   });
   const token = Object.freeze({}) as AwHomeMutationToken;
   tokenRoots.set(token, coordinationRoot);

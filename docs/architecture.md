@@ -98,7 +98,7 @@ Catalog snapshot 的 logical identity 只来自其 `.aw-generated.json.workspace
 
 Git 首次手动 refresh 直接建立 Active；已有 Active 时，高版本建立 Candidate，同版本同 digest 为 no-op，未显式改变 ref 的低版本报告 `channelRollback`，显式 ref 变化可建立 `refChange` Candidate。同一未变化 Git config 返回其它 Workspace identity 时，refresh 返回 `catalogGenerationIdentityMismatch`，且不改 Active、Candidate 或 state。Path source 默认 `manual`，每次 add 或手动 refresh 都建立 immutable local generation 并直接切换 Active；它允许同一 Catalog version 对应不同 digest，不监听文件系统。`aw catalog source activate-candidate <id>` 只在现有 `AW_HOME` mutation lock 下原子切 pointer，不下载或复制 snapshot。refresh 的远端解析、snapshot staging 和验证不持有该 mutation lock；最终 pointer 提交只短暂持锁并重读 source config fingerprint。这样，已更新或删除 source 的旧 refresh 只能丢弃自己的 staging，不能写回旧 pointer。source config mutation 和 activation 继续与普通 AW 写操作互斥。
 
-最小公开入口是 `aw catalog source refresh <id>`、`aw catalog source activate-candidate <id>` 和 `aw catalog source generation-status [id]`，均支持 `--json`。Active generation resolver 校验 state pointer、generation metadata、content-addressed 目录和 snapshot 后返回固定本地路径；`CatalogGenerationSet` 绑定当前 source 集合及稳定 `generationSetDigest`。generation state 不是 installed ledger，source 删除不得删除插件内容。
+最小公开入口是 `aw catalog source refresh <id>`、`aw catalog source activate-candidate <id>`、`aw catalog source generation-status [id]` 和 `aw catalog source refresh-policy <id> <startup|manual>`，均支持 `--json`。policy 更新只原子写 generation state，不访问远端；Path 只允许 `manual`。Active generation resolver 校验 state pointer、generation metadata、content-addressed 目录和 snapshot 后返回固定本地路径；`CatalogGenerationSet` 绑定当前 source 集合及稳定 `generationSetDigest`。generation state 不是 installed ledger，source 删除不得删除插件内容。
 
 普通 install、upgrade、reinstall、uninstall、非离线 cleanup、plugin config、status、TUI 和 Portable 操作只读取 Active generation。每次操作建立一个 typed `CatalogOperationContext`，直接绑定 immutable snapshot 路径、已解析的本地 Catalog 证据和 `generationSetDigest`；依赖 closure、目标计划、Review 和执行都复用该 context。它不复制 generation，也不建立 reader lease。已有 Active 时，普通操作不调用 provider、不检查 Git branch，也不访问远端。Candidate 只有显式 activate 后才对新操作可见；Path 工作区变化也只有显式 refresh 后才建立新的 Active。
 
@@ -128,6 +128,8 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
 ```
 
 TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。一次成功的 TUI load 固定可用来源的 Active generation 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 从该固定子集选择所需 source context。load 时失败的来源不可操作，直到用户刷新来源并重新加载；后续页面不会再次 bootstrap。后台 refresh 产生 Candidate 或显式 refresh 尚未改变该子集。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
+
+TUI 只在首屏使用已绑定 Active 和 live status 发布后，对 `refreshPolicy=startup` 的 Git source 启动内存后台刷新，最大并发数为 2。单个 source 失败不阻止其它 source；Controller dispose 取消未完成的 provider 和 staging。后台结果只更新 Candidate、lastCheck 和页面进度，不改变当前 session generation。激活只在用户确认 Review 后复用本地 Candidate；成功后重建 session，Candidate 在 Review 后漂移时必须返回 stale 并建立新 Review。
 
 Review 仍是用户确认边界。Review evidence 包含 `generationSetDigest` 和所需 source generation 证据。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。Execute 在同一个 `AW_HOME` mutation lock 内重新解析当前 Active set，验证绑定的 generation 目录和 metadata 仍存在，并比较 Review digest。source config 改变或 Candidate 被 activate 后，Execute 必须在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或新 Review。该检查不访问远端 branch。
 
