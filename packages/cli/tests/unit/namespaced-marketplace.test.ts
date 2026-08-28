@@ -637,6 +637,24 @@ describe('namespaced marketplace root', () => {
     },
   );
 
+  it('ignores regular files in the Codex cache root inventory', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const cacheRoot = path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw');
+    await Promise.all([
+      createMarketplaceRoot(root),
+      fs.outputFile(path.join(cacheRoot, '.DS_Store'), 'finder metadata\n'),
+    ]);
+
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      includeHistoricalProjects: true,
+    });
+
+    expect(inventory.errors).toEqual([]);
+  });
+
   it.each([
     ['missing manifest', async (manifestPath: string) => fs.ensureDir(path.dirname(manifestPath))],
     ['malformed manifest', async (manifestPath: string) => fs.outputFile(manifestPath, '{')],

@@ -156,7 +156,6 @@
         }
       ],
       "expected_output": "识别一次自动修复后的完整复审仍为 blocked，进入 Review 修复升级检查点；用户选择停止后保持工作区不变。",
-      "sandbox": "workspace-write",
       "workspace_files": {
         "docs/dev/invite-expiry/spec.md": "# Invite expiry\n\n- 邀请创建 7 天后过期。\n- 服务端拒绝过期邀请。\n",
         "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Engineering quality\n\n同一边界语义 finding 仍未解决。\n\n## 与上一份 Review 比较\n\n- 已解决：无。\n- 仍存在：边界语义 finding。\n- 新发现：无。\n\n## 建议动作\n\n已完成一次自动修复与完整复审；仍 blocked，需要用户决定是否继续。\n",
