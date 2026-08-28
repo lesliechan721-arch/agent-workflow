@@ -58,6 +58,7 @@ import {
 } from '../../src/utils/catalog-generation-service.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
+import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
   const isolation = getCurrentSourceTestIsolation();
@@ -575,6 +576,77 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ pluginId: 'team/middle', action: 'keep' }),
       expect.objectContaining({ pluginId: 'team/root', relation: 'requested' }),
     ]));
+  });
+
+  it('reuses ordinary inventory across write discovery and keeps historical consumer scans separate', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'inventory-reuse-source');
+    const remainingRoot = path.join(isolation.layout.fixtureCwd, 'inventory-reuse-remaining');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    await createDependencyCatalogSnapshotFixture(remainingRoot, [{ name: 'other' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const inventoryReads: Array<boolean> = [];
+    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
+      inventoryReads.push(options.includeHistoricalProjects === true);
+      return inventoryCatalogSourceReferences(options);
+    };
+    const runtime = {
+      env: isolation.env,
+      inventoryCatalogSourceReferences: readInventory,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+
+    const installed = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    expect(installed.dependencyPlan?.resolvedPluginIds).toEqual(['team/leaf', 'team/root']);
+    expect(inventoryReads).toEqual([false]);
+
+    inventoryReads.length = 0;
+    const cleaned = await cleanupWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    expect(inventoryReads).toEqual([false, true]);
+
+    const reinstalled = await reinstallWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(reinstalled.overallState, JSON.stringify(reinstalled.rebuildResults)).toBe('succeeded');
+    inventoryReads.length = 0;
+    const upgraded = await upgradeWriteCommand([], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', all: true,
+    }, runtime);
+    expect(upgraded.overallState, JSON.stringify(upgraded.rebuildResults)).toBe('succeeded');
+    expect(inventoryReads).toEqual([false]);
+
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'remaining', type: 'path', primary: true, path: remainingRoot }],
+      },
+      expectedDigest: configured.digest,
+      env: isolation.env,
+    });
+    inventoryReads.length = 0;
+    const offline = await cleanupWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(offline.overallState, JSON.stringify(offline.rebuildResults)).toBe('succeeded');
+    expect(inventoryReads).toEqual([false, true]);
   });
 
   it('keeps a present user dependency when installing its project consumer', async () => {

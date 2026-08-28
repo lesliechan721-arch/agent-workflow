@@ -22,6 +22,7 @@ afterEach(() => {
 describe('command runtime', () => {
   it('keeps a successful native result when diagnostic sinks fail', async () => {
     const { createCommandExecutionContext } = await import('../../src/commands/runtime.js');
+    const sentinel = 'unlabeled-native-success-secret';
     const reportEvent = vi.fn((event: { type: string }) => {
       if (event.type === 'native:success') throw new Error('reporter sink failed');
     });
@@ -29,19 +30,70 @@ describe('command runtime', () => {
       if (event.type === 'native:success') throw new Error('debug sink failed');
     });
     const context = createCommandExecutionContext({
-      nativeCliRunner: vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' })),
+      nativeCliRunner: vi.fn(async () => ({ exitCode: 0, stdout: sentinel, stderr: sentinel })),
       reporter: { event: reportEvent, notice: vi.fn() },
       debugLogger: { log: debugLog },
       diagnostics: { commandName: 'install' },
     });
 
-    await expect(context.nativeCliRunner({ command: 'codex', args: ['--version'] })).resolves.toEqual({
+    await expect(context.nativeCliRunner({
+      command: 'codex',
+      args: ['--version', sentinel],
+      cwd: path.join('/private', sentinel),
+    })).resolves.toEqual({
       exitCode: 0,
-      stdout: 'ok',
-      stderr: '',
+      stdout: sentinel,
+      stderr: sentinel,
     });
     expect(reportEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'native:success' }));
     expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ type: 'native:success' }));
+    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'native:success',
+      data: expect.objectContaining({ durationMs: expect.any(Number) }),
+    }));
+    expect(JSON.stringify([reportEvent.mock.calls, debugLog.mock.calls])).not.toContain(sentinel);
+  });
+
+  it('keeps native failure diagnostics on a safe whitelist', async () => {
+    const [{ createCommandExecutionContext }, { NativeCliError }] = await Promise.all([
+      import('../../src/commands/runtime.js'),
+      import('../../src/utils/native-cli.js'),
+    ]);
+    const sentinel = 'unlabeled-native-failure-secret';
+    const invocation = {
+      command: path.join('/private', 'bin', 'claude'),
+      args: ['plugin', 'install', sentinel],
+      cwd: path.join('/private', sentinel),
+    };
+    const failure = new NativeCliError({
+      invocation,
+      exitCode: 17,
+      stdout: sentinel,
+      stderr: sentinel,
+      reason: 'timeout',
+      cause: new Error(sentinel),
+    });
+    const reportEvent = vi.fn();
+    const debugLog = vi.fn();
+    const context = createCommandExecutionContext({
+      nativeCliRunner: vi.fn(async () => { throw failure; }),
+      reporter: { event: reportEvent, notice: vi.fn() },
+      debugLogger: { log: debugLog },
+      diagnostics: { commandName: 'install' },
+    });
+
+    await expect(context.nativeCliRunner(invocation)).rejects.toBe(failure);
+    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'native:error',
+      data: expect.objectContaining({
+        agent: 'claude',
+        operation: 'plugin',
+        exitCode: 17,
+        reason: 'timeout',
+        durationMs: expect.any(Number),
+      }),
+    }));
+    expect(JSON.stringify([reportEvent.mock.calls, debugLog.mock.calls])).not.toContain(sentinel);
   });
 
   it('uses the injected prompt output sink instead of stdout', async () => {

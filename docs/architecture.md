@@ -127,6 +127,12 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
   → 输出 receipt v4
 ```
 
+一次写操作在 `AW_HOME` mutation lock 内只采集一个当前现场 inventory。来源身份检查、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为 plan 或 preflight 再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 generation evidence。删除操作为检查历史 project consumer 读取的 inventory 范围不同，不与普通 target inventory 合并。
+
+性能观察复用现有 debug event。`review.prepare.*` 记录 Review 准备阶段耗时；`native:start|success|error` 只记录白名单 `agent`、稳定 operation、`exitCode`、固定 reason 和 `durationMs`，不记录 args、cwd、stdout、stderr 或未知 error/cause 文本；`rebuild:action` 分别记录 `preflight.inspect`、`native.write` 和 `postcheck.inspect` 等写阶段耗时。测试用调用次数、检查范围和阶段事件验证 write 性能边界。Warm install 的两秒目标只有在真实环境采样稳定后才可以形成预算；当前不增加机器相关硬门槛。
+
+首版不增加 authoritative installed-state DB、Observation Index、generation GC/read lease、新锁层级、全局事务或补偿状态机。Active generation 已是不可变内容寻址目录，操作 context 直接引用它；当前可观察的重复 inventory 可以用操作内 snapshot 消除。这些事实不足以证明新增持久状态和协调协议的成本合理。
+
 TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。一次成功的 TUI load 固定可用来源的 Active generation 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 从该固定子集选择所需 source context。load 时失败的来源不可操作，直到用户刷新来源并重新加载；后续页面不会再次 bootstrap。后台 refresh 产生 Candidate 或显式 refresh 尚未改变该子集。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
 
 TUI 只在首屏使用已绑定 Active 和 live status 发布后，对 `refreshPolicy=startup` 的 Git source 启动内存后台刷新，最大并发数为 2。单个 source 失败不阻止其它 source；Controller dispose 取消未完成的 provider 和 staging。后台结果只更新 Candidate、lastCheck 和页面进度，不改变当前 session generation。激活只在用户确认 Review 后复用本地 Candidate；成功后重建 session，Candidate 在 Review 后漂移时必须返回 stale 并建立新 Review。

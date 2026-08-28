@@ -19,6 +19,7 @@ import {
   withResolvedMultiSourceCatalog,
 } from '../../src/utils/multi-source-catalog.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
+import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import {
   NativeCliError,
   setNativeCliRunnerOverrideForTests,
@@ -104,14 +105,8 @@ describe('multi-source performance budgets', () => {
         { id: 'path-b', type: 'path', primary: false, path: secondPath },
       ],
     });
-    const fanoutConfig = await readCatalogSourcesConfigSnapshot(fanoutEnv);
-    await withResolvedMultiSourceCatalog({
-      cliVersion: '1.0.0',
-      freshnessPolicy: 'forceRemote',
-      configSnapshot: fanoutConfig,
-      env: fanoutEnv,
-      consume: () => undefined,
-    });
+    await Promise.all(['git-a', 'git-b', 'path-a', 'path-b'].map((sourceId) =>
+      refreshCatalogSourceGeneration({ sourceId, cliVersion: '1.0.0', env: fanoutEnv })));
   });
 
   afterAll(async () => {
@@ -269,26 +264,19 @@ describe('multi-source performance budgets', () => {
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('keeps four local Git and path source resolutions in the parallel fanout budget', async () => {
+  it('reads four Active sources without invoking a provider', async () => {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(fanoutEnv);
-    let maximumActive = 0;
+    let providerInvocations = 0;
     const durations = await sample(async () => {
-      let active = 0;
-      const observe = async <T>(operation: () => Promise<T>): Promise<T> => {
-        active += 1;
-        maximumActive = Math.max(maximumActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        try {
-          return await operation();
-        } finally {
-          active -= 1;
-        }
-      };
       const providers = {
-        git: (source: Parameters<typeof catalogGitProviderInternal.resolve>[0], options: Parameters<typeof catalogGitProviderInternal.resolve>[1]) =>
-          observe(() => catalogGitProviderInternal.resolve(source, options)),
-        path: (source: Parameters<typeof catalogPathProviderInternal.resolve>[0], options: Parameters<typeof catalogPathProviderInternal.resolve>[1]) =>
-          observe(() => catalogPathProviderInternal.resolve(source, options)),
+        git: async (..._args: Parameters<typeof catalogGitProviderInternal.resolve>) => {
+          providerInvocations += 1;
+          throw new Error('Active read invoked the Git provider.');
+        },
+        path: async (..._args: Parameters<typeof catalogPathProviderInternal.resolve>) => {
+          providerInvocations += 1;
+          throw new Error('Active read invoked the Path provider.');
+        },
       };
       await withResolvedMultiSourceCatalog({
         cliVersion: '1.0.0',
@@ -301,10 +289,41 @@ describe('multi-source performance budgets', () => {
         },
       });
     });
-    expect(maximumActive).toBe(4);
-    const summary = createPerfSummary('local-four-source-git-path-fanout', durations, BUDGET_MS);
+    expect(providerInvocations).toBe(0);
+    const summary = createPerfSummary('active-four-source-read-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
+
+  it('fans out remote work only through explicit refresh', async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const observe = async <T>(operation: () => Promise<T>): Promise<T> => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      try {
+        return await operation();
+      } finally {
+        active -= 1;
+      }
+    };
+    const providers = {
+      git: (source: Parameters<typeof catalogGitProviderInternal.resolve>[0], options: Parameters<typeof catalogGitProviderInternal.resolve>[1]) =>
+        observe(() => catalogGitProviderInternal.resolve(source, options)),
+      path: (source: Parameters<typeof catalogPathProviderInternal.resolve>[0], options: Parameters<typeof catalogPathProviderInternal.resolve>[1]) =>
+        observe(() => catalogPathProviderInternal.resolve(source, options)),
+    };
+
+    await Promise.all(['git-a', 'git-b', 'path-a', 'path-b'].map((sourceId) =>
+      refreshCatalogSourceGeneration({
+        sourceId,
+        cliVersion: '1.0.0',
+        env: fanoutEnv,
+        runtime: { providers },
+      })));
+
+    expect(maximumActive).toBe(4);
   });
 
   it('fails a local remote deadline within budget and confirms process cleanup', async () => {

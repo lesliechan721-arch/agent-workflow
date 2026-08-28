@@ -8,7 +8,6 @@ import {
 } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { bootstrapCatalogOperationSources } from '../utils/catalog-operation-context.js';
-import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   normalizeCleanupCommandOptions,
@@ -33,8 +32,6 @@ type WriteCommand = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup
 async function planBootstrapSourceIds(options: {
   pluginNames: string[];
   all?: boolean;
-  commandOptions: InstallCommandOptions;
-  env?: NodeJS.ProcessEnv;
 }): Promise<string[] | undefined> {
   const selectors = options.pluginNames.map(parsePluginId);
   if (selectors.some((selector) => !selector.sourceId)) return undefined;
@@ -42,22 +39,7 @@ async function planBootstrapSourceIds(options: {
     return [...new Set(selectors.map((selector) => selector.sourceId!))];
   }
   if (!options.all) return [];
-  const inventory = await inventoryCatalogSourceReferences({
-    cwd: options.commandOptions.cwd,
-    ...(options.env ? { env: options.env } : {}),
-  });
-  const platforms = options.commandOptions.platform === 'both'
-    ? new Set<PlatformName>(['codex', 'claude'])
-    : new Set<PlatformName>([options.commandOptions.platform]);
-  return [...new Set(inventory.references.flatMap((reference) =>
-    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
-    && reference.sourceId
-    && reference.pluginName
-    && reference.scope === options.commandOptions.scope
-    && reference.platform
-    && platforms.has(reference.platform as PlatformName)
-      ? [reference.sourceId]
-      : []))];
+  return undefined;
 }
 
 function writeErrorCode(message: string): string {
@@ -213,8 +195,6 @@ async function runPublicWriteCommand(options: {
           const sourceIds = await planBootstrapSourceIds({
             pluginNames: options.pluginNames,
             ...(options.all === undefined ? {} : { all: options.all }),
-            commandOptions: options.commandOptions,
-            env: runtime.env,
           });
           const packageInfo = await readCliPackageInfo();
           if (sourceIds === undefined || sourceIds.length > 0) {
@@ -228,7 +208,7 @@ async function runPublicWriteCommand(options: {
                   : {}),
               });
             } catch (error) {
-              if (options.command !== 'cleanup') catalogBootstrapError = error;
+              if (options.command !== 'cleanup' && !options.all) catalogBootstrapError = error;
             }
           }
         }

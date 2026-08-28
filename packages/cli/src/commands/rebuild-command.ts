@@ -98,6 +98,7 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   catalogOperationContext?: CatalogOperationContext;
   catalogBootstrapError?: unknown;
   catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
+  inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   expectedOfflineCleanupEvidence?: OfflineCleanupTargetEvidence;
   reviewPreflight?: (evidence: RebuildReviewPreflightEvidence) => Promise<void> | void;
   resolvedReviewEvidenceByPlugin?: Record<
@@ -1102,8 +1103,9 @@ async function assertOfflineCleanupDependents(options: {
   targets: LiveCleanupTarget[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  readInventory: typeof inventoryCatalogSourceReferences;
 }): Promise<void> {
-  const inventory = await inventoryCatalogSourceReferences({
+  const inventory = await options.readInventory({
     cwd: options.cwd,
     env: options.env,
     includeHistoricalProjects: true,
@@ -1147,6 +1149,16 @@ export async function runRebuildCommand(options: {
     return runSingleSourceRebuildCommand(options);
   }
   const runtimeEnv = options.runtime?.env ?? process.env;
+  const readInventory = options.runtime?.inventoryCatalogSourceReferences
+    ?? inventoryCatalogSourceReferences;
+  let ordinaryInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
+  const readOrdinaryInventory = async () => {
+    ordinaryInventory ??= await readInventory({
+      cwd: options.commandOptions.cwd,
+      env: runtimeEnv,
+    });
+    return ordinaryInventory;
+  };
   let requestedPluginNames = options.pluginNames;
   const cleanupForce = options.command === 'cleanup'
     && (options.commandOptions as CleanupCommandOptions).force === true;
@@ -1168,10 +1180,7 @@ export async function runRebuildCommand(options: {
     scope: Scope;
   }> = [];
   if (options.command === 'cleanup' && !options.all) {
-    cleanupInventory = await inventoryCatalogSourceReferences({
-      cwd: options.commandOptions.cwd,
-      env: runtimeEnv,
-    });
+    cleanupInventory = await readOrdinaryInventory();
     const live = resolveLiveCleanupTargets({
       selectors: requestedPluginNames,
       platforms: selectedPlatforms(options.commandOptions.platform),
@@ -1235,10 +1244,7 @@ export async function runRebuildCommand(options: {
     });
   }
   if (options.all) {
-    const inventory = await inventoryCatalogSourceReferences({
-      cwd: options.commandOptions.cwd,
-      env: runtimeEnv,
-    });
+    const inventory = await readOrdinaryInventory();
     if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(inventory);
     const requestedPlatforms = new Set(selectedPlatforms(options.commandOptions.platform));
     legacyLiveTargets = projectLegacyTargets(selectedLegacyLiveReferences(
@@ -1456,10 +1462,7 @@ export async function runRebuildCommand(options: {
       if (options.runtime?.previewDependencyPlanOnly) {
         await options.runtime.onPreviewStage?.('inventory');
       }
-      const stateInventory = await inventoryCatalogSourceReferences({
-        cwd: options.commandOptions.cwd,
-        env: runtimeEnv,
-      });
+      const stateInventory = await readOrdinaryInventory();
       if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(stateInventory);
       const commandProjectKey = await resolveCanonicalRepoProjectKey(options.commandOptions.cwd);
       const codexScopePathsAlias = codexProjectConfigAliasesUserHome(
@@ -1582,12 +1585,8 @@ export async function runRebuildCommand(options: {
         scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
       });
       const createPlan = async (
-        preparedInventory?: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
+        inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
       ): Promise<DependencyOperationPlan> => {
-        const inventory = preparedInventory ?? await inventoryCatalogSourceReferences({
-          cwd: options.commandOptions.cwd,
-          env: runtimeEnv,
-        });
         if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(inventory);
         const targets = [];
         for (const [order, { entry, platform }] of executionSelections.entries()) {
@@ -1791,7 +1790,7 @@ export async function runRebuildCommand(options: {
               candidate.name === entry.plugin.manifest.name)?.contentDigest,
           });
       }
-        const lockedPlan = await createPlan();
+        const lockedPlan = await createPlan(stateInventory);
         for (const pluginName of new Set(lockedPlan.targets.flatMap((target) =>
           target.platform === 'claude'
           && (target.action === 'install'
@@ -1879,7 +1878,7 @@ export async function runRebuildCommand(options: {
         }
         const removalRequiredConsumers = new Map<string, Set<string>>();
         if ((options.command === 'cleanup' && !cleanupForce) || options.command === 'uninstall') {
-          const removalStateInventory = await inventoryCatalogSourceReferences({
+          const removalStateInventory = await readInventory({
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,
             includeHistoricalProjects: true,
@@ -2190,6 +2189,7 @@ export async function runRebuildCommand(options: {
           targets: cleanupLiveTargets,
           cwd: options.commandOptions.cwd,
           env: runtimeEnv,
+          readInventory,
         });
       }
       return cleanupOfflineOwnedComponents({
