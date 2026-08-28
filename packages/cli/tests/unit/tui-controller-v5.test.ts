@@ -670,9 +670,9 @@ describe('TUI v4 router and ViewModel', () => {
     });
 
     expect(view.issues.map((issue) => issue.issueId)).toEqual([
-      'target:official/demo:codex:user:error',
-      'status:legacyStateUnsupported',
       'status:nativeStateUnreadable',
+      'status:legacyStateUnsupported',
+      'target:official/demo:codex:user:error',
     ]);
     expect(JSON.stringify(view.issues)).not.toContain('/Users/private');
     expect(JSON.stringify(view.issues)).not.toContain('private-token');
@@ -746,6 +746,126 @@ describe('TUI v4 router and ViewModel', () => {
       .toEqual(['reAddSource', 'viewTechnical']);
     expect(view.issues.find((issue) => issue.category === 'sourceIdentityChanged')?.actions.map((action) => action.id))
       .toEqual(['viewSourceChange', 'viewTechnical']);
+  });
+
+  it('selects one stable primary reason and orders issue root groups', () => {
+    const consumer = target({
+      pluginName: 'consumer', scope: 'project', state: 'partial', errors: [{
+        code: 'dependencyNotReady',
+        message: 'safe dependency symptom',
+        dependencyPluginId: 'official/leaf',
+        rootIssueId: 'artifactCollision:official/leaf:codex:user:agent:leaf-role',
+        rootIssueCode: 'artifactCollision',
+      }],
+    });
+    const view = buildTuiViewModel({
+      status: status({
+        targets: [
+          target({ pluginName: 'removed', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
+          consumer,
+          target({ sourceId: 'team', pluginName: 'graph', scope: 'user', state: 'absent' }),
+          target({
+            pluginName: 'dependency', scope: 'user', state: 'partial', errors: [{
+              code: 'dependencyMissing',
+              message: 'safe dependency evidence',
+              dependencyPluginId: 'official/leaf',
+            }],
+          }),
+          target({ pluginName: 'incomplete', scope: 'user', state: 'partial' }),
+        ],
+      }),
+      pluginSummaries: [
+        ...summaries(
+          ['official', 'removed'],
+          ['official', 'consumer'],
+          ['official', 'leaf'],
+          ['team', 'graph'],
+          ['official', 'dependency'],
+          ['official', 'incomplete'],
+          ['official', 'available'],
+        ),
+        {
+          pluginName: 'configured',
+          pluginId: 'team/configured',
+          description: 'config fixture',
+          configIssues: [{
+            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+          }],
+        },
+        {
+          pluginName: 'source-configured',
+          pluginId: 'official/source-configured',
+          description: 'source config fixture',
+          configIssues: [{
+            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+          }],
+        },
+      ],
+      sourceHealth: new Map([['official', {
+        sourceId: 'official', state: 'degraded', issueId: 'source:official:cache',
+      }]]),
+      dependencyOverviews: [{
+        pluginId: 'team/graph',
+        summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 0, missingCount: 0, issueCount: 1 },
+        dependencies: [],
+        dependents: [],
+        blockers: [{
+          code: 'dependencyGraphInvalid',
+          title: '依赖关系无效',
+          explanation: '依赖关系形成环。',
+        }],
+      }],
+    });
+
+    expect(view.issues.map((issue) => issue.group)).toEqual([
+      'sourceRemoved',
+      'artifactCollision',
+      'sourceUnavailable',
+      'dependency',
+      'dependency',
+      'config',
+      'config',
+      'installation',
+    ]);
+    expect(view.issues.filter((issue) =>
+      issue.issueId === 'artifactCollision:official/leaf:codex:user:agent:leaf-role')).toHaveLength(1);
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/consumer')?.primaryAttention)
+      .toEqual({
+        severity: 'error',
+        code: 'artifactCollision',
+        message: '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。',
+      });
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'team/configured')?.primaryAttention?.code)
+      .toBe('invalidConfig');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/available')?.primaryAttention)
+      .toMatchObject({ severity: 'warning', code: 'sourceUnavailable' });
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/incomplete')?.primaryAttention?.code)
+      .toBe('sourceUnavailable');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/dependency')?.primaryAttention?.code)
+      .toBe('sourceUnavailable');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'team/graph')?.primaryAttention?.code)
+      .toBe('dependencyGraphInvalid');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/source-configured')?.primaryAttention?.code)
+      .toBe('sourceUnavailable');
+  });
+
+  it('selects an unavailable source before config and incomplete symptoms', () => {
+    const view = buildTuiViewModel({
+      status: status({ targets: [target({ pluginName: 'offline', scope: 'user', state: 'partial' })] }),
+      pluginSummaries: [{
+        pluginName: 'offline',
+        pluginId: 'official/offline',
+        description: 'offline fixture',
+        configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
+      }],
+      sourceHealth: new Map([['official', {
+        sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
+      }]]),
+    });
+
+    expect(view.plugins[0]?.primaryAttention).toMatchObject({
+      severity: 'error', code: 'sourceUnavailable',
+    });
   });
 
   it('keeps bundleUnavailable as a plugin target issue beside a degraded source root', () => {

@@ -85,6 +85,21 @@ export interface StatusV5Target {
     directCount: number;
     issueCount: number;
   };
+  dependencyReadiness?: StatusV5DependencyReadiness[];
+}
+
+export type StatusV5DependencyReadinessState =
+  | 'ready'
+  | 'absent'
+  | 'blockedByCollision'
+  | 'incomplete'
+  | 'error';
+
+export interface StatusV5DependencyReadiness {
+  dependencyPluginId: string;
+  state: StatusV5DependencyReadinessState;
+  rootIssueId?: string;
+  rootIssueCode?: string;
 }
 
 export interface StatusV5Component {
@@ -97,6 +112,9 @@ export interface StatusV5TargetError {
   code: string;
   message: string;
   collision?: ArtifactCollisionEvidence;
+  dependencyPluginId?: string;
+  rootIssueId?: string;
+  rootIssueCode?: string;
 }
 
 export interface StatusV5Payload {
@@ -143,6 +161,7 @@ interface StatusPluginCapability {
     state: StatusV5Target['state'];
     errors: StatusV5Target['errors'];
     components: StatusV5Component[];
+    dependencyReadiness?: StatusV5DependencyReadiness[];
     installedVersion?: string;
   }>>>>;
   dependencies: string[];
@@ -328,6 +347,22 @@ function collisionMessage(collision: ArtifactCollisionEvidence): string {
   return `artifactCollision: ${collision.artifactKind} ${collision.artifactKey}: ${reason}。请移除或迁移冲突内容后重试。`;
 }
 
+function collisionRootIssueId(options: {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+  collision: ArtifactCollisionEvidence;
+}): string {
+  return [
+    'artifactCollision',
+    options.pluginId,
+    options.platform,
+    options.scope,
+    options.collision.artifactKind,
+    options.collision.artifactKey,
+  ].join(':');
+}
+
 export async function statusCommandV5(options: {
   plugins?: string[];
   cwd: string;
@@ -348,7 +383,11 @@ export async function statusCommandV5(options: {
   const dependencyPluginCache = new Map<string, Promise<PluginMeta>>();
   const dependencyInspectionCache = new Map<
     string,
-    Promise<StatusV5Target['state']>
+    Promise<{
+      state: StatusV5DependencyReadinessState;
+      rootIssueId?: string;
+      rootIssueCode?: string;
+    }>
   >();
   const cliVersion = options.cliVersion ?? assertStrictSemVer(
     (JSON.parse(fs.readFileSync(path.join(resolveCliPackageRoot(), 'package.json'), 'utf8')) as {
@@ -615,9 +654,20 @@ export async function statusCommandV5(options: {
                         code: 'artifactCollision',
                         message: collisionMessage(component.collision),
                         collision: component.collision,
+                        rootIssueId: collisionRootIssueId({
+                          pluginId: formatPluginId({
+                            sourceId: item.resolution!.sourceId,
+                            pluginName: entry.name,
+                          }),
+                          platform,
+                          scope,
+                          collision: component.collision,
+                        }),
+                        rootIssueCode: 'artifactCollision',
                       }] : [],
                     );
                     const dependencyErrors: StatusV5TargetError[] = [];
+                    const dependencyReadiness: StatusV5DependencyReadiness[] = [];
                     const directDependencies = plugin.manifest.dependencies ?? [];
                     if (directDependencies.length > 0
                       && (liveState === 'present' || liveState === 'partial')) {
@@ -628,9 +678,19 @@ export async function statusCommandV5(options: {
                         });
                         if (!item.resolution!.manifest.entries.some((candidate) =>
                           candidate.name === dependencyName)) {
+                          const rootIssueId = `dependencyMissing:${dependencyId}:${platform}:${scope}`;
+                          dependencyReadiness.push({
+                            dependencyPluginId: dependencyId,
+                            state: 'absent',
+                            rootIssueId,
+                            rootIssueCode: 'dependencyMissing',
+                          });
                           dependencyErrors.push({
                             code: 'dependencyMissing',
                             message: `dependencyMissing: ${dependencyId} is not available in the current source snapshot.`,
+                            dependencyPluginId: dependencyId,
+                            rootIssueId,
+                            rootIssueCode: 'dependencyMissing',
                           });
                           continue;
                         }
@@ -649,7 +709,13 @@ export async function statusCommandV5(options: {
                           dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
                         }
                         const placements: Scope[] = scope === 'project' ? ['project', 'user'] : ['user'];
-                        let dependencyState: StatusV5Target['state'] = 'absent';
+                        let dependencyResult: {
+                          state: StatusV5DependencyReadinessState;
+                          rootIssueId?: string;
+                          rootIssueCode?: string;
+                        } = {
+                          state: 'absent',
+                        };
                         for (const dependencyScope of placements) {
                           const inspectionCacheKey = [
                             item.resolution!.sourceIdentity,
@@ -685,31 +751,97 @@ export async function statusCommandV5(options: {
                                   debugLogger: createNoopDebugLogger(),
                                 },
                               });
-                              return projectedLiveState({
+                              const dependencyLiveState = projectedLiveState({
                                 inspection: dependencyInspected.inspection,
                                 required: dependencyInspected.target.desiredOwnedComponents
                                   ?? dependencyInspected.target.ownedComponents,
                                 optional: dependencyInspected.target.optionalOwnedComponents ?? [],
                               });
-                            });
+                              const collision = dependencyInspected.inspection.components.find(
+                                (component) => component.collision,
+                              )?.collision;
+                              if (collision) {
+                                return {
+                                  state: 'blockedByCollision' as const,
+                                  rootIssueId: collisionRootIssueId({
+                                    pluginId: dependencyId,
+                                    platform,
+                                    scope: dependencyScope,
+                                    collision,
+                                  }),
+                                  rootIssueCode: 'artifactCollision',
+                                };
+                              }
+                              return {
+                                state: dependencyLiveState === 'present' ? 'ready' as const
+                                  : dependencyLiveState === 'absent' ? 'absent' as const
+                                    : dependencyLiveState === 'partial' ? 'incomplete' as const
+                                      : 'error' as const,
+                                ...(dependencyLiveState === 'partial'
+                                  ? {
+                                      rootIssueId: `incompleteInstallation:${dependencyId}:${platform}:${dependencyScope}`,
+                                      rootIssueCode: 'incompleteInstallation',
+                                    }
+                                  : dependencyLiveState === 'error'
+                                    ? {
+                                        rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
+                                        rootIssueCode: 'diagnostic',
+                                      }
+                                    : {}),
+                              };
+                            }).catch(() => ({
+                              state: 'error' as const,
+                              rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
+                              rootIssueCode: 'diagnostic',
+                            }));
                             dependencyInspectionCache.set(inspectionCacheKey, dependencyInspection);
                           }
-                          const candidateState = await dependencyInspection;
-                          if (candidateState === 'present') {
-                            dependencyState = 'present';
+                          const candidate = await dependencyInspection;
+                          if (candidate.state === 'ready') {
+                            dependencyResult = candidate;
                             break;
                           }
-                          if (candidateState !== 'absent') dependencyState = candidateState;
+                          const priority: Record<StatusV5DependencyReadinessState, number> = {
+                            ready: 5,
+                            blockedByCollision: 4,
+                            incomplete: 3,
+                            error: 2,
+                            absent: 1,
+                          };
+                          if (priority[candidate.state] > priority[dependencyResult.state]) {
+                            dependencyResult = candidate;
+                          }
                         }
-                        if (dependencyState === 'absent') {
+                        if (dependencyResult.state === 'absent') {
+                          dependencyResult = {
+                            state: 'absent',
+                            rootIssueId: `dependencyMissing:${dependencyId}:${platform}:${scope}`,
+                            rootIssueCode: 'dependencyMissing',
+                          };
+                        }
+                        dependencyReadiness.push({
+                          dependencyPluginId: dependencyId,
+                          ...dependencyResult,
+                        });
+                        if (dependencyResult.state === 'absent') {
                           dependencyErrors.push({
                             code: 'dependencyMissing',
                             message: `dependencyMissing: ${dependencyId} is absent from its required live placement.`,
+                            dependencyPluginId: dependencyId,
+                            rootIssueId: dependencyResult.rootIssueId,
+                            rootIssueCode: dependencyResult.rootIssueCode,
                           });
-                        } else if (dependencyState !== 'present') {
+                        } else if (dependencyResult.state !== 'ready') {
                           dependencyErrors.push({
                             code: 'dependencyNotReady',
                             message: `dependencyNotReady: ${dependencyId} is not ready at its required live placement.`,
+                            dependencyPluginId: dependencyId,
+                            ...(dependencyResult.rootIssueId
+                              ? { rootIssueId: dependencyResult.rootIssueId }
+                              : {}),
+                            ...(dependencyResult.rootIssueCode
+                              ? { rootIssueCode: dependencyResult.rootIssueCode }
+                              : {}),
                           });
                         }
                       }
@@ -720,6 +852,7 @@ export async function statusCommandV5(options: {
                         code: 'componentInspectionFailed',
                         message: `${error.label}: ${error.message}`,
                       })), ...collisionErrors, ...dependencyErrors],
+                      ...(dependencyReadiness.length > 0 ? { dependencyReadiness } : {}),
                       components: options.verbose === true
                         ? inspected.inspection.components.map((component) => {
                             const projectedError = component.collision
@@ -911,6 +1044,9 @@ export async function statusCommandV5(options: {
             code: 'targetInspectionFailed',
             message: `No live inspection result exists for ${entry.source.id}/${entry.name}.`,
           }],
+          ...(live?.dependencyReadiness
+            ? { dependencyReadiness: live.dependencyReadiness }
+            : {}),
           ...(entry.dependencies.length > 0 || dependencyIssueCount > 0 ? {
             dependency: {
               directCount: entry.dependencies.length,

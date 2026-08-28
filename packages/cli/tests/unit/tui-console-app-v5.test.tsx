@@ -879,6 +879,30 @@ describe('ConsoleAppV4', () => {
     expect(screens).not.toContain('G04');
   });
 
+  it('shows the stable primary root cause on an installed plugin row', async () => {
+    const loaded = loadResult();
+    const consumer = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'team-tools/review-gate' && entry.platform === 'codex');
+    expect(consumer).toBeDefined();
+    consumer!.state = 'partial';
+    consumer!.errors = [{
+      code: 'dependencyNotReady',
+      message: 'safe dependency symptom',
+      dependencyPluginId: 'team-tools/toolkit',
+      rootIssueId: 'artifactCollision:team-tools/toolkit:codex:user:agent:toolkit',
+      rootIssueCode: 'artifactCollision',
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 24 }} />);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('artifactCollision');
+    expect(instance.lastFrame()).toContain('AW 不会覆盖或删除');
+    instance.unmount();
+  });
+
   it.each([
     [80, 24],
     [60, 18],

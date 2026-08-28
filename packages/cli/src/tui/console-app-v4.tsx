@@ -236,6 +236,19 @@ function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
   }).join('  |  ') || '没有可用平台';
 }
 
+function issueGroupLabel(group: UserIssueViewModel['group']): string {
+  return {
+    sourceRemoved: '来源已移除',
+    artifactCollision: '输出冲突',
+    sourceUnavailable: '来源不可用',
+    dependency: '依赖',
+    scope: '位置',
+    config: '设置',
+    installation: '安装',
+    diagnostic: '诊断',
+  }[group];
+}
+
 function pluginRowStatus(plugin: PluginListItemViewModel): PluginListRowViewModel['status'] {
   if (plugin.aggregateStatus === 'needsAttention') return 'warning';
   if (plugin.aggregateStatus === 'installed') return 'success';
@@ -1704,7 +1717,9 @@ export function ConsoleAppV4(props: {
       pluginId: item.pluginId,
       name: item.displayName,
       sourceLabel: item.sourceLabel,
-      description: item.description,
+      description: item.primaryAttention
+        ? `${item.primaryAttention.code} · ${item.primaryAttention.message}`
+        : item.description,
       placementSummary: pluginPlacementSummary(item),
       statusLabel: statusText(item),
       status: pluginRowStatus(item),
@@ -2793,9 +2808,9 @@ export function ConsoleAppV4(props: {
         label: entry.category.startsWith('dependency')
           ? `${props.controller.getPluginOverview(entry.pluginId ?? '')?.displayName ?? entry.pluginId ?? entry.title}${entry.platform ? ` · ${platformLabel(entry.platform)}` : ''}`
           : entry.title,
-        description: entry.category.startsWith('dependency')
+        description: `${issueGroupLabel(entry.group)} · ${entry.category.startsWith('dependency')
           ? `${props.controller.getPluginOverview(entry.dependencyPluginId ?? '')?.displayName ?? entry.dependencyPluginId ?? entry.explanation} · ${entry.impact[0] ?? ''}`
-          : `${entry.explanation} · ${entry.impact[0] ?? ''}`,
+          : `${entry.explanation} · ${entry.impact[0] ?? ''}`}`,
         status: entry.category === 'sourceDegraded' ? 'warning' as const : 'error' as const,
         run: () => entry.category === 'dependencyStillRequired' && entry.pluginId
           ? go({ name: 'pluginDependencies', pluginId: entry.pluginId, view: 'removeBlocked',

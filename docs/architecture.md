@@ -149,9 +149,13 @@ Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始�
 
 target 聚合只使用 AW-owned live 证据。所有 own 组件健康时为 `present`；存在 own 组件但必要组件缺失或损坏时为 `partial`；没有 own 组件时为 `absent`。foreign-only target 为 `absent` 并带结构化 `artifactCollision`；own 不完整且存在 collision 时为 `partial` 并带相同错误。当前插件的普通 cleanup 和 uninstall 不删除 foreign component。
 
+Status v5 对已检查的直接依赖公开 `ready | absent | blockedByCollision | incomplete | error` readiness。依赖问题携带 `dependencyPluginId`；有可识别根因时还携带稳定的 `rootIssueId` 和 `rootIssueCode`。依赖 artifact collision 必须投影为 `blockedByCollision` 和 `artifactCollision` 根因；consumer 的 `dependencyNotReady` 与 `partial` 只保留为症状，不能覆盖根因。
+
 `status --json` 只输出 schema 5，不提供 schema 4 参数或双轨输出。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。人类 CLI 和 TUI 把 `artifactCollision` 显示为需要移除或迁移占用内容的输出冲突，不把它显示为安装不完整。
 
 TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理 AW-owned live 内容、保留 plugin config 且不运行 uninstall lifecycle，并显示不含 `--force` 的等价命令。普通 cleanup 继续执行 dependent 保护；成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
+
+TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序；共享 `rootIssueId` 的下游症状折叠到同一个根问题详情。
 
 target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v5 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
 

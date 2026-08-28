@@ -2178,8 +2178,19 @@ describe('five namespaced write commands', () => {
     await expect(status()).resolves.toMatchObject({
       payload: { targets: [expect.objectContaining({
         state: 'partial',
+        dependencyReadiness: [{
+          dependencyPluginId: 'team/leaf',
+          state: 'absent',
+          rootIssueCode: 'dependencyMissing',
+          rootIssueId: 'dependencyMissing:team/leaf:codex:project',
+        }],
         errors: expect.arrayContaining([
-          expect.objectContaining({ code: 'dependencyMissing' }),
+          expect.objectContaining({
+            code: 'dependencyMissing',
+            dependencyPluginId: 'team/leaf',
+            rootIssueCode: 'dependencyMissing',
+            rootIssueId: 'dependencyMissing:team/leaf:codex:project',
+          }),
         ]),
       })] },
     });
@@ -2211,18 +2222,72 @@ describe('five namespaced write commands', () => {
     await fs.ensureDir(leafAgent);
     const notReadyController = createController();
     await notReadyController.load();
-    const collisionMissingIssue = notReadyController.listUserIssues().find((issue) =>
-      issue.category === 'dependencyMissing'
+    const collisionIssue = notReadyController.listUserIssues().find((issue) =>
+      issue.category === 'artifactCollision'
       && issue.pluginId === 'team/root'
       && issue.platform === 'codex'
       && issue.scope === 'project');
-    expect(collisionMissingIssue?.actions).toEqual(expect.arrayContaining([
+    expect(collisionIssue).toMatchObject({
+      group: 'artifactCollision',
+      dependencyPluginId: 'team/leaf',
+      technicalDetails: expect.arrayContaining([expect.objectContaining({ code: 'dependencyNotReady' })]),
+    });
+    const collisionStatus = await status();
+    expect(collisionStatus.payload.targets[0]).toMatchObject({
+      state: 'partial',
+      dependencyReadiness: [expect.objectContaining({
+        dependencyPluginId: 'team/leaf',
+        state: 'blockedByCollision',
+        rootIssueCode: 'artifactCollision',
+        rootIssueId: expect.stringContaining('artifactCollision:team/leaf:codex:project:'),
+      })],
+      errors: expect.arrayContaining([expect.objectContaining({
+        code: 'dependencyNotReady',
+        dependencyPluginId: 'team/leaf',
+        rootIssueCode: 'artifactCollision',
+      })]),
+    });
+    notReadyController.dispose();
+  });
+
+  it('projects a dependency target blocker through a real controller load', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const targetRoot = path.join(isolation.layout.fixtureCwd, 'dependency-target-issue-source');
+    await createDependencyCatalogSnapshotFixture(targetRoot, [
+      {
+        name: 'leaf',
+        configureManifest: (manifest) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'target', type: 'path', primary: true, path: targetRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    })));
+    await controller.load();
+
+    expect(controller.listUserIssues()).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        id: 'installDependency', pluginId: 'team/leaf', platform: 'codex',
-        scope: 'project', project: 'current',
+        category: 'dependencyTargetUnsupported',
+        group: 'dependency',
+        pluginId: 'target/root',
       }),
     ]));
-    notReadyController.dispose();
+    expect(controller.getPluginOverview('target/root')?.primaryAttention?.code)
+      .toBe('dependencyTargetUnsupported');
+    controller.dispose();
   });
 
   it('deduplicates status inspection for one dependency placement shared by consumers', async () => {

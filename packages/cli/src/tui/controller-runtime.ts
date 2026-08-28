@@ -353,6 +353,7 @@ async function loadDependencyOverviews(options: {
       }),
     });
   const nodes = new Map(graph.nodes.map((node) => [node.pluginId, node]));
+  const summaryById = new Map(options.status.pluginSummaries.map((summary) => [summary.pluginId, summary]));
   const displayName = (pluginId: string): string => nodes.get(pluginId)?.displayName
     ?? parsePluginId(pluginId).pluginName;
   const reverse = new Map<string, string[]>();
@@ -489,6 +490,13 @@ async function loadDependencyOverviews(options: {
           title: '依赖关系需要处理',
           explanation: '当前目标的依赖证据不能安全通过检查。',
         })));
+    const consumerTargets = summaryById.get(pluginId)?.supportedTargets;
+    const unsupportedDependency = dependencyItems.find((dependency) => {
+      const dependencyTargets = summaryById.get(dependency.pluginId)?.supportedTargets;
+      if (!consumerTargets || !dependencyTargets) return true;
+      return (['codex', 'claude'] as const).some((platform) =>
+        consumerTargets[platform].length > 0 && dependencyTargets[platform].length === 0);
+    });
     const sourceId = parsePluginId(pluginId).sourceId;
     const blockers = [
       ...graph.sourceErrors.filter((error) => error.sourceId === sourceId).map((error) => ({
@@ -500,6 +508,11 @@ async function loadDependencyOverviews(options: {
         code: 'dependencyGraphInvalid',
         title: '依赖关系无效',
         explanation: '依赖关系形成环。',
+      }] : []),
+      ...(unsupportedDependency ? [{
+        code: 'dependencyTargetUnsupported',
+        title: '依赖目标不兼容',
+        explanation: `${unsupportedDependency.displayName} 不支持根插件所需的平台。`,
       }] : []),
       ...targetBlockers,
     ];

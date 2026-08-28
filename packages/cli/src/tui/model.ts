@@ -66,6 +66,11 @@ export interface PluginListItemViewModel {
   supportedPlatforms: PlatformName[];
   installedPlacements: PlatformPlacementSummary[];
   aggregateStatus: 'available' | 'installed' | 'needsAttention' | 'unavailable';
+  primaryAttention?: {
+    severity: 'warning' | 'error';
+    code: string;
+    message: string;
+  };
   portableSkills: boolean;
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
@@ -223,6 +228,16 @@ export type UserIssueCategory =
   | 'legacyState'
   | 'diagnostic';
 
+export type UserIssueGroup =
+  | 'sourceRemoved'
+  | 'artifactCollision'
+  | 'sourceUnavailable'
+  | 'dependency'
+  | 'scope'
+  | 'config'
+  | 'installation'
+  | 'diagnostic';
+
 export type UserIssueActionId =
   | 'reinstall'
   | 'cleanup'
@@ -271,6 +286,7 @@ export type TargetIssueRootCode =
 export interface UserIssueViewModel {
   issueId: string;
   category: UserIssueCategory;
+  group: UserIssueGroup;
   title: string;
   explanation: string;
   impact: string[];
@@ -299,7 +315,7 @@ export interface UserIssueViewModel {
   diagnostic: DiagnosticSummaryViewModel;
 }
 
-type UserIssueDraft = Omit<UserIssueViewModel, 'diagnostic'>;
+type UserIssueDraft = Omit<UserIssueViewModel, 'diagnostic' | 'group'>;
 
 export interface TuiViewModel {
   plugins: PluginListItemViewModel[];
@@ -560,53 +576,72 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
       'dependencyStillRequired',
       'dependencyGraphInvalid',
     ] as const;
-    const dependencyRoots = [...new Map(target.errors.flatMap((error) => {
-      if (!dependencyCodes.includes(error.code as typeof dependencyCodes[number])) return [];
-      const code = error.code as typeof dependencyCodes[number];
-      const dependencyPluginId = dependencyPluginIdFromMessage(error.message);
-      return [[`${code}\0${dependencyPluginId ?? ''}`, {
-        code,
-        category: code,
-        mergeEligible: false,
-        error,
-        dependencyPluginId,
-      }] as const];
-    })).values()];
-    const roots: Array<{
+    type TargetIssueRoot = {
       code: TargetIssueRootCode;
       category: UserIssueCategory;
       mergeEligible: boolean;
       error?: StatusV5Target['errors'][number];
       dependencyPluginId?: string;
-    }> = codes.has('artifactCollision')
+    };
+    const dependencyRootMap = new Map<string, TargetIssueRoot>();
+    for (const error of target.errors) {
+      if (!dependencyCodes.includes(error.code as typeof dependencyCodes[number])) continue;
+      if (error.rootIssueCode === 'artifactCollision') {
+        dependencyRootMap.set(error.rootIssueId ?? `artifactCollision\0${error.dependencyPluginId ?? ''}`, {
+          code: 'artifactCollision',
+          category: 'artifactCollision',
+          mergeEligible: false,
+          error,
+          dependencyPluginId: error.dependencyPluginId,
+        });
+        continue;
+      }
+      const code = error.code as typeof dependencyCodes[number];
+      const dependencyPluginId = error.dependencyPluginId ?? dependencyPluginIdFromMessage(error.message);
+      dependencyRootMap.set(`${code}\0${dependencyPluginId ?? ''}`, {
+        code,
+        category: code,
+        mergeEligible: false,
+        error,
+        dependencyPluginId,
+      });
+    }
+    const dependencyRoots = [...dependencyRootMap.values()];
+    const directCollision = target.errors.find((error) => error.code === 'artifactCollision');
+    const projectedCollisionRoots = dependencyRoots.filter((root) => root.code === 'artifactCollision');
+    const ordinaryDependencyRoots = dependencyRoots.filter((root) => root.code !== 'artifactCollision');
+    const roots: TargetIssueRoot[] = codes.has('sourceMissing')
+      ? [{ code: 'sourceMissing', category: 'sourceMissing', mergeEligible: false }]
+      : directCollision || projectedCollisionRoots.length > 0
       ? [{
           code: 'artifactCollision',
           category: 'artifactCollision',
           mergeEligible: false,
-          error: target.errors.find((error) => error.code === 'artifactCollision'),
+          error: directCollision ?? projectedCollisionRoots[0]!.error,
+          dependencyPluginId: projectedCollisionRoots[0]?.dependencyPluginId,
         }]
-      : dependencyRoots.length > 0
-        ? dependencyRoots
-        : target.state === 'partial'
-      ? [{ code: 'partial', category: 'incompleteInstallation', mergeEligible: false }]
-      : codes.has('sourceMissing')
-        ? [{ code: 'sourceMissing', category: 'sourceMissing', mergeEligible: false }]
-        : codes.has('sourceChanged')
+      : codes.has('sourceChanged')
           ? [{ code: 'sourceChanged', category: 'sourceIdentityChanged', mergeEligible: false }]
+          : codes.has('catalogSourceUnavailable') || codes.has('bundleUnavailable')
+            ? [
+                ...(codes.has('catalogSourceUnavailable')
+                  ? [{ code: 'catalogSourceUnavailable' as const, category: 'sourceUnavailable' as const, mergeEligible: true }]
+                  : []),
+                ...(codes.has('bundleUnavailable')
+                  ? [{ code: 'bundleUnavailable' as const, category: 'sourceUnavailable' as const, mergeEligible: false }]
+                  : []),
+              ]
+          : ordinaryDependencyRoots.length > 0
+            ? ordinaryDependencyRoots
+            : target.state === 'partial'
+              ? [{ code: 'partial', category: 'incompleteInstallation', mergeEligible: false }]
           : [
-              ...(codes.has('catalogSourceUnavailable')
-                ? [{ code: 'catalogSourceUnavailable' as const, category: 'sourceUnavailable' as const, mergeEligible: true }]
-                : []),
-              ...(codes.has('bundleUnavailable')
-                ? [{ code: 'bundleUnavailable' as const, category: 'sourceUnavailable' as const, mergeEligible: false }]
-                : []),
-              ...(!codes.has('catalogSourceUnavailable') && !codes.has('bundleUnavailable')
-                ? [{ code: 'targetDiagnostic' as const, category: 'diagnostic' as const, mergeEligible: false }]
-                : []),
+              { code: 'targetDiagnostic' as const, category: 'diagnostic' as const, mergeEligible: false },
             ];
     for (const root of roots) {
       const rootError = root.error ?? target.errors.find((error) => error.code === root.code);
       const dependencyPluginId = root.dependencyPluginId
+        ?? rootError?.dependencyPluginId
         ?? (rootError ? dependencyPluginIdFromMessage(rootError.message) : undefined);
       const dependencyCategory = root.category.startsWith('dependency');
       const actions: UserIssueActionViewModel[] = root.category === 'dependencyMissing'
@@ -664,7 +699,8 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
                   { id: 'viewTechnical', label: '技术详情' },
                 ]
               : [{ id: 'viewTechnical', label: '技术详情' }, { id: 'retryLater', label: '稍后重试' }];
-      const issueId = `target:${target.pluginId}:${target.platform}:${target.scope}:${target.state}${roots.length > 1 ? `:${root.code}` : ''}${dependencyPluginId ? `:${dependencyPluginId}` : ''}`;
+      const issueId = rootError?.rootIssueId
+        ?? `target:${target.pluginId}:${target.platform}:${target.scope}:${target.state}${roots.length > 1 ? `:${root.code}` : ''}${dependencyPluginId ? `:${dependencyPluginId}` : ''}`;
       const bundleUnavailable = root.code === 'bundleUnavailable';
       issues.push({
         issueId,
@@ -705,7 +741,8 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
         technicalDetails: target.errors.length > 0
           ? target.errors.filter((error) => root.code === 'targetDiagnostic'
             || root.code === 'partial'
-            || error.code === root.code)
+            || error.code === root.code
+            || error.rootIssueId === issueId)
             .map((error) => ({
               code: error.code,
               message: error.collision
@@ -848,6 +885,42 @@ function configIssues(pluginSummaries: StatusV5PluginSummary[]): UserIssueDraft[
       })),
     }];
   });
+}
+
+function dependencyOverviewIssues(
+  overviews: PluginDependencyOverviewViewModel[],
+  pluginSummaries: StatusV5PluginSummary[],
+  status: StatusV5Payload,
+): UserIssueDraft[] {
+  const summaryById = new Map(pluginSummaries.map((summary) => [summary.pluginId, summary]));
+  return overviews.flatMap((overview) => overview.blockers.flatMap((blocker): UserIssueDraft[] => {
+    if (blocker.code !== 'dependencyGraphInvalid'
+      && blocker.code !== 'dependencyTargetUnsupported') return [];
+    if (status.targets.some((target) => target.pluginId === overview.pluginId
+      && target.errors.some((error) => error.code === blocker.code))) return [];
+    const summary = summaryById.get(overview.pluginId);
+    const sourceId = overview.pluginId.slice(0, overview.pluginId.indexOf('/'));
+    const category = blocker.code;
+    return [{
+      issueId: `dependency:${overview.pluginId}:${blocker.code}`,
+      category,
+      rootCode: category,
+      mergeEligible: false,
+      title: `${summary?.displayName ?? summary?.pluginName ?? overview.pluginId} · ${blocker.title}`,
+      explanation: blocker.explanation,
+      impact: [category === 'dependencyGraphInvalid'
+        ? '修复依赖关系后才能安全计算安装顺序。'
+        : '当前不能在所有声明的平台上安全安装这个插件。'],
+      entity: { kind: 'plugin', id: overview.pluginId },
+      pluginId: overview.pluginId,
+      sourceId,
+      actions: [
+        { id: 'viewDependencies', label: '查看依赖关系' },
+        { id: 'viewTechnical', label: '技术详情' },
+      ],
+      technicalDetails: [{ code: blocker.code, message: blocker.explanation }],
+    }];
+  }));
 }
 
 function enrichDependencyIssuePlacements(
@@ -1004,6 +1077,81 @@ function issueDiagnostic(
   };
 }
 
+const issueGroupOrder: Record<UserIssueGroup, number> = {
+  sourceRemoved: 0,
+  artifactCollision: 1,
+  sourceUnavailable: 2,
+  dependency: 3,
+  scope: 4,
+  config: 5,
+  installation: 6,
+  diagnostic: 7,
+};
+
+function issueGroup(issue: UserIssueDraft): UserIssueGroup {
+  if (issue.category === 'sourceMissing') return 'sourceRemoved';
+  if (issue.category === 'artifactCollision') return 'artifactCollision';
+  if (issue.category === 'sourceUnavailable'
+    || issue.category === 'sourceDegraded'
+    || issue.category === 'sourceIdentityChanged') return 'sourceUnavailable';
+  if (issue.category.startsWith('dependency')) return 'dependency';
+  if (issue.category === 'scopeConflict') return 'scope';
+  if (issue.category === 'requiredConfigMissing') return 'config';
+  if (issue.category === 'incompleteInstallation') return 'installation';
+  return 'diagnostic';
+}
+
+function primaryAttentionCode(issue: UserIssueDraft): string {
+  if (issue.category === 'requiredConfigMissing') {
+    return issue.requiredFields?.some((field) => field.type === 'invalid-config')
+      ? 'invalidConfig'
+      : 'requiredConfigMissing';
+  }
+  if (issue.category === 'incompleteInstallation') return 'incompleteInstallation';
+  if (issue.category === 'sourceDegraded') return 'sourceUnavailable';
+  if (issue.category === 'sourceIdentityChanged') return 'sourceUnavailable';
+  return issue.rootCode ?? issue.category;
+}
+
+function issueReasonPriority(issue: UserIssueDraft): number {
+  const code = primaryAttentionCode(issue);
+  return ({
+    sourceMissing: 0,
+    artifactCollision: 1,
+    sourceUnavailable: 2,
+    catalogSourceUnavailable: 2,
+    bundleUnavailable: 2,
+    dependencyGraphInvalid: 3,
+    dependencyTargetUnsupported: 4,
+    dependencyNotReady: 5,
+    dependencyMissing: 5,
+    scopeConflict: 6,
+    requiredConfigMissing: 7,
+    invalidConfig: 7,
+    incompleteInstallation: 8,
+    diagnostic: 9,
+  } as Record<string, number>)[code] ?? 9;
+}
+
+function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
+  const byId = new Map<string, UserIssueDraft>();
+  for (const issue of issues) {
+    const existing = byId.get(issue.issueId);
+    if (!existing) {
+      byId.set(issue.issueId, issue);
+      continue;
+    }
+    const primary = issue.dependencyPluginId ? issue : existing;
+    byId.set(issue.issueId, {
+      ...primary,
+      impact: [...new Set([...existing.impact, ...issue.impact])],
+      technicalDetails: [...new Map([...existing.technicalDetails, ...issue.technicalDetails]
+        .map((detail) => [`${detail.code}\0${detail.message}`, detail])).values()],
+    });
+  }
+  return [...byId.values()];
+}
+
 export function buildTuiViewModel(options: {
   status: StatusV5Payload;
   pluginSummaries: StatusV5PluginSummary[];
@@ -1098,25 +1246,53 @@ export function buildTuiViewModel(options: {
       || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
     ...statusIssues(options.status),
     ...configIssues(options.pluginSummaries),
+    ...dependencyOverviewIssues(
+      options.dependencyOverviews ?? [],
+      options.pluginSummaries,
+      options.status,
+    ),
     ...[...(options.sourceHealth?.values() ?? [])].flatMap((health) =>
       sourceIssue(health, targetImpactCounts.get(health.sourceId) ?? 0) ?? []),
   ], options.dependencyOverviews ?? []);
-  const issues = issueDrafts.map((issue): UserIssueViewModel => ({
+  const stableIssueDrafts = collapseRootIssues(issueDrafts).sort((left, right) =>
+    issueGroupOrder[issueGroup(left)] - issueGroupOrder[issueGroup(right)]
+    || issueReasonPriority(left) - issueReasonPriority(right)
+    || compareText(primaryAttentionCode(left), primaryAttentionCode(right))
+    || compareText(left.issueId, right.issueId));
+  const issues = stableIssueDrafts.map((issue): UserIssueViewModel => ({
     ...issue,
+    group: issueGroup(issue),
     diagnostic: issueDiagnostic(issue, sourceDetails),
   }));
+  const pluginsWithAttention = plugins.map((plugin): PluginListItemViewModel => {
+    const primary = stableIssueDrafts.filter((issue) => issue.pluginId === plugin.pluginId
+      || issue.dependencyPluginId === plugin.pluginId
+      || issue.entity.kind === 'source' && issue.sourceId === plugin.sourceId)
+      .sort((left, right) => issueReasonPriority(left) - issueReasonPriority(right)
+        || compareText(primaryAttentionCode(left), primaryAttentionCode(right))
+        || compareText(left.issueId, right.issueId))[0];
+    if (!primary) return plugin;
+    return {
+      ...plugin,
+      primaryAttention: {
+        severity: primary.category === 'sourceDegraded' ? 'warning' : 'error',
+        code: primaryAttentionCode(primary),
+        message: primary.explanation,
+      },
+    };
+  });
   return {
-    plugins,
+    plugins: pluginsWithAttention,
     sourceTabs,
     sourceDetails: (options.sourceDetails ?? []).map((detail) => ({
       ...detail,
-      pluginCount: plugins.filter((plugin) => plugin.sourceId === detail.id).length,
+      pluginCount: pluginsWithAttention.filter((plugin) => plugin.sourceId === detail.id).length,
     })),
     issues,
     dependencyOverviews: options.dependencyOverviews ?? [],
     home: {
-      availablePlugins: plugins.filter((plugin) => plugin.aggregateStatus === 'available').length,
-      installedPlugins: plugins.filter(hasInstalledPlacement).length,
+      availablePlugins: pluginsWithAttention.filter((plugin) => plugin.aggregateStatus === 'available').length,
+      installedPlugins: pluginsWithAttention.filter(hasInstalledPlacement).length,
       issueCount: issues.length,
       sourceCount: sourceTabs.length,
       cachedSourceCount: sourceTabs.filter((source) => source.state === 'cache').length,
