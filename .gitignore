@@ -9,12 +9,7 @@ packages/cli/plugins-dist
 .release
 .idea
 *.tgz
-.agent-workflows-manifest.json
-.claude/.agent-workflows/
-.codex/.agent-workflows/
 .agent-workflows/plugin-config.local/
 .worktrees
 .tmp/
 .aw/
-# Skill report roots only track a published human report and compact summary.
-.agents

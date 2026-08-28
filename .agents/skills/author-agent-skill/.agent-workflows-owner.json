@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 2,
+  "owner": "agent-workflows",
+  "sourceId": "official",
+  "sourceIdentity": "sha256:f82790a0557050cf03d9340d9ce46f436706a47917650e02b00d770eebdf851e",
+  "pluginId": "official/agent-skill-toolkit",
+  "plugin": "agent-skill-toolkit",
+  "artifactKey": "author-agent-skill",
+  "platform": "codex",
+  "scope": "project"
+}

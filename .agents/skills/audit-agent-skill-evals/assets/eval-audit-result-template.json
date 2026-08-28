@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 3,
+  "producer": "audit-agent-skill-evals",
+  "independentContext": true,
+  "auditId": "replace-me",
+  "mode": "preflight",
+  "targetSkillDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "caseCorpusDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "runBundleDigest": null,
+  "validity": "unknown",
+  "optimizationPolicy": "balanced",
+  "cases": [],
+  "blockedCases": [],
+  "releaseEligible": false,
+  "failureTriage": [],
+  "recommendedAction": "collect-more-data"
+}
