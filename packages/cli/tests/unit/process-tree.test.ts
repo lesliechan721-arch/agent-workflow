@@ -394,6 +394,43 @@ describe('process-tree', () => {
     }
   });
 
+  it('uses the termination budget for the first POSIX process lookup', async () => {
+    vi.useFakeTimers();
+    try {
+      const processes = new Map<number, FakeProcess>([
+        [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
+        [101, { ppid: 100, state: 'S', startTime: 'descendant-start' }],
+      ]);
+      const kill = vi.fn((pid: number, signal: string) => {
+        const entry = processes.get(pid);
+        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+        if (signal === 'SIGKILL') processes.delete(pid);
+      });
+      let lookup = 0;
+      const execFile = vi.fn((_command, _args, _options, callback) => {
+        lookup += 1;
+        if (lookup === 1) {
+          setTimeout(() => callback(null, renderPosixTable(processes)), 300);
+          return;
+        }
+        callback(null, renderPosixTable(processes));
+      });
+      const promise = terminateProcessTree(100, vi.fn(), {
+        platform: 'linux',
+        execFile,
+        kill,
+      });
+
+      await vi.advanceTimersByTimeAsync(300);
+      await promise;
+
+      expect(kill).toHaveBeenCalledWith(101, 'SIGSTOP');
+      expect(kill).toHaveBeenCalledWith(101, 'SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('taskkills an identity-verified Windows descendant after the root exits', async () => {
     const processes = new Map([
       [100, { ppid: 1, startTime: '1000' }],
@@ -694,7 +731,7 @@ describe('process-tree', () => {
         { platform: 'linux', execFile: vi.fn() },
       );
       const assertion = expect(promise).rejects.toThrow('cleanup unconfirmed');
-      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(1_000);
       await assertion;
 
       expect(killDirectChild).toHaveBeenCalledWith('SIGKILL');

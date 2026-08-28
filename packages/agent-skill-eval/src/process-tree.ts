@@ -444,6 +444,7 @@ async function terminatePosixProcessTree(
     execFileImpl,
     state.markerEnvironmentVariable,
     state.marker,
+    PROCESS_TREE_COMMAND_TIMEOUT_MS,
   );
   if (!snapshot) {
     if (!requireConfirmedCleanup && allowInspectionUnavailable) return;
