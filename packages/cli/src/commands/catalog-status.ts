@@ -228,7 +228,7 @@ export async function getCatalogStatus(options: {
     });
   }
   receipt.git = await inspectGit(workspaceRoot, options.env);
-  if (receipt.git.checked && receipt.git.clean === false) {
+  if (options.preflight && receipt.git.checked && receipt.git.clean === false) {
     receipt.issues.push({ code: 'sourceDirty', message: 'The complete source Git worktree is not clean.' });
   }
   if (!options.preflight) {

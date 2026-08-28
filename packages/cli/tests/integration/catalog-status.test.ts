@@ -82,6 +82,72 @@ describe('Catalog publication status CLI', () => {
     expect(human.stdout()).toContain('Publication preflight: not checked');
   });
 
+  it('keeps a dirty Git worktree as a static fact without blocking static status', async () => {
+    const root = await createRoot();
+    await createCommittedWorkspace(root, 'dirty-static-demo');
+    await fs.outputFile(path.join(root, 'working.txt'), 'uncommitted\n');
+    const output = capture();
+
+    expect(await runCli(['catalog', 'status', '--workspace-root', root, '--json'], {
+      cwd: root,
+      io: output.io,
+    })).toBe(0);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      command: 'catalog:status',
+      ok: true,
+      workspace: { valid: true },
+      git: { checked: true, clean: false },
+      publication: { checked: false, publishable: null },
+      issues: [],
+    });
+    expect(output.stderr()).toBe('');
+  });
+
+  it('blocks publication preflight for a dirty Git worktree', async () => {
+    const root = await createRoot();
+    await createCommittedWorkspace(root, 'dirty-preflight-demo');
+    await fs.outputFile(path.join(root, 'working.txt'), 'uncommitted\n');
+    const output = capture();
+
+    expect(await runCli([
+      'catalog', 'status', '--workspace-root', root, '--preflight', '--json',
+    ], { cwd: root, io: output.io })).toBe(1);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      command: 'catalog:status',
+      ok: false,
+      workspace: { valid: true },
+      git: { checked: true, clean: false },
+      publication: { checked: true, publishable: false },
+      issues: [{ code: 'sourceDirty', message: expect.any(String) }],
+    });
+    expect(output.stderr()).toBe('');
+    await expect(fs.pathExists(path.join(root, '.aw'))).resolves.toBe(false);
+  });
+
+  it('reports a valid non-Git Workspace without requiring Git for static status', async () => {
+    const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'plugin', 'init', 'no-git-static-demo', '--description', 'No Git static demo.',
+      '--no-skills', '--workspace-root', root,
+    ], { cwd: root, io: capture().io });
+    const output = capture();
+
+    expect(await runCli(['catalog', 'status', '--workspace-root', root, '--json'], {
+      cwd: root,
+      io: output.io,
+    })).toBe(0);
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      command: 'catalog:status',
+      ok: true,
+      workspace: { valid: true },
+      git: { checked: false, sourceHead: null, clean: null },
+      publication: { checked: false, publishable: null },
+      issues: [],
+    });
+    expect(output.stderr()).toBe('');
+  });
+
   it('returns a stable JSON issue and exit code for an invalid workspace marker', async () => {
     const root = await createRoot();
     await fs.writeJson(path.join(root, '.aw-workspace.json'), { schemaVersion: 99 });
