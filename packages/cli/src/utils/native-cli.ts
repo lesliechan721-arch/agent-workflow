@@ -6,6 +6,7 @@ import {
   terminateProcessTree,
   type ProcessTreeObservation,
 } from './process-tree.js';
+import { getCodexHome } from './state-paths.js';
 
 const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
 const DEFAULT_NATIVE_CLI_TIMEOUT_MS = 60_000;
@@ -17,11 +18,27 @@ const NATIVE_CLI_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
 export interface NativeCliInvocation {
   command: string;
   args: string[];
+  agentKind?: 'codex' | 'claude';
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
+
+export interface CodexManager {
+  kind: 'system' | 'aw-managed';
+  version: string;
+  command: string;
+  argsPrefix: string[];
+  runtimeRoot?: string;
+}
+
+export const SYSTEM_CODEX_MANAGER: CodexManager = {
+  kind: 'system',
+  version: 'unknown',
+  command: 'codex',
+  argsPrefix: [],
+};
 
 export interface NativeCliResult {
   exitCode: number;
@@ -493,6 +510,9 @@ function normalizeNativeCliCommandName(command: string): string {
 }
 
 function isAgentNativeCliInvocation(invocation: NativeCliInvocation): boolean {
+  if (invocation.agentKind !== undefined) {
+    return true;
+  }
   const commandName = normalizeNativeCliCommandName(invocation.command);
   return commandName === 'codex' || commandName === 'claude';
 }
@@ -547,80 +567,79 @@ export async function runNativeCli(
   return (runner ?? getDefaultNativeCliRunner())(resolvedInvocation);
 }
 
-export function buildCodexPluginAddInvocation(
-  pluginId: string,
+function buildCodexInvocation(
+  manager: CodexManager,
+  args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
   return {
-    command: 'codex',
-    args: ['plugin', 'add', pluginId],
+    command: manager.command,
+    args: [...manager.argsPrefix, ...args],
+    agentKind: 'codex',
     cwd,
-    env,
+    env: {
+      ...env,
+      CODEX_HOME: getCodexHome(env),
+    },
   };
+}
+
+export function buildCodexPluginAddInvocation(
+  manager: CodexManager,
+  pluginId: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return buildCodexInvocation(manager, ['plugin', 'add', pluginId], cwd, env);
 }
 
 export function buildCodexPluginListInvocation(
+  manager: CodexManager,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
-  return {
-    command: 'codex',
-    args: ['plugin', 'list'],
-    cwd,
-    env,
-  };
+  return buildCodexInvocation(manager, ['plugin', 'list'], cwd, env);
 }
 
 export function buildCodexPluginRemoveInvocation(
+  manager: CodexManager,
   pluginId: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
-  return {
-    command: 'codex',
-    args: ['plugin', 'remove', pluginId],
-    cwd,
-    env,
-  };
+  return buildCodexInvocation(manager, ['plugin', 'remove', pluginId], cwd, env);
 }
 
 export function buildCodexMarketplaceAddInvocation(
+  manager: CodexManager,
   awHome: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
-  return {
-    command: 'codex',
-    args: ['plugin', 'marketplace', 'add', awHome],
-    cwd,
-    env,
-  };
+  return buildCodexInvocation(manager, ['plugin', 'marketplace', 'add', awHome], cwd, env);
 }
 
 export function buildCodexMarketplaceListInvocation(
+  manager: CodexManager,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
-  return {
-    command: 'codex',
-    args: ['plugin', 'marketplace', 'list'],
-    cwd,
-    env,
-  };
+  return buildCodexInvocation(manager, ['plugin', 'marketplace', 'list'], cwd, env);
 }
 
 export function buildCodexMarketplaceRemoveInvocation(
+  manager: CodexManager,
   marketplaceName: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
-  return {
-    command: 'codex',
-    args: ['plugin', 'marketplace', 'remove', marketplaceName],
+  return buildCodexInvocation(
+    manager,
+    ['plugin', 'marketplace', 'remove', marketplaceName],
     cwd,
     env,
-  };
+  );
 }
 
 export async function runNativeCliChecked(
