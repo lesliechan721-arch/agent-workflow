@@ -452,12 +452,16 @@ test('review collection discovery rejects special nodes without treating them as
 test('installed reviewer supports a real non-Git plugin with MCP and no Skills', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-plugin-review-empty-'));
   temps.push(temp);
-  await mkdir(path.join(temp, 'plugins'), { recursive: true });
-  await writeFile(path.join(temp, 'plugins', 'marketplace-source.json'), JSON.stringify({
-    owner: { name: 'Fixture', url: 'https://example.invalid/fixture' },
-    interface: { displayName: 'Fixture' },
-    catalog: { version: '1.0.0' },
-  }));
+  await execFileAsync(process.execPath, [
+    skillValidatorBin,
+    'catalog', 'init',
+    '--workspace-root', temp,
+    '--owner-name', 'Fixture',
+    '--owner-url', 'https://example.invalid/fixture',
+    '--display-name', 'Fixture',
+    '--catalog-version', '1.0.0',
+    '--json',
+  ], { cwd: tmpdir(), encoding: 'utf8' });
   const plugin = path.join(temp, 'plugins', 'mcp-only');
   await execFileAsync(process.execPath, [
     skillValidatorBin,

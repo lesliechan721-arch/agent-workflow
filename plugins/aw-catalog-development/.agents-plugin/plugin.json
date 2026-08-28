@@ -32,5 +32,10 @@
     "capabilities": [
       "Skills"
     ]
+  },
+  "requires": {
+    "aw": {
+      "capabilities": []
+    }
   }
 }

@@ -2,7 +2,7 @@
 
 项目专有检查：
 
-- workspace 根由调用方显式提供；所有 `aw plugin validate` 调用使用 `--workspace-root`，不依赖 Git 或当前目录；
+- workspace 根来自 `aw catalog context --json` receipt；所有 `aw plugin validate` 调用使用该 receipt 的 `workspace.root`，不依赖 Git、当前目录或调用方提供的 root；
 - target 发现器先完成公开 plugin validate；失败时不读取 manifest 派生的 source/final collection；
 - 插件根、`.agents-plugin`、source/final Skill collection 根必须是普通目录，不跟随 symlink；
 - manifest 未声明 `skills` 时保留插件级 composition gate，并把 leaf inventory 记录为空；

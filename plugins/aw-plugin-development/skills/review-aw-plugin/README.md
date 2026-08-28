@@ -1,6 +1,6 @@
 # review-aw-plugin
 
-只读评审一个 AW plugin、其内部组件和 source/materialized profile 差异。
+只读评审一个 AW plugin、其内部组件和 source/materialized profile 差异。它先从自身实际 Skill 根检查 AW requirements，再从 `aw catalog context --json` receipt 取得 Workspace；调用方不需要提供 Workspace root。
 
 ## 结果
 
@@ -10,4 +10,4 @@
 
 ## 边界
 
-本 Skill 不修改 Skill、Eval、README、manifest 或 materialized final。只有用户明确要求发布准备状态时，才单独运行确定性发布检查；检查要求完整 QualityReviewResult v1，并对 required Eval 校验 preflight、run bundle 和 result-triage 的实际 digest 链。
+本 Skill 不修改 Skill、Eval、README、manifest 或 materialized final，也不因 Review 运行 build、test 或 Catalog mutation。只有用户明确要求发布准备状态时，才单独运行确定性发布检查；检查要求完整 QualityReviewResult v1，并对 required Eval 校验 preflight、run bundle 和 result-triage 的实际 digest 链。

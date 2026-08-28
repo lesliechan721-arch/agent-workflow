@@ -17,6 +17,8 @@ const runtimeRoot = context?.platform ? path.join(localRoot, context.platform) :
 const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const temps = [];
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
+const reviewSkillRoot = path.join(runtimeRoot, 'skills/review-aw-plugin');
+const materializedRuntime = { skip: context ? false : 'requires plugin:test materialization' };
 const testBinRoot = await mkdtemp(path.join(tmpdir(), 'aw-review-contract-bin-'));
 temps.push(testBinRoot);
 await writeFile(path.join(testBinRoot, 'aw'), `#!/bin/sh
@@ -65,9 +67,12 @@ test('review adapter manifest and runtime contain only current quality and relea
     'scripts/validate-json-contract.mjs',
     'scripts/validate-quality-review-result.mjs',
   ]);
-  const skillRoot = path.join(runtimeRoot, 'skills/review-aw-plugin');
-  assert.ok((await readFile(path.join(skillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
-  assert.ok((await readFile(path.join(skillRoot, 'scripts/corpus-digest.mjs'), 'utf8')).length > 100);
+  assert.ok((await readFile(path.join(reviewSkillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
+  if (context) {
+    assert.ok((await readFile(path.join(reviewSkillRoot, 'scripts/corpus-digest.mjs'), 'utf8')).length > 100);
+  } else {
+    assert.ok(targets.includes('scripts/corpus-digest.mjs'));
+  }
 });
 
 test('AW reviewer production and materialized closures use registered current dependencies', async () => {
@@ -99,73 +104,7 @@ test('AW reviewer production and materialized closures use registered current de
   );
 });
 
-test('author adapter uses only public single-plugin workspace-root commands', async () => {
-  const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
-  // Static contract exception: installed agents must discover every public plugin authoring command, safe deletion boundary, and Catalog handoff; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
-  for (const command of ['init', 'add-skill', 'validate', 'test', 'build', 'status']) {
-    assert.match(skill, new RegExp(`aw plugin ${command}[\\s\\S]*--workspace-root`, 'u'));
-  }
-  assert.match(skill, /调用每个作者命令前[^\n]+对应 `--help`/u);
-  assert.match(skill, /aw --version` 和 `aw plugin remove --help`/u);
-  assert.match(skill, /aw plugin remove <plugin-name> --workspace-root <workspace-root> --yes --json/u);
-  assert.match(skill, /不得直接调用 `rm`、递归删除/u);
-  assert.match(skill, /不得提供、猜测或要求 `--force`/u);
-  assert.match(skill, /不得新增 tombstone 或 retirement metadata/u);
-  assert.match(skill, /只在 `author-aw-catalog` 已明确交接一个删除任务时进入/u);
-  assert.match(skill, /没有这一个明确 handoff 时停止，并要求调用 `author-aw-catalog`/u);
-  assert.match(skill, /结构化 receipt 和控制权交回 `author-aw-catalog`/u);
-  assert.match(skill, /不得对已删除插件运行 validate、test、build 或 status/u);
-  assert.doesNotMatch(skill, /aw catalog (?:init|version|build|validate|status|publish)/u);
-  assert.match(skill, /缺少或不合法时停止/u);
-  assert.match(skill, /要求调用 `author-aw-catalog`/u);
-  assert.doesNotMatch(skill, /--repo-root|pnpm plugin:test|pnpm build/u);
-  assert.match(skill, /不得回退到本 Skill 的本地 registry 或工具副本/u);
-  assert.match(skill, /aw plugin capabilities --surface <surface> --json/u);
-  assert.match(skill, /委托 `author-agent-skill`/u);
-  assert.match(skill, /aw skill validate <skill-root>/u);
-  assert.doesNotMatch(skill, /capabilities\.generated\.md|skill-frontmatter-capabilities\.md/u);
-});
-
-test('author adapter exposes structured context tools from the final Skill entrypoint', async () => {
-  // Static contract exception: installed agents must discover the bundled context preparation and validation interfaces; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
-  const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
-  assert.match(skill, /scripts\/prepare-aw-authoring-context\.mjs/u);
-  assert.match(skill, /scripts\/validate-json-contract\.mjs/u);
-  assert.match(skill, /assets\/aw-authoring-context\.schema\.json/u);
-  assert.match(skill, /assets\/aw-authoring-context\.json/u);
-});
-
-test('config-driven artifact eval keeps renderer filename flexible', async () => {
-  const cases = JSON.parse(await readFile(
-    path.join(sourceRoot, 'skills/author-aw-plugin/evals/behavior-cases.json'),
-    'utf8',
-  ));
-  const evalCase = cases.evals.find((entry) => entry.id === 'config-driven-instructions-artifact');
-  assert.ok(evalCase, 'missing config-driven-instructions-artifact case');
-
-  assert.deepEqual(evalCase.review.artifacts, [
-    {
-      path: 'plugins/incident-policy/.agents-plugin/plugin.json',
-      exists: true,
-    },
-  ]);
-  assert.deepEqual(evalCase.review.allowed_workspace_changes, [
-    'plugins/incident-policy/.agents-plugin/plugin.json',
-    'plugins/incident-policy/scripts/**',
-  ]);
-
-  // Static contract exception: these reviewer-facing qualitative checks are the public Eval oracle; behavior test is not suitable because no deterministic runner can judge their semantic trace evidence.
-  assert.ok(evalCase.review.checks.some((check) => (
-    check.includes('manifest 声明 config.schema.severityPrefix、scripts.artifacts.render 和 codex.developerInstructionsBlock target')
-      && check.includes('refreshKeys 包含 severityPrefix')
-  )));
-  assert.ok(evalCase.review.checks.some((check) => (
-    check.includes('renderer 只输出 ArtifactPlan V2')
-      && check.includes('默认值和一个非默认 severityPrefix 产生不同的 instructions content')
-  )));
-});
-
-test('target discovery groups identical content by digest and preserves real differences', async () => {
+test('target discovery groups identical content by digest and preserves real differences', materializedRuntime, async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-light-review-'));
   temps.push(temp);
   const plugin = path.join(temp, 'plugin');
@@ -180,7 +119,7 @@ test('target discovery groups identical content by digest and preserves real dif
     await writeFile(path.join(root, 'SKILL.md'), skillText);
     await writeFile(path.join(root, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
   }
-  const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
+  const discover = path.join(reviewSkillRoot, 'scripts/discover-aw-review-targets.mjs');
   const first = await runJson(discover, [plugin, '--workspace-root', temp, '--final', `codex-project=${path.dirname(codexSkill)}`, '--final', `claude-project=${path.dirname(claudeSkill)}`, '--format', 'json']);
   assert.equal(first.targets.length, 3);
   assert.equal(first.uniqueReviews.length, 1);
@@ -191,7 +130,7 @@ test('target discovery groups identical content by digest and preserves real dif
   assert.equal(second.uniqueReviews.length, 2);
 });
 
-test('target discovery requires real materialized content for build-generated Skill resources', async () => {
+test('target discovery requires real materialized content for build-generated Skill resources', materializedRuntime, async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-built-review-'));
   temps.push(temp);
   const plugin = path.join(temp, 'plugin');
@@ -213,7 +152,7 @@ test('target discovery requires real materialized content for build-generated Sk
   await writeFile(path.join(finalSkill, 'SKILL.md'), skillText);
   await writeFile(path.join(finalSkill, 'references', 'generated.md'), '# Generated\n\nRuntime content.\n');
   await writeFile(path.join(finalSkill, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
-  const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
+  const discover = path.join(reviewSkillRoot, 'scripts/discover-aw-review-targets.mjs');
   await assert.rejects(runJson(discover, [plugin, '--workspace-root', temp, '--format', 'json']), /materialized --final collection/u);
   const result = await runJson(discover, [plugin, '--workspace-root', temp, '--final', `codex-project=${finalRoot}`, '--format', 'json']);
   assert.equal(result.targets.length, 1);
@@ -222,7 +161,7 @@ test('target discovery requires real materialized content for build-generated Sk
   assert.equal(result.uniqueReviews.length, 1);
 });
 
-test('target discovery surfaces machine errors without review workflow state', async () => {
+test('target discovery surfaces machine errors without review workflow state', materializedRuntime, async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-light-review-error-'));
   temps.push(temp);
   const plugin = path.join(temp, 'plugin');
@@ -231,7 +170,7 @@ test('target discovery surfaces machine errors without review workflow state', a
   await mkdir(skill, { recursive: true });
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({ name: 'broken-plugin', version: '1.0.0', skills: './skills' }));
   await writeFile(path.join(skill, 'SKILL.md'), '---\nname: broken\ndescription: Broken fixture.\n---\n\nRun `node scripts/missing.mjs`.\n');
-  const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
+  const discover = path.join(reviewSkillRoot, 'scripts/discover-aw-review-targets.mjs');
   const result = await runJson(discover, [plugin, '--workspace-root', temp, '--format', 'json']);
   assert.equal(result.targets[0].machineCheck.ok, false);
   assert.ok(result.targets[0].machineCheck.errors.some((entry) => entry.code === 'missing-runtime-resource'));

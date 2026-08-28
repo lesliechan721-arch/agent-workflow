@@ -14,6 +14,7 @@ const context = process.env.AW_PLUGIN_CONTEXT
   ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
   : null;
 const sourceRoot = context?.sourceRoot ?? path.resolve(localRoot, '..');
+const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
 const root = context
   ? path.join(context.plugin.rootDir, context.platform, 'skills/review-aw-plugin/scripts')
   : localRoot;
@@ -21,6 +22,16 @@ const releaseCheck = path.join(root, 'check-aw-plugin-release.mjs');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'aw-light-review-'));
 
 try {
+  await execFileAsync(process.execPath, [
+    skillValidatorBin,
+    'catalog', 'init',
+    '--workspace-root', temp,
+    '--owner-name', 'Fixture Owner',
+    '--owner-url', 'https://example.invalid/fixture',
+    '--display-name', 'Fixture Workspace',
+    '--catalog-version', '1.0.0',
+    '--json',
+  ], { encoding: 'utf8' });
   const plugin = path.join(temp, 'plugins', 'demo-plugin');
   const source = path.join(plugin, 'skills', 'demo');
   const finalRoot = path.join(temp, 'final');
@@ -67,11 +78,6 @@ try {
   }));
   await writeFile(path.join(provider, 'generated.md'), '# Generated\n\nReturn the supplied value.\n');
   await writeFile(path.join(provider, 'README.md'), '# Fixture Provider\n');
-  await writeFile(path.join(temp, 'plugins', 'marketplace-source.json'), JSON.stringify({
-    owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
-    interface: { displayName: 'Fixture Workspace' },
-    catalog: { version: '1.0.0' },
-  }));
   const skill = '---\nname: demo\ndescription: Perform the demo task.\n---\n\n# Demo\n\nRead [the generated guide](references/generated.md).\n';
   await writeFile(path.join(source, 'SKILL.md'), skill);
   await writeFile(path.join(source, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
@@ -86,7 +92,6 @@ try {
     ? root
     : path.resolve(root, '..', '..', 'agent-skill-toolkit', 'scripts');
   const checker = path.join(sharedScripts, 'check-agent-skill.mjs');
-  const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
   const publicBin = path.join(temp, 'public-bin');
   const publicAw = path.join(publicBin, 'aw');
   await mkdir(publicBin, { recursive: true });

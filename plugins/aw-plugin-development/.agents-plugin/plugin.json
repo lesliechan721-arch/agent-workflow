@@ -176,5 +176,12 @@
     "capabilities": [
       "Skills"
     ]
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-authoring.v1"
+      ]
+    }
   }
 }

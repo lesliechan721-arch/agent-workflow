@@ -1,6 +1,6 @@
 # Dynamic Artifact Renderer
 
-manifest 字段和 target 值运行 `aw plugin capabilities --surface artifacts --json` 查询。`artifacts.targets` 是静态能力真值；renderer 只根据当前 context 返回 `ArtifactPlan`，plan 由 `aw plugin validate` 验证，不直接写平台文件。
+先读取 `aw plugin capabilities --json` receipt；只有 receipt 含所需领域时，才查询该领域。`artifacts.targets` 是静态能力真值；renderer 只根据当前 context 返回 `ArtifactPlan`，plan 由 `aw plugin validate` 验证，不直接写平台文件。
 
 renderer 从 `AW_PLUGIN_CONTEXT` 读取 platform、scope、已验证 config、`artifactSources`、changed keys 和前一状态。user 与 project render 输入严格分开；machine-local、path 或 private 值不能进入 repo-visible artifact。
 
