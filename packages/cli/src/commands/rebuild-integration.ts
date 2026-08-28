@@ -2212,6 +2212,7 @@ export async function discoverCodexNativeResidueNames(options: {
   const cacheEntries = await readdirCodexResidueIfPresent(cacheRoot).catch((error) =>
     probeFailure(cacheRoot, error));
   for (const entry of cacheEntries) {
+    if (entry.isFile()) continue;
     const entryPath = path.join(cacheRoot, entry.name);
     const pluginName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(entry.name)
       ? entry.name
