@@ -2949,12 +2949,9 @@ export function ConsoleAppV4(props: {
       }
       content = <Box flexDirection="column">{issueDiagnosticSummary}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
-      const sourceMissingCleanup = issue.category === 'sourceMissing' && issue.pluginId && issue.platform && issue.scope
-        ? `aw cleanup ${issue.pluginId} --platform ${issue.platform} --scope ${issue.scope}`
-        : undefined;
-      const hasRecoveryEvidence = sourceMissingCleanup || issue.category === 'sourceIdentityChanged'
+      const hasRecoveryEvidence = issue.category === 'sourceIdentityChanged'
         || issue.placements || issue.requiredFields;
-      const recoveryRows = <>{sourceMissingCleanup ? <><Text color={tuiTheme.statusColors.warning}>{sourceMissingCleanup}</Text><Text color={tuiTheme.statusColors.warning}>需要时可在命令末尾添加 --force。</Text></> : null}{issue.category === 'sourceIdentityChanged' ? <StaticRow title="来源身份已变化；请确认变更或恢复原来源。" status="warning" compact /> : null}{issue.placements ? <StaticRow title="位置" meta={issue.placements.map(scopeLabel).join('、')} compact /> : null}{issue.requiredFields ? <StaticRow title="字段" meta={sanitizeDiagnosticText(issue.requiredFields.map((field) => field.title).join('、'))} compact /> : null}</>;
+      const recoveryRows = <>{issue.category === 'sourceIdentityChanged' ? <StaticRow title="来源身份已变化；请确认变更或恢复原来源。" status="warning" compact /> : null}{issue.placements ? <StaticRow title="位置" meta={issue.placements.map(scopeLabel).join('、')} compact /> : null}{issue.requiredFields ? <StaticRow title="字段" meta={sanitizeDiagnosticText(issue.requiredFields.map((field) => field.title).join('、'))} compact /> : null}</>;
       content = <Box flexDirection="column">{issueDiagnosticSummary}{!showTechnical && hasRecoveryEvidence
         ? policy.mode === 'compact' ? recoveryRows : <SectionCard title="恢复证据">{recoveryRows}</SectionCard>
         : null}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={issueActionViewport.offset} limit={issueActionViewport.limit} /></Box>;

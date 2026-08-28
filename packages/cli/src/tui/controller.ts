@@ -10,6 +10,7 @@ import type {
 } from '../commands/status-v5.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
+import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type {
   RebuildProgressFeed,
   RebuildProgressSnapshot,
@@ -121,6 +122,7 @@ export interface OperationEvidence {
     contentDigest?: string;
   };
   targetFingerprint?: string;
+  offlineCleanup?: OfflineCleanupTargetEvidence;
   dependencyPlan?: DependencyOperationPlan;
   config?: {
     scope: Scope;
@@ -708,6 +710,10 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     if (evidence.source.contentDigest) details.push(`Content digest：${evidence.source.contentDigest}`);
   }
   if (evidence.targetFingerprint) details.push(`目标状态：${evidence.targetFingerprint}`);
+  if (evidence.offlineCleanup) {
+    details.push(`离线清理原因：${evidence.offlineCleanup.reason}`);
+    details.push(`离线清理目标：${evidence.offlineCleanup.targetFingerprint}`);
+  }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${evidence.config.storeDigest}`);
   if (evidence.sourceWrite) {
@@ -2415,6 +2421,10 @@ export class TuiController {
           ? { action: 'uninstall' as const, scope: issue.scope }
           : undefined
       : issue.category === 'sourceUnavailable'
+        ? origin.actionId === 'cleanup' && action.writeAction === 'cleanup'
+          ? { action: 'cleanup' as const, scope: issue.scope }
+          : undefined
+      : issue.category === 'sourceMissing'
         ? origin.actionId === 'cleanup' && action.writeAction === 'cleanup'
           ? { action: 'cleanup' as const, scope: issue.scope }
           : undefined

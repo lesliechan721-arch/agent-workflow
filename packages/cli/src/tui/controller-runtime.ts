@@ -47,6 +47,11 @@ import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
 import {
+  offlineCleanupEvidenceFromInventory,
+  type OfflineCleanupTargetEvidence,
+} from '../commands/offline-cleanup-evidence.js';
+import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
+import {
   operationEvidenceFingerprint,
   TuiController,
   TuiOperationBlockedError,
@@ -282,6 +287,13 @@ async function assertTypedIssueOrigin(
     if (intent.originIssue.actionId !== 'cleanup' || intent.action !== 'cleanup'
       || !selected || !selected.errors.some((error) => error.code === 'bundleUnavailable')) {
       stale('原 Catalog 缺失插件问题已变化。');
+    }
+    return;
+  }
+  else if (intent.originIssue.category === 'sourceMissing') {
+    if (intent.originIssue.actionId !== 'cleanup' || intent.action !== 'cleanup'
+      || !selected || !selected.errors.some((error) => error.code === 'sourceMissing')) {
+      stale('原来源缺失问题已变化。');
     }
     return;
   }
@@ -740,24 +752,51 @@ export function createTuiControllerDependencies(
     }
     let dependencyPlan: DependencyOperationPlan | undefined;
     await preparation?.reporter.emit('catalog');
-    const bundleUnavailableCleanupTarget = intent.kind === 'pluginWrite'
+    const offlineCleanupReason: OfflineCleanupTargetEvidence['reason'] | undefined =
+      intent.kind === 'pluginWrite'
       && intent.action === 'cleanup'
-      && intent.originIssue?.category === 'sourceUnavailable'
-      && intent.originIssue.actionId === 'cleanup'
+      && intent.originIssue?.actionId === 'cleanup'
+      && (intent.originIssue?.category === 'sourceMissing'
+        || intent.originIssue?.category === 'sourceUnavailable')
+        ? intent.originIssue.category === 'sourceMissing' ? 'sourceMissing' : 'bundleUnavailable'
+        : undefined;
+    const offlineCleanupTarget = offlineCleanupReason && intent.kind === 'pluginWrite'
       ? status.payload.targets.find((target) => target.pluginId === intent.pluginId
         && target.platform === intent.platform
         && target.scope === intent.scope
-        && target.errors.some((error) => error.code === 'bundleUnavailable'))
+        && target.errors.some((error) => error.code === offlineCleanupReason))
       : undefined;
-    const catalogSource = bundleUnavailableCleanupTarget
-      ? status.payload.catalog.sources.find((source) => source.id === bundleUnavailableCleanupTarget.sourceId)
+    const catalogSource = offlineCleanupTarget
+      ? status.payload.catalog.sources.find((source) => source.id === offlineCleanupTarget.sourceId)
       : undefined;
-    const selected = bundleUnavailableCleanupTarget
+    let offlineCleanup: OfflineCleanupTargetEvidence | undefined;
+    if (offlineCleanupReason && offlineCleanupTarget) {
+      await preparation?.reporter.emit('inventory');
+      const inventory = await inventoryCatalogSourceReferences({
+        cwd: context.cwd,
+        env: context.env,
+      });
+      signal?.throwIfAborted();
+      offlineCleanup = offlineCleanupEvidenceFromInventory({
+        reason: offlineCleanupReason,
+        pluginId: offlineCleanupTarget.pluginId,
+        pluginName: offlineCleanupTarget.pluginName,
+        sourceId: offlineCleanupTarget.sourceId,
+        sourceIdentity: offlineCleanupTarget.sourceIdentity,
+        platform: offlineCleanupTarget.platform,
+        scope: offlineCleanupTarget.scope,
+        inventory,
+      }) ?? undefined;
+      if (!offlineCleanup) {
+        throw operationReviewStale('离线清理现场证据已消失或无法验证。');
+      }
+    }
+    const selected = offlineCleanupTarget
       ? {
-          pluginName: bundleUnavailableCleanupTarget.pluginName,
+          pluginName: offlineCleanupTarget.pluginName,
           source: {
-            sourceId: bundleUnavailableCleanupTarget.sourceId,
-            sourceIdentity: bundleUnavailableCleanupTarget.sourceIdentity,
+            sourceId: offlineCleanupTarget.sourceId,
+            sourceIdentity: offlineCleanupTarget.sourceIdentity,
             ...(catalogSource?.requestedRef ? { requestedRef: catalogSource.requestedRef } : {}),
             ...(catalogSource?.resolvedCommit ? { resolvedCommit: catalogSource.resolvedCommit } : {}),
           },
@@ -837,6 +876,7 @@ export function createTuiControllerDependencies(
         compositeDigest: status.payload.catalog.compositeDigest,
       },
       source: selected.source,
+      ...(offlineCleanup ? { offlineCleanup } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
       targetFingerprint: statusTargetFingerprint(
         status.payload.targets,
@@ -1161,14 +1201,18 @@ export function createTuiControllerDependencies(
               cleanup: cleanupWriteCommand,
             }[intent.action];
             const currentSource = currentEvidence.source;
-            if (!expectedEvidence.source || !currentSource) {
+            const offlineCleanup = currentEvidence.offlineCleanup;
+            if (!offlineCleanup && (!expectedEvidence.source || !currentSource)) {
               throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
             }
             const result = await command([intent.pluginId], options, {
               ...context,
               awHomeMutationToken,
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
-              reviewPreflight: (actual) => assertSourceEvidenceMatches(currentSource, actual),
+              ...(offlineCleanup
+                ? { expectedOfflineCleanupEvidence: offlineCleanup }
+                : { reviewPreflight: (actual: RebuildReviewPreflightEvidence) =>
+                    assertSourceEvidenceMatches(currentSource!, actual) }),
             });
             throwIfWriteReviewStale(result);
             return result;

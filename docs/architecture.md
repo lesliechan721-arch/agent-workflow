@@ -124,6 +124,8 @@ Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始�
 - `cleanup`：不运行 uninstall lifecycle。它可在 source 或 Catalog 不可用时，根据 live AW owner 现场清理。它保留 plugin config。
 - `cleanup --force`：用于跳过依赖保护，或恢复专属且已损坏的 AW-owned 输出。它可能让 dependent 变为 partial；它不得删除 foreign 或 shared 内容，且保留配置。
 
+TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为 offline cleanup。Review 不解析缺失的 bundle，而是绑定包含来源身份、目标位置和 live ownership fingerprint 的 typed evidence。Execute 在同一个 `AW_HOME` mutation lock 内重新读取 owner marker/header、shared owner 和 native registration；evidence 漂移时在写入前返回 stale Review。synthetic cleanup target 只使用这些 live evidence 发现的 matching-owner 组件，且普通 TUI 不启用 force。
+
 每条失败链必须可用 `cleanup`、`cleanup --force`、`reinstall`、来源刷新或新版本发布恢复。无法证明 ownership 时宁可保留内容，也不能删除用户或共享内容。
 
 ### Lifecycle Active State

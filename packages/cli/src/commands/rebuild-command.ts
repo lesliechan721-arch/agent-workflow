@@ -73,6 +73,11 @@ import {
   type DependencyOperationPlan,
 } from './dependency-operation-plan.js';
 import type { CleanupCommandOptions } from './options.js';
+import {
+  offlineCleanupEvidenceFromInventory,
+  offlineCleanupEvidenceMatches,
+  type OfflineCleanupTargetEvidence,
+} from './offline-cleanup-evidence.js';
 
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   awHomeMutationToken?: AwHomeMutationToken;
@@ -84,6 +89,7 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     marketplaceRoot: string;
   };
   expectedCatalogConfigDigest?: string;
+  expectedOfflineCleanupEvidence?: OfflineCleanupTargetEvidence;
   reviewPreflight?: (evidence: RebuildReviewPreflightEvidence) => Promise<void> | void;
   resolvedReviewEvidenceByPlugin?: Record<
     string,
@@ -754,6 +760,7 @@ type LiveCleanupTarget = {
   scope: Scope;
   marketplaceName?: string;
   marketplaceIdentityUnresolved?: boolean;
+  nativeRegistration?: boolean;
 };
 
 function exclusiveSkillRoot(options: {
@@ -833,6 +840,10 @@ function resolveLiveCleanupTargets(options: {
           platform: reference.platform as PlatformName,
           scope: reference.scope as Scope,
           ...(marketplaceName ? { marketplaceName } : {}),
+          ...((liveNames.size === 1
+            || (marketplaceName !== undefined && unboundNativeNames.has(marketplaceName)))
+            ? { nativeRegistration: true }
+            : {}),
           ...(marketplaceIdentityUnresolved ? { marketplaceIdentityUnresolved: true } : {}),
         };
         const key = [target.pluginId, target.sourceIdentity, target.platform, target.scope].join('\0');
@@ -1004,6 +1015,7 @@ async function cleanupOfflineOwnedComponents(options: {
         minAwVersion: '0.0.0',
       },
       includeHistoricalLifecycleArtifacts: false,
+      includeNativeCleanupCandidate: target.nativeRegistration === true,
     });
     let result: RebuildResult;
     const operationLock = await activeStore.acquireOperation!(desired.identity);
@@ -1129,6 +1141,7 @@ export async function runRebuildCommand(options: {
   let requestedPluginNames = options.pluginNames;
   const cleanupForce = options.command === 'cleanup'
     && (options.commandOptions as CleanupCommandOptions).force === true;
+  const expectedOfflineCleanup = options.runtime?.expectedOfflineCleanupEvidence;
   let cleanupInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
   let cleanupLiveTargets: LiveCleanupTarget[] = [];
   let cleanupHasDamagedExclusiveTarget = false;
@@ -1158,7 +1171,31 @@ export async function runRebuildCommand(options: {
     });
     requestedPluginNames = live.selectors;
     cleanupLiveTargets = live.targets;
-    if (cleanupForce) {
+    if (expectedOfflineCleanup) {
+      const liveTarget = cleanupLiveTargets.find((target) =>
+        target.pluginId === expectedOfflineCleanup.pluginId
+        && target.pluginName === expectedOfflineCleanup.pluginName
+        && target.sourceId === expectedOfflineCleanup.sourceId
+        && target.sourceIdentity === expectedOfflineCleanup.sourceIdentity
+        && target.platform === expectedOfflineCleanup.platform
+        && target.scope === expectedOfflineCleanup.scope);
+      const actualOfflineCleanup = liveTarget
+        ? offlineCleanupEvidenceFromInventory({
+            ...expectedOfflineCleanup,
+            inventory: cleanupInventory,
+          })
+        : null;
+      if (!liveTarget
+        || !actualOfflineCleanup
+        || !offlineCleanupEvidenceMatches(expectedOfflineCleanup, actualOfflineCleanup)) {
+        throw namespacedPreflightError(
+          'operationReviewStale: offline cleanup ownership evidence changed before mutation.',
+          cleanupLiveTargets,
+        );
+      }
+      cleanupLiveTargets = [liveTarget];
+    }
+    if (cleanupForce && !expectedOfflineCleanup) {
       const damagedTargets = (await Promise.all(requestedPluginNames.map(async (selector) =>
         parsePluginId(selector).sourceId
           ? discoverDamagedExclusiveCleanupTargets({
@@ -2109,7 +2146,7 @@ export async function runRebuildCommand(options: {
       && (catalogUnavailable || message.includes('sourceChanged'))
       && cleanupInventory
       && cleanupLiveTargets.length > 0) {
-      if (!cleanupForce) {
+      if (!cleanupForce || expectedOfflineCleanup) {
         await assertOfflineCleanupDependents({
           targets: cleanupLiveTargets,
           cwd: options.commandOptions.cwd,
@@ -2120,7 +2157,7 @@ export async function runRebuildCommand(options: {
         targets: cleanupLiveTargets,
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
-        force: cleanupForce,
+        force: cleanupForce && !expectedOfflineCleanup,
         removeObsoleteInstallationContracts: options.runtime?.removeObsoleteInstallationContracts,
         nativeCliRunner: options.runtime?.nativeCliRunner,
         corruptExclusiveDirectoryOperations: options.runtime?.corruptExclusiveDirectoryOperations,

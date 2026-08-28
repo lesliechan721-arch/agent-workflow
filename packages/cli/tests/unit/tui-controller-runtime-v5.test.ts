@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'fs-extra';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +15,9 @@ import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
+import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+
+const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
 const runtimeMocks = vi.hoisted(() => ({
   statusCommandV5: vi.fn(),
@@ -57,7 +61,7 @@ function target(
     pluginName: 'demo',
     pluginId: 'official/demo',
     sourceId: 'official',
-    sourceIdentity: 'identity:official',
+    sourceIdentity: OFFLINE_SOURCE_IDENTITY,
     version: '1.0.0',
     platform: 'codex',
     scope,
@@ -552,6 +556,22 @@ describe('TUI controller runtime scope conflict validation', () => {
 
   it('uses status ownership evidence to run ordinary cleanup when the current Catalog bundle is absent', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    const skillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
+    await fs.ensureDir(path.join(skillsRoot, 'demo-owned'));
+    await writeSkillOwnerMarker({
+      skillRoot: path.join(skillsRoot, 'demo-owned'),
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'official',
+        sourceIdentity: OFFLINE_SOURCE_IDENTITY,
+        pluginId: 'official/demo',
+        plugin: 'demo',
+        artifactKey: 'demo-owned',
+        platform: 'codex',
+        scope: 'user',
+      },
+    });
     const configSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     runtimeMocks.statusCommandV5.mockResolvedValue(bundleUnavailableStatus(configSnapshot.digest));
     runtimeMocks.cleanupWriteCommand.mockResolvedValue({
@@ -600,7 +620,12 @@ describe('TUI controller runtime scope conflict validation', () => {
       .resolves.toBeUndefined();
     const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
     expect(evidence).toMatchObject({
-      source: { sourceId: 'official', sourceIdentity: 'identity:official', requestedRef: 'path' },
+      source: { sourceId: 'official', sourceIdentity: OFFLINE_SOURCE_IDENTITY, requestedRef: 'path' },
+      offlineCleanup: {
+        reason: 'bundleUnavailable',
+        pluginId: 'official/demo',
+        targetFingerprint: expect.stringMatching(/^sha256:/u),
+      },
       targetFingerprint: expect.stringMatching(/^sha256:/u),
     });
 
@@ -610,7 +635,13 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledWith(
       ['official/demo'],
       expect.objectContaining({ platform: 'codex', scope: 'user', force: false }),
-      expect.objectContaining({ reviewPreflight: expect.any(Function) }),
+      expect.objectContaining({
+        expectedOfflineCleanupEvidence: expect.objectContaining({
+          reason: 'bundleUnavailable',
+          pluginId: 'official/demo',
+          targetFingerprint: expect.stringMatching(/^sha256:/u),
+        }),
+      }),
     );
     expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();

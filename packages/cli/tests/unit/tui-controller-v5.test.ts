@@ -743,7 +743,7 @@ describe('TUI v4 router and ViewModel', () => {
       '2 个安装位置受此来源根问题影响。',
     );
     expect(view.issues.find((issue) => issue.category === 'sourceMissing')?.actions.map((action) => action.id))
-      .toEqual(['reAddSource', 'viewTechnical']);
+      .toEqual(['cleanup', 'reAddSource', 'viewTechnical']);
     expect(view.issues.find((issue) => issue.category === 'sourceIdentityChanged')?.actions.map((action) => action.id))
       .toEqual(['viewSourceChange', 'viewTechnical']);
   });

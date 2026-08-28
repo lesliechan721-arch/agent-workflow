@@ -679,6 +679,7 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
           ]
         : root.category === 'sourceMissing'
           ? [
+              { id: 'cleanup', label: '清理已安装内容', description: '只清理 matching owner 的现场内容；保留插件设置', writeAction: 'cleanup' },
               { id: 'reAddSource', label: '重新添加同一来源', description: '保留来源 ID；来源类型和位置由你选择' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
