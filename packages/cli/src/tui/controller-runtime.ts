@@ -1145,6 +1145,43 @@ export function createTuiControllerDependencies(
           throw error;
         }
       }
+      if (intent.kind === 'sourceMutation') {
+        const currentEvidence = await captureEvidence(intent, undefined, 'requireRemote');
+        if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
+          throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
+        }
+        await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
+        const packageInfo = await readCliPackageInfo();
+        const runtime = {
+          onProgress: async (event: CatalogSourceMutationProgress) => {
+            const phase = SOURCE_PROGRESS_PHASES[event.stage];
+            progressFeed?.setCurrent(
+              { target: 'Catalog 来源配置', phase },
+              `来源操作：${phase}`,
+            );
+            await tuiControllerRuntimeTestHooks?.onCatalogSourceProgress?.(event);
+          },
+        };
+        const common = {
+          cwd: context.cwd,
+          env: context.env,
+          expectedConfigDigest: expectedEvidence.sourceWrite?.configDigest,
+          runtime,
+        };
+        if (intent.action === 'add' && intent.source) {
+          return addCatalogSourceCommand({ ...common, source: intent.source, cliVersion: packageInfo.version });
+        }
+        if (intent.action === 'update' && intent.update) {
+          return updateCatalogSourceCommand({ ...common, sourceId: intent.sourceId, update: intent.update, cliVersion: packageInfo.version });
+        }
+        if (intent.action === 'setPrimary') {
+          return setPrimaryCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
+        }
+        if (intent.action === 'remove') {
+          return removeCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
+        }
+        throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
+      }
       return withAwHomeMutationLock({
         env: context.env,
         action: async (awHomeMutationToken) => {
@@ -1153,39 +1190,6 @@ export function createTuiControllerDependencies(
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
           }
           await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
-          if (intent.kind === 'sourceMutation') {
-            const packageInfo = await readCliPackageInfo();
-            const runtime = {
-              awHomeMutationToken,
-              onProgress: async (event: CatalogSourceMutationProgress) => {
-                const phase = SOURCE_PROGRESS_PHASES[event.stage];
-                progressFeed?.setCurrent(
-                  { target: 'Catalog 来源配置', phase },
-                  `来源操作：${phase}`,
-                );
-                await tuiControllerRuntimeTestHooks?.onCatalogSourceProgress?.(event);
-              },
-            };
-            const common = {
-              cwd: context.cwd,
-              env: context.env,
-              expectedConfigDigest: expectedEvidence.sourceWrite?.configDigest,
-              runtime,
-            };
-            if (intent.action === 'add' && intent.source) {
-              return addCatalogSourceCommand({ ...common, source: intent.source, cliVersion: packageInfo.version });
-            }
-            if (intent.action === 'update' && intent.update) {
-              return updateCatalogSourceCommand({ ...common, sourceId: intent.sourceId, update: intent.update, cliVersion: packageInfo.version });
-            }
-            if (intent.action === 'setPrimary') {
-              return setPrimaryCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
-            }
-            if (intent.action === 'remove') {
-              return removeCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
-            }
-            throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
-          }
           if (intent.kind === 'pluginWrite') {
             const options = {
               cwd: context.cwd,

@@ -55,6 +55,8 @@ installed plugin
           ↓ AW 写入
 <AW_HOME>/
   catalog-sources.json                 [强配置]
+  catalog-generations.json             [强选择状态]
+  catalog-generations/<identity>/<digest>/{generation.json,snapshot/**}
   plugin-config/**                     [强配置]
   catalog-cache/sources/<sourceId>/{current,last-good}/
   marketplaces/**
@@ -88,11 +90,21 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 
 ## Catalog Sources and Cache
 
-每个 source 在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 有独立身份、当前快照和最近一次可用快照。resolver 先使用有效的 `current`，需要时可回退同一 source 的 `last-good`。cache 只是可删除的性能和离线状态；它不决定安装、配置或删除权限。
+Catalog snapshot 的 logical identity 只来自其 `.aw-generated.json.workspaceIdentity`。source ID、Git URL、SSH/HTTPS 文本和本地路径不是 logical identity；同一 Workspace 的 official HTTPS/SSH alias 和不同 source ID 因此共享同一不可变版本检查。
+
+`<AW_HOME>/catalog-generations.json` 是 schema 1 强选择状态。每个 source 只记录 `logicalIdentity`、`refreshPolicy`、`active`、可选 `candidate` 和 `lastCheck`；每个 pointer 还绑定不含凭据的 canonical source-config fingerprint，防止相同 source ID 复用其它 location、ref 或 subdir 的 generation。它不记录安装状态或删除授权。内容寻址 store 位于 `<AW_HOME>/catalog-generations/<logical-identity-hex>/<snapshot-digest-hex>/`，每个已发布 generation 只包含 `generation.json` 和完整、独立的 `snapshot/`，不引用可变 Git cache 或 Path source。首版不做 generation GC、reader lease 或 observation database。
+
+刷新先在调用自己的 staging 中复制 snapshot，并完成 snapshot、兼容性、digest 和 generated marker 验证。Git source 还通过扫描保留的 `generation.json` 强制 `(logicalIdentity, catalogVersion) -> snapshotDigest` 唯一；同版本不同 digest 返回稳定 `catalogImmutableVersionViolation`，且不改 Active 或 Candidate。验证完成后 generation 以目录 rename 原子发布，最后通过强状态原子替换更新 pointer；失败只清理本次 staging，原 Active 保留。
+
+Git 首次手动 refresh 直接建立 Active；已有 Active 时，高版本建立 Candidate，同版本同 digest 为 no-op，未显式改变 ref 的低版本报告 `channelRollback`，显式 ref 变化可建立 `refChange` Candidate。同一未变化 Git config 返回其它 Workspace identity 时，refresh 返回 `catalogGenerationIdentityMismatch`，且不改 Active、Candidate 或 state。Path source 默认 `manual`，每次 add 或手动 refresh 都建立 immutable local generation 并直接切换 Active；它允许同一 Catalog version 对应不同 digest，不监听文件系统。`aw catalog source activate-candidate <id>` 只在现有 `AW_HOME` mutation lock 下原子切 pointer，不下载或复制 snapshot。refresh 的远端解析、snapshot staging 和验证不持有该 mutation lock；最终 pointer 提交只短暂持锁并重读 source config fingerprint。这样，已更新或删除 source 的旧 refresh 只能丢弃自己的 staging，不能写回旧 pointer。source config mutation 和 activation 继续与普通 AW 写操作互斥。
+
+最小公开入口是 `aw catalog source refresh <id>`、`aw catalog source activate-candidate <id>` 和 `aw catalog source generation-status [id]`，均支持 `--json`。Active generation resolver 校验 state pointer、generation metadata、content-addressed 目录和 snapshot 后返回固定本地路径；`CatalogGenerationSet` 还绑定当前 source 集合及稳定 `generationSetDigest`，供后续普通操作接入。generation state 不是 installed ledger，source 删除不得删除插件内容。
+
+每个 source 仍在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 保留 transport cache。它只用于远端获取、最近可用回退和 generation staging 输入，是可删除弱状态；它不决定 Active、安装、配置或删除权限。
 
 Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，默认远端解析超时为 180 秒，并可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整；它禁止 URL 内嵌凭据、SSH local command 和 proxy command，且 AW 不保存 Catalog 授权信息。
 
-`aw catalog source add` 和 `update` 先原子提交 source config，再尽力刷新该 source。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`list`、`set-primary` 和 `remove` 只修改 source config。
+`aw catalog source add` 和 `update` 先在 mutation lock 内原子提交 source config，并在 transport/location 输入变化时失效该 source ID 的旧 generation pointer；然后释放 mutation lock 并尽力刷新。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`set-primary` 只改 source config；`remove` 同时移除该 source ID 的 generation selection state，但不删除 immutable generation、插件内容或任何 live ownership 现场。
 
 多来源 resolver 在稳定的 cache generation 内调用消费者回调。回调只能返回普通数据，不能保留 bundle root、manifest path 或其它缓存路径。generation 结束后，调用方必须重新解析，不得保存内部路径。
 

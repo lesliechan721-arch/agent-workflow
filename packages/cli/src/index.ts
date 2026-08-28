@@ -18,6 +18,11 @@ import {
   type CatalogSourceMutationReceipt,
 } from './commands/catalog-source.js';
 import {
+  activateCatalogSourceCandidateCommand,
+  catalogGenerationStatusCommand,
+  refreshCatalogSourceGenerationCommand,
+} from './commands/catalog-generation.js';
+import {
   cleanupWriteCommand as cleanupCommand,
   installWriteCommand as installCommand,
   reinstallWriteCommand as reinstallCommand,
@@ -100,6 +105,7 @@ import {
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
+import { catalogGenerationErrorCode } from './utils/catalog-generation-error.js';
 import {
   formatConfigCommandValue,
   parseConfigValue,
@@ -1741,6 +1747,27 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     commandExitState.exitCode = 1;
   };
 
+  const writeCatalogGenerationFailure = (
+    command: 'catalog:source:refresh' | 'catalog:source:activate-candidate' | 'catalog:source:generation-status',
+    sourceId: string | undefined,
+    json: boolean,
+    error: unknown,
+  ): void => {
+    const failure = sanitizeCatalogSourceError(error, env);
+    const message = redactString(failure.message);
+    if (json) {
+      writeJsonReceipt(io.stdout, {
+        catalogGenerationSchemaVersion: 1,
+        command,
+        ok: false,
+        ...(sourceId ? { sourceId } : {}),
+        errors: [{ code: catalogGenerationErrorCode(error), message }],
+      });
+    }
+    writeLine(io.stderr, message);
+    commandExitState.exitCode = 1;
+  };
+
   const writeConfigMutationFailure = (
     command: 'config:set' | 'config:unset' | 'config:reset',
     plugin: string | undefined,
@@ -1801,6 +1828,90 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeLine(io.stdout, `Primary source: ${payload.primarySourceId}`);
       for (const source of payload.sources) {
         writeLine(io.stdout, `${source.primary ? '*' : '-'} ${source.id} ${source.type} ${source.sourceIdentity}`);
+      }
+    });
+
+  catalogSource
+    .command('refresh')
+    .argument('<id>')
+    .option('-j, --json', 'print the generation refresh result as JSON', false)
+    .action(async (id: string, rawOptions: { json?: boolean }) => {
+      try {
+        const result = await refreshCatalogSourceGenerationCommand({
+          sourceId: id,
+          cliVersion: resolveCliVersion(),
+          env,
+        });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, {
+            ...result,
+            command: 'catalog:source:refresh',
+            ok: true,
+          });
+        } else {
+          writeLine(io.stdout, `Catalog source ${id}: ${result.outcome}.`);
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:refresh',
+          id,
+          rawOptions.json === true,
+          error,
+        );
+      }
+    });
+
+  catalogSource
+    .command('activate-candidate')
+    .argument('<id>')
+    .option('-j, --json', 'print the generation activation result as JSON', false)
+    .action(async (id: string, rawOptions: { json?: boolean }) => {
+      try {
+        const result = await activateCatalogSourceCandidateCommand({ sourceId: id, env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, {
+            ...result,
+            command: 'catalog:source:activate-candidate',
+            ok: true,
+          });
+        } else {
+          writeLine(io.stdout, `Catalog source ${id} Candidate activated.`);
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:activate-candidate',
+          id,
+          rawOptions.json === true,
+          error,
+        );
+      }
+    });
+
+  catalogSource
+    .command('generation-status')
+    .argument('[id]')
+    .option('-j, --json', 'print Catalog generation status as JSON', false)
+    .action(async (id: string | undefined, rawOptions: { json?: boolean }) => {
+      try {
+        const result = await catalogGenerationStatusCommand({ sourceId: id, env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, result);
+        } else {
+          for (const source of result.sources) {
+            const active = source.active ? `Active ${source.active.catalogVersion}` : 'no Active';
+            const candidate = source.candidate
+              ? `, Candidate ${source.candidate.catalogVersion}`
+              : '';
+            writeLine(io.stdout, `${source.sourceId}: ${active}${candidate} (${source.refreshPolicy})`);
+          }
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:generation-status',
+          id,
+          rawOptions.json === true,
+          error,
+        );
       }
     });
 

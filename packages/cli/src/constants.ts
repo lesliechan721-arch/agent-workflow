@@ -7,6 +7,10 @@ export const CURRENT_CATALOG_MANIFEST_FILE = 'catalog-manifest.json';
 export const CATALOG_SOURCES_FILE = 'catalog-sources.json';
 export const CATALOG_SOURCES_SCHEMA_VERSION = 1;
 export const CATALOG_SOURCE_IDENTITY_VERSION = 1;
+export const CATALOG_GENERATIONS_FILE = 'catalog-generations.json';
+export const CATALOG_GENERATIONS_SCHEMA_VERSION = 1;
+export const CATALOG_GENERATIONS_DIRECTORY = 'catalog-generations';
+export const CATALOG_GENERATION_METADATA_FILE = 'generation.json';
 export const OFFICIAL_CATALOG_SOURCE_URL =
   'https://github.com/lesliechan721-arch/agent-workflow.git';
 export const CATALOG_LATEST_REF = 'refs/heads/catalog/latest';

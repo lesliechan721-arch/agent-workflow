@@ -131,3 +131,19 @@ export async function calculateCatalogSourceIdentity(
   });
   return `sha256:${crypto.createHash('sha256').update(input).digest('hex')}`;
 }
+
+export function calculateCatalogSourceConfigFingerprint(
+  source: CatalogSource,
+): string {
+  const location = source.type === 'git'
+    ? canonicalizeCatalogGitUrl(source.url)
+    : path.normalize(source.path);
+  const input = JSON.stringify({
+    version: 1,
+    type: source.type,
+    location,
+    refPolicy: source.type === 'git' ? source.refPolicy : null,
+    subdir: normalizeIdentitySubdir(source.type === 'git' ? source.subdir : undefined),
+  });
+  return `sha256:${crypto.createHash('sha256').update(input).digest('hex')}`;
+}
