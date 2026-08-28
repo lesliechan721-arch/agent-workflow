@@ -47,6 +47,8 @@
 - TUI unit 和入口测试使用真实 Ink mount；不要用静态组件快照代替交互行为。
 - Platform tests 断言 MCP、apps、hooks、permissions、roles、instructions、Skill 和 command 的最终平台输出，不建立独立安装健康数据库。
 - JSON 测试同时断言 schema、单一 stdout 对象、stderr 诊断边界和退出码。
+- Eval case 声明 `workspace_valid: true` 时，contract test 必须 materialize `workspace_files`，通过公开 `aw catalog status --json` 验证 marker、metadata、inventory、依赖图和 snapshot evidence，并对预期有效插件运行 `aw plugin validate --json`。Prose 标记不能代替该 preflight。
+- Conversation Eval 的 `environment.pathPrepend` 只能引用相对 suite/case Eval 根的已存在 fixture。Runner 测试必须证明路径不能逃逸或包含符号链接、只有已声明 fixture 被复制和设为 executable，且 PATH 不引用仓库私有 CLI。确定性 contract test 不运行模型 Eval，也不审核 Oracle。
 
 ## Test Value Gate
 
@@ -87,6 +89,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
 | Catalog 作者与 Publisher 合同 | Plugin test + Smoke | `pnpm plugin:test aw-catalog-development`、Catalog build/publish smoke 和 [Catalog 作者指南](catalog-authoring.md)要求的隔离验证；删除分支的 Agent-facing command/return boundary 与 empty inventory 指令只在已安装 Skill 的静态合同测试中覆盖，CLI 删除行为由 integration 覆盖 |
+| Eval schema、fixture environment 或 conversation runner | Unit + Plugin test | 定向 Eval contract/runner unit、`workspace_valid` fixture preflight 和相关 `pnpm plugin:test`；不运行昂贵 model Eval |
 | 第三方作者公开闭环与 tarball dependency closure | Smoke | `pnpm test:smoke:authoring:external`；它不得通过 monorepo cwd、`NODE_PATH` 或 workspace symlink 取得依赖 |
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |

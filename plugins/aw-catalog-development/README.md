@@ -10,6 +10,8 @@ aw install aw-catalog-development -p both
 
 安装会解析其对 `aw-plugin-development` 的依赖。
 
+当前 CLI 合同是 Plugin Manifest v2、Catalog snapshot schema 5 和 Catalog Sources Config schema 2。三个 Skill 都先消费 materialized runtime requirements receipt 并运行 `aw self check`；它们通过 `aw catalog context` 与 status schema v2 使用 CLI 的 root、publication 默认值和 snapshot evidence。
+
 ## 包含的 Skill
 
 | Skill | 用途 |
@@ -34,3 +36,4 @@ aw install aw-catalog-development -p both
 - 日常维护不会发布。普通用户的删除请求只使用 `author-aw-catalog`；它编排后把实际删除交给 `author-aw-plugin` 的公开 CLI 分支。删除后重新读取 inventory/依赖，只验证受影响插件与反向依赖闭包；不会创建 tombstone、retirement metadata 或 release ledger。
 - Catalog Review 不修改文件、不运行 plugin test/build、Catalog build 或 preflight，也不评审单插件内部质量或跨插件业务 workflow。
 - Publish 从 CLI context 解析 root、remote 和 branch。Preflight 会执行已提交插件的 validator 和 build code；每个精确发布 identity 都需要本次单独授权，且 Catalog 不支持同版本重试或 repair。
+- Development source 的 activate 会按需 complete validate，并通过 managed source service 提交配置和刷新。Refresh 失败可以返回 partial receipt；重跑 activate/refresh 恢复，不创建第二套 source 状态。

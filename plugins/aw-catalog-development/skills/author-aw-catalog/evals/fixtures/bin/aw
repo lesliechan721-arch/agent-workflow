@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+
+const node = process.env.AW_PLUGIN_EVAL_CLI_NODE;
+const entry = process.env.AW_PLUGIN_EVAL_CLI_ENTRY;
+if (!node || !entry) {
+  process.stderr.write('Author Eval fixture requires the run-owned AW CLI entry.\n');
+  process.exit(9);
+}
+
+const args = process.argv.slice(2);
+const scenario = readFileSync('fixtures/scenario.txt', 'utf8').trim().replace(/^scenario=/u, '');
+
+// The public remove command requires the target tree to match HEAD. Conversation
+// workspace_files are materialized after the subject repository is created, so
+// commit only this deletion precondition before forwarding the real command.
+if (
+  scenario === 'remove-plugin' &&
+  args[0] === 'plugin' &&
+  args[1] === 'remove' &&
+  args[2] === 'remove-me'
+) {
+  const add = spawnSync('git', ['add', '--', 'plugins/remove-me'], { stdio: 'inherit' });
+  if (add.status !== 0) process.exit(add.status ?? 9);
+  const commit = spawnSync('git', [
+    '-c', 'user.name=AW Eval Fixture',
+    '-c', 'user.email=aw-eval@example.invalid',
+    'commit', '--no-verify', '-m', 'Materialize removal precondition',
+  ], { stdio: 'inherit' });
+  if (commit.status !== 0) process.exit(commit.status ?? 9);
+}
+
+const result = spawnSync(node, [entry, ...args], {
+  env: process.env,
+  stdio: 'inherit',
+});
+if (result.error) {
+  process.stderr.write(`${result.error.message}\n`);
+  process.exit(9);
+}
+process.exit(result.status ?? 9);

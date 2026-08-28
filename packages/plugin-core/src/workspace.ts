@@ -769,6 +769,7 @@ export async function buildCatalogWorkspace(options: {
     force: options.force === true,
     build: async (stagingRoot) => {
       const bundledPlugins: PluginMeta[] = [];
+      await fs.ensureDir(path.join(stagingRoot, 'plugins'));
       for (const plugin of plugins) {
         const closure = dependencyClosure(plugin, plugins);
         const outputRoot = path.join(stagingRoot, 'plugins', plugin.manifest.name);

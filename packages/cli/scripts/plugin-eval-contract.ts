@@ -38,6 +38,10 @@ export interface PluginEvalPluginInstallation {
   config: Record<string, unknown>;
 }
 
+export interface PluginEvalEnvironment {
+  pathPrepend: string[];
+}
+
 export interface PluginEvalCommandSuite {
   id: string;
   kind: 'command';
@@ -74,6 +78,7 @@ export interface PluginEvalConversationSuite {
   requiredForRelease: boolean;
   perRunTimeoutMs: number;
   isolation: PluginEvalIsolation;
+  environment?: PluginEvalEnvironment;
 }
 
 export interface PluginEvalTriggerSuite {
@@ -405,10 +410,46 @@ function validateConversationWorkspaceFiles(value: unknown, label: string): void
   }
 }
 
+function validateConversationEnvironment(
+  value: unknown,
+  label: string,
+  fixtureRoot: string,
+): PluginEvalEnvironment | undefined {
+  if (value === undefined) return undefined;
+  const environment = expectRecord(value, label);
+  expectOnlyKeys(environment, ['pathPrepend'], label);
+  const pathPrepend = parseStringArray(
+    environment.pathPrepend,
+    `${label}.pathPrepend`,
+  ).map((entry, index) => {
+    const relativePath = parseEvalWorkspacePath(
+      entry,
+      `${label}.pathPrepend[${index}]`,
+      { allowTreePattern: false },
+    );
+    const absolutePath = path.resolve(fixtureRoot, relativePath);
+    if (!fs.pathExistsSync(absolutePath)) {
+      throw new Error(`${label}.pathPrepend[${index}] must reference an existing fixture.`);
+    }
+    assertRealPathInside(
+      fixtureRoot,
+      absolutePath,
+      `${label}.pathPrepend[${index}]`,
+      'Eval fixture root',
+    );
+    return relativePath;
+  });
+  if (new Set(pathPrepend).size !== pathPrepend.length) {
+    throw new Error(`${label}.pathPrepend must not contain duplicates.`);
+  }
+  return { pathPrepend };
+}
+
 export function validatePluginEvalConversationCaseDocument(
   value: unknown,
   expectedSkill: string,
   label = 'conversation cases',
+  fixtureRoot = process.cwd(),
 ): Array<Record<string, unknown>> {
   const document = expectRecord(value, label);
   const skill = expectString(document.skill_name, `${label}.skill_name`);
@@ -447,6 +488,11 @@ export function validatePluginEvalConversationCaseDocument(
     validateConversationWorkspaceFiles(
       row.workspace_files,
       `${label}.evals[${index}].workspace_files`,
+    );
+    validateConversationEnvironment(
+      row.environment,
+      `${label}.evals[${index}].environment`,
+      fixtureRoot,
     );
     const review = expectRecord(row.review, `${label}.evals[${index}].review`);
     parseStringArray(review.checks, `${label}.evals[${index}].review.checks`);
@@ -674,7 +720,7 @@ function parseSuite(
   if (kind === 'conversation') {
     expectOnlyKeys(row, [
       'id', 'kind', 'skills', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
-      'requiredForRelease', 'perRunTimeoutMs', 'isolation',
+      'requiredForRelease', 'perRunTimeoutMs', 'isolation', 'environment',
     ], `suites[${index}]`);
     return {
       ...common,
@@ -686,6 +732,13 @@ function parseSuite(
         `suites[${index}].cases`,
       ),
       isolation: parseIsolation(row.isolation, `suites[${index}].isolation`),
+      ...(row.environment === undefined ? {} : {
+        environment: validateConversationEnvironment(
+          row.environment,
+          `suites[${index}].environment`,
+          evalRoot,
+        ),
+      }),
     };
   }
 
@@ -1107,6 +1160,7 @@ export async function readPluginEvalManifest(
         await fs.readJson(casesPath),
         suite.skill,
         `conversation cases for suite "${suite.id}"`,
+        path.dirname(casesPath),
       );
     } else if (suite.cases) {
       const casesPath = path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, ''));

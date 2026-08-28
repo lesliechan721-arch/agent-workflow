@@ -183,6 +183,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - 所有兼容 Runner 输出统一的 `EvalRunBundle v3`。bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，不包含 Audit 字段。
 - 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。它消费 `AwSkillEvalExecutionPlan v3`，只负责本次副作用授权、运行时能力检查、执行和 bundle 完整性。
 - plugin model Eval 把本次构建的 CLI production closure 实体部署到 run-owned runtime capsule，并提供只指向 capsule 内入口的临时 `aw` launcher。探针和实际模型进程使用同一前置 `PATH`；它们不能通过 CLI 模块路径访问仓库或用户全局 `aw`。最终 capsule 的 package identity 和确定性 content digest 进入公开 eval evidence 和 model environment identity；依赖字节变化时，batch 在复用 checkpoint 前拒绝 append。materialize-only 不创建 capsule。
+- Conversation suite 或 case 可用最小 `environment.pathPrepend` 声明 Eval-owned PATH fixture。路径相对声明它的 Eval 根解析，必须是根内的普通文件或目录树，且不能包含符号链接。Runner 只复制已声明 fixture 到本次隔离 workspace，并只在那里设置 executable mode 和前置 PATH；Oracle 不依赖仓库私有 CLI 路径。声明 `workspace_valid: true` 的确定性 fixture 必须 materialize 后通过公开 `aw catalog status --json`，并让每个预期有效插件通过 `aw plugin validate --json`。该 preflight 不运行模型，也不代替 Oracle Audit。
 - `hostSourceAccessAbsent` 只按 app-server 事件中的显式命令、审批和文件访问输入归因。命令输出、Agent 消息、reasoning 和 diff 中的宿主路径文本不是访问证据。
 - Plan 可用可选的 `minimumEvidenceLevel` 固定最低证据要求。省略时为 `executed`；要求 `comparative` 时，默认 runner 只在 macOS/Linux 的 Full Access verified observation 或更强 external containment 下接受 grading。verified observation 必须在 bundle 中保留非 OS 强隔离限制，不能记录后代清理保证。
 - Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。未经 Audit/triage 的 bundle 可以作为原始诊断证据，但不得影响 Review finding、生产 Skill 修改或发布结论。

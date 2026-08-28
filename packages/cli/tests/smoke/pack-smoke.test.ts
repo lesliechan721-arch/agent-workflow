@@ -11,6 +11,11 @@ import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
+import {
+  createAwPluginRequirementsReceipt,
+  readPluginManifest,
+} from '../../src/utils/manifest.js';
 
 const execFileAsync = promisify(execFile);
 const sharedTempBase = os.tmpdir();
@@ -561,6 +566,28 @@ describe('pack smoke', () => {
         manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
       },
     );
+    const catalogPortablePluginRoot = path.join(portableCatalog, 'plugins', 'portable-pack');
+    const portablePlugin = await readPluginManifest(catalogPortablePluginRoot, { mode: 'bundle' });
+    await fs.outputJson(
+      path.join(
+        catalogPortablePluginRoot,
+        'agent-skills',
+        'skills',
+        'packed-portable',
+        'aw-plugin-requirements.json',
+      ),
+      createAwPluginRequirementsReceipt(
+        { name: portablePlugin.manifest.name, version: portablePlugin.manifest.version },
+        portablePlugin.manifest.requires?.aw.capabilities ?? [],
+      ),
+      { spaces: 2 },
+    );
+    const portableCatalogManifestPath = path.join(portableCatalog, 'catalog-manifest.json');
+    const portableCatalogManifest = await fs.readJson(portableCatalogManifestPath);
+    portableCatalogManifest.entries = [
+      await createCatalogManifestV5Entry(portablePlugin, portablePlugin.rootDir),
+    ];
+    await fs.writeJson(portableCatalogManifestPath, portableCatalogManifest, { spaces: 2 });
     const portableCwd = path.join(tempRoot, 'portable-project');
     const portableHome = path.join(tempRoot, 'portable-aw-home');
     const fakeBin = path.join(tempRoot, 'fake-skills-bin');

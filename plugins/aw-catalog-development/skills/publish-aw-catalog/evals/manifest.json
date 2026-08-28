@@ -41,7 +41,10 @@
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
-      "perRunTimeoutMs": 240000
+      "perRunTimeoutMs": 240000,
+      "environment": {
+        "pathPrepend": ["fixtures/bin"]
+      }
     }
   ]
 }

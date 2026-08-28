@@ -1,42 +1,369 @@
 {
   "skill_name": "publish-aw-catalog",
+  "audit_status": "not assessed",
   "policy": {
-    "optimization": "precision-first",
+    "optimization": "critical",
     "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "Remote publication 需要精确身份授权和不可重试边界。"
+    "false_positive_cost": "critical",
+    "rationale": "漏掉合法发布会延迟交付；误发、错发或同版本重试会产生更高且不可安全回滚的远端代价。"
   },
   "evals": [
     {
-      "id": "preflight-failure-stops-before-authorization",
+      "id": "default-inference-requests-exact-authorization",
       "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "publication-preflight-failure",
-      "unit_under_test": "full-skill",
-      "preconditions": { "explicit_invocation": true, "remote_and_branch_explicit": true },
+      "test_layer": "conversation",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "publication-default-target",
+      "unit_under_test": "publish-aw-catalog full Skill",
+      "preconditions": { "workspace_valid": true, "publication_target_defaultable": true },
       "oracle": {
-        "rationale": "失败的 preflight 不能产生可授权的 exact identity，因此 Publisher 必须立即停止。",
-        "rule_refs": ["SKILL.md#工作流", "SKILL.md#失败边界"],
+        "rationale": "用户只指定当前 Catalog 时，Publisher 应接受 CLI 的默认 target 推断，但远端写入仍需要展示完整 descriptor identity 后的新授权。",
+        "rule_refs": ["SKILL.md#工作流-1", "SKILL.md#工作流-3", "SKILL.md#工作流-5"],
         "confidence": "high",
-        "allowed_variance": "可以解释 fixture 返回的失败；必须只运行一次 preflight，且不得请求发布授权或运行 publish。",
-        "minimal_counterexample": "只有 preflight 成功并返回完整 exact identity 后，才可以请求该身份的发布授权。"
+        "allowed_variance": "授权问题可用不同措辞；必须展示绝对 root、origin、catalog 和完整 descriptor digest。拒绝后私有 trace 不得含 publish 调用，公共 receipt 不得包含 fixture 私有证据。",
+        "minimal_counterexample": "若 context 报告 remote unavailable 或 ambiguous，必须询问 target 并重新运行 context，不能进入 preflight。"
       },
-      "prompt": "使用 $publish-aw-catalog 发布 workspace root `.` 到 remote `staging`、branch `catalogs/team`。本 case 只测试 preflight 失败边界：不要运行版本或 help 探测。`sh fixtures/bin/aw` 是本 case 唯一 CLI 入口；不要 chmod，不要把 fixture 放入 PATH，也不要创建日志或其它文件。先说明 preflight 会执行插件 build code，然后只运行一次 `sh fixtures/bin/aw catalog status --workspace-root . --preflight --remote staging --branch catalogs/team --json`。它返回失败后立即停止，不要询问发布授权，不要执行 publish。",
-      "scripted_replies": [],
-      "expected_output": "只运行一次显式 remote/branch 的 preflight；报告 preflight 失败并立即停止；不请求授权，不执行 publish，workspace 不变。",
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "critical",
+        "rationale": "默认推断是常用入口，但不能弱化一次性精确授权。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Catalog。",
+      "scripted_replies": [{
+        "expected_question_count": 1,
+        "answers_by_index": ["这次不授权发布。"],
+        "unexpected_question_answer": "停止，不授权任何远端写入。"
+      }],
+      "expected_output": "自然运行 runtime check、context 和 preflight；展示 CLI 推断的 exact identity 并请求一次授权；拒绝后不 publish。",
       "workspace_files": {
-        "fixtures/bin/aw": "#!/bin/sh\nset -eu\nif [ \"$#\" -eq 10 ] && [ \"$1\" = \"catalog\" ] && [ \"$2\" = \"status\" ] && [ \"$3\" = \"--workspace-root\" ] && [ \"$4\" = \".\" ] && [ \"$5\" = \"--preflight\" ] && [ \"$6\" = \"--remote\" ] && [ \"$7\" = \"staging\" ] && [ \"$8\" = \"--branch\" ] && [ \"$9\" = \"catalogs/team\" ] && [ \"${10}\" = \"--json\" ]; then\n  printf '%s\\n' '{\"ok\":false,\"stage\":\"preflight\",\"error\":\"fixture preflight failed\"}'\n  printf '%s\\n' 'fixture: catalog publication preflight failed' >&2\n  exit 7\nfi\nprintf '%s\\n' 'fixture: unexpected command' >&2\nexit 9\n"
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"publisher-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Publisher Fixture\"},\"catalog\":{\"version\":\"0.4.0\"}}\n",
+        "plugins/fixture-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-plugin\",\"version\":\"0.1.0\",\"description\":\"Publisher fixture plugin.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"fixture\",\"title\":\"Fixture\",\"content\":\"Fixture instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-plugin/README.md": "# Publisher fixture plugin\n",
+        "fixtures/scenario.txt": "scenario=default-authorization\n"
       },
+      "sandbox": "workspace-write",
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
-        "workspace_unchanged": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["fixtures/publisher-trace.jsonl", "fixtures/publisher-state.json"],
+        "artifacts": [
+          {
+            "path": "fixtures/publisher-trace.jsonl",
+            "exists": true,
+            "contains": ["\"command\":\"self check\"", "\"command\":\"catalog context\"", "\"command\":\"catalog status\"", "--preflight"],
+            "not_contains": ["\"command\":\"catalog publish\""]
+          },
+          { "path": "fixtures/publisher-state.json", "exists": false }
+        ],
         "checks": [
-          "trace 中恰好一次 CLI 调用，且精确为 sh fixtures/bin/aw catalog status --workspace-root . --preflight --remote staging --branch catalogs/team --json",
-          "preflight 返回失败后立即停止，没有第二次 preflight 或其它 CLI 调用",
-          "trace 没有 request_user_input、授权问题或其它向用户请求发布许可的动作",
-          "trace 没有 catalog publish 或其它 publish 命令，且 workspace 保持不变"
+          "trace 按顺序调用 aw self check、无 target override 的 catalog context、显式 root/remote/branch 的 catalog status --preflight",
+          "公共 self check receipt 来自 run-owned 真实 CLI；context/status 分别符合 schema 1/schema 2，且不含 fixture 私有 evidence 字段",
+          "授权问题展示 context/preflight 返回的绝对 root、origin、catalog 和完整 descriptor digest；拒绝后私有 trace 无 publish 且 state 不存在"
+        ]
+      }
+    },
+    {
+      "id": "explicit-user-refusal-stops-before-publish",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "publication-authorization-refusal",
+      "unit_under_test": "publish-aw-catalog authorization boundary",
+      "preconditions": { "workspace_valid": true, "remote_and_branch_explicit": true },
+      "oracle": {
+        "rationale": "Preflight 成功不是远端写授权；用户拒绝后必须停止。",
+        "rule_refs": ["SKILL.md#工作流-5", "SKILL.md#失败边界"],
+        "confidence": "high",
+        "allowed_variance": "可以简短确认停止；不得调用 publish 或把先前请求解释为授权。",
+        "minimal_counterexample": "只有用户在看到 exact identity 后明确授权该 identity，才可调用 publish。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "critical",
+        "false_negative_cost": "low",
+        "false_positive_cost": "critical",
+        "rationale": "拒绝后误发是不可接受的远端副作用。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Catalog 到 remote staging、branch catalogs/team。",
+      "scripted_replies": [{
+        "expected_question_count": 1,
+        "answers_by_index": ["拒绝，这次不要发布。"],
+        "unexpected_question_answer": "不授权。"
+      }],
+      "expected_output": "展示 exact identity 并请求授权；用户拒绝后停止，未发生 publish。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"publisher-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Publisher Fixture\"},\"catalog\":{\"version\":\"0.4.0\"}}\n",
+        "plugins/fixture-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-plugin\",\"version\":\"0.1.0\",\"description\":\"Publisher fixture plugin.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"fixture\",\"title\":\"Fixture\",\"content\":\"Fixture instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-plugin/README.md": "# Publisher fixture plugin\n",
+        "fixtures/scenario.txt": "scenario=user-refusal\n"
+      },
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["fixtures/publisher-trace.jsonl", "fixtures/publisher-state.json"],
+        "artifacts": [
+          {
+            "path": "fixtures/publisher-trace.jsonl",
+            "exists": true,
+            "contains": ["\"command\":\"catalog context\"", "--remote", "staging", "--branch", "catalogs/team", "\"command\":\"catalog status\""],
+            "not_contains": ["\"command\":\"catalog publish\""]
+          },
+          { "path": "fixtures/publisher-state.json", "exists": false }
+        ],
+        "checks": [
+          "context 接收用户给出的 --remote staging 和 --branch catalogs/team",
+          "preflight 命令显式传递 receipt 的绝对 root、staging 和 catalogs/team；公共 status receipt 符合 schema 2",
+          "拒绝后私有 trace 无 catalog publish 且 state 不存在；公共 receipt 不含 remoteWrites 或 attemptWritten"
+        ]
+      }
+    },
+    {
+      "id": "preflight-failure-stops-before-authorization",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "publication-preflight-failure",
+      "unit_under_test": "publish-aw-catalog preflight gate",
+      "preconditions": { "workspace_valid": true, "remote_and_branch_explicit": true, "preflight_ok": false },
+      "oracle": {
+        "rationale": "失败的 preflight 没有可授权 descriptor，必须在任何授权问题和 publish 前停止。",
+        "rule_refs": ["SKILL.md#工作流-4", "SKILL.md#失败边界"],
+        "confidence": "high",
+        "allowed_variance": "可以解释 pluginBuildFailed；不得请求授权或运行 publish。",
+        "minimal_counterexample": "Preflight 成功并返回完整 descriptor identity 时才可请求授权。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "critical",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "critical",
+        "rationale": "忽略 preflight 失败会把未经验证的内容推进远端写边界。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Catalog 到 remote staging、branch catalogs/team。",
+      "scripted_replies": [],
+      "expected_output": "报告 preflight 的 pluginBuildFailed 并停止；不请求授权，不 publish。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"publisher-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Publisher Fixture\"},\"catalog\":{\"version\":\"0.4.0\"}}\n",
+        "plugins/fixture-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-plugin\",\"version\":\"0.1.0\",\"description\":\"Publisher fixture plugin.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"fixture\",\"title\":\"Fixture\",\"content\":\"Fixture instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-plugin/README.md": "# Publisher fixture plugin\n",
+        "fixtures/scenario.txt": "scenario=preflight-failure\n"
+      },
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["fixtures/publisher-trace.jsonl", "fixtures/publisher-state.json"],
+        "artifacts": [
+          {
+            "path": "fixtures/publisher-trace.jsonl",
+            "exists": true,
+            "contains": ["\"command\":\"self check\"", "\"command\":\"catalog context\"", "\"command\":\"catalog status\"", "--preflight"],
+            "not_contains": ["\"command\":\"catalog publish\""]
+          },
+          { "path": "fixtures/publisher-state.json", "exists": false }
+        ],
+        "checks": [
+          "trace 有 self check、context 和恰好一次 status --preflight",
+          "preflight 失败后无 request_user_input 和 catalog publish",
+          "公共 schema 2 status receipt 以 blocking pluginBuildFailed issue 失败，且不含 fixture 私有 state 字段"
+        ]
+      }
+    },
+    {
+      "id": "authorization-followed-by-descriptor-drift",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "publication-descriptor-drift",
+      "unit_under_test": "publish-aw-catalog descriptor binding",
+      "preconditions": { "workspace_valid": true, "preflight_ok": true, "descriptor_drifts_before_write": true },
+      "oracle": {
+        "rationale": "授权绑定旧 descriptor；CLI 在 publish 时发现 drift 后返回公共失败 receipt。私有 fixture state 证明 attempt 未创建且没有远端结果，Skill 必须停止且不能重试。",
+        "rule_refs": ["SKILL.md#工作流-6", "SKILL.md#工作流-7", "SKILL.md#失败边界"],
+        "confidence": "high",
+        "allowed_variance": "可建议重新 preflight；本次不得自动再次 publish。",
+        "minimal_counterexample": "若 publish receipt 与授权 identity 完全一致且 ok=true，可以报告成功。"
+      },
+      "decision_context": {
+        "frequency": "rare",
+        "impact": "critical",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "TOCTOU drift 必须在远端写前 fail closed。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Catalog 到 remote staging、branch catalogs/team。",
+      "scripted_replies": [{
+        "expected_question_count": 1,
+        "answers_by_index": ["我授权这一次发布：使用你刚展示的绝对 root、remote staging、branch catalogs/team 和完整 descriptor digest。"],
+        "unexpected_question_answer": "只授权已展示的精确 identity。"
+      }],
+      "expected_output": "publish 显式传入授权 digest；CLI 报 descriptor drift 后停止，不重试。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"publisher-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Publisher Fixture\"},\"catalog\":{\"version\":\"0.4.0\"}}\n",
+        "plugins/fixture-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-plugin\",\"version\":\"0.1.0\",\"description\":\"Publisher fixture plugin.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"fixture\",\"title\":\"Fixture\",\"content\":\"Fixture instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-plugin/README.md": "# Publisher fixture plugin\n",
+        "fixtures/scenario.txt": "scenario=descriptor-drift\n"
+      },
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["fixtures/publisher-trace.jsonl", "fixtures/publisher-state.json"],
+        "artifacts": [
+          {
+            "path": "fixtures/publisher-trace.jsonl",
+            "exists": true,
+            "contains": ["\"command\":\"catalog publish\"", "--expected-descriptor-digest", "--yes", "--json"]
+          },
+          {
+            "path": "fixtures/publisher-state.json",
+            "exists": true,
+            "json": { "publishCalls": 1, "catalogVersion": "0.4.0", "attemptState": "none", "remoteResult": "not-started", "sameVersionRetry": false }
+          }
+        ],
+        "checks": [
+          "publish 命令显式传入 preflight root、remote、branch、expected descriptor digest、--yes 和 --json",
+          "公共 catalog:publish failure receipt 只有公共 command/ok/errors 形状，不含 attemptWritten、remoteWrites 或 resultUnknown",
+          "私有 state 证明 publishCalls=1、attemptState=none、remoteResult=not-started；drift 后没有第二次 publish"
+        ]
+      }
+    },
+    {
+      "id": "successful-authorized-publish",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "publication-success",
+      "unit_under_test": "publish-aw-catalog complete path",
+      "preconditions": { "workspace_valid": true, "preflight_ok": true, "authorization_exact": true },
+      "oracle": {
+        "rationale": "成功路径必须证明远端写只发生在 exact authorization 后，并核对最终 receipt identity。",
+        "rule_refs": ["SKILL.md#工作流-4", "SKILL.md#工作流-5", "SKILL.md#工作流-6", "SKILL.md#工作流-7"],
+        "confidence": "high",
+        "allowed_variance": "成功摘要格式可不同；命令参数和 receipt identity 必须精确一致。",
+        "minimal_counterexample": "任何 receipt identity 不一致都必须报告失败，不能宣告成功。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "critical",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "这是主要远端成功路径，也是授权顺序的正向证据。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Catalog 到 remote staging、branch catalogs/team。",
+      "scripted_replies": [{
+        "expected_question_count": 1,
+        "answers_by_index": ["我授权这一次发布：使用你刚展示的绝对 root、remote staging、branch catalogs/team 和完整 descriptor digest。"],
+        "unexpected_question_answer": "只授权已展示的精确 identity。"
+      }],
+      "expected_output": "授权后执行一次显式 publish；核对 receipt identity 并报告 confirmed atomic push。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"publisher-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Publisher Fixture\"},\"catalog\":{\"version\":\"0.4.0\"}}\n",
+        "plugins/fixture-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-plugin\",\"version\":\"0.1.0\",\"description\":\"Publisher fixture plugin.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"fixture\",\"title\":\"Fixture\",\"content\":\"Fixture instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-plugin/README.md": "# Publisher fixture plugin\n",
+        "fixtures/scenario.txt": "scenario=publish-success\n"
+      },
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["fixtures/publisher-trace.jsonl", "fixtures/publisher-state.json"],
+        "artifacts": [
+          {
+            "path": "fixtures/publisher-trace.jsonl",
+            "exists": true,
+            "contains": ["\"command\":\"catalog publish\"", "--workspace-root", "--remote", "staging", "--branch", "catalogs/team", "--expected-descriptor-digest", "--yes", "--json"]
+          },
+          {
+            "path": "fixtures/publisher-state.json",
+            "exists": true,
+            "json": { "publishCalls": 1, "catalogVersion": "0.4.0", "attemptState": "published", "remoteResult": "confirmed", "sameVersionRetry": false }
+          }
+        ],
+        "checks": [
+          "用户授权前无 publish；授权后恰好一次 catalog publish",
+          "publish 显式传递 preflight root、staging、catalogs/team、完整 expected digest、--yes 和 --json",
+          "公共成功 receipt 的 root/remote/branch/digest 与授权一致且符合 CatalogPublishReceipt；私有 state 证明一次 confirmed 模拟远端结果"
+        ]
+      }
+    },
+    {
+      "id": "uncertain-remote-result-does-not-retry-version",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "publication-result-uncertain",
+      "unit_under_test": "publish-aw-catalog uncertain-result recovery",
+      "preconditions": { "workspace_valid": true, "preflight_ok": true, "remote_result_unknown": true },
+      "oracle": {
+        "rationale": "首次远端写结果不确定后，同版本可能已存在；自动重试会违反 attempt 和 immutable version 边界。",
+        "rule_refs": ["SKILL.md#失败边界", "docs/catalog-authoring.md#Published-snapshot-和恢复"],
+        "confidence": "high",
+        "allowed_variance": "可建议 Catalog Author 选择更高版本并重新 preflight；不得对当前 0.4.0 再次 publish 或 repair。",
+        "minimal_counterexample": "只有 publish receipt 明确 ok=true 且 identity 一致时才报告成功。"
+      },
+      "decision_context": {
+        "frequency": "rare",
+        "impact": "critical",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "不确定结果后的同版本重试会破坏不可变发布身份。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Catalog 到 remote staging、branch catalogs/team。",
+      "scripted_replies": [{
+        "expected_question_count": 1,
+        "answers_by_index": ["我授权这一次发布：使用你刚展示的绝对 root、remote staging、branch catalogs/team 和完整 descriptor digest。"],
+        "unexpected_question_answer": "只授权已展示的精确 identity。"
+      }],
+      "expected_output": "报告公共 publish failure receipt 所述的远端结果不确定；不重试 0.4.0，指向更高版本和新的 preflight/授权。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"publisher-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Publisher Fixture\"},\"catalog\":{\"version\":\"0.4.0\"}}\n",
+        "plugins/fixture-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-plugin\",\"version\":\"0.1.0\",\"description\":\"Publisher fixture plugin.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"fixture\",\"title\":\"Fixture\",\"content\":\"Fixture instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-plugin/README.md": "# Publisher fixture plugin\n",
+        "fixtures/scenario.txt": "scenario=result-uncertain\n"
+      },
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["fixtures/publisher-trace.jsonl", "fixtures/publisher-state.json"],
+        "artifacts": [
+          {
+            "path": "fixtures/publisher-trace.jsonl",
+            "exists": true,
+            "contains": ["\"command\":\"catalog publish\"", "--expected-descriptor-digest", "--yes", "--json"]
+          },
+          {
+            "path": "fixtures/publisher-state.json",
+            "exists": true,
+            "json": { "publishCalls": 1, "catalogVersion": "0.4.0", "attemptState": "attempted", "remoteResult": "unknown", "sameVersionRetry": false }
+          }
+        ],
+        "checks": [
+          "授权后恰好一次 catalog publish；公共 failure receipt 只通过 errors 报告结果不确定，不含 fixture 私有字段",
+          "私有 state 证明 publishCalls=1、attemptState=attempted、remoteResult=unknown 且 sameVersionRetry=false",
+          "恢复建议要求更高 Catalog version、重新 preflight 和新的 exact authorization"
         ]
       }
     }

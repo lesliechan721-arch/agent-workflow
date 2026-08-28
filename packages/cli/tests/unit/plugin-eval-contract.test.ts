@@ -325,6 +325,65 @@ describe('plugin eval contract and materialization', () => {
     );
   });
 
+  it('accepts safe conversation PATH fixtures and rejects missing or escaping fixtures', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    const fixtureDirectory = skillEvalPath(pluginRoot, 'fixtures', 'bin');
+    await fs.ensureDir(fixtureDirectory);
+    await fs.writeFile(path.join(fixtureDirectory, 'aw'), '#!/bin/sh\nexit 0\n', 'utf8');
+    const casesPath = skillEvalPath(pluginRoot, 'cases', 'conversation-cases.json');
+    await fs.ensureDir(path.dirname(casesPath));
+    await fs.ensureDir(path.join(path.dirname(casesPath), 'case-fixtures', 'bin'));
+    await fs.writeFile(
+      path.join(path.dirname(casesPath), 'case-fixtures', 'bin', 'aw'),
+      '#!/bin/sh\nexit 0\n',
+      'utf8',
+    );
+    await fs.writeJson(casesPath, {
+      skill_name: 'eval-fixture',
+      evals: [{
+        id: 'conversation-fixture',
+        prompt: 'Inspect the fixture.',
+        scripted_replies: [],
+        expected_output: 'Return the result.',
+        environment: { pathPrepend: ['case-fixtures/bin'] },
+        review: { checks: ['Inspects the fixture.'], workspace_unchanged: true },
+      }],
+    }, { spaces: 2 });
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.suites = [{
+      id: 'conversation',
+      kind: 'conversation',
+      skills: ['eval-fixture'],
+      cases: './cases/conversation-cases.json',
+      profiles: ['project-runtime'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+      environment: { pathPrepend: ['fixtures/bin'] },
+    }];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).resolves.toMatchObject({
+      suites: [expect.objectContaining({
+        environment: { pathPrepend: ['fixtures/bin'] },
+      })],
+    });
+
+    manifest.suites[0].environment.pathPrepend = ['fixtures/missing'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must reference an existing fixture',
+    );
+
+    manifest.suites[0].environment.pathPrepend = ['../outside'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must be a normalized POSIX path inside the eval workspace',
+    );
+  });
+
   it('accepts bounded conversation workspace files and rejects unsafe paths', async () => {
     const pluginRoot = await createStaticEvalPlugin();
     const casesPath = skillEvalPath(pluginRoot, 'conversation-cases.json');

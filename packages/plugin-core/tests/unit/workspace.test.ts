@@ -379,6 +379,24 @@ describe('AW Catalog Workspace v1', () => {
     })
   })
 
+  it('builds a complete schema 5 snapshot for an empty plugin inventory', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    let adapterCalls = 0
+
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { async build() { adapterCalls += 1 } },
+    })
+
+    expect(adapterCalls).toBe(0)
+    expect(built.pluginNames).toEqual([])
+    await expect(fs.readdir(path.join(built.outputRoot, 'plugins'))).resolves.toEqual([])
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
+      manifest: { schemaVersion: 5, catalogVersion: '0.1.0', entries: [] },
+    })
+  })
+
   it('keeps snapshot digests equal for identical workspaces at different roots', async () => {
     const roots = [await createWorkspace(), await createWorkspace()]
     const validations = []

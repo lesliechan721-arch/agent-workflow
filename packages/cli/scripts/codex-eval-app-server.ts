@@ -114,6 +114,7 @@ interface ConversationEvalCase {
   sandbox: 'read-only' | 'workspace-write';
   allowedWorkspaceChanges: string[];
   artifacts: WorkspaceArtifactExpectation[];
+  environmentPathPrepend: string[];
 }
 
 interface AppServerRunEvidence {
@@ -150,6 +151,7 @@ interface ConversationCaseResult {
   expected_output: string;
   checks: string[];
   workspace_files: string[];
+  environment_path_prepend: string[];
   runs: Array<{
     run: number;
     with_skill: AppServerRunEvidence;
@@ -216,6 +218,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function comparablePath(value: string): string {
   const normalized = value.replaceAll('\\', '/');
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function isPathInsideOrEqual(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }
 
 function containsForbiddenHostRoot(value: unknown, forbiddenHostRoots: string[]): boolean {
@@ -865,7 +876,12 @@ async function readConversationCases(
   expectedSkill: string,
 ): Promise<ConversationEvalCase[]> {
   const raw = await fs.readJson(casesPath);
-  const evals = validatePluginEvalConversationCaseDocument(raw, expectedSkill);
+  const evals = validatePluginEvalConversationCaseDocument(
+    raw,
+    expectedSkill,
+    'conversation cases',
+    path.dirname(casesPath),
+  );
   return evals.map((value, index) => {
     const review = isRecord(value.review) ? value.review : {};
     if (
@@ -908,8 +924,83 @@ async function readConversationCases(
             };
           })
         : [],
+      environmentPathPrepend: isRecord(value.environment) &&
+        Array.isArray(value.environment.pathPrepend)
+        ? value.environment.pathPrepend as string[]
+        : [],
     };
   });
+}
+
+async function assertFixtureTreeSafe(root: string, target: string, label: string): Promise<void> {
+  const rootRealPath = await fs.realpath(root);
+  const targetRealPath = await fs.realpath(target);
+  if (!isPathInsideOrEqual(rootRealPath, targetRealPath)) {
+    throw new Error(`${label} must stay inside its Eval fixture root.`);
+  }
+  const relative = path.relative(root, target);
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stat = await fs.lstat(current);
+    if (stat.isSymbolicLink()) throw new Error(`${label} must not contain symbolic links.`);
+  }
+  const stat = await fs.lstat(target);
+  if (stat.isFile()) return;
+  if (!stat.isDirectory()) throw new Error(`${label} must be a regular file or directory.`);
+  const entries = await fs.readdir(target);
+  for (const entry of entries) {
+    await assertFixtureTreeSafe(root, path.join(target, entry), label);
+  }
+}
+
+async function makeFixtureExecutable(target: string): Promise<void> {
+  const stat = await fs.lstat(target);
+  if (stat.isFile()) {
+    await fs.chmod(target, 0o755);
+    return;
+  }
+  if (!stat.isDirectory()) return;
+  for (const entry of await fs.readdir(target)) {
+    await makeFixtureExecutable(path.join(target, entry));
+  }
+}
+
+async function materializeConversationEnvironment(options: {
+  workspaceRoot: string;
+  fixtures: Array<{ fixtureRoot: string; relativePath: string }>;
+}): Promise<string[]> {
+  const pathEntries: string[] = [];
+  const materialized = new Map<string, string>();
+  for (const { fixtureRoot, relativePath } of options.fixtures) {
+    const source = path.resolve(fixtureRoot, relativePath);
+    await assertFixtureTreeSafe(
+      fixtureRoot,
+      source,
+      `Conversation PATH fixture ${JSON.stringify(relativePath)}`,
+    );
+    const target = path.resolve(options.workspaceRoot, relativePath);
+    if (!isPathInsideOrEqual(options.workspaceRoot, target)) {
+      throw new Error(`Conversation PATH fixture must stay inside the eval workspace: ${relativePath}`);
+    }
+    const sourceRealPath = await fs.realpath(source);
+    const previousSource = materialized.get(target);
+    if (previousSource) {
+      if (previousSource !== sourceRealPath) {
+        throw new Error(`Conversation PATH fixtures conflict at: ${relativePath}`);
+      }
+      continue;
+    }
+    if (await fs.pathExists(target)) {
+      throw new Error(`Conversation PATH fixture conflicts with materialized subject: ${relativePath}`);
+    }
+    await fs.copy(source, target, { dereference: false, errorOnExist: true, overwrite: false });
+    await makeFixtureExecutable(target);
+    materialized.set(target, sourceRealPath);
+    const stat = await fs.lstat(target);
+    pathEntries.push(stat.isDirectory() ? target : path.dirname(target));
+  }
+  return pathEntries;
 }
 
 async function materializeConversationWorkspaceFiles(
@@ -965,6 +1056,7 @@ async function runConversationOnce(options: {
   processManagement: PluginEvalProcessManagementEvidence;
   forbiddenHostRoots: string[];
   workRoot?: string;
+  environmentFixtures: Array<{ fixtureRoot: string; relativePath: string }>;
 }): Promise<AppServerRunEvidence> {
   assertCodexEvalCanStartWork();
   const temporaryRoot = await createEvalTemporaryRoot(
@@ -988,6 +1080,10 @@ async function runConversationOnce(options: {
   const startedAt = Date.now();
   try {
     await fs.copy(options.sourceProjectRoot, workspaceRoot, { dereference: false });
+    const environmentPathEntries = await materializeConversationEnvironment({
+      workspaceRoot,
+      fixtures: options.environmentFixtures,
+    });
     await materializeConversationWorkspaceFiles(workspaceRoot, options.evalCase.workspaceFiles);
     let allowedSkillRoots: string[] = [];
     if (options.isolation === 'strict') {
@@ -1007,6 +1103,7 @@ async function runConversationOnce(options: {
       codexHome,
       options.codexRuntime,
     );
+    env.PATH = [...environmentPathEntries, env.PATH].filter(Boolean).join(path.delimiter);
     await Promise.all([
       fs.ensureDir(env.HOME!),
       fs.ensureDir(env.TMPDIR!),
@@ -1338,6 +1435,8 @@ export async function runCodexConversationSuite(options: {
   processManagement?: PluginEvalProcessManagementEvidence;
   forbiddenHostRoots?: string[];
   workRoot?: string;
+  environmentPathPrepend?: string[];
+  environmentFixtureRoot?: string;
   onCaseCompleted?: (checkpoint: PluginEvalCaseCheckpoint) => Promise<void>;
   stopOnIncomplete?: boolean;
 }): Promise<PluginEvalSuiteReport> {
@@ -1350,6 +1449,8 @@ export async function runCodexConversationSuite(options: {
   const forbiddenHostRoots = await canonicalForbiddenHostRoots(
     [options.subjectRoot, ...(options.forbiddenHostRoots ?? [])],
   );
+  const fixtureRoot = path.dirname(options.casesPath);
+  const environmentFixtureRoot = options.environmentFixtureRoot ?? fixtureRoot;
   let cases = await readConversationCases(options.casesPath, options.skillName);
   if (options.caseId && options.caseIds) {
     throw new Error('runCodexConversationSuite cannot combine caseId and caseIds.');
@@ -1508,6 +1609,16 @@ export async function runCodexConversationSuite(options: {
         processManagement,
         forbiddenHostRoots,
         workRoot: options.workRoot,
+        environmentFixtures: [
+          ...(options.environmentPathPrepend ?? []).map((relativePath) => ({
+            fixtureRoot: environmentFixtureRoot,
+            relativePath,
+          })),
+          ...evalCase.environmentPathPrepend.map((relativePath) => ({
+            fixtureRoot,
+            relativePath,
+          })),
+        ],
       });
       assertCodexEvalCanStartWork();
       const withoutSkill = await runConversationOnce({
@@ -1525,6 +1636,16 @@ export async function runCodexConversationSuite(options: {
         processManagement,
         forbiddenHostRoots,
         workRoot: options.workRoot,
+        environmentFixtures: [
+          ...(options.environmentPathPrepend ?? []).map((relativePath) => ({
+            fixtureRoot: environmentFixtureRoot,
+            relativePath,
+          })),
+          ...evalCase.environmentPathPrepend.map((relativePath) => ({
+            fixtureRoot,
+            relativePath,
+          })),
+        ],
       });
       runs.push({ run: runIndex + 1, with_skill: withSkill, without_skill: withoutSkill });
     }
@@ -1534,6 +1655,10 @@ export async function runCodexConversationSuite(options: {
       expected_output: evalCase.expectedOutput,
       checks: evalCase.checks,
       workspace_files: Object.keys(evalCase.workspaceFiles),
+      environment_path_prepend: [
+        ...(options.environmentPathPrepend ?? []),
+        ...evalCase.environmentPathPrepend,
+      ],
       runs,
     };
     results.push(caseResult);

@@ -94,6 +94,113 @@ describe('Codex app-server eval driver', () => {
     }
   });
 
+  it('materializes only declared PATH fixtures and makes their files executable', async () => {
+    const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-subject-'));
+    const casesRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-cases-'));
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-report-'));
+    tempDirs.push(subjectRoot, casesRoot, outputRoot);
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'ask-me'));
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'ask-me', 'SKILL.md'),
+      '# Ask Me\n',
+      'utf8',
+    );
+    await fs.writeFile(path.join(subjectRoot, 'app-server'), [
+      "const readline = require('node:readline');",
+      "const fs = require('node:fs');",
+      "const { execFileSync } = require('node:child_process');",
+      'const input = readline.createInterface({ input: process.stdin });',
+      "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
+      "input.on('line', (line) => {",
+      '  const frame = JSON.parse(line);',
+      "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+      "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+      "  else if (frame.method === 'turn/start') {",
+      "    const result = execFileSync('eval-suite-fixture', [], { encoding: 'utf8' }).trim() + ':' + execFileSync('eval-case-fixture', [], { encoding: 'utf8' }).trim() + ':' + (fs.existsSync('fixtures/not-declared') ? 'undeclared-present' : 'undeclared-absent');",
+      "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
+      "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text: result } } });",
+      "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
+      '  }',
+      '});',
+    ].join('\n'), 'utf8');
+    await fs.outputFile(
+      path.join(casesRoot, 'suite-fixtures', 'bin', 'eval-suite-fixture'),
+      '#!/bin/sh\nprintf suite-fixture\n',
+      { mode: 0o644 },
+    );
+    await fs.outputFile(
+      path.join(casesRoot, 'cases', 'case-fixtures', 'bin', 'eval-case-fixture'),
+      '#!/bin/sh\nprintf case-fixture\n',
+      { mode: 0o644 },
+    );
+    await fs.outputFile(
+      path.join(casesRoot, 'fixtures', 'not-declared'),
+      '#!/bin/sh\nprintf undeclared-fixture\n',
+      { mode: 0o644 },
+    );
+    const casesPath = path.join(casesRoot, 'cases', 'cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'ask-me',
+      evals: [behaviorCase('path-fixture', {
+        environment: { pathPrepend: ['case-fixtures/bin'] },
+      })],
+    }, { spaces: 2 });
+    const reportPath = path.join(outputRoot, 'behavior.json');
+
+    const report = await runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'ask-me',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      runs: 1,
+      codexBin: process.execPath,
+      timeoutMs: 10_000,
+      sourceEnv: process.env,
+      reportPath,
+      environmentPathPrepend: ['suite-fixtures/bin'],
+      environmentFixtureRoot: casesRoot,
+    });
+
+    expect(report).toMatchObject({ complete: true, mechanicalPassed: true });
+    const evidence = await fs.readJson(reportPath);
+    expect(evidence.results[0].environment_path_prepend)
+      .toEqual(['suite-fixtures/bin', 'case-fixtures/bin']);
+    expect(evidence.results[0].runs[0].with_skill.finalMessages)
+      .toEqual(['suite-fixture:case-fixture:undeclared-absent']);
+    expect(evidence.results[0].runs[0].without_skill.finalMessages)
+      .toEqual(['suite-fixture:case-fixture:undeclared-absent']);
+    await expect(fs.stat(path.join(casesRoot, 'fixtures', 'not-declared')))
+      .resolves.toMatchObject({ mode: expect.any(Number) });
+    expect((await fs.stat(path.join(casesRoot, 'fixtures', 'not-declared'))).mode & 0o111).toBe(0);
+
+    await fs.symlink(
+      path.join(casesRoot, 'fixtures', 'not-declared'),
+      path.join(casesRoot, 'suite-fixtures', 'bin', 'linked-fixture'),
+    );
+    const unsafeReport = await runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'ask-me',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      runs: 1,
+      codexBin: process.execPath,
+      timeoutMs: 10_000,
+      sourceEnv: process.env,
+      reportPath,
+      environmentPathPrepend: ['suite-fixtures/bin'],
+      environmentFixtureRoot: casesRoot,
+    });
+    expect(unsafeReport).toMatchObject({
+      complete: false,
+      mechanicalPassed: false,
+      diagnostics: expect.arrayContaining([
+        expect.stringContaining('must not contain symbolic links'),
+      ]),
+    });
+  });
+
   it('answers dynamic request_user_input ids and preserves baseline evidence', async () => {
     const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-subject-'));
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-report-'));

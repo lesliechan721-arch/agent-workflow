@@ -882,6 +882,7 @@ async function readSuiteCaseIds(options: {
     await fs.readJson(casesPath),
     options.manifestSkill,
     `conversation cases for suite "${options.suite.id}"`,
+    path.dirname(casesPath),
   ).map((entry) => String(entry.id));
 }
 
@@ -1021,6 +1022,7 @@ async function preparePluginEval(options: {
         await fs.readJson(casesPath),
         manifest.skill,
         `conversation cases for suite "${suite.id}"`,
+        path.dirname(casesPath),
       );
       if (!cases.some((entry) => entry.id === options.parsed.caseId)) {
         throw new Error(`Unknown conversation case: ${options.parsed.caseId}`);
@@ -1218,6 +1220,7 @@ function checkpointEvaluation(
 async function runOnePlugin(options: {
   sourcePlugin: PluginMeta;
   sourcePlugins: PluginMeta[];
+  skillRoot: string;
   manifest: PluginEvalManifest;
   parsed: ParsedArgs;
   outputRoot: string;
@@ -1360,6 +1363,8 @@ async function runOnePlugin(options: {
                 codexRuntime: options.codexRuntime,
                 timeoutMs: suite.perRunTimeoutMs,
                 isolation: suite.isolation,
+                environmentPathPrepend: suite.environment?.pathPrepend,
+                environmentFixtureRoot: path.join(options.skillRoot, 'evals'),
                 sourceEnv: options.modelEnv,
                 reportPath,
                 processManagement: options.processManagement,
@@ -1876,6 +1881,7 @@ export async function runPluginEvals(
     const bundle = await runOnePlugin({
       sourcePlugin: prepared.sourcePlugin,
       sourcePlugins: prepared.sourcePlugins,
+      skillRoot: prepared.skillRoot,
       manifest: prepared.manifest,
       parsed,
       outputRoot: layout.rawRoot,

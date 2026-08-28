@@ -210,6 +210,8 @@ aw install aw-catalog-development -p both
 
 使用 `author-aw-catalog` 建立或维护 Workspace；单个 canonical Plugin Source 交给 `author-aw-plugin`。删除由 Catalog Author 确认 Workspace、插件名、inventory 和反向依赖后交给 Plugin Author 的公开 `aw plugin remove` 分支；receipt 返回后 Catalog Author 验证剩余 inventory，空 inventory 不验证已删除对象。删除不会自动 publish。Workspace、聚合验证、preflight、发布和失败恢复的唯一作者流程见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
 
+当前作者合同固定为 Plugin Manifest v2、Catalog snapshot schema 5 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。`aw catalog context --json` 提供 Workspace 和 publication 默认推断，静态 `aw catalog status --json` 使用 schema v2。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；transport、complete validation 和安装 dependency closure 各自保持独立验证边界。
+
 ### 本仓库维护与官方发版
 
 本官方仓库本身也是普通 Catalog Workspace，使用与第三方相同的 marker、metadata、inventory、Core validator、preflight、publisher 和 attempt 合同。以下 `pnpm` 命令只面向本 monorepo 维护者，用于编排 CLI/Core/npm/Product Release；它们不是第二套 Catalog contract：

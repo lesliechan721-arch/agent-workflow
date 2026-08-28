@@ -99,6 +99,23 @@ describe('build smoke', () => {
       path.join(tempRepo, 'packages', 'cli', 'dist'),
       'dir',
     );
+    await fs.writeJson(path.join(tempRepo, '.aw-workspace.json'), {
+      schemaVersion: 1,
+      kind: 'aw-catalog-workspace',
+      workspaceIdentity: 'version-gate-smoke-fixture',
+    }, { spaces: 2 });
+    await fs.writeJson(path.join(tempRepo, 'plugins', 'marketplace-source.json'), {
+      owner: {
+        name: 'AW Test',
+        url: 'https://example.invalid/aw-test',
+      },
+      interface: {
+        displayName: 'Version Gate Smoke',
+      },
+      catalog: {
+        version: '0.1.0',
+      },
+    }, { spaces: 2 });
     await fs.writeJson(manifestPath, {
       schemaVersion: 2,
       name: 'version-gate-smoke',
@@ -112,11 +129,19 @@ describe('build smoke', () => {
           authentication: 'ON_INSTALL',
         },
       },
+      requires: {
+        aw: {
+          capabilities: ['aw.plugin-manifest.v2'],
+        },
+      },
     }, { spaces: 2 });
     await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Version Gate Smoke\n', 'utf8');
 
     await execFileAsync('git', ['init'], { cwd: tempRepo, env: process.env });
-    await execFileAsync('git', ['add', 'plugins'], { cwd: tempRepo, env: process.env });
+    await execFileAsync('git', ['add', '.aw-workspace.json', 'plugins'], {
+      cwd: tempRepo,
+      env: process.env,
+    });
     await execFileAsync('git', [
       '-c',
       'user.name=AW Test',
