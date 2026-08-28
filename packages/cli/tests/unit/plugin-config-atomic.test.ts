@@ -12,19 +12,11 @@ import {
   readPluginConfigStore,
   resetPluginConfigStore,
   resetPluginConfigStores,
-  resolveConfigFileLockPath,
   resolvePluginConfigStorePath,
   setAtomicConfigAfterRenameHookForTests,
   setAtomicConfigBeforeRenameHookForTests,
-  setConfigFileLockBeforeReleaseHookForTests,
-  withConfigFileLock,
-  withPluginConfigTransactionLease,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
-import {
-  resolveActiveMarketplaceRuntimeCoordinationRoot,
-  withActiveMarketplaceRuntimeLease,
-} from '../../src/utils/active-marketplace-runtime-lock.js';
 
 const tempDirs: string[] = [];
 
@@ -45,13 +37,12 @@ async function makeFixture(): Promise<{
 afterEach(async () => {
   setAtomicConfigAfterRenameHookForTests(undefined);
   setAtomicConfigBeforeRenameHookForTests(undefined);
-  setConfigFileLockBeforeReleaseHookForTests(undefined);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
 
 describe('plugin config atomic writes', () => {
-  it('reads and lists user config without creating runtime coordination state', async () => {
+  it('reads and lists user config without creating config state', async () => {
     const fixture = await makeFixture();
     const options = {
       pluginName: 'read-only-test',
@@ -59,8 +50,6 @@ describe('plugin config atomic writes', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     };
-    const coordinationRoot = resolveActiveMarketplaceRuntimeCoordinationRoot(fixture.env);
-
     await expect(readPluginConfigStore(options)).resolves.toMatchObject({
       exists: false,
       values: {},
@@ -69,7 +58,7 @@ describe('plugin config atomic writes', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     })).resolves.toEqual([]);
-    await expect(fs.pathExists(coordinationRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(fixture.env.AW_HOME!, 'plugin-config'))).resolves.toBe(false);
   });
 
   it.each([
@@ -168,7 +157,7 @@ describe('plugin config atomic writes', () => {
     await expect(readNamespacedPluginConfigStoreIdentity(options)).rejects.toThrow('regular file');
   });
 
-  it('keeps the old store and removes its temp and lock when atomic commit fails', async () => {
+  it('keeps the old store and removes its temp when atomic commit fails', async () => {
     const fixture = await makeFixture();
     const options = {
       pluginName: 'atomic-test',
@@ -186,7 +175,6 @@ describe('plugin config atomic writes', () => {
       .rejects.toThrow('injected rename failure');
 
     await expect(fs.readJson(filePath)).resolves.toEqual({ old: true });
-    expect(await fs.pathExists(resolveConfigFileLockPath(filePath))).toBe(false);
     expect((await fs.readdir(path.dirname(filePath))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
   });
@@ -286,142 +274,8 @@ describe('plugin config atomic writes', () => {
       .resolves.toMatchObject({ path: filePath });
     rejectPostCommitIo = false;
     await expect(fs.readJson(filePath)).resolves.toEqual({ committed: true });
-    expect(await fs.pathExists(resolveConfigFileLockPath(filePath))).toBe(false);
     expect((await fs.readdir(path.dirname(filePath))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
-  });
-
-  it('retries a post-commit lock release failure without rejecting the committed write', async () => {
-    const fixture = await makeFixture();
-    const options = {
-      pluginName: 'release-retry-test',
-      scope: 'user' as const,
-      cwd: fixture.cwd,
-      env: fixture.env,
-    };
-    const attempts: number[] = [];
-    setConfigFileLockBeforeReleaseHookForTests(async (_lockPath, attempt) => {
-      attempts.push(attempt);
-      if (attempt === 1) {
-        throw Object.assign(new Error('injected release failure'), { code: 'EACCES' });
-      }
-    });
-
-    await expect(writePluginConfigStore({ ...options, values: { committed: true } }))
-      .resolves.toMatchObject({ pluginName: options.pluginName });
-    expect(attempts).toEqual([1, 2]);
-    const filePath = resolvePluginConfigStorePath(options);
-    await expect(fs.readJson(filePath)).resolves.toEqual({ committed: true });
-    expect(await fs.pathExists(resolveConfigFileLockPath(filePath))).toBe(false);
-
-    setConfigFileLockBeforeReleaseHookForTests(undefined);
-    await expect(writePluginConfigStore({ ...options, values: { next: true } }))
-      .resolves.toMatchObject({ pluginName: options.pluginName });
-    await expect(fs.readJson(filePath)).resolves.toEqual({ next: true });
-    expect(await fs.pathExists(resolveConfigFileLockPath(filePath))).toBe(false);
-  });
-
-  it('keeps an action failure primary when lock release also fails', async () => {
-    const fixture = await makeFixture();
-    const filePath = path.join(fixture.root, 'failed-action.json');
-    const primary = new Error('primary action failure');
-    setConfigFileLockBeforeReleaseHookForTests(async () => {
-      throw Object.assign(new Error('secondary release failure'), { code: 'EACCES' });
-    });
-
-    const error = await withConfigFileLock({
-      filePath,
-      allowedRoot: fixture.root,
-      action: async () => { throw primary; },
-    }).catch((caught: unknown) => caught);
-
-    expect(error).toBe(primary);
-    expect(await fs.pathExists(filePath)).toBe(false);
-    setConfigFileLockBeforeReleaseHookForTests(undefined);
-    await fs.remove(resolveConfigFileLockPath(filePath));
-  });
-
-  it('rejects a fulfilled config preflight on permanent release failure without leaving a self-lock', async () => {
-    const fixture = await makeFixture();
-    const filePath = path.join(fixture.root, 'preflight.json');
-    setConfigFileLockBeforeReleaseHookForTests(async () => {
-      throw Object.assign(new Error('permanent preflight release failure'), { code: 'EPERM' });
-    });
-
-    await expect(withConfigFileLock({
-      filePath,
-      allowedRoot: fixture.root,
-      action: async () => 'read-only',
-    })).rejects.toThrow('permanent preflight release failure');
-
-    setConfigFileLockBeforeReleaseHookForTests(undefined);
-    await expect(withConfigFileLock({
-      filePath,
-      allowedRoot: fixture.root,
-      action: async () => 'next-read',
-    })).resolves.toBe('next-read');
-    await expect(fs.pathExists(resolveConfigFileLockPath(filePath))).resolves.toBe(false);
-  });
-
-  it('keeps an inner committed patch successful when the outer transaction release fails', async () => {
-    const fixture = await makeFixture();
-    const options = {
-      pluginName: 'nested-commit-test',
-      scope: 'user' as const,
-      cwd: fixture.cwd,
-      env: fixture.env,
-    };
-    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
-    const privateReleasePath = path.join(fixture.root, 'private', 'outer.lock');
-    setConfigFileLockBeforeReleaseHookForTests(async (lockPath) => {
-      if (lockPath.includes('.transaction.')) {
-        throw Object.assign(new Error(`${privateReleasePath}: outer release failed`), { code: 'EPERM' });
-      }
-    });
-
-    await expect(withPluginConfigTransactionLease({
-      ...options,
-      action: () => patchPluginConfigStore({ ...options, updates: { committed: true } }),
-    })).resolves.toMatchObject({ updatedKeys: ['committed'] });
-    await expect(readPluginConfigStore(options)).resolves.toMatchObject({
-      values: { committed: true },
-    });
-    expect(warning).toHaveBeenCalledWith(
-      expect.stringContaining('committed result remains successful'),
-      expect.objectContaining({ code: 'AW_CONFIG_LOCK_RELEASE_FAILED' }),
-    );
-    expect(JSON.stringify(warning.mock.calls)).not.toContain(privateReleasePath);
-  });
-
-  it('returns a committed reset receipt when the outer transaction release fails', async () => {
-    const fixture = await makeFixture();
-    const options = {
-      pluginName: 'nested-reset-commit-test',
-      scope: 'user' as const,
-      cwd: fixture.cwd,
-      env: fixture.env,
-    };
-    await writePluginConfigStore({ ...options, values: { remove: true } });
-    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
-    setConfigFileLockBeforeReleaseHookForTests(async (lockPath) => {
-      if (lockPath.includes('.transaction.')) {
-        throw Object.assign(new Error('outer reset release failed'), { code: 'EPERM' });
-      }
-    });
-
-    await expect(withPluginConfigTransactionLease({
-      ...options,
-      action: () => resetPluginConfigStore(options),
-    })).resolves.toMatchObject({
-      pluginName: options.pluginName,
-      existed: true,
-      deleted: true,
-    });
-    await expect(readPluginConfigStore(options)).resolves.toMatchObject({ exists: false });
-    expect(warning).toHaveBeenCalledWith(
-      expect.stringContaining('committed result remains successful'),
-      expect.objectContaining({ code: 'AW_CONFIG_LOCK_RELEASE_FAILED' }),
-    );
   });
 
   it('resets through the atomic file boundary and rejects directory, symlink, and foreign stores', async () => {
@@ -494,59 +348,6 @@ describe('plugin config atomic writes', () => {
     await expect(fs.pathExists(localPath)).resolves.toBe(true);
   });
 
-  it('serializes concurrent patches so distinct keys are not lost', async () => {
-    const fixture = await makeFixture();
-    const options = {
-      pluginName: 'concurrent-test',
-      scope: 'user' as const,
-      cwd: fixture.cwd,
-      env: fixture.env,
-    };
-
-    await Promise.all(Array.from({ length: 12 }, (_, index) =>
-      patchPluginConfigStore({
-        ...options,
-        updates: { [`key${index}`]: index },
-      })));
-
-    const store = await readPluginConfigStore(options);
-    expect(store.values).toEqual(Object.fromEntries(
-      Array.from({ length: 12 }, (_, index) => [`key${index}`, index]),
-    ));
-    expect(await fs.pathExists(resolveConfigFileLockPath(store.path))).toBe(false);
-    expect((await fs.readdir(path.dirname(store.path))).filter((entry) => entry.includes('.tmp-')))
-      .toEqual([]);
-  });
-
-  it.each(['shared', 'local'] as const)('holds the shared runtime lease while creating a namespaced project %s store', async (projectLayer) => {
-    const fixture = await makeFixture();
-    let releaseRename!: () => void;
-    const renameGate = new Promise<void>((resolve) => { releaseRename = resolve; });
-    let enteredRename!: () => void;
-    const renameEntered = new Promise<void>((resolve) => { enteredRename = resolve; });
-    setAtomicConfigBeforeRenameHookForTests(async (filePath) => {
-      if (!filePath.includes('plugin-config')) return;
-      enteredRename();
-      await renameGate;
-    });
-    const write = writePluginConfigStore({
-      sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
-      scope: 'project', projectLayer, cwd: fixture.cwd, env: fixture.env, values: { mode: 'safe' },
-    });
-    await renameEntered;
-    let competingEntered = false;
-    const competing = withActiveMarketplaceRuntimeLease(fixture.env, async () => {
-      competingEntered = true;
-    });
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(competingEntered).toBe(false);
-
-    releaseRename();
-    await write;
-    await competing;
-    expect(competingEntered).toBe(true);
-  });
-
   it('rejects target and parent symlinks without changing external files', async () => {
     const fixture = await makeFixture();
     const options = {
@@ -576,7 +377,6 @@ describe('plugin config atomic writes', () => {
       .rejects.toThrow('symbolic link');
     await expect(fs.readFile(path.join(externalParent, 'config.json'), 'utf8'))
       .resolves.toBe('{"parent":true}\n');
-    expect(await fs.pathExists(resolveConfigFileLockPath(filePath))).toBe(false);
   });
 
   it('revalidates a target symlink replacement immediately before rename', async () => {
@@ -601,7 +401,6 @@ describe('plugin config atomic writes', () => {
     await expect(fs.readFile(externalTarget, 'utf8')).resolves.toBe('{"external":true}\n');
     expect((await fs.readdir(path.dirname(filePath))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
-    expect(await fs.pathExists(resolveConfigFileLockPath(filePath))).toBe(false);
   });
 
   it('revalidates parent identity immediately before rename', async () => {
@@ -634,6 +433,5 @@ describe('plugin config atomic writes', () => {
       .rejects.toThrow('symbolic link');
     await expect(fs.readJson(filePath)).resolves.toEqual({ old: true });
     expect((await fs.readdir(parentPath)).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
-    expect(await fs.pathExists(resolveConfigFileLockPath(filePath))).toBe(false);
   });
 });

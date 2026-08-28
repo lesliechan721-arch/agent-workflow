@@ -2,7 +2,6 @@ import type { RebuildActionName } from '../types.js';
 import type { CommandEvent, CommandNotice, RebuildActionEvent } from './model.js';
 
 const ACTION_LABELS: Record<RebuildActionName, string> = {
-  'operation.lock': '获取操作锁',
   'preflight.inspect': '检查当前组件',
   'stale.cleanup': '清理过期组件',
   'native.write': '写入平台插件',
@@ -20,8 +19,6 @@ const ACTION_LABELS: Record<RebuildActionName, string> = {
   'cleanup.owned': '清理 AW 组件',
   'active.read': '读取生命周期快照',
   'active.remove': '删除生命周期快照',
-  'active.release': '释放生命周期快照',
-  'operation.release': '释放操作锁',
 };
 
 const SAFE_PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;

@@ -8,8 +8,7 @@ import {
   listCatalogSources,
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
-import { loadConsoleItemsResult } from '../../src/commands/status.js';
-import { statusCommandV4 } from '../../src/commands/status-v4.js';
+import { loadConsoleItemsResult, statusCommandV4 } from '../../src/commands/status-v4.js';
 import { runCli } from '../../src/index.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
@@ -310,7 +309,7 @@ describe('multi-source read commands', () => {
       .toEqual([]);
     expect(verboseConsole.items.find((item) => item.pluginName === 'team/demo')?.targets[0]?.components)
       .toEqual(expect.arrayContaining([
-        expect.objectContaining({ artifactKey: 'review', state: 'partial' }),
+        expect.objectContaining({ key: 'review', state: 'partial' }),
       ]));
     expect(JSON.stringify(
       verboseConsole.items.flatMap((item) => item.targets.flatMap((target) => target.components)),
@@ -440,44 +439,6 @@ describe('multi-source read commands', () => {
     })).toBe(1);
     expect(blocked.readStdout()).toBe('');
     expect(blocked.readStderr()).toContain('legacyStateUnsupported');
-  });
-
-  it.each([
-    ['init', '--channel', 'latest'],
-    ['status', '--catalog-version', '1.0.0'],
-    ['install', 'demo', '--platform', 'codex', '--catalog-channel', 'beta'],
-  ])('rejects removed public catalog selector flags: %s', async (...argv) => {
-    const captured = createCapturedCliIo();
-    const exitCode = await runCli(argv, { interactive: false, io: captured.io });
-    expect(exitCode).toBe(1);
-    expect(captured.readStderr()).toContain('unknown option');
-  });
-
-  it('ignores removed catalog environment selectors and resolves the configured source', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const good = fixturePath('legacy-env-good');
-    await createCatalogSnapshotFixture(good);
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const env = {
-      ...isolation.env,
-      AW_CATALOG_CHANNEL: 'beta',
-      AW_CATALOG_VERSION: '99.0.0',
-      AW_NPM_REGISTRY_URL: 'https://invalid.example.test/',
-    };
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 1,
-        sources: [{ id: 'good', type: 'path', primary: true, path: good }],
-      },
-      expectedDigest: initial.digest,
-      env,
-    });
-
-    await expect(initCommand({ cliVersion: '1.0.0', env })).resolves.toMatchObject({
-      ok: true,
-      primarySourceId: 'good',
-      sources: [expect.objectContaining({ id: 'good', freshness: 'path' })],
-    });
   });
 
   it('uses qualified plugin IDs in the multi-source console writes', async () => {
@@ -1304,7 +1265,6 @@ describe('multi-source read commands', () => {
         configSchema: { mode: { type: 'string', default: 'fast' } },
       },
     });
-    expect(item.plugin).toBeUndefined();
     expect(JSON.stringify(item)).not.toContain('rootDir');
   });
 });

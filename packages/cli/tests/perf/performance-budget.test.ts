@@ -9,8 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createRebuildIntegration } from '../../src/commands/rebuild-integration.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
-import { loadConsoleItemsResult } from '../../src/commands/status.js';
-import { statusCommandV4 } from '../../src/commands/status-v4.js';
+import { loadConsoleItemsResult, statusCommandV4 } from '../../src/commands/status-v4.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';

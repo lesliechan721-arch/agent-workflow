@@ -1153,7 +1153,7 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     const versionCheck = await execFileAsync('node', [
-      authoringScriptPath('check-plugin-versions.mjs'),
+      authoringScriptPath('plugin-status.mjs'),
       '--base',
       'HEAD',
       'demo',
@@ -1168,7 +1168,6 @@ describe('authoring tools', () => {
       currentVersion: '0.1.1',
       productionChanged: true,
     });
-    expect(versionCheck.stderr).toContain('use `aw plugin status`');
   });
 
   externalPluginRootTest('rejects add-skill path redirection without changing external bytes', async () => {

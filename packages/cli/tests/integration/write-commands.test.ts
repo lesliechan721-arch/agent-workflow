@@ -2586,7 +2586,6 @@ describe('five namespaced write commands', () => {
         ],
       });
     }
-    expect(JSON.stringify(concurrentResults[0])).not.toContain('operation.lock timeout');
     if (concurrentResults[1].status === 'rejected') {
       expect(concurrentResults[1].reason).toMatchObject({ code: 'operationReviewStale' });
     } else {

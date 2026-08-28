@@ -1,11 +1,13 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 
+import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
 import {
-  releaseActiveMarketplaceCoordinationLease,
-  resolveActiveMarketplaceRuntimeCoordinationRoot,
-} from './active-marketplace-runtime-lock.js';
-import { acquireProcessLock } from './process-lock.js';
-import { ensureRegularDirectoryPath } from './state-paths.js';
+  canonicalizePathThroughExistingAncestorSync,
+  ensureRegularDirectoryPath,
+  resolveAwHome,
+} from './state-paths.js';
+import { assertTestWritablePath } from './test-path-fence.js';
 
 const AW_HOME_MUTATION_LOCK_TIMEOUT_MS = 600_000;
 const tokenRoots = new WeakMap<object, string>();
@@ -15,6 +17,44 @@ declare const awHomeMutationTokenBrand: unique symbol;
 export type AwHomeMutationToken = Readonly<{
   [awHomeMutationTokenBrand]: true;
 }>;
+
+function resolveAwHomeMutationCoordinationRoot(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const awHome = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
+  const identity = crypto.createHash('sha256')
+    .update(awHome)
+    .digest('hex')
+    .slice(0, 16);
+  return assertTestWritablePath(
+    path.join(
+      path.dirname(awHome),
+      '.aw-local-marketplace-staging',
+      `.runtime-state-${identity}`,
+    ),
+    'AW_HOME mutation coordination root',
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或登记 AW_HOME 同盘 sibling lock 路径。',
+  );
+}
+
+async function releaseMutationLease(lease: ProcessLockLease): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await lease.release();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!new Set(['EACCES', 'EBUSY', 'EINTR', 'EIO', 'ENOTEMPTY', 'EPERM']).has(
+        (error as NodeJS.ErrnoException).code ?? '',
+      )) {
+        throw error;
+      }
+    }
+  }
+  await lease.release().catch(() => undefined);
+  throw lastError;
+}
 
 function releaseWarning(): void {
   try {
@@ -32,7 +72,7 @@ export async function withAwHomeMutationLock<T>(options: {
   token?: AwHomeMutationToken;
   action: (token: AwHomeMutationToken) => Promise<T>;
 }): Promise<T> {
-  const coordinationRoot = resolveActiveMarketplaceRuntimeCoordinationRoot(options.env);
+  const coordinationRoot = resolveAwHomeMutationCoordinationRoot(options.env);
   if (options.token !== undefined) {
     const tokenRoot = tokenRoots.get(options.token);
     if (tokenRoot === undefined) {
@@ -63,7 +103,7 @@ export async function withAwHomeMutationLock<T>(options: {
   }
   tokenRoots.delete(token);
   try {
-    await releaseActiveMarketplaceCoordinationLease(lease);
+    await releaseMutationLease(lease);
   } catch {
     releaseWarning();
   }

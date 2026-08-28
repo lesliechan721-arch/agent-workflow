@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { Scope } from '../types.js';
 import {
   atomicReplaceConfigFile,
-  withConfigFileLock,
+  withConfigFileMutation,
 } from '../utils/plugin-config.js';
 import { readJsonFileIfExists } from '../utils/json.js';
 
@@ -132,7 +132,7 @@ export async function writeClaudeSettings(
   settings: ClaudeSettings,
 ): Promise<void> {
   const baseline = claudeSettingsBaselines.get(settings);
-  await withConfigFileLock({
+  await withConfigFileMutation({
     filePath: settingsPath,
     allowedRoot: path.dirname(settingsPath),
     action: async () => {
