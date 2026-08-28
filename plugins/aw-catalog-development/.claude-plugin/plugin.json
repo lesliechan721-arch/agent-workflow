@@ -1,10 +1,10 @@
 {
   "name": "aw-catalog-development",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "创建、维护和只读评审 AW Catalog Workspace，并通过显式授权发布 Catalog。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.1.0"
+      "minVersion": "0.0.0"
     }
   },
   "interface": {

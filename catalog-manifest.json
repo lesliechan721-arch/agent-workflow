@@ -1,10 +1,10 @@
 {
   "schemaVersion": 4,
-  "catalogVersion": "0.1.0-beta.2",
+  "catalogVersion": "0.1.0-beta.3",
   "channel": "beta",
   "compatibility": {
     "aw": {
-      "minVersion": "0.1.0"
+      "minVersion": "0.0.0"
     }
   },
   "marketplace": {
@@ -19,9 +19,9 @@
   "release": {
     "state": "published",
     "targetVersion": "0.1.0",
-    "planId": "sha256:bdd707abaab537f483f6637b5eb676bf1a194ced0aeafd01cbe3a66eb10acad3",
-    "sourceHead": "6135e2ff52c3380766953c6d60895c07ab3d319c",
-    "contentDigest": "sha256:bdd707abaab537f483f6637b5eb676bf1a194ced0aeafd01cbe3a66eb10acad3"
+    "planId": "sha256:347580ca5867b518cd1bc1455fabe680661531be44f74d98a6e137c8e0c9430e",
+    "sourceHead": "fe5101b89a4a6d55710edcd4e282bfe5f92962d3",
+    "contentDigest": "sha256:347580ca5867b518cd1bc1455fabe680661531be44f74d98a6e137c8e0c9430e"
   },
   "entries": [
     {
@@ -134,15 +134,15 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "compatibility": {
         "aw": {
-          "minVersion": "0.1.0"
+          "minVersion": "0.0.0"
         }
       },
-      "artifactDigest": "sha256:05f9f3d18145019439efabec999c9a787e6022cfef9f4e1f2c3dfec06de44391",
-      "manifestDigest": "sha256:89c220917895eb5bacd20869e669eaa8aa24d0e40793b385b05cbc0f01bd3248",
-      "contentDigest": "sha256:39ff1d6d1dcd4eca5410b8d5f5c4998f60f7d50c6bc456c9c76fcc395ac95637"
+      "artifactDigest": "sha256:fa326c242b5fd9b6c177ce32e3f3ed7c94c1861d80170a8cd943c8446ab6977f",
+      "manifestDigest": "sha256:b4c23479c836bad5030ac900b55a5f033f26bcb1bc4ca9087dbdc74efc20196f",
+      "contentDigest": "sha256:047d8e80b7fa3d7ae09110c26e68947af09e829039fc6a9aeab2c4ffca8b13d8"
     },
     {
       "name": "aw-plugin-development",
@@ -165,15 +165,15 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "compatibility": {
         "aw": {
-          "minVersion": "0.1.0"
+          "minVersion": "0.0.0"
         }
       },
-      "artifactDigest": "sha256:748d20715d63b2193cf1c7dbfe231aa53591c8912822dec030d325af2c35d230",
-      "manifestDigest": "sha256:7d7220da42f59436f470ba417630cd23df4a34acd8e6d52d40d21591cb97c95b",
-      "contentDigest": "sha256:fdcd56cc0f15f5d452a25caf40fbd215af78eaee8a06fb933faf14b655e2f9a7"
+      "artifactDigest": "sha256:2cda2d4fe70daedfdd0cbf80e0410aa507e27cffe81fda89706473627d9229db",
+      "manifestDigest": "sha256:3c3f9b57d5dbb040881471fa1dc8111eb9ffc948e2bde19550b979bc4e729349",
+      "contentDigest": "sha256:9fb97a41819580705012483a3aef2815f9acc23d0ba101a8a053561112ef1646"
     },
     {
       "name": "aw-skill-eval-runner",

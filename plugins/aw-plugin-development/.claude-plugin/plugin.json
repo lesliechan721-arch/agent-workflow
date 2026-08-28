@@ -1,10 +1,10 @@
 {
   "name": "aw-plugin-development",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "创建或维护 AW 插件，评审单个 AW 插件，并评审有界的跨 AW 插件工作流。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.1.0"
+      "minVersion": "0.0.0"
     }
   },
   "interface": {
