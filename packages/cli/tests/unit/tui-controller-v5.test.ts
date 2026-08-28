@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { StatusV4Payload, StatusV4PluginSummary } from '../../src/commands/status-v4.js';
+import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/status-v5.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
@@ -22,7 +22,7 @@ import { TuiRouter } from '../../src/tui/router.js';
 function source(
   id: string,
   options: { primary?: boolean; freshness?: 'remote' | 'cache' | 'path'; error?: string; type?: 'git' | 'path' } = {},
-): StatusV4Payload['catalog']['sources'][number] {
+): StatusV5Payload['catalog']['sources'][number] {
   return {
     id,
     identity: `identity:${id}`,
@@ -35,12 +35,12 @@ function source(
 }
 
 function status(options: {
-  sources?: StatusV4Payload['catalog']['sources'];
-  targets?: StatusV4Payload['targets'];
-  errors?: StatusV4Payload['errors'];
-} = {}): StatusV4Payload {
+  sources?: StatusV5Payload['catalog']['sources'];
+  targets?: StatusV5Payload['targets'];
+  errors?: StatusV5Payload['errors'];
+} = {}): StatusV5Payload {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     catalog: {
       primarySourceId: 'official',
       configDigest: 'sha256:config',
@@ -60,7 +60,8 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-}): StatusV4Payload['targets'][number] {
+  errors?: StatusV5Payload['targets'][number]['errors'];
+}): StatusV5Payload['targets'][number] {
   const pluginName = options.pluginName ?? 'demo';
   const sourceId = options.sourceId ?? 'official';
   return {
@@ -74,11 +75,12 @@ function target(options: {
     cwd: '/workspace',
     state: options.state,
     components: [],
-    errors: options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure' }] : [],
+    errors: options.errors
+      ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure' }] : []),
   };
 }
 
-function summaries(...entries: Array<[string, string]>): StatusV4PluginSummary[] {
+function summaries(...entries: Array<[string, string]>): StatusV5PluginSummary[] {
   return entries.map(([sourceId, pluginName]) => ({
     pluginName,
     pluginId: `${sourceId}/${pluginName}`,
@@ -280,7 +282,10 @@ describe('TUI v4 router and ViewModel', () => {
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue({
         payload: status({ targets: [
-          target({ platform: 'codex', scope: 'user', state: 'absent' }),
+          target({
+            platform: 'codex', scope: 'user', state: 'absent',
+            errors: [{ code: 'artifactCollision', message: 'safe collision' }],
+          }),
           target({ platform: 'codex', scope: 'project', state: 'absent' }),
           target({ platform: 'claude', scope: 'project', state: 'absent' }),
         ] }),
@@ -293,7 +298,7 @@ describe('TUI v4 router and ViewModel', () => {
     await controller.load();
 
     expect(controller.listInstallTargets('official/demo', 'user')).toEqual([
-      { platform: 'codex', compatible: true },
+      { platform: 'codex', compatible: false, disabled: '存在输出冲突；请先移除或迁移占用内容' },
       { platform: 'claude', compatible: false, disabled: '不支持所选位置' },
     ]);
     expect(controller.listInstallTargets('official/demo', 'project')).toEqual([
@@ -678,6 +683,21 @@ describe('TUI v4 router and ViewModel', () => {
       status: status({
         targets: [
           target({ pluginName: 'partial', scope: 'user', state: 'partial' }),
+          target({
+            pluginName: 'collision',
+            scope: 'user',
+            state: 'absent',
+            errors: [{
+              code: 'artifactCollision',
+              message: 'safe collision',
+              collision: {
+                reason: 'unownedContent',
+                artifactKind: 'skill-directory',
+                artifactKey: 'review',
+                expectedOwner: 'official/collision',
+              },
+            }],
+          }),
           target({ pluginName: 'missing', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
           target({ pluginName: 'changed', scope: 'user', state: 'error', errorCode: 'sourceChanged' }),
           target({ pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable' }),
@@ -700,6 +720,7 @@ describe('TUI v4 router and ViewModel', () => {
 
     expect(Object.fromEntries(view.issues.map((issue) => [issue.issueId, issue.category]))).toMatchObject({
       'target:official/partial:codex:user:partial': 'incompleteInstallation',
+      'target:official/collision:codex:user:absent': 'artifactCollision',
       'target:official/missing:codex:user:error': 'sourceMissing',
       'target:official/changed:codex:user:error': 'sourceIdentityChanged',
       'config:official/required:required': 'requiredConfigMissing',
@@ -707,6 +728,13 @@ describe('TUI v4 router and ViewModel', () => {
       'source:official:cache': 'sourceDegraded',
     });
     expect(JSON.stringify(view.issues)).not.toContain('arbitrary text');
+    const collision = view.issues.find((issue) => issue.category === 'artifactCollision');
+    expect(collision).toMatchObject({
+      title: expect.stringContaining('输出冲突'),
+      explanation: expect.stringContaining('不会覆盖或删除'),
+      actions: [{ id: 'viewTechnical' }, { id: 'retryLater' }],
+      technicalDetails: [{ code: 'artifactCollision', message: '目标包含没有 AW owner 标记的内容。' }],
+    });
     expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.actions.map((action) => action.id))
       .toContain('continueWithCache');
     expect(view.issues.filter((issue) => issue.sourceId === 'official'

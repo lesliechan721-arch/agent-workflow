@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createRebuildIntegration } from '../../src/commands/rebuild-integration.js';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { loadConsoleItemsResult } from '../../src/commands/status.js';
-import { statusCommandV4 } from '../../src/commands/status-v4.js';
+import { statusCommandV5 } from '../../src/commands/status-v5.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
@@ -229,7 +229,7 @@ describe('multi-source performance budgets', () => {
 
   it('keeps warm multi-source status and console loading within budget', async () => {
     const durations = await sample(async () => {
-      const result = await statusCommandV4({
+      const result = await statusCommandV5({
         cwd: root, env, cliVersion: '1.0.0', json: true,
       });
       const consoleResult = await loadConsoleItemsResult({ cwd: root }, { env });

@@ -450,7 +450,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(1);
     expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       targets: expect.arrayContaining([
         expect.objectContaining({
           pluginId: 'team/demo',

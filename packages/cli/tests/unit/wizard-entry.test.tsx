@@ -20,7 +20,7 @@ vi.mock('../../src/commands/write-commands.js', async () => ({
 }));
 
 describe('write command runtime entry', () => {
-  it('uses the status v4 plugin summary for namespaced config candidates', () => {
+  it('uses the status v5 plugin summary for namespaced config candidates', () => {
     expect(toWizardCandidates([{
       pluginName: 'team/demo',
       pluginSummary: {

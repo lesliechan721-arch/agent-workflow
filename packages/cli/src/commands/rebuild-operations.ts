@@ -542,7 +542,7 @@ function collisionMessage(inspection: OwnershipInspection): string | null {
     return inspection.errors.map((error) => `${error.label}: ${error.message}`).join('; ');
   }
   const collision = inspection.components.find((component) => (
-    component.state === 'partial' || component.state === 'error'
+    component.state === 'partial' || component.state === 'foreign' || component.state === 'error'
   ));
   if (collision) {
     return collision.diagnostic ?? 'Owned component preflight failed.';
@@ -568,7 +568,9 @@ function recordInspectionResiduals(
   pushUnique(
     accumulator.residual,
     inspection.components
-      .filter((component) => component.state === 'partial' || component.state === 'error')
+      .filter((component) => (
+        component.state === 'partial' || component.state === 'foreign' || component.state === 'error'
+      ))
       .map((component) => ownedComponentLabel(component.component)),
   );
 }

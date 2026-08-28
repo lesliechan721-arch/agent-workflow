@@ -14,8 +14,8 @@ import { supportsPlatform } from '../utils/platform-support.js';
 import { hasCodexProjectManagedArtifacts } from '../utils/codex-project-surface.js';
 import type {
   OwnedComponent,
+  OwnershipComponentState,
   OwnershipInspection,
-  OwnershipInspectionState,
 } from '../utils/ownership.js';
 import {
   discoverRebuildTargetNames,
@@ -23,7 +23,7 @@ import {
   type RebuildExecutionContext,
 } from './rebuild-integration.js';
 import { normalizeStatusCommandOptions, type RawStatusCommandOptions } from './options.js';
-import { statusCommandV4, type StatusV4PluginSummary } from './status-v4.js';
+import { statusCommandV5, type StatusV5PluginSummary } from './status-v5.js';
 
 export type LiveStatusState = 'present' | 'absent' | 'partial' | 'error';
 
@@ -39,7 +39,7 @@ export interface LiveStatusComponentCheck {
   kind?: OwnedComponent['kind'];
   label?: string;
   artifactKey: string;
-  state: OwnershipInspectionState;
+  state: OwnershipComponentState;
   error?: string;
   errorCode?: string;
 }
@@ -90,7 +90,7 @@ export interface LiveConsoleItem {
   pluginName: string;
   version?: string;
   plugin?: PluginMeta;
-  pluginSummary?: Omit<StatusV4PluginSummary, 'pluginName' | 'pluginId'>;
+  pluginSummary?: Omit<StatusV5PluginSummary, 'pluginName' | 'pluginId'>;
   targets: LiveStatusTarget[];
 }
 
@@ -160,11 +160,11 @@ function projectLiveState(options: {
     options.inspection.state === 'error'
     || options.inspection.components.some((entry) => entry.state === 'error')
   ) return 'error';
-  if (
-    options.inspection.components.length === 0
-    || options.inspection.components.every((entry) => entry.state === 'absent')
-  ) return 'absent';
-  if (options.inspection.components.some((entry) => entry.state === 'partial')) return 'partial';
+  const owned = options.inspection.components.filter((entry) => (
+    entry.state === 'present' || entry.state === 'partial'
+  ));
+  if (owned.length === 0) return 'absent';
+  if (owned.some((entry) => entry.state === 'partial')) return 'partial';
   const required = new Set(options.requiredComponents);
   const optional = new Set(options.optionalComponents);
   const stalePresent = options.inspection.components.some((entry) =>
@@ -506,7 +506,7 @@ export async function loadConsoleItemsResult(
     && runtime.inspectTarget === undefined
     && runtime.discoverTargets === undefined
   ) {
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       cwd: rawOptions.cwd ?? process.cwd(),
       env: runtime.env,
       platform: rawOptions.platform,

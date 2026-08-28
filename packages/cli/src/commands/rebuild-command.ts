@@ -1559,8 +1559,8 @@ export async function runRebuildCommand(options: {
               entry.state === 'present' && !required.has(entry.component) && !optional.has(entry.component));
             const hasPartial = result.components.some((entry) => entry.state === 'partial');
             const hasAnyPresent = result.components.some((entry) => entry.state === 'present');
-            const state: 'absent' | 'present' | 'partial' = !hasAnyPresent
-              && result.components.every((entry) => entry.state === 'absent')
+            const hasAnyOwned = hasAnyPresent || hasPartial;
+            const state: 'absent' | 'present' | 'partial' = !hasAnyOwned
               ? 'absent'
               : hasPartial || hasUnexpectedPresent || !presentRequired
               ? 'partial'
@@ -1582,7 +1582,7 @@ export async function runRebuildCommand(options: {
             : options.command === 'reinstall' ? 'reinstall' : 'upgrade';
           let errorCode: string | undefined;
           const hasForeignCollision = [...requestedInspection.components, ...otherInspection.components]
-            .some((component) => component.diagnostic?.includes('foreign collision'));
+            .some((component) => component.collision !== undefined);
           if (dependencyEnabled && hasForeignCollision) {
             action = 'block';
             errorCode = 'artifactCollision';

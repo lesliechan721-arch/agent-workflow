@@ -9,7 +9,7 @@ import {
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
 import { loadConsoleItemsResult } from '../../src/commands/status.js';
-import { statusCommandV4 } from '../../src/commands/status-v4.js';
+import { statusCommandV5 } from '../../src/commands/status-v5.js';
 import { runCli } from '../../src/index.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
@@ -135,14 +135,14 @@ describe('multi-source read commands', () => {
     });
   });
 
-  it('reports status schema 4 and continues after one source failure', async () => {
+  it('reports status schema 5 and continues after one source failure', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const good = fixturePath('good');
     const bad = fixturePath('bad');
     await Promise.all([createCatalogSnapshotFixture(good), fs.ensureDir(bad)]);
     const env = await configureTwoPaths(good, bad);
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd,
       env,
       cliVersion: '1.0.0',
@@ -151,7 +151,7 @@ describe('multi-source read commands', () => {
 
     expect(result.hasErrors).toBe(true);
     expect(result.payload).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       catalog: {
         primarySourceId: 'good',
         configDigest: expect.stringMatching(/^sha256:/),
@@ -196,7 +196,7 @@ describe('multi-source read commands', () => {
       env: isolation.env,
     });
 
-    const missing = await statusCommandV4({
+    const missing = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
     });
     expect(missing.pluginSummaries[0]?.configIssues).toEqual([
@@ -207,7 +207,7 @@ describe('multi-source read commands', () => {
     await fs.outputFile(path.join(
       isolation.env.AW_HOME!, 'plugin-config', 'good', 'demo', 'config.json',
     ), '{ private invalid config');
-    const unreadable = await statusCommandV4({
+    const unreadable = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
     });
     expect(unreadable.pluginSummaries[0]?.configDiagnostic).toEqual({
@@ -354,18 +354,108 @@ describe('multi-source read commands', () => {
     };
     expect(brokenPayload).toMatchObject({
       targets: [expect.objectContaining({
-        state: 'partial',
+        state: 'absent',
+        errors: expect.arrayContaining([expect.objectContaining({
+          code: 'artifactCollision',
+          collision: expect.objectContaining({
+            reason: 'unownedContent',
+            artifactKind: 'skill-directory',
+            artifactKey: 'review',
+            expectedOwner: 'team/demo',
+          }),
+        })]),
         components: expect.arrayContaining([expect.objectContaining({
           key: 'review',
-          state: 'partial',
+          state: 'foreign',
           error: expect.objectContaining({
-            code: 'componentInspectionFailed',
+            code: 'artifactCollision',
             message: expect.any(String),
           }),
         })]),
       })],
     });
     expect(JSON.stringify(brokenPayload.targets[0]!.components)).not.toContain(isolation.layout.rootDir);
+
+    const collisionHuman = createCapturedCliIo();
+    await runCli([
+      'status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--verbose',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: collisionHuman.io,
+      interactive: false,
+    });
+    expect(collisionHuman.readStdout()).toContain('component review: foreign');
+    expect(collisionHuman.readStdout()).toContain('请移除或迁移冲突内容后重试');
+    expect(collisionHuman.readStdout()).not.toContain(isolation.layout.rootDir);
+  });
+
+  it('keeps owned incomplete evidence partial when another required artifact collides', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('partial-collision');
+    for (const skillName of ['owned', 'collision']) {
+      await fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'demo', 'skills', skillName, 'SKILL.md'),
+        `---\nname: ${skillName}\ndescription: ${skillName} fixture.\n---\n`,
+      );
+      await fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'demo', 'skills', skillName, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      );
+    }
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.skills = './skills';
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+    const ownedRoot = path.join(skillsRoot, 'owned');
+    await fs.copy(path.join(sourceRoot, 'plugins', 'demo', 'skills', 'owned'), ownedRoot);
+    await fs.remove(path.join(ownedRoot, 'SKILL.md'));
+    await writeSkillOwnerMarker({
+      skillRoot: ownedRoot,
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows', sourceId: 'team', sourceIdentity, pluginId: 'team/demo', plugin: 'demo',
+        artifactKey: 'owned', platform: 'codex', scope: 'project',
+      },
+    });
+    await fs.outputFile(path.join(skillsRoot, 'collision', 'foreign.txt'), 'keep\n');
+
+    const result = await statusCommandV5({
+      plugins: ['team/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      json: true,
+      verbose: true,
+    });
+    expect(result.payload).toMatchObject({
+      schemaVersion: 5,
+      targets: [expect.objectContaining({
+        state: 'partial',
+        errors: expect.arrayContaining([expect.objectContaining({
+          code: 'artifactCollision',
+          collision: expect.objectContaining({
+            reason: 'unownedContent', artifactKind: 'skill-directory', artifactKey: 'collision',
+            expectedOwner: 'team/demo',
+          }),
+        })]),
+        components: expect.arrayContaining([
+          expect.objectContaining({ key: 'owned', state: 'partial' }),
+          expect.objectContaining({ key: 'collision', state: 'foreign' }),
+        ]),
+      })],
+    });
+    expect(JSON.stringify(result.payload.targets[0]!.errors)).not.toContain(isolation.layout.rootDir);
   });
 
   it('emits one init JSON object and a non-zero partial-failure exit code', async () => {
@@ -523,7 +613,7 @@ describe('multi-source read commands', () => {
       env: isolation.env,
     });
 
-    const ambiguous = await statusCommandV4({
+    const ambiguous = await statusCommandV5({
       plugins: ['demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -535,7 +625,7 @@ describe('multi-source read commands', () => {
       expect.objectContaining({ code: 'ambiguousPlugin' }),
     ]);
 
-    const mixed = await statusCommandV4({
+    const mixed = await statusCommandV5({
       plugins: ['missing', 'first/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -559,7 +649,7 @@ describe('multi-source read commands', () => {
       interactive: false,
     })).toBe(1);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       targets: expect.arrayContaining([
         expect.objectContaining({ pluginId: 'first/demo' }),
       ]),
@@ -577,7 +667,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(good);
     const env = await configureTwoPaths(good, bad);
 
-    const qualified = await statusCommandV4({
+    const qualified = await statusCommandV5({
       plugins: ['good/demo'],
       cwd: isolation.layout.fixtureCwd,
       env,
@@ -589,7 +679,7 @@ describe('multi-source read commands', () => {
       expect.objectContaining({ pluginId: 'good/demo' }),
     ]));
 
-    const bare = await statusCommandV4({
+    const bare = await statusCommandV5({
       plugins: ['demo'],
       cwd: isolation.layout.fixtureCwd,
       env,
@@ -601,7 +691,7 @@ describe('multi-source read commands', () => {
       expect.objectContaining({ code: 'catalogSourceUnavailable' }),
     ]));
 
-    const mixed = await statusCommandV4({
+    const mixed = await statusCommandV5({
       plugins: ['good/demo', 'demo'],
       cwd: isolation.layout.fixtureCwd,
       env,
@@ -637,7 +727,7 @@ describe('multi-source read commands', () => {
       'config.json',
     ), '{');
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['missing/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -671,7 +761,7 @@ describe('multi-source read commands', () => {
       'config.json',
     ), '{');
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['good/foo', 'missing/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -706,7 +796,7 @@ describe('multi-source read commands', () => {
       env: isolation.env,
     });
 
-    const defaultTargets = await statusCommandV4({
+    const defaultTargets = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       cliVersion: '1.0.0',
@@ -714,7 +804,7 @@ describe('multi-source read commands', () => {
     expect(defaultTargets.payload.targets.map((target) => `${target.platform}/${target.scope}`).sort())
       .toEqual(['claude/project', 'claude/user']);
 
-    const unsupported = await statusCommandV4({
+    const unsupported = await statusCommandV5({
       plugins: ['local/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -741,7 +831,7 @@ describe('multi-source read commands', () => {
       interactive: false,
     })).toBe(0);
     expect(JSON.parse(filtered.readStdout())).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       targets: [],
       errors: [],
     });
@@ -782,7 +872,7 @@ describe('multi-source read commands', () => {
       env: isolation.env,
     });
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       cliVersion: '1.0.0',
@@ -790,7 +880,7 @@ describe('multi-source read commands', () => {
     expect(result.payload.targets.map((target) => `${target.platform}/${target.scope}`))
       .toEqual(['codex/user']);
 
-    const unsupported = await statusCommandV4({
+    const unsupported = await statusCommandV5({
       plugins: ['local/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -826,7 +916,7 @@ describe('multi-source read commands', () => {
       expectedDigest: current.digest,
       env: isolation.env,
     });
-    const supported = await statusCommandV4({
+    const supported = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       cliVersion: '1.0.0',
@@ -852,7 +942,7 @@ describe('multi-source read commands', () => {
     await expect(listCatalogSources({ env: isolation.env })).resolves.toMatchObject({
       sources: [{ id: 'local', sourceIdentity: expect.stringMatching(/^sha256:/) }],
     });
-    const unavailable = await statusCommandV4({
+    const unavailable = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       cliVersion: '1.0.0',
@@ -949,7 +1039,7 @@ describe('multi-source read commands', () => {
         interactive: false,
       })).toBe(1);
       expect(JSON.parse(captured.readStdout())).toMatchObject({
-        schemaVersion: 4,
+        schemaVersion: 5,
         targets: expect.arrayContaining([
           expect.objectContaining({
             pluginId: 'good/demo',
@@ -981,7 +1071,7 @@ describe('multi-source read commands', () => {
     const unrelatedPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
     await fs.outputFile(unrelatedPath, '[invalid');
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['good/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1045,7 +1135,7 @@ describe('multi-source read commands', () => {
       ), '{'),
     ]);
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['team/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1088,7 +1178,7 @@ describe('multi-source read commands', () => {
       'config.json',
     ), '{');
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['good/demo'],
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -1124,7 +1214,7 @@ describe('multi-source read commands', () => {
       });
       await fs.outputFile(configRoot(isolation), 'not a directory\n');
 
-      const result = await statusCommandV4({
+      const result = await statusCommandV5({
         plugins: ['good/demo'],
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,

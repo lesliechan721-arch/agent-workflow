@@ -17,7 +17,7 @@
 - `commands/rebuild-command.ts` 解析当前 Catalog、依赖和现场状态，并交给统一 rebuild 流程。
 - `commands/rebuild-operations.ts` 编排 ownership 检查、清理、平台写入、lifecycle 和完成后检查。
 - `commands/rebuild-integration.ts` 把插件能力转换成平台原生写入和 AW-owned 组件。
-- `commands/status-v4.ts` 读取多来源 Catalog、live ownership 和平台组件，生成 status v4 和控制台输入。
+- `commands/status-v5.ts` 读取多来源 Catalog、live ownership 和平台组件，生成 status v5 和控制台输入。
 - `commands/dependency-operation-plan.ts` 只生成一次命令内的依赖执行顺序；它不是持久安装记录。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存下一次 uninstall lifecycle 所需的弱状态。
@@ -145,11 +145,15 @@ Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始�
 | `partial` | 只有部分组件或组件不完整 | `aw reinstall` |
 | `error` | Catalog、发现或组件检查失败 | 修复来源或现场后重试 |
 
-`status --json` 保持 schema 4。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。
+组件状态为 `present | absent | partial | foreign | error`。`foreign` 表示 exclusive artifact slot 已被当前插件不拥有的内容占用；它不能作为已安装证据。公开 collision evidence 只包含 `reason`（`ownerMismatch | unownedContent | typeMismatch`）、`artifactKind`、`artifactKey`、`expectedOwner` 和可选 `actualOwner`，不得包含组件绝对路径、credential、未知 stderr 或临时内部信息。
+
+target 聚合只使用 AW-owned live 证据。所有 own 组件健康时为 `present`；存在 own 组件但必要组件缺失或损坏时为 `partial`；没有 own 组件时为 `absent`。foreign-only target 为 `absent` 并带结构化 `artifactCollision`；own 不完整且存在 collision 时为 `partial` 并带相同错误。当前插件的普通 cleanup 和 uninstall 不删除 foreign component。
+
+`status --json` 只输出 schema 5，不提供 schema 4 参数或双轨输出。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。人类 CLI 和 TUI 把 `artifactCollision` 显示为需要移除或迁移占用内容的输出冲突，不把它显示为安装不完整。
 
 TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理 AW-owned live 内容、保留 plugin config 且不运行 uninstall lifecycle，并显示不含 `--force` 的等价命令。普通 cleanup 继续执行 dependent 保护；成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
 
-target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v4 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
+target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v5 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
 
 配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
@@ -157,7 +161,7 @@ target health 只表示当前 live 组件是否完整，不表示 Catalog 版本
 
 ### TUI 诊断投影与脱敏边界
 
-TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v4 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；来源使用匹配缓存和来源完全不可用必须使用不同影响与动作。
+TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v5 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；来源使用匹配缓存和来源完全不可用必须使用不同影响与动作。
 
 技术层只接受白名单结构字段：安全错误 code、可选 stage、sourceId、requestedRef、resolvedCommit、last-good 证据，以及有限的 platform、scope、plugin、dependency、field、freshness 或 compatibility context。技术层在显示前再次执行通用凭据脱敏、URL userinfo 和敏感 query 清理、已知 home、cwd、临时目录和来源路径替换，并截断文本。任意 native stderr、未知 `Error.cause`、内部绝对路径、digest、credential 或未证明安全的 status message 不进入诊断 ViewModel；不能证明 cause 安全时省略 cause，只保留 code、stage 和白名单 context。
 

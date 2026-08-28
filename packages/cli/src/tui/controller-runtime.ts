@@ -3,10 +3,10 @@ import crypto from 'node:crypto';
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { CatalogFreshnessPolicy, CatalogSourceResolution, PlatformName } from '../types.js';
 import {
-  statusCommandV4,
+  statusCommandV5,
   type StatusTargetRevision,
-  type StatusV4Target,
-} from '../commands/status-v4.js';
+  type StatusV5Target,
+} from '../commands/status-v5.js';
 import {
   addCatalogSourceCommand,
   listCatalogSources,
@@ -64,7 +64,10 @@ import {
   type PluginDependencyOverviewViewModel,
 } from './model.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
-import { targetCanBeUninstalled } from '../utils/target-eligibility.js';
+import {
+  targetCanBeUninstalled,
+  targetHasArtifactCollision,
+} from '../utils/target-eligibility.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
@@ -113,7 +116,7 @@ function digest(value: unknown): string {
 }
 
 export function statusTargetFingerprint(
-  targets: StatusV4Target[],
+  targets: StatusV5Target[],
   revisions: StatusTargetRevision[] = [],
 ): string {
   return digest({
@@ -199,7 +202,7 @@ function pluginIntent(intent: OperationIntent): intent is Extract<OperationInten
 
 function assertIntentIsLegal(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
-  targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
+  targets: Awaited<ReturnType<typeof statusCommandV5>>['payload']['targets'],
   revisions: StatusTargetRevision[] = [],
 ): void {
   const platforms: PlatformName[] = intent.platform === 'both'
@@ -217,6 +220,12 @@ function assertIntentIsLegal(
       && (target.state === 'present' || target.state === 'partial'));
     if (intent.action === 'install' && otherScopeInstalled) {
       throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
+    }
+    if (intent.action === 'install' && targetHasArtifactCollision(selected)) {
+      throw new TuiOperationBlockedError(
+        'artifactCollision',
+        '所选位置存在输出冲突。请先移除或迁移冲突内容。',
+      );
     }
     if (intent.action === 'install' && selected.state !== 'absent') {
       throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
@@ -238,7 +247,7 @@ function assertIntentIsLegal(
 
 async function assertTypedIssueOrigin(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
-  targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
+  targets: Awaited<ReturnType<typeof statusCommandV5>>['payload']['targets'],
 ): Promise<void> {
   if (!intent.originIssue) return;
   const stale = (message: string): never => {
@@ -318,7 +327,7 @@ interface DependencyCatalogNode {
 async function loadDependencyOverviews(options: {
   context: CliExecutionContext;
   cliVersion: string;
-  status: Awaited<ReturnType<typeof statusCommandV4>>;
+  status: Awaited<ReturnType<typeof statusCommandV5>>;
   signal: AbortSignal;
 }): Promise<PluginDependencyOverviewViewModel[]> {
   const graph = await withResolvedMultiSourceCatalog({
@@ -555,7 +564,7 @@ export function createTuiControllerDependencies(
     signal.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await statusCommandV4({
+      const result = await statusCommandV5({
         cwd: context.cwd,
         env: context.env,
         cliVersion: packageInfo.version,
@@ -692,7 +701,7 @@ export function createTuiControllerDependencies(
       };
     }
     await preparation?.reporter.emit('status');
-    const status = await statusCommandV4({
+    const status = await statusCommandV5({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
           ? [intent.originIssue.consumerPluginId] : [])])],
@@ -908,7 +917,7 @@ export function createTuiControllerDependencies(
       if (intent.kind !== 'pluginWrite') return;
       signal.throwIfAborted();
       const packageInfo = await readCliPackageInfo();
-      const status = await statusCommandV4({
+      const status = await statusCommandV5({
         plugins: [...new Set([intent.pluginId,
           ...(intent.originIssue?.consumerPluginId ? [intent.originIssue.consumerPluginId] : [])])],
         platform: intent.platform,

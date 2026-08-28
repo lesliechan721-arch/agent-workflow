@@ -865,6 +865,7 @@ export function resolveConsoleV4ScreenId(
     const category = controller.listUserIssues().find((issue) => issue.issueId === route.issueId)?.category;
     return {
       incompleteInstallation: 'I03',
+      artifactCollision: 'I09',
       sourceDegraded: 'I04',
       sourceUnavailable: 'I04',
       sourceMissing: 'I05',

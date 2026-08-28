@@ -4,10 +4,10 @@ import type { CatalogSource, PlatformName, Scope } from '../types.js';
 import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import type {
-  StatusV4Payload,
-  StatusV4PluginSummary,
+  StatusV5Payload,
+  StatusV5PluginSummary,
   StatusTargetRevision,
-} from '../commands/status-v4.js';
+} from '../commands/status-v5.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 import type {
@@ -30,6 +30,7 @@ import {
   type UserIssueViewModel,
 } from './model.js';
 import { safeDiagnosticCode } from './diagnostics.js';
+import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
   type PluginInstallFilter,
@@ -286,8 +287,8 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
-  payload: StatusV4Payload;
-  pluginSummaries: StatusV4PluginSummary[];
+  payload: StatusV5Payload;
+  pluginSummaries: StatusV5PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
@@ -1555,6 +1556,12 @@ export class TuiController {
       }));
     }
     return plugin.supportedPlatforms.map((platform): InstallTargetOption => {
+      const statusTarget = this.#status?.payload.targets.find((target) => (
+        target.pluginId === pluginId && target.platform === platform && target.scope === scope
+      ));
+      if (statusTarget && targetHasArtifactCollision(statusTarget)) {
+        return { platform, compatible: false, disabled: '存在输出冲突；请先移除或迁移占用内容' };
+      }
       const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
       if (!placement) return { platform, compatible: false, disabled: '当前没有可信的平台能力信息' };
       if (placement.state === 'scopeConflict') {
@@ -1572,6 +1579,18 @@ export class TuiController {
       }
       const overview = this.#viewModel?.dependencyOverviews.find((entry) => entry.pluginId === pluginId);
       for (const dependency of overview?.dependencies ?? []) {
+        const dependencyTarget = this.#status?.payload.targets.find((target) => (
+          target.pluginId === dependency.pluginId
+          && target.platform === platform
+          && target.scope === scope
+        ));
+        if (dependencyTarget && targetHasArtifactCollision(dependencyTarget)) {
+          return {
+            platform,
+            compatible: false,
+            disabled: `${dependency.displayName} 存在输出冲突`,
+          };
+        }
         const dependentPlugin = this.#viewModel?.plugins.find((entry) =>
           entry.pluginId === dependency.pluginId);
         if (!dependentPlugin || !dependentPlugin.supportedPlatforms.includes(platform)) {
@@ -1607,7 +1626,7 @@ export class TuiController {
     pluginId: string,
     platform: PlatformName,
     scope: Scope,
-  ): StatusV4Payload['targets'][number]['state'] | undefined {
+  ): StatusV5Payload['targets'][number]['state'] | undefined {
     return this.#status?.payload.targets.find((target) =>
       target.pluginId === pluginId
       && target.platform === platform

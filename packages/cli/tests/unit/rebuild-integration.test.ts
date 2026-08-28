@@ -12,7 +12,7 @@ import {
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
 import { statusCommand } from '../../src/commands/status.js';
-import { projectTargetRevision } from '../../src/commands/status-v4.js';
+import { projectTargetRevision } from '../../src/commands/status-v5.js';
 import {
   executeRebuildOperation,
   type RebuildActiveStore,
@@ -522,10 +522,15 @@ describe('rebuild adapter integration', () => {
         nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
       }),
     });
-    expect(inspected.inspection.state).toBe('partial');
+    expect(inspected.inspection.state).toBe('absent');
     expect(inspected.inspection.components).toContainEqual(expect.objectContaining({
-      state: 'partial',
+      state: 'foreign',
       diagnostic: expect.stringContaining('foreign collision'),
+      collision: expect.objectContaining({
+        reason: 'unownedContent',
+        artifactKind: 'skill-directory',
+        artifactKey: 'decision-grill',
+      }),
     }));
   });
 

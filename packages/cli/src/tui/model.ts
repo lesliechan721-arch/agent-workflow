@@ -6,13 +6,13 @@ import type {
   Scope,
 } from '../types.js';
 import type {
-  StatusV4Payload,
-  StatusV4PluginSummary,
-  StatusV4Target,
-  StatusV4Component,
+  StatusV5Payload,
+  StatusV5PluginSummary,
+  StatusV5Target,
+  StatusV5Component,
   StatusTargetRevision,
   TargetRevisionState,
-} from '../commands/status-v4.js';
+} from '../commands/status-v5.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 import {
   safeDiagnosticCode,
@@ -72,7 +72,7 @@ export interface PluginListItemViewModel {
     platform: PlatformName;
     scope: Scope;
     key: string;
-    state: StatusV4Component['state'];
+    state: StatusV5Component['state'];
     errorCode?: string;
   }>;
 }
@@ -208,6 +208,7 @@ export interface ConfigPageViewModel {
 
 export type UserIssueCategory =
   | 'incompleteInstallation'
+  | 'artifactCollision'
   | 'sourceDegraded'
   | 'sourceUnavailable'
   | 'sourceMissing'
@@ -255,6 +256,7 @@ export interface UserIssueActionViewModel {
 
 export type TargetIssueRootCode =
   | 'partial'
+  | 'artifactCollision'
   | 'sourceMissing'
   | 'sourceChanged'
   | 'catalogSourceUnavailable'
@@ -344,13 +346,13 @@ function compareText(left: string, right: string): number {
   return left.localeCompare(right, 'en');
 }
 
-function targetHealth(target: StatusV4Target): 'ready' | 'incomplete' | 'error' {
+function targetHealth(target: StatusV5Target): 'ready' | 'incomplete' | 'error' {
   if (target.state === 'present') return 'ready';
   if (target.state === 'partial') return 'incomplete';
   return 'error';
 }
 
-function isInstalledScopeEvidence(target: StatusV4Target): boolean {
+function isInstalledScopeEvidence(target: StatusV5Target): boolean {
   return target.state === 'present' || target.state === 'partial';
 }
 
@@ -360,10 +362,10 @@ function dependencyPluginIdFromMessage(message: string): string | undefined {
 
 export function projectPlatformPlacement(
   platform: PlatformName,
-  targets: StatusV4Target[],
+  targets: StatusV5Target[],
   revisions: StatusTargetRevision[] = [],
 ): PlatformPlacementSummary {
-  const revisionFor = (target: StatusV4Target): TargetRevisionState =>
+  const revisionFor = (target: StatusV5Target): TargetRevisionState =>
     revisions.find((entry) => entry.pluginId === target.pluginId
       && entry.platform === target.platform
       && entry.scope === target.scope)?.revision
@@ -494,7 +496,7 @@ export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean 
 }
 
 function sourceState(
-  source: StatusV4Payload['catalog']['sources'][number],
+  source: StatusV5Payload['catalog']['sources'][number],
   health?: SourceHealthViewModel,
 ): SourceTabViewModel['state'] {
   if (health?.state === 'ready') return 'ready';
@@ -542,13 +544,14 @@ function sourceIssue(
   };
 }
 
-function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
+function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
   const issues: UserIssueDraft[] = [];
-  const byPlacement = new Map<string, StatusV4Target[]>();
+  const byPlacement = new Map<string, StatusV5Target[]>();
   for (const target of payload.targets) {
     const key = `${target.pluginId}\0${target.platform}`;
     byPlacement.set(key, [...(byPlacement.get(key) ?? []), target]);
-    if (target.state !== 'partial' && target.state !== 'error') continue;
+    if (target.state !== 'partial' && target.state !== 'error'
+      && !target.errors.some((error) => error.code === 'artifactCollision')) continue;
     const codes = new Set(target.errors.map((error) => error.code));
     const dependencyCodes = [
       'dependencyMissing',
@@ -573,11 +576,18 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
       code: TargetIssueRootCode;
       category: UserIssueCategory;
       mergeEligible: boolean;
-      error?: { code: string; message: string };
+      error?: StatusV5Target['errors'][number];
       dependencyPluginId?: string;
-    }> = dependencyRoots.length > 0
-      ? dependencyRoots
-      : target.state === 'partial'
+    }> = codes.has('artifactCollision')
+      ? [{
+          code: 'artifactCollision',
+          category: 'artifactCollision',
+          mergeEligible: false,
+          error: target.errors.find((error) => error.code === 'artifactCollision'),
+        }]
+      : dependencyRoots.length > 0
+        ? dependencyRoots
+        : target.state === 'partial'
       ? [{ code: 'partial', category: 'incompleteInstallation', mergeEligible: false }]
       : codes.has('sourceMissing')
         ? [{ code: 'sourceMissing', category: 'sourceMissing', mergeEligible: false }]
@@ -621,7 +631,12 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
                 { id: 'viewDependencies', label: '查看依赖关系' },
                 { id: 'viewTechnical', label: '技术详情' },
               ]
-            : root.category === 'incompleteInstallation'
+            : root.category === 'artifactCollision'
+              ? [
+                  { id: 'viewTechnical', label: '查看冲突原因' },
+                  { id: 'retryLater', label: '处理冲突后重试' },
+                ]
+              : root.category === 'incompleteInstallation'
         ? [
             { id: 'reinstall', label: '重新安装', description: '保留插件设置，重新生成缺失内容' },
             { id: 'remove', label: '移除安装', description: '保留插件设置' },
@@ -656,14 +671,16 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
         category: root.category,
         rootCode: root.code,
         mergeEligible: root.mergeEligible,
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyCategory ? {
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
-        }[root.category as Exclude<UserIssueCategory, 'incompleteInstallation' | 'sourceDegraded' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
-        explanation: dependencyCategory
+        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceDegraded' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
+        explanation: root.category === 'artifactCollision'
+          ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
+          : dependencyCategory
           ? dependencyPluginId
             ? `${dependencyPluginId} 导致当前依赖检查不能通过。`
             : '当前依赖检查不能安全通过。'
@@ -672,7 +689,9 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
           : bundleUnavailable
             ? '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。'
             : '当前目标不能安全分类为正常安装。',
-        impact: [bundleUnavailable
+        impact: [root.category === 'artifactCollision'
+          ? '请先移除或迁移冲突内容，然后重试安装或重新安装。'
+          : bundleUnavailable
           ? '可以清理可信的 AW 现场；这不表示来源缓存整体不可用。'
           : '写操作前需要重新检查这个目标。'],
         entity: { kind: 'plugin', id: target.pluginId },
@@ -687,7 +706,16 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
           ? target.errors.filter((error) => root.code === 'targetDiagnostic'
             || root.code === 'partial'
             || error.code === root.code)
-            .map((error) => ({ code: error.code, message: '状态检查报告了这个安全错误代码。' }))
+            .map((error) => ({
+              code: error.code,
+              message: error.collision
+                ? ({
+                    ownerMismatch: '目标由其他 owner 占用。',
+                    unownedContent: '目标包含没有 AW owner 标记的内容。',
+                    typeMismatch: '目标节点类型不符合预期。',
+                  })[error.collision.reason]
+                : '状态检查报告了这个安全错误代码。',
+            }))
           : [{ code: 'targetStateError', message: '目标状态异常。' }],
       });
     }
@@ -719,7 +747,7 @@ function targetIssues(payload: StatusV4Payload): UserIssueDraft[] {
   return issues;
 }
 
-function statusIssues(payload: StatusV4Payload): UserIssueDraft[] {
+function statusIssues(payload: StatusV5Payload): UserIssueDraft[] {
   const targetCodes = new Set(payload.targets.flatMap((target) =>
     target.errors.map((error) => error.code)));
   const issues = new Map<string, UserIssueDraft>();
@@ -762,7 +790,7 @@ function statusIssues(payload: StatusV4Payload): UserIssueDraft[] {
   return [...issues.values()];
 }
 
-function configIssues(pluginSummaries: StatusV4PluginSummary[]): UserIssueDraft[] {
+function configIssues(pluginSummaries: StatusV5PluginSummary[]): UserIssueDraft[] {
   return pluginSummaries.flatMap((summary): UserIssueDraft[] => {
     const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
     if (summary.configDiagnostic) {
@@ -977,8 +1005,8 @@ function issueDiagnostic(
 }
 
 export function buildTuiViewModel(options: {
-  status: StatusV4Payload;
-  pluginSummaries: StatusV4PluginSummary[];
+  status: StatusV5Payload;
+  pluginSummaries: StatusV5PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
@@ -988,7 +1016,7 @@ export function buildTuiViewModel(options: {
   const dependencyById = new Map((options.dependencyOverviews ?? [])
     .map((overview) => [overview.pluginId, overview]));
   const summaryById = new Map(options.pluginSummaries.map((summary) => [summary.pluginId, summary]));
-  const targetsByPlugin = new Map<string, StatusV4Target[]>();
+  const targetsByPlugin = new Map<string, StatusV5Target[]>();
   for (const target of options.status.targets) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }

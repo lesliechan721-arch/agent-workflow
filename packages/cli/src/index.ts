@@ -46,7 +46,7 @@ import {
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
 import { loadConsoleItemsResult } from './commands/status.js';
-import { statusCommandV4 } from './commands/status-v4.js';
+import { statusCommandV5 } from './commands/status-v5.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
@@ -2799,7 +2799,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('status', rawOptions);
       const result = await runActionWithContext(
         context,
-        () => statusCommandV4({
+        () => statusCommandV5({
           plugins: plugins ?? [],
           cwd,
           env: context.env,

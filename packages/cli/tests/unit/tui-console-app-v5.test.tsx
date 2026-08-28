@@ -1,7 +1,7 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV4Payload, StatusV4PluginSummary } from '../../src/commands/status-v4.js';
+import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/status-v5.js';
 import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
@@ -49,7 +49,7 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-}): StatusV4Payload['targets'][number] {
+}): StatusV5Payload['targets'][number] {
   const sourceId = options.sourceId ?? 'official';
   return {
     pluginName: options.pluginName,
@@ -69,7 +69,7 @@ function target(options: {
 }
 
 function loadResult(): TuiStatusLoadResult {
-  const summaries: StatusV4PluginSummary[] = [
+  const summaries: StatusV5PluginSummary[] = [
     {
       pluginName: 'agent-lab',
       pluginId: 'official/agent-lab',
@@ -112,8 +112,8 @@ function loadResult(): TuiStatusLoadResult {
           : 'absent',
       }))),
   );
-  const payload: StatusV4Payload = {
-      schemaVersion: 4,
+  const payload: StatusV5Payload = {
+      schemaVersion: 5,
       catalog: {
         primarySourceId: 'official',
         configDigest: 'sha256:config',

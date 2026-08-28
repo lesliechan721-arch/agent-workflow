@@ -41,7 +41,11 @@ import { createNoopReporter } from '../output/reporter.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
-import type { OwnedComponent, OwnershipInspection } from '../utils/ownership.js';
+import type {
+  ArtifactCollisionEvidence,
+  OwnedComponent,
+  OwnershipInspection,
+} from '../utils/ownership.js';
 import {
   codexProjectConfigAliasesUserHome,
   createProjectLocationKey,
@@ -51,7 +55,7 @@ import {
 } from '../utils/state-paths.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 
-export interface StatusV4CatalogSource {
+export interface StatusV5CatalogSource {
   id: string;
   identity: string;
   type: CatalogSource['type'];
@@ -65,7 +69,7 @@ export interface StatusV4CatalogSource {
   errorCode?: string;
 }
 
-export interface StatusV4Target {
+export interface StatusV5Target {
   pluginName: string;
   sourceId: string;
   sourceIdentity: string;
@@ -75,27 +79,33 @@ export interface StatusV4Target {
   scope: Scope;
   cwd: string;
   state: 'present' | 'absent' | 'partial' | 'error';
-  components: StatusV4Component[];
-  errors: Array<{ code: string; message: string }>;
+  components: StatusV5Component[];
+  errors: StatusV5TargetError[];
   dependency?: {
     directCount: number;
     issueCount: number;
   };
 }
 
-export interface StatusV4Component {
+export interface StatusV5Component {
   key: string;
   state: OwnershipInspection['components'][number]['state'];
-  error?: { code: string; message: string };
+  error?: StatusV5TargetError;
 }
 
-export interface StatusV4Payload {
-  schemaVersion: 4;
+export interface StatusV5TargetError {
+  code: string;
+  message: string;
+  collision?: ArtifactCollisionEvidence;
+}
+
+export interface StatusV5Payload {
+  schemaVersion: 5;
   catalog: {
     primarySourceId: string;
     configDigest: string;
     compositeDigest: string;
-    sources: StatusV4CatalogSource[];
+    sources: StatusV5CatalogSource[];
   };
   filters: {
     plugins: string[];
@@ -103,7 +113,7 @@ export interface StatusV4Payload {
     scope?: Scope;
     cwd: string;
   };
-  targets: StatusV4Target[];
+  targets: StatusV5Target[];
   errors: Array<{ code: string; message: string }>;
 }
 
@@ -126,19 +136,19 @@ interface StatusPluginCapability {
   shortDescription: string;
   description: string;
   configSchema?: Record<string, PluginConfigSchemaField>;
-  configIssues?: StatusV4PluginSummary['configIssues'];
-  configDiagnostic?: StatusV4PluginSummary['configDiagnostic'];
+  configIssues?: StatusV5PluginSummary['configIssues'];
+  configDiagnostic?: StatusV5PluginSummary['configDiagnostic'];
   targets: Record<PlatformName, Record<Scope, boolean>>;
   states: Partial<Record<PlatformName, Partial<Record<Scope, {
-    state: StatusV4Target['state'];
-    errors: StatusV4Target['errors'];
-    components: StatusV4Component[];
+    state: StatusV5Target['state'];
+    errors: StatusV5Target['errors'];
+    components: StatusV5Component[];
     installedVersion?: string;
   }>>>>;
   dependencies: string[];
 }
 
-export interface StatusV4PluginSummary {
+export interface StatusV5PluginSummary {
   pluginName: string;
   pluginId: string;
   displayName?: string;
@@ -217,16 +227,16 @@ function inventoryErrorMatchesSelection(options: {
 }
 
 function projectTargetError(
-  error: { code: string; message: string },
+  error: StatusV5TargetError,
   env: NodeJS.ProcessEnv,
   cwd: string,
-): { code: string; message: string } {
+): StatusV5TargetError {
   const sanitized = sanitizeCatalogSourceError(new Error(error.message), env, [
     getCodexHome(env),
     getClaudeHome(env),
     path.resolve(cwd),
   ]);
-  return { code: error.code, message: sanitized.message };
+  return { ...error, message: sanitized.message };
 }
 
 function sourceRequestedRef(source: CatalogSource, cliVersion: string): string {
@@ -246,12 +256,14 @@ function projectedLiveState(options: {
   inspection: OwnershipInspection;
   required: readonly OwnedComponent[];
   optional: readonly OwnedComponent[];
-}): StatusV4Target['state'] {
+}): StatusV5Target['state'] {
   if (options.inspection.state === 'error'
     || options.inspection.components.some((entry) => entry.state === 'error')) return 'error';
-  if (options.inspection.components.length === 0
-    || options.inspection.components.every((entry) => entry.state === 'absent')) return 'absent';
-  if (options.inspection.components.some((entry) => entry.state === 'partial')) return 'partial';
+  const owned = options.inspection.components.filter((entry) => (
+    entry.state === 'present' || entry.state === 'partial'
+  ));
+  if (owned.length === 0) return 'absent';
+  if (owned.some((entry) => entry.state === 'partial')) return 'partial';
   const required = new Set(options.required);
   const optional = new Set(options.optional);
   if (options.inspection.components.some((entry) =>
@@ -284,7 +296,7 @@ export function projectTargetRevision(
   return { state: 'unknown', availableVersion, installedVersion };
 }
 
-function renderStatusV4(payload: StatusV4Payload, verbose: boolean): string {
+function renderStatusV5(payload: StatusV5Payload, verbose: boolean): string {
   const lines = [`Catalog sources: ${payload.catalog.sources.length}`];
   for (const source of payload.catalog.sources) {
     lines.push(`${source.primary ? '*' : '-'} ${source.id}: ${source.error ?? source.freshness ?? 'unavailable'}`);
@@ -307,7 +319,16 @@ function renderStatusV4(payload: StatusV4Payload, verbose: boolean): string {
   return lines.join('\n');
 }
 
-export async function statusCommandV4(options: {
+function collisionMessage(collision: ArtifactCollisionEvidence): string {
+  const reason = {
+    ownerMismatch: '已有内容属于其他 owner',
+    unownedContent: '已有内容没有 AW owner 标记',
+    typeMismatch: '已有内容类型与目标不匹配',
+  }[collision.reason];
+  return `artifactCollision: ${collision.artifactKind} ${collision.artifactKey}: ${reason}。请移除或迁移冲突内容后重试。`;
+}
+
+export async function statusCommandV5(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -317,17 +338,17 @@ export async function statusCommandV4(options: {
   json?: boolean;
   verbose?: boolean;
 }): Promise<{
-  payload: StatusV4Payload;
+  payload: StatusV5Payload;
   output: string;
   hasErrors: boolean;
-  pluginSummaries: StatusV4PluginSummary[];
+  pluginSummaries: StatusV5PluginSummary[];
   targetRevisions: StatusTargetRevision[];
 }> {
   const env = options.env ?? process.env;
   const dependencyPluginCache = new Map<string, Promise<PluginMeta>>();
   const dependencyInspectionCache = new Map<
     string,
-    Promise<StatusV4Target['state']>
+    Promise<StatusV5Target['state']>
   >();
   const cliVersion = options.cliVersion ?? assertStrictSemVer(
     (JSON.parse(fs.readFileSync(path.join(resolveCliPackageRoot(), 'package.json'), 'utf8')) as {
@@ -481,7 +502,7 @@ export async function statusCommandV4(options: {
               plugin.sourceIdentity = item.resolution!.sourceIdentity;
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
               let effectiveConfig: Awaited<ReturnType<typeof resolveEffectivePluginConfig>> | undefined;
-              let configDiagnostic: StatusV4PluginSummary['configDiagnostic'];
+              let configDiagnostic: StatusV5PluginSummary['configDiagnostic'];
               if (plugin.manifest.config?.schema) {
                 try {
                   effectiveConfig = await resolveEffectivePluginConfig({
@@ -589,7 +610,14 @@ export async function statusCommandV4(options: {
                       required: inspected.target.desiredOwnedComponents ?? inspected.target.ownedComponents,
                       optional: inspected.target.optionalOwnedComponents ?? [],
                     });
-                    const dependencyErrors: Array<{ code: string; message: string }> = [];
+                    const collisionErrors: StatusV5TargetError[] = inspected.inspection.components.flatMap(
+                      (component) => component.collision ? [{
+                        code: 'artifactCollision',
+                        message: collisionMessage(component.collision),
+                        collision: component.collision,
+                      }] : [],
+                    );
+                    const dependencyErrors: StatusV5TargetError[] = [];
                     const directDependencies = plugin.manifest.dependencies ?? [];
                     if (directDependencies.length > 0
                       && (liveState === 'present' || liveState === 'partial')) {
@@ -621,7 +649,7 @@ export async function statusCommandV4(options: {
                           dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
                         }
                         const placements: Scope[] = scope === 'project' ? ['project', 'user'] : ['user'];
-                        let dependencyState: StatusV4Target['state'] = 'absent';
+                        let dependencyState: StatusV5Target['state'] = 'absent';
                         for (const dependencyScope of placements) {
                           const inspectionCacheKey = [
                             item.resolution!.sourceIdentity,
@@ -691,10 +719,16 @@ export async function statusCommandV4(options: {
                       errors: [...inspected.inspection.errors.map((error) => ({
                         code: 'componentInspectionFailed',
                         message: `${error.label}: ${error.message}`,
-                      })), ...dependencyErrors],
+                      })), ...collisionErrors, ...dependencyErrors],
                       components: options.verbose === true
                         ? inspected.inspection.components.map((component) => {
-                            const projectedError = component.diagnostic
+                            const projectedError = component.collision
+                              ? projectTargetError({
+                                  code: 'artifactCollision',
+                                  message: collisionMessage(component.collision),
+                                  collision: component.collision,
+                                }, env, options.cwd)
+                              : component.diagnostic
                               ? projectTargetError({
                                   code: 'componentInspectionFailed',
                                   message: component.diagnostic,
@@ -838,8 +872,8 @@ export async function statusCommandV4(options: {
   const selected = [...selectedById.values()];
   const explicitTargetFilter = requested.length > 0
     && (options.platform !== undefined || options.scope !== undefined);
-  const targets: StatusV4Target[] = selected.flatMap((entry) => platforms.flatMap((platform) =>
-    scopes.flatMap((scope): StatusV4Target[] => {
+  const targets: StatusV5Target[] = selected.flatMap((entry) => platforms.flatMap((platform) =>
+    scopes.flatMap((scope): StatusV5Target[] => {
       const target = {
         pluginName: entry.name,
         sourceId: entry.source.id,
@@ -849,7 +883,7 @@ export async function statusCommandV4(options: {
         platform,
         scope,
         cwd: path.resolve(options.cwd),
-        components: [] as StatusV4Component[],
+        components: [] as StatusV5Component[],
       };
       if (platform === 'codex'
         && scope === 'project'
@@ -955,7 +989,7 @@ export async function statusCommandV4(options: {
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
       || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
     const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
-    const target: StatusV4Target = {
+    const target: StatusV5Target = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -984,7 +1018,7 @@ export async function statusCommandV4(options: {
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
       || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
     const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
-    const target: StatusV4Target = {
+    const target: StatusV5Target = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -1025,7 +1059,7 @@ export async function statusCommandV4(options: {
     if (requested.length > 0 && !plannedSelectors.some((selector) =>
       selector.parsed.pluginName === reference.pluginName
       && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === reference.sourceId))) return [];
-    const target: StatusV4Target = {
+    const target: StatusV5Target = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -1075,8 +1109,8 @@ export async function statusCommandV4(options: {
       ),
     };
   });
-  const payload: StatusV4Payload = {
-    schemaVersion: 4,
+  const payload: StatusV5Payload = {
+    schemaVersion: 5,
     catalog: {
       primarySourceId: catalog.primarySourceId,
       configDigest: catalog.configDigest,
@@ -1101,7 +1135,7 @@ export async function statusCommandV4(options: {
     || payload.targets.some((target) => target.state === 'error');
   return {
     payload,
-    output: options.json ? JSON.stringify(payload) : renderStatusV4(payload, options.verbose === true),
+    output: options.json ? JSON.stringify(payload) : renderStatusV5(payload, options.verbose === true),
     hasErrors,
     targetRevisions,
     pluginSummaries: available.map((entry) => {
