@@ -27,7 +27,7 @@
       "workspace_files": {
         ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"fixture-catalog\"}\n",
         "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture\"},\"interface\":{\"displayName\":\"Fixture Catalog\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
-        "plugins/shared-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":1,\"name\":\"shared-rules\",\"version\":\"0.1.0\",\"description\":\"Shared rules.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
+        "plugins/shared-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"shared-rules\",\"version\":\"0.1.0\",\"description\":\"Shared rules.\",\"skills\":\"./skills\"}\n",
         "plugins/shared-rules/skills/shared/SKILL.md": "---\nname: shared\ndescription: Provide shared rules.\n---\n\nProvide rules.\n",
         "plugins/shared-rules/skills/shared/README.md": "# shared\n\nProvide rules.\n",
         "AGENTS.md": "# Rules\nOnly change plugins/status-tools and Catalog metadata when required. Do not publish.\n"

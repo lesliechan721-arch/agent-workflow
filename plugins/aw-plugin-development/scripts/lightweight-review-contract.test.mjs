@@ -32,10 +32,10 @@ try {
   await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
   await mkdir(path.join(plugin, 'scripts'), { recursive: true });
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    schemaVersion: 2,
     name: 'demo-plugin',
     version: '1.0.0',
     description: 'Demo',
-    compatibility: { aw: { minVersion: '0.1.0' } },
     skills: './skills',
     scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs', args: [] } } },
     buildConfig: {
@@ -54,10 +54,10 @@ try {
   const provider = path.join(temp, 'plugins', 'fixture-provider');
   await mkdir(path.join(provider, '.agents-plugin'), { recursive: true });
   await writeFile(path.join(provider, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    schemaVersion: 2,
     name: 'fixture-provider',
     version: '1.0.0',
     description: 'Fixture provider.',
-    compatibility: { aw: { minVersion: '0.1.0' } },
     extensions: { instructions: [{ name: 'provider', title: 'Provider', content: 'Provider.' }] },
     buildConfig: { runtimeExports: [{ name: 'generated-guide', source: './generated.md' }] },
     marketplace: {

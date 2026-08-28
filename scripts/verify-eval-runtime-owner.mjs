@@ -19,6 +19,7 @@ const canonicalSchemaNames = [
 const runnerSkillFiles = new Set([
   'README.md',
   'SKILL.md',
+  'aw-plugin-requirements.json',
   'agents/openai.yaml',
   'assets/aw-skill-eval-execution-plan.template.json',
 ])

@@ -7,7 +7,7 @@ import {
   initializeCatalogWorkspace,
   mutateCatalogWorkspaceVersion,
   readCatalogWorkspace,
-  validateCatalogSnapshot,
+  validateCatalogSnapshotComplete,
   type CatalogVersionBump,
   type CatalogWorkspaceBuildAdapter,
   type CatalogWorkspacePluginBuildAdapter,
@@ -130,7 +130,7 @@ export async function runCatalogValidateCommand(options: {
   json?: boolean;
   io: AuthoringCommandIo;
 }): Promise<void> {
-  const result = await validateCatalogSnapshot(options.snapshotDirectory);
+  const result = await validateCatalogSnapshotComplete(options.snapshotDirectory);
   const receipt = {
     command: 'catalog:validate',
     ok: true,

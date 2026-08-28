@@ -27,7 +27,7 @@ const adapterFacts: Readonly<Partial<Record<
     },
     'distributions.agentSkills': {
       profiles: 'agent-skills',
-      requires: 'A strict compatibility.aw.minVersion and at least one non-empty native capability in V1.',
+      requires: 'At least one non-empty native capability; portable-only plugins are not supported.',
       conflicts: 'Portable-only plugins and implicit promotion of native skills.',
       provenance: ['CLI source plugin validator'],
     },

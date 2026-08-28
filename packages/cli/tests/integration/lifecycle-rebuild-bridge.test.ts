@@ -80,7 +80,7 @@ async function writePlugin(options: {
     name: options.name,
     version: options.version,
     description: `${options.name} lifecycle bridge fixture`,
-    compatibility: { aw: { minVersion: '0.1.0' } },
+    schemaVersion: 2,
     marketplace: {
       category: 'test',
       strict: true,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { validatePluginManifest } from '../../src/utils/manifest.js';
-import { validateCatalogManifestV4 } from '../../src/utils/catalog-manifest-v4.js';
+import { validateCatalogManifestV5 } from '../../src/utils/catalog-manifest-v5.js';
 
 const marketplace = {
   category: 'workflow',
@@ -9,15 +9,13 @@ const marketplace = {
   policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
 };
 
-const compatibility = { aw: { minVersion: '0.0.0' } };
-
 describe('plugin manifest dependencies contract', () => {
   it('accepts canonical dependency names and rejects invalid declarations', () => {
     const source = {
+      schemaVersion: 2,
       name: 'parent',
       version: '1.0.0',
       description: 'parent',
-      compatibility,
       marketplace,
     };
     expect(validatePluginManifest('/tmp/plugin', {
@@ -48,6 +46,7 @@ describe('plugin manifest dependencies contract', () => {
 
   it('accepts dependencies without a dedicated AW feature floor', () => {
     const source = {
+      schemaVersion: 2,
       name: 'parent',
       version: '1.0.0',
       description: 'parent',
@@ -55,26 +54,20 @@ describe('plugin manifest dependencies contract', () => {
     };
     expect(validatePluginManifest('/tmp/plugin', {
       ...source,
-      compatibility,
       dependencies: ['child'],
     }).dependencies).toEqual(['child']);
     expect(validatePluginManifest('/tmp/plugin', {
       ...source,
-      dependencies: ['child'],
-    }).compatibility.aw.minVersion).toBe('0.0.0');
-    expect(validatePluginManifest('/tmp/plugin', {
-      ...source,
-      compatibility,
       dependencies: [],
     }).dependencies).toBeUndefined();
   });
 
-  it('rejects dependencies in current catalog entries explicitly', () => {
-    expect(() => validateCatalogManifestV4({
-      schemaVersion: 4,
+  it('accepts dependencies in catalog v5 entries', () => {
+    expect(validateCatalogManifestV5({
+      schemaVersion: 5,
       catalogVersion: '1.0.0',
       channel: 'latest',
-      compatibility: { aw: { minVersion: '1.0.0' } },
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
       marketplace: {
         owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
         interface: { displayName: 'Fixture Marketplace' },
@@ -87,13 +80,13 @@ describe('plugin manifest dependencies contract', () => {
         category: 'workflow',
         strict: true,
         policy: marketplace.policy,
-        compatibility: { aw: { minVersion: '1.0.0' } },
-        dependencies: { plugins: [] },
-        source: 'plugins/parent',
+        requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+        dependencies: ['child'],
+        source: './plugins/parent',
         artifactDigest: `sha256:${'0'.repeat(64)}`,
         manifestDigest: `sha256:${'1'.repeat(64)}`,
         contentDigest: `sha256:${'2'.repeat(64)}`,
       }],
-    })).toThrow('"dependencies" is unsupported');
+    }).entries[0]!.dependencies).toEqual(['child']);
   });
 });

@@ -26,9 +26,9 @@
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
 - Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
-- Core 的 AW capability registry 定义稳定 ID、集合规范化与摘要、Manifest 结构派生、受限生产源码扫描和 schema 1 runtime requirements receipt。未登记但语法合法的 ID 是可交换数据；是否支持只由当前 executable 的实现集合决定。`aw self describe --json` 公开该集合，`aw self check --json` 从最近的 receipt 或 Manifest 检查兼容性，`aw plugin requirements <plugin-directory> --json` 只读计算插件的 effective requirements。Manifest v1 不声明 requirements，且这些入口不改变 Manifest v1 或 Catalog schema。
+- Core 的 AW capability registry 定义稳定 ID、集合规范化与摘要、Manifest 结构派生、受限生产源码扫描和 schema 1 runtime requirements receipt。未登记但语法合法的 ID 是可交换数据；是否支持只由当前 executable 的实现集合决定。`aw self describe --json` 公开该集合，`aw self check --json` 从最近的 receipt 或 Manifest 检查兼容性，`aw plugin requirements <plugin-directory> --add/--remove <capability> --json` 只修改 `requires.aw.capabilities`，并计算 declared、derived、detected 和 effective requirements。Plugin Manifest v2 要求显式 `schemaVersion: 2`。
 
-公开包 `@lesliechan721/aw-plugin-core` 还拥有 Catalog Workspace v1 marker 与 metadata、单插件 bundle 和 schema 4 Catalog snapshot build/validate 的机器合同。固定源码入口是 `.aw-workspace.json`、`plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
+公开包 `@lesliechan721/aw-plugin-core` 还拥有 Catalog Workspace v1 marker 与 metadata、单插件 bundle 和 schema 5 Catalog snapshot build/validate 的机器合同。固定源码入口是 `.aw-workspace.json`、`plugins/marketplace-source.json` 和 `plugins/<name>/.agents-plugin/plugin.json`；metadata 的 `catalog.version` 只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。CLI 只负责参数、输出、安全目标选择，以及注入 build/test adapter；Core 不读取 `AW_HOME`、Catalog cache、安装状态、TUI 或 Git transport。
 
 ### Module Invariants
 
@@ -49,7 +49,7 @@ Catalog Workspace
   plugins/<name>/.agents-plugin/plugin.json
   plugins/<name>/skills/**
           ↓ aw catalog build
-generated schema 4 Catalog snapshot
+generated schema 5 Catalog snapshot
   .aw/catalog/
           ↓ Git/path source 解析
 installed plugin
@@ -63,11 +63,12 @@ installed plugin
 ```
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
-- 第三方 workspace 用 `aw catalog build` 生成 `.aw/catalog` schema 4 snapshot；本仓库维护者的 `pnpm build` 还会生成本地 staging。两种输出都是生成目录，不手工修改。
+- 第三方 workspace 用 `aw catalog build` 生成 `.aw/catalog` schema 5 snapshot；本仓库维护者的 `pnpm build` 还会生成本地 staging。两种输出都是生成目录，不手工修改。
+- Catalog v5 transport validation 只验证 snapshot 结构、路径、摘要、marketplace projection、release metadata 和 ledger。Path/Git provider、list 和 TUI 使用该层。producer、publication 和 published verification 使用 complete validation。安装先从 entry dependencies 计算闭包并逐 entry 检查 capabilities；通过后只对选中闭包执行完整 plugin validation。
 - `aw catalog build` 从独立 workspace 生成 `.aw/catalog` development snapshot；`aw plugin build` 默认生成 `.aw/plugins/<name>`。两者先在同父 staging 完整构建和验证，再替换已证明为生成物的旧输出，并拒绝 workspace 外、符号链接及 `.git`、`plugins` 等受保护边界。
 - `aw catalog init` 生成 `.aw-workspace.json`，唯一合法合同是 schema 1、`kind: "aw-catalog-workspace"` 和稳定非空的 `workspaceIdentity`。marker 必须存在；source、manifest 或 `catalog.version` 变化不改变该 identity，`--force` 也保留已有合法 identity。独立初始化的 Catalog Workspace identity 不同。生成输出 marker 不进入公开 plugin 或 snapshot digest。
 - source plugin 的 authoring 输入树不允许符号链接。Manifest 声明的 source path 不能进入任意深度的 `.git/` 或 `node_modules/`；CLI 在读取 manifest、脚本或静态资源前统一检查该树，并跳过这两类不进入 source bundle 的目录。Catalog 严格校验把每个平台 `plugin.json` 与 bundle source manifest 的完整生成投影逐字段核对，并验证所有生成路径留在 bundle 内且存在。
-- `aw catalog publish` 从干净且已有提交的 Source Workspace 发布到用户配置的 Git remote。CLI 先把已解析的 source HEAD 归档到隔离 workspace，在其中对每个插件执行公开 source validator，并只从该归档构建；ignored 或其它不属于 source HEAD 的工作树字节不能进入 snapshot。Core 准备 schema 4 published snapshot、完整 release ledger 和 release identity；CLI 的公共 preparation/publication service 负责 Git 前置条件、隔离 commit/tag、一次 atomic push 和完成后核验。branch 只是调用参数；第三方分支、`catalog/latest` 和 `catalog/beta` 使用同一算法、不可变 `catalog-v<version>` 注解 tag和 Workspace attempt。首次发布创建 root commit，后续发布只以读取并验证的远端 branch commit 为父提交。
+- `aw catalog publish` 从干净且已有提交的 Source Workspace 发布到用户配置的 Git remote。CLI 先把已解析的 source HEAD 归档到隔离 workspace，在其中对每个插件执行公开 source validator，并只从该归档构建；ignored 或其它不属于 source HEAD 的工作树字节不能进入 snapshot。Core 准备 schema 5 published snapshot、完整 release ledger 和 release identity；CLI 的公共 preparation/publication service 负责 Git 前置条件、隔离 commit/tag、一次 atomic push 和完成后核验。branch 只是调用参数；第三方分支、`catalog/latest` 和 `catalog/beta` 使用同一算法、不可变 `catalog-v<version>` 注解 tag和 Workspace attempt。首次发布创建 root commit，后续发布只以读取并验证的远端 branch commit 为父提交。
 - `aw catalog status --workspace-root <root>` 默认只静态读取 Workspace marker、metadata、插件 source manifest、依赖图和可用的 Git 状态；它不运行插件代码、不构建，也不创建 `.aw`。只有显式 `--preflight` 才从 committed source HEAD 的临时归档运行公开插件 validator 和 build、读取远端 branch/tag/上一 snapshot，并调用与 `aw catalog publish` 相同的 Core publication preparation。preflight 不写 attempt、不 push，也不形成后续 publish 的持久授权；显式发布把用户授权的 descriptor digest 传回 CLI，publisher 在 attempt 和远端写入前核验该 digest 以及当前 source、remote、tag 和 plan identity。
 - 第三方发布在第一次远端写入前保存 gitignored `.aw/publish/attempts/<version>.json`。每个版本文件独立保留；文件损坏或发布结果不确定时只阻止该版本，作者用 `aw catalog version <higher>` 恢复。该恢复合同不增加 force、补偿 push 或平台专用发布路径。
 - Catalog manifest 保存规范化 marketplace owner/interface，验证器以它为唯一根 metadata 真值核对 Codex 和 Claude projection。`release.state=published` 的 snapshot 必须包含并完整验证 `plugin-release-ledger.json`；development snapshot 不包含 ledger。公开 Catalog 作者合同见[Catalog 作者指南](catalog-authoring.md)。
@@ -75,7 +76,7 @@ installed plugin
 
 ### Portable Agent Skills Distribution
 
-`agent-skills` 是独立 distribution，不是 `PlatformName`，也不改变 marketplace product eligibility。插件通过 `distributions.agentSkills` 显式声明该能力；原生 `skills` 不自动成为 portable source，V1 也不支持 portable-only plugin。manifest 仍必须声明严格 SemVer 的 `compatibility.aw.minVersion`，但该字段没有 Portable 专用版本门槛。
+`agent-skills` 是独立 distribution，不是 `PlatformName`，也不改变 marketplace product eligibility。插件通过 `distributions.agentSkills` 显式声明该能力；原生 `skills` 不自动成为 portable source，也不支持 portable-only plugin。每个 materialized Skill root 都包含同一插件级 `aw-plugin-requirements.json` receipt；同层 receipt 优先于祖先 Manifest。
 
 Catalog build 把 portable static Skill、明确选择 `distributions: ["agent-skills"]` 的 `skillRuntimeFiles`，以及 dynamic artifact 的 `runtimeImports` 复制到 consumer bundle。runtime import 带 bundle-local path、digest 和 provider provenance；materialize 运行时不读取其它插件 bundle，也不导入其它 renderer 的输出。
 

@@ -265,7 +265,7 @@ export async function scanPluginAwCliRequirements(options: {
         if (call === 'dynamic') {
           observe({
             code: 'aw-command-dynamic', blocking: false, path: relativePath,
-            message: 'Dynamic AW CLI command construction cannot be mapped; declare its capability in a future manifest schema.',
+            message: 'Dynamic AW CLI command construction cannot be mapped; declare its capability in requires.aw.capabilities.',
           })
         } else {
           recordLiteral(relativePath, call)
@@ -277,7 +277,7 @@ export async function scanPluginAwCliRequirements(options: {
     if (containsDynamicAwCommand(content)) {
       observe({
         code: 'aw-command-dynamic', blocking: false, path: relativePath,
-        message: 'Dynamic AW CLI command construction cannot be mapped; declare its capability in a future manifest schema.',
+        message: 'Dynamic AW CLI command construction cannot be mapped; declare its capability in requires.aw.capabilities.',
       })
     }
   }
@@ -289,7 +289,10 @@ export async function resolvePluginRequirements(options: {
   manifest: PluginManifestSource | NormalizedPluginManifest
   implementedCapabilities: readonly string[]
 }): Promise<PluginRequirementsResolution> {
-  const declared: AwCapabilityId[] = []
+  const declared = normalizeAwCapabilities(
+    options.manifest.requires?.aw.capabilities ?? [],
+    'requires.aw.capabilities',
+  )
   const derived = deriveAwCapabilitiesFromManifest(options.manifest)
   const scan = await scanPluginAwCliRequirements(options)
   const effective = normalizeAwCapabilities([...declared, ...derived, ...scan.detected])

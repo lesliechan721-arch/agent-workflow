@@ -59,7 +59,7 @@ describe('AW capability CLI commands', () => {
       kind: 'aw-plugin-requirements',
       plugin: { name: 'future', version: '1.0.0' },
       requiredCapabilities: capabilities,
-      capabilitySetDigest: computeAwCapabilitySetDigest(capabilities),
+      digest: computeAwCapabilitySetDigest(capabilities),
     })
     const result = await runCliEntry(['self', 'check', '--from', root, '--json'], { cwd: root })
     expect(result.exitCode).toBe(1)
@@ -96,7 +96,6 @@ describe('AW capability CLI commands', () => {
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
     const manifest = await fs.readJson(manifestPath)
     if (version) manifest.version = version
-    else delete manifest.compatibility
     await fs.writeJson(manifestPath, manifest, { spaces: 2 })
 
     const result = await runCliEntry([
@@ -186,6 +185,39 @@ describe('AW capability CLI commands', () => {
     })
     expect(await fs.readFile(path.join(pluginRoot, '.agents-plugin', 'plugin.json'))).toEqual(before)
     expect(await fs.pathExists(path.join(pluginRoot, 'aw-plugin-requirements.json'))).toBe(false)
+  })
+
+  it('adds and removes a declared capability without changing the plugin version', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-mutate-'))
+    tempDirs.push(root)
+    await fs.copy(fixturePath('repo-template'), root)
+    const manifestPath = path.join(root, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')
+
+    const added = await runCliEntry([
+      'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
+      '--add', 'aw.future-feature.v3', '--json',
+    ], { cwd: root })
+    expect(added.exitCode).toBe(0)
+    expect(added.parseJsonStdout()).toMatchObject({
+      mutation: { action: 'add', capability: 'aw.future-feature.v3', changed: true },
+      declared: ['aw.future-feature.v3'],
+      unsupportedByCurrentAw: ['aw.future-feature.v3'],
+    })
+    await expect(fs.readJson(manifestPath)).resolves.toMatchObject({
+      version: '0.1.0',
+      requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
+    })
+
+    const removed = await runCliEntry([
+      'plugin', 'requirements', 'plugins/git-commit', '--workspace-root', root,
+      '--remove', 'aw.future-feature.v3', '--json',
+    ], { cwd: root })
+    expect(removed.exitCode).toBe(0)
+    expect(removed.parseJsonStdout()).toMatchObject({
+      mutation: { action: 'remove', capability: 'aw.future-feature.v3', changed: true },
+      declared: [],
+    })
+    await expect(fs.readJson(manifestPath)).resolves.toMatchObject({ version: '0.1.0' })
   })
 
   it('uses CLI reserved imports for plugin requirements', async () => {

@@ -3,7 +3,7 @@ import {
   compareStrictSemVer,
   parseStrictSemVer,
 } from './manifest-contract.js';
-import type { CatalogChannel, CatalogManifestV4, PluginMeta } from './types.js';
+import type { CatalogChannel, CatalogManifestV5, PluginMeta } from './types.js';
 
 export const PLUGIN_RELEASE_LEDGER_FILENAME = 'plugin-release-ledger.json';
 export const PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION = 2;
@@ -124,7 +124,7 @@ export function validatePluginReleaseLedger(rawValue: unknown): PluginReleaseLed
   };
 }
 
-export function validatePluginReleaseLedgerAgainstManifest(rawLedger: unknown, manifest: CatalogManifestV4): PluginReleaseLedger {
+export function validatePluginReleaseLedgerAgainstManifest(rawLedger: unknown, manifest: CatalogManifestV5): PluginReleaseLedger {
   const ledger = validatePluginReleaseLedger(rawLedger);
   for (const entry of manifest.entries) {
     const records = ledger.records.filter((record) => record.plugin === entry.name
@@ -186,7 +186,7 @@ export function resolveBetaPluginVersionOverrides(options: {
 
 export function appendCatalogToPluginReleaseLedger(options: {
   previous: PluginReleaseLedger;
-  manifest: CatalogManifestV4;
+  manifest: CatalogManifestV5;
   contentDigests: ReadonlyMap<string, string>;
 }): PluginReleaseLedger {
   const previous = validatePluginReleaseLedger(options.previous);

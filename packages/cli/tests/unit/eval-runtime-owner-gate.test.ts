@@ -90,6 +90,7 @@ describe('aw-skill-eval execution owner gate', () => {
       files: [
         'agents/openai.yaml',
         'assets/aw-skill-eval-execution-plan.template.json',
+        'aw-plugin-requirements.json',
         'README.md',
         'SKILL.md',
       ],

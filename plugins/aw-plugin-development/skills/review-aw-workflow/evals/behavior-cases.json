@@ -31,11 +31,11 @@
       "scripted_replies": [],
       "expected_output": "scope admitted；识别跨插件 gate 传播，给正确 owner 和最小路径。",
       "workspace_files": {
-        "plugins/eval-designer/.agents-plugin/plugin.json": "{\"name\":\"eval-designer\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"runtimeExports\":[{\"name\":\"eval-plan\",\"source\":\"./plan.json\"}]}}\n",
+        "plugins/eval-designer/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-designer\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"runtimeExports\":[{\"name\":\"eval-plan\",\"source\":\"./plan.json\"}]}}\n",
         "plugins/eval-designer/skills/design/SKILL.md": "---\nname: design\ndescription: Design Eval assets.\n---\n\nDesign cases and mark audit not assessed.\n",
-        "plugins/eval-auditor/.agents-plugin/plugin.json": "{\"name\":\"eval-auditor\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-designer\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-designer\",\"export\":\"eval-plan\",\"env\":\"PLAN\"}],\"runtimeExports\":[{\"name\":\"audit-result\",\"source\":\"./audit.json\"}]}}\n",
+        "plugins/eval-auditor/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-auditor\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-designer\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-designer\",\"export\":\"eval-plan\",\"env\":\"PLAN\"}],\"runtimeExports\":[{\"name\":\"audit-result\",\"source\":\"./audit.json\"}]}}\n",
         "plugins/eval-auditor/skills/audit/SKILL.md": "---\nname: audit\ndescription: Audit Eval assets.\n---\n\nOwn semantic preflight.\n",
-        "plugins/eval-runner/.agents-plugin/plugin.json": "{\"name\":\"eval-runner\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-auditor\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-auditor\",\"export\":\"audit-result\",\"env\":\"AUDIT\"}]}}\n",
+        "plugins/eval-runner/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-runner\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-auditor\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-auditor\",\"export\":\"audit-result\",\"env\":\"AUDIT\"}]}}\n",
         "plugins/eval-runner/skills/run/SKILL.md": "---\nname: run\ndescription: Run admitted Eval assets.\n---\n\nOwn the machine execution gate.\n"
       },
       "review": {
@@ -72,9 +72,9 @@
       "scripted_replies": [],
       "expected_output": "报告 dependencyEdges cycle，明确 buildImportEdges cycle 为空，再评估对用户路径的影响。",
       "workspace_files": {
-        "plugins/cycle-a/.agents-plugin/plugin.json": "{\"name\":\"cycle-a\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-b\"],\"skills\":\"./skills\"}\n",
+        "plugins/cycle-a/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"cycle-a\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-b\"],\"skills\":\"./skills\"}\n",
         "plugins/cycle-a/skills/a/SKILL.md": "---\nname: cycle-a-skill\ndescription: Produce the cycle A result.\n---\n\nProduce A.\n",
-        "plugins/cycle-b/.agents-plugin/plugin.json": "{\"name\":\"cycle-b\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-a\"],\"skills\":\"./skills\"}\n",
+        "plugins/cycle-b/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"cycle-b\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-a\"],\"skills\":\"./skills\"}\n",
         "plugins/cycle-b/skills/b/SKILL.md": "---\nname: cycle-b-skill\ndescription: Consume the cycle A result.\n---\n\nConsume A and produce B.\n"
       },
       "review": {
@@ -152,9 +152,9 @@
       "expected_output": "用 production canonical component digest 生成有效 aw-workflow scope，并以 delta 的 --supersedes 用新 aw review publish 归档；复核动态 record。",
       "sandbox": "workspace-write",
       "workspace_files": {
-        "plugins/author-side/.agents-plugin/plugin.json": "{\"name\":\"author-side\",\"version\":\"0.1.0\",\"description\":\"Author side fixture.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
+        "plugins/author-side/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"author-side\",\"version\":\"0.1.0\",\"description\":\"Author side fixture.\",\"skills\":\"./skills\"}\n",
         "plugins/author-side/skills/author/SKILL.md": "---\nname: author-side\ndescription: Produce the reviewed handoff.\n---\n\nProduce the handoff.\n",
-        "plugins/reviewer-side/.agents-plugin/plugin.json": "{\"name\":\"reviewer-side\",\"version\":\"0.1.0\",\"description\":\"Reviewer side fixture.\",\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
+        "plugins/reviewer-side/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"reviewer-side\",\"version\":\"0.1.0\",\"description\":\"Reviewer side fixture.\",\"skills\":\"./skills\"}\n",
         "plugins/reviewer-side/skills/review/SKILL.md": "---\nname: reviewer-side\ndescription: Review the author handoff.\n---\n\nReview the handoff.\n",
         "outputs/report.md": "# AW Workflow Quality Review\n\n- User outcome: author-side produces one handoff and reviewer-side reviews it.\n- Entry: plugins/author-side/skills/author/SKILL.md\n- Components: author-side and reviewer-side.\n- Representative path: author-side -> reviewer-side.\n- External dependencies: none.\n- Excluded: real model execution and release check.\n",
         "outputs/previous-review-id.txt": "20260824T120000Z-cccccccc-dddddddd\n",

@@ -27,7 +27,7 @@
       "workspace_files": {
         ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"review-fixture\"}\n",
         "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture\"},\"interface\":{\"displayName\":\"Review Fixture\"},\"catalog\":{\"version\":\"0.2.0\"}}\n",
-        "plugins/worker/.agents-plugin/plugin.json": "{\"schemaVersion\":1,\"name\":\"worker\",\"version\":\"0.1.0\",\"description\":\"Worker.\",\"dependencies\":[\"missing-provider\"],\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
+        "plugins/worker/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"worker\",\"version\":\"0.1.0\",\"description\":\"Worker.\",\"dependencies\":[\"missing-provider\"],\"skills\":\"./skills\"}\n",
         "plugins/worker/skills/work/SKILL.md": "---\nname: work\ndescription: Do too many unrelated things.\n---\n\nWork.\n",
         "plugins/worker/skills/work/README.md": "# work\n\nWork.\n"
       },

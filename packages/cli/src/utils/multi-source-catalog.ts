@@ -19,11 +19,15 @@ import {
   type CatalogSourcesConfigSnapshot,
 } from './catalog-sources.js';
 import { catalogGitProviderInternal } from './git-catalog-provider.js';
-import { ensurePluginName, readPluginManifest } from './manifest.js';
+import { checkAwCapabilitySupport, ensurePluginName, readPluginManifest } from './manifest.js';
 import { catalogPathProviderInternal } from './path-catalog-provider.js';
 import { sanitizeCatalogSourceError } from './catalog-public-error.js';
 import { canonicalizePathThroughExistingAncestor } from './state-paths.js';
-import { validateCatalogSnapshot } from './catalog-snapshot.js';
+import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
+import {
+  AwCapabilityUnsupportedError,
+  IMPLEMENTED_AW_CAPABILITIES,
+} from '../commands/aw-capabilities.js';
 
 export interface ParsedPluginId {
   sourceId?: CatalogSourceId;
@@ -260,7 +264,7 @@ async function materializeCallbackGeneration(
         dereference: false,
         preserveTimestamps: true,
       });
-      const validation = await validateCatalogSnapshot(rootDir);
+      const validation = await validateCatalogSnapshotTransport(rootDir);
       if (
         validation.manifestDigest !== item.resolution.manifestDigest
         || validation.snapshotDigest !== item.resolution.snapshotDigest
@@ -498,6 +502,17 @@ export async function withResolvedCatalogPlugin<T>(
       );
     }
     const source = matches[0]!;
+    const selectedEntry = source.manifest.entries.find((entry) => entry.name === selector.pluginName)!;
+    const support = checkAwCapabilitySupport(
+      selectedEntry.requires.aw.capabilities ?? [],
+      IMPLEMENTED_AW_CAPABILITIES,
+    );
+    if (!support.supported) {
+      throw new AwCapabilityUnsupportedError(
+        formatPluginId({ sourceId: source.sourceId, pluginName: selector.pluginName }),
+        support.missing,
+      );
+    }
     const plugin = await readPluginManifest(
       path.join(source.rootDir, 'plugins', selector.pluginName),
       { mode: 'bundle' },

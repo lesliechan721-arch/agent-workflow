@@ -15,7 +15,6 @@ import { readPluginManifest } from '../../src/utils/manifest.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
-const DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION = '0.0.0';
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -30,18 +29,14 @@ function fixturePath(...segments: string[]): string {
   );
 }
 
-function withDefaultCompatibility<T extends Record<string, unknown>>(manifest: T): T {
-  if (Object.prototype.hasOwnProperty.call(manifest, 'compatibility')) {
+function withManifestSchema<T extends Record<string, unknown>>(manifest: T): T {
+  if (Object.prototype.hasOwnProperty.call(manifest, 'schemaVersion')) {
     return manifest;
   }
 
   return {
     ...manifest,
-    compatibility: {
-      aw: {
-        minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
-      },
-    },
+    schemaVersion: 2,
   };
 }
 
@@ -52,7 +47,7 @@ async function writeManifestOnlyPlugin(
 ): Promise<string> {
   const pluginDir = path.join(root, name);
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-  await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+  await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
     name,
     version: '0.1.0',
     description: `${name} test plugin.`,
@@ -145,7 +140,7 @@ async function writeSourcePlugin(
   const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
 
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-  await fs.writeJson(manifestPath, withDefaultCompatibility(manifest), { spaces: 2 });
+  await fs.writeJson(manifestPath, withManifestSchema(manifest), { spaces: 2 });
 
   for (const [relativePath, content] of Object.entries(files)) {
     const absolutePath = path.join(pluginDir, relativePath);
@@ -167,14 +162,10 @@ function createBaseManifest(
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
+    schemaVersion: 2,
     name,
     version: '0.1.0',
     description: `${name} test plugin.`,
-    compatibility: {
-      aw: {
-        minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
-      },
-    },
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -190,12 +181,11 @@ function createBaseManifest(
 async function writeAuthoringPluginManifest(
   pluginDir: string,
   manifest: Record<string, unknown>,
-  options: { preserveCompatibility?: boolean } = {},
 ): Promise<void> {
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
   await fs.writeJson(
     path.join(pluginDir, '.agents-plugin', 'plugin.json'),
-    options.preserveCompatibility ? manifest : withDefaultCompatibility(manifest),
+    withManifestSchema(manifest),
     { spaces: 2 },
   );
 }
@@ -217,7 +207,7 @@ async function writeDynamicArtifactPlugin(
   await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
   await fs.ensureDir(path.join(pluginDir, 'scripts'));
   await fs.ensureDir(path.join(pluginDir, 'skills', 'dynamic-authoring-test', 'agents'));
-  await fs.writeJson(manifestPath, withDefaultCompatibility({
+  await fs.writeJson(manifestPath, withManifestSchema({
     name: 'dynamic-authoring-test',
     version: '0.1.0',
     description: 'Test dynamic artifact authoring contracts.',
@@ -515,15 +505,10 @@ describe('authoring tools', () => {
       path.join(tempRepo, 'plugins', 'repo-check', '.agents-plugin', 'plugin.json'),
     );
     expect(scaffoldManifest).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       name: 'repo-check',
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
-      compatibility: {
-        aw: {
-          minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
-        },
-      },
       skills: './skills',
       apps: './.app.json',
       marketplace: {
@@ -2178,7 +2163,7 @@ describe('authoring tools', () => {
     await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
   });
 
-  it('scaffolds compatibility.aw.minVersion and blocks values above the target catalog minimum', async () => {
+  it('scaffolds an explicit manifest v2 without a version compatibility field', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-'));
     tempDirs.push(tempRoot);
 
@@ -2193,10 +2178,8 @@ describe('authoring tools', () => {
         scriptPath,
         'catalog-aware',
         '--description',
-        '用于验证 catalog 最低版本上下文与兼容性约束的示例插件。',
+        '用于验证 Manifest v2 的示例插件。',
         '--no-skills',
-        '--catalog-min-version',
-        '0.8.0',
         '--workspace-root',
         tempRepo,
       ],
@@ -2210,52 +2193,26 @@ describe('authoring tools', () => {
     await expect(
       fs.readJson(path.join(tempRepo, 'plugins', 'catalog-aware', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
-      compatibility: {
-        aw: {
-          minVersion: '0.8.0',
-        },
-      },
+      schemaVersion: 2,
     });
-
-    await expect(
-      execFileAsync(
-        'node',
-        [
-          scriptPath,
-          'too-new-for-catalog',
-          '--description',
-          '插件最低版本高于 catalog 门槛。',
-          '--no-skills',
-          '--min-version',
-          '0.9.0',
-          '--catalog-min-version',
-          '0.8.0',
-          '--workspace-root',
-          tempRepo,
-        ],
-        {
-          cwd: repoRoot(),
-          env: process.env,
-          maxBuffer: 10 * 1024 * 1024,
-        },
-      ),
-    ).rejects.toMatchObject({
-      stderr: expect.stringContaining('target catalog minimum'),
-    });
+    await expect(fs.readJson(
+      path.join(tempRepo, 'plugins', 'catalog-aware', '.agents-plugin', 'plugin.json'),
+    )).resolves.not.toHaveProperty('compatibility');
   });
 
-  it('validate_plugin.mjs rejects invalid authoring version contracts and catalog gates', async () => {
+  it('validate_plugin.mjs rejects v1 and reports unsupported declared capabilities', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-version-contracts-'));
     tempDirs.push(tempRoot);
     const pluginsRoot = path.join(tempRoot, 'plugins');
 
-    const missingCompatibilityDir = path.join(pluginsRoot, 'missing-compatibility');
+    const oldSchemaDir = path.join(pluginsRoot, 'old-schema');
     await writeAuthoringPluginManifest(
-      missingCompatibilityDir,
+      oldSchemaDir,
       {
-        name: 'missing-compatibility',
+        schemaVersion: 1,
+        name: 'old-schema',
         version: '0.1.0',
-        description: 'Missing compatibility contract.',
+        description: 'Old schema contract.',
         marketplace: {
           category: 'workflow',
           strict: true,
@@ -2265,27 +2222,18 @@ describe('authoring tools', () => {
           },
         },
       },
-      { preserveCompatibility: true },
     );
-    await expect(runValidatePlugin(missingCompatibilityDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
-      ),
+    await expect(runValidatePlugin(oldSchemaDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('Unsupported plugin manifest schemaVersion: expected 2'),
     });
 
-    const invalidMinVersionDir = path.join(pluginsRoot, 'invalid-min-version');
-    await writeAuthoringPluginManifest(invalidMinVersionDir, {
-      ...createBaseManifest('invalid-min-version'),
-      compatibility: {
-        aw: {
-          minVersion: 'latest',
-        },
-      },
+    const futureCapabilityDir = path.join(pluginsRoot, 'future-capability');
+    await writeAuthoringPluginManifest(futureCapabilityDir, {
+      ...createBaseManifest('future-capability'),
+      requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
     });
-    await expect(runValidatePlugin(invalidMinVersionDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received "latest".',
-      ),
+    await expect(runValidatePlugin(futureCapabilityDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('awCapabilityUnsupported'),
     });
 
     const invalidPluginVersionDir = path.join(pluginsRoot, 'invalid-plugin-version');
@@ -2315,40 +2263,6 @@ describe('authoring tools', () => {
       ),
     });
 
-    const aboveCatalogMinDir = path.join(pluginsRoot, 'above-catalog-min');
-    await writeAuthoringPluginManifest(aboveCatalogMinDir, {
-      ...createBaseManifest('above-catalog-min'),
-      compatibility: {
-        aw: {
-          minVersion: '0.9.0',
-        },
-      },
-    });
-    await expect(
-      runValidatePlugin(aboveCatalogMinDir, ['--catalog-min-version', '0.8.0']),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('target catalog minimum "0.8.0"'),
-    });
-
-    const perAgentVersionDir = path.join(pluginsRoot, 'per-agent-version');
-    await writeAuthoringPluginManifest(
-      perAgentVersionDir,
-      {
-        ...createBaseManifest('per-agent-version'),
-        compatibility: {
-          aw: {
-            minVersion: DEFAULT_AUTHORING_PLUGIN_AW_MIN_VERSION,
-          },
-          codex: {
-            minVersion: '0.145.0',
-          },
-        },
-      },
-      { preserveCompatibility: true },
-    );
-    await expect(runValidatePlugin(perAgentVersionDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('/compatibility must NOT have additional properties'),
-    });
   });
 
   it('supports explicit skill UI metadata without changing the trigger description', async () => {
@@ -2613,7 +2527,7 @@ describe('authoring tools', () => {
       ),
       path.join(bundleRoot, 'scripts', 'aw-config.mjs'),
     );
-    await fs.writeJson(path.join(bundleRoot, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(bundleRoot, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'config-demo',
       version: '0.1.0',
       description: 'Config helper fallback fixture.',
@@ -2982,7 +2896,7 @@ describe('authoring tools', () => {
     await fs.ensureDir(evalDir);
     await fs.writeJson(
       path.join(pluginDir, '.agents-plugin', 'plugin.json'),
-      withDefaultCompatibility({
+      withManifestSchema({
         name: 'eval-demo',
         version: '0.1.0',
         description: 'Test the plugin eval authoring contract.',
@@ -3763,7 +3677,7 @@ describe('authoring tools', () => {
       { 'shared.txt': providerBytes },
     );
     const invalidManifest = createBaseManifest('surface-consumer', {
-      compatibility: { aw: { minVersion: '0.1.0' } },
+      schemaVersion: 2,
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       skills: './skills',
       distributions: { agentSkills: { skills: './portable-skills' } },
@@ -3867,7 +3781,7 @@ describe('authoring tools', () => {
       path.join(tempRoot, 'plugins'),
       'portable-authoring',
       createBaseManifest('portable-authoring', {
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         extensions: {
           instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
         },
@@ -4917,7 +4831,7 @@ describe('authoring tools', () => {
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'slash-commands'));
-    await fs.writeJson(manifestPath, withDefaultCompatibility({
+    await fs.writeJson(manifestPath, withManifestSchema({
       name: 'slash-commands-products',
       version: '0.1.0',
       description: 'Test plugin for slash command platform gating.',
@@ -5003,7 +4917,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'metadata-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'metadata-test'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'metadata-test',
       version: '0.1.0',
       description: 'Test plugin for skill metadata checks.',
@@ -5199,7 +5113,7 @@ describe('authoring tools', () => {
 
     const pluginDir = path.join(tempRoot, 'manifest-products-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'manifest-products-test',
       version: '0.1.0',
       description: 'Test plugin for manifest product checks.',
@@ -5267,7 +5181,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'policy-products-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'policy-products-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'policy-products-test',
       version: '0.1.0',
       description: 'Test plugin for Codex policy product checks.',
@@ -5345,7 +5259,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'runtime-yaml-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'runtime-yaml-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'runtime-yaml-test',
       version: '0.1.0',
       description: 'Test plugin for runtime-compatible YAML metadata.',
@@ -5422,7 +5336,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'templated-metadata-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'templated-metadata-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'templated-metadata-test',
       version: '0.1.0',
       description: 'Test plugin for templated skill metadata.',
@@ -5516,7 +5430,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'claude-only');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'claude-only'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'claude-only',
       version: '0.1.0',
       description: 'Test plugin for Claude-only skill metadata checks.',
@@ -5566,7 +5480,7 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'frontmatter-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'frontmatter-test', 'agents'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'frontmatter-test',
       version: '0.1.0',
       description: 'Test plugin for skill frontmatter checks.',
@@ -6016,7 +5930,7 @@ describe('authoring tools', () => {
 
     const pluginDir = path.join(tempRoot, 'boundary-test');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
-    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withDefaultCompatibility({
+    await fs.writeJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'boundary-test',
       version: '0.1.0',
       description: 'Test plugin for boundary check.',
@@ -6061,7 +5975,7 @@ describe('authoring tools', () => {
         name: 'fallback-dependency',
         version: '1.0.0',
         description: 'Fallback dependency fixture.',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        schemaVersion: 2,
         dependencies: ['shared'],
         marketplace: {
           category: 'workflow',
@@ -6080,7 +5994,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v7 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v8 is unavailable'),
     });
   });
 
@@ -6111,7 +6025,7 @@ describe('authoring tools', () => {
     await Promise.all([
       fs.outputJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
         ...createBaseManifest('stale-portable'),
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
         distributions: { agentSkills: { skills: './portable-skills' } },
       }),
@@ -6129,7 +6043,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v7 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v8 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6142,7 +6056,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v7 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v8 is unavailable'),
     });
   });
 

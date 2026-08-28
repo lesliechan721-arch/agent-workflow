@@ -97,7 +97,6 @@ export interface CatalogPublicationDescriptor {
   contentDigest: string;
   planId: string;
   ledgerDigest: string;
-  minCliVersion: string;
   pluginNames: string[];
 }
 
@@ -471,7 +470,7 @@ export async function prepareCatalogPublicationInspection(options: {
         'Catalog remote changed during preparation. Increase the Catalog version before publishing again.',
       );
     }
-    const [preparedValidation, ledgerBytes] = await Promise.all([
+    const [, ledgerBytes] = await Promise.all([
       validatePublishedCatalogSnapshot(prepared.outputRoot),
       fs.readFile(path.join(prepared.outputRoot, 'plugin-release-ledger.json')),
     ]);
@@ -493,7 +492,6 @@ export async function prepareCatalogPublicationInspection(options: {
       contentDigest: prepared.contentDigest,
       planId: prepared.planId,
       ledgerDigest,
-      minCliVersion: preparedValidation.manifest.compatibility.aw.minVersion,
       pluginNames: [...prepared.pluginNames],
     };
     return {

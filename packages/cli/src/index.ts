@@ -148,6 +148,7 @@ import {
   renderPluginCapabilities,
 } from './commands/plugin-capabilities.js';
 import {
+  AwCapabilityUnsupportedError,
   checkCurrentAw,
   describeCurrentAw,
   inspectPluginRequirements,
@@ -1056,15 +1057,23 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   plugin
     .command('requirements')
-    .description('Inspect effective AW capabilities required by a plugin')
+    .description('Inspect or update effective AW capabilities required by a plugin')
     .argument('<plugin-directory>', 'plugin source directory')
     .option('--workspace-root <root>', 'Catalog workspace root')
+    .option('--add <capability>', 'add one declared AW capability')
+    .option('--remove <capability>', 'remove one declared AW capability')
     .requiredOption('--json', 'emit one machine-readable JSON object')
-    .action(async (pluginDirectory: string, rawOptions: { workspaceRoot?: string }) => {
+    .action(async (pluginDirectory: string, rawOptions: {
+      workspaceRoot?: string;
+      add?: string;
+      remove?: string;
+    }) => {
       try {
         const result = await inspectPluginRequirements({
           pluginDirectory,
           ...(rawOptions.workspaceRoot ? { workspaceRoot: rawOptions.workspaceRoot } : {}),
+          ...(rawOptions.add ? { add: rawOptions.add } : {}),
+          ...(rawOptions.remove ? { remove: rawOptions.remove } : {}),
           cwd,
         });
         writeJsonReceipt(io.stdout, result);
@@ -1292,9 +1301,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     }) => {
       const context = createActionContext('skill:install', {});
       const writeFailure = (error: unknown): void => {
-        const code = error instanceof PortableCommandError || error instanceof SkillsCliError
+        const capabilityError = error instanceof AwCapabilityUnsupportedError ? error : undefined;
+        const code = capabilityError?.code
+          ?? (error instanceof PortableCommandError || error instanceof SkillsCliError
           ? error.code
-          : 'portableInstallFailed';
+          : 'portableInstallFailed');
         writeJsonReceipt(io.stdout, {
           receiptSchemaVersion: 4,
           command: 'skill:install',
@@ -1312,7 +1323,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           materializationDigest: null,
           verification: { records: [], missing: [] },
           warnings: [],
-          failures: [{ code, message: `${code}: portable Skill 安装未执行。` }],
+          failures: [{
+            code,
+            message: capabilityError?.message ?? `${code}: portable Skill 安装未执行。`,
+            ...(capabilityError ? {
+              plugin: capabilityError.plugin,
+              missingCapabilities: capabilityError.missingCapabilities,
+              availableCapabilities: capabilityError.availableCapabilities,
+            } : {}),
+          }],
         });
       };
       if (rawOptions.json && !rawOptions.yes) {
@@ -1402,9 +1421,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         else writeLine(io.stdout, `portable Skill 已写入 ${receipt.out}：${receipt.selectedSkills.length} 项。`);
       } catch (error) {
         if (!rawOptions.json) throw error;
-        const code = error instanceof PortableCommandError || error instanceof SkillsCliError
+        const capabilityError = error instanceof AwCapabilityUnsupportedError ? error : undefined;
+        const code = capabilityError?.code
+          ?? (error instanceof PortableCommandError || error instanceof SkillsCliError
           ? error.code
-          : 'portableMaterializeFailed';
+          : 'portableMaterializeFailed');
         writeJsonReceipt(io.stdout, {
           receiptSchemaVersion: 4,
           command: 'skill:materialize',
@@ -1418,7 +1439,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           configDigest: null,
           materializationDigest: null,
           outputDigest: null,
-          errors: [{ code, message: `${code}: portable Skill 导出未执行。` }],
+          errors: [{
+            code,
+            message: capabilityError?.message ?? `${code}: portable Skill 导出未执行。`,
+            ...(capabilityError ? {
+              plugin: capabilityError.plugin,
+              missingCapabilities: capabilityError.missingCapabilities,
+              availableCapabilities: capabilityError.availableCapabilities,
+            } : {}),
+          }],
         });
         commandExitState.exitCode = 1;
       }
@@ -1443,8 +1472,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill-short-description <text>', 'initial Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
     .option('--version <semver>', 'initial stable plugin version (default: 0.1.0)')
-    .option('--min-version <semver>', 'compatibility.aw.minVersion')
-    .option('--catalog-min-version <semver>', 'target catalog compatibility minimum')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
     .option('--no-skills', 'create the plugin without a skills directory')
     .option('--with-mcp', 'add a minimal .mcp.json', false)
@@ -1481,7 +1508,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('validate')
     .description('Validate one source plugin directory')
     .argument('<plugin-directory>', 'source plugin directory')
-    .option('--catalog-min-version <semver>', 'validate compatibility against a target catalog')
     .option('--strict-agent-skills', 'allow only Agent Skills portable core frontmatter', false)
     .option('--claude-skill-profile <profile>', 'minimum | current (default: minimum)')
     .option('--version-base <git-ref>', 'production bundle comparison base (default: HEAD)')
@@ -1655,7 +1681,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   catalog
     .command('validate')
-    .description('Validate a schema 4 Catalog snapshot')
+    .description('Validate a schema 5 Catalog snapshot')
     .argument('<snapshot-directory>', 'Catalog snapshot directory')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (snapshotDirectory: string, rawOptions: { json?: boolean }) => {

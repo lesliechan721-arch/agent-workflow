@@ -234,7 +234,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('prepares config review with one status read, ordered real stages, and safe duration logging', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-config-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -342,7 +342,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   ] as const)('prepares one legal %s Review with one status entry', async (action, state, revisionState) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, `runtime-review-${action}-source`);
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {

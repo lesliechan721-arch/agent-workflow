@@ -29,7 +29,8 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 7;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 8;
+let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -409,11 +410,23 @@ async function tryLoadCliManifestTools() {
     'utils',
     'catalog-runtime-projection.js',
   );
-  if (!fs.existsSync(manifestModulePath) || !fs.existsSync(runtimeProjectionModulePath)) return null;
+  const capabilityModulePath = path.join(
+    CLI_PACKAGE_ROOT,
+    'dist',
+    'src',
+    'commands',
+    'aw-capabilities.js',
+  );
+  if (
+    !fs.existsSync(manifestModulePath)
+    || !fs.existsSync(runtimeProjectionModulePath)
+    || !fs.existsSync(capabilityModulePath)
+  ) return null;
   try {
-    const [manifestModule, runtimeProjectionModule] = await Promise.all([
+    const [manifestModule, runtimeProjectionModule, capabilityModule] = await Promise.all([
       import(pathToFileURL(manifestModulePath).href),
       import(pathToFileURL(runtimeProjectionModulePath).href),
+      import(pathToFileURL(capabilityModulePath).href),
     ]);
     if (
       manifestModule.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
@@ -426,6 +439,8 @@ async function tryLoadCliManifestTools() {
       validateSourcePluginManifest: manifestModule.validateSourcePluginManifest ?? null,
       readPluginManifest: manifestModule.readPluginManifest ?? null,
       discoverPlugins: manifestModule.discoverPlugins ?? null,
+      resolvePluginRequirements: manifestModule.resolvePluginRequirements ?? null,
+      implementedCapabilities: capabilityModule.IMPLEMENTED_AW_CAPABILITIES ?? null,
       createRuntimeResolver: runtimeProjectionModule.createCatalogRuntimeImportResolver ?? null,
     };
   } catch {
@@ -588,11 +603,12 @@ function validateManifestLightweight(manifest) {
     error('top-level "commands" has been removed; use "slashCommands" instead');
   }
   validateAllowedKeys(input, 'plugin manifest', [
+    'schemaVersion',
     'name',
     'version',
     'description',
     'dependencies',
-    'compatibility',
+    'requires',
     'skills',
     'slashCommands',
     'mcpServers',
@@ -709,7 +725,7 @@ function validatePortableNativeArtifactCapabilityLightweight(manifest) {
     && Array.isArray(target.states)
     && target.states.includes('present'));
   if (!hasOtherNativeDeclaration && !hasPresentNativeArtifact) {
-    const message = 'Invalid plugin manifest: portable-only plugins are not supported in V1. Declare at least one non-empty native capability.';
+    const message = 'Invalid plugin manifest: portable-only plugins are not supported. Declare at least one non-empty native capability.';
     if (!errors.includes(message)) error(message);
   }
 }
@@ -2328,41 +2344,6 @@ function validateDeclaredNativeAssets(pluginDir, manifest) {
         `"${filename}" exists but manifest does not declare "${field}" — declare it or remove the file`,
       );
     }
-  }
-}
-
-function validatePluginVersionContracts(manifest, options) {
-  if (manifest.compatibility === undefined) {
-    error('Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.');
-    return;
-  }
-  const compatibility = expectRecord(manifest.compatibility, 'compatibility');
-  if (!compatibility) {
-    return;
-  }
-
-  validateAllowedKeys(compatibility, 'compatibility', ['aw']);
-  if (compatibility.aw === undefined) {
-    error('Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.');
-    return;
-  }
-  const aw = expectRecord(compatibility.aw, 'compatibility.aw');
-  if (!aw) {
-    return;
-  }
-  validateAllowedKeys(aw, 'compatibility.aw', ['minVersion']);
-  const pluginMinVersion = validateStrictSemVerString(
-    aw.minVersion,
-    'compatibility.aw.minVersion',
-  );
-  if (!pluginMinVersion || !options.catalogMinVersion) {
-    return;
-  }
-
-  if (compareStrictSemVer(pluginMinVersion, options.catalogMinVersion) > 0) {
-    error(
-      `Invalid compatibility.aw.minVersion for plugin "${pluginNameForError(manifest)}": received ${JSON.stringify(pluginMinVersion)}, which is higher than target catalog minimum ${JSON.stringify(options.catalogMinVersion)}.`,
-    );
   }
 }
 
@@ -4670,8 +4651,6 @@ function printUsage() {
   aw plugin validate <plugin-directory> [options]
 
 Options:
-  --catalog-min-version <semver>
-                               Validate compatibility.aw.minVersion against a target catalog.
   --strict-agent-skills        Allow only Agent Skills portable core frontmatter.
   --claude-skill-profile <minimum|current>
                                Validate Claude fields at AW minimum 2.1.88 (default) or current docs.
@@ -4749,7 +4728,24 @@ async function validatePluginDir(pluginDir, options) {
 
   const skillValidationTools = await tryLoadCliSkillValidationTools();
   try {
-    await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+    const normalizedManifest = await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+    const requirements = await cliManifestTools.resolvePluginRequirements({
+      pluginRoot: pluginDir,
+      manifest: normalizedManifest,
+      implementedCapabilities: cliManifestTools.implementedCapabilities,
+    });
+    const blockingObservations = requirements.observations.filter((observation) => observation.blocking);
+    if (requirements.unsupportedByCurrentAw.length > 0) {
+      capabilityDiagnostic = {
+        errorCode: 'awCapabilityUnsupported',
+        missingCapabilities: requirements.unsupportedByCurrentAw,
+        availableCapabilities: [...cliManifestTools.implementedCapabilities].sort(),
+      };
+      error(`[awCapabilityUnsupported] missingCapabilities=${JSON.stringify(requirements.unsupportedByCurrentAw)}`);
+    }
+    for (const observation of blockingObservations) {
+      error(`[awCapabilityScanBlocked] ${observation.path}: ${observation.message}`);
+    }
   } catch (e) {
     error(e.message);
   }
@@ -4760,7 +4756,6 @@ async function validatePluginDir(pluginDir, options) {
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
   validateCanonicalSkillLayout(pluginDir, manifest);
-  validatePluginVersionContracts(manifest, options);
   validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
   const runtimeImports = await resolveAuthorRuntimeImports({
@@ -4823,7 +4818,6 @@ function parseArgs(argv) {
   const args = argv.slice(2);
   const options = {
     pluginDir: null,
-    catalogMinVersion: null,
     strictAgentSkills: false,
     claudeSkillProfile: 'minimum',
     versionBase: 'HEAD',
@@ -4885,22 +4879,6 @@ function parseArgs(argv) {
       exitCliError(`Unknown argument: ${arg}`, options.json);
     }
 
-    if (arg === '--catalog-min-version') {
-      const value = args[index + 1];
-      if (!value || value.startsWith('--')) {
-        exitCliError('--catalog-min-version requires a value.', options.json);
-      }
-      index += 1;
-      if (!STRICT_SEMVER_PATTERN.test(value)) {
-        exitCliError(
-          `Invalid --catalog-min-version: expected a strict SemVer 2.0.0 string. Received ${JSON.stringify(value)}.`,
-          options.json,
-        );
-      }
-      options.catalogMinVersion = value;
-      continue;
-    }
-
     exitCliError(`Unknown option: ${arg}`, options.json);
   }
 
@@ -4935,7 +4913,6 @@ async function main() {
   const gitRoot = discoverCanonicalRepoRoot(findRepoRootCandidate(resolved));
 
   await validatePluginDir(resolved, {
-    catalogMinVersion: args.catalogMinVersion,
     strictAgentSkills: args.strictAgentSkills,
     claudeSkillProfile: args.claudeSkillProfile,
     versionBase: args.versionBase,
@@ -4953,6 +4930,7 @@ async function main() {
       versionCheck: pluginVersionCheckResult,
       warnings,
       errors,
+      ...(capabilityDiagnostic ?? {}),
     }, null, 2));
     if (errors.length > 0) {
       process.exit(1);

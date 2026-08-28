@@ -16,11 +16,11 @@
 
 具体目录由 manifest 声明。所有 source path 必须留在插件根内，不能进入任意深度的 `.git` 或 `node_modules`。只维护 source 文件；`.aw/plugins/`、Catalog snapshot、digest 和 platform marketplace 是生成物，不手改。
 
-每个 manifest 使用 `schemaVersion: 1`。不要混淆：
+每个 source manifest 使用 `schemaVersion: 2`。不要混淆：
 
 - `schemaVersion`：manifest 结构版本。
 - `version`：单插件稳定 artifact 版本。
-- `compatibility.aw.minVersion`：插件要求的最低 AW 版本。
+- `requires.aw.capabilities`：插件显式要求的 AW capability ID；插件版本只标识 artifact。
 
 字段、类型、required 条件和 accepted values 通过当前 CLI 查询：
 

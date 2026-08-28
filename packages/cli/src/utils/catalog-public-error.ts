@@ -5,25 +5,28 @@ import { resolveAwHome } from './state-paths.js';
 
 const DEFAULT_ERROR_CODE = 'catalogSourceResolutionFailed';
 
-export type CatalogProviderCompatibilityErrorCode =
-  | 'awVersionTooLow'
-  | 'explicitCatalogIncompatible';
+export type CatalogProviderCompatibilityErrorCode = 'awCapabilityUnsupported';
 
 export class CatalogProviderCompatibilityError extends Error {
   readonly sourceId: string;
   readonly code: CatalogProviderCompatibilityErrorCode;
+  readonly requiredCapabilities: string[];
+  readonly missingCapabilities: string[];
+  readonly availableCapabilities: string[];
 
   constructor(options: {
     sourceId: string;
-    minAwVersion: string;
-    selection: 'cliChannel' | 'explicit';
+    requiredCapabilities: readonly string[];
+    missingCapabilities: readonly string[];
+    availableCapabilities: readonly string[];
   }) {
-    super(`Catalog source "${options.sourceId}" requires aw >= ${options.minAwVersion}.`);
+    super(`Catalog source "${options.sourceId}" requires unsupported AW capabilities: ${options.missingCapabilities.join(', ')}.`);
     this.name = 'CatalogProviderCompatibilityError';
     this.sourceId = options.sourceId;
-    this.code = options.selection === 'cliChannel'
-      ? 'awVersionTooLow'
-      : 'explicitCatalogIncompatible';
+    this.code = 'awCapabilityUnsupported';
+    this.requiredCapabilities = [...options.requiredCapabilities];
+    this.missingCapabilities = [...options.missingCapabilities];
+    this.availableCapabilities = [...options.availableCapabilities];
   }
 }
 
@@ -102,6 +105,20 @@ export function sanitizeCatalogSourceError(
   }
   if ('inventory' in original) {
     (sanitized as Error & { inventory?: unknown }).inventory = original.inventory;
+  }
+  type CapabilityField = 'requiredCapabilities' | 'missingCapabilities' | 'availableCapabilities';
+  const originalCapabilities = original as Error & Partial<Record<CapabilityField, unknown>>;
+  const sanitizedCapabilities = sanitized as Error & { code: string }
+    & Partial<Record<CapabilityField, string[]>>;
+  for (const field of [
+    'requiredCapabilities',
+    'missingCapabilities',
+    'availableCapabilities',
+  ] as const) {
+    const value = originalCapabilities[field];
+    if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) {
+      sanitizedCapabilities[field] = [...value];
+    }
   }
   return sanitized;
 }

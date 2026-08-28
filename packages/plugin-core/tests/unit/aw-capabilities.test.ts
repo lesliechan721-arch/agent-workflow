@@ -25,7 +25,7 @@ afterEach(async () => {
 
 function manifest(overrides: Record<string, unknown> = {}): NormalizedPluginManifest {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name: 'example',
     version: '1.0.0',
     description: 'Example.',
@@ -34,7 +34,6 @@ function manifest(overrides: Record<string, unknown> = {}): NormalizedPluginMani
       strict: true,
       policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
     },
-    compatibility: { aw: { minVersion: '0.1.0' } },
     ...overrides,
   } as NormalizedPluginManifest
 }
@@ -89,18 +88,18 @@ describe('AW capability contracts', () => {
       kind: 'aw-plugin-requirements',
       plugin: { name: 'example', version: '1.0.0' },
       requiredCapabilities,
-      capabilitySetDigest: computeAwCapabilitySetDigest(requiredCapabilities),
+      digest: computeAwCapabilitySetDigest(requiredCapabilities),
     }).requiredCapabilities).toEqual(requiredCapabilities)
     expect(() => parseAwPluginRequirementsReceipt({
       schemaVersion: 1,
       kind: 'aw-plugin-requirements',
       plugin: { name: 'example', version: '1.0.0' },
       requiredCapabilities,
-      capabilitySetDigest: 'sha256:bad',
-    })).toThrow('capabilitySetDigest')
+      digest: 'sha256:bad',
+    })).toThrow('digest')
   })
 
-  it('derives coarse structural requirements without adding a v1 manifest capability', () => {
+  it('derives the v2 manifest capability and other structural requirements', () => {
     expect(deriveAwCapabilitiesFromManifest(manifest({
       skills: './skills',
       buildConfig: {
@@ -115,6 +114,7 @@ describe('AW capability contracts', () => {
       'aw.plugin-build-config.v1',
       'aw.plugin-config.v1',
       'aw.plugin-lifecycle.v1',
+      'aw.plugin-manifest.v2',
       'aw.plugin-skills.v1',
       'aw.portable-skills.v1',
       'aw.runtime-imports.v1',

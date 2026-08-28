@@ -79,7 +79,21 @@ export interface AwPluginRequirementsReceiptV1 {
   kind: 'aw-plugin-requirements'
   plugin: { name: string; version: string }
   requiredCapabilities: AwCapabilityId[]
-  capabilitySetDigest: string
+  digest: string
+}
+
+export function createAwPluginRequirementsReceipt(
+  plugin: { name: string; version: string },
+  requiredCapabilities: readonly unknown[],
+): AwPluginRequirementsReceiptV1 {
+  const normalized = normalizeAwCapabilities(requiredCapabilities)
+  return {
+    schemaVersion: 1,
+    kind: 'aw-plugin-requirements',
+    plugin,
+    requiredCapabilities: normalized,
+    digest: computeAwCapabilitySetDigest(normalized),
+  }
 }
 
 function assertRecord(value: unknown, fieldName: string): asserts value is Record<string, unknown> {
@@ -95,7 +109,7 @@ function assertExactKeys(value: Record<string, unknown>, keys: readonly string[]
 
 export function parseAwPluginRequirementsReceipt(value: unknown): AwPluginRequirementsReceiptV1 {
   assertRecord(value, 'AW plugin requirements receipt')
-  assertExactKeys(value, ['schemaVersion', 'kind', 'plugin', 'requiredCapabilities', 'capabilitySetDigest'], 'AW plugin requirements receipt')
+  assertExactKeys(value, ['schemaVersion', 'kind', 'plugin', 'requiredCapabilities', 'digest'], 'AW plugin requirements receipt')
   if (value.schemaVersion !== 1) throw new Error('Invalid AW plugin requirements receipt.schemaVersion: expected 1.')
   if (value.kind !== 'aw-plugin-requirements') throw new Error('Invalid AW plugin requirements receipt.kind.')
   assertRecord(value.plugin, 'AW plugin requirements receipt.plugin')
@@ -113,14 +127,14 @@ export function parseAwPluginRequirementsReceipt(value: unknown): AwPluginRequir
     value.requiredCapabilities,
     'AW plugin requirements receipt.requiredCapabilities',
   )
-  if (typeof value.capabilitySetDigest !== 'string' || value.capabilitySetDigest !== computeAwCapabilitySetDigest(requiredCapabilities)) {
-    throw new Error('Invalid AW plugin requirements receipt.capabilitySetDigest.')
+  if (typeof value.digest !== 'string' || value.digest !== computeAwCapabilitySetDigest(requiredCapabilities)) {
+    throw new Error('Invalid AW plugin requirements receipt.digest.')
   }
   return {
     schemaVersion: 1,
     kind: 'aw-plugin-requirements',
     plugin: { name: value.plugin.name, version: value.plugin.version },
     requiredCapabilities,
-    capabilitySetDigest: value.capabilitySetDigest,
+    digest: value.digest,
   }
 }

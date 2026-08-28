@@ -34,7 +34,7 @@ describe('plugin authoring capability structure registry', () => {
   it('keeps accepted values equal to the public manifest schema', async () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
     const schema = JSON.parse(await fs.readFile(
-      path.join(root, 'schemas', 'plugin-manifest-v1.json'),
+      path.join(root, 'schemas', 'plugin-manifest-v2.json'),
       'utf8',
     ))
     expect(getPluginAuthoringAcceptedValues('manifest', 'marketplace.policy.installation'))

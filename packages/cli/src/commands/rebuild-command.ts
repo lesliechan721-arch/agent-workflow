@@ -17,7 +17,7 @@ import { probeAgentVersion } from '../utils/agent-version.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { createNoopReporter } from '../output/reporter.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
-import { readPluginManifest, resolvePluginsFromCatalog } from '../utils/manifest.js';
+import { readPluginManifest } from '../utils/manifest.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
@@ -67,6 +67,12 @@ import {
   resolveRepoRootSync,
 } from '../utils/state-paths.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
+import {
+  AwCapabilityUnsupportedError,
+  IMPLEMENTED_AW_CAPABILITIES,
+} from './aw-capabilities.js';
+import { checkAwCapabilitySupport } from '../utils/manifest.js';
 import {
   createDependencyOperationPlan,
   type DependencyOperationPlan,
@@ -76,6 +82,7 @@ import type { CleanupCommandOptions } from './options.js';
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   awHomeMutationToken?: AwHomeMutationToken;
   catalogResolution?: CatalogResolution;
+  resolvedCatalogPlugins?: PluginMeta[];
   namespacedSource?: {
     sourceId: string;
     sourceIdentity: string;
@@ -169,11 +176,10 @@ function createSyntheticPlugin(pluginName: string, env: NodeJS.ProcessEnv): Plug
     rootDir,
     manifestPath: path.join(rootDir, '.agents-plugin', 'plugin.json'),
     manifest: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       name: pluginName,
       version: '0.0.0',
       description: 'Cleanup-only target for a plugin missing from the current catalog.',
-      compatibility: { aw: { minVersion: '0.0.0' } },
       marketplace: {
         category: 'cleanup',
         strict: true,
@@ -289,7 +295,25 @@ async function runSingleSourceRebuildCommand(options: {
   const selected = selectedPlatforms(options.commandOptions.platform);
   const catalog = options.runtime?.catalogResolution;
   if (!catalog) throw new Error('Internal error: a resolved catalog source is required.');
-  const catalogPlugins = await resolvePluginsFromCatalog(catalog.rootDir, undefined);
+  const requestedByPlatform = await resolveRequestedNames({
+    command: options.command,
+    pluginNames: options.pluginNames,
+    all: options.all,
+    platforms: selected,
+    scope: options.commandOptions.scope,
+    cwd: options.commandOptions.cwd,
+    env,
+    nativeCliRunner: runtime.nativeCliRunner,
+  });
+  const exactPluginNames = [...new Set([...requestedByPlatform.values()].flat())];
+  const catalogPlugins = options.runtime?.resolvedCatalogPlugins ?? (await Promise.all(
+    exactPluginNames.map(async (pluginName) => {
+      const pluginRoot = path.join(catalog.rootDir, 'plugins', pluginName);
+      return await fs.pathExists(pluginRoot)
+        ? readPluginManifest(pluginRoot, { mode: 'bundle' })
+        : null;
+    }),
+  )).filter((plugin): plugin is PluginMeta => plugin !== null);
   if (options.runtime?.namespacedSource) {
     for (const plugin of catalogPlugins) {
       plugin.sourceId = options.runtime.namespacedSource.sourceId;
@@ -302,16 +326,6 @@ async function runSingleSourceRebuildCommand(options: {
     }
   }
   const catalogByName = new Map(catalogPlugins.map((plugin) => [plugin.manifest.name, plugin]));
-  const requestedByPlatform = await resolveRequestedNames({
-    command: options.command,
-    pluginNames: options.pluginNames,
-    all: options.all,
-    platforms: selected,
-    scope: options.commandOptions.scope,
-    cwd: options.commandOptions.cwd,
-    env,
-    nativeCliRunner: runtime.nativeCliRunner,
-  });
   if (
     options.commandOptions.platform === 'both'
     && options.command !== 'cleanup'
@@ -540,7 +554,6 @@ function toCatalogResolution(source: CatalogSourceResolution): CatalogResolution
     source: 'local',
     catalogVersion: source.manifest.catalogVersion,
     channel: source.manifest.channel,
-    minAwVersion: source.manifest.compatibility.aw.minVersion,
   };
 }
 
@@ -885,7 +898,6 @@ async function cleanupOfflineOwnedComponents(options: {
         source: 'local',
         catalogVersion: '0.0.0',
         channel: 'beta',
-        minAwVersion: '0.0.0',
       },
       includeHistoricalLifecycleArtifacts: false,
     });
@@ -1161,21 +1173,18 @@ export async function runRebuildCommand(options: {
           legacyLiveTargets,
         );
       }
-      const available = (await Promise.all(catalog.sources.map(async (item) => {
+      const availableEntries = catalog.sources.flatMap((item) => {
         const source = item.resolution!;
-        const plugins = await resolvePluginsFromCatalog(source.rootDir, undefined);
-        return plugins.map((plugin) => {
-          const pluginId = formatPluginId({ sourceId: source.sourceId, pluginName: plugin.manifest.name });
-          plugin.sourceId = source.sourceId;
-          plugin.sourceIdentity = source.sourceIdentity;
-          plugin.pluginId = pluginId;
-          return { source, plugin, pluginId };
-        });
-      }))).flat();
-      const selected = selectors.map((selector, index) => {
-        const matches = available.filter((entry) =>
-          entry.plugin.manifest.name === selector.pluginName
-          && (selector.sourceId === undefined || entry.source.sourceId === selector.sourceId));
+        return source.manifest.entries.map((entry) => ({
+          source,
+          entry,
+          pluginId: formatPluginId({ sourceId: source.sourceId, pluginName: entry.name }),
+        }));
+      });
+      const selectedEntries = selectors.map((selector, index) => {
+        const matches = availableEntries.filter((candidate) =>
+          candidate.entry.name === selector.pluginName
+          && (selector.sourceId === undefined || candidate.source.sourceId === selector.sourceId));
         if (matches.length === 0) {
           throw new Error(`Plugin "${requestedPluginNames[index]}" does not exist in the required catalog source set.`);
         }
@@ -1187,6 +1196,67 @@ export async function runRebuildCommand(options: {
       const dependencyEnabled = options.command === 'install'
         || options.command === 'upgrade'
         || options.command === 'reinstall';
+      const entryClosure = (roots: typeof selectedEntries): typeof availableEntries => {
+        const result: typeof availableEntries = [];
+        const seen = new Set<string>();
+        const visiting = new Set<string>();
+        const byId = new Map(availableEntries.map((candidate) => [candidate.pluginId, candidate]));
+        const visit = (candidate: typeof availableEntries[number]): void => {
+          if (seen.has(candidate.pluginId)) return;
+          if (visiting.has(candidate.pluginId)) throw new Error(`Catalog dependency cycle includes "${candidate.pluginId}".`);
+          visiting.add(candidate.pluginId);
+          for (const dependency of candidate.entry.dependencies) {
+            const dependencyId = formatPluginId({ sourceId: candidate.source.sourceId, pluginName: dependency });
+            const resolved = byId.get(dependencyId);
+            if (!resolved) throw new Error(`Catalog plugin "${candidate.pluginId}" depends on missing plugin "${dependency}".`);
+            visit(resolved);
+          }
+          visiting.delete(candidate.pluginId);
+          seen.add(candidate.pluginId);
+          result.push(candidate);
+        };
+        for (const root of roots) visit(root);
+        return result;
+      };
+      const removalConsumerEntries = options.command === 'cleanup' || options.command === 'uninstall'
+        ? availableEntries.filter((candidate) => selectedEntries.some((selectedEntry) =>
+            candidate.source.sourceId === selectedEntry.source.sourceId
+            && candidate.entry.dependencies.includes(selectedEntry.entry.name)))
+        : [];
+      const requiredEntryClosure = dependencyEnabled
+        ? entryClosure(selectedEntries)
+        : [...new Map([...selectedEntries, ...removalConsumerEntries].map((candidate) =>
+            [candidate.pluginId, candidate] as const)).values()];
+      if (dependencyEnabled) {
+        for (const candidate of requiredEntryClosure) {
+          const requiredCapabilities = candidate.entry.requires.aw.capabilities ?? [];
+          const support = checkAwCapabilitySupport(requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
+          if (!support.supported) {
+            throw new AwCapabilityUnsupportedError(candidate.pluginId, support.missing);
+          }
+        }
+        for (const item of catalog.sources) {
+          const source = item.resolution!;
+          const names = requiredEntryClosure
+            .filter((candidate) => candidate.source.sourceId === source.sourceId)
+            .map((candidate) => candidate.entry.name);
+          if (names.length > 0) {
+            await validateCatalogSnapshotPluginEntriesComplete(source.rootDir, names);
+          }
+        }
+      }
+      const available = await Promise.all(requiredEntryClosure.map(async (candidate) => {
+        const plugin = await readPluginManifest(
+          path.join(candidate.source.rootDir, 'plugins', candidate.entry.name),
+          { mode: 'bundle' },
+        );
+        plugin.sourceId = candidate.source.sourceId;
+        plugin.sourceIdentity = candidate.source.sourceIdentity;
+        plugin.pluginId = candidate.pluginId;
+        return { source: candidate.source, plugin, pluginId: candidate.pluginId };
+      }));
+      const selected = selectedEntries.map((entry) => available.find((candidate) =>
+        candidate.pluginId === entry.pluginId)!);
       const selectedIds = new Set(selected.map((entry) => entry.pluginId));
       const resolveClosureEntries = (
         rootsBySource: typeof selected,
@@ -1921,6 +1991,9 @@ export async function runRebuildCommand(options: {
             ...options.runtime,
             env: runtimeEnv,
             catalogResolution: toCatalogResolution(entry.source),
+            resolvedCatalogPlugins: available
+              .filter((candidate) => candidate.source.sourceId === entry.source.sourceId)
+              .map((candidate) => candidate.plugin),
             namespacedSource,
             dependencyReviewPreflightHandled: true,
             targetBuiltHookHandled: true,

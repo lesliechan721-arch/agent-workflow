@@ -7,7 +7,6 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import { compareReleaseSemVer } from '../../../../scripts/release/common.mjs';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
@@ -101,14 +100,10 @@ describe('build smoke', () => {
       'dir',
     );
     await fs.writeJson(manifestPath, {
+      schemaVersion: 2,
       name: 'version-gate-smoke',
       version: '0.1.0',
       description: 'Baseline version gate smoke plugin.',
-      compatibility: {
-        aw: {
-          minVersion: '0.0.0',
-        },
-      },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -283,14 +278,15 @@ describe('build smoke', () => {
       fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
     ]);
     const catalogManifest = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json')) as {
-      compatibility: { aw: { minVersion: string } };
+      requires: { aw: { capabilities: string[] } };
       entries: Array<{
         name: string;
         source: string;
         artifactDigest: string;
         manifestDigest: string;
         contentDigest: string;
-        compatibility: { aw: { minVersion: string } };
+        dependencies: string[];
+        requires: { aw: { capabilities: string[] } };
       }>;
     };
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
@@ -484,7 +480,7 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
     expect(catalogManifest).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       catalogVersion: sourceMetadata.catalog.version,
       channel: String(sourceMetadata.catalog.version).includes('-') ? 'beta' : 'latest',
       release: { state: 'development' },
@@ -497,12 +493,9 @@ describe('build smoke', () => {
           contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }))),
     });
-    const entryMinVersions = catalogManifest.entries.map((entry) => entry.compatibility.aw.minVersion);
-    expect(entryMinVersions).not.toHaveLength(0);
-    const derivedFloor = entryMinVersions.reduce((floor, version) => (
-      compareReleaseSemVer(version, floor) > 0 ? version : floor
-    ));
-    expect(catalogManifest.compatibility.aw.minVersion).toBe(derivedFloor);
+    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v5']);
+    expect(catalogManifest.entries.every((entry) =>
+      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v2'))).toBe(true);
     expect(catalogManifest).not.toHaveProperty('history');
     expect(catalogManifest).not.toHaveProperty('packages');
     expect((await fs.readdir(outputRoot)).sort()).toEqual([
@@ -534,16 +527,16 @@ describe('build smoke', () => {
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
   });
 
-  it('materializes and validates schema 4 compatibility from real build bundles', async () => {
+  it('materializes and completely validates schema 5 from real build bundles', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
-    const { validateCatalogSnapshot } = await importSmokeSnapshotModule<{
-      validateCatalogSnapshot: (rootDir: string) => Promise<{
+    const { validateCatalogSnapshotComplete } = await importSmokeSnapshotModule<{
+      validateCatalogSnapshotComplete: (rootDir: string) => Promise<{
         manifest: { schemaVersion: number; entries: Array<{ name: string; contentDigest: string }> };
       }>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
-    const validated = await validateCatalogSnapshot(outputRoot);
-    expect(validated.manifest.schemaVersion).toBe(4);
+    const validated = await validateCatalogSnapshotComplete(outputRoot);
+    expect(validated.manifest.schemaVersion).toBe(5);
     expect(validated.manifest.entries.map((entry) => entry.name).sort())
       .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
     expect(validated.manifest.entries.every((entry) =>

@@ -89,10 +89,10 @@ describe('multi-source read commands', () => {
     expect(result.compositeDigest).toMatch(/^sha256:/);
   });
 
-  it('keeps path compatibility codes in init and status JSON', async () => {
+  it('keeps a source loadable when one catalog entry requires a future capability', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const incompatible = fixturePath('incompatible');
-    await createCatalogSnapshotFixture(incompatible, 'demo', '99.0.0');
+    await createCatalogSnapshotFixture(incompatible, 'demo', ['aw.future-feature.v99']);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
@@ -109,11 +109,11 @@ describe('multi-source read commands', () => {
       env: isolation.env,
       io: initOutput.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(0);
     expect(JSON.parse(initOutput.readStdout())).toMatchObject({
       sources: [expect.objectContaining({
         id: 'local',
-        errorCode: 'explicitCatalogIncompatible',
+        ok: true,
       })],
     });
 
@@ -123,12 +123,12 @@ describe('multi-source read commands', () => {
       env: isolation.env,
       io: statusOutput.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(0);
     expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
       catalog: {
         sources: [expect.objectContaining({
           id: 'local',
-          errorCode: 'explicitCatalogIncompatible',
+          freshness: 'path',
         })],
       },
     });
@@ -185,7 +185,7 @@ describe('multi-source read commands', () => {
   it('keeps typed config preflight details internal and isolates a safe read diagnostic', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('status-config-preflight');
-    await createCatalogSnapshotFixture(root, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = { schema: { rules: { type: 'string', title: '规则', required: true } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -227,7 +227,7 @@ describe('multi-source read commands', () => {
       path.join(sourceRoot, 'plugins', 'demo', 'skills', 'review', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n',
     );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.skills = './skills';
     });
@@ -653,7 +653,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       claudeOnly,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => { manifest.marketplace.policy.products = ['CLAUDE']; },
     );
@@ -729,7 +729,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       codexOnly,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => { manifest.marketplace.policy.products = ['CODEX']; },
     );
@@ -771,7 +771,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       projectCapable,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
@@ -1108,7 +1108,7 @@ describe('multi-source read commands', () => {
       await createCatalogSnapshotFixture(
         good,
         'demo',
-        '0.0.0',
+        [],
         'demo\n',
         (manifest) => {
           manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };
@@ -1239,7 +1239,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       good,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => {
         manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };

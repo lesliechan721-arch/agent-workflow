@@ -31,7 +31,7 @@ const plugin = (name = 'active-plugin', version = '2.0.0'): PluginMeta => ({
     name,
     version,
     description: 'rebuild fixture',
-    compatibility: { aw: { minVersion: '0.1.0' } },
+    schemaVersion: 2,
     marketplace: {
       category: 'test',
       strict: true,

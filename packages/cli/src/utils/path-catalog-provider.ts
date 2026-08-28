@@ -12,9 +12,10 @@ import { calculateCatalogSourceIdentity } from './catalog-source-identity.js';
 import {
   catalogSourceCacheInternal,
 } from './catalog-source-cache.js';
-import { validateCatalogSnapshot } from './catalog-snapshot.js';
-import { compareStrictSemVer } from './manifest.js';
+import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
+import { checkAwCapabilitySupport } from './manifest.js';
 import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 
 const {
   ensureCatalogSourceCacheLocation,
@@ -46,22 +47,25 @@ async function resolvePathCatalogSourceDirect(
   const stagingRoot = path.join(location.rootDir, `.path-${crypto.randomUUID()}.tmp`);
   let published = false;
   try {
-    const initial = await validateCatalogSnapshot(await fs.realpath(source.path));
+    const initial = await validateCatalogSnapshotTransport(await fs.realpath(source.path));
     const sourceRoot = initial.rootDir;
     await fs.copy(sourceRoot, stagingRoot, { dereference: false, preserveTimestamps: true });
-    const copied = await validateCatalogSnapshot(stagingRoot);
-    const current = await validateCatalogSnapshot(sourceRoot);
+    const copied = await validateCatalogSnapshotTransport(stagingRoot);
+    const current = await validateCatalogSnapshotTransport(sourceRoot);
     if (
       initial.manifestDigest !== copied.manifestDigest
       || initial.snapshotDigest !== copied.snapshotDigest
       || current.manifestDigest !== copied.manifestDigest
       || current.snapshotDigest !== copied.snapshotDigest
     ) throw new Error(`Catalog path source "${source.id}" changed during snapshot copy.`);
-    if (compareStrictSemVer(options.cliVersion, copied.manifest.compatibility.aw.minVersion) < 0) {
+    const requiredCapabilities = copied.manifest.requires.aw.capabilities ?? [];
+    const support = checkAwCapabilitySupport(requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
+    if (!support.supported) {
       throw new CatalogProviderCompatibilityError({
         sourceId: source.id,
-        minAwVersion: copied.manifest.compatibility.aw.minVersion,
-        selection: 'explicit',
+        requiredCapabilities,
+        missingCapabilities: support.missing,
+        availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
       });
     }
     const entry = await publishCatalogSourceCacheEntry({

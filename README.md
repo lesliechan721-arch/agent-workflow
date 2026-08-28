@@ -232,7 +232,7 @@ pnpm release:install:local
 pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz>
 ```
 
-`pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
+`pnpm build` 生成 `packages/cli/plugins-dist/` schema 5 本地 snapshot。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
 
 正常发布只使用一个非交互入口。渠道必须是 `beta` 或 `release`，并显式选择 CLI、Catalog 或两者：
 

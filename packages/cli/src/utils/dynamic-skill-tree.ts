@@ -7,6 +7,7 @@ import {
   validatePortableSkillDirectoriesRoot as validateCorePortableSkillDirectoriesRoot,
   validatePortableSkillDirectory as validateCorePortableSkillDirectory,
   validatePortableSkillName as validateCorePortableSkillName,
+  parseAwPluginRequirementsReceipt,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
@@ -25,6 +26,7 @@ import { validateSkillFrontmatterCapabilities } from '@lesliechan721/aw-plugin-c
 
 export const SKILL_FILE_PATH = 'SKILL.md';
 export const CODEX_OPENAI_YAML_PATH = 'agents/openai.yaml';
+export const AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH = 'aw-plugin-requirements.json';
 
 export interface DynamicSkillTree {
   skillKey: string;
@@ -195,6 +197,7 @@ function assertNoFileDirectoryConflicts(files: Record<string, Buffer>): void {
 async function collectDirectoryFiles(
   rootDir: string,
   ownerMarkerPolicy: 'reject' | 'ignore',
+  requirementsReceiptPolicy: 'reject' | 'allow' | 'ignore',
 ): Promise<Record<string, Buffer>> {
   const files: Record<string, Buffer> = {};
 
@@ -206,6 +209,12 @@ async function collectDirectoryFiles(
       if (relativePath === SKILL_OWNER_MARKER) {
         if (ownerMarkerPolicy === 'ignore') continue;
         throw new Error(`Skill source tree 不能声明保留文件 ${SKILL_OWNER_MARKER}。`);
+      }
+      if (relativePath === AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH) {
+        if (requirementsReceiptPolicy === 'reject') {
+          throw new Error(`Skill source tree 不能声明保留文件 ${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}。`);
+        }
+        if (requirementsReceiptPolicy === 'ignore') continue;
       }
       const absolutePath = path.join(currentDir, entry.name);
       if (entry.isSymbolicLink()) {
@@ -250,7 +259,10 @@ function validatePresentSkillTree(options: {
 export async function validateSkillDirectory(
   rootDir: string,
   target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'],
-  options?: { ownerMarkerPolicy?: 'reject' | 'ignore' },
+  options?: {
+    ownerMarkerPolicy?: 'reject' | 'ignore';
+    requirementsReceiptPolicy?: 'reject' | 'allow';
+  },
 ): Promise<DynamicSkillTree> {
   const rootStats = await fs.lstat(rootDir).catch(() => null);
   if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
@@ -258,7 +270,11 @@ export async function validateSkillDirectory(
   }
   const tree = {
     skillKey: path.basename(rootDir),
-    files: await collectDirectoryFiles(rootDir, options?.ownerMarkerPolicy ?? 'reject'),
+    files: await collectDirectoryFiles(
+      rootDir,
+      options?.ownerMarkerPolicy ?? 'reject',
+      options?.requirementsReceiptPolicy ?? 'reject',
+    ),
   };
   validatePresentSkillTree({
     target,
@@ -287,6 +303,7 @@ export async function validateSkillDirectoriesRoot(
     }
     trees.push(await validateSkillDirectory(path.join(rootDir, entry.name), target, {
       ownerMarkerPolicy: 'ignore',
+      requirementsReceiptPolicy: 'allow',
     }));
   }
   return trees;
@@ -296,6 +313,8 @@ export async function createDynamicSkillExpectedTree(options: {
   artifact: Pick<CodexSkillArtifact | ClaudeSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'>;
   sourceDirs?: string[];
   requireReadme?: boolean;
+  requirementsReceipt?: Buffer;
+  sourceRequirementsReceiptPolicy?: 'reject' | 'allow' | 'ignore';
 }): Promise<DynamicSkillTree> {
   const skillKey = options.artifact.skillKey?.trim();
   if (!skillKey) {
@@ -307,7 +326,11 @@ export async function createDynamicSkillExpectedTree(options: {
 
   const files: Record<string, Buffer> = {};
   for (const sourceDir of options.sourceDirs ?? []) {
-    Object.assign(files, await collectDirectoryFiles(sourceDir, 'reject'));
+    Object.assign(files, await collectDirectoryFiles(
+      sourceDir,
+      'reject',
+      options.sourceRequirementsReceiptPolicy ?? 'reject',
+    ));
   }
   for (const [relativePath, content] of Object.entries(options.artifact.content?.files ?? {})) {
     if (isSkillAuthorOnlyPath(relativePath)) {
@@ -318,7 +341,27 @@ export async function createDynamicSkillExpectedTree(options: {
     if (relativePath === SKILL_OWNER_MARKER) {
       throw new Error(`Skill renderer 不能声明保留文件 ${SKILL_OWNER_MARKER}。`);
     }
+    if (relativePath === AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH) {
+      throw new Error(`Skill renderer 不能声明保留文件 ${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}。`);
+    }
     files[relativePath] = Buffer.from(content, 'utf8');
+  }
+  if (options.requirementsReceipt) {
+    const existingReceipt = files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
+    if (existingReceipt) {
+      let actual: ReturnType<typeof parseAwPluginRequirementsReceipt>;
+      let expected: ReturnType<typeof parseAwPluginRequirementsReceipt>;
+      try {
+        actual = parseAwPluginRequirementsReceipt(JSON.parse(existingReceipt.toString('utf8')));
+        expected = parseAwPluginRequirementsReceipt(JSON.parse(options.requirementsReceipt.toString('utf8')));
+      } catch {
+        throw new Error(`Skill bundle contains an invalid reserved file ${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}.`);
+      }
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        throw new Error(`Skill bundle contains a mismatched reserved file ${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}.`);
+      }
+    }
+    files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH] = options.requirementsReceipt;
   }
   validatePresentSkillTree({
     target: options.artifact.target,
@@ -529,7 +572,7 @@ export async function readDynamicSkillTree(
   if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Skill runtime 根路径必须是真实目录：${rootDir}`);
   }
-  const files = await collectDirectoryFiles(rootDir, 'ignore');
+  const files = await collectDirectoryFiles(rootDir, 'ignore', 'allow');
   if (!files[SKILL_FILE_PATH] || (target === 'codex.skill' && !files[CODEX_OPENAI_YAML_PATH])) {
     return null;
   }

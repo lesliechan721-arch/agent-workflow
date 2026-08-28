@@ -80,7 +80,10 @@ import {
 } from '../utils/ownership.js';
 import { resolveArtifactRenderConfig, runArtifactRenderer } from '../utils/artifact-renderer.js';
 import { validateArtifactPlan, type ValidatedArtifactPlanArtifact } from '../utils/artifact-plan.js';
-import { readPluginManifest } from '../utils/manifest.js';
+import {
+  createAwPluginRequirementsReceipt,
+  readPluginManifest,
+} from '../utils/manifest.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
   resolveAwHome,
@@ -121,6 +124,14 @@ import type {
 
 const MARKETPLACE_NAME = 'aw';
 const MCP_OWNER_ENV = 'AW_AGENT_WORKFLOWS_OWNER';
+
+function requirementsReceipt(plugin: PluginMeta): Buffer {
+  const receipt = createAwPluginRequirementsReceipt(
+    { name: plugin.manifest.name, version: plugin.manifest.version },
+    plugin.manifest.requires?.aw.capabilities ?? [],
+  );
+  return Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+}
 
 interface PlannedWrite {
   artifact: GeneratedArtifact;
@@ -224,7 +235,7 @@ function pathComponent(options: {
       await validateSkillDirectory(
         options.path,
         options.identity.platform === 'codex' ? 'codex.skill' : 'claude.skill',
-        { ownerMarkerPolicy: 'ignore' },
+        { ownerMarkerPolicy: 'ignore', requirementsReceiptPolicy: 'allow' },
       );
     },
   };
@@ -1240,6 +1251,7 @@ async function buildBundledCodexSkillWrites(options: {
         content: { files: {} },
       },
       sourceDirs: [skillSource],
+      sourceRequirementsReceiptPolicy: 'allow',
     });
     const skillPath = path.join(targetRoot, entry.name);
     const canRecoverPristine = options.scope === 'user'
@@ -1305,6 +1317,8 @@ async function buildClaudeWrites(options: {
       artifact,
       sourceDirs: dynamic.sourceDirs(artifact),
       requireReadme: true,
+      requirementsReceipt: requirementsReceipt(options.plugin),
+      sourceRequirementsReceiptPolicy: 'allow',
     });
     writes.push(dynamicSkillWrite({
       ...options,
@@ -1401,6 +1415,8 @@ async function buildCodexWrites(options: {
       artifact,
       sourceDirs: dynamic.sourceDirs(artifact),
       requireReadme: true,
+      requirementsReceipt: requirementsReceipt(options.plugin),
+      sourceRequirementsReceiptPolicy: 'allow',
     });
     writes.push(dynamicSkillWrite({
       ...options,

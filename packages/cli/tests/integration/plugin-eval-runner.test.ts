@@ -259,7 +259,7 @@ async function writeCommandPlugin(
     name: options.name,
     version: '0.1.0',
     description: 'Exercise the central command suite contract.',
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    schemaVersion: 2,
     skills: './skills',
     marketplace: {
       category: 'workflow',

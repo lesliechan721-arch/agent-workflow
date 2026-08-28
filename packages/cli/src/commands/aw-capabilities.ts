@@ -2,10 +2,12 @@ import path from 'node:path'
 
 import {
   checkAwCapabilitySupport,
+  createAwPluginRequirementsReceipt,
   computeAwCapabilitySetDigest,
   getPluginCoreVersion,
   parseAwPluginRequirementsReceipt,
   resolvePluginRequirements,
+  normalizeAwCapabilities,
   type AwPluginRequirementsReceiptV1,
   type PluginRequirementsResolution,
 } from '@lesliechan721/aw-plugin-core/manifest'
@@ -14,6 +16,7 @@ import fs from 'fs-extra'
 import { readPluginManifest } from '../utils/manifest.js'
 
 export const IMPLEMENTED_AW_CAPABILITIES = [
+  'aw.plugin-manifest.v2',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
   'aw.plugin-config.v1',
@@ -25,8 +28,25 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-authoring.v1',
   'aw.catalog-authoring.v1',
   'aw.catalog-publication.v1',
+  'aw.catalog-snapshot.v5',
   'aw.self-check.v1',
 ] as const
+
+export class AwCapabilityUnsupportedError extends Error {
+  readonly code = 'awCapabilityUnsupported'
+  readonly plugin: string
+  readonly missingCapabilities: string[]
+  readonly availableCapabilities: string[]
+
+  constructor(plugin: string, missingCapabilities: readonly string[]) {
+    const missing = [...missingCapabilities]
+    super(`Plugin "${plugin}" requires unsupported AW capabilities: ${missing.join(', ')}.`)
+    this.name = 'AwCapabilityUnsupportedError'
+    this.plugin = plugin
+    this.missingCapabilities = missing
+    this.availableCapabilities = [...IMPLEMENTED_AW_CAPABILITIES].sort()
+  }
+}
 
 export interface AwSelfDescribeResult {
   schemaVersion: 1
@@ -109,7 +129,7 @@ export async function discoverAwPluginRequirements(from: string): Promise<Discov
         source: { kind: 'receipt', path: receiptPath },
         plugin: receipt.plugin,
         requiredCapabilities: receipt.requiredCapabilities,
-        capabilitySetDigest: receipt.capabilitySetDigest,
+        capabilitySetDigest: receipt.digest,
       }
     }
     const manifestPath = path.join(current, '.agents-plugin', 'plugin.json')
@@ -186,16 +206,53 @@ export interface PluginRequirementsResult extends PluginRequirementsResolution {
   command: 'plugin:requirements'
   plugin: { name: string; version: string }
   pluginDirectory: string
+  mutation?: {
+    action: 'add' | 'remove'
+    capability: string
+    changed: boolean
+  }
 }
 
 export async function inspectPluginRequirements(options: {
   pluginDirectory: string
   workspaceRoot?: string
   cwd: string
+  add?: string
+  remove?: string
 }): Promise<PluginRequirementsResult> {
   const workspaceRoot = path.resolve(options.cwd, options.workspaceRoot ?? '.')
   const pluginRoot = path.resolve(workspaceRoot, options.pluginDirectory)
-  const plugin = await readPluginManifest(pluginRoot, { mode: 'source' })
+  if (options.add !== undefined && options.remove !== undefined) {
+    throw new Error('Use exactly one of --add or --remove.')
+  }
+  let plugin = await readPluginManifest(pluginRoot, { mode: 'source' })
+  let mutation: PluginRequirementsResult['mutation']
+  const action = options.add === undefined
+    ? (options.remove === undefined ? undefined : 'remove')
+    : 'add'
+  const capability = options.add ?? options.remove
+  if (action && capability) {
+    const normalizedCapability = normalizeAwCapabilities([capability], `--${action}`)[0]!
+    const before = normalizeAwCapabilities(plugin.manifest.requires?.aw.capabilities ?? [])
+    const after = action === 'add'
+      ? normalizeAwCapabilities([...before, normalizedCapability])
+      : before.filter((value) => value !== normalizedCapability)
+    const changed = before.length !== after.length
+    if (changed) {
+      const raw = await fs.readJson(plugin.manifestPath) as Record<string, unknown>
+      raw.requires = { aw: { capabilities: after } }
+      const temporaryPath = `${plugin.manifestPath}.${process.pid}.tmp`
+      await fs.writeJson(temporaryPath, raw, { spaces: 2 })
+      try {
+        await fs.rename(temporaryPath, plugin.manifestPath)
+      } catch (error) {
+        await fs.remove(temporaryPath)
+        throw error
+      }
+      plugin = await readPluginManifest(pluginRoot, { mode: 'source' })
+    }
+    mutation = { action, capability: normalizedCapability, changed }
+  }
   const resolution = await resolvePluginRequirements({
     pluginRoot,
     manifest: plugin.manifest,
@@ -205,6 +262,7 @@ export async function inspectPluginRequirements(options: {
     command: 'plugin:requirements',
     plugin: { name: plugin.manifest.name, version: plugin.manifest.version },
     pluginDirectory: pluginRoot,
+    ...(mutation ? { mutation } : {}),
     ...resolution,
   }
 }
@@ -213,11 +271,5 @@ export function createRequirementsReceipt(
   plugin: { name: string; version: string },
   requiredCapabilities: string[],
 ): AwPluginRequirementsReceiptV1 {
-  return {
-    schemaVersion: 1,
-    kind: 'aw-plugin-requirements',
-    plugin,
-    requiredCapabilities,
-    capabilitySetDigest: computeAwCapabilitySetDigest(requiredCapabilities),
-  }
+  return createAwPluginRequirementsReceipt(plugin, requiredCapabilities)
 }

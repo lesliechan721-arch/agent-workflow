@@ -50,11 +50,11 @@ const registry = {
     manifest: {
       surface: 'manifest',
       entries: [
-        { field: 'schemaVersion', type: 'literal 1', required: false, acceptedValues: [1] },
+        { field: 'schemaVersion', type: 'literal 2', required: true, acceptedValues: [2] },
         { field: 'name', type: 'kebab-case string', required: true },
         { field: 'version', type: 'stable strict SemVer', required: true },
         { field: 'description', type: 'non-empty string', required: true },
-        { field: 'compatibility.aw.minVersion', type: 'strict SemVer', required: true },
+        { field: 'requires.aw.capabilities', type: 'unique AW capability ID[]', required: false },
         { field: 'dependencies', type: 'unique plugin-name[]', required: false },
         { field: 'skills', type: './ plugin-relative path', required: false },
         { field: 'slashCommands', type: './ plugin-relative path', required: false },

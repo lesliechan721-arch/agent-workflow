@@ -31,7 +31,10 @@ import {
 } from '../../src/utils/ownership.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
 import { preflightDesiredArtifactCollisions } from '../../src/utils/multi-source-catalog.js';
-import { readPluginManifest } from '../../src/utils/manifest.js';
+import {
+  createAwPluginRequirementsReceipt,
+  readPluginManifest,
+} from '../../src/utils/manifest.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import {
   prepareLifecycleActiveSnapshot,
@@ -160,7 +163,7 @@ function createClaudeCleanupPlugin(root: string, name: string): PluginMeta {
       name,
       version: '0.0.0',
       description: 'Claude cleanup fixture',
-      compatibility: { aw: { minVersion: '0.1.0' } },
+      schemaVersion: 2,
       marketplace: {
         category: 'test',
         strict: true,
@@ -962,7 +965,7 @@ describe('rebuild adapter integration', () => {
         name: 'simple-plugin',
         version: '1.2.3',
         description: 'rebuild integration fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1071,7 +1074,7 @@ describe('rebuild adapter integration', () => {
         name: 'removed-plugin',
         version: '0.0.0',
         description: 'cleanup-only target',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'cleanup',
           strict: true,
@@ -1115,7 +1118,7 @@ describe('rebuild adapter integration', () => {
         name: 'read-only-plugin',
         version: '1.0.0',
         description: 'read-only inspection fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1239,7 +1242,7 @@ describe('rebuild adapter integration', () => {
         name: 'active-only-plugin',
         version: '1.0.0',
         description: 'active-only inspection fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1277,7 +1280,7 @@ describe('rebuild adapter integration', () => {
         name: 'renderer-read-only',
         version: '1.0.0',
         description: 'renderer read-only fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1731,7 +1734,7 @@ describe('rebuild adapter integration', () => {
         name: 'optional-plan',
         version: '1.0.0',
         description: 'optional planner fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1927,7 +1930,7 @@ describe('rebuild adapter integration', () => {
         name: 'symlink-boundary',
         version: '1.0.0',
         description: 'symlink boundary fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1972,7 +1975,7 @@ describe('rebuild adapter integration', () => {
         name: 'file-symlink-boundary',
         version: '1.0.0',
         description: 'file symlink boundary fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2020,7 +2023,7 @@ describe('rebuild adapter integration', () => {
       name: 'project-skill-plugin',
       version: '1.0.0',
       description: 'project skill fixture',
-      compatibility: { aw: { minVersion: '0.1.0' } },
+      schemaVersion: 2,
       marketplace: {
         category: 'test',
         strict: true,
@@ -2186,6 +2189,23 @@ describe('rebuild adapter integration', () => {
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
         mode: 'bundle',
       });
+      const dynamicTarget = plugin.manifest.artifacts?.targets.find((target) =>
+        target.platform === 'codex'
+        && target.target === 'codex.skill'
+        && (target.sourceDirs?.length ?? 0) > 0);
+      expect(dynamicTarget).toBeDefined();
+      await fs.outputJson(path.join(
+        plugin.rootDir,
+        '.agents-plugin',
+        'artifact-sources',
+        'codex',
+        dynamicTarget!.id,
+        '0',
+        'aw-plugin-requirements.json',
+      ), createAwPluginRequirementsReceipt(
+        { name: plugin.manifest.name, version: plugin.manifest.version },
+        plugin.manifest.requires?.aw.capabilities ?? [],
+      ));
       const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
       let installed = false;
       const runner: NativeCliRunner = async (invocation) => {
@@ -2283,7 +2303,7 @@ describe('rebuild adapter integration', () => {
         name: 'foreign-collision-plugin',
         version: '1.0.0',
         description: 'foreign collision fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2396,7 +2416,7 @@ describe('rebuild adapter integration', () => {
         name: 'safety-plugin',
         version: '1.0.0',
         description: 'project safety fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2646,7 +2666,7 @@ describe('rebuild adapter integration', () => {
         name: 'stale-permission',
         version: '0.0.0',
         description: 'stale permission cleanup fixture',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2912,7 +2932,7 @@ describe('rebuild adapter integration', () => {
         name: pluginName,
         version: '0.0.0',
         description: 'native residue fixture',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3012,7 +3032,7 @@ describe('rebuild adapter integration', () => {
         name: 'orphan-plugin',
         version: '0.0.0',
         description: 'orphan marketplace fixture',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3124,7 +3144,7 @@ describe('rebuild adapter integration', () => {
         name: 'custom-root-plugin',
         version: '1.0.0',
         description: 'custom root fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3826,7 +3846,7 @@ describe('rebuild adapter integration', () => {
       name: 'renderer-contract',
       version: '1.0.0',
       description: 'renderer contract fixture',
-      compatibility: { aw: { minVersion: '0.1.0' } },
+      schemaVersion: 2,
       marketplace: {
         category: 'test',
         strict: true,
@@ -4281,7 +4301,7 @@ describe('rebuild adapter integration', () => {
           name: 'corrupted-owned',
           version: '1.0.0',
           description: 'corrupted owned fixture',
-          compatibility: { aw: { minVersion: '0.1.0' } },
+          schemaVersion: 2,
           marketplace: {
             category: 'test', strict: true,
             policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
@@ -4341,7 +4361,7 @@ describe('rebuild adapter integration', () => {
       manifestPath: path.join(isolation.layout.rootDir, 'removed-claude', '.agents-plugin', 'plugin.json'),
       manifest: {
         name: 'removed-claude', version: '0.0.0', description: 'removed catalog fixture',
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test', strict: true,
           policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },

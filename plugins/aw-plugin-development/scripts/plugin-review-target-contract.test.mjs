@@ -165,10 +165,10 @@ test('target discovery stops after public validation rejects an escaping skills 
   await symlink(sentinel, path.join(outside, 'SKILL.md'));
   await writeFile(path.join(plugin, 'README.md'), '# Escaping Plugin\n');
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    schemaVersion: 2,
     name: 'escaping-plugin',
     version: '0.1.0',
     description: 'Escaping fixture.',
-    compatibility: { aw: { minVersion: '0.1.0' } },
     skills: '../outside',
     marketplace: {
       category: 'workflow', strict: true,

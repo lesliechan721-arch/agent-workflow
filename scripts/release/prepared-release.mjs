@@ -432,7 +432,6 @@ export async function prepareLocalRelease(channel, options = {}) {
             version: candidates.catalog,
             path: path.relative(temporaryRoot, catalogPath),
             snapshotDigest: preparation.descriptor.snapshotDigest,
-            minCliVersion: preparation.descriptor.minCliVersion,
             ledgerDigest: preparation.descriptor.ledgerDigest,
             publication: preparation.descriptor,
           };
@@ -503,7 +502,6 @@ export async function readPreparedDescriptor(options = {}) {
       || descriptor.catalog?.publication?.catalogVersion !== descriptor.candidates.catalog
       || descriptor.catalog?.publication?.snapshotDigest !== descriptor.catalog?.snapshotDigest
       || descriptor.catalog?.publication?.ledgerDigest !== descriptor.catalog?.ledgerDigest
-      || descriptor.catalog?.publication?.minCliVersion !== descriptor.catalog?.minCliVersion
     ))
     || (!descriptor.axes.catalog && descriptor.catalog !== null)
   ) {
@@ -567,9 +565,6 @@ export async function assertPreparedCliArtifacts(root, descriptor, options = {})
 async function assertPreparedArtifacts(root, descriptor, options = {}) {
   await assertPreparedCliArtifacts(root, descriptor, options);
   if (descriptor.catalog) {
-    if (descriptor.catalog.publication?.minCliVersion !== descriptor.catalog.minCliVersion) {
-      throw new Error('Prepared Catalog compatibility binding changed; prepare again.');
-    }
     const modules = options.catalogModules ?? await loadCatalogModules(options.cliDistRoot);
     const catalogRoot = resolvePreparedPath(root, descriptor.catalog.path);
     const [stats, realPath, realRoot] = await Promise.all([
@@ -582,7 +577,7 @@ async function assertPreparedArtifacts(root, descriptor, options = {}) {
     ) {
       throw new Error('Prepared Catalog path is not a regular local directory; prepare again.');
     }
-    const validation = await modules.catalogSnapshot.validateCatalogSnapshot(catalogRoot);
+    const validation = await modules.catalogSnapshot.validateCatalogSnapshotComplete(catalogRoot);
     const ledgerPath = path.join(catalogRoot, 'plugin-release-ledger.json');
     const ledgerBytes = await fs.readFile(ledgerPath);
     const ledger = JSON.parse(ledgerBytes);

@@ -20,6 +20,7 @@ afterEach(async () => {
 describe('current AW executable capabilities', () => {
   it('describes only implemented capabilities with a bound digest', () => {
     const expectedCapabilities = [
+      'aw.plugin-manifest.v2',
       'aw.plugin-skills.v1',
       'aw.plugin-build-config.v1',
       'aw.plugin-config.v1',
@@ -31,6 +32,7 @@ describe('current AW executable capabilities', () => {
       'aw.plugin-authoring.v1',
       'aw.catalog-authoring.v1',
       'aw.catalog-publication.v1',
+      'aw.catalog-snapshot.v5',
       'aw.self-check.v1',
     ]
     expect(IMPLEMENTED_AW_CAPABILITIES).toEqual(expectedCapabilities)
@@ -42,7 +44,8 @@ describe('current AW executable capabilities', () => {
       coreVersion: expect.any(String),
     })
     expect(result.capabilities).toEqual([...expectedCapabilities].sort())
-    expect(result.capabilities).not.toContain('aw.plugin-manifest.v2')
+    expect(result.capabilities).toContain('aw.plugin-manifest.v2')
+    expect(result.capabilities).toContain('aw.catalog-snapshot.v5')
     expect(result.capabilities).not.toContain('aw.catalog-source.v2')
     expect(result.capabilitySetDigest).toBe(computeAwCapabilitySetDigest(result.capabilities))
   })
@@ -58,7 +61,7 @@ describe('current AW executable capabilities', () => {
       kind: 'aw-plugin-requirements',
       plugin: { name: 'outer', version: '1.0.0' },
       requiredCapabilities: capabilities,
-      capabilitySetDigest: computeAwCapabilitySetDigest(capabilities),
+      digest: computeAwCapabilitySetDigest(capabilities),
     })
     await fs.writeFile(path.join(root, 'plugin', 'aw-plugin-requirements.json'), '{broken', 'utf8')
 
@@ -77,7 +80,7 @@ describe('current AW executable capabilities', () => {
       kind: 'aw-plugin-requirements',
       plugin: { name: 'receipt', version: '1.0.0' },
       requiredCapabilities: capabilities,
-      capabilitySetDigest: computeAwCapabilitySetDigest(capabilities),
+      digest: computeAwCapabilitySetDigest(capabilities),
     })
     await fs.writeFile(path.join(root, 'nested', '.agents-plugin', 'plugin.json'), '{broken', 'utf8')
 

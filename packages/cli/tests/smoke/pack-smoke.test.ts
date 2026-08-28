@@ -498,7 +498,6 @@ describe('pack smoke', () => {
     const portablePluginRoot = path.join(authorRepo, 'plugins', 'validate-fixture');
     const portableManifestPath = path.join(portablePluginRoot, '.agents-plugin', 'plugin.json');
     const portableManifest = await fs.readJson(portableManifestPath);
-    portableManifest.compatibility.aw.minVersion = '0.1.0';
     portableManifest.extensions = {
       instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
     };
@@ -534,7 +533,7 @@ describe('pack smoke', () => {
     await createCatalogSnapshotFixture(
       portableCatalog,
       'portable-pack',
-      '0.1.0',
+      [],
       '# Portable pack plugin\n',
       (manifest) => {
         manifest.extensions = {

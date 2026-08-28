@@ -60,7 +60,7 @@ describe('status v4 current behavior', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'capability-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.apps = './.app.json';
     });
@@ -72,7 +72,13 @@ describe('status v4 current behavior', () => {
     });
 
     expect(result.payload.schemaVersion).toBe(4);
-    expect(result.payload.targets).toEqual([]);
+    expect(result.payload.targets).toEqual([
+      expect.objectContaining({
+        pluginId: 'local/demo',
+        state: 'error',
+        errors: [expect.objectContaining({ code: 'unsupportedTarget' })],
+      }),
+    ]);
   });
 
   it('keeps a partial target when another Catalog source fails', async () => {
@@ -87,7 +93,7 @@ describe('status v4 current behavior', () => {
       path.join(good, 'plugins', 'demo', 'skills', 'review', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n',
     );
-    await createCatalogSnapshotFixture(good, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(good, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.skills = './skills';
     });
@@ -150,7 +156,7 @@ describe('status v4 current behavior', () => {
       'fs.writeFileSync(process.env.AW_RENDER_SENTINEL, "renderer ran\\n");',
       'console.log(JSON.stringify({ version: 2, artifacts: [] }));',
     ].join('\n'));
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.scripts = {
         artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },

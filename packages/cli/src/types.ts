@@ -3,7 +3,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   CatalogChannel,
-  CatalogManifestV4,
+  CatalogManifestV5,
   CatalogSourceId,
   CliVersion,
   DistributionName,
@@ -123,7 +123,7 @@ export interface CatalogSourceResolution {
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
-  manifest: CatalogManifestV4;
+  manifest: CatalogManifestV5;
   manifestDigest: string;
   snapshotDigest: string;
   cacheEntryKey: string;
@@ -429,5 +429,4 @@ export interface CatalogResolution {
   source: 'local' | 'embedded' | 'remote' | 'cache';
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
-  minAwVersion?: CliVersion;
 }

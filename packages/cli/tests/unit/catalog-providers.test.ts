@@ -11,8 +11,11 @@ import {
   catalogSourceCacheInternal,
   cleanupLegacyCatalogSourceCache,
 } from '../../src/utils/catalog-source-cache.js';
-import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
-import { createCatalogManifestV4Entry } from '../../src/utils/catalog-manifest-v4.js';
+import {
+  validateCatalogSnapshotComplete,
+  validateCatalogSnapshotTransport,
+} from '../../src/utils/catalog-snapshot.js';
+import { createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
 import { calculateCatalogSourcesConfigDigest } from '../../src/utils/catalog-sources.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import {
@@ -80,7 +83,7 @@ async function publishFixtureManifest(root: string): Promise<void> {
   const contentDigest = sha256({
     schemaIdentity: { schemaVersion: manifest.schemaVersion },
     marketplaceMetadata: { name: 'aw', ...manifest.marketplace },
-    compatibility: manifest.compatibility,
+    requires: manifest.requires,
     plugins: manifest.entries.map((entry: Record<string, string>) => ({
       name: entry.name,
       targetVersion: entry.version,
@@ -117,7 +120,7 @@ function fixturePath(name: string): string {
 
 async function publish(root: string, resolvedCommit: string): Promise<ReturnType<typeof resolveCatalogSourceCacheLocation>> {
   const isolation = getCurrentSourceTestIsolation();
-  const validation = await validateCatalogSnapshot(root);
+  const validation = await validateCatalogSnapshotTransport(root);
   const location = resolveCatalogSourceCacheLocation({ sourceId: 'team', sourceIdentity: identity, env: isolation.env });
   await publishCatalogSourceCacheEntry({
     location,
@@ -147,8 +150,8 @@ describe('catalog source current and last-good cache', () => {
   it('publishes complete validated snapshots and rotates current to last-good', async () => {
     const first = fixturePath('cache-first');
     const second = fixturePath('cache-second');
-    await createCatalogSnapshotFixture(first, 'demo', '0.9.0', 'first\n');
-    await createCatalogSnapshotFixture(second, 'demo', '0.1.0', 'second\n');
+    await createCatalogSnapshotFixture(first, 'demo', [], 'first\n');
+    await createCatalogSnapshotFixture(second, 'demo', [], 'second\n');
     const location = await publish(first, '1'.repeat(40));
     const firstDigest = (await readCatalogSourceCache({
       location, sourceId: 'team', sourceIdentity: identity,
@@ -166,7 +169,7 @@ describe('catalog source current and last-good cache', () => {
   it('serializes concurrent publications for one source', async () => {
     const roots = await Promise.all(Array.from({ length: 6 }, async (_value, index) => {
       const root = fixturePath(`cache-concurrent-${index}`);
-      await createCatalogSnapshotFixture(root, 'demo', '0.1.0', `${index}\n`);
+      await createCatalogSnapshotFixture(root, 'demo', [], `${index}\n`);
       return root;
     }));
     const location = await publish(roots[0]!, '1'.repeat(40));
@@ -176,17 +179,17 @@ describe('catalog source current and last-good cache', () => {
       publish(root, String(index + 3).repeat(40))))).resolves.toHaveLength(4);
 
     for (const entryDir of [location.currentDir, location.lastGoodDir]) {
-      await expect(validateCatalogSnapshot(path.join(entryDir, 'snapshot'))).resolves.toBeDefined();
+      await expect(validateCatalogSnapshotTransport(path.join(entryDir, 'snapshot'))).resolves.toBeDefined();
     }
   });
 
   it('falls back to matching last-good when current is corrupt', async () => {
     const first = fixturePath('fallback-first');
     const second = fixturePath('fallback-second');
-    await createCatalogSnapshotFixture(first, 'demo', '0.1.0', 'first\n');
-    await createCatalogSnapshotFixture(second, 'demo', '0.1.0', 'second\n');
+    await createCatalogSnapshotFixture(first, 'demo', [], 'first\n');
+    await createCatalogSnapshotFixture(second, 'demo', [], 'second\n');
     const location = await publish(first, '1'.repeat(40));
-    const expected = (await validateCatalogSnapshot(first)).snapshotDigest;
+    const expected = (await validateCatalogSnapshotTransport(first)).snapshotDigest;
     await publish(second, '2'.repeat(40));
     await fs.writeFile(path.join(location.currentDir, 'snapshot', 'catalog-manifest.json'), '{}\n');
     const fallback = await readCatalogSourceCache({
@@ -200,12 +203,11 @@ describe('catalog source current and last-good cache', () => {
   it.each([
     ['identity', `sha256:${'2'.repeat(64)}`, 'refs/heads/catalog/latest', '1.0.0'],
     ['ref', identity, 'refs/heads/catalog/beta', '1.0.0'],
-    ['compatibility', identity, 'refs/heads/catalog/latest', '0.1.0-beta.2'],
   ])('rejects last-good when %s does not match', async (_label, sourceIdentity, requestedRef, cliVersion) => {
     const first = fixturePath(`mismatch-first-${_label}`);
     const second = fixturePath(`mismatch-second-${_label}`);
-    await createCatalogSnapshotFixture(first, 'demo', '0.1.0', 'first\n');
-    await createCatalogSnapshotFixture(second, 'demo', '0.1.0', 'second\n');
+    await createCatalogSnapshotFixture(first, 'demo', [], 'first\n');
+    await createCatalogSnapshotFixture(second, 'demo', [], 'second\n');
     const location = await publish(first, '1'.repeat(40));
     await publish(second, '2'.repeat(40));
     await fs.writeFile(path.join(location.currentDir, 'snapshot', 'catalog-manifest.json'), '{}\n');
@@ -224,7 +226,7 @@ describe('catalog source current and last-good cache', () => {
       location, sourceId: 'team', sourceIdentity: identity,
       requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
     }))!.metadata.entryKey;
-    const validation = await validateCatalogSnapshot(broken);
+    const validation = await validateCatalogSnapshotTransport(broken);
     await fs.writeFile(path.join(broken, 'catalog-manifest.json'), '{}\n');
     await expect(publishCatalogSourceCacheEntry({
       location, sourceId: 'team', sourceIdentity: identity,
@@ -242,8 +244,8 @@ describe('catalog source current and last-good cache', () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('callback-generation-first');
     const second = fixturePath('callback-generation-second');
-    await createCatalogSnapshotFixture(first, 'demo', '0.1.0', 'first generation\n');
-    await createCatalogSnapshotFixture(second, 'demo', '0.1.0', 'second generation\n');
+    await createCatalogSnapshotFixture(first, 'demo', [], 'first generation\n');
+    await createCatalogSnapshotFixture(second, 'demo', [], 'second generation\n');
     const location = await publish(first, '1'.repeat(40));
     const cached = (await readCatalogSourceCache({
       location, sourceId: 'team', sourceIdentity: identity,
@@ -289,7 +291,7 @@ describe('catalog source current and last-good cache', () => {
     });
     await entered;
     const advancedIdentity = `sha256:${'2'.repeat(64)}`;
-    const advancedValidation = await validateCatalogSnapshot(second);
+    const advancedValidation = await validateCatalogSnapshotTransport(second);
     const advancedLocation = resolveCatalogSourceCacheLocation({
       sourceId: 'team', sourceIdentity: advancedIdentity, env: isolation.env,
     });
@@ -333,7 +335,7 @@ describe('multi-source resolver public behavior', () => {
     await publishFixtureManifest(root);
     await fs.remove(path.join(root, 'plugin-release-ledger.json'));
 
-    await expect(validateCatalogSnapshot(root)).rejects.toThrow(/must include plugin-release-ledger/u);
+    await expect(validateCatalogSnapshotTransport(root)).rejects.toThrow(/must include plugin-release-ledger/u);
     await expect(catalogPathProviderInternal.resolve({
       id: 'missing-ledger', type: 'path', primary: true, path: root,
     }, {
@@ -377,7 +379,7 @@ describe('multi-source resolver public behavior', () => {
     })).rejects.toThrow(/Codex marketplace metadata or plugin inventory/u);
   });
 
-  it('rejects a path source with a tampered platform manifest after digest recomputation', async () => {
+  it('loads a transport-valid path source while complete validation catches a platform mismatch', async () => {
     const root = fixturePath('tampered-path-platform-manifest');
     await createCatalogSnapshotFixture(root);
     const pluginRoot = path.join(root, 'plugins', 'demo');
@@ -388,7 +390,7 @@ describe('multi-source resolver public behavior', () => {
     const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
     const catalogManifestPath = path.join(root, 'catalog-manifest.json');
     const catalogManifest = await fs.readJson(catalogManifestPath);
-    catalogManifest.entries = [await createCatalogManifestV4Entry(plugin, pluginRoot)];
+    catalogManifest.entries = [await createCatalogManifestV5Entry(plugin, pluginRoot)];
     await fs.writeJson(catalogManifestPath, catalogManifest);
 
     await expect(catalogPathProviderInternal.resolve({
@@ -397,7 +399,9 @@ describe('multi-source resolver public behavior', () => {
       cliVersion: '99.0.0',
       freshnessPolicy: 'forceRemote',
       env: getCurrentSourceTestIsolation().env,
-    })).rejects.toThrow(/codex platform manifest projection/u);
+    })).resolves.toMatchObject({ sourceId: 'tampered-platform' });
+    await expect(validateCatalogSnapshotComplete(root))
+      .rejects.toThrow(/codex platform manifest projection/u);
   });
 
   it('rejects a Git source with a tampered Claude marketplace projection', async () => {
@@ -435,7 +439,7 @@ describe('multi-source resolver public behavior', () => {
   it('isolates one source failure and preserves the other source result', async () => {
     const root = fixturePath('resolver-good');
     await createCatalogSnapshotFixture(root);
-    const validation = await validateCatalogSnapshot(root);
+    const validation = await validateCatalogSnapshotTransport(root);
     const config = {
       schemaVersion: 1 as const,
       sources: [

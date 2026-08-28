@@ -67,6 +67,7 @@ export interface PluginListItemViewModel {
   installedPlacements: PlatformPlacementSummary[];
   aggregateStatus: 'available' | 'installed' | 'needsAttention' | 'unavailable';
   portableSkills: boolean;
+  missingCapabilities?: string[];
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
     platform: PlatformName;
@@ -1006,7 +1007,8 @@ export function buildTuiViewModel(options: {
     const attention = placements.some((placement) => placement.state === 'scopeConflict'
       || (placement.state === 'installed' && placement.health !== 'ready'));
     const installed = placements.some((placement) => placement.state !== 'notInstalled');
-    const unavailable = options.sourceHealth?.get(sourceId)?.state === 'unavailable';
+    const unavailable = options.sourceHealth?.get(sourceId)?.state === 'unavailable'
+      || (summary?.missingCapabilities?.length ?? 0) > 0;
     return {
       pluginId,
       sourceId,
@@ -1025,6 +1027,9 @@ export function buildTuiViewModel(options: {
       installedPlacements: placements,
       aggregateStatus: unavailable ? 'unavailable' : attention ? 'needsAttention' : installed ? 'installed' : 'available',
       portableSkills: options.portablePluginIds?.includes(pluginId) ?? false,
+      ...(summary?.missingCapabilities
+        ? { missingCapabilities: summary.missingCapabilities }
+        : {}),
       ...(dependencyById.get(pluginId)
         ? { dependencySummary: dependencyById.get(pluginId)!.summary }
         : summary && (summary.dependencyTotalCount ?? 0) > 0

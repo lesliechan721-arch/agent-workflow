@@ -518,7 +518,7 @@ async function validateRequiredOutputs(repoRoot) {
         }
         if (
           output.type === 'catalog' &&
-          (parsed.schemaVersion !== 4 ||
+          (parsed.schemaVersion !== 5 ||
             !parsed.release ||
             (parsed.release.state !== 'development' && parsed.release.state !== 'published') ||
             !Array.isArray(parsed.entries) ||

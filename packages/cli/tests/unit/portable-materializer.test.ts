@@ -12,8 +12,8 @@ import {
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { getArtifactSourceBundleRelativePath } from '../../src/utils/artifact-sources.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
-import { readPluginManifest } from '../../src/utils/manifest.js';
-import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
+import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
+import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 import { calculateCatalogSourcesConfigDigest } from '../../src/utils/catalog-sources.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 
@@ -27,10 +27,10 @@ async function tempRoot(label: string): Promise<string> {
 
 function baseManifest(name: string): PluginManifestSource {
   return {
+    schemaVersion: 2,
     name,
     version: '0.1.0',
     description: `${name} fixture`,
-    compatibility: { aw: { minVersion: '0.1.0' } },
     marketplace: {
       category: 'test',
       strict: true,
@@ -76,23 +76,31 @@ describe('portable materializer', () => {
   it('keeps selector materialization valid after the Catalog generation lease ends', async () => {
     const root = await tempRoot('aw-portable-catalog-wrapper-');
     const snapshotRoot = path.join(root, 'snapshot');
-    await createCatalogSnapshotFixture(snapshotRoot, 'portable', '0.1.0', 'portable\n', (manifest) => {
+    await createCatalogSnapshotFixture(snapshotRoot, 'portable', [], 'portable\n', (manifest) => {
       manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
       manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
     });
     await writeSkill(path.join(snapshotRoot, 'plugins', 'portable'), 'catalog-skill');
     const plugin = await readPluginManifest(path.join(snapshotRoot, 'plugins', 'portable'), { mode: 'bundle' });
-    const { createCatalogManifestV4, createCatalogManifestV4Entry } = await import('../../src/utils/catalog-manifest-v4.js');
-    await fs.writeJson(path.join(snapshotRoot, 'catalog-manifest.json'), createCatalogManifestV4({
-      catalogVersion: '1.0.0', channel: 'latest', compatibility: { aw: { minVersion: '0.1.0' } },
+    await fs.writeJson(
+      path.join(plugin.rootDir, 'agent-skills', 'skills', 'catalog-skill', 'aw-plugin-requirements.json'),
+      createAwPluginRequirementsReceipt(
+        { name: plugin.manifest.name, version: plugin.manifest.version },
+        plugin.manifest.requires?.aw.capabilities ?? [],
+      ),
+    );
+    const { createCatalogManifestV5, createCatalogManifestV5Entry } = await import('../../src/utils/catalog-manifest-v5.js');
+    await fs.writeJson(path.join(snapshotRoot, 'catalog-manifest.json'), createCatalogManifestV5({
+      catalogVersion: '1.0.0', channel: 'latest',
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
       marketplace: {
         owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
         interface: { displayName: 'Fixture Marketplace' },
       },
       release: { state: 'development' },
-      entries: [await createCatalogManifestV4Entry(plugin, plugin.rootDir)],
+      entries: [await createCatalogManifestV5Entry(plugin, plugin.rootDir)],
     }));
-    const validation = await validateCatalogSnapshot(snapshotRoot);
+    const validation = await validateCatalogSnapshotTransport(snapshotRoot);
     const config = {
       schemaVersion: 1 as const,
       sources: [{ id: 'fixture', type: 'path' as const, path: snapshotRoot, primary: true }],
@@ -153,6 +161,20 @@ describe('portable materializer', () => {
       schemaVersion: 1,
       dependencyPluginIds: ['fixture/transitive', 'fixture/direct'],
     });
+    for (const candidate of materialized.candidates) {
+      await expect(fs.readJson(path.join(
+        materialized.rootDir,
+        'skills',
+        candidate.name,
+        'aw-plugin-requirements.json',
+      ))).resolves.toMatchObject({
+        schemaVersion: 1,
+        kind: 'aw-plugin-requirements',
+        plugin: { version: '0.1.0' },
+        requiredCapabilities: [],
+        digest: expect.stringMatching(/^sha256:/u),
+      });
+    }
     await materialized.cleanup();
     expect(await fs.pathExists(materialized.rootDir)).toBe(false);
   });
@@ -301,6 +323,20 @@ describe('portable materializer', () => {
       env: { ...process.env, AW_HOME: path.join(root, 'home-c') },
     })).rejects.toThrow('frontmatter');
 
+    const reserved = await pluginFixture(root, baseManifest('reserved'));
+    await writeSkill(reserved.rootDir, 'reserved');
+    await fs.outputJson(path.join(
+      reserved.rootDir,
+      'agent-skills',
+      'skills',
+      'reserved',
+      'aw-plugin-requirements.json',
+    ), {});
+    await expect(materializePortableSkills({
+      plugins: [reserved], pluginId: reserved.pluginId!, scope: 'user', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home-reserved') },
+    })).rejects.toThrow('reserved file');
+
     const uppercase = await pluginFixture(root, baseManifest('uppercase'));
     await fs.outputFile(
       path.join(uppercase.rootDir, 'agent-skills', 'skills', 'Foo', 'SKILL.md'),
@@ -361,6 +397,7 @@ console.log(JSON.stringify({version:2,artifacts:[{id:'owned',distribution:'agent
     const materialized = await materializePortableSkills({
       plugins: [bundled], pluginId: bundled.pluginId, scope: 'project', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home') },
+      inputMode: 'bundle',
     });
     expect(await fs.readFile(path.join(materialized.rootDir, 'skills', 'owned', 'references', 'runtime.txt'), 'utf8'))
       .toBe('projected');
@@ -371,6 +408,7 @@ console.log(JSON.stringify({version:2,artifacts:[{id:'owned',distribution:'agent
     await expect(materializePortableSkills({
       plugins: [bundled], pluginId: bundled.pluginId, scope: 'project', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home-failure') },
+      inputMode: 'bundle',
     })).rejects.toThrow('缺少 SKILL.md');
   });
 

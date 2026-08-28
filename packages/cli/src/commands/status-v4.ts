@@ -29,6 +29,7 @@ import {
 } from '../utils/multi-source-catalog.js';
 import {
   assertStrictSemVer,
+  checkAwCapabilitySupport,
   compareStrictSemVer,
   readPluginManifest,
   tryParseStrictSemVer,
@@ -50,6 +51,7 @@ import {
   resolveCanonicalRepoProjectKey,
 } from '../utils/state-paths.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from './aw-capabilities.js';
 
 export interface StatusV4CatalogSource {
   id: string;
@@ -136,6 +138,7 @@ interface StatusPluginCapability {
     installedVersion?: string;
   }>>>>;
   dependencies: string[];
+  missingCapabilities?: string[];
 }
 
 export interface StatusV4PluginSummary {
@@ -157,6 +160,7 @@ export interface StatusV4PluginSummary {
   dependencyDirectCount?: number;
   dependencyTotalCount?: number;
   dependencyIssueCount?: number;
+  missingCapabilities?: string[];
 }
 
 export interface LiveConsoleItem {
@@ -540,6 +544,42 @@ export async function statusCommandV4(options: {
         try {
           const plugins: StatusPluginCapability[] = await Promise.all(
             item.resolution!.manifest.entries.map(async (entry) => {
+              const capabilitySupport = checkAwCapabilitySupport(
+                entry.requires.aw.capabilities ?? [],
+                IMPLEMENTED_AW_CAPABILITIES,
+              );
+              if (!capabilitySupport.supported) {
+                const products = entry.policy.products;
+                const supports = (platform: PlatformName): boolean => products === undefined
+                  || products.includes(platform === 'codex' ? 'CODEX' : 'CLAUDE');
+                const states: StatusPluginCapability['states'] = {};
+                const message = `awCapabilityUnsupported: ${item.resolution!.sourceId}/${entry.name} requires unsupported AW capabilities: ${capabilitySupport.missing.join(', ')}.`;
+                for (const platform of ['codex', 'claude'] as const) {
+                  if (!supports(platform)) continue;
+                  states[platform] = {};
+                  for (const scope of ['user', 'project'] as const) {
+                    states[platform]![scope] = {
+                      state: 'error',
+                      components: [],
+                      errors: [{ code: 'awCapabilityUnsupported', message }],
+                    };
+                  }
+                }
+                return {
+                  name: entry.name,
+                  version: entry.version,
+                  displayName: entry.interface?.displayName ?? entry.name,
+                  shortDescription: entry.interface?.shortDescription ?? entry.description,
+                  description: entry.description,
+                  targets: {
+                    claude: { user: supports('claude'), project: supports('claude') },
+                    codex: { user: supports('codex'), project: supports('codex') },
+                  },
+                  states,
+                  dependencies: entry.dependencies,
+                  missingCapabilities: capabilitySupport.missing,
+                };
+              }
               const plugin = await readPluginManifest(
                 path.join(item.resolution!.rootDir, 'plugins', entry.name),
                 { mode: 'bundle' },
@@ -667,11 +707,23 @@ export async function statusCommandV4(options: {
                           sourceId: item.resolution!.sourceId,
                           pluginName: dependencyName,
                         });
-                        if (!item.resolution!.manifest.entries.some((candidate) =>
-                          candidate.name === dependencyName)) {
+                        const dependencyEntry = item.resolution!.manifest.entries.find((candidate) =>
+                          candidate.name === dependencyName);
+                        if (!dependencyEntry) {
                           dependencyErrors.push({
                             code: 'dependencyMissing',
                             message: `dependencyMissing: ${dependencyId} is not available in the current source snapshot.`,
+                          });
+                          continue;
+                        }
+                        const dependencySupport = checkAwCapabilitySupport(
+                          dependencyEntry.requires.aw.capabilities ?? [],
+                          IMPLEMENTED_AW_CAPABILITIES,
+                        );
+                        if (!dependencySupport.supported) {
+                          dependencyErrors.push({
+                            code: 'awCapabilityUnsupported',
+                            message: `awCapabilityUnsupported: ${dependencyId} requires unsupported AW capabilities: ${dependencySupport.missing.join(', ')}.`,
                           });
                           continue;
                         }
@@ -1167,7 +1219,8 @@ export async function statusCommandV4(options: {
   };
   const hasErrors = payload.catalog.sources.some((source) => source.error !== undefined)
     || payload.errors.length > 0
-    || payload.targets.some((target) => target.state === 'error');
+    || payload.targets.some((target) => target.state === 'error'
+      && target.errors.some((error) => error.code !== 'awCapabilityUnsupported'));
   return {
     payload,
     output: options.json ? JSON.stringify(payload) : renderStatusV4(payload, options.verbose === true),
@@ -1190,7 +1243,9 @@ export async function statusCommandV4(options: {
         sourceId: entry.source.id,
         pluginName: entry.name,
       })).reduce((count, target) => count + target.errors.filter((error) =>
-        error.code.startsWith('dependency') || error.code === 'sourceChanged').length, 0);
+        error.code.startsWith('dependency')
+        || error.code === 'awCapabilityUnsupported'
+        || error.code === 'sourceChanged').length, 0);
       return {
         pluginName: entry.name,
         pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
@@ -1208,6 +1263,9 @@ export async function statusCommandV4(options: {
         dependencyDirectCount: entry.dependencies.length,
         dependencyTotalCount: transitive.size,
         dependencyIssueCount,
+        ...(entry.missingCapabilities
+          ? { missingCapabilities: entry.missingCapabilities }
+          : {}),
       };
     }),
   };

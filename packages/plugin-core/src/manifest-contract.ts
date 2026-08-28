@@ -2,6 +2,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import fs from 'fs-extra';
+import { normalizeAwCapabilities } from './aw-capabilities.js';
 import {
   normalizePluginManifestSchemaVersion,
   PLUGIN_MANIFEST_SCHEMA_VERSION,
@@ -31,7 +32,7 @@ import type {
   PlatformAgentOverrides,
   PlatformName,
   PlatformPluginManifest,
-  PluginCompatibility,
+  PluginRequirements,
   PluginConfigSchema,
   PluginArtifactRenderScriptEntry,
   PluginArtifactsConfig,
@@ -106,7 +107,6 @@ const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
 };
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
-export const DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION = '0.0.0';
 const STRICT_SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
@@ -433,56 +433,30 @@ function assertCatalogChannel(value: unknown, fieldName: string): CatalogChannel
   return channel as CatalogChannel;
 }
 
-function createPluginCompatibility(minVersion: string): PluginCompatibility {
-  return {
-    aw: {
-      minVersion,
-    },
-  };
-}
-
-function normalizePluginCompatibility(
+function normalizePluginRequirements(
   value: unknown,
   fieldName: string,
-  options: {
-    allowMissing: boolean;
-    defaultMinVersion?: string;
-  },
-): PluginCompatibility {
+  options: { allowMissing: boolean },
+): PluginRequirements | undefined {
   if (value === undefined) {
-    if (options.allowMissing) {
-      return createPluginCompatibility(
-        assertStrictSemVer(
-          options.defaultMinVersion ?? DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
-          `${fieldName}.aw.minVersion`,
-        ),
-      );
-    }
-
-    throw new Error(`Invalid ${fieldName}.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.`);
+    if (options.allowMissing) return undefined;
+    throw new Error(`Invalid ${fieldName}: expected an object.`);
   }
 
   const input = assertObject(value, fieldName);
   assertAllowedKeys(input, fieldName, ['aw']);
   const aw = assertObject(input.aw, `${fieldName}.aw`);
-  assertAllowedKeys(aw, `${fieldName}.aw`, ['minVersion']);
-
-  return createPluginCompatibility(
-    assertStrictSemVer(aw.minVersion, `${fieldName}.aw.minVersion`),
-  );
-}
-
-function assertPluginMinVersionWithinCatalogBounds(options: {
-  pluginName: string;
-  pluginMinVersion: string;
-  catalogMinVersion: string;
-  fieldName: string;
-}): void {
-  if (compareStrictSemVer(options.pluginMinVersion, options.catalogMinVersion) > 0) {
-    throw new Error(
-      `Invalid ${options.fieldName}: plugin "${options.pluginName}" requires aw ${options.pluginMinVersion}, which is higher than catalog minimum ${options.catalogMinVersion}.`,
-    );
+  assertAllowedKeys(aw, `${fieldName}.aw`, ['capabilities']);
+  if (aw.capabilities !== undefined && !Array.isArray(aw.capabilities)) {
+    throw new Error(`Invalid ${fieldName}.aw.capabilities: expected an array.`);
   }
+  return {
+    aw: {
+      ...(aw.capabilities === undefined
+        ? {}
+        : { capabilities: normalizeAwCapabilities(aw.capabilities, `${fieldName}.aw.capabilities`) }),
+    },
+  };
 }
 
 function normalizeMarketplaceProducts(value: unknown, fieldName: string): string[] | undefined {
@@ -2813,8 +2787,6 @@ export async function readMarketplaceSourceMeta(repoRoot: string): Promise<Marke
 }
 
 export interface ValidatePluginManifestOptions {
-  compatibilityMode?: 'defaulted' | 'required';
-  defaultMinVersion?: string;
   reservedImports?: ReservedImportRegistry;
 }
 
@@ -2915,7 +2887,7 @@ export async function assertActualNativePluginCapability(
     }
   }
   if (!skills && !slashCommands && !mcpServers && !apps && !bundled) {
-    throw new Error('Invalid plugin manifest: portable-only plugins are not supported in V1. Declare at least one non-empty native capability.');
+    throw new Error('Invalid plugin manifest: portable-only plugins are not supported. Declare at least one non-empty native capability.');
   }
 }
 
@@ -2939,7 +2911,7 @@ export function validatePluginManifest(
     'version',
     'description',
     'dependencies',
-    'compatibility',
+    'requires',
     'skills',
     'slashCommands',
     'mcpServers',
@@ -2959,12 +2931,11 @@ export function validatePluginManifest(
     name: ensureString(input.name, 'name'),
     version: assertStrictSemVer(input.version, 'plugin manifest.version'),
     description: ensureString(input.description, 'description'),
-    compatibility: normalizePluginCompatibility(input.compatibility, 'compatibility', {
-      allowMissing: (options.compatibilityMode ?? 'defaulted') === 'defaulted',
-      defaultMinVersion: options.defaultMinVersion,
-    }),
     marketplace: normalizeMarketplaceMeta(input.marketplace, 'marketplace'),
   };
+
+  const requires = normalizePluginRequirements(input.requires, 'requires', { allowMissing: true });
+  if (requires !== undefined) manifest.requires = requires;
 
   if (input.dependencies !== undefined) {
     const dependencies = ensureStringArray(input.dependencies, 'dependencies');
@@ -3328,18 +3299,7 @@ export async function validateSourcePluginManifest(
   options: Pick<ValidatePluginManifestOptions, 'reservedImports'> = {},
 ): Promise<NormalizedPluginManifest> {
   await assertPluginInputTree(pluginRoot);
-  const distributionsInput = rawManifest !== null
-    && typeof rawManifest === 'object'
-    && !Array.isArray(rawManifest)
-    ? (rawManifest as Record<string, unknown>).distributions
-    : undefined;
-  const requiresExplicitMinVersion = distributionsInput !== null
-    && typeof distributionsInput === 'object'
-    && !Array.isArray(distributionsInput)
-    && Object.hasOwn(distributionsInput, 'agentSkills');
   const manifest = validatePluginManifest(pluginRoot, rawManifest, {
-    compatibilityMode: requiresExplicitMinVersion ? 'required' : 'defaulted',
-    defaultMinVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
     reservedImports: options.reservedImports,
   });
   const parsedVersion = parseStrictSemVer(manifest.version, 'plugin manifest.version');
@@ -3392,10 +3352,7 @@ export async function readPluginManifest(
     ? await validateSourcePluginManifest(pluginRoot, rawManifest, {
       reservedImports: options.reservedImports,
     })
-    : validatePluginManifest(pluginRoot, rawManifest, {
-      compatibilityMode: 'required',
-      reservedImports: options.reservedImports,
-    });
+    : validatePluginManifest(pluginRoot, rawManifest, { reservedImports: options.reservedImports });
   if (mode === 'bundle') await assertActualNativePluginCapability(pluginRoot, manifest, 'bundle');
   return {
     rootDir: pluginRoot,
@@ -3540,9 +3497,6 @@ function normalizeCatalogManifestEntry(
   fieldName: string,
 ): CatalogManifestEntry {
   const input = assertObject(value, fieldName);
-  if (Object.hasOwn(input, 'dependencies')) {
-    throw new Error(`Invalid ${fieldName}: "dependencies" is unsupported.`);
-  }
   assertAllowedKeys(input, fieldName, [
     'name',
     'version',
@@ -3552,7 +3506,8 @@ function normalizeCatalogManifestEntry(
     'tags',
     'strict',
     'policy',
-    'compatibility',
+    'dependencies',
+    'requires',
     'source',
     'artifactDigest',
     'manifestDigest',
@@ -3565,9 +3520,13 @@ function normalizeCatalogManifestEntry(
     category: ensureString(input.category, `${fieldName}.category`),
     strict: ensureBoolean(input.strict, `${fieldName}.strict`),
     policy: normalizeMarketplacePolicy(input.policy, `${fieldName}.policy`),
-    compatibility: normalizePluginCompatibility(input.compatibility, `${fieldName}.compatibility`, {
+    dependencies: input.dependencies === undefined
+      ? []
+      : normalizeComparableStringArray(ensureStringArray(input.dependencies, `${fieldName}.dependencies`))!
+        .map((dependency, index) => ensurePluginName(dependency, `${fieldName}.dependencies[${index}]`)),
+    requires: normalizePluginRequirements(input.requires, `${fieldName}.requires`, {
       allowMissing: false,
-    }),
+    })!,
     source: normalizeCatalogRelativePath(input.source, `${fieldName}.source`),
     artifactDigest: ensureDigestString(input.artifactDigest, `${fieldName}.artifactDigest`),
     manifestDigest: ensureDigestString(input.manifestDigest, `${fieldName}.manifestDigest`),
@@ -3585,7 +3544,7 @@ function normalizeCatalogManifestEntry(
 export interface NormalizedCatalogManifestBase {
   catalogVersion: string;
   channel: CatalogChannel;
-  compatibility: PluginCompatibility;
+  requires: PluginRequirements;
 }
 
 export function normalizeCatalogManifestBase(
@@ -3600,12 +3559,12 @@ export function normalizeCatalogManifestBase(
     fieldName: `${fieldName}.catalogVersion`,
     kind: 'catalog',
   });
-  const compatibility = normalizePluginCompatibility(
-    input.compatibility,
-    `${fieldName}.compatibility`,
+  const requires = normalizePluginRequirements(
+    input.requires,
+    `${fieldName}.requires`,
     { allowMissing: false },
-  );
-  return { catalogVersion, channel, compatibility };
+  )!;
+  return { catalogVersion, channel, requires };
 }
 
 export function normalizeCatalogManifestEntries(
@@ -3633,17 +3592,14 @@ export function normalizeCatalogManifestEntries(
         kind: 'plugin',
       });
     }
-    assertPluginMinVersionWithinCatalogBounds({
-      pluginName: entry.name,
-      pluginMinVersion: entry.compatibility.aw.minVersion,
-      catalogMinVersion: base.compatibility.aw.minVersion,
-      fieldName: `${fieldName}.entries.${entry.name}.compatibility.aw.minVersion`,
-    });
   }
   return entries;
 }
 
-export function createBundleSourceManifest(plugin: PluginMeta): NormalizedPluginManifest {
+export function createBundleSourceManifest(
+  plugin: PluginMeta,
+  requiredCapabilities?: readonly string[],
+): NormalizedPluginManifest {
   const scripts = plugin.manifest.scripts
     ? structuredClone(plugin.manifest.scripts)
     : undefined;
@@ -3670,9 +3626,9 @@ export function createBundleSourceManifest(plugin: PluginMeta): NormalizedPlugin
   return {
     ...plugin.manifest,
     buildConfig,
-    compatibility: plugin.manifest.compatibility
-      ? structuredClone(plugin.manifest.compatibility)
-      : createPluginCompatibility(DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION),
+    requires: requiredCapabilities === undefined
+      ? structuredClone(plugin.manifest.requires)
+      : { aw: { capabilities: normalizeAwCapabilities(requiredCapabilities) } },
     extensions: plugin.manifest.extensions
       ? {
           instructions: plugin.manifest.extensions.instructions
@@ -3708,11 +3664,6 @@ export function createPlatformManifestBase(plugin: PluginMeta): PlatformPluginMa
     name: plugin.manifest.name,
     version: plugin.manifest.version,
     description: plugin.manifest.description,
-    compatibility: structuredClone(plugin.manifest.compatibility ?? {
-      aw: {
-        minVersion: '0.0.0',
-      },
-    }),
     interface: plugin.manifest.interface,
   };
 }

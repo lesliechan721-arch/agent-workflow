@@ -28,12 +28,10 @@ async function createStaticEvalPlugin(): Promise<string> {
   await fs.ensureDir(path.join(pluginRoot, 'skills', 'eval-fixture', 'agents'));
   await fs.ensureDir(path.join(pluginRoot, 'skills', 'eval-fixture', 'evals'));
   await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+    schemaVersion: 2,
     name: 'eval-fixture',
     version: '0.1.0',
     description: 'Static plugin eval fixture.',
-    compatibility: {
-      aw: { minVersion: '0.0.0' },
-    },
     skills: './skills',
     marketplace: {
       category: 'workflow',

@@ -1,18 +1,18 @@
 import { Ajv2020, type ErrorObject } from 'ajv/dist/2020.js'
 
-import schema from '../schemas/plugin-manifest-v1.json' with { type: 'json' }
-import type { PluginManifestSourceV1 } from './generated/plugin-manifest-v1.js'
+import schema from '../schemas/plugin-manifest-v2.json' with { type: 'json' }
+import type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js'
 
-export type { PluginManifestSourceV1 } from './generated/plugin-manifest-v1.js'
+export type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js'
 
-export const PLUGIN_MANIFEST_SCHEMA_VERSION = 1 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 7
+export const PLUGIN_MANIFEST_SCHEMA_VERSION = 2 as const
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 8
 
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
 })
-const validateV1 = ajv.compile<PluginManifestSourceV1>(schema)
+const validateV2 = ajv.compile<PluginManifestSourceV2>(schema)
 
 export class PluginManifestStructureError extends Error {
   readonly issues: ErrorObject[]
@@ -28,7 +28,7 @@ function formatIssue(issue: ErrorObject): string {
   const location = issue.instancePath || '/'
   if (
     issue.keyword === 'pattern'
-    && (location === '/version' || location.endsWith('/minVersion'))
+    && location === '/version'
   ) {
     return `${location} must match pattern (expected a strict SemVer 2.0.0 string)`
   }
@@ -37,7 +37,7 @@ function formatIssue(issue: ErrorObject): string {
 
 export function assertPluginManifestStructure(
   value: unknown,
-): asserts value is PluginManifestSourceV1 {
+): asserts value is PluginManifestSourceV2 {
   if (
     value !== null
     && typeof value === 'object'
@@ -49,8 +49,8 @@ export function assertPluginManifestStructure(
       `Unsupported plugin manifest schemaVersion: expected ${PLUGIN_MANIFEST_SCHEMA_VERSION}.`,
     )
   }
-  if (!validateV1(value)) {
-    const issues = validateV1.errors ?? []
+  if (!validateV2(value)) {
+    const issues = validateV2.errors ?? []
     throw new PluginManifestStructureError(
       `Invalid plugin manifest structure: ${issues.map(formatIssue).join('; ')}`,
       issues,
@@ -60,7 +60,7 @@ export function assertPluginManifestStructure(
 
 export function normalizePluginManifestSchemaVersion(
   value: unknown,
-): PluginManifestSourceV1 & { schemaVersion: 1 } {
+): PluginManifestSourceV2 {
   assertPluginManifestStructure(value)
   return {
     ...value,
