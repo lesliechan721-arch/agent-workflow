@@ -52,6 +52,7 @@ import {
 } from '../../src/commands/catalog-source.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
+import { CodexManagerError } from '../../src/utils/codex-manager.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
   const isolation = getCurrentSourceTestIsolation();
@@ -2890,7 +2891,7 @@ describe('five namespaced write commands', () => {
     })).resolves.toMatchObject({ ok: true, changed: true, sourceId: 'team' });
   });
 
-  it('runs every command through the same namespaced runtime', async () => {
+  it('runs every command through the same namespaced runtime without an unrelated Codex probe', async () => {
     const isolation = await configureCatalog();
     const nativeCliRunner = vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }));
     const report = vi.fn();
@@ -2927,7 +2928,7 @@ describe('five namespaced write commands', () => {
         }],
       });
     }
-    expect(nativeCliRunner).toHaveBeenCalled();
+    expect(nativeCliRunner).not.toHaveBeenCalled();
     expect(report).toHaveBeenCalled();
   });
 
@@ -3583,17 +3584,192 @@ describe('five namespaced write commands', () => {
       stdout: 'codex-cli 0.200.0',
       stderr: '',
     }));
+    const codexManagerResolver = vi.fn(async () => ({
+      kind: 'system' as const,
+      version: '0.200.0',
+      command: 'codex',
+      argsPrefix: [] as string[],
+    }));
+    const managedCodexAuthorizer = vi.fn(async () => true);
 
     const installed = await installWriteCommand(['first/demo', 'second/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
-    }, { env: isolation.env, nativeCliRunner });
+    }, {
+      env: isolation.env,
+      nativeCliRunner,
+      codexManagerResolver,
+      managedCodexAuthorizer,
+    });
     expect(installed).toMatchObject({ overallState: 'succeeded' });
     const config = await fs.readFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'), 'utf8');
     expect(config).toContain('First.');
     expect(config).toContain('Second.');
-    expect(nativeCliRunner).toHaveBeenCalledTimes(1);
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    expect(codexManagerResolver).not.toHaveBeenCalled();
+    expect(managedCodexAuthorizer).not.toHaveBeenCalled();
+  });
+
+  it('authorizes a managed Codex runtime before the first user native write', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'managed-codex-source');
+    const configureManifest = (manifest: PluginMeta['manifest']) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.skills = './skills';
+    };
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', configureManifest);
+    const skillRoot = path.join(sourceRoot, 'plugins', 'demo', 'skills', 'demo-skill');
+    await Promise.all([
+      fs.outputFile(
+        path.join(skillRoot, 'SKILL.md'),
+        '---\nname: demo-skill\ndescription: Demo skill.\n---\n',
+      ),
+      fs.outputFile(
+        path.join(skillRoot, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+    ]);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', configureManifest);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const manager = {
+      kind: 'managed' as const,
+      version: '0.150.1',
+      command: '/managed/node',
+      argsPrefix: ['/managed/codex.js'],
+    };
+    let installed = false;
+    let marketplace = false;
+    let marketplaceRoot = '';
+    const configPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    const writeCodexConfig = async () => fs.outputFile(configPath, [
+      ...(marketplace ? [
+        '[marketplaces.aw]',
+        `source = ${JSON.stringify(marketplaceRoot)}`,
+        'source_type = "local"',
+        '',
+      ] : []),
+      ...(installed ? [
+        '[plugins."demo@aw"]',
+        'enabled = true',
+        '',
+      ] : []),
+    ].join('\n'));
+    const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = invocation.args.slice(pluginIndex);
+      if (args[1] === 'marketplace' && args[2] === 'add') {
+        marketplace = true;
+        marketplaceRoot = args[3]!;
+        await writeCodexConfig();
+      } else if (args[1] === 'marketplace' && args[2] === 'remove') {
+        marketplace = false;
+        await writeCodexConfig();
+      } else if (args[1] === 'add') {
+        installed = true;
+        await writeCodexConfig();
+        await fs.copy(
+          path.join(marketplaceRoot, 'plugins', 'demo'),
+          path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo', '1.0.0'),
+          { overwrite: true },
+        );
+      } else if (args[1] === 'remove') {
+        installed = false;
+        await fs.remove(path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'demo'));
+        await writeCodexConfig();
+      }
+      return {
+        exitCode: 0,
+        stdout: args[1] === 'list' && installed ? 'demo@aw\n' : '',
+        stderr: '',
+      };
+    });
+    const codexManagerResolver = vi.fn(async (options: {
+      authorizer?: () => Promise<boolean>;
+    }) => {
+      if (!options.authorizer || !await options.authorizer()) {
+        throw new CodexManagerError(
+          'managedCodexAuthorizationRequired',
+          'Explicit authorization is required.',
+        );
+      }
+      return manager;
+    });
+
+    const output = createCapturedCliIo();
+    const missingSystemRunner = vi.fn(async () => {
+      const error = new Error('not found') as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    });
+    expect(await runCli([
+      'install', 'team/demo', '--platform', 'codex', '--scope', 'user', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: output.io,
+      interactive: false,
+      nativeCliRunner: missingSystemRunner,
+    })).toBe(1);
+    expect(JSON.parse(output.readStdout())).toMatchObject({
+      overallState: 'failed',
+      targets: [expect.objectContaining({ errorCode: 'managedCodexAuthorizationRequired' })],
+    });
+    expect(output.readStderr()).toBe('');
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    await expect(fs.pathExists(configPath)).resolves.toBe(false);
+
+    const declined = await installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex', scope: 'user',
+    }, {
+      env: isolation.env,
+      nativeCliRunner,
+      codexManagerResolver,
+      managedCodexAuthorizer: async () => false,
+    });
+    expect(declined.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'managedCodexAuthorizationRequired' }),
+    ]);
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+    await expect(fs.pathExists(configPath)).resolves.toBe(false);
+
+    const installedResult = await installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex', scope: 'user', allowManagedCodexInstall: true,
+    }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
+    expect(installedResult.overallState, JSON.stringify(installedResult.rebuildResults))
+      .toBe('succeeded');
+    expect(codexManagerResolver).toHaveBeenCalledTimes(2);
+    expect(nativeCliRunner).toHaveBeenCalled();
+
+    const cleaned = await cleanupWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex', scope: 'user', allowManagedCodexInstall: true,
+    }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    expect(codexManagerResolver).toHaveBeenCalledTimes(3);
+    expect(nativeCliRunner.mock.calls.every(([invocation]) =>
+      invocation.command === manager.command && invocation.args[0] === manager.argsPrefix[0]))
+      .toBe(true);
+    codexManagerResolver.mockClear();
+    nativeCliRunner.mockClear();
+
+    const alreadyClean = await uninstallWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex', scope: 'user',
+    }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
+    expect(alreadyClean.overallState, JSON.stringify(alreadyClean.rebuildResults)).toBe('succeeded');
+    expect(codexManagerResolver).not.toHaveBeenCalled();
+    expect(nativeCliRunner).not.toHaveBeenCalled();
   });
 
   it('replays public namespaced config writes and keeps the store when rendering fails', async () => {

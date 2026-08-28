@@ -444,6 +444,19 @@ async function probeSystemCodex(options: CodexManagerOptions) {
   });
 }
 
+function unsupportedSystemDiagnostic(
+  system: Awaited<ReturnType<typeof probeSystemCodex>>,
+): string {
+  const detected = system.detectedVersion ? ` Detected ${system.detectedVersion}.` : '';
+  return `The installed system Codex CLI is not supported.${detected} Required minimum: ${system.requiredMinVersion}. Upgrade the official Codex CLI and retry; AW does not bypass an installed but unsupported system CLI.`;
+}
+
+const MANAGED_AUTHORIZATION_DIAGNOSTIC =
+  'This operation must acquire or rebuild the pinned AW-managed Codex runtime. Retry with --allow-managed-codex-install, or approve the interactive prompt.';
+
+const MANAGED_UNAVAILABLE_DIAGNOSTIC =
+  'The AW-managed Codex runtime is unavailable. Retry the command, upgrade AW, or install a compatible official Codex CLI.';
+
 export async function previewCodexManager(
   options: Omit<CodexManagerOptions, 'authorizer' | 'pnpmEntry'> = {},
 ): Promise<CodexManagerPreview> {
@@ -463,7 +476,7 @@ export async function previewCodexManager(
     return {
       state: 'blocked',
       code: 'codexSystemCliUnsupported',
-      diagnostic: system.details ?? `The system Codex probe returned ${system.status}.`,
+      diagnostic: unsupportedSystemDiagnostic(system),
     };
   }
   const managed = await inspectManagedCodexRuntime(options);
@@ -474,7 +487,7 @@ export async function previewCodexManager(
   return {
     state: 'blocked',
     code: 'managedCodexUnavailable',
-    diagnostic: managed.diagnostic,
+    diagnostic: MANAGED_UNAVAILABLE_DIAGNOSTIC,
   };
 }
 
@@ -493,19 +506,19 @@ export async function resolveCodexManager(
   if (system.status !== 'missing') {
     throw new CodexManagerError(
       'codexSystemCliUnsupported',
-      system.details ?? `The system Codex probe returned ${system.status}.`,
+      unsupportedSystemDiagnostic(system),
     );
   }
 
   const managed = await inspectManagedCodexRuntime(options);
   if (managed.state === 'valid') return managed.manager;
   if (managed.state === 'blocked') {
-    throw new CodexManagerError('managedCodexUnavailable', managed.diagnostic);
+    throw new CodexManagerError('managedCodexUnavailable', MANAGED_UNAVAILABLE_DIAGNOSTIC);
   }
   if (!options.authorizer) {
     throw new CodexManagerError(
       'managedCodexAuthorizationRequired',
-      'Installing or rebuilding the AW-managed Codex runtime requires authorization.',
+      MANAGED_AUTHORIZATION_DIAGNOSTIC,
     );
   }
   let authorized: boolean;
@@ -514,13 +527,13 @@ export async function resolveCodexManager(
   } catch (error) {
     throw new CodexManagerError(
       'managedCodexUnavailable',
-      `The managed Codex authorization check failed: ${error instanceof Error ? error.message : String(error)}`,
+      MANAGED_UNAVAILABLE_DIAGNOSTIC,
     );
   }
   if (!authorized) {
     throw new CodexManagerError(
       'managedCodexAuthorizationRequired',
-      'Installing or rebuilding the AW-managed Codex runtime requires authorization.',
+      MANAGED_AUTHORIZATION_DIAGNOSTIC,
     );
   }
   try {
@@ -528,7 +541,7 @@ export async function resolveCodexManager(
   } catch (error) {
     throw new CodexManagerError(
       'managedCodexUnavailable',
-      error instanceof Error ? error.message : String(error),
+      MANAGED_UNAVAILABLE_DIAGNOSTIC,
     );
   }
 }

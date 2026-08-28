@@ -73,6 +73,10 @@ import {
   preparePortableInstall,
   PortableCommandError,
 } from '../portable/commands.js';
+import {
+  MANAGED_CODEX_PACKAGE_NAME,
+  MANAGED_CODEX_VERSION,
+} from '../utils/codex-manager.js';
 
 async function loadPortablePluginIds(options: {
   context: CliExecutionContext;
@@ -770,20 +774,22 @@ export function createTuiControllerDependencies(
             };
           },
         });
+    let codexManager: OperationEvidence['codexManager'];
     const hasDeclaredDependencies = (status.pluginSummaries.find((summary) =>
       summary.pluginId === intent.pluginId)?.dependencyTotalCount ?? 0) > 0;
-    if (intent.kind === 'pluginWrite'
-      && hasDeclaredDependencies
-      && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
+    if (intent.kind === 'pluginWrite') {
       const command = {
         install: installWriteCommand,
         upgrade: upgradeWriteCommand,
         reinstall: reinstallWriteCommand,
+        uninstall: uninstallWriteCommand,
+        cleanup: cleanupWriteCommand,
       }[intent.action];
       const preview = await command([intent.pluginId], {
         cwd: context.cwd,
         platform: intent.platform,
         scope: intent.scope,
+        ...(intent.action === 'cleanup' ? { force: intent.force === true } : {}),
       }, {
         ...context,
         expectedCatalogConfigDigest: status.payload.catalog.configDigest,
@@ -795,16 +801,40 @@ export function createTuiControllerDependencies(
         } : {}),
       });
       signal?.throwIfAborted();
-      dependencyPlan = preview.dependencyPlan;
-      if (!dependencyPlan) {
-        throw new TuiOperationBlockedError('dependencyGraphInvalid', '无法建立可信的依赖安装计划。');
+      if (hasDeclaredDependencies
+        && (intent.action === 'install'
+          || intent.action === 'upgrade'
+          || intent.action === 'reinstall')) {
+        dependencyPlan = preview.dependencyPlan;
+        if (!dependencyPlan) {
+          throw new TuiOperationBlockedError('dependencyGraphInvalid', '无法建立可信的依赖安装计划。');
+        }
+        const blocker = dependencyPlan.targets.find((target) => target.action === 'block');
+        if (blocker) {
+          throw new TuiOperationBlockedError(
+            blocker.errorCode ?? 'dependencyNotReady',
+            `${blocker.errorCode ?? 'dependencyNotReady'}: 依赖安装计划被阻止。`,
+          );
+        }
       }
-      const blocker = dependencyPlan.targets.find((target) => target.action === 'block');
-      if (blocker) {
+      const managerPreview = preview?.codexManagerPreview;
+      if (managerPreview?.state === 'blocked') {
+        const message = managerPreview.code === 'codexSystemCliUnsupported'
+          ? '系统 Codex CLI 版本不受支持。请升级官方 Codex CLI 后重试。'
+          : 'AW-managed Codex runtime 当前不可用。请重试、升级 AW，或安装官方 Codex CLI。';
         throw new TuiOperationBlockedError(
-          blocker.errorCode ?? 'dependencyNotReady',
-          `${blocker.errorCode ?? 'dependencyNotReady'}: 依赖安装计划被阻止。`,
+          managerPreview.code,
+          `${managerPreview.code}: ${message}`,
         );
+      }
+      if (managerPreview) {
+        codexManager = {
+          state: managerPreview.state,
+          packageName: MANAGED_CODEX_PACKAGE_NAME,
+          version: managerPreview.state === 'requires-install'
+            ? MANAGED_CODEX_VERSION
+            : managerPreview.manager.version,
+        };
       }
     }
     await preparation?.reporter.emit('evidence');
@@ -816,6 +846,7 @@ export function createTuiControllerDependencies(
       },
       source: selected.source,
       ...(dependencyPlan ? { dependencyPlan } : {}),
+      ...(codexManager ? { codexManager } : {}),
       targetFingerprint: statusTargetFingerprint(
         status.payload.targets,
         status.targetRevisions ?? [],
@@ -1129,6 +1160,9 @@ export function createTuiControllerDependencies(
               cwd: context.cwd,
               platform: intent.platform,
               scope: intent.scope,
+              ...(expectedEvidence.codexManager?.state === 'requires-install'
+                ? { allowManagedCodexInstall: true }
+                : {}),
               ...(intent.action === 'cleanup' ? { force: intent.force === true } : {}),
             };
             const command = {
@@ -1146,6 +1180,9 @@ export function createTuiControllerDependencies(
               ...context,
               awHomeMutationToken,
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
+              ...(expectedEvidence.codexManager?.state === 'requires-install'
+                ? { managedCodexAuthorizer: async () => true }
+                : {}),
               reviewPreflight: (actual) => assertSourceEvidenceMatches(currentSource, actual),
             });
             throwIfWriteReviewStale(result);

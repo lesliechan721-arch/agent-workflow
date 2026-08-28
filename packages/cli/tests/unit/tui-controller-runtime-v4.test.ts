@@ -560,14 +560,30 @@ describe('TUI controller runtime scope conflict validation', () => {
       targetFingerprint: expect.stringMatching(/^sha256:/u),
     });
 
-    await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
+    const authorizedEvidence = {
+      ...evidence,
+      codexManager: {
+        state: 'requires-install' as const,
+        packageName: '@openai/codex' as const,
+        version: '0.150.1',
+      },
+    };
+    await expect(dependencies.executeIntent(intent, authorizedEvidence)).resolves.toMatchObject({
       overallState: 'succeeded',
     });
     expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledWith(
       ['official/demo'],
-      expect.objectContaining({ platform: 'codex', scope: 'user', force: false }),
-      expect.objectContaining({ reviewPreflight: expect.any(Function) }),
+      expect.objectContaining({
+        platform: 'codex', scope: 'user', force: false,
+        allowManagedCodexInstall: true,
+      }),
+      expect.objectContaining({
+        reviewPreflight: expect.any(Function),
+        managedCodexAuthorizer: expect.any(Function),
+      }),
     );
+    const runtime = runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[2];
+    await expect(runtime.managedCodexAuthorizer()).resolves.toBe(true);
     expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
   });

@@ -3012,6 +3012,7 @@ export function ConsoleAppV4(props: {
     const groupTitle = {
       requested: review.operationKind === 'portableInstall' ? '已选择 Skills · 当前插件' : '你选择的插件',
       dependencies: review.operationKind === 'portableInstall' ? '已选择 Skills · 来自依赖插件' : '必需依赖',
+      runtime: 'Codex runtime',
       portableTarget: '安装目标',
       portableInputs: '准备内容',
       portableWarnings: '覆盖冲突',
@@ -3021,7 +3022,7 @@ export function ConsoleAppV4(props: {
       change.kind === 'remove' ? 'error'
         : change.kind === 'warning' ? 'warning'
           : change.kind === 'keep' || change.kind === 'add' ? 'success' : undefined;
-    const groupOrder = ['portableWarnings', 'portableTarget', 'requested', 'dependencies', 'preserved', 'portableInputs'] as const;
+    const groupOrder = ['portableWarnings', 'portableTarget', 'requested', 'dependencies', 'runtime', 'preserved', 'portableInputs'] as const;
     const groupedSpecs = groupedChanges
       ? groupOrder.map((group) => ({
           key: group,

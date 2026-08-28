@@ -16,9 +16,9 @@ import {
   executeRebuildOperation,
   type RebuildActiveStore,
 } from '../../src/commands/rebuild-operations.js';
-import { createCommandExecutionContext } from '../../src/commands/runtime.js';
+import { createCommandExecutionContext as createBaseCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { CatalogResolution, CodexSharedHookGroup, PluginMeta } from '../../src/types.js';
-import type { NativeCliRunner } from '../../src/utils/native-cli.js';
+import { SYSTEM_CODEX_MANAGER, type NativeCliRunner } from '../../src/utils/native-cli.js';
 import {
   OWNED_TEXT_HEADER_PREFIX,
   inspectOwnedComponents,
@@ -56,6 +56,15 @@ import {
 } from '../../src/utils/catalog-sources.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+
+function createCommandExecutionContext(
+  options: Parameters<typeof createBaseCommandExecutionContext>[0],
+) {
+  return {
+    ...createBaseCommandExecutionContext(options),
+    codexManager: SYSTEM_CODEX_MANAGER,
+  };
+}
 
 async function prewarmActiveMarketplace(catalogRoot: string, awHome: string): Promise<void> {
   await fs.ensureDir(path.dirname(awHome));
@@ -2934,6 +2943,11 @@ describe('rebuild adapter integration', () => {
     });
     expect(result.status).toBe('failed');
     expect(result.residual).toEqual(expect.arrayContaining([`${pluginName}@aw`]));
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: expect.stringContaining('Retry cleanup or uninstall, upgrade AW'),
+      }),
+    ]));
     expect(calls).toContain(`codex plugin remove ${pluginName}@aw`);
     expect(calls).not.toContain('codex plugin marketplace remove aw');
     expect(await fs.pathExists(cacheRoot)).toBe(true);

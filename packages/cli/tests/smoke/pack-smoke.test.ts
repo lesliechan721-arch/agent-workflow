@@ -314,6 +314,59 @@ describe('pack smoke', () => {
       const packageStats = await fs.lstat(path.join(globalNodeModules, ...packageName.split('/')));
       expect(packageStats.isSymbolicLink()).toBe(false);
     }
+    const installedCodexManagerImport = pathToFileURL(path.join(
+      globalNodeModules,
+      '@lesliechan721',
+      'aw',
+      'dist',
+      'src',
+      'utils',
+      'codex-manager.js',
+    )).href;
+    const installedRuntimeHome = path.join(tempRoot, 'installed-manager-aw-home');
+    const installedManagerProbe = await execFileAsync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        [
+          'const { resolveCodexManager } = await import(process.argv[1]);',
+          'let pnpmEntry;',
+          'try {',
+          '  await resolveCodexManager({',
+          '    env: { ...process.env, AW_HOME: process.argv[2] },',
+          '    authorizer: async () => true,',
+          '    runner: async (invocation) => {',
+          "      if (invocation.command === 'codex') { const error = new Error('missing'); error.code = 'ENOENT'; throw error; }",
+          '      pnpmEntry = invocation.args[0];',
+          "      return { exitCode: 1, stdout: '', stderr: '' };",
+          '    },',
+          '  });',
+          '} catch (error) {',
+          "  if (error?.code !== 'managedCodexUnavailable') throw error;",
+          '}',
+          "if (!pnpmEntry) throw new Error('The installed CLI did not resolve pnpm.');",
+          'console.log(JSON.stringify({ pnpmEntry }));',
+        ].join('\n'),
+        installedCodexManagerImport,
+        installedRuntimeHome,
+      ],
+      {
+        cwd: tempRoot,
+        env: {
+          ...externalAuthoringEnv,
+          HOME: path.join(tempRoot, 'installed-manager-home'),
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    const installedPnpmEntry = (JSON.parse(installedManagerProbe.stdout) as {
+      pnpmEntry: string;
+    }).pnpmEntry;
+    await expect(fs.pathExists(installedPnpmEntry)).resolves.toBe(true);
+    expect(path.relative(globalNodeModules, installedPnpmEntry).startsWith(`..${path.sep}`)).toBe(false);
+    expect(path.relative(repoRoot(), installedPnpmEntry).startsWith(`..${path.sep}`)).toBe(true);
+    expect(installedPnpmEntry).toContain(`${path.sep}pnpm${path.sep}`);
     await expect(execFileAsync(awBin, ['--version'], {
       cwd: tempRoot,
       env: externalAuthoringEnv,

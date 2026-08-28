@@ -59,6 +59,7 @@ installed plugin
   catalog-cache/sources/<sourceId>/{current,last-good}/
   marketplaces/**
   lifecycle-active/**
+  runtimes/codex/0.150.1/<platform-arch>/**
 ```
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
@@ -71,6 +72,7 @@ installed plugin
 - 第三方发布在第一次远端写入前保存 gitignored `.aw/publish/attempts/<version>.json`。每个版本文件独立保留；文件损坏或发布结果不确定时只阻止该版本，作者用 `aw catalog version <higher>` 恢复。该恢复合同不增加 force、补偿 push 或平台专用发布路径。
 - Catalog manifest 保存规范化 marketplace owner/interface，验证器以它为唯一根 metadata 真值核对 Codex 和 Claude projection。`release.state=published` 的 snapshot 必须包含并完整验证 `plugin-release-ledger.json`；development snapshot 不包含 ledger。公开 Catalog 作者合同见[Catalog 作者指南](catalog-authoring.md)。
 - `<AW_HOME>/catalog-sources.json` 缺失时读取内置 `official` source；第一次来源修改才物化该文件。稳定版 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。
+- `runtimes/codex/**` 是可删除、可重建的弱状态。AW 只在用户级操作实际需要 Codex native 写入或移除时使用它。runtime 固定安装随 AW 发布更新的 `@openai/codex` 版本，不写入 `PATH`，也不读取或检测 Codex App。
 
 ### Portable Agent Skills Distribution
 
@@ -104,6 +106,7 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
 解析当前 Catalog 和目标
   → 生成临时依赖顺序与期望组件
   → 检查 live ownership
+  → 仅为实际 Codex native 操作解析执行 manager
   → 必要时清理 AW-owned 旧组件
   → 写入原生和 AW-managed 组件
   → 按命令运行 lifecycle
@@ -114,6 +117,10 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
 TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。准备读取统一使用 cache-first Catalog：有效 cache 立即可用，cache miss 仍可按 resolver 合同访问远端。依赖 preview 也使用这个策略；`requireRemote` 仍允许匹配 cache fallback，不表示无回退的严格远端读取。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
 
 Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。执行前仍重新验证 intent，并在 `AW_HOME` mutation lock 内使用新鲜 Catalog 和现场重新采集 evidence。若 cache-first Review 证据与执行证据不同，必须在任何写入前返回 typed `operationReviewStale` 或新 Review；准备页证据不能替代 stale/TOCTOU 防护。
+
+Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。Codex project scope 不使用 native manager。用户级正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt/status v4，也不成为 `operationReviewStale` 证据。
+
+TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 
 依赖执行顺序只在本次命令内存在。receipt 可摘要公开 requested/resolved plugin ID、dependency edge、relation、requiredBy 和 dependency state；它不公开持久计划、摘要、锁或来源内部证据。
 
@@ -166,6 +173,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - 只删除可证明属于 AW 的 marker、managed block、artifact 或 namespaced 组件。
 - primary source 默认继续使用 `aw` marketplace。若用户级 Codex 或 Claude 的 `aw` 已由 legacy 或 foreign source 占用，首次安装改用 source-bound `aw-<sourceId>`；两个平台使用同一名称。已有 canonical 注册继续决定名称，候选名称被 foreign source 占用时 fail closed。
 - 外部 Codex/Claude 命令、用户手改目录和共享 marketplace 都是不受 AW 完全控制的边界。Claude 合法的未绑定默认安装记录不属于任何 marketplace；来源 inventory 必须保留并忽略它，不能把它归为 canonical 或 foreign。执行 native install 前，若任意 scope 存在与目标原生插件名称相同的未绑定 bare-key 记录，写命令必须在清理、mirror 和 native CLI 调用前 fail closed；不同名记录继续保留并忽略。cleanup 和 uninstall 不删除、迁移或重命名未绑定记录。命令允许部分成功，并报告残留和失败。
+- Codex cleanup 和 uninstall 先直接检查 config、cache、manifest 和 ownership。没有可证明的 AW-owned native residue 或待移除的 canonical marketplace 时，不解析或获取 manager。发现 residue 且 system CLI 缺失时，可在本次授权下使用 AW-managed 官方 CLI 执行 remove。AW 不直接删除 Codex 私有 plugin storage；foreign 内容始终保留。remove 或完成后检查失败时保留 residue，并提示重试 cleanup/uninstall、升级 AW 或安装兼容的官方 Codex CLI。
 - Codex project config 的规范路径与 Codex user home 相同时，未发现 project owner 的默认 status 不生成 project placement；显式 project status 报告路径别名。`install`、`upgrade` 和 `reinstall` 不向这个 project placement 写入，用户必须进入独立项目目录；`cleanup` 和 `uninstall` 仍可处理已有 project owner。
 - active marketplace、backup、quarantine 和 lifecycle snapshot 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。

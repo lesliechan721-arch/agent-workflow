@@ -2331,7 +2331,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }
   });
 
-  it('keeps an orphan schema 2 lifecycle snapshot during qualified cleanup', async () => {
+  it('keeps an orphan lifecycle snapshot after failed cleanup and clears it without probing Codex', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-lifecycle-source');
     await createCatalogSnapshotFixture(sourceRoot);
@@ -2416,8 +2416,8 @@ describe('phase 3B namespaced runtime stores', () => {
         throw new Error('orphan metadata cleanup must not call the native CLI');
       },
     });
-    expect(cleanup).toMatchObject({ overallState: 'failed' });
-    expect(await fs.pathExists(target.activeRoot)).toBe(true);
+    expect(cleanup).toMatchObject({ overallState: 'succeeded' });
+    expect(await fs.pathExists(target.activeRoot)).toBe(false);
   });
 
   it('does not consume a lost-source snapshot after its last live owner disappears', async () => {
