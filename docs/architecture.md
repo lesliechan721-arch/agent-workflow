@@ -183,6 +183,10 @@ target health 只表示当前 live 组件是否完整，不表示 Catalog 版本
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user、project shared 或 project local 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
 
+控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 generation、目标 fingerprint 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；Review 分别显示设置变更、应用影响和保持不变。个人默认变更重新应用当前目录中已安装的 user 与 project 目标；项目 shared/local 变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
+
+Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。official HTTPS/SSH 切换只改变 transport location，并通过 source mutation Review 提交；Catalog logical identity 继续只来自 generation 中的 Workspace identity，不修改 live owner identity。
+
 ### TUI 诊断投影与脱敏边界
 
 TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v5 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；Active generation 正常、缺失和损坏必须使用不同影响与恢复动作。

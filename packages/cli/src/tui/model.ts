@@ -177,6 +177,8 @@ export interface ConfigFieldViewModel {
   sourceLabel: string;
   effectiveDisplayValue: string;
   effectiveSourceLabel: string;
+  fallbackDisplayValue?: string;
+  fallbackSourceLabel?: string;
   value?: string | number | boolean;
   effectiveValue?: string | number | boolean;
   defaultValue?: string | number | boolean;
@@ -1329,6 +1331,11 @@ export function buildConfigGroups(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
   effectiveRead?: ResolvedConfigRead;
+  layerReads?: {
+    user: ResolvedConfigRead;
+    project: ResolvedConfigRead;
+    local: ResolvedConfigRead;
+  };
   dirtyKeys?: ReadonlySet<string>;
 }): ConfigGroupViewModel[] {
   const entryByKey = new Map(options.read.fields.map((field) => [field.key, field]));
@@ -1336,6 +1343,8 @@ export function buildConfigGroups(options: {
     (options.effectiveRead ?? options.read).fields.map((field) => [field.key, field]),
   );
   const effectivePage = options.read.scope === 'effective';
+  const layerEntry = (layer: keyof NonNullable<typeof options.layerReads>, key: string) =>
+    options.layerReads?.[layer].fields.find((field) => field.key === key);
   const fieldModel = (key: string): ConfigFieldViewModel => {
     const schema = options.schema.schema[key]!;
     const entry = entryByKey.get(key);
@@ -1361,6 +1370,16 @@ export function buildConfigGroups(options: {
       && effectiveEntry.effectiveValue !== undefined
       && effectiveEntry.effectiveValue !== null
       && (effectiveEntry.valueState === 'configured' || effectiveEntry.valueState === 'default');
+    const omittedLayer = options.read.scope === 'user'
+      ? 'user'
+      : options.read.projectLayer === 'local' ? 'local' : 'project';
+    const fallback = (['local', 'project', 'user'] as const)
+      .filter((layer) => layer !== omittedLayer)
+      .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
+      .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
+    const fallbackValue = fallback?.entry?.storedValue ?? schema.default;
+    const fallbackConfigured = fallback !== undefined || schema.default !== undefined;
+    const fallbackSource = fallback?.layer ?? (schema.default !== undefined ? 'default' : undefined);
     return {
       key,
       title: schema.title ?? key,
@@ -1387,6 +1406,15 @@ export function buildConfigGroups(options: {
         value: effectiveEntry?.effectiveValue,
       }),
       effectiveSourceLabel: configSourceLabel(effectiveEntry?.sourceLayer ?? null),
+      ...(!effectivePage && configured ? {
+        fallbackDisplayValue: displayConfigValue({
+          privateValue,
+          inherited: false,
+          configured: fallbackConfigured,
+          value: fallbackValue,
+        }),
+        fallbackSourceLabel: fallbackSource ? configSourceLabel(fallbackSource) : '未设置',
+      } : {}),
       ...(!privateValue && selectedValue !== undefined
         ? { value: selectedValue as string | number | boolean }
         : {}),
@@ -1463,6 +1491,11 @@ export function buildConfigPage(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
   effectiveRead?: ResolvedConfigRead;
+  layerReads?: {
+    user: ResolvedConfigRead;
+    project: ResolvedConfigRead;
+    local: ResolvedConfigRead;
+  };
 }): ConfigPageViewModel {
   const privateFields = new Set(Object.entries(options.schema.schema)
     .filter(([, field]) => field.sensitive === true || field.type === 'file' || field.type === 'directory')

@@ -66,6 +66,12 @@ export type TuiRoute =
       editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
     }
   | {
+      name: 'configFieldAction';
+      pluginId: string;
+      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      fieldKey: string;
+    }
+  | {
       name: 'configUnavailable';
       pluginId: string;
       layer?: { scope: Scope; projectLayer: ProjectConfigStoreLayer };

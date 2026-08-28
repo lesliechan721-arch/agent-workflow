@@ -105,6 +105,7 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       projectLayer: ProjectConfigStoreLayer;
+      changes?: Array<{ key: string; title: string; before: string; after: string }>;
     }
   | {
       kind: 'sourceMutation';
@@ -145,6 +146,7 @@ export interface OperationEvidence {
     projectLayer: ProjectConfigStoreLayer;
     schemaIdentity?: string;
     storeDigest: string;
+    affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
   };
   sourceWrite?: {
     configDigest: string;
@@ -169,7 +171,7 @@ export interface OperationEvidence {
 
 export interface OperationReviewChange {
   kind: 'add' | 'change' | 'remove' | 'keep' | 'warning';
-  group?: 'requested' | 'dependencies' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'preserved';
+  group?: 'requested' | 'dependencies' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'configChanges' | 'configImpact' | 'preserved';
   pluginId?: string;
   relation?: 'requested' | 'direct' | 'transitive';
   title: string;
@@ -320,6 +322,7 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
+  cliChannel?: 'latest' | 'beta';
   payload: StatusV5Payload;
   pluginSummaries: StatusV5PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
@@ -414,6 +417,7 @@ export interface ConfigResetAvailability {
 
 export interface TuiControllerSnapshot {
   phase: 'idle' | 'loading' | 'ready' | 'error' | 'disposed';
+  cliChannel?: 'latest' | 'beta';
   router: TuiRouterSnapshot;
   viewModel?: TuiViewModel;
   sourceHealth: SourceHealthViewModel[];
@@ -712,10 +716,16 @@ function reviewChanges(
       ? '个人默认'
       : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
     return [
-      { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' },
-      { kind: 'change', title: '重新计算有效设置' },
-      { kind: 'change', title: '重新应用当前可见安装位置' },
-      { kind: 'keep', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
+      ...(intent.changes?.map((change): OperationReviewChange => ({
+        kind: 'remove', group: 'configChanges', title: `${layerLabel} · ${change.title}`,
+        description: `${change.before} → ${change.after}`,
+      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' }]),
+      ...((evidence?.config?.affectedTargets.length ?? 0) > 0
+        ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
+            kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+          }))
+        : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
+      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
     ];
   }
   if (intent.kind === 'sourceMutation') {
@@ -740,17 +750,24 @@ function reviewChanges(
     throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
   }
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
+  const removeKeys = new Set(intent.removeKeys ?? []);
   if (intent.changes) {
     return [
       ...intent.changes.map((change): OperationReviewChange => ({
-        kind: 'change',
-        title: change.title,
-        description: privateKeys.has(change.key)
-          ? change.after === '未设置' ? '已设置 → 未设置' : '已设置 → 将更新'
+        kind: removeKeys.has(change.key) ? 'remove' : 'change',
+        group: 'configChanges',
+        title: removeKeys.has(change.key) ? `删除 ${change.title} 中的值` : change.title,
+        description: removeKeys.has(change.key)
+          ? privateKeys.has(change.key) ? `已设置 → ${change.after}` : `${change.before} → ${change.after}`
+          : privateKeys.has(change.key) ? '已设置 → 将更新'
           : `${change.before} → ${change.after}`,
       })),
-      { kind: 'change', title: '重新应用插件内容', description: '只处理当前可见安装位置。' },
-      { kind: 'keep', title: '其他项目不会被自动扫描' },
+      ...((evidence?.config?.affectedTargets.length ?? 0) > 0
+        ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
+            kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+          }))
+        : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
+      { kind: 'keep', group: 'preserved', title: '其他项目不会被自动扫描' },
     ];
   }
   const updateKeys = Object.keys(intent.updates ?? {});
@@ -936,6 +953,7 @@ export class TuiController {
   get snapshot(): TuiControllerSnapshot {
     return cloneFrozen({
       phase: this.#phase,
+      ...(this.#status?.cliChannel ? { cliChannel: this.#status.cliChannel } : {}),
       router: this.#router.snapshot,
       ...(this.#viewModel ? { viewModel: this.#viewModel } : {}),
       sourceHealth: [...this.#health.values()],

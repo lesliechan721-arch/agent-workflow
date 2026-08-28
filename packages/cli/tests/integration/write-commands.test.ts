@@ -1222,6 +1222,7 @@ describe('five namespaced write commands', () => {
         sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
       });
       const controller = new TuiController(createTuiControllerDependencies(context));
+      await controller.load();
       const review = await controller.buildOperationReview(intent);
       await writeSource('actual C');
       await refreshCatalogSourceGeneration({
@@ -2906,6 +2907,7 @@ describe('five namespaced write commands', () => {
     expect(page.presets).toEqual([{ id: 'strict', title: '严格方案', values: { level: 'strict', count: 7 } }]);
 
     const controller = new TuiController(dependencies);
+    await controller.load();
     const privatePath = path.join(isolation.layout.fixtureCwd, 'private-secret-rules.json');
     await expect(controller.buildOperationReview({
       kind: 'configSave',

@@ -166,6 +166,18 @@ export function statusTargetFingerprint(
   });
 }
 
+export function configAffectedStatusTargets(
+  targets: StatusV5Target[],
+  pluginId: string,
+  configScope: 'user' | 'project',
+): StatusV5Target[] {
+  return targets.filter((target) => target.pluginId === pluginId
+    && (configScope === 'user' || target.scope === 'project')
+    && (target.state === 'present' || target.state === 'partial'))
+    .sort((left, right) => `${left.platform}\0${left.scope}`
+      .localeCompare(`${right.platform}\0${right.scope}`, 'en'));
+}
+
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
 
 function operationReviewStale(message: string): TuiOperationBlockedError {
@@ -615,6 +627,7 @@ export function createTuiControllerDependencies(
 ): TuiControllerDependencies {
   const catalogOperationByEvidence = new WeakMap<OperationEvidence, CatalogOperationContext>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
+  let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV5>> | undefined;
   let bootstrapNextCatalogSession = true;
   const sessionContextForPlugin = (pluginId: string): CatalogOperationContext | undefined => {
     const sourceId = parsePluginId(pluginId).sourceId;
@@ -647,6 +660,7 @@ export function createTuiControllerDependencies(
       const configured = await listCatalogSources({ env: context.env });
       signal.throwIfAborted();
       if (result.payload.catalog.configDigest !== configured.configDigest) continue;
+      sessionStatusResult = result;
       const dependencyOverviews = await loadDependencyOverviews({
         context,
         cliVersion: packageInfo.version,
@@ -667,6 +681,7 @@ export function createTuiControllerDependencies(
       signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
+        cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
         targetRevisions: result.targetRevisions,
@@ -851,6 +866,85 @@ export function createTuiControllerDependencies(
       if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
       return evidence;
     }
+    if (preparation && (intent.kind === 'configSave' || intent.kind === 'configReset')) {
+      if (!sessionStatusResult || !catalogOperation) {
+        throw operationReviewStale('当前 TUI session 没有可复用的设置证据。');
+      }
+      await preparation.reporter.emit('config');
+      const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
+      signal?.throwIfAborted();
+      if (configSnapshot.digest !== sessionStatusResult.payload.catalog.configDigest) {
+        throw operationReviewStale('准备设置确认期间来源配置发生变化。');
+      }
+      const selected = await withResolvedCatalogPlugin({
+        selector: intent.pluginId,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'cacheFirst',
+        configSnapshot,
+        env: context.env,
+        operationContext: catalogOperation,
+        ...(signal ? { signal } : {}),
+        consume: async ({ plugin, source }) => {
+          if (!plugin.manifest.config) {
+            throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
+          }
+          if (intent.kind === 'configSave') {
+            await coercePluginConfigUpdates({
+              schema: plugin.manifest.config.schema,
+              updates: intent.updates ?? {},
+              cwd: context.cwd,
+            });
+            for (const key of intent.removeKeys ?? []) {
+              if (!plugin.manifest.config.schema[key]) {
+                throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
+              }
+            }
+          }
+          return {
+            pluginName: plugin.manifest.name,
+            source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+          };
+        },
+      });
+      const store = await readPluginConfigStore({
+        sourceId: selected.source.sourceId,
+        sourceIdentity: selected.source.sourceIdentity,
+        pluginName: selected.pluginName,
+        scope: intent.scope,
+        projectLayer: intent.projectLayer,
+        cwd: context.cwd,
+        env: context.env,
+      });
+      signal?.throwIfAborted();
+      const relevantTargets = configAffectedStatusTargets(
+        sessionStatusResult.payload.targets,
+        intent.pluginId,
+        intent.scope,
+      );
+      const relevantRevisions = (sessionStatusResult.targetRevisions ?? []).filter((revision) =>
+        relevantTargets.some((target) => target.platform === revision.platform
+          && target.scope === revision.scope
+          && target.pluginId === revision.pluginId));
+      await preparation.reporter.emit('evidence');
+      const evidence: OperationEvidence = {
+        catalog: {
+          configDigest: sessionStatusResult.payload.catalog.configDigest,
+          compositeDigest: sessionStatusResult.payload.catalog.compositeDigest,
+          generationSetDigest: catalogOperation.generationSetDigest,
+        },
+        source: selected.source,
+        targetFingerprint: statusTargetFingerprint(relevantTargets, relevantRevisions),
+        config: {
+          scope: intent.scope,
+          projectLayer: intent.projectLayer,
+          schemaIdentity: selected.source.manifestDigest,
+          storeDigest: digest({ exists: store.exists, values: store.values }),
+          affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
+        },
+      };
+      catalogOperationByEvidence.set(evidence, catalogOperation);
+      return evidence;
+    }
     await preparation?.reporter.emit('status');
     const statusCatalogOperation = offlineCleanupReason
       ? undefined
@@ -1012,6 +1106,15 @@ export function createTuiControllerDependencies(
     }
     await preparation?.reporter.emit('evidence');
     signal?.throwIfAborted();
+    const evidenceTargets = intent.kind === 'configSave' || intent.kind === 'configReset'
+      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
+      : status.payload.targets;
+    const evidenceRevisions = intent.kind === 'configSave' || intent.kind === 'configReset'
+      ? (status.targetRevisions ?? []).filter((revision) =>
+          evidenceTargets.some((target) => target.platform === revision.platform
+            && target.scope === revision.scope
+            && target.pluginId === revision.pluginId))
+      : (status.targetRevisions ?? []);
     const evidence: OperationEvidence = {
       catalog: {
         configDigest: status.payload.catalog.configDigest,
@@ -1024,8 +1127,8 @@ export function createTuiControllerDependencies(
       ...(offlineCleanup ? { offlineCleanup } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
       targetFingerprint: statusTargetFingerprint(
-        status.payload.targets,
-        status.targetRevisions ?? [],
+        evidenceTargets,
+        evidenceRevisions,
       ),
     };
     if (intent.kind === 'configSave' || intent.kind === 'configReset') {
@@ -1044,6 +1147,7 @@ export function createTuiControllerDependencies(
         projectLayer: intent.projectLayer,
         schemaIdentity: selected.source.manifestDigest,
         storeDigest: digest({ exists: store.exists, values: store.values }),
+        affectedTargets: evidenceTargets.map(({ platform, scope }) => ({ platform, scope })),
       };
     }
     if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
@@ -1294,7 +1398,39 @@ export function createTuiControllerDependencies(
             cwd: context.cwd,
             env: context.env,
           });
-          return buildConfigPage({ pluginId, schema: plugin.manifest.config, read, effectiveRead });
+          const layerReads = layer.scope === 'effective' ? undefined : {
+            user: await resolveConfigRead({
+              pluginName: plugin.manifest.name,
+              plugin,
+              scope: 'user',
+              projectLayer: 'shared',
+              cwd: context.cwd,
+              env: context.env,
+            }),
+            project: await resolveConfigRead({
+              pluginName: plugin.manifest.name,
+              plugin,
+              scope: 'project',
+              projectLayer: 'shared',
+              cwd: context.cwd,
+              env: context.env,
+            }),
+            local: await resolveConfigRead({
+              pluginName: plugin.manifest.name,
+              plugin,
+              scope: 'project',
+              projectLayer: 'local',
+              cwd: context.cwd,
+              env: context.env,
+            }),
+          };
+          return buildConfigPage({
+            pluginId,
+            schema: plugin.manifest.config,
+            read,
+            effectiveRead,
+            ...(layerReads ? { layerReads } : {}),
+          });
         },
       });
     },
@@ -1488,6 +1624,11 @@ export function createTuiControllerDependencies(
                   currentSource,
                   sourceEvidenceForPlugin(source, plugin.manifest.name),
                 );
+                const applyTargets = currentEvidence.config?.affectedTargets.map((target) => ({
+                  pluginName: plugin.manifest.name,
+                  platform: target.platform,
+                  scope: target.scope,
+                })) ?? [];
                 const result = intent.kind === 'configSave'
                   ? await applyPluginConfigWrite({
                       plugin,
@@ -1506,6 +1647,7 @@ export function createTuiControllerDependencies(
                         } : {}),
                       },
                       awHomeMutationToken,
+                      applyTargets,
                       request: { updates: intent.updates, removeKeys: intent.removeKeys },
                     })
                   : await resetPluginConfigWithHelper({
@@ -1525,6 +1667,7 @@ export function createTuiControllerDependencies(
                         } : {}),
                       },
                       awHomeMutationToken,
+                      applyTargets,
                     });
                 return result;
               },

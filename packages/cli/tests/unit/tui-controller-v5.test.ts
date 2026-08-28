@@ -2530,6 +2530,7 @@ describe('TUI v4 Review safety', () => {
           projectLayer: 'shared',
           schemaIdentity: 'sha256:schema',
           storeDigest: 'sha256:store',
+          affectedTargets: [],
         },
       }),
     }));
@@ -2546,6 +2547,42 @@ describe('TUI v4 Review safety', () => {
     expect(visible).not.toContain(secret);
     expect(visible).toContain('已设置 → 将更新');
     expect(visible).not.toContain('/Users/');
+  });
+
+  it.each([
+    ['user and current project', 'user', [
+      { platform: 'codex', scope: 'user' },
+      { platform: 'codex', scope: 'project' },
+    ], ['Codex · 所有项目', 'Codex · 当前项目']],
+    ['project only', 'project', [
+      { platform: 'claude', scope: 'project' },
+    ], ['Claude Code · 当前项目']],
+    ['user only', 'user', [
+      { platform: 'claude', scope: 'user' },
+    ], ['Claude Code · 所有项目']],
+  ] as const)('uses evidence-owned affected targets for a %s config Review', async (_label, scope, affectedTargets, labels) => {
+    const evidence: OperationEvidence = {
+      ...baseEvidence,
+      config: {
+        scope,
+        projectLayer: 'shared',
+        schemaIdentity: 'sha256:schema',
+        storeDigest: 'sha256:store',
+        affectedTargets: [...affectedTargets],
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+    }));
+
+    const review = await controller.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/demo', scope,
+      projectLayer: 'shared', updates: { mode: 'safe' },
+      changes: [{ key: 'mode', title: '模式', before: '旧值', after: '新值' }],
+    });
+
+    expect(review.changes.filter((change) => change.group === 'configImpact').map((change) => change.title))
+      .toEqual(labels.map((label) => `重新应用 ${label}`));
   });
 
   it('passes the canonical plugin identity to the write executor', async () => {
