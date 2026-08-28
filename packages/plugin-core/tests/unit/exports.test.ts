@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DEFAULT_CATALOG_WORKSPACE_VERSION,
+  getAwCapabilityRegistry,
 } from '@lesliechan721/aw-plugin-core'
 import {
+  computeAwCapabilitySetDigest,
   getPluginAuthoringCapabilities,
   getPluginAuthoringCapabilitySurface,
   PLUGIN_MANIFEST_SCHEMA_VERSION,
@@ -17,6 +19,8 @@ const require = createRequire(import.meta.url)
 describe('public package exports', () => {
   it('exposes the manifest runtime and published v1 schema subpaths', async () => {
     expect(DEFAULT_CATALOG_WORKSPACE_VERSION).toBe('0.1.0')
+    expect(getAwCapabilityRegistry()).toContain('aw.self-check.v1')
+    expect(computeAwCapabilitySetDigest(['aw.self-check.v1'])).toMatch(/^sha256:/u)
     expect(PLUGIN_MANIFEST_SCHEMA_VERSION).toBe(1)
     expect(getPluginAuthoringCapabilities().schemaVersion).toBe(1)
     expect(getPluginAuthoringCapabilitySurface('manifest').surface).toBe('manifest')

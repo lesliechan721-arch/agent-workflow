@@ -147,6 +147,11 @@ import {
   parsePluginCapabilitySurface,
   renderPluginCapabilities,
 } from './commands/plugin-capabilities.js';
+import {
+  checkCurrentAw,
+  describeCurrentAw,
+  inspectPluginRequirements,
+} from './commands/aw-capabilities.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -1001,9 +1006,35 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('plugin')
     .description('Create and validate AW plugin source');
 
+  const self = program
+    .command('self')
+    .description('Describe and check this AW executable');
+
+  self
+    .command('describe')
+    .description('Describe implemented AW capabilities')
+    .requiredOption('--json', 'emit one machine-readable JSON object')
+    .action(() => {
+      writeJsonReceipt(io.stdout, describeCurrentAw(resolveCliVersion()));
+    });
+
+  self
+    .command('check')
+    .description('Check nearby plugin requirements against this AW executable')
+    .option('--from <path>', 'start discovery from this file or directory')
+    .requiredOption('--json', 'emit one machine-readable JSON object')
+    .action(async (rawOptions: { from?: string }) => {
+      const result = await checkCurrentAw({
+        awVersion: resolveCliVersion(),
+        from: path.resolve(cwd, rawOptions.from ?? '.'),
+      });
+      writeJsonReceipt(io.stdout, result);
+      commandExitState.exitCode = result.ok ? 0 : 1;
+    });
+
   plugin
     .command('capabilities')
-    .description('Show the current plugin authoring capability contract')
+    .description('Show the current plugin manifest authoring surface')
     .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | lifecycle | artifacts')
     .option('--json', 'emit one machine-readable JSON object', false)
     .action((rawOptions: { surface?: string; json?: boolean }) => {
@@ -1019,6 +1050,34 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         else for (const line of renderPluginCapabilities(result)) writeLine(io.stdout, line);
       } catch (error) {
         writeLine(io.stderr, error instanceof Error ? error.message : String(error));
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  plugin
+    .command('requirements')
+    .description('Inspect effective AW capabilities required by a plugin')
+    .argument('<plugin-directory>', 'plugin source directory')
+    .option('--workspace-root <root>', 'Catalog workspace root')
+    .requiredOption('--json', 'emit one machine-readable JSON object')
+    .action(async (pluginDirectory: string, rawOptions: { workspaceRoot?: string }) => {
+      try {
+        const result = await inspectPluginRequirements({
+          pluginDirectory,
+          ...(rawOptions.workspaceRoot ? { workspaceRoot: rawOptions.workspaceRoot } : {}),
+          cwd,
+        });
+        writeJsonReceipt(io.stdout, result);
+        if (result.observations.some((observation) => observation.blocking)) {
+          commandExitState.exitCode = 1;
+        }
+      } catch (error) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'plugin:requirements',
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
         commandExitState.exitCode = 1;
       }
     });
