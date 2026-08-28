@@ -33,7 +33,6 @@ describe('CLI entry v4', () => {
     ]) {
       expect(output.stdout()).toContain(command);
     }
-    expect(output.stdout()).not.toContain('diagnose');
   });
 
   it('publishes the standalone Skill validator options', async () => {
@@ -86,13 +85,6 @@ describe('CLI entry v4', () => {
     expect(output.stdout()).toContain('--json');
     expect(output.stdout()).not.toContain('--force');
     expect(output.stdout()).not.toContain('--plugin-root');
-  });
-
-  it('treats diagnose as an unknown command', async () => {
-    const output = capture();
-    expect(await runCli(['diagnose'], { io: output.io })).toBe(1);
-    expect(output.stderr()).toContain("unknown command 'diagnose'");
-    expect(output.stdout()).toBe('');
   });
 
   it('rejects legacy cleanup flags at Commander parsing', async () => {

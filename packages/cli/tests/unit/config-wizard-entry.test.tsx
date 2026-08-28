@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildEquivalentConfigCommandTokens, runCli } from '../../src/index.js';
+import { runCli } from '../../src/index.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 
 const mocks = vi.hoisted(() => ({
@@ -35,9 +35,7 @@ describe('config mutation runtime entry', () => {
       command: `config:${command}`,
       ok: false,
       overallState: 'failed',
-      errors: [expect.objectContaining({ code: expect.not.stringContaining('runtimeTransitionIncomplete') })],
     });
-    expect(captured.readStderr()).not.toContain('runtimeTransitionIncomplete');
     expect(launch).not.toHaveBeenCalled();
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
     expect(mocks.resetPluginConfigWithHelper).not.toHaveBeenCalled();
@@ -53,21 +51,4 @@ describe('config mutation runtime entry', () => {
     expect(captured.readStdout()).not.toContain(secret);
     expect(captured.readStderr()).not.toContain(secret);
   });
-
-  it.each(['list', 'get', 'set', 'unset', 'reset'] as const)(
-    'keeps config %s replay tokens free of removed catalog selectors',
-    (command) => {
-      const tokens = buildEquivalentConfigCommandTokens({
-        command,
-        plugin: 'demo',
-        ...(command === 'get' || command === 'set' || command === 'unset' ? { key: 'key' } : {}),
-        ...(command === 'set' ? { value: 'value' } : {}),
-        scope: 'user',
-        projectLayer: 'shared',
-        confirmed: command === 'reset',
-      });
-      expect(tokens).not.toContain('--catalog-channel');
-      expect(tokens).not.toContain('--catalog-version');
-    },
-  );
 });

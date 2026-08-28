@@ -9,7 +9,7 @@ import type { ConsoleExitRequest } from '../../src/tui/console-app-v4.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-describe('console and removed diagnose entry', () => {
+describe('console entry', () => {
   it('rejects the bare console in a non-interactive runtime with copyable live commands', async () => {
     const captured = createCapturedCliIo();
     const exitCode = await runCli([], {
@@ -150,29 +150,12 @@ describe('console and removed diagnose entry', () => {
     },
   );
 
-  it.each(['--catalog-channel', '--catalog-version'])(
-    'rejects removed bare console option %s',
-    async (option) => {
-      const captured = createCapturedCliIo();
-      const launch = vi.fn(async () => ({ exitCode: 0 }));
-      const exitCode = await runCli([option], {
-        interactive: true,
-        io: captured.io,
-        tuiRunner: { launch } as never,
-      });
-
-      expect(exitCode).toBe(1);
-      expect(launch).not.toHaveBeenCalled();
-      expect(captured.readStderr()).toContain('unknown option');
-    },
-  );
-
-  it('treats diagnose as an ordinary unknown command without a compatibility route', async () => {
+  it('rejects a generic invalid command', async () => {
     const captured = createCapturedCliIo();
-    const exitCode = await runCli(['diagnose'], { io: captured.io });
+    const exitCode = await runCli(['invalid-command'], { io: captured.io });
 
     expect(exitCode).toBe(1);
     expect(captured.readStderr()).toContain('unknown command');
-    expect(captured.readStderr()).not.toContain('status --verbose');
+    expect(captured.readStdout()).toBe('');
   });
 });

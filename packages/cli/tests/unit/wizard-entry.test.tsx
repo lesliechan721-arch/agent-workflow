@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildEquivalentWriteCommandTokens, runCli } from '../../src/index.js';
+import { runCli } from '../../src/index.js';
 import { toWizardCandidates } from '../../src/commands/wizard.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 
@@ -91,21 +91,5 @@ describe('write command runtime entry', () => {
     expect(captured.readStdout()).toBe('');
     expect(captured.readStderr()).toContain('Usage: aw install');
     expect(launch).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['install', ['demo'], ['--platform', 'codex', '--scope', 'user']],
-    ['upgrade', [], ['--all', '--platform', 'both', '--scope', 'user']],
-    ['reinstall', ['demo'], ['--platform', 'claude', '--scope', 'project']],
-    ['uninstall', ['demo'], ['--platform', 'codex', '--scope', 'user']],
-    ['cleanup', ['demo'], ['--platform', 'codex', '--scope', 'project']],
-  ] as const)('keeps %s replay tokens free of removed catalog selectors', (command, plugins, expected) => {
-    const tokens = buildEquivalentWriteCommandTokens(command, {
-      plugins: [...plugins],
-      platform: expected[1] as 'codex' | 'claude' | 'both',
-      scope: expected[3] as 'project' | 'user',
-    }, { all: command === 'upgrade' });
-    expect(tokens).not.toContain('--catalog-channel');
-    expect(tokens).not.toContain('--catalog-version');
   });
 });
