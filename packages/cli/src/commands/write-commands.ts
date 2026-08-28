@@ -5,9 +5,11 @@ import type {
 } from '../types.js';
 import {
   withAwHomeMutationLock,
-  type AwHomeMutationToken,
 } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
+import { bootstrapCatalogOperationSources } from '../utils/catalog-operation-context.js';
+import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
+import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   normalizeCleanupCommandOptions,
   normalizeInstallCommandOptions,
@@ -28,6 +30,36 @@ import {
 
 type WriteCommand = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
 
+async function planBootstrapSourceIds(options: {
+  pluginNames: string[];
+  all?: boolean;
+  commandOptions: InstallCommandOptions;
+  env?: NodeJS.ProcessEnv;
+}): Promise<string[] | undefined> {
+  const selectors = options.pluginNames.map(parsePluginId);
+  if (selectors.some((selector) => !selector.sourceId)) return undefined;
+  if (selectors.length > 0) {
+    return [...new Set(selectors.map((selector) => selector.sourceId!))];
+  }
+  if (!options.all) return [];
+  const inventory = await inventoryCatalogSourceReferences({
+    cwd: options.commandOptions.cwd,
+    ...(options.env ? { env: options.env } : {}),
+  });
+  const platforms = options.commandOptions.platform === 'both'
+    ? new Set<PlatformName>(['codex', 'claude'])
+    : new Set<PlatformName>([options.commandOptions.platform]);
+  return [...new Set(inventory.references.flatMap((reference) =>
+    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+    && reference.sourceId
+    && reference.pluginName
+    && reference.scope === options.commandOptions.scope
+    && reference.platform
+    && platforms.has(reference.platform as PlatformName)
+      ? [reference.sourceId]
+      : []))];
+}
+
 function writeErrorCode(message: string): string {
   for (const code of [
     'legacyStateUnsupported',
@@ -44,6 +76,10 @@ function writeErrorCode(message: string): string {
     if (message.includes(code)) return code;
   }
   if (message.startsWith('Cannot resolve required catalog sources:')) {
+    return 'catalogSourceUnavailable';
+  }
+  if (message.includes('Catalog source')
+    && (message.includes('is not configured') || message.includes('has no Active generation'))) {
     return 'catalogSourceUnavailable';
   }
   const prefix = message.split(':', 1)[0];
@@ -163,22 +199,54 @@ async function runPublicWriteCommand(options: {
   all?: boolean;
 }): Promise<RebuildCommandResult> {
   const runtime = options.runtime;
-  const execute = (token: AwHomeMutationToken | undefined) => runRebuildCommand({
-    command: options.command,
-    pluginNames: options.pluginNames,
-    commandOptions: options.commandOptions,
-    runtime: token === undefined
-      ? runtime
-      : { ...runtime, awHomeMutationToken: token },
-    ...(options.all === undefined ? {} : { all: options.all }),
-  });
   const execution = runtime.previewDependencyPlanOnly === true
-    ? execute(runtime.awHomeMutationToken)
-    : withAwHomeMutationLock({
-        env: runtime.env,
-        token: runtime.awHomeMutationToken,
-        action: execute,
-      });
+    ? runRebuildCommand({
+        command: options.command,
+        pluginNames: options.pluginNames,
+        commandOptions: options.commandOptions,
+        runtime,
+        ...(options.all === undefined ? {} : { all: options.all }),
+      })
+    : (async () => {
+        let catalogBootstrapError: unknown;
+        if (!runtime.catalogOperationContext && !runtime.awHomeMutationToken) {
+          const sourceIds = await planBootstrapSourceIds({
+            pluginNames: options.pluginNames,
+            ...(options.all === undefined ? {} : { all: options.all }),
+            commandOptions: options.commandOptions,
+            env: runtime.env,
+          });
+          const packageInfo = await readCliPackageInfo();
+          if (sourceIds === undefined || sourceIds.length > 0) {
+            try {
+              await bootstrapCatalogOperationSources({
+                cliVersion: packageInfo.version,
+                ...(sourceIds ? { sourceIds } : {}),
+                ...(runtime.env ? { env: runtime.env } : {}),
+                ...(runtime.catalogGenerationRuntime
+                  ? { runtime: runtime.catalogGenerationRuntime }
+                  : {}),
+              });
+            } catch (error) {
+              if (options.command !== 'cleanup') catalogBootstrapError = error;
+            }
+          }
+        }
+        const executionRuntime = catalogBootstrapError === undefined
+          ? runtime
+          : { ...runtime, catalogBootstrapError };
+        return withAwHomeMutationLock({
+          env: runtime.env,
+          token: runtime.awHomeMutationToken,
+          action: (token) => runRebuildCommand({
+            command: options.command,
+            pluginNames: options.pluginNames,
+            commandOptions: options.commandOptions,
+            runtime: { ...executionRuntime, awHomeMutationToken: token },
+            ...(options.all === undefined ? {} : { all: options.all }),
+          }),
+        });
+      })();
   return execution.catch((error) => failedWriteCommandResult(
     options.command,
     options.pluginNames,

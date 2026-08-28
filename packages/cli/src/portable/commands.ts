@@ -7,7 +7,12 @@ import fs from 'fs-extra';
 import type { CliPromptResult } from '../commands/runtime.js';
 import type { PortableSkillCandidate, Scope } from '../types.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
+import {
+  resolveCatalogOperationContext,
+  type CatalogOperationContext,
+} from '../utils/catalog-operation-context.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { resolveAwProjectRoot } from '../utils/plugin-config.js';
 import { getClaudeHome, getCodexHome, resolveAwHome } from '../utils/paths.js';
 import {
@@ -75,6 +80,7 @@ export interface PortableReview {
   materializationDigest: string;
   configDigest: string;
   evidenceDigest: string;
+  generationSetDigest: string;
 }
 
 export interface PortableInstallReceipt {
@@ -244,6 +250,7 @@ async function createMaterialization(options: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   configSnapshot: Awaited<ReturnType<typeof readCatalogSourcesConfigSnapshot>>;
+  catalogOperationContext: CatalogOperationContext;
 }): Promise<MaterializedPortableSkills> {
   try {
     return await materializePortableSkillsFromCatalog({
@@ -254,6 +261,7 @@ async function createMaterialization(options: {
       env: options.env,
       signal: options.signal,
       configSnapshot: options.configSnapshot,
+      catalogOperationContext: options.catalogOperationContext,
     });
   } catch (error) {
     if (options.signal?.aborted) options.signal.throwIfAborted();
@@ -270,6 +278,7 @@ async function collectEvidence(options: {
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  catalogOperationContext: CatalogOperationContext;
 }): Promise<CollectedEvidence> {
   const executionCwd = options.scope === 'project' ? resolveAwProjectRoot(options.cwd) : options.cwd;
   const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
@@ -305,6 +314,7 @@ async function collectEvidence(options: {
         catalogSources: configSnapshot.digest,
         pluginConfig: materialized.configDigest,
       }),
+      generationSetDigest: options.catalogOperationContext.generationSetDigest,
     };
     return {
       materialized,
@@ -325,9 +335,19 @@ export async function preparePortableInstall(options: {
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  catalogOperationContext?: CatalogOperationContext;
 }): Promise<PortableReview> {
   const agents = normalizePortableAgents(options.requestedAgents);
-  const collected = await collectEvidence({ ...options, agents });
+  const catalogOperationContext = options.catalogOperationContext
+    ?? await resolveCatalogOperationContext({
+      cliVersion: options.cliVersion,
+      ...(parsePluginId(options.selector).sourceId
+        ? { sourceIds: [parsePluginId(options.selector).sourceId!] }
+        : {}),
+      env: options.env,
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  const collected = await collectEvidence({ ...options, agents, catalogOperationContext });
   try {
     return structuredClone(collected.review);
   } finally {
@@ -400,13 +420,30 @@ export async function installPortableSkills(options: {
   confirm?: (review: PortableReview) => Promise<CliPromptResult<boolean>>;
   onReview?: (review: PortableReview) => void;
   expectedEvidenceDigest?: string;
+  expectedGenerationSetDigest?: string;
   onProgress?: (stage: PortableInstallProgressStage) => void | Promise<void>;
 }): Promise<PortableInstallReceipt> {
   assertScope(options.scope);
   const scope = options.scope;
   const agents = normalizePortableAgents(options.requestedAgents);
   await options.onProgress?.('prepare');
-  const initial = await collectEvidence({ ...options, scope, agents });
+  const parsedSelector = parsePluginId(options.selector);
+  const initialCatalogOperation = await resolveCatalogOperationContext({
+    cliVersion: options.cliVersion,
+    ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
+    env: options.env,
+    ...(options.expectedGenerationSetDigest ? { bootstrapMissingActive: false } : {}),
+  });
+  if (options.expectedGenerationSetDigest
+    && initialCatalogOperation.generationSetDigest !== options.expectedGenerationSetDigest) {
+    throw new PortableCommandError('reviewStale', '确认后 Active Catalog generation 已变化。');
+  }
+  const initial = await collectEvidence({
+    ...options,
+    scope,
+    agents,
+    catalogOperationContext: initialCatalogOperation,
+  });
   options.onReview?.(initial.review);
   try {
     if (!options.yes) {
@@ -427,7 +464,24 @@ export async function installPortableSkills(options: {
     action: async () => {
       let current: CollectedEvidence;
       try {
-        current = await collectEvidence({ ...options, scope, agents });
+        const currentCatalogOperation = await resolveCatalogOperationContext({
+          cliVersion: options.cliVersion,
+          ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
+          env: options.env,
+          bootstrapMissingActive: false,
+        });
+        if (currentCatalogOperation.generationSetDigest
+          !== initialCatalogOperation.generationSetDigest
+          || options.expectedGenerationSetDigest
+            && currentCatalogOperation.generationSetDigest !== options.expectedGenerationSetDigest) {
+          throw new PortableCommandError('reviewStale', '确认后 Active Catalog generation 已变化。');
+        }
+        current = await collectEvidence({
+          ...options,
+          scope,
+          agents,
+          catalogOperationContext: currentCatalogOperation,
+        });
       } catch (error) {
         if (error instanceof PortableCommandError && error.code === 'portableNoSkillsSelected') {
           throw new PortableCommandError('reviewStale', '确认后的所选 Skill 已消失。');
@@ -654,7 +708,18 @@ export async function materializePortableSkillsToDirectory(options: {
   const target = await canonicalizePathThroughExistingAncestor(rawTarget);
   await assertSafeOutputPath(target, options);
   const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
-  const materialized = await createMaterialization({ ...options, scope, configSnapshot });
+  const parsedSelector = parsePluginId(options.selector);
+  const catalogOperationContext = await resolveCatalogOperationContext({
+    cliVersion: options.cliVersion,
+    ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
+    env: options.env,
+  });
+  const materialized = await createMaterialization({
+    ...options,
+    scope,
+    configSnapshot,
+    catalogOperationContext,
+  });
   try {
     const selected = selectCandidates(materialized.candidates, options.requestedSkills);
     await prepareExistingOutput(

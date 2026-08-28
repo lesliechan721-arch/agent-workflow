@@ -28,12 +28,19 @@ import { readCatalogGenerationState } from '../../src/utils/catalog-generation-s
 import { resolveCatalogGenerationLocation } from '../../src/utils/catalog-generation-store.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
+  resolveCatalogOperationContext,
+  resolvePartialCatalogOperationContext,
+} from '../../src/utils/catalog-operation-context.js';
+import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
   resolveCatalogSourceRef,
 } from '../../src/utils/catalog-sources.js';
 import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
-import type { CatalogSourceProviderSet } from '../../src/utils/multi-source-catalog.js';
+import {
+  withResolvedMultiSourceCatalog,
+  type CatalogSourceProviderSet,
+} from '../../src/utils/multi-source-catalog.js';
 import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -677,5 +684,198 @@ describe('Catalog immutable generations', () => {
         snapshotDigest: source.snapshotDigest,
       });
     }
+  });
+
+  it('bootstraps exactly once, keeps Candidate out of ordinary contexts, and changes only after activation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('operation-first');
+    const second = fixturePath('operation-second');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: first, workspaceIdentity: 'workspace:operation', catalogVersion: '1.0.0', content: 'first\n',
+      }),
+      createGenerationSnapshot({
+        root: second, workspaceIdentity: 'workspace:operation', catalogVersion: '2.0.0', content: 'second\n',
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 1,
+      sources: [{
+        id: 'team', type: 'git', primary: true, url: 'https://example.invalid/operation.git',
+        refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+      }],
+    });
+    const roots = new Map([['team', first]]);
+    let providerCalls = 0;
+    const runtime = { providers: providers({
+      roots,
+      onResolve: () => { providerCalls += 1; },
+    }) };
+
+    const bootstrapped = await resolveCatalogOperationContext({
+      cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    expect(providerCalls).toBe(1);
+    expect(bootstrapped.catalog.sources[0]!.resolution!.rootDir)
+      .toContain(path.join(isolation.env.AW_HOME!, 'catalog-generations'));
+    await resolveCatalogOperationContext({ cliVersion: '1.0.0', env: isolation.env, runtime });
+    expect(providerCalls).toBe(1);
+
+    roots.set('team', second);
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    const withCandidate = await resolveCatalogOperationContext({
+      cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    expect(withCandidate.generationSetDigest).toBe(bootstrapped.generationSetDigest);
+    expect(withCandidate.catalog.sources[0]!.resolution!.manifest.catalogVersion).toBe('1.0.0');
+    expect(providerCalls).toBe(2);
+
+    await activateCatalogSourceCandidate({ sourceId: 'team', env: isolation.env });
+    const activated = await resolveCatalogOperationContext({
+      cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    expect(activated.generationSetDigest).not.toBe(bootstrapped.generationSetDigest);
+    expect(activated.catalog.sources[0]!.resolution!.manifest.catalogVersion).toBe('2.0.0');
+    expect(providerCalls).toBe(2);
+  });
+
+  it('reports one failed bootstrap without resolving an existing Active source remotely', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const activeRoot = fixturePath('partial-active');
+    const missingRoot = fixturePath('partial-missing');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: activeRoot, workspaceIdentity: 'workspace:active', catalogVersion: '1.0.0', content: 'active\n',
+      }),
+      createGenerationSnapshot({
+        root: missingRoot, workspaceIdentity: 'workspace:missing', catalogVersion: '1.0.0', content: 'missing\n',
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 1,
+      sources: [
+        { id: 'active', type: 'path', primary: true, path: activeRoot },
+        {
+          id: 'missing', type: 'git', primary: false, url: 'https://example.invalid/missing.git',
+          refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+        },
+      ],
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'active', cliVersion: '1.0.0', env: isolation.env,
+      runtime: { providers: providers({ roots: new Map([['active', activeRoot]]) }) },
+    });
+    let activeCalls = 0;
+    let missingCalls = 0;
+    const failingProviders: CatalogSourceProviderSet = {
+      path: async () => {
+        activeCalls += 1;
+        throw new Error('existing Active must not resolve its provider');
+      },
+      git: async () => {
+        missingCalls += 1;
+        throw new Error('offline');
+      },
+    };
+
+    const catalog = await withResolvedMultiSourceCatalog({
+      cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', env: isolation.env,
+      providers: failingProviders,
+      consume: (resolution) => ({
+        available: resolution.sources.filter((source) => source.resolution).map((source) => source.sourceId),
+        failed: resolution.sources.filter((source) => source.error).map((source) => source.sourceId),
+        messages: resolution.sources.flatMap((source) => source.error ? [source.error.message] : []),
+      }),
+    });
+    expect(catalog).toMatchObject({ available: ['active'], failed: ['missing'] });
+    expect(catalog.messages[0]).toContain('aw catalog source refresh missing');
+    expect(activeCalls).toBe(0);
+    expect(missingCalls).toBe(1);
+  });
+
+  it('binds successful Active sources when another source bootstrap fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const activeRoot = fixturePath('partial-context-active');
+    await createGenerationSnapshot({
+      root: activeRoot,
+      workspaceIdentity: 'workspace:partial-context-active',
+      catalogVersion: '1.0.0',
+      content: 'active\n',
+    });
+    await configureSources({
+      schemaVersion: 1,
+      sources: [
+        { id: 'active', type: 'path', primary: true, path: activeRoot },
+        {
+          id: 'missing', type: 'git', primary: false,
+          url: 'https://example.invalid/partial-context.git',
+          refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+        },
+      ],
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'active', cliVersion: '1.0.0', env: isolation.env,
+      runtime: { providers: providers({ roots: new Map([['active', activeRoot]]) }) },
+    });
+    let activeCalls = 0;
+    let missingCalls = 0;
+    const context = await resolvePartialCatalogOperationContext({
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: {
+        providers: {
+          path: async () => {
+            activeCalls += 1;
+            throw new Error('bound Active source must stay local');
+          },
+          git: async () => {
+            missingCalls += 1;
+            throw new Error('offline');
+          },
+        },
+      },
+    });
+    expect(context.generationSet.sources.map((source) => source.sourceId)).toEqual(['active']);
+    expect(context.catalog.sources).toEqual([
+      expect.objectContaining({ sourceId: 'active', resolution: expect.any(Object) }),
+      expect.objectContaining({ sourceId: 'missing', error: expect.any(Error) }),
+    ]);
+    expect(context.generationSetDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(activeCalls).toBe(0);
+    expect(missingCalls).toBe(1);
+  });
+
+  it('fails closed for a damaged Active without automatic provider recovery', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('operation-damaged');
+    await createGenerationSnapshot({
+      root, workspaceIdentity: 'workspace:operation-damaged', catalogVersion: '1.0.0', content: 'content\n',
+    });
+    await configureSources({
+      schemaVersion: 1,
+      sources: [{ id: 'local', type: 'path', primary: true, path: root }],
+    });
+    const runtime = { providers: providers({ roots: new Map([['local', root]]) }) };
+    const active = await refreshCatalogSourceGeneration({
+      sourceId: 'local', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    const location = resolveCatalogGenerationLocation({
+      logicalIdentity: 'workspace:operation-damaged',
+      snapshotDigest: active.active!.snapshotDigest,
+      env: isolation.env,
+    });
+    await fs.writeFile(path.join(location.snapshotRoot, 'catalog-manifest.json'), '{}\n');
+    let providerCalls = 0;
+    await expect(resolveCatalogOperationContext({
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: { providers: providers({
+        roots: new Map([['local', root]]),
+        onResolve: () => { providerCalls += 1; },
+      }) },
+    })).rejects.toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
+    expect(providerCalls).toBe(0);
   });
 });

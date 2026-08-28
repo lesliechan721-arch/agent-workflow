@@ -93,7 +93,7 @@ export async function resolveActiveCatalogGeneration(options: {
   return resolveFromState({ source, state, env });
 }
 
-function generationSetDigest(
+export function calculateCatalogGenerationSetDigest(
   primarySourceId: string,
   sources: CatalogGenerationSetSource[],
 ): string {
@@ -142,7 +142,7 @@ export async function resolveCatalogGenerationSet(options: {
   const sources: CatalogGenerationSetSource[] = resolved.map(({ pointer: _pointer, ...source }) => source);
   const primarySourceId = config.config.sources.find((source) => source.primary)!.id;
   return {
-    generationSetDigest: generationSetDigest(primarySourceId, sources),
+    generationSetDigest: calculateCatalogGenerationSetDigest(primarySourceId, sources),
     primarySourceId,
     sources,
   };

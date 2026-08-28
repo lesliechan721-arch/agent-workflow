@@ -107,6 +107,11 @@ import {
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
 import { catalogGenerationErrorCode } from './utils/catalog-generation-error.js';
 import {
+  bootstrapCatalogOperationSources,
+  resolveCatalogOperationContext,
+  type CatalogOperationContext,
+} from './utils/catalog-operation-context.js';
+import {
   formatConfigCommandValue,
   parseConfigValue,
 } from './utils/config-value.js';
@@ -1775,7 +1780,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     error: unknown,
   ): void => {
     const message = error instanceof Error ? error.message : String(error);
-    const code = message.includes('legacyStateUnsupported')
+    const generationCode = catalogGenerationErrorCode(error);
+    const code = generationCode === 'catalogGenerationUnavailable'
+      || generationCode === 'catalogGenerationSourceMissing'
+      ? 'catalogSourceUnavailable'
+      : generationCode !== 'catalogGenerationFailed'
+        ? generationCode
+        : message.includes('legacyStateUnsupported')
       ? 'legacyStateUnsupported'
       : message.includes('sourceChanged')
         ? 'sourceChanged'
@@ -1804,17 +1815,39 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     consume: (
       resolution: ResolvedCatalogPlugin,
       awHomeMutationToken: AwHomeMutationToken,
+      catalogOperationContext: CatalogOperationContext,
     ) => Promise<T> | T,
-  ) => withAwHomeMutationLock({
-    env: context.env,
-    action: (awHomeMutationToken) => withResolvedCatalogPlugin({
-      selector,
+  ) => (async () => {
+    const parsed = parsePluginId(selector);
+    await bootstrapCatalogOperationSources({
       cliVersion: resolveCliVersion(),
-      freshnessPolicy: 'requireRemote',
+      ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
       env: context.env,
-      consume: (resolution) => consume(resolution, awHomeMutationToken),
-    }),
-  });
+    });
+    return withAwHomeMutationLock({
+      env: context.env,
+      action: async (awHomeMutationToken) => {
+        const catalogOperationContext = await resolveCatalogOperationContext({
+          cliVersion: resolveCliVersion(),
+          ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
+          env: context.env,
+          bootstrapMissingActive: false,
+        });
+        return withResolvedCatalogPlugin({
+          selector,
+          cliVersion: resolveCliVersion(),
+          freshnessPolicy: 'cacheFirst',
+          operationContext: catalogOperationContext,
+          env: context.env,
+          consume: (resolution) => consume(
+            resolution,
+            awHomeMutationToken,
+            catalogOperationContext,
+          ),
+        });
+      },
+    });
+  })();
 
   catalogSource
     .command('list')
@@ -2467,7 +2500,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken) => {
+            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
         if (!plugin.manifest.config?.schema) {
           throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" does not declare an AW config schema.`);
         }
@@ -2482,7 +2515,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: { ...context, awHomeMutationToken },
+          rebuildRuntime: {
+            ...context,
+            awHomeMutationToken,
+            catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+          },
           awHomeMutationToken,
           request: {
             updates: { [selectedKey]: inputValue },
@@ -2614,7 +2652,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken) => {
+            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
         if (plugin.manifest.config?.schema && !plugin.manifest.config.schema[selectedKey]) {
           throw new Error(`Unknown config key "${selectedKey}".`);
         }
@@ -2637,7 +2675,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: { ...context, awHomeMutationToken },
+          rebuildRuntime: {
+            ...context,
+            awHomeMutationToken,
+            catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+          },
           awHomeMutationToken,
           request: {
             removeKeys: [selectedKey],
@@ -2750,7 +2793,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           return withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken) => {
+            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
         const affectedFields = await describeResetAffectedFields({
           pluginName: plugin.manifest.name,
           plugin,
@@ -2766,7 +2809,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: { ...context, awHomeMutationToken },
+          rebuildRuntime: {
+            ...context,
+            awHomeMutationToken,
+            catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+          },
           awHomeMutationToken,
           plugin,
         });

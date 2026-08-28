@@ -27,6 +27,7 @@ import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { collectSensitivePluginConfigValues } from '../utils/plugin-scripts.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 import { isSkillAuthorOnlyPath } from '../utils/skill-authoring.js';
@@ -76,6 +77,7 @@ export interface MaterializePortableSkillsFromCatalogOptions {
   signal?: AbortSignal;
   configSnapshot?: CatalogSourcesConfigSnapshot;
   providers?: CatalogSourceProviderSet;
+  catalogOperationContext?: CatalogOperationContext;
 }
 
 interface CandidateTree {
@@ -384,6 +386,9 @@ export async function materializePortableSkillsFromCatalog(
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
       ...(options.providers ? { providers: options.providers } : {}),
+      ...(options.catalogOperationContext
+        ? { operationContext: options.catalogOperationContext }
+        : {}),
       consume: async ({ pluginId: resolvedPluginId, source, plugin: requestedPlugin }) => {
         const plugins = await resolvePluginsFromCatalog(source.rootDir);
         for (const plugin of plugins) {

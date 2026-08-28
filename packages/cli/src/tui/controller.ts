@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { CatalogSource, PlatformName, Scope } from '../types.js';
 import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
+import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import type {
   StatusV5Payload,
   StatusV5PluginSummary,
@@ -111,6 +112,7 @@ export interface OperationEvidence {
   catalog: {
     configDigest: string;
     compositeDigest: string;
+    generationSetDigest?: string;
   };
   source?: {
     sourceId: string;
@@ -320,6 +322,7 @@ export interface SourceReferenceSummaryViewModel {
 }
 
 export interface TuiControllerDependencies {
+  beginCatalogSession?: (options?: { bootstrapMissingActive?: boolean }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
   checkSource: (sourceId: string, signal: AbortSignal) => Promise<{
     sourceIdentity: string;
@@ -702,6 +705,9 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     `Catalog 配置：${evidence.catalog.configDigest}`,
     `Catalog 组合：${evidence.catalog.compositeDigest}`,
   ];
+  if (evidence.catalog.generationSetDigest) {
+    details.push(`Catalog generations：${evidence.catalog.generationSetDigest}`);
+  }
   if (evidence.source) {
     details.push(`来源：${evidence.source.sourceId}`);
     details.push(`来源身份：${evidence.source.sourceIdentity}`);
@@ -730,6 +736,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
 
 function issueCode(error: unknown): string {
   if (error instanceof TuiOperationBlockedError) return error.code;
+  if (error instanceof CatalogGenerationError) return error.code;
   if (error instanceof Error && error.name === 'CatalogSourcesConfigConflictError') {
     return 'operationReviewStale';
   }
@@ -1015,6 +1022,7 @@ export class TuiController {
 
   async load(): Promise<void> {
     this.#cancelSourceRefreshes();
+    this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
     this.#phase = 'loading';
     this.#publish();
@@ -1723,7 +1731,12 @@ export class TuiController {
     } catch (error) {
       const code = issueCode(error);
       await this.#logOperationError(error, code, intent);
-      throw new TuiOperationBlockedError(code, '操作未建立。请检查当前设置后重试。');
+      throw new TuiOperationBlockedError(
+        code,
+        code === 'catalogGenerationUnavailable'
+          ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
+          : '操作未建立。请检查当前设置后重试。',
+      );
     }
   }
 
@@ -1842,14 +1855,17 @@ export class TuiController {
       this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
     } catch (error) {
       if (!this.#reviewPreparationIsCurrent(token)) return;
+      const code = issueCode(error);
       const active = this.#reviewPreparation!;
       active.snapshot.state = 'failed';
       active.snapshot.stages = active.snapshot.stages.map((stage) =>
         stage.state === 'running' ? { ...stage, state: 'failed' } : stage);
       active.snapshot.code = 'reviewPreparationFailed';
-      active.snapshot.message = '无法准备确认信息。请返回检查选择，或重试。';
+      active.snapshot.message = code === 'catalogGenerationUnavailable'
+        ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
+        : '无法准备确认信息。请返回检查选择，或重试。';
       this.#publish();
-      await this.#logOperationError(error, issueCode(error), intent);
+      await this.#logOperationError(error, code, intent);
     }
   }
 
@@ -2071,6 +2087,7 @@ export class TuiController {
       this.#cancelSourceRefreshes();
       generation = ++this.#generation;
       if (ticket.intent.kind === 'sourceMutation') {
+        this.dependencies.beginCatalogSession?.();
         try {
           this.#progressFeed?.setCurrent(
             { target: 'Catalog 来源配置', phase: '读取最终状态' },
@@ -2264,6 +2281,7 @@ export class TuiController {
     generation = this.#generation,
   ): Promise<OperationExecuteResult> {
     this.#cancelSourceRefreshes();
+    this.dependencies.beginCatalogSession?.({ bootstrapMissingActive: false });
     generation = ++this.#generation;
     try {
       const refreshed = await this.dependencies.loadStatus(this.#abort.signal);

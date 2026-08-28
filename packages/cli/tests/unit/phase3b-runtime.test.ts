@@ -40,6 +40,7 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
+import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import {
   resetPluginConfigWithHelper,
@@ -774,6 +775,11 @@ describe('phase 3B namespaced runtime stores', () => {
     const retainedPluginRoot = path.join(sourceRoot, 'plugins', 'other');
     await fs.move(removedPluginRoot, retainedPluginRoot);
     await createCatalogSnapshotFixture(sourceRoot, 'other');
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
 
     const statusOutput = createCapturedCliIo();
     expect(await runCli(['status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--json'], {
@@ -1407,7 +1413,6 @@ describe('phase 3B namespaced runtime stores', () => {
     }, {
       ...runtime,
       previewDependencyPlanOnly: true,
-      previewCatalogFreshnessPolicy: 'cacheFirst',
       onPreviewStage(stage) { previewStages.push(stage); },
     });
     expect(preview.overallState).toBe('succeeded');

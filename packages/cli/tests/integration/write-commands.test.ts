@@ -52,6 +52,12 @@ import {
 } from '../../src/commands/catalog-source.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
+import {
+  activateCatalogSourceCandidate,
+  refreshCatalogSourceGeneration,
+} from '../../src/utils/catalog-generation-service.js';
+import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
+import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
   const isolation = getCurrentSourceTestIsolation();
@@ -128,6 +134,239 @@ async function writeDynamicSkillRenderer(options: {
 }
 
 describe('five namespaced write commands', () => {
+  it('keeps warm write, config, status, and TUI operations provider-free', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'warm-active-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'warm\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'warm', title: 'Warm', content: 'Warm.' }],
+      };
+      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    let providerCalls = 0;
+    const catalogGenerationRuntime = {
+      providers: {
+        path: async (...args: Parameters<typeof catalogPathProviderInternal.resolve>) => {
+          providerCalls += 1;
+          return catalogPathProviderInternal.resolve(...args);
+        },
+        git: async () => {
+          providerCalls += 1;
+          throw new Error('warm Active must not invoke the Git provider');
+        },
+      },
+    };
+    const nativeCliRunner = async () => ({
+      exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
+    });
+    const writeRuntime = {
+      env: isolation.env,
+      nativeCliRunner,
+      catalogGenerationRuntime,
+    };
+
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, writeRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(upgradeWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, writeRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(reinstallWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, writeRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(statusCommandV5({
+      plugins: ['team/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      platform: 'codex',
+      catalogGenerationRuntime,
+    })).resolves.toMatchObject({ hasErrors: false });
+
+    const context = createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner,
+      interactive: false,
+    });
+    const controller = new TuiController(createTuiControllerDependencies(
+      context,
+      undefined,
+      { catalogGenerationRuntime },
+    ));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'project',
+      projectLayer: 'shared',
+      updates: { mode: 'strict' },
+    });
+    expect(review.technicalDetails).toContainEqual(
+      expect.stringMatching(/^Catalog generations：sha256:[0-9a-f]{64}$/u),
+    );
+    const pinnedGeneration = review.technicalDetails!.find((detail) =>
+      detail.startsWith('Catalog generations：'))!;
+    await expect(controller.executeOperation(review.reviewToken))
+      .resolves.toMatchObject({ state: 'succeeded' });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'changed\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'warm', title: 'Warm', content: 'Changed.' }],
+      };
+      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const staleReview = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'project',
+      projectLayer: 'shared',
+      updates: { mode: 'new' },
+    });
+    expect(staleReview.technicalDetails).toContain(pinnedGeneration);
+    await expect(controller.executeOperation(staleReview.reviewToken))
+      .resolves.toMatchObject({ state: 'stale' });
+    controller.dispose();
+    expect(providerCalls).toBe(0);
+  });
+
+  it('pins successful TUI source generations when another source is unavailable', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'partial-session-good');
+    const writeGoodSource = (version: string, field: string, content: string) =>
+      createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', `${content}\n`, (manifest) => {
+        manifest.version = version;
+        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.extensions = {
+          instructions: [{ name: 'session', title: 'Session', content }],
+        };
+        manifest.config = {
+          schema: {
+            oldMode: { type: 'string', title: 'oldMode' },
+            ...(field === 'oldMode' ? {} : { [field]: { type: 'string', title: field } }),
+          },
+        };
+      });
+    await writeGoodSource('1.0.0', 'oldMode', 'old generation');
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [
+          { id: 'good', type: 'path', primary: true, path: sourceRoot },
+          {
+            id: 'missing', type: 'git', primary: false,
+            url: 'https://example.invalid/missing-session.git',
+            refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+          },
+        ],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'good', cliVersion: '1.0.0', env: isolation.env,
+    });
+    let goodProviderCalls = 0;
+    let missingProviderCalls = 0;
+    const catalogGenerationRuntime = {
+      providers: {
+        path: async (...args: Parameters<typeof catalogPathProviderInternal.resolve>) => {
+          goodProviderCalls += 1;
+          return catalogPathProviderInternal.resolve(...args);
+        },
+        git: async () => {
+          missingProviderCalls += 1;
+          throw new Error('missing source is offline');
+        },
+      },
+    };
+    const controller = new TuiController(createTuiControllerDependencies(
+      createCliExecutionContext({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+        interactive: false,
+      }),
+      undefined,
+      { catalogGenerationRuntime },
+    ));
+    await controller.load();
+    expect(controller.getPluginOverview('good/demo')).toMatchObject({ version: '1.0.0' });
+    await vi.waitFor(() => {
+      expect(controller.snapshot.sourceHealth).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceId: 'good', state: 'path' }),
+        expect.objectContaining({ sourceId: 'missing', state: 'unavailable' }),
+      ]));
+    });
+    expect(goodProviderCalls).toBe(0);
+    expect(missingProviderCalls).toBe(1);
+
+    await writeGoodSource('2.0.0', 'newMode', 'new generation');
+    await refreshCatalogSourceGeneration({
+      sourceId: 'good', cliVersion: '1.0.0', env: isolation.env,
+    });
+    expect(controller.getPluginOverview('good/demo')).toMatchObject({ version: '1.0.0' });
+    const page = await controller.getConfigPage(
+      'good/demo',
+      { scope: 'project', projectLayer: 'shared' },
+    );
+    expect(page.groups.flatMap((group) => group.fields.map((field) => field.key)))
+      .toContain('oldMode');
+    expect(page.groups.flatMap((group) => group.fields.map((field) => field.key)))
+      .not.toContain('newMode');
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'good/demo',
+      scope: 'project',
+      projectLayer: 'shared',
+      updates: { oldMode: 'strict' },
+    });
+    const executeResult = await controller.executeOperation(review.reviewToken);
+    expect(executeResult, JSON.stringify(executeResult)).toMatchObject({ state: 'stale' });
+    const sourceIdentity = await calculateCatalogSourceIdentity({
+      id: 'good', type: 'path', primary: true, path: sourceRoot,
+    });
+    await expect(readPluginConfigStore({
+      sourceId: 'good',
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'project',
+      projectLayer: 'shared',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ exists: false });
+    await expect(controller.buildOperationReview({
+      kind: 'pluginWrite',
+      action: 'install',
+      pluginId: 'missing/demo',
+      platform: 'codex',
+      scope: 'project',
+    })).rejects.toMatchObject({
+      code: 'catalogGenerationUnavailable',
+      message: expect.stringContaining('重新加载'),
+    });
+    expect(goodProviderCalls).toBe(0);
+    expect(missingProviderCalls).toBe(1);
+    controller.dispose();
+  });
+
   it('keeps a Codex user install healthy when the project config aliases the user home', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = path.join(isolation.layout.fixtureCwd, 'codex-scope-alias-home');
@@ -782,6 +1021,9 @@ describe('five namespaced write commands', () => {
       { name: 'leaf' },
       { name: 'root', dependencies: ['leaf'] },
     ]);
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
 
     const upgraded = await upgradeWriteCommand([], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', all: true,
@@ -910,9 +1152,19 @@ describe('five namespaced write commands', () => {
         manifest.marketplace.policy.products = ['CODEX'];
       });
       if (provider === 'git') {
+        const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+        const manifest = await fs.readJson(manifestPath);
+        manifest.catalogVersion = '2.0.0';
+        await fs.writeJson(manifestPath, manifest, { spaces: 2 });
         await git(workRoot, ['add', '.']);
         await git(workRoot, ['-c', 'commit.gpgSign=false', 'commit', '-m', 'review B']);
         await git(workRoot, ['push', source.url, 'HEAD:refs/heads/main']);
+      }
+      await refreshCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      });
+      if (provider === 'git') {
+        await activateCatalogSourceCandidate({ sourceId: 'team', env: isolation.env });
       }
       const dispatched = vi.fn();
       setTuiControllerRuntimeTestHooksForTests({ afterMutationEvidenceCapture: async () => dispatched() });
@@ -964,15 +1216,18 @@ describe('five namespaced write commands', () => {
       intent: Parameters<TuiController['buildOperationReview']>[0],
     ) => {
       await writeSource('review B');
+      await refreshCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      });
       const controller = new TuiController(createTuiControllerDependencies(context));
       const review = await controller.buildOperationReview(intent);
-      setTuiControllerRuntimeTestHooksForTests({
-        afterMutationEvidenceCapture: async () => writeSource('actual C'),
+      await writeSource('actual C');
+      await refreshCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
       });
       try {
         return await controller.executeOperation(review.reviewToken);
       } finally {
-        setTuiControllerRuntimeTestHooksForTests(undefined);
         controller.dispose();
       }
     };
@@ -1621,6 +1876,8 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     await fs.move(sourceRoot, `${sourceRoot}-unavailable`);
+    const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
+    await fs.remove(active.snapshotPath);
 
     const result = await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
@@ -1797,6 +2054,10 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ pluginId: 'team/demo', state: 'partial', errors: [] }),
     ]);
     await fs.move(sourceRoot, `${sourceRoot}-unavailable`);
+    const damagedActive = await resolveActiveCatalogGeneration({
+      sourceId: 'team', env: isolation.env,
+    });
+    await fs.remove(damagedActive.snapshotPath);
 
     const result = await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
@@ -2702,7 +2963,7 @@ describe('five namespaced write commands', () => {
       pluginId: 'team/demo',
       scope: 'user',
       projectLayer: 'shared',
-    })).rejects.toThrow('操作未建立。请检查当前设置后重试。');
+    })).resolves.toMatchObject({ title: '重置插件设置' });
     await expect(readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity,
@@ -3018,6 +3279,9 @@ describe('five namespaced write commands', () => {
         manifest.extensions = {
           instructions: [{ name: 'review', title: 'Review', content: 'changed content' }],
         };
+      });
+      await refreshCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
       });
       const result = await controller.executeOperation(review.reviewToken);
 

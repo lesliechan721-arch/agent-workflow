@@ -23,6 +23,7 @@ import {
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 
 function deferred(): {
   promise: Promise<void>;
@@ -99,6 +100,11 @@ describe('public AW_HOME mutation command lock', () => {
 
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
     const { isolation } = await configureCatalog();
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
     const result = await withAwHomeMutationLock({
       env: isolation.env,
       action: () => installWriteCommand(['team/demo'], {

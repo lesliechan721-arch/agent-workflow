@@ -527,7 +527,7 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
 }
 
 
-export type CatalogFreshnessPolicy = 'cacheFirst' | 'requireRemote' | 'forceRemote';
+export type CatalogFreshnessPolicy = 'cacheFirst' | 'forceRemote';
 
 export interface CatalogResolution {
   rootDir: string;

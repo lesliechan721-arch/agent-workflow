@@ -12,6 +12,7 @@ import { loadConsoleItemsResult } from '../../src/commands/status.js';
 import { statusCommandV5 } from '../../src/commands/status-v5.js';
 import { runCli } from '../../src/index.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
+import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
@@ -82,7 +83,7 @@ describe('multi-source read commands', () => {
           id: 'bad',
           ok: false,
           error: expect.any(String),
-          errorCode: 'catalogSourceResolutionFailed',
+          errorCode: 'catalogGenerationUnavailable',
         }),
       ]),
     });
@@ -114,7 +115,7 @@ describe('multi-source read commands', () => {
     expect(JSON.parse(initOutput.readStdout())).toMatchObject({
       sources: [expect.objectContaining({
         id: 'local',
-        errorCode: 'explicitCatalogIncompatible',
+        errorCode: 'catalogGenerationUnavailable',
       })],
     });
 
@@ -129,7 +130,7 @@ describe('multi-source read commands', () => {
       catalog: {
         sources: [expect.objectContaining({
           id: 'local',
-          errorCode: 'explicitCatalogIncompatible',
+          errorCode: 'catalogGenerationUnavailable',
         })],
       },
     });
@@ -161,7 +162,7 @@ describe('multi-source read commands', () => {
           expect.objectContaining({
             id: 'bad',
             error: expect.any(String),
-            errorCode: 'catalogSourceResolutionFailed',
+            errorCode: 'catalogGenerationUnavailable',
           }),
         ]),
       },
@@ -915,6 +916,9 @@ describe('multi-source read commands', () => {
       },
       expectedDigest: current.digest,
       env: isolation.env,
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'local', cliVersion: '1.0.0', env: isolation.env,
     });
     const supported = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd,

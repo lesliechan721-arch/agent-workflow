@@ -27,6 +27,8 @@ import {
   planPluginSelectorSourceIds,
   withResolvedMultiSourceCatalog,
 } from '../utils/multi-source-catalog.js';
+import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
+import type { CatalogGenerationServiceRuntime } from '../utils/catalog-generation-service.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
@@ -123,6 +125,7 @@ export interface StatusV5Payload {
     primarySourceId: string;
     configDigest: string;
     compositeDigest: string;
+    generationSetDigest?: string;
     sources: StatusV5CatalogSource[];
   };
   filters: {
@@ -372,6 +375,9 @@ export async function statusCommandV5(options: {
   scope?: string;
   json?: boolean;
   verbose?: boolean;
+  catalogOperationContext?: CatalogOperationContext;
+  bootstrapMissingActive?: boolean;
+  catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
 }): Promise<{
   payload: StatusV5Payload;
   output: string;
@@ -505,6 +511,13 @@ export async function statusCommandV5(options: {
     freshnessPolicy: 'cacheFirst',
     configSnapshot: snapshot,
     ...(plannedSourceIds === undefined ? {} : { sourceIds: plannedSourceIds }),
+    ...(options.catalogOperationContext
+      ? { operationContext: options.catalogOperationContext }
+      : {}),
+    ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
+    ...(options.catalogGenerationRuntime?.providers
+      ? { providers: options.catalogGenerationRuntime.providers }
+      : {}),
     env,
     consume: async (resolution) => ({
       primarySourceId: resolution.primarySourceId,
@@ -1251,6 +1264,9 @@ export async function statusCommandV5(options: {
       primarySourceId: catalog.primarySourceId,
       configDigest: catalog.configDigest,
       compositeDigest: catalog.compositeDigest,
+      ...(options.catalogOperationContext
+        ? { generationSetDigest: options.catalogOperationContext.generationSetDigest }
+        : {}),
       sources: catalog.sources.map((source) => {
         if (!('plugins' in source)) return source;
         const { plugins: _plugins, ...projected } = source;

@@ -48,6 +48,11 @@ import {
   preflightDesiredArtifactCollisions,
   withResolvedMultiSourceCatalog,
 } from '../utils/multi-source-catalog.js';
+import {
+  resolveCatalogOperationContext,
+  type CatalogOperationContext,
+} from '../utils/catalog-operation-context.js';
+import type { CatalogGenerationServiceRuntime } from '../utils/catalog-generation-service.js';
 import { assertStrictSemVer } from '../utils/manifest.js';
 import {
   assertCatalogSourceInventoryComplete,
@@ -89,6 +94,10 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     marketplaceRoot: string;
   };
   expectedCatalogConfigDigest?: string;
+  expectedGenerationSetDigest?: string;
+  catalogOperationContext?: CatalogOperationContext;
+  catalogBootstrapError?: unknown;
+  catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
   expectedOfflineCleanupEvidence?: OfflineCleanupTargetEvidence;
   reviewPreflight?: (evidence: RebuildReviewPreflightEvidence) => Promise<void> | void;
   resolvedReviewEvidenceByPlugin?: Record<
@@ -99,7 +108,6 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   bypassDependencyPlan?: boolean;
   dependencyReviewPreflightHandled?: boolean;
   previewDependencyPlanOnly?: boolean;
-  previewCatalogFreshnessPolicy?: 'cacheFirst';
   onPreviewStage?: (stage: 'catalog' | 'inventory' | 'dependencyPlan') => Promise<void> | void;
   targetBuiltHookHandled?: boolean;
   preparedTarget?: PreparedRebuildTarget;
@@ -115,6 +123,7 @@ export interface RebuildReviewPreflightEvidence {
   command: RebuildCommand;
   identity: RebuildTargetIdentity;
   configDigest?: string;
+  generationSetDigest?: string;
   sourceId?: string;
   sourceIdentity?: string;
   resolvedCommit?: string;
@@ -1303,16 +1312,37 @@ export async function runRebuildCommand(options: {
     if (options.runtime?.previewDependencyPlanOnly) {
       await options.runtime.onPreviewStage?.('catalog');
     }
+    if (options.runtime?.catalogBootstrapError !== undefined) {
+      throw options.runtime.catalogBootstrapError;
+    }
+    const catalogOperation = options.runtime?.catalogOperationContext
+      ?? (options.command === 'cleanup'
+        ? undefined
+        : await resolveCatalogOperationContext({
+            cliVersion: resolveRuntimeCliVersion(),
+            ...(sourceIds ? { sourceIds } : {}),
+            env: runtimeEnv,
+            ...(options.runtime?.catalogGenerationRuntime
+              ? { runtime: options.runtime.catalogGenerationRuntime }
+              : {}),
+            ...(options.runtime?.awHomeMutationToken
+              ? { bootstrapMissingActive: false }
+              : {}),
+          }));
+    if (options.runtime?.expectedGenerationSetDigest
+      && catalogOperation?.generationSetDigest !== options.runtime.expectedGenerationSetDigest) {
+      throw new Error('operationReviewStale: Active Catalog generation changed before mutation.');
+    }
     const resolvedResult = await withResolvedMultiSourceCatalog({
-    cliVersion: resolveRuntimeCliVersion(),
-    freshnessPolicy: options.command === 'cleanup'
-      ? 'cacheFirst'
-      : options.runtime?.previewDependencyPlanOnly
-        ? options.runtime.previewCatalogFreshnessPolicy ?? 'requireRemote'
-        : 'requireRemote',
-    ...(sourceIds ? { sourceIds } : {}),
-    env: runtimeEnv,
-    consume: async (catalog) => {
+      cliVersion: resolveRuntimeCliVersion(),
+      freshnessPolicy: 'cacheFirst',
+      ...(sourceIds ? { sourceIds } : {}),
+      ...(catalogOperation ? { operationContext: catalogOperation } : {}),
+      ...(options.command === 'cleanup' || options.runtime?.awHomeMutationToken
+        ? { bootstrapMissingActive: false }
+        : {}),
+      env: runtimeEnv,
+      consume: async (catalog) => {
       const failedSources = catalog.sources.filter((source) => source.error);
       if (failedSources.length > 0) {
         throw namespacedPreflightError(
@@ -1749,6 +1779,9 @@ export async function runRebuildCommand(options: {
               cwd: options.commandOptions.cwd,
             },
             configDigest: catalog.configDigest,
+            ...(catalogOperation
+              ? { generationSetDigest: catalogOperation.generationSetDigest }
+              : {}),
             sourceId: entry.source.sourceId,
             sourceIdentity: entry.source.sourceIdentity,
             resolvedCommit: entry.source.resolvedCommit,
@@ -2093,6 +2126,9 @@ export async function runRebuildCommand(options: {
             resolvedReviewEvidenceByPlugin: {
               [entry.plugin.manifest.name]: {
                 configDigest: catalog.configDigest,
+                ...(catalogOperation
+                  ? { generationSetDigest: catalogOperation.generationSetDigest }
+                  : {}),
                 sourceId: entry.source.sourceId,
                 sourceIdentity: entry.source.sourceIdentity,
                 resolvedCommit: entry.source.resolvedCommit,
@@ -2141,7 +2177,10 @@ export async function runRebuildCommand(options: {
     const message = error instanceof Error ? error.message : String(error);
     const catalogUnavailable = message.startsWith('Cannot resolve required catalog sources:')
       || message.includes('does not exist in the required catalog source set')
-      || (message.includes('Catalog source') && message.includes('does not exist'));
+      || (message.includes('Catalog source')
+        && (message.includes('does not exist')
+          || message.includes('is not configured')
+          || message.includes('has no Active generation')));
     if (options.command === 'cleanup'
       && (catalogUnavailable || message.includes('sourceChanged'))
       && cleanupInventory

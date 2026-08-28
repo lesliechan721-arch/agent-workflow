@@ -60,7 +60,7 @@ async function resolveInitCatalog(
   options: InitCommandV4Options,
 ): Promise<InitCommandResult> {
   const env = options.env ?? process.env;
-  const freshnessPolicy: CatalogFreshnessPolicy = options.force ? 'forceRemote' : 'requireRemote';
+  const freshnessPolicy: CatalogFreshnessPolicy = options.force ? 'forceRemote' : 'cacheFirst';
   const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
   return withResolvedMultiSourceCatalog({
     cliVersion: options.cliVersion,

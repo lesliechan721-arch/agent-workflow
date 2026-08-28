@@ -98,22 +98,26 @@ Catalog snapshot 的 logical identity 只来自其 `.aw-generated.json.workspace
 
 Git 首次手动 refresh 直接建立 Active；已有 Active 时，高版本建立 Candidate，同版本同 digest 为 no-op，未显式改变 ref 的低版本报告 `channelRollback`，显式 ref 变化可建立 `refChange` Candidate。同一未变化 Git config 返回其它 Workspace identity 时，refresh 返回 `catalogGenerationIdentityMismatch`，且不改 Active、Candidate 或 state。Path source 默认 `manual`，每次 add 或手动 refresh 都建立 immutable local generation 并直接切换 Active；它允许同一 Catalog version 对应不同 digest，不监听文件系统。`aw catalog source activate-candidate <id>` 只在现有 `AW_HOME` mutation lock 下原子切 pointer，不下载或复制 snapshot。refresh 的远端解析、snapshot staging 和验证不持有该 mutation lock；最终 pointer 提交只短暂持锁并重读 source config fingerprint。这样，已更新或删除 source 的旧 refresh 只能丢弃自己的 staging，不能写回旧 pointer。source config mutation 和 activation 继续与普通 AW 写操作互斥。
 
-最小公开入口是 `aw catalog source refresh <id>`、`aw catalog source activate-candidate <id>` 和 `aw catalog source generation-status [id]`，均支持 `--json`。Active generation resolver 校验 state pointer、generation metadata、content-addressed 目录和 snapshot 后返回固定本地路径；`CatalogGenerationSet` 还绑定当前 source 集合及稳定 `generationSetDigest`，供后续普通操作接入。generation state 不是 installed ledger，source 删除不得删除插件内容。
+最小公开入口是 `aw catalog source refresh <id>`、`aw catalog source activate-candidate <id>` 和 `aw catalog source generation-status [id]`，均支持 `--json`。Active generation resolver 校验 state pointer、generation metadata、content-addressed 目录和 snapshot 后返回固定本地路径；`CatalogGenerationSet` 绑定当前 source 集合及稳定 `generationSetDigest`。generation state 不是 installed ledger，source 删除不得删除插件内容。
 
-每个 source 仍在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 保留 transport cache。它只用于远端获取、最近可用回退和 generation staging 输入，是可删除弱状态；它不决定 Active、安装、配置或删除权限。
+普通 install、upgrade、reinstall、uninstall、非离线 cleanup、plugin config、status、TUI 和 Portable 操作只读取 Active generation。每次操作建立一个 typed `CatalogOperationContext`，直接绑定 immutable snapshot 路径、已解析的本地 Catalog 证据和 `generationSetDigest`；依赖 closure、目标计划、Review 和执行都复用该 context。它不复制 generation，也不建立 reader lease。已有 Active 时，普通操作不调用 provider、不检查 Git branch，也不访问远端。Candidate 只有显式 activate 后才对新操作可见；Path 工作区变化也只有显式 refresh 后才建立新的 Active。
+
+唯一的自动获取例外是：本次需要的已配置 source 完全没有 Active。操作开始时，每个缺失 source 最多尝试一次 bootstrap；Git source 可以访问远端，Path source 读取本地路径。bootstrap 成功后重新解析完整 Active set。失败返回可恢复的 source unavailable 诊断和显式 `aw catalog source refresh <id>` 指引。已有但损坏、metadata 不匹配或 fingerprint 不匹配的 Active 必须 fail closed，不自动联网修复。多来源中已有 Active 的 source 不因其它 source bootstrap 失败而调用 provider。
+
+每个 source 仍在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 保留 transport cache。它只用于显式远端获取和 generation staging 输入，是可删除弱状态；它不决定 Active、普通读取、安装、配置或删除权限。
 
 Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，默认远端解析超时为 180 秒，并可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整；它禁止 URL 内嵌凭据、SSH local command 和 proxy command，且 AW 不保存 Catalog 授权信息。
 
 `aw catalog source add` 和 `update` 先在 mutation lock 内原子提交 source config，并在 transport/location 输入变化时失效该 source ID 的旧 generation pointer；然后释放 mutation lock 并尽力刷新。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`set-primary` 只改 source config；`remove` 同时移除该 source ID 的 generation selection state，但不删除 immutable generation、插件内容或任何 live ownership 现场。
 
-多来源 resolver 在稳定的 cache generation 内调用消费者回调。回调只能返回普通数据，不能保留 bundle root、manifest path 或其它缓存路径。generation 结束后，调用方必须重新解析，不得保存内部路径。
+多来源 resolver 用操作已绑定的 immutable Active snapshots 调用普通消费者。回调只能返回普通数据，不能向公开结果泄漏 bundle root、manifest path 或其它内部路径。首版没有 generation GC，因此操作 context 可在本次操作或 TUI load session 内固定引用这些目录。
 
 ## Write Pipeline
 
 五个公开写命令使用同一条 rebuild 流程：
 
 ```text
-解析当前 Catalog 和目标
+固定 Active `CatalogOperationContext` 和目标
   → 生成临时依赖顺序与期望组件
   → 检查 live ownership
   → 必要时清理 AW-owned 旧组件
@@ -123,9 +127,9 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
   → 输出 receipt v4
 ```
 
-TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。准备读取统一使用 cache-first Catalog：有效 cache 立即可用，cache miss 仍可按 resolver 合同访问远端。依赖 preview 也使用这个策略；`requireRemote` 仍允许匹配 cache fallback，不表示无回退的严格远端读取。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
+TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。一次成功的 TUI load 固定可用来源的 Active generation 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 从该固定子集选择所需 source context。load 时失败的来源不可操作，直到用户刷新来源并重新加载；后续页面不会再次 bootstrap。后台 refresh 产生 Candidate 或显式 refresh 尚未改变该子集。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
 
-Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。执行前仍重新验证 intent，并在 `AW_HOME` mutation lock 内使用新鲜 Catalog 和现场重新采集 evidence。若 cache-first Review 证据与执行证据不同，必须在任何写入前返回 typed `operationReviewStale` 或新 Review；准备页证据不能替代 stale/TOCTOU 防护。
+Review 仍是用户确认边界。Review evidence 包含 `generationSetDigest` 和所需 source generation 证据。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。Execute 在同一个 `AW_HOME` mutation lock 内重新解析当前 Active set，验证绑定的 generation 目录和 metadata 仍存在，并比较 Review digest。source config 改变或 Candidate 被 activate 后，Execute 必须在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或新 Review。该检查不访问远端 branch。
 
 依赖执行顺序只在本次命令内存在。receipt 可摘要公开 requested/resolved plugin ID、dependency edge、relation、requiredBy 和 dependency state；它不公开持久计划、摘要、锁或来源内部证据。
 
@@ -148,7 +152,7 @@ TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为 offline cleanup�
 
 ## Live Status and Config
 
-`aw status` 是只读操作。它组合多来源 Catalog、live owner、原生平台组件和有效配置，并对每个来源独立报告错误。它不运行 lifecycle，也不创建 config 目录。`cacheFirst` 先读有效 cache；cache miss 时 Git source 可以访问远端并更新弱 cache，path source 每次物化路径内容并更新弱 cache。
+`aw status` 是只读操作。它组合多来源 Active Catalog、live owner、原生平台组件和有效配置，并对每个来源独立报告错误。它不运行 lifecycle，也不创建 config 目录。已有 Active 时，status 只读取 immutable local snapshot，远端调用数为零；无 Active 时只允许前述单次 bootstrap。普通 config read/write 和 TUI settings 使用相同规则。
 
 每个 target 的状态为：
 
@@ -179,7 +183,7 @@ target health 只表示当前 live 组件是否完整，不表示 Catalog 版本
 
 ### TUI 诊断投影与脱敏边界
 
-TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v5 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；来源使用匹配缓存和来源完全不可用必须使用不同影响与动作。
+TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v5 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；Active generation 正常、缺失和损坏必须使用不同影响与恢复动作。
 
 技术层只接受白名单结构字段：安全错误 code、可选 stage、sourceId、requestedRef、resolvedCommit、last-good 证据，以及有限的 platform、scope、plugin、dependency、field、freshness 或 compatibility context。技术层在显示前再次执行通用凭据脱敏、URL userinfo 和敏感 query 清理、已知 home、cwd、临时目录和来源路径替换，并截断文本。任意 native stderr、未知 `Error.cause`、内部绝对路径、digest、credential 或未证明安全的 status message 不进入诊断 ViewModel；不能证明 cause 安全时省略 cause，只保留 code、stage 和白名单 context。
 

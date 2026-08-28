@@ -99,6 +99,7 @@ describe('portable materializer', () => {
     };
     const materialized = await materializePortableSkillsFromCatalog({
       selector: 'portable', scope: 'user', cwd: root, cliVersion: '1.0.0',
+      freshnessPolicy: 'forceRemote',
       configSnapshot: { config, digest: calculateCatalogSourcesConfigDigest(config), materialized: true },
       providers: {
         git: async () => { throw new Error('unused'); },

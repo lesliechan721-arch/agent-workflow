@@ -169,7 +169,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
-  it('marks a real path source unavailable after its verified directory is removed', async () => {
+  it('keeps a real path source available from Active after its workspace directory is removed', async () => {
     const { controller, firstRoot } = await configuredController();
     await controller.load();
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'path' });
@@ -177,12 +177,9 @@ describe('TUI v4 real catalog source boundary', () => {
     await fs.remove(firstRoot);
     await controller.refreshSource('local');
 
-    expect(controller.snapshot.sourceHealth).toContainEqual(expect.objectContaining({
-      sourceId: 'local', state: 'unavailable',
-    }));
+    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'path' });
     const issue = controller.listUserIssues().find((entry) => entry.sourceId === 'local');
-    expect(issue).toMatchObject({ category: 'sourceUnavailable' });
-    expect(issue?.actions).not.toContainEqual(expect.objectContaining({ id: 'continueWithCache' }));
+    expect(issue).toBeUndefined();
     controller.dispose();
   });
 
