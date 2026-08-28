@@ -51,7 +51,13 @@ describe('command wizard', () => {
     const candidate = {
       pluginName: 'official/demo',
       targets: [{
-        target: { plugin: 'demo', platform: 'codex' as const, scope: 'user' as const, cwd: '/fixture' },
+        pluginName: 'demo',
+        sourceId: 'official',
+        sourceIdentity: `sha256:${'a'.repeat(64)}`,
+        pluginId: 'official/demo',
+        platform: 'codex' as const,
+        scope: 'user' as const,
+        cwd: '/fixture',
         state,
         components: [],
         errors: [],

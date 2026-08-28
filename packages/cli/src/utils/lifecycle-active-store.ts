@@ -16,7 +16,7 @@ import type {
 } from '../types.js';
 import {
   calculateFileDigest,
-  calculatePluginBundleFingerprintV2,
+  calculatePluginBundleFingerprint,
 } from './bundle-integrity.js';
 import {
   acquireActiveMarketplaceLifecycleLeaseAtRoot,
@@ -968,7 +968,7 @@ async function validateSnapshotRoot(
   const metadata = parseMetadata(rawMetadata, target);
   const [manifestDigest, bundleFingerprint] = await Promise.all([
     calculateFileDigest(resolvedManifestPath),
-    calculatePluginBundleFingerprintV2(resolvedBundleRoot),
+    calculatePluginBundleFingerprint(resolvedBundleRoot),
   ]);
   if (manifestDigest !== metadata.sourceManifestDigest) {
     fail('Lifecycle active manifest digest does not match metadata.');
@@ -1262,7 +1262,7 @@ export async function prepareLifecycleActiveSnapshot(options: {
     }
     const [sourceManifestDigest, bundleFingerprint] = await Promise.all([
       calculateFileDigest(stagedPlugin.manifestPath),
-      calculatePluginBundleFingerprintV2(bundleRoot),
+      calculatePluginBundleFingerprint(bundleRoot),
     ]);
     const payload: LifecycleActiveMetadataPayload = {
       schemaVersion: target.sourceId ? LIFECYCLE_ACTIVE_SCHEMA_VERSION : 1,

@@ -34,10 +34,7 @@ import {
   terminateProcessTree,
   type ProcessTreeObservation,
 } from './process-tree.js';
-export {
-  calculateFileDigest,
-  calculatePluginBundleFingerprint,
-} from './bundle-integrity.js';
+export { calculateFileDigest } from './bundle-integrity.js';
 import { calculateFileDigest } from './bundle-integrity.js';
 
 export type LifecycleScriptTargetSource = 'currentCatalog' | 'none';

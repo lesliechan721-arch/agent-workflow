@@ -15,8 +15,8 @@ export function writeCandidateEligibility(
   selection: CommandWizardSelection,
 ): { selectable: boolean; reason?: string } {
   const targets = candidate.targets.filter((target) =>
-    target.target.scope === (selection.scope ?? 'user')
-    && (selection.platform === 'both' || target.target.platform === selection.platform));
+    target.scope === (selection.scope ?? 'user')
+    && (selection.platform === 'both' || target.platform === selection.platform));
   if (targets.length === 0) {
     return { selectable: false, reason: 'current bundle 不支持所选平台和范围' };
   }

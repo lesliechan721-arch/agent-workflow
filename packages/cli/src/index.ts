@@ -45,8 +45,7 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult } from './commands/status.js';
-import { statusCommandV4 } from './commands/status-v4.js';
+import { loadConsoleItemsResult, statusCommandV4 } from './commands/status-v4.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
@@ -429,7 +428,6 @@ async function loadWizardCandidates(
     cwd: context.cwd,
     scope: rawOptions.scope as Scope | undefined,
     platform: rawOptions.platform as PlatformSelection | undefined,
-    includeCatalogOnly: true,
   }, context);
   return toWizardCandidates(loaded.items);
 }
@@ -711,7 +709,6 @@ async function runWriteCommandAction(
     cwd: context.cwd,
     scope: rawOptions.scope,
     platform: rawOptions.platform,
-    includeCatalogOnly: true,
   }, context);
   if (loaded.catalogUnavailable) {
     throw new Error(
@@ -1493,15 +1490,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .description('Show current plugin status or compare against an explicit Git base')
     .argument('[plugin-name]', 'one explicit plugin name')
     .option('--all', 'check every current Catalog Workspace plugin', false)
-    .option('--base <git-ref>', 'explicit Git comparison base')
-    .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
-
-  plugin
-    .command('check-versions')
-    .description('Deprecated alias for plugin status')
-    .argument('[plugin-name]', 'one explicit plugin name')
-    .option('--all', 'check every plugin changed relative to the Git base', false)
     .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
     .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
@@ -2867,7 +2855,6 @@ export async function runCli(
       remove: 'remove-plugin.mjs',
       validate: 'validate-plugin.mjs',
       status: 'plugin-status.mjs',
-      'check-versions': 'check-plugin-versions.mjs',
     };
     const authoringScript = argv[0] === 'plugin'
       ? authoringScriptByCommand[argv[1] ?? '']

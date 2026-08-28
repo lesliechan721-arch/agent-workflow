@@ -8,8 +8,7 @@ import {
   listCatalogSources,
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
-import { loadConsoleItemsResult } from '../../src/commands/status.js';
-import { statusCommandV4 } from '../../src/commands/status-v4.js';
+import { loadConsoleItemsResult, statusCommandV4 } from '../../src/commands/status-v4.js';
 import { runCli } from '../../src/index.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
@@ -310,7 +309,7 @@ describe('multi-source read commands', () => {
       .toEqual([]);
     expect(verboseConsole.items.find((item) => item.pluginName === 'team/demo')?.targets[0]?.components)
       .toEqual(expect.arrayContaining([
-        expect.objectContaining({ artifactKey: 'review', state: 'partial' }),
+        expect.objectContaining({ key: 'review', state: 'partial' }),
       ]));
     expect(JSON.stringify(
       verboseConsole.items.flatMap((item) => item.targets.flatMap((target) => target.components)),
@@ -1266,7 +1265,6 @@ describe('multi-source read commands', () => {
         configSchema: { mode: { type: 'string', default: 'fast' } },
       },
     });
-    expect(item.plugin).toBeUndefined();
     expect(JSON.stringify(item)).not.toContain('rootDir');
   });
 });

@@ -11,8 +11,7 @@ import {
   discoverRebuildTargetNames,
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
-import { statusCommand } from '../../src/commands/status.js';
-import { projectTargetRevision } from '../../src/commands/status-v4.js';
+import { projectTargetRevision, statusCommandV4 } from '../../src/commands/status-v4.js';
 import {
   executeRebuildOperation,
   type RebuildActiveStore,
@@ -54,6 +53,10 @@ import {
   readCodexConfigFile,
 } from '../../src/utils/codex-config.js';
 import { renderTrackedHookGroupIdentity } from '../../src/utils/hooks-contract.js';
+import {
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -3843,20 +3846,28 @@ describe('rebuild adapter integration', () => {
           extensions: undefined,
         },
       };
-      const beforeStatus = await statusCommand([], {
-        cwd, platform: 'codex', scope: 'project', json: true,
-      }, {
-        env: isolation.env,
-        catalogResolution: catalog,
-        catalogPlugins: [v2],
-        nativeCliRunner: async () => { throw new Error('project status must not call native CLI'); },
+      await fs.outputJson(v2.manifestPath, v2.manifest);
+      await fs.remove(path.join(v2.rootDir, '.mcp.json'));
+      const statusCatalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [v2.rootDir],
       });
-      expect(beforeStatus.payload.targets).toEqual([
-        expect.objectContaining({
-          target: expect.objectContaining({ plugin: v2.manifest.name }),
-          state: 'partial',
-        }),
-      ]);
+      const sourceSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: {
+          schemaVersion: 1,
+          sources: [{ id: 'local', type: 'path', primary: true, path: statusCatalogRoot }],
+        },
+        expectedDigest: sourceSnapshot.digest,
+        env: isolation.env,
+      });
+      const beforeStatus = await statusCommandV4({
+        cwd, env: isolation.env, platform: 'codex', scope: 'project', json: true,
+      });
+      expect(beforeStatus.payload.targets).toEqual([]);
+      expect(beforeStatus.payload.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'legacyStateUnsupported' }),
+      ]));
       const next = await integration.buildTarget({
         plugin: v2, platform: 'codex', scope: 'project', cwd,
         command, catalog, includeHistoricalLifecycleArtifacts: false,
@@ -3877,15 +3888,11 @@ describe('rebuild adapter integration', () => {
         }),
       });
       expect(status.inspection.state).toBe('absent');
-      const afterStatus = await statusCommand([], {
-        cwd, platform: 'codex', scope: 'project', json: true,
-      }, {
-        env: isolation.env,
-        catalogResolution: catalog,
-        catalogPlugins: [v2],
-        nativeCliRunner: async () => { throw new Error('project status must not call native CLI'); },
+      const afterStatus = await statusCommandV4({
+        cwd, env: isolation.env, platform: 'codex', scope: 'project', json: true,
       });
       expect(afterStatus.payload.targets).toEqual([]);
+      expect(afterStatus.payload.errors).toEqual([]);
     },
   );
 

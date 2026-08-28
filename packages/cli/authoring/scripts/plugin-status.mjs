@@ -34,8 +34,6 @@ Options:
 
 function parseArgs(argv) {
   const args = argv.slice(2);
-  const deprecatedAlias = args.includes('--deprecated-check-versions-alias');
-  const command = deprecatedAlias ? 'check-versions' : 'status';
   const options = {
     all: false,
     json: false,
@@ -44,9 +42,8 @@ function parseArgs(argv) {
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--deprecated-check-versions-alias') continue;
     if (arg === '-h' || arg === '--help') {
-      printUsage(command);
+      printUsage('status');
       process.exit(0);
     }
     if (arg === '--') continue;
@@ -75,14 +72,11 @@ function parseArgs(argv) {
   if (!options.all && options.pluginNames.length === 0) {
     fail('Provide a plugin name or use --all.');
   }
-  return { deprecatedAlias, options };
+  return options;
 }
 
 async function main() {
-  const { deprecatedAlias, options } = parseArgs(process.argv);
-  if (deprecatedAlias) {
-    console.error('[DEPRECATED] `aw plugin check-versions` is deprecated; use `aw plugin status`.');
-  }
+  const options = parseArgs(process.argv);
   const result = await checkPluginVersions(options);
   if (options.json) console.log(JSON.stringify(result, null, 2));
   else console.log(formatPluginVersionCheck(result));
