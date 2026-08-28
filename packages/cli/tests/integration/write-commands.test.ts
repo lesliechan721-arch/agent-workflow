@@ -17,6 +17,10 @@ import {
 } from '../../src/commands/status-v5.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import {
+  OFFICIAL_CATALOG_SOURCE_SSH_URL,
+  OFFICIAL_CATALOG_SOURCE_URL,
+} from '../../src/constants.js';
+import {
   createTuiControllerDependencies,
   setTuiControllerRuntimeTestHooksForTests,
 } from '../../src/tui/controller-runtime.js';
@@ -34,12 +38,13 @@ import {
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
+  resolveCatalogSourceRef,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
-import type { CatalogSource, PluginMeta } from '../../src/types.js';
+import type { CatalogSource, CatalogSourceResolution, PluginMeta } from '../../src/types.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   prepareLifecycleActiveSnapshot,
@@ -59,6 +64,7 @@ import {
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
   const isolation = getCurrentSourceTestIsolation();
@@ -245,6 +251,132 @@ describe('five namespaced write commands', () => {
       .resolves.toMatchObject({ state: 'stale' });
     controller.dispose();
     expect(providerCalls).toBe(0);
+  });
+
+  it('keeps owner and config identity after the official HTTPS transport changes to SSH', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const httpsRoot = path.join(isolation.layout.fixtureCwd, 'official-https-generation');
+    const sshRoot = path.join(isolation.layout.fixtureCwd, 'official-ssh-generation');
+    const configureManifest = (manifest: PluginMeta['manifest']) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'transport', title: 'Transport', content: 'Transport.' }],
+      };
+      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+    };
+    await Promise.all([
+      createCatalogSnapshotFixture(httpsRoot, 'demo', '0.0.0', 'https\n', configureManifest),
+      createCatalogSnapshotFixture(sshRoot, 'demo', '0.0.0', 'ssh\n', configureManifest),
+    ]);
+    const sshManifestPath = path.join(sshRoot, 'catalog-manifest.json');
+    const sshManifest = await fs.readJson(sshManifestPath) as Record<string, unknown>;
+    sshManifest.catalogVersion = '2.0.0';
+    await Promise.all([
+      fs.writeJson(sshManifestPath, sshManifest, { spaces: 2 }),
+      ...[httpsRoot, sshRoot].map((root) => fs.writeJson(path.join(root, '.aw-generated.json'), {
+        schemaVersion: 1,
+        kind: 'catalog',
+        workspaceIdentity: 'workspace:official-transport',
+        sourceIdentity: 'sha256:'.concat('1'.repeat(64)),
+      }, { spaces: 2 })),
+    ]);
+    const httpsSource = {
+      id: 'official', type: 'git', primary: true, url: OFFICIAL_CATALOG_SOURCE_URL,
+      refPolicy: { type: 'cliChannel' },
+    } as const;
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [httpsSource] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    let currentRoot = httpsRoot;
+    let commit = '1'.repeat(40);
+    const resolvedTransports: string[] = [];
+    const gitProvider = async (source: CatalogSource): Promise<CatalogSourceResolution> => {
+      if (source.type === 'git') resolvedTransports.push(source.url);
+      const validation = await validateCatalogSnapshot(currentRoot);
+      return {
+        sourceId: source.id,
+        sourceIdentity: await calculateCatalogSourceIdentity(source),
+        requestedRef: source.type === 'git'
+          ? resolveCatalogSourceRef(source.refPolicy, '1.0.0')
+          : 'path',
+        resolvedCommit: commit,
+        rootDir: currentRoot,
+        manifest: validation.manifest,
+        manifestDigest: validation.manifestDigest,
+        snapshotDigest: validation.snapshotDigest,
+        cacheEntryKey: commit,
+        source: 'remote',
+        cacheFallback: false,
+      };
+    };
+    const catalogGenerationRuntime = {
+      providers: {
+        git: gitProvider,
+        path: catalogPathProviderInternal.resolve,
+      },
+    };
+    await refreshCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env,
+      runtime: catalogGenerationRuntime,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(httpsSource);
+    const nativeCliRunner = async () => ({
+      exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
+    });
+    await expect(installWriteCommand(['official/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, { env: isolation.env, nativeCliRunner })).resolves.toMatchObject({ overallState: 'succeeded' });
+    await writePluginConfigStore({
+      sourceId: 'official', sourceIdentity, pluginName: 'demo', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { mode: 'https' },
+    });
+
+    currentRoot = sshRoot;
+    commit = '2'.repeat(40);
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'official', update: { url: OFFICIAL_CATALOG_SOURCE_SSH_URL },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      runtime: { generation: catalogGenerationRuntime },
+    })).resolves.toMatchObject({ ok: true, changed: true, errors: [] });
+    expect(resolvedTransports).toEqual([
+      OFFICIAL_CATALOG_SOURCE_URL,
+      OFFICIAL_CATALOG_SOURCE_SSH_URL,
+    ]);
+    await expect(readCatalogSourcesConfigSnapshot(isolation.env)).resolves.toMatchObject({
+      config: { sources: [{ url: OFFICIAL_CATALOG_SOURCE_SSH_URL }] },
+    });
+    await activateCatalogSourceCandidate({ sourceId: 'official', env: isolation.env });
+
+    const status = await statusCommandV5({
+      plugins: ['official/demo'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
+    });
+    expect(status.payload.targets).toEqual([
+      expect.objectContaining({ pluginId: 'official/demo', state: 'present', errors: [] }),
+    ]);
+    const captured = createCapturedCliIo();
+    await expect(runCli([
+      'config', 'set', 'official/demo', 'mode', 'ssh', '--scope', 'project', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: false,
+      nativeCliRunner,
+    })).resolves.toBe(0);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      configWrite: 'succeeded', overallState: 'succeeded',
+    });
+    await expect(readPluginConfigStore({
+      sourceId: 'official', sourceIdentity, pluginName: 'demo', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({ exists: true, values: { mode: 'ssh' } });
+    await expect(reinstallWriteCommand(['official/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, { env: isolation.env, nativeCliRunner })).resolves.toMatchObject({ overallState: 'succeeded' });
   });
 
   it('pins successful TUI source generations when another source is unavailable', async () => {
@@ -1124,21 +1256,159 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
+    const inventoryReads: Array<boolean> = [];
+    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
+      inventoryReads.push(options.includeHistoricalProjects === true);
+      return inventoryCatalogSourceReferences(options);
+    };
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
       interactive: false,
-    }));
+    }), undefined, { inventoryCatalogSourceReferences: readInventory });
     const intent = {
       kind: 'pluginWrite', action: 'install', pluginId: 'team/root', platform: 'codex', scope: 'project',
     } as const;
     const evidence = await dependencies.captureEvidence(intent);
+    expect(inventoryReads).toEqual([false]);
+    inventoryReads.length = 0;
     const result = await dependencies.executeIntent(intent, evidence) as Awaited<ReturnType<typeof installWriteCommand>>;
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
     expect(result.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['leaf', 'root']);
     expect(result.dependencyPlan?.dependencyEdges).toEqual([{ from: 'team/root', to: 'team/leaf' }]);
+    expect(inventoryReads).toEqual([false]);
+  });
+
+  it('fails closed before a dependency write when the operation plan no longer matches', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-dependency-plan-stale-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    const preview = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, { ...runtime, previewDependencyPlanOnly: true });
+    const stalePlan = {
+      ...preview.dependencyPlan!,
+      resolvedPluginIds: ['team/root'],
+    };
+
+    const result = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, { ...runtime, expectedOperationDependencyPlan: stalePlan });
+
+    expect(result.overallState).toBe('failed');
+    expect(result.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'operationReviewStale', state: 'failed' }),
+      expect.objectContaining({ errorCode: 'operationReviewStale', state: 'failed' }),
+    ]);
+    await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')))
+      .resolves.toBe(false);
+  });
+
+  it('uses one fresh ordinary inventory for a reviewed TUI write and a separate historical cleanup scan', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-inventory-owner-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const inventoryReads: Array<boolean> = [];
+    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
+      inventoryReads.push(options.includeHistoricalProjects === true);
+      return inventoryCatalogSourceReferences(options);
+    };
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      interactive: false,
+    }), undefined, { inventoryCatalogSourceReferences: readInventory });
+    const installIntent = {
+      kind: 'pluginWrite', action: 'install', pluginId: 'team/demo', platform: 'codex', scope: 'project',
+    } as const;
+    const installEvidence = await dependencies.captureEvidence(installIntent);
+    expect(inventoryReads).toEqual([false]);
+    inventoryReads.length = 0;
+
+    await expect(dependencies.executeIntent(installIntent, installEvidence)).resolves.toMatchObject({
+      overallState: 'succeeded',
+    });
+    expect(inventoryReads).toEqual([false]);
+
+    inventoryReads.length = 0;
+    const cleanupIntent = { ...installIntent, action: 'cleanup' as const };
+    const cleanupEvidence = await dependencies.captureEvidence(cleanupIntent);
+    expect(inventoryReads).toEqual([false]);
+    inventoryReads.length = 0;
+
+    await expect(dependencies.executeIntent(cleanupIntent, cleanupEvidence)).resolves.toMatchObject({
+      overallState: 'succeeded',
+    });
+    expect(inventoryReads).toEqual([false, true]);
+  });
+
+  it('rejects stale reviewed TUI inventory before changing an already advanced target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-inventory-stale-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const inventoryReads: Array<boolean> = [];
+    const readInventory: typeof inventoryCatalogSourceReferences = async (options) => {
+      inventoryReads.push(options.includeHistoricalProjects === true);
+      return inventoryCatalogSourceReferences(options);
+    };
+    const context = createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      interactive: false,
+    });
+    const dependencies = createTuiControllerDependencies(
+      context,
+      undefined,
+      { inventoryCatalogSourceReferences: readInventory },
+    );
+    const intent = {
+      kind: 'pluginWrite', action: 'install', pluginId: 'team/demo', platform: 'codex', scope: 'project',
+    } as const;
+    const reviewEvidence = await dependencies.captureEvidence(intent);
+    expect(inventoryReads).toEqual([false]);
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, context)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const targetPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    const before = await fs.readFile(targetPath, 'utf8');
+    const beforeMtime = (await fs.stat(targetPath)).mtimeMs;
+    inventoryReads.length = 0;
+
+    await expect(dependencies.executeIntent(intent, reviewEvidence)).rejects.toMatchObject({
+      code: 'operationReviewStale',
+    });
+    expect(inventoryReads).toEqual([false]);
+    await expect(fs.readFile(targetPath, 'utf8')).resolves.toBe(before);
+    await expect(fs.stat(targetPath)).resolves.toMatchObject({ mtimeMs: beforeMtime });
   });
 
   it('executes force cleanup through the reviewed TUI runtime', async () => {
@@ -1832,7 +2102,7 @@ describe('five namespaced write commands', () => {
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const driftRoot = path.join(skillsRoot, 'drift-owner');
     setTuiControllerRuntimeTestHooksForTests({
-      afterMutationEvidenceCapture: async () => {
+      beforeMutationEvidenceCapture: async () => {
         await fs.ensureDir(driftRoot);
         await writeSkillOwnerMarker({
           skillRoot: driftRoot,

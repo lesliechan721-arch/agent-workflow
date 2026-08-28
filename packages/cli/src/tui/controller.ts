@@ -2276,7 +2276,9 @@ export class TuiController {
     this.#publish();
     try {
       this.#assertIssueOrigin(ticket.intent);
-      await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+      if (ticket.intent.kind !== 'pluginWrite') {
+        await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+      }
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
@@ -2302,22 +2304,24 @@ export class TuiController {
       });
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    let current: OperationEvidence;
-    try {
-      current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
-    } catch (error) {
-      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      const code = issueCode(error);
-      await this.#logOperationError(error, code, ticket.intent);
-      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      if (code === 'operationReviewStale' && ticket.intent.kind === 'catalogActivate') {
-        return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
+    if (ticket.intent.kind !== 'pluginWrite') {
+      let current: OperationEvidence;
+      try {
+        current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
+      } catch (error) {
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        const code = issueCode(error);
+        await this.#logOperationError(error, code, ticket.intent);
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        if (code === 'operationReviewStale' && ticket.intent.kind === 'catalogActivate') {
+          return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
+        }
+        return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
       }
-      return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
-    }
-    if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
-      return this.#rebuildStaleReview(ticket, operationId, current, generation);
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
+        return this.#rebuildStaleReview(ticket, operationId, current, generation);
+      }
     }
     if (ticket.intent.kind === 'sourceMutation') {
       this.#cancelSourceRefreshes();

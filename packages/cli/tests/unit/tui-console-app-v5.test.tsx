@@ -2334,18 +2334,10 @@ describe('ConsoleAppV4', () => {
   });
 
   it('ignores a second Enter after the Review primary action becomes busy', async () => {
-    const validation = deferred<void>();
-    const capture = deferred<OperationEvidence>();
-    const executeIntent = vi.fn().mockResolvedValue({
-      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
-    });
+    const execution = deferred<unknown>();
+    const executeIntent = vi.fn(() => execution.promise);
     const value = controller({
-      validateIntent: vi.fn()
-        .mockResolvedValueOnce(undefined)
-        .mockImplementationOnce(() => validation.promise),
-      captureEvidence: vi.fn()
-        .mockResolvedValueOnce(evidence)
-        .mockImplementationOnce(() => capture.promise),
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
       executeIntent,
     });
     await value.load();
@@ -2359,9 +2351,10 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(value.snapshot.router.current.route.name).toBe('progress');
     expect(instance.lastFrame()).not.toContain('reviewTicketInvalid');
-    validation.resolve();
-    await nextTurn(2);
-    capture.resolve(evidence);
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    execution.resolve({
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
     await nextTurn(4);
 
     expect(executeIntent).toHaveBeenCalledTimes(1);
@@ -2469,13 +2462,23 @@ describe('ConsoleAppV4', () => {
     });
   });
 
-  it('shows a new review after stale evidence and performs no write', async () => {
+  it('shows a new review after the locked executor reports stale evidence before business writes', async () => {
     const changed = { ...evidence, targetFingerprint: 'sha256:changed' };
-    const executeIntent = vi.fn();
+    const businessWrite = vi.fn();
+    const executeIntent = vi.fn(async (
+      _intent: Parameters<TuiControllerDependencies['executeIntent']>[0],
+      expected: OperationEvidence,
+    ) => {
+      if (expected.targetFingerprint !== changed.targetFingerprint) {
+        throw new Error('operationReviewStale: locked target evidence changed');
+      }
+      return businessWrite();
+    });
+    const captureEvidence = vi.fn()
+      .mockResolvedValueOnce(evidence)
+      .mockResolvedValue(changed);
     const value = controller({
-      captureEvidence: vi.fn()
-        .mockResolvedValueOnce(evidence)
-        .mockResolvedValue(changed),
+      captureEvidence,
       executeIntent,
     });
     await value.load();
@@ -2484,7 +2487,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     await confirmReview(instance, value);
 
-    expect(executeIntent).not.toHaveBeenCalled();
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(businessWrite).not.toHaveBeenCalled();
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
     expect(instance.lastFrame()).toContain('状态已变化');
     expect(instance.lastFrame()).toContain('再次确认');
   });

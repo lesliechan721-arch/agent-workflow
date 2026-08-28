@@ -7,6 +7,10 @@ import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
 import {
+  OFFICIAL_CATALOG_SOURCE_SSH_URL,
+  OFFICIAL_CATALOG_SOURCE_URL,
+} from '../../src/constants.js';
+import {
   removeCatalogSourceCommand,
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
@@ -31,7 +35,10 @@ import {
 } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { resolveCatalogGenerationLocation } from '../../src/utils/catalog-generation-store.js';
-import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
+import {
+  calculateCatalogSourceConfigFingerprint,
+  calculateCatalogSourceIdentity,
+} from '../../src/utils/catalog-source-identity.js';
 import {
   resolveCatalogOperationContext,
   resolvePartialCatalogOperationContext,
@@ -1063,6 +1070,75 @@ describe('Catalog immutable generations', () => {
     expect(activated.generationSetDigest).not.toBe(bootstrapped.generationSetDigest);
     expect(activated.catalog.sources[0]!.resolution!.manifest.catalogVersion).toBe('2.0.0');
     expect(providerCalls).toBe(2);
+  });
+
+  it('keeps official Active across a transport update until the refreshed Candidate is activated', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('official-https-active');
+    const second = fixturePath('official-ssh-candidate');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: first, workspaceIdentity: 'workspace:official', catalogVersion: '1.0.0', content: 'https\n',
+      }),
+      createGenerationSnapshot({
+        root: second, workspaceIdentity: 'workspace:official', catalogVersion: '2.0.0', content: 'ssh\n',
+      }),
+    ]);
+    const httpsSource = {
+      id: 'official', type: 'git', primary: true, url: OFFICIAL_CATALOG_SOURCE_URL,
+      refPolicy: { type: 'cliChannel' },
+    } as const;
+    const sshSource = { ...httpsSource, url: OFFICIAL_CATALOG_SOURCE_SSH_URL };
+    await configureSources({ schemaVersion: 1, sources: [httpsSource] });
+    const roots = new Map([['official', first]]);
+    const runtime = { providers: providers({ roots }) };
+    const bootstrapped = await refreshCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    const oldActive = bootstrapped.active!;
+    roots.set('official', second);
+
+    const updated = await updateCatalogSourceCommand({
+      sourceId: 'official', update: { url: OFFICIAL_CATALOG_SOURCE_SSH_URL },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      runtime: { generation: runtime },
+    });
+
+    expect(updated).toMatchObject({ ok: true, changed: true, errors: [] });
+    const pending = (await readCatalogGenerationState(isolation.env)).sources.official!;
+    expect(pending.active).toEqual(oldActive);
+    expect(pending.candidate).toMatchObject({
+      catalogVersion: '2.0.0',
+      sourceConfigFingerprint: calculateCatalogSourceConfigFingerprint(sshSource),
+    });
+    expect(pending.active!.sourceConfigFingerprint)
+      .toBe(calculateCatalogSourceConfigFingerprint(httpsSource));
+    await expect(readCatalogGenerationStatus({ sourceId: 'official', env: isolation.env }))
+      .resolves.toMatchObject({ sources: [{
+        active: { catalogVersion: '1.0.0' },
+        candidate: { catalogVersion: '2.0.0' },
+      }] });
+    await expect(resolveCatalogOperationContext({
+      cliVersion: '1.0.0', env: isolation.env, runtime,
+    })).rejects.toMatchObject({
+      code: 'catalogGenerationIdentityMismatch',
+      message: expect.stringContaining('activate-candidate official'),
+    });
+
+    await activateCatalogSourceCandidate({ sourceId: 'official', env: isolation.env });
+    const activated = await resolveCatalogOperationContext({
+      cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    expect(activated.catalog.sources[0]!.resolution).toMatchObject({
+      sourceIdentity: await calculateCatalogSourceIdentity(httpsSource),
+      manifest: { catalogVersion: '2.0.0' },
+    });
+    expect(await calculateCatalogSourceIdentity(sshSource))
+      .toBe(await calculateCatalogSourceIdentity(httpsSource));
+    await expect(readCatalogGenerationStatus({ sourceId: 'official', env: isolation.env }))
+      .resolves.toMatchObject({ sources: [{
+        active: { catalogVersion: '2.0.0' },
+      }] });
   });
 
   it('reports one failed bootstrap without resolving an existing Active source remotely', async () => {

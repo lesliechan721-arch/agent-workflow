@@ -1627,18 +1627,12 @@ describe('TUI v4 Review safety', () => {
     });
   });
 
-  it('single-flights repeated execution while validation and evidence capture are delayed', async () => {
-    const validation = deferred<void>();
-    const capture = deferred<OperationEvidence>();
+  it('single-flights plugin execution without a second pre-dispatch freshness scan', async () => {
     const executeIntent = vi.fn().mockResolvedValue({
       targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
     });
-    const validateIntent = vi.fn()
-      .mockResolvedValueOnce(undefined)
-      .mockImplementationOnce(() => validation.promise);
-    const captureEvidence = vi.fn()
-      .mockResolvedValueOnce(baseEvidence)
-      .mockImplementationOnce(() => capture.promise);
+    const validateIntent = vi.fn().mockResolvedValue(undefined);
+    const captureEvidence = vi.fn().mockResolvedValue(baseEvidence);
     const controller = new TuiController(dependencies({
       validateIntent,
       captureEvidence,
@@ -1657,12 +1651,11 @@ describe('TUI v4 Review safety', () => {
     const second = controller.executeOperation(review.reviewToken);
     expect(second).toBe(first);
     expect(controller.snapshot.router.current.route).toEqual({ name: 'progress', operationId: review.operationId });
-    validation.resolve();
-    await nextTurn();
-    capture.resolve(baseEvidence);
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
     expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(validateIntent).toHaveBeenCalledTimes(1);
+    expect(captureEvidence).toHaveBeenCalledTimes(1);
     expect(firstResult).toEqual(secondResult);
     expect(firstResult.operationId).toBe(review.operationId);
     expect(observedCodes).not.toContain('reviewTicketInvalid');
@@ -2102,7 +2095,7 @@ describe('TUI v4 Review safety', () => {
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
-  it('revalidates both sides of a dependency issue at execution entry and performs zero writes when it changes', async () => {
+  it('delegates dependency issue freshness to the locked plugin write executor', async () => {
     const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
     consumer.errors = [{ code: 'dependencyMissing', message: 'dependencyMissing: official/toolkit is absent.' }];
     const loaded: TuiStatusLoadResult = {
@@ -2126,7 +2119,9 @@ describe('TUI v4 Review safety', () => {
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('operationReviewStale: consumer issue changed'));
     const captureEvidence = vi.fn().mockResolvedValue(baseEvidence);
-    const executeIntent = vi.fn();
+    const executeIntent = vi.fn().mockRejectedValue(new Error(
+      'operationReviewStale: dependency issue changed under the mutation lock',
+    ));
     const value = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue(loaded), validateIntent, captureEvidence, executeIntent,
     }));
@@ -2148,7 +2143,7 @@ describe('TUI v4 Review safety', () => {
       state: 'blocked', code: 'operationReviewStale',
     });
     expect(captureEvidence).toHaveBeenCalledTimes(1);
-    expect(executeIntent).not.toHaveBeenCalled();
+    expect(executeIntent).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -2457,9 +2452,11 @@ describe('TUI v4 Review safety', () => {
     expect(newest.reviewToken).not.toBe(cancelled.reviewToken);
   });
 
-  it('performs zero writes and shows a blocked result after fresh status makes the stale intent illegal', async () => {
+  it('rebuilds a plugin Review after the locked executor reports that the intent became illegal', async () => {
     const changedEvidence = { ...baseEvidence, targetFingerprint: 'sha256:changed' };
-    const executeIntent = vi.fn();
+    const executeIntent = vi.fn().mockRejectedValue(new Error(
+      'operationReviewStale: locked target evidence changed',
+    ));
     const validateIntent = vi.fn()
       .mockResolvedValueOnce(undefined)
       .mockRejectedValue(new Error('targetAlreadyInstalled: new state is not legal'));
@@ -2483,7 +2480,7 @@ describe('TUI v4 Review safety', () => {
 
     const result = await controller.executeOperation(review.reviewToken);
 
-    expect(executeIntent).not.toHaveBeenCalled();
+    expect(executeIntent).toHaveBeenCalledTimes(1);
     expect(validateIntent).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       state: 'blocked',

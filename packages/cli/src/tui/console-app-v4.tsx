@@ -6,6 +6,7 @@ import type { CatalogSource, PlatformName, Scope } from '../types.js';
 import {
   CATALOG_BETA_REF,
   CATALOG_LATEST_REF,
+  OFFICIAL_CATALOG_SOURCE_SSH_URL,
   OFFICIAL_CATALOG_SOURCE_URL,
 } from '../constants.js';
 import { CATALOG_SOURCE_ID_PATTERN } from '../utils/catalog-sources.js';
@@ -3024,7 +3025,6 @@ export function ConsoleAppV4(props: {
       setDirty(true);
       go({ name: 'sourceAdd', step: field === 'location' ? 'location' : field === 'subdir' ? 'subdir' : 'refPolicy', owner });
     };
-    const officialSshUrl = 'git@github.com:lesliechan721-arch/agent-workflow.git';
     const switchOfficialTransport = (location: string): void => {
       if (!detail || detail.type !== 'git'
         || detail.locationSummary === projectCatalogSourceLocation(location)) return;
@@ -3047,7 +3047,7 @@ export function ConsoleAppV4(props: {
     actions = detail?.type === 'git' ? [
       ...(route.sourceId === 'official' ? [
         { label: 'HTTPS', description: '使用系统 Git credential helper', selected: detail.locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_URL), run: () => switchOfficialTransport(OFFICIAL_CATALOG_SOURCE_URL) },
-        { label: 'SSH', description: '使用本机 SSH key；Git 连接使用 BatchMode', selected: detail.locationSummary === projectCatalogSourceLocation(officialSshUrl), run: () => switchOfficialTransport(officialSshUrl) },
+        { label: 'SSH', description: '使用本机 SSH key；Git 连接使用 BatchMode', selected: detail.locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_SSH_URL), run: () => switchOfficialTransport(OFFICIAL_CATALOG_SOURCE_SSH_URL) },
       ] : [{ label: 'Git URL', description: detail.locationSummary, run: () => startEdit('location') }]),
       { label: '版本引用', description: detail.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startEdit('refPolicy') },
       { label: 'Catalog 子目录', description: detail.subdir ?? '未设置', run: () => startEdit('subdir') },

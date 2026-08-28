@@ -37,7 +37,7 @@ async function resolveFromState(options: {
     throw new CatalogGenerationError({
       code: 'catalogGenerationIdentityMismatch',
       sourceId: options.source.id,
-      message: `Active Catalog generation for source "${options.source.id}" does not match the current source configuration. Refresh the source.`,
+      message: `Active Catalog generation for source "${options.source.id}" does not match the current source configuration. Run aw catalog source refresh ${options.source.id}, activate the Candidate with aw catalog source activate-candidate ${options.source.id}, then reload and retry.`,
     });
   }
   const generation = await readCatalogGeneration({

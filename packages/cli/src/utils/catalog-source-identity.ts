@@ -4,7 +4,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
 
-import { CATALOG_SOURCE_IDENTITY_VERSION } from '../constants.js';
+import {
+  CATALOG_SOURCE_IDENTITY_VERSION,
+  OFFICIAL_CATALOG_SOURCE_SSH_URL,
+  OFFICIAL_CATALOG_SOURCE_URL,
+} from '../constants.js';
 import type { CatalogSource, SourceIdentity } from '../types.js';
 
 const SCP_GIT_URL_PATTERN = /^([^@/:\s]+)@([^/:\s]+):(.+)$/;
@@ -72,6 +76,13 @@ export function canonicalizeCatalogGitUrl(value: string): string {
   return `${url.protocol}//${username}${url.hostname.toLowerCase()}${port}${normalizeGitPath(url.pathname)}`;
 }
 
+function logicalCatalogGitIdentityLocation(value: string): string {
+  if (value === OFFICIAL_CATALOG_SOURCE_URL || value === OFFICIAL_CATALOG_SOURCE_SSH_URL) {
+    return canonicalizeCatalogGitUrl(OFFICIAL_CATALOG_SOURCE_URL);
+  }
+  return canonicalizeCatalogGitUrl(value);
+}
+
 function normalizeIdentitySubdir(subdir: unknown): string | null {
   if (subdir === undefined) return null;
   if (typeof subdir !== 'string' || subdir.trim() === '' || subdir.includes('\\')) {
@@ -113,7 +124,7 @@ export async function calculateCatalogSourceIdentity(
 ): Promise<SourceIdentity> {
   let location: string;
   if (source.type === 'git') {
-    location = canonicalizeCatalogGitUrl(source.url);
+    location = logicalCatalogGitIdentityLocation(source.url);
   } else if (source.type === 'path') {
     if (!path.isAbsolute(source.path)) {
       throw new Error('Invalid catalog path source: expected a canonical absolute path.');

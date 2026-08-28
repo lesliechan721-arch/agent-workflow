@@ -99,6 +99,7 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   catalogBootstrapError?: unknown;
   catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
+  expectedOperationDependencyPlan?: DependencyOperationPlan;
   expectedOfflineCleanupEvidence?: OfflineCleanupTargetEvidence;
   reviewPreflight?: (evidence: RebuildReviewPreflightEvidence) => Promise<void> | void;
   resolvedReviewEvidenceByPlugin?: Record<
@@ -1791,6 +1792,13 @@ export async function runRebuildCommand(options: {
           });
       }
         const lockedPlan = await createPlan(stateInventory);
+        if (options.runtime?.expectedOperationDependencyPlan
+          && JSON.stringify(lockedPlan) !== JSON.stringify(options.runtime.expectedOperationDependencyPlan)) {
+          throw namespacedPreflightError(
+            'operationReviewStale: dependency plan changed before mutation.',
+            preflightTargets,
+          );
+        }
         for (const pluginName of new Set(lockedPlan.targets.flatMap((target) =>
           target.platform === 'claude'
           && (target.action === 'install'

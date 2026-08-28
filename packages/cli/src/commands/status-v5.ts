@@ -378,6 +378,7 @@ export async function statusCommandV5(options: {
   catalogOperationContext?: CatalogOperationContext;
   bootstrapMissingActive?: boolean;
   catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
+  inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
 }): Promise<{
   payload: StatusV5Payload;
   output: string;
@@ -406,7 +407,9 @@ export async function statusCommandV5(options: {
   const currentProjectLocationKey = createProjectLocationKey(currentProjectKey);
   const codexScopePathsAlias = codexProjectConfigAliasesUserHome(options.cwd, env);
   const inventoryErrors: StatusInventoryError[] = [];
-  const ownerInventory = await inventoryCatalogSourceReferences({ cwd: options.cwd, env }).catch(async (error) => {
+  const readInventory = options.inventoryCatalogSourceReferences
+    ?? inventoryCatalogSourceReferences;
+  const ownerInventory = await readInventory({ cwd: options.cwd, env }).catch(async (error) => {
     inventoryErrors.push(projectStateInventoryError(error, env, options.cwd));
     return inventoryLegacyOwnerReferences({ cwd: options.cwd, env }).catch((fallbackError) => {
       inventoryErrors.push(projectStateInventoryError(fallbackError, env, options.cwd));

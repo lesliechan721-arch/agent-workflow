@@ -108,7 +108,7 @@ Git 首次手动 refresh 直接建立 Active；已有 Active 时，高版本建�
 
 Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，默认远端解析超时为 180 秒，并可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整；它禁止 URL 内嵌凭据、SSH local command 和 proxy command，且 AW 不保存 Catalog 授权信息。
 
-`aw catalog source add` 和 `update` 先在 mutation lock 内原子提交 source config，并在 transport/location 输入变化时失效该 source ID 的旧 generation pointer；然后释放 mutation lock 并尽力刷新。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`set-primary` 只改 source config；`remove` 同时移除该 source ID 的 generation selection state，但不删除 immutable generation、插件内容或任何 live ownership 现场。
+`aw catalog source add` 和 `update` 先在 mutation lock 内原子提交 source config；只有 logical source identity 变化才失效该 source ID 的旧 generation pointer。transport 或其它 source-config fingerprint 变化保留旧 Active 和 Candidate selection，再释放 mutation lock 并尽力刷新；新 fingerprint 的 refresh 结果建立 Candidate，用户显式激活后才切换 Active。刷新失败时 config 仍已提交，receipt 报告该 source 的诊断；普通操作在激活前因 fingerprint 不匹配而 fail closed，并指向 refresh、Candidate activation 和 reload 恢复路径。其它来源不会因此失败。`set-primary` 只改 source config；`remove` 同时移除该 source ID 的 generation selection state，但不删除 immutable generation、插件内容或任何 live ownership 现场。
 
 多来源 resolver 用操作已绑定的 immutable Active snapshots 调用普通消费者。回调只能返回普通数据，不能向公开结果泄漏 bundle root、manifest path 或其它内部路径。首版没有 generation GC，因此操作 context 可在本次操作或 TUI load session 内固定引用这些目录。
 

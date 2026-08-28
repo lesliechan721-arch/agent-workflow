@@ -124,6 +124,7 @@ async function loadPortablePluginIds(options: {
 }
 
 export interface TuiControllerRuntimeTestHooks {
+  beforeMutationEvidenceCapture?: () => Promise<void>;
   afterMutationEvidenceCapture?: () => Promise<void>;
   onCatalogSourceProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
 }
@@ -623,8 +624,24 @@ function createReviewStageReporter(options: {
 export function createTuiControllerDependencies(
   context: CliExecutionContext,
   progressFeed?: RebuildProgressFeed,
-  options: { now?: () => number; catalogGenerationRuntime?: CatalogGenerationServiceRuntime } = {},
+  options: {
+    now?: () => number;
+    catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
+    inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
+  } = {},
 ): TuiControllerDependencies {
+  const readInventory = options.inventoryCatalogSourceReferences
+    ?? inventoryCatalogSourceReferences;
+  const createOperationInventoryReader = (): typeof inventoryCatalogSourceReferences => {
+    let ordinaryInventory: ReturnType<typeof inventoryCatalogSourceReferences> | undefined;
+    return (inventoryOptions) => {
+      if (inventoryOptions.includeHistoricalProjects === true) {
+        return readInventory(inventoryOptions);
+      }
+      ordinaryInventory ??= readInventory(inventoryOptions);
+      return ordinaryInventory;
+    };
+  };
   const catalogOperationByEvidence = new WeakMap<OperationEvidence, CatalogOperationContext>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
   let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV5>> | undefined;
@@ -655,6 +672,7 @@ export function createTuiControllerDependencies(
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
         ...(!catalogOperationContext ? { bootstrapMissingActive: false } : {}),
         ...(options.catalogGenerationRuntime ? { catalogGenerationRuntime: options.catalogGenerationRuntime } : {}),
+        inventoryCatalogSourceReferences: readInventory,
       });
       signal.throwIfAborted();
       const configured = await listCatalogSources({ env: context.env });
@@ -729,6 +747,7 @@ export function createTuiControllerDependencies(
       validateIntent: boolean;
     },
     bootstrapMissingActive = true,
+    operationInventory = createOperationInventoryReader(),
   ): Promise<OperationEvidence> => {
     if (intent.kind === 'catalogActivate') {
       signal?.throwIfAborted();
@@ -965,6 +984,7 @@ export function createTuiControllerDependencies(
         || (!statusCatalogOperation && sessionCatalogOperationContext)
         ? { bootstrapMissingActive: false }
         : {}),
+      inventoryCatalogSourceReferences: operationInventory,
     });
     signal?.throwIfAborted();
     const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
@@ -1004,7 +1024,7 @@ export function createTuiControllerDependencies(
     let offlineCleanup: OfflineCleanupTargetEvidence | undefined;
     if (offlineCleanupReason && offlineCleanupTarget) {
       await preparation?.reporter.emit('inventory');
-      const inventory = await inventoryCatalogSourceReferences({
+      const inventory = await operationInventory({
         cwd: context.cwd,
         env: context.env,
       });
@@ -1080,6 +1100,7 @@ export function createTuiControllerDependencies(
         scope: intent.scope,
       }, {
         ...context,
+        inventoryCatalogSourceReferences: operationInventory,
         expectedCatalogConfigDigest: status.payload.catalog.configDigest,
         ...(catalogOperation ? {
           catalogOperationContext: catalogOperation,
@@ -1253,6 +1274,7 @@ export function createTuiControllerDependencies(
         ...(offlineCleanup || sessionCatalogOperationContext
           ? { bootstrapMissingActive: false }
           : {}),
+        inventoryCatalogSourceReferences: readInventory,
       });
       signal.throwIfAborted();
       await assertTypedIssueOrigin(intent, status.payload.targets);
@@ -1562,7 +1584,15 @@ export function createTuiControllerDependencies(
       return withAwHomeMutationLock({
         env: context.env,
         action: async (awHomeMutationToken) => {
-          const currentEvidence = await captureEvidence(intent, undefined, undefined, false);
+          await tuiControllerRuntimeTestHooks?.beforeMutationEvidenceCapture?.();
+          const operationInventory = createOperationInventoryReader();
+          const currentEvidence = await captureEvidence(
+            intent,
+            undefined,
+            undefined,
+            false,
+            operationInventory,
+          );
           if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
           }
@@ -1594,6 +1624,10 @@ export function createTuiControllerDependencies(
             const result = await command([intent.pluginId], options, {
               ...context,
               awHomeMutationToken,
+              inventoryCatalogSourceReferences: operationInventory,
+              ...(currentEvidence.dependencyPlan
+                ? { expectedOperationDependencyPlan: currentEvidence.dependencyPlan }
+                : {}),
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
               ...(catalogOperation ? {
                 catalogOperationContext: catalogOperation,
