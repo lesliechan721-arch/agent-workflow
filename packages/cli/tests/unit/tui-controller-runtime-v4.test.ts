@@ -240,7 +240,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -346,7 +346,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -439,6 +439,28 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
     expect(stages).toEqual(['validate', 'evidence']);
     expect(runtimeMocks.statusCommandV4).not.toHaveBeenCalled();
+  });
+
+  it('stops a managed source mutation when public preflight rejects it', async () => {
+    runtimeMocks.preflightCatalogSourceMutation.mockRejectedValue(Object.assign(
+      new Error('Catalog source "workspace-dev" is managed by a Catalog Workspace.'),
+      { code: 'managedSourceProtected' },
+    ));
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+
+    await expect(dependencies.prepareReviewEvidence!({
+      kind: 'sourceMutation',
+      action: 'remove',
+      sourceId: 'workspace-dev',
+    }, new AbortController().signal, () => undefined)).rejects.toMatchObject({
+      code: 'managedSourceProtected',
+    });
+    expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
   });
 
   it('does not return source evidence after cancellation during an unsupported preflight boundary', async () => {

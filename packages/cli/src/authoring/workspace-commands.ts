@@ -119,7 +119,16 @@ export async function runCatalogBuildCommand(options: {
   force?: boolean;
   json?: boolean;
   io: AuthoringCommandIo;
-}): Promise<void> {
+}): Promise<{
+  command: 'catalog:build';
+  ok: true;
+  workspaceRoot: string;
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom;
+  outputRoot: string;
+  catalogVersion: string;
+  channel: 'latest' | 'beta';
+  pluginNames: string[];
+}> {
   const result = await buildCatalogWorkspace({
     workspaceRoot: options.workspaceRoot,
     ...(options.out ? { outputPath: options.out } : {}),
@@ -128,14 +137,15 @@ export async function runCatalogBuildCommand(options: {
     reservedImports: CLI_RESERVED_IMPORTS,
   });
   const receipt = {
-    command: 'catalog:build',
-    ok: true,
+    command: 'catalog:build' as const,
+    ok: true as const,
     workspaceRoot: path.resolve(options.workspaceRoot),
     workspaceRootResolvedFrom: options.workspaceRootResolvedFrom,
     ...result,
   };
   if (options.json) writeJson(options.io, receipt);
   else options.io.stdout(`Catalog snapshot built at ${result.outputRoot}.\n`);
+  return receipt;
 }
 
 export async function runCatalogValidateCommand(options: {

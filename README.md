@@ -264,7 +264,7 @@ aw catalog version --bump patch --workspace-root .
 
 远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `.release/attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布三个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若三个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 使用 Workspace `.aw/publish/attempts/<catalogVersion>.json`；公开命令与官方 release 共用该门禁，失败后必须提升 Catalog version，不能删除 attempt 后重试同一版本。
 
-CLI 读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。
+CLI 读取 Catalog Sources Config schema 2 的 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。当前 Catalog Workspace 的本地 development source 使用 `aw catalog dev activate|status|deactivate --json` 管理。
 
 维护者入口：
 

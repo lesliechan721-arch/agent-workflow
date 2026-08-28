@@ -377,26 +377,36 @@ describe('pack smoke', () => {
       stderr: '',
     });
     const externalPathSource = await execFileAsync(awBin, [
-      'catalog', 'source', 'add', 'packed-local', '--path', path.join(standaloneWorkspace, '.aw', 'catalog'),
-      '--primary', '--json',
+      'catalog', 'dev', 'activate', '--workspace-root', standaloneWorkspace, '--primary', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
-    expect(JSON.parse(externalPathSource.stdout)).toMatchObject({ ok: true, sourceId: 'packed-local' });
+    const developmentSourceReceipt = JSON.parse(externalPathSource.stdout);
+    expect(developmentSourceReceipt).toMatchObject({
+      command: 'catalog:dev:activate', ok: true,
+      snapshot: { action: 'reused' },
+      source: { action: 'added', primary: true },
+    });
+    const developmentSourceId = developmentSourceReceipt.source.id as string;
     const externalInstall = await execFileAsync(awBin, [
-      'install', 'packed-local/packed-build', '-p', 'both', '--scope', 'project', '--json',
+      'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(externalInstall.stdout)).toMatchObject({
       ok: true,
       command: 'install',
       overallState: 'succeeded',
       targets: expect.arrayContaining([
-        expect.objectContaining({ pluginId: 'packed-local/packed-build', platform: 'codex', scope: 'project' }),
-        expect.objectContaining({ pluginId: 'packed-local/packed-build', platform: 'claude', scope: 'project' }),
+        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'project' }),
+        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project' }),
       ]),
     });
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.claude', 'settings.json'))).resolves.toBe(true);
     await expect(fs.readJson(path.join(externalAuthoringEnv.AW_HOME, 'catalog-sources.json')))
       .resolves.toMatchObject({
-        sources: expect.arrayContaining([expect.objectContaining({ id: 'packed-local', type: 'path' })]),
+        schemaVersion: 2,
+        sources: expect.arrayContaining([expect.objectContaining({
+          id: developmentSourceId,
+          type: 'path',
+          managedBy: expect.objectContaining({ kind: 'catalog-workspace' }),
+        })]),
       });
     const claudeInstalledPlugins = await fs.readJson(
       path.join(externalAuthoringEnv.AW_CLAUDE_HOME, 'plugins', 'installed_plugins.json'),
@@ -406,6 +416,15 @@ describe('pack smoke', () => {
       scope: 'project',
       projectPath: await fs.realpath(standaloneWorkspace),
     }));
+    const developmentSourceRemoval = await execFileAsync(awBin, [
+      'catalog', 'dev', 'deactivate', '--workspace-root', standaloneWorkspace, '--json',
+    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    expect(JSON.parse(developmentSourceRemoval.stdout)).toMatchObject({
+      command: 'catalog:dev:deactivate', ok: true,
+      source: { id: developmentSourceId, action: 'removed', previousPrimary: true },
+      replacementPrimarySourceId: 'official',
+    });
+    await expect(fs.pathExists(path.join(standaloneWorkspace, '.aw', 'catalog'))).resolves.toBe(true);
     const packedCatalogRemote = path.join(tempRoot, 'packed-catalog.git');
     registerSmokeWritableRoot(packedCatalogRemote, 'packed CLI Catalog publication remote');
     await execFileAsync('git', ['init', '--bare', packedCatalogRemote], { env: process.env });
@@ -552,7 +571,7 @@ describe('pack smoke', () => {
       fs.ensureDir(portableCwd),
       fs.ensureDir(fakeBin),
       fs.outputJson(path.join(portableHome, 'catalog-sources.json'), {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: portableCatalog }],
       }),
     ]);

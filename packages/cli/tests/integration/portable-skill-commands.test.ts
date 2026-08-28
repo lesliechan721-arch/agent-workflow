@@ -101,7 +101,7 @@ async function configurePortableCatalog(options: {
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
     },
     expectedDigest: snapshot.digest,

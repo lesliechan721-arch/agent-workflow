@@ -153,7 +153,7 @@ function normalizeSource(value: unknown, fieldName: string): CatalogSource {
     };
   }
   if (input.type === 'path') {
-    assertAllowedKeys(input, fieldName, ['id', 'type', 'primary', 'path']);
+    assertAllowedKeys(input, fieldName, ['id', 'type', 'primary', 'path', 'managedBy']);
     if (
       typeof input.path !== 'string'
       || input.path.trim() === ''
@@ -161,11 +161,28 @@ function normalizeSource(value: unknown, fieldName: string): CatalogSource {
     ) {
       throw new Error(`Invalid ${fieldName}.path: expected a canonical absolute path.`);
     }
+    let managedBy: { kind: 'catalog-workspace'; workspaceIdentity: string } | undefined;
+    if (input.managedBy !== undefined) {
+      const owner = assertObject(input.managedBy, `${fieldName}.managedBy`);
+      assertAllowedKeys(owner, `${fieldName}.managedBy`, ['kind', 'workspaceIdentity']);
+      if (owner.kind !== 'catalog-workspace') {
+        throw new Error(`Invalid ${fieldName}.managedBy.kind: expected "catalog-workspace".`);
+      }
+      if (
+        typeof owner.workspaceIdentity !== 'string'
+        || owner.workspaceIdentity.trim() === ''
+        || owner.workspaceIdentity !== owner.workspaceIdentity.trim()
+      ) {
+        throw new Error(`Invalid ${fieldName}.managedBy.workspaceIdentity: expected a non-empty string.`);
+      }
+      managedBy = { kind: 'catalog-workspace', workspaceIdentity: owner.workspaceIdentity };
+    }
     return {
       id,
       type: 'path',
       primary: input.primary,
       path: input.path,
+      ...(managedBy ? { managedBy } : {}),
     };
   }
   throw new Error(`Invalid ${fieldName}.type: expected "git" or "path".`);
@@ -188,7 +205,7 @@ export function validateCatalogSourcesConfig(rawConfig: unknown): CatalogSources
   const input = assertObject(rawConfig, 'catalog sources config');
   assertAllowedKeys(input, 'catalog sources config', ['schemaVersion', 'sources']);
   if (input.schemaVersion !== CATALOG_SOURCES_SCHEMA_VERSION) {
-    throw new Error('Invalid catalog sources config.schemaVersion: expected 1.');
+    throw new Error('Invalid catalog sources config.schemaVersion: expected 2.');
   }
   if (!Array.isArray(input.sources) || input.sources.length === 0) {
     throw new Error('Invalid catalog sources config.sources: expected at least one source.');
@@ -202,7 +219,7 @@ export function validateCatalogSourcesConfig(rawConfig: unknown): CatalogSources
   if (sources.filter((source) => source.primary).length !== 1) {
     throw new Error('Invalid catalog sources config.sources: expected exactly one primary source.');
   }
-  return { schemaVersion: 1, sources };
+  return { schemaVersion: 2, sources };
 }
 
 export function resolveCatalogSourceRef(
@@ -231,7 +248,7 @@ export async function addCatalogSource(
     throw new Error(`Catalog source "${candidate.id}" already exists.`);
   }
   return validateCatalogSourcesConfig({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: [
       ...current.sources.map((entry) => candidate.primary ? { ...entry, primary: false } : entry),
       candidate,
@@ -285,7 +302,7 @@ export async function updateCatalogSource(
       };
   if (candidate.type === 'git' && !subdir) delete candidate.subdir;
   return validateCatalogSourcesConfig({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: current.sources.map((source, sourceIndex) => sourceIndex === index ? candidate : source),
   });
 }
@@ -299,7 +316,7 @@ export function setPrimaryCatalogSource(
     throw new Error(`Catalog source "${sourceId}" does not exist.`);
   }
   return validateCatalogSourcesConfig({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: current.sources.map((source) => ({
       ...source,
       primary: source.id === sourceId,
@@ -317,7 +334,7 @@ export function removeCatalogSource(
   if (current.sources.length === 1) throw new Error('The last catalog source cannot be removed.');
   if (source.primary) throw new Error('The primary catalog source cannot be removed.');
   return validateCatalogSourcesConfig({
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: current.sources.filter((entry) => entry.id !== sourceId),
   });
 }

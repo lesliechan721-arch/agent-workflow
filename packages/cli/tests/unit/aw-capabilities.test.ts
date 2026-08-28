@@ -32,6 +32,8 @@ describe('current AW executable capabilities', () => {
       'aw.plugin-authoring.v1',
       'aw.catalog-authoring.v1',
       'aw.catalog-context.v1',
+      'aw.catalog-source.v2',
+      'aw.catalog-dev-source.v1',
       'aw.catalog-publication.v1',
       'aw.catalog-snapshot.v5',
       'aw.self-check.v1',
@@ -47,7 +49,8 @@ describe('current AW executable capabilities', () => {
     expect(result.capabilities).toEqual([...expectedCapabilities].sort())
     expect(result.capabilities).toContain('aw.plugin-manifest.v2')
     expect(result.capabilities).toContain('aw.catalog-snapshot.v5')
-    expect(result.capabilities).not.toContain('aw.catalog-source.v2')
+    expect(result.capabilities).toContain('aw.catalog-source.v2')
+    expect(result.capabilities).toContain('aw.catalog-dev-source.v1')
     expect(result.capabilitySetDigest).toBe(computeAwCapabilitySetDigest(result.capabilities))
   })
 

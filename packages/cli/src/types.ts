@@ -108,12 +108,16 @@ export interface GitCatalogSource extends CatalogSourceBase {
 export interface PathCatalogSource extends CatalogSourceBase {
   type: 'path';
   path: string;
+  managedBy?: {
+    kind: 'catalog-workspace';
+    workspaceIdentity: string;
+  };
 }
 
 export type CatalogSource = GitCatalogSource | PathCatalogSource;
 
 export interface CatalogSourcesConfig {
-  schemaVersion: 1;
+  schemaVersion: 2;
   sources: CatalogSource[];
 }
 

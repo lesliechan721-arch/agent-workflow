@@ -371,7 +371,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'primary', type: 'path', primary: true, path: primaryRoot },
           { id: 'team', type: 'path', primary: false, path: teamRoot },
@@ -687,7 +687,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'primary', type: 'path', primary: true, path: primaryRoot },
           { id: 'team', type: 'path', primary: false, path: teamRoot },
@@ -735,7 +735,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -870,7 +870,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'good', type: 'path', primary: true, path: goodRoot },
           { id: 'bad', type: 'path', primary: false, path: badRoot },
@@ -952,7 +952,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'bad', type: 'path', primary: true, path: missingRoot }],
       },
       expectedDigest: initial.digest,
@@ -1237,7 +1237,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -1368,7 +1368,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -1482,7 +1482,7 @@ describe('phase 3B namespaced runtime stores', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: initial.digest,
@@ -1705,7 +1705,7 @@ describe('phase 3B namespaced runtime stores', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: initial.digest,
@@ -1764,7 +1764,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -1839,7 +1839,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -1903,7 +1903,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'primary', type: 'path', primary: true, path: primaryRoot }],
       },
       expectedDigest: initial.digest,
@@ -1959,7 +1959,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2022,7 +2022,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -2090,7 +2090,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -2152,7 +2152,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2210,7 +2210,7 @@ describe('phase 3B namespaced runtime stores', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: initial.digest,
@@ -2266,7 +2266,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     const configured = await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2350,7 +2350,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           ...initial.config.sources,
           { id: 'team', type: 'path' as const, primary: false, path: sourceRoot },

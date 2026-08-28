@@ -21,7 +21,7 @@
 - `commands/dependency-operation-plan.ts` 只生成一次命令内的依赖执行顺序；它不是持久安装记录。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存下一次 uninstall lifecycle 所需的弱状态。
-- `utils/multi-source-catalog.ts` 和 `utils/catalog-source-cache.ts` 解析 schema 1 Git/path source，并管理可重建的本地快照。
+- `utils/multi-source-catalog.ts` 和 `utils/catalog-source-cache.ts` 解析 Catalog Sources Config v2 的 Git/path source，并管理可重建的本地快照。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
@@ -75,6 +75,7 @@ installed plugin
 - 第三方发布在第一次远端写入前保存 gitignored `.aw/publish/attempts/<version>.json`。每个版本文件独立保留；文件损坏或发布结果不确定时只阻止该版本，作者用 `aw catalog version <higher>` 恢复。该恢复合同不增加 force、补偿 push 或平台专用发布路径。
 - Catalog manifest 保存规范化 marketplace owner/interface，验证器以它为唯一根 metadata 真值核对 Codex 和 Claude projection。`release.state=published` 的 snapshot 必须包含并完整验证 `plugin-release-ledger.json`；development snapshot 不包含 ledger。公开 Catalog 作者合同见[Catalog 作者指南](catalog-authoring.md)。
 - `<AW_HOME>/catalog-sources.json` 缺失时读取内置 `official` source；第一次来源修改才物化该文件。稳定版 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。
+- `catalog-sources.json` 只接受 schema 2。Path source 可带 `managedBy: { kind: "catalog-workspace", workspaceIdentity }`；Git source 和普通 `catalog source` CLI 不能声明或接管该 ownership。`aw catalog dev activate|status|deactivate --json` 按稳定 Workspace marker identity 管理当前 `.aw/catalog` path source。Workspace 移动时 activate 更新同一 owned source 的 path。status 严格只读；deactivate 不删除 snapshot。
 
 ### Portable Agent Skills Distribution
 
@@ -97,6 +98,8 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，默认远端解析超时为 180 秒，并可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整；它禁止 URL 内嵌凭据、SSH local command 和 proxy command，且 AW 不保存 Catalog 授权信息。
 
 `aw catalog source add` 和 `update` 先原子提交 source config，再尽力刷新该 source。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`list`、`set-primary` 和 `remove` 只修改 source config。
+
+`aw catalog dev activate` 复用 current development snapshot；snapshot stale、invalid、absent 或显式 `--force-build` 时执行 Catalog build 和 complete validation。随后它只通过统一 source service 新增或更新 managed path source，并刷新 cache。snapshot build 与 source config、cache 不组成跨系统事务：config 失败保留 snapshot，refresh 失败保留已提交 source，并返回 partial receipt。`deactivate` 对 primary source 先选择真实 `official`，否则只接受唯一其它 source；没有候选或候选不唯一时不修改配置。
 
 多来源 resolver 在稳定的 cache generation 内调用消费者回调。回调只能返回普通数据，不能保留 bundle root、manifest path 或其它缓存路径。generation 结束后，调用方必须重新解析，不得保存内部路径。
 

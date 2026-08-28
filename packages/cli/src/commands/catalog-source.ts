@@ -52,7 +52,7 @@ export interface CatalogSourceMutationReceipt {
 }
 
 export interface CatalogSourceListPayload {
-  catalogSourcesSchemaVersion: 1;
+  catalogSourcesSchemaVersion: 2;
   primarySourceId: string;
   configDigest: string;
   sources: Array<CatalogSource & { sourceIdentity: string }>;
@@ -92,6 +92,26 @@ export interface CatalogSourcePreflightInventory {
   inventorySchemaVersion: 1;
   references: Array<Omit<CatalogSourceReference, 'location'>>;
   errors: Array<Pick<CatalogSourceInventoryError, 'code' | 'kind' | 'relevance'>>;
+}
+
+export class CatalogManagedSourceProtectedError extends Error {
+  readonly code = 'managedSourceProtected';
+
+  constructor(sourceId: string) {
+    super(`Catalog source "${sourceId}" is managed by a Catalog Workspace. Use catalog dev commands.`);
+    this.name = 'CatalogManagedSourceProtectedError';
+  }
+}
+
+function assertManagedSourceAccess(options: {
+  source: CatalogSource | undefined;
+  managedByWorkspaceIdentity?: string;
+}): void {
+  const owner = options.source?.type === 'path' ? options.source.managedBy : undefined;
+  if (!owner) return;
+  if (owner.workspaceIdentity !== options.managedByWorkspaceIdentity) {
+    throw new CatalogManagedSourceProtectedError(options.source!.id);
+  }
 }
 
 async function reportMutationProgress(
@@ -195,12 +215,18 @@ export async function preflightCatalogSourceMutation(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
+  managedByWorkspaceIdentity?: string;
 }): Promise<CatalogSourceMutationPreflight> {
   const env = options.env ?? process.env;
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   const request = options.request;
   const sourceId = request.action === 'add' ? request.source.id : request.sourceId;
   const before = snapshot.config.sources.find((source) => source.id === sourceId);
+  assertManagedSourceAccess({
+    source: request.action === 'add' ? request.source
+      : request.action === 'update' || request.action === 'remove' ? before : undefined,
+    managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
+  });
   const candidate = request.action === 'add'
     ? await addCatalogSource(snapshot.config, request.source, options.cwd)
     : request.action === 'update'
@@ -293,7 +319,7 @@ export async function listCatalogSources(options: {
 } = {}): Promise<CatalogSourceListPayload> {
   const snapshot = await readCatalogSourcesConfigSnapshot(options.env);
   return {
-    catalogSourcesSchemaVersion: 1,
+    catalogSourcesSchemaVersion: 2,
     primarySourceId: primarySourceId(snapshot.config),
     configDigest: snapshot.digest,
     sources: await Promise.all(snapshot.config.sources.map(async (source) => ({
@@ -303,6 +329,39 @@ export async function listCatalogSources(options: {
   };
 }
 
+export async function refreshCatalogSourceCommand(options: {
+  sourceId: string;
+  cliVersion: string;
+  env?: NodeJS.ProcessEnv;
+  runtime?: CatalogSourceCommandRuntime;
+}): Promise<{ source?: CatalogSourceEvidence; errors: Array<{ code: string; message: string }> }> {
+  return withCatalogSourceMutationLock({
+    env: options.env,
+    runtime: options.runtime,
+    action: async ({ env, runtime }) => {
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      if (!snapshot.config.sources.some((source) => source.id === options.sourceId)) {
+        throw new Error(`Catalog source "${options.sourceId}" does not exist.`);
+      }
+      try {
+        await runtime.beforeRefresh?.();
+        return {
+          source: await validateCandidate({
+            config: snapshot.config,
+            sourceId: options.sourceId,
+            cliVersion: options.cliVersion,
+            env,
+          }),
+          errors: [],
+        };
+      } catch (error) {
+        const diagnostic = sanitizeCatalogSourceError(error, env);
+        return { errors: [{ code: catalogSourceErrorCode(diagnostic), message: diagnostic.message }] };
+      }
+    },
+  });
+}
+
 export async function addCatalogSourceCommand(options: {
   source: CatalogSource;
   cliVersion: string;
@@ -310,12 +369,17 @@ export async function addCatalogSourceCommand(options: {
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
+  managedByWorkspaceIdentity?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
     action: async ({ env, runtime }) => {
       const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      assertManagedSourceAccess({
+        source: options.source,
+        managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
+      });
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
@@ -344,12 +408,17 @@ export async function updateCatalogSourceCommand(options: {
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
+  managedByWorkspaceIdentity?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
     action: async ({ env, runtime }) => {
       const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      assertManagedSourceAccess({
+        source: snapshot.config.sources.find((source) => source.id === options.sourceId),
+        managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
+      });
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
@@ -407,12 +476,17 @@ export async function removeCatalogSourceCommand(options: {
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
+  managedByWorkspaceIdentity?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
     action: async ({ env, runtime }) => {
       const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      assertManagedSourceAccess({
+        source: snapshot.config.sources.find((source) => source.id === options.sourceId),
+        managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
+      });
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }

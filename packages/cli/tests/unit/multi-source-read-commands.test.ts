@@ -29,7 +29,7 @@ async function configureTwoPaths(validRoot: string, invalidRoot: string): Promis
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         { id: 'good', type: 'path', primary: true, path: validRoot },
         { id: 'bad', type: 'path', primary: false, path: invalidRoot },
@@ -48,7 +48,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(root);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
+      config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -96,7 +96,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: incompatible }],
       },
       expectedDigest: initial.digest,
@@ -190,7 +190,7 @@ describe('multi-source read commands', () => {
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'good', type: 'path', primary: true, path: root }] },
+      config: { schemaVersion: 2, sources: [{ id: 'good', type: 'path', primary: true, path: root }] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -235,7 +235,7 @@ describe('multi-source read commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -402,7 +402,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -449,7 +449,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'first', type: 'path', primary: true, path: first },
           { id: 'second', type: 'path', primary: false, path: second },
@@ -474,7 +474,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'first', type: 'path', primary: true, path: first },
           { id: 'second', type: 'path', primary: false, path: second },
@@ -584,7 +584,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -618,7 +618,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -660,7 +660,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: claudeOnly }],
       },
       expectedDigest: initial.digest,
@@ -736,7 +736,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: codexOnly }],
       },
       expectedDigest: initial.digest,
@@ -781,7 +781,7 @@ describe('multi-source read commands', () => {
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: projectCapable }],
       },
       expectedDigest: current.digest,
@@ -803,7 +803,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: missing }],
       },
       expectedDigest: initial.digest,
@@ -839,7 +839,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -891,7 +891,7 @@ describe('multi-source read commands', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'good', type: 'path', primary: true, path: good }],
         },
         expectedDigest: initial.digest,
@@ -933,7 +933,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -974,7 +974,7 @@ describe('multi-source read commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -1034,7 +1034,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -1077,7 +1077,7 @@ describe('multi-source read commands', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'good', type: 'path', primary: true, path: good }],
         },
         expectedDigest: initial.digest,
@@ -1117,7 +1117,7 @@ describe('multi-source read commands', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'good', type: 'path', primary: true, path: good }],
         },
         expectedDigest: initial.digest,
@@ -1167,7 +1167,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{
           id: 'broken',
           type: 'git',
@@ -1207,7 +1207,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'private-path', type: 'path', primary: true, path: missingSource }],
       },
       expectedDigest: initial.digest,
@@ -1248,7 +1248,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,

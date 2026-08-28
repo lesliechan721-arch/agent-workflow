@@ -21,7 +21,7 @@ async function configurePathSource(
   const source = { id: sourceId, type: 'path', primary: true, path: sourceRoot } as const;
   const current = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
-    config: { schemaVersion: 1, sources: [source] },
+    config: { schemaVersion: 2, sources: [source] },
     expectedDigest: current.digest,
     env: isolation.env,
   });
@@ -102,7 +102,7 @@ describe('status v4 current behavior', () => {
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [goodSource, { id: 'bad', type: 'path', primary: false, path: bad }],
       },
       expectedDigest: current.digest,

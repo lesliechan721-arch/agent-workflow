@@ -102,7 +102,7 @@ describe('portable materializer', () => {
     }));
     const validation = await validateCatalogSnapshotTransport(snapshotRoot);
     const config = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       sources: [{ id: 'fixture', type: 'path' as const, path: snapshotRoot, primary: true }],
     };
     const materialized = await materializePortableSkillsFromCatalog({

@@ -65,7 +65,7 @@ async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTes
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: root }],
     },
     expectedDigest: snapshot.digest,
@@ -92,7 +92,7 @@ async function configureCodexAliasCatalog(options: {
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
     },
     expectedDigest: snapshot.digest,
@@ -257,7 +257,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -300,7 +300,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -364,7 +364,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -408,7 +408,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -471,7 +471,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -518,7 +518,7 @@ describe('five namespaced write commands', () => {
     await createDependencyCatalogSnapshotFixture(sourceRoot, plugins);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -574,7 +574,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -637,7 +637,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -693,7 +693,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -759,7 +759,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -824,7 +824,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -872,7 +872,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -925,7 +925,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -961,7 +961,7 @@ describe('five namespaced write commands', () => {
     ]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -991,7 +991,7 @@ describe('five namespaced write commands', () => {
     ]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1049,7 +1049,7 @@ describe('five namespaced write commands', () => {
       }
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
-        config: { schemaVersion: 1, sources: [source] },
+        config: { schemaVersion: 2, sources: [source] },
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
@@ -1106,7 +1106,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1175,7 +1175,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1209,7 +1209,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -1260,7 +1260,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1290,7 +1290,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1341,7 +1341,7 @@ describe('five namespaced write commands', () => {
       const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
-        config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+        config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
       });
       const runtime = {
         env: isolation.env,
@@ -1380,7 +1380,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1409,7 +1409,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1446,7 +1446,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const marketplaceRoots = new Map<string, string>();
     const runtime = { env: isolation.env, nativeCliRunner: async (invocation: NativeCliInvocation) => {
@@ -1538,7 +1538,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const nativeCliRunner = vi.fn(async () => ({
       exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
@@ -1573,7 +1573,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -1607,7 +1607,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -1671,7 +1671,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'team', type: 'path', primary: true, path: sourceRoot },
           { id: 'other', type: 'path', primary: false, path: otherRoot },
@@ -1792,7 +1792,7 @@ describe('five namespaced write commands', () => {
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceA }],
         },
         expectedDigest: snapshot.digest,
@@ -1836,7 +1836,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceA }],
       },
       expectedDigest: snapshot.digest,
@@ -1983,7 +1983,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -2183,7 +2183,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -2213,7 +2213,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -2250,7 +2250,7 @@ describe('five namespaced write commands', () => {
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: snapshot.digest,
@@ -2312,7 +2312,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -2393,7 +2393,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -2425,7 +2425,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -2468,7 +2468,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -2514,7 +2514,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -2664,7 +2664,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -2771,7 +2771,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -2831,7 +2831,7 @@ describe('five namespaced write commands', () => {
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -2893,7 +2893,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -2947,7 +2947,7 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -3102,7 +3102,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'team', type: 'path', primary: teamInitiallyPrimary, path: teamRoot },
           { id: 'other', type: 'path', primary: !teamInitiallyPrimary, path: otherRoot },
@@ -3216,7 +3216,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'codex', type: 'path', primary: true, path: codexRoot },
           { id: 'claude', type: 'path', primary: false, path: claudeRoot },
@@ -3493,7 +3493,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3590,7 +3590,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3648,7 +3648,7 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -3726,7 +3726,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'first', type: 'path', primary: true, path: firstRoot },
           { id: 'second', type: 'path', primary: false, path: secondRoot },
@@ -3793,7 +3793,7 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: before.digest,
       env: isolation.env,
     });

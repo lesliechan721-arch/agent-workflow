@@ -90,7 +90,15 @@ Catalog 没有同版本 repair。Development snapshot 和 Catalog cache 是可�
 
 ## Source consumption 和信任
 
-Path source 消费本地 development snapshot；Git source 消费 published snapshot。两者使用同一 Catalog schema。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
+Path source 消费本地 development snapshot；Git source 消费 published snapshot。两者使用同一 Catalog schema。当前 Workspace 的日常开发 source 使用稳定 marker identity 管理：
+
+```bash
+aw catalog dev activate --workspace-root "$workspace" --json
+aw catalog dev status --workspace-root "$workspace" --json
+aw catalog dev deactivate --workspace-root "$workspace" --json
+```
+
+`activate` 会按需 build/validate 并刷新 source；`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。低层 `catalog source add/update` 不能声明 managed ownership。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
 
 ```bash
 aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json

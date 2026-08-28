@@ -28,6 +28,8 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-authoring.v1',
   'aw.catalog-authoring.v1',
   'aw.catalog-context.v1',
+  'aw.catalog-source.v2',
+  'aw.catalog-dev-source.v1',
   'aw.catalog-publication.v1',
   'aw.catalog-snapshot.v5',
   'aw.self-check.v1',

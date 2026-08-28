@@ -94,7 +94,7 @@ async function configureCatalog(): Promise<{
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: currentRoot }],
     },
     expectedDigest: snapshot.digest,

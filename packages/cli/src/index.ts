@@ -145,6 +145,13 @@ import { runCatalogPublishCommand } from './commands/catalog-publish.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
 import { getCatalogContext } from './commands/catalog-context.js';
 import {
+  activateCatalogDevSource,
+  catalogDevSourceError,
+  createCatalogDevFailureReceipt,
+  deactivateCatalogDevSource,
+  getCatalogDevSourceStatus,
+} from './commands/catalog-dev-source.js';
+import {
   getPluginCapabilitiesResult,
   parsePluginCapabilitySurface,
   renderPluginCapabilities,
@@ -1834,6 +1841,82 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       }
     });
 
+  const catalogDev = catalog
+    .command('dev')
+    .description('Manage the current Catalog Workspace development source');
+
+  catalogDev
+    .command('activate')
+    .option('--workspace-root <path>', 'explicit Catalog Workspace root')
+    .option('--source-id <id>', 'explicit managed source ID')
+    .option('--primary', 'make the development source primary', false)
+    .option('--force-build', 'rebuild a current snapshot', false)
+    .requiredOption('--json', 'emit one schema 1 JSON receipt')
+    .action(async (rawOptions: {
+      workspaceRoot?: string;
+      sourceId?: string;
+      primary?: boolean;
+      forceBuild?: boolean;
+    }) => {
+      try {
+        const receipt = await activateCatalogDevSource({
+          cwd,
+          workspaceRoot: rawOptions.workspaceRoot,
+          sourceId: rawOptions.sourceId,
+          primary: rawOptions.primary,
+          forceBuild: rawOptions.forceBuild,
+          cliVersion: resolveCliVersion(),
+          env,
+        });
+        writeJsonReceipt(io.stdout, receipt);
+        commandExitState.exitCode = receipt.ok ? 0 : 1;
+      } catch (error) {
+        const failure = catalogDevSourceError(error);
+        writeJsonReceipt(io.stdout, createCatalogDevFailureReceipt({
+          command: 'activate', cwd, workspaceRoot: rawOptions.workspaceRoot,
+          sourceId: rawOptions.sourceId, ...failure,
+        }));
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalogDev
+    .command('status')
+    .option('--workspace-root <path>', 'explicit Catalog Workspace root')
+    .requiredOption('--json', 'emit one schema 1 JSON receipt')
+    .action(async (rawOptions: { workspaceRoot?: string }) => {
+      const receipt = await getCatalogDevSourceStatus({
+        cwd,
+        workspaceRoot: rawOptions.workspaceRoot,
+        cliVersion: resolveCliVersion(),
+        env,
+      });
+      writeJsonReceipt(io.stdout, receipt);
+      commandExitState.exitCode = receipt.ok ? 0 : 1;
+    });
+
+  catalogDev
+    .command('deactivate')
+    .option('--workspace-root <path>', 'explicit Catalog Workspace root')
+    .requiredOption('--json', 'emit one schema 1 JSON receipt')
+    .action(async (rawOptions: { workspaceRoot?: string }) => {
+      try {
+        const receipt = await deactivateCatalogDevSource({
+          cwd,
+          workspaceRoot: rawOptions.workspaceRoot,
+          env,
+        });
+        writeJsonReceipt(io.stdout, receipt);
+        commandExitState.exitCode = receipt.ok ? 0 : 1;
+      } catch (error) {
+        const failure = catalogDevSourceError(error);
+        writeJsonReceipt(io.stdout, createCatalogDevFailureReceipt({
+          command: 'deactivate', cwd, workspaceRoot: rawOptions.workspaceRoot, ...failure,
+        }));
+        commandExitState.exitCode = 1;
+      }
+    });
+
   const catalogSource = catalog
     .command('source')
     .description('Manage catalog sources');
@@ -2983,6 +3066,12 @@ export async function runCli(
     )
     ? `${argv[0]}:${argv[1]}`
     : null;
+  const jsonCatalogDevCommand = argv.includes('--json')
+    && argv[0] === 'catalog'
+    && argv[1] === 'dev'
+    && ['activate', 'status', 'deactivate'].includes(argv[2] ?? '')
+    ? argv[2] as 'activate' | 'status' | 'deactivate'
+    : null;
 
   try {
     const authoringScriptByCommand: Record<string, string> = {
@@ -3086,7 +3175,7 @@ export async function runCli(
     }
     const program = buildProgram({
       ...options,
-      io,
+      io: jsonCatalogDevCommand ? { ...io, stderr: () => undefined } : io,
       diagnostics: {
         ...options.diagnostics,
         metadata: {
@@ -3100,6 +3189,27 @@ export async function runCli(
       __awCommandExitState?: { exitCode: number };
     }).__awCommandExitState?.exitCode ?? 0;
   } catch (error) {
+    if (jsonCatalogDevCommand) {
+      const workspaceRootIndex = argv.findIndex((token) => token === '--workspace-root');
+      const workspaceRootOption = argv.find((token) => token.startsWith('--workspace-root='));
+      const workspaceRoot = workspaceRootOption?.slice('--workspace-root='.length)
+        ?? (workspaceRootIndex >= 0 ? argv[workspaceRootIndex + 1] : undefined);
+      const sourceIdIndex = argv.findIndex((token) => token === '--source-id');
+      const sourceIdOption = argv.find((token) => token.startsWith('--source-id='));
+      const sourceId = sourceIdOption?.slice('--source-id='.length)
+        ?? (sourceIdIndex >= 0 ? argv[sourceIdIndex + 1] : undefined);
+      const failure = error instanceof CommanderError
+        ? { code: 'invalidArguments', message: error.message }
+        : catalogDevSourceError(error);
+      writeJsonReceipt(io.stdout, createCatalogDevFailureReceipt({
+        command: jsonCatalogDevCommand,
+        cwd: options.cwd ?? process.cwd(),
+        workspaceRoot,
+        sourceId,
+        ...failure,
+      }));
+      return 1;
+    }
     if (jsonAuthoringCommand && !(error instanceof CommanderError)) {
       const message = error instanceof Error ? error.message : String(error);
       if (jsonAuthoringCommand === 'plugin:validate') {

@@ -5,7 +5,7 @@ export const CLAUDE_MARKETPLACE_PATH = '.claude-plugin/marketplace.json';
 export const CODEX_MARKETPLACE_PATH = '.agents/plugins/marketplace.json';
 export const CURRENT_CATALOG_MANIFEST_FILE = 'catalog-manifest.json';
 export const CATALOG_SOURCES_FILE = 'catalog-sources.json';
-export const CATALOG_SOURCES_SCHEMA_VERSION = 1;
+export const CATALOG_SOURCES_SCHEMA_VERSION = 2;
 export const CATALOG_SOURCE_IDENTITY_VERSION = 1;
 export const OFFICIAL_CATALOG_SOURCE_URL =
   'https://github.com/lesliechan721-arch/agent-workflow.git';

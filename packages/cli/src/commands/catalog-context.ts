@@ -10,8 +10,10 @@ import {
 } from '@lesliechan721/aw-plugin-core'
 
 import { resolveCatalogPublicationTarget } from './catalog-publication-target.js'
+import { suggestedCatalogDevSourceId } from './catalog-dev-source.js'
 import { sanitizedGitEnvironment } from './catalog-publication-inspection.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -29,10 +31,6 @@ async function git(cwd: string, args: string[], env: NodeJS.ProcessEnv): Promise
   } catch {
     return null
   }
-}
-
-function suggestedSourceId(root: string): string {
-  return path.basename(root).toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || 'catalog'
 }
 
 export async function getCatalogContext(options: {
@@ -96,6 +94,40 @@ export async function getCatalogContext(options: {
   const remotesText = repositoryRoot ? await git(repositoryRoot, ['remote'], options.env) : null
   const remotes = remotesText ? remotesText.split('\n').filter(Boolean).sort() : []
   const capabilities = [...options.capabilities].sort()
+  let suggestedSourceId = suggestedCatalogDevSourceId(inspectionRoot)
+  let existingSourceId: string | null = null
+  let active = false
+  if (workspaceIdentity !== null) {
+    try {
+      const sourceConfig = await readCatalogSourcesConfigSnapshot(options.env)
+      const owned = sourceConfig.config.sources.filter((source): source is Extract<typeof source, { type: 'path' }> => source.type === 'path'
+        && source.managedBy?.kind === 'catalog-workspace'
+        && source.managedBy.workspaceIdentity === workspaceIdentity)
+      if (owned.length > 1) {
+        issues.push({
+          code: 'managedSourceAmbiguous',
+          message: `Catalog Workspace owns multiple development sources: ${owned.map((source) => source.id).join(', ')}.`,
+          blocking: true,
+        })
+      } else if (owned.length === 1) {
+        existingSourceId = owned[0]!.id
+        active = owned[0]!.path === path.join(inspectionRoot, '.aw', 'catalog')
+        suggestedSourceId = owned[0]!.id
+      } else {
+        suggestedSourceId = suggestedCatalogDevSourceId(
+          inspectionRoot,
+          workspaceIdentity,
+          sourceConfig.config.sources.map((source) => source.id),
+        )
+      }
+    } catch (error) {
+      issues.push({
+        code: 'sourceConfigInvalid',
+        message: error instanceof Error ? error.message : String(error),
+        blocking: true,
+      })
+    }
+  }
   return {
     schemaVersion: 1,
     command: 'catalog:context',
@@ -130,9 +162,9 @@ export async function getCatalogContext(options: {
     },
     developmentSource: {
       snapshotPath: path.join(inspectionRoot, '.aw', 'catalog'),
-      suggestedSourceId: suggestedSourceId(inspectionRoot),
-      existingSourceId: null,
-      active: false,
+      suggestedSourceId,
+      existingSourceId,
+      active,
     },
     issues,
   }

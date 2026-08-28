@@ -256,7 +256,7 @@ describe('catalog source current and last-good cache', () => {
     let releaseCallback!: () => void;
     const released = new Promise<void>((resolve) => { releaseCallback = resolve; });
     const config = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       sources: [{ id: 'team', type: 'path' as const, path: first, primary: true }],
     };
     const providers: CatalogSourceProviderSet = {
@@ -441,7 +441,7 @@ describe('multi-source resolver public behavior', () => {
     await createCatalogSnapshotFixture(root);
     const validation = await validateCatalogSnapshotTransport(root);
     const config = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       sources: [
         { id: 'bad', type: 'path' as const, path: fixturePath('missing'), primary: false },
         { id: 'good', type: 'path' as const, path: root, primary: true },

@@ -3702,7 +3702,7 @@ describe('rebuild adapter integration', () => {
       const sourceSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'local', type: 'path', primary: true, path: statusCatalogRoot }],
         },
         expectedDigest: sourceSnapshot.digest,

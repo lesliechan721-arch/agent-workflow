@@ -1,0 +1,390 @@
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { activateCatalogDevSource } from '../../src/commands/catalog-dev-source.js';
+import { runCli } from '../../src/index.js';
+import {
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
+
+const roots: string[] = [];
+
+function capture() {
+  let stdout = '';
+  let stderr = '';
+  return {
+    io: {
+      stdout: (text: string) => { stdout += text; },
+      stderr: (text: string) => { stderr += text; },
+    },
+    stdout: () => stdout,
+    stderr: () => stderr,
+  };
+}
+
+async function fixture() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-dev-source-'));
+  roots.push(root);
+  const workspaceRoot = path.join(root, 'workspace');
+  await fs.ensureDir(workspaceRoot);
+  const env = {
+    ...process.env,
+    AW_HOME: path.join(root, 'aw-home'),
+    AW_CODEX_HOME: path.join(root, 'codex-home'),
+    AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+  };
+  expect(await runCli(['catalog', 'init', '--workspace-root', workspaceRoot], {
+    cwd: workspaceRoot, env, io: capture().io,
+  })).toBe(0);
+  expect(await runCli([
+    'plugin', 'init', 'dev-demo', '--description', 'Development source fixture.', '--no-skills',
+    '--workspace-root', workspaceRoot,
+  ], { cwd: workspaceRoot, env, io: capture().io })).toBe(0);
+  return { root, workspaceRoot, env };
+}
+
+async function jsonCommand(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
+  const output = capture();
+  const exitCode = await runCli(args, { cwd, env, io: output.io });
+  return { exitCode, receipt: JSON.parse(output.stdout()), stderr: output.stderr() };
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
+});
+
+describe('Catalog Workspace development source', () => {
+  it('activates idempotently, follows a moved Workspace, reports cache evidence, and deactivates without deleting the snapshot', async () => {
+    const { root, workspaceRoot, env } = await fixture();
+    const first = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(first.exitCode, first.stderr).toBe(0);
+    expect(first.receipt).toMatchObject({
+      receiptSchemaVersion: 1,
+      command: 'catalog:dev:activate',
+      ok: true,
+      state: 'completed',
+      snapshot: { action: 'built', digest: expect.stringMatching(/^sha256:/u) },
+      source: { action: 'added', primary: false },
+      recovery: [],
+    });
+
+    const repeated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(repeated.exitCode, repeated.stderr).toBe(0);
+    expect(repeated.receipt).toMatchObject({
+      snapshot: { action: 'reused', digest: first.receipt.snapshot.digest },
+      source: { id: first.receipt.source.id, action: 'reused', primary: false },
+    });
+    const manifestPath = path.join(workspaceRoot, 'plugins', 'dev-demo', '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    await fs.writeJson(manifestPath, { ...manifest, description: 'Updated development source fixture.' }, { spaces: 2 });
+    const staleRebuilt = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(staleRebuilt.exitCode, staleRebuilt.stderr).toBe(0);
+    expect(staleRebuilt.receipt).toMatchObject({
+      snapshot: { action: 'built' },
+      source: { action: 'reused' },
+    });
+    const context = await jsonCommand(['catalog', 'context', '--json'], workspaceRoot, env);
+    expect(context.receipt.developmentSource).toMatchObject({
+      existingSourceId: first.receipt.source.id,
+      active: true,
+    });
+
+    const movedRoot = path.join(root, 'moved-workspace');
+    await fs.rename(workspaceRoot, movedRoot);
+    const movedStatus = await jsonCommand(['catalog', 'dev', 'status', '--json'], movedRoot, env);
+    expect(movedStatus.exitCode).toBe(1);
+    expect(movedStatus.receipt).toMatchObject({
+      source: { exists: true, pathMatches: false },
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourcePathMismatch', blocking: true })]),
+    });
+    const moved = await jsonCommand(['catalog', 'dev', 'activate', '--json'], movedRoot, env);
+    expect(moved.exitCode, moved.stderr).toBe(0);
+    expect(moved.receipt).toMatchObject({
+      workspaceIdentity: first.receipt.workspaceIdentity,
+      source: { id: first.receipt.source.id, action: 'updated' },
+    });
+    const status = await jsonCommand(['catalog', 'dev', 'status', '--json'], movedRoot, env);
+    expect(status.exitCode, status.stderr).toBe(0);
+    expect(status.receipt).toMatchObject({
+      ok: true,
+      snapshot: { state: 'current', valid: true },
+      source: { exists: true, pathMatches: true },
+      cache: { state: 'current', snapshotDigest: moved.receipt.snapshot.digest },
+    });
+    const cacheRoot = path.join(env.AW_HOME!, 'catalog-cache', 'sources', first.receipt.source.id);
+    await fs.remove(cacheRoot);
+    const configBeforeStatus = await fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'));
+    const cacheAbsent = await jsonCommand(['catalog', 'dev', 'status', '--json'], movedRoot, env);
+    expect(cacheAbsent.exitCode, cacheAbsent.stderr).toBe(0);
+    expect(cacheAbsent.receipt.cache.state).toBe('absent');
+    await expect(fs.pathExists(cacheRoot)).resolves.toBe(false);
+    await expect(fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'))).resolves.toEqual(configBeforeStatus);
+
+    const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], movedRoot, env);
+    expect(deactivated.exitCode, deactivated.stderr).toBe(0);
+    expect(deactivated.receipt).toMatchObject({
+      ok: true,
+      source: { id: first.receipt.source.id, action: 'removed', previousPrimary: false },
+    });
+    await expect(fs.pathExists(path.join(movedRoot, '.aw', 'catalog'))).resolves.toBe(true);
+  });
+
+  it('moves primary ownership back to official before removing the managed source', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await jsonCommand([
+      'catalog', 'dev', 'activate', '--primary', '--json',
+    ], workspaceRoot, env);
+    expect(activated.exitCode, activated.stderr).toBe(0);
+    expect(activated.receipt.source.primary).toBe(true);
+
+    const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
+    expect(deactivated.exitCode, deactivated.stderr).toBe(0);
+    expect(deactivated.receipt).toMatchObject({ replacementPrimarySourceId: 'official' });
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    expect(config.config.sources).toEqual([
+      expect.objectContaining({ id: 'official', primary: true }),
+    ]);
+  });
+
+  it('rejects public update and remove for a Workspace-managed source', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(activated.exitCode).toBe(0);
+    const configPath = path.join(env.AW_HOME!, 'catalog-sources.json');
+    const before = await fs.readFile(configPath);
+    for (const args of [
+      ['catalog', 'source', 'update', activated.receipt.source.id, '--path', activated.receipt.snapshot.path, '--json'],
+      ['catalog', 'source', 'remove', activated.receipt.source.id, '--json'],
+    ]) {
+      const result = await jsonCommand(args, workspaceRoot, env);
+      expect(result.exitCode).toBe(1);
+      expect(result.receipt.errors).toEqual([
+        expect.objectContaining({ code: 'managedSourceProtected' }),
+      ]);
+      await expect(fs.readFile(configPath)).resolves.toEqual(before);
+    }
+  });
+
+  it('emits stable schema 1 failures for invalid Workspaces and Commander errors', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-dev-failure-'));
+    roots.push(root);
+    const env = { ...process.env, AW_HOME: path.join(root, 'aw-home') };
+    for (const command of ['activate', 'status', 'deactivate'] as const) {
+      const invalidWorkspace = await jsonCommand(['catalog', 'dev', command, '--json'], root, env);
+      expect(invalidWorkspace.exitCode).toBe(1);
+      expect(invalidWorkspace.stderr).toBe('');
+      expect(invalidWorkspace.receipt).toMatchObject({
+        receiptSchemaVersion: 1,
+        command: `catalog:dev:${command}`,
+        ok: false,
+      });
+      const failures = command === 'status'
+        ? invalidWorkspace.receipt.issues
+        : invalidWorkspace.receipt.errors;
+      expect(failures).toEqual([
+        expect.objectContaining({ code: 'workspaceInvalid' }),
+      ]);
+
+      const invalidArguments = await jsonCommand([
+        'catalog', 'dev', command, '--unknown-option', '--json',
+      ], root, env);
+      expect(invalidArguments.exitCode).toBe(1);
+      expect(invalidArguments.stderr).toBe('');
+      expect(invalidArguments.receipt).toMatchObject({
+        receiptSchemaVersion: 1,
+        command: `catalog:dev:${command}`,
+        ok: false,
+      });
+      const argumentFailures = command === 'status'
+        ? invalidArguments.receipt.issues
+        : invalidArguments.receipt.errors;
+      expect(argumentFailures).toEqual([
+        expect.objectContaining({ code: 'invalidArguments' }),
+      ]);
+    }
+  });
+
+  it('reports invalid explicit development source IDs with a stable code', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const result = await jsonCommand([
+      'catalog', 'dev', 'activate', '--source-id', 'NOT_VALID', '--json',
+    ], workspaceRoot, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(result.receipt.errors).toEqual([
+      expect.objectContaining({ code: 'invalidSourceId' }),
+    ]);
+  });
+
+  it('keeps a built snapshot when an explicit source ID belongs to a foreign source', async () => {
+    const { workspaceRoot, env } = await fixture();
+    expect((await jsonCommand(['catalog', 'build', '--json'], workspaceRoot, env)).exitCode).toBe(0);
+    const snapshotPath = path.join(workspaceRoot, '.aw', 'catalog');
+    expect((await jsonCommand([
+      'catalog', 'source', 'add', 'foreign', '--path', snapshotPath, '--json',
+    ], workspaceRoot, env)).exitCode).toBe(0);
+
+    const activated = await jsonCommand([
+      'catalog', 'dev', 'activate', '--source-id', 'foreign', '--force-build', '--json',
+    ], workspaceRoot, env);
+    expect(activated.exitCode).toBe(1);
+    expect(activated.receipt).toMatchObject({
+      ok: false,
+      snapshot: { action: 'built', digest: expect.stringMatching(/^sha256:/u) },
+      errors: [{ code: 'sourceIdConflict', message: expect.stringContaining('foreign') }],
+    });
+    await expect(fs.pathExists(snapshotPath)).resolves.toBe(true);
+  });
+
+  it('uses a deterministic identity suffix when the default source ID is foreign', async () => {
+    const { workspaceRoot, env } = await fixture();
+    expect((await jsonCommand(['catalog', 'build', '--json'], workspaceRoot, env)).exitCode).toBe(0);
+    const snapshotPath = path.join(workspaceRoot, '.aw', 'catalog');
+    expect((await jsonCommand([
+      'catalog', 'source', 'add', 'workspace-dev', '--path', snapshotPath, '--json',
+    ], workspaceRoot, env)).exitCode).toBe(0);
+
+    const first = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(first.exitCode, first.stderr).toBe(0);
+    expect(first.receipt.source.id).toMatch(/^workspace-dev-[0-9a-f]{6}$/u);
+    const repeated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(repeated.receipt.source.id).toBe(first.receipt.source.id);
+  });
+
+  it('keeps a committed source after refresh failure and succeeds when activate is rerun', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const first = await activateCatalogDevSource({
+      cwd: workspaceRoot,
+      cliVersion: '1.0.0',
+      env,
+      runtime: { sourceRuntime: { beforeRefresh: () => fs.remove(path.join(workspaceRoot, '.aw', 'catalog')) } },
+    });
+    expect(first).toMatchObject({
+      ok: false, state: 'partial', source: { action: 'added' },
+      errors: [{ code: 'sourceRefreshFailed' }],
+    });
+    expect((await readCatalogSourcesConfigSnapshot(env)).config.sources).toContainEqual(
+      expect.objectContaining({
+        id: first.source.id,
+        managedBy: expect.objectContaining({ workspaceIdentity: first.workspaceIdentity }),
+      }),
+    );
+
+    const repeated = await activateCatalogDevSource({ cwd: workspaceRoot, cliVersion: '1.0.0', env });
+    expect(repeated).toMatchObject({ ok: true, state: 'completed', snapshot: { action: 'built' } });
+  });
+
+  it('refuses to remove a primary managed source when no replacement exists and does not modify config', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await activateCatalogDevSource({
+      cwd: workspaceRoot, cliVersion: '1.0.0', env, primary: true,
+    });
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    const managed = current.config.sources.find((source) => source.id === activated.source.id)!;
+    const onlyManaged = await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [managed] },
+      expectedDigest: current.digest,
+      env,
+    });
+    const before = await fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'));
+
+    const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
+    expect(deactivated.exitCode).toBe(1);
+    expect(deactivated.receipt.errors).toEqual([
+      expect.objectContaining({ code: 'replacementPrimaryUnavailable', message: expect.stringContaining('No replacement') }),
+    ]);
+    await expect(fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'))).resolves.toEqual(before);
+    expect((await readCatalogSourcesConfigSnapshot(env)).digest).toBe(onlyManaged.digest);
+  });
+
+  it('selects the unique remaining source when official is absent', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await activateCatalogDevSource({
+      cwd: workspaceRoot, cliVersion: '1.0.0', env, primary: true,
+    });
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    const managed = current.config.sources.find((source) => source.id === activated.source.id)!;
+    const snapshotPath = path.join(workspaceRoot, '.aw', 'catalog');
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          managed,
+          { id: 'backup', type: 'path', path: snapshotPath, primary: false },
+        ],
+      },
+      expectedDigest: current.digest,
+      env,
+    });
+
+    const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
+    expect(deactivated.exitCode, deactivated.stderr).toBe(0);
+    expect(deactivated.receipt).toMatchObject({ replacementPrimarySourceId: 'backup' });
+    expect((await readCatalogSourcesConfigSnapshot(env)).config.sources).toEqual([
+      expect.objectContaining({ id: 'backup', primary: true }),
+    ]);
+  });
+
+  it('refuses an ambiguous primary replacement and lists the candidates without modifying config', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await activateCatalogDevSource({
+      cwd: workspaceRoot, cliVersion: '1.0.0', env, primary: true,
+    });
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    const managed = current.config.sources.find((source) => source.id === activated.source.id)!;
+    const snapshotPath = path.join(workspaceRoot, '.aw', 'catalog');
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          managed,
+          { id: 'backup-a', type: 'path', path: snapshotPath, primary: false },
+          { id: 'backup-b', type: 'path', path: snapshotPath, primary: false },
+        ],
+      },
+      expectedDigest: current.digest,
+      env,
+    });
+    const before = await fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'));
+
+    const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
+    expect(deactivated.exitCode).toBe(1);
+    expect(deactivated.receipt.errors[0]).toMatchObject({
+      code: 'replacementPrimaryAmbiguous',
+      message: expect.stringContaining('backup-a, backup-b'),
+    });
+    await expect(fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'))).resolves.toEqual(before);
+  });
+
+  it('reports multiple managed sources for one Workspace as an invalid ambiguous configuration', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await activateCatalogDevSource({ cwd: workspaceRoot, cliVersion: '1.0.0', env });
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    const managed = current.config.sources.find((source) => source.id === activated.source.id)!;
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          ...current.config.sources,
+          { ...managed, id: 'duplicate-dev' },
+        ],
+      },
+      expectedDigest: current.digest,
+      env,
+    });
+
+    const status = await jsonCommand(['catalog', 'dev', 'status', '--json'], workspaceRoot, env);
+    expect(status.exitCode).toBe(1);
+    expect(status.receipt.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'multipleManagedSources', blocking: true }),
+    ]));
+    const activate = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(activate.exitCode).toBe(1);
+    expect(activate.receipt.errors[0].code).toBe('multipleManagedSources');
+    expect(activate.receipt.errors[0].message).toContain('multiple development sources');
+  });
+});
