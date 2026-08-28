@@ -10,6 +10,8 @@ metadata:
 
 # Review AW Workflow
 
+Workflow 是跨插件完成一个用户结果的行为路径，不是 Catalog Workspace composition。只评审 Workspace identity、metadata、inventory、Catalog version、snapshot 或 publication evidence 时，使用 `review-aw-catalog`；本 Skill 不把这些事实包装成业务 workflow。
+
 ## 依赖
 
 - `review-agent-workflow`：判断端到端路由、职责、handoff、状态 owner、失败传播与最小架构。

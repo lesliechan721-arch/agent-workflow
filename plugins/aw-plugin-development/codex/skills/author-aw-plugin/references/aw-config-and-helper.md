@@ -1,6 +1,6 @@
 # AW Config / Helper
 
-字段合同读取 [CLI 生成的聚焦视图](config-lifecycle-artifact-capabilities.generated.md)。`config.schema` 是跨平台 AW 配置真值；Claude `userConfig` 是单独的 Claude runtime 能力，不能替代或镜像 AW config。
+字段合同运行 `aw plugin capabilities --surface config --json` 查询。`config.schema` 是跨平台 AW 配置真值；Claude `userConfig` 是单独的 Claude runtime 能力，不能替代或镜像 AW config。
 
 presentation 只改变显示，不改变字段类型和值。`valueLabels` 不改变 enum token。preset 是部分更新，且 preset 不得包含 sensitive、`file` 或 `directory` 字段。
 

@@ -1,6 +1,6 @@
 # Build 作者策略
 
-字段合同读取 [CLI 生成的能力视图](build-config-capabilities.generated.md)。build 只从已声明输入生成确定性 staging 输出；源码树和用户环境不是输出位置。
+字段合同运行 `aw plugin capabilities --surface build-config --json` 查询。build 只从已声明输入生成确定性 staging 输出；源码树和用户环境不是输出位置。
 
 - `buildImports` 复用 canonical build 输入，不形成安装依赖。
 - `skillRuntimeFiles` 投影已有 source/import 文件。

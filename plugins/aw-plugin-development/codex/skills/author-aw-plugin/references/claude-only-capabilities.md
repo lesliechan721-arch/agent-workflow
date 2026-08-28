@@ -1,6 +1,6 @@
 # Claude-only 作者策略
 
-Claude-only manifest 字段属于 `buildConfig.manifestOverrides.claude`。字段集合读取 [Build 能力视图](build-config-capabilities.generated.md)；插件必须支持 CLAUDE。
+Claude-only manifest 字段属于 `buildConfig.manifestOverrides.claude`。字段集合运行 `aw plugin capabilities --surface build-config --json` 查询；插件必须支持 CLAUDE。
 
 - `outputStyles` 和路径形式的 LSP 配置使用插件内 `./` 路径。
 - `userConfig` 只用于 Claude runtime 独占配置。跨平台值使用 AW [Config](aw-config-and-helper.md)，不能维护两份真值。

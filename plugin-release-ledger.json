@@ -11,6 +11,15 @@
       "catalogVersion": "0.1.0-beta.1"
     },
     {
+      "plugin": "agent-content-toolkit",
+      "version": "0.1.0-beta.1",
+      "contentDigest": "sha256:dd5f6f523758c98d04ebc32c259b9192319ea4e6e5f3ca01d5bb1897118409d7",
+      "artifactDigest": "sha256:e9c6cc2dba1c26508d0ac2675b331af066cd4da7604d2023e7cfdc942ad0dace",
+      "manifestDigest": "sha256:8a701d9793431e7ea9c437fd1fcf3611d03897cc96deb5395b4ba9d27d7cbda4",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
+    },
+    {
       "plugin": "agent-skill-toolkit",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:abeae8b59eb7cba24e65fed95e0d86392955f47876de19a29c9ed3837aacc5fd",
@@ -18,6 +27,15 @@
       "manifestDigest": "sha256:65fe79930f5a37845415dde256c3b65ea490a88507d1757c8df44ed2e6e75702",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.1"
+    },
+    {
+      "plugin": "agent-skill-toolkit",
+      "version": "0.1.0-beta.1",
+      "contentDigest": "sha256:abeae8b59eb7cba24e65fed95e0d86392955f47876de19a29c9ed3837aacc5fd",
+      "artifactDigest": "sha256:c5e3624ea0898c6c23009c0a55fc8503ac3e85ab7e39ddca1d73a6b4a64bbe92",
+      "manifestDigest": "sha256:65fe79930f5a37845415dde256c3b65ea490a88507d1757c8df44ed2e6e75702",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
     },
     {
       "plugin": "ask-me",
@@ -29,6 +47,24 @@
       "catalogVersion": "0.1.0-beta.1"
     },
     {
+      "plugin": "ask-me",
+      "version": "0.1.0-beta.1",
+      "contentDigest": "sha256:2bf8ffcaa1de57127b4528f4a8c41c7d609589f9d4d9b7bbf983fd82ef4ae60d",
+      "artifactDigest": "sha256:b99edd83c772a43e20056b3b6feaf5d91363d8cab28c03709399c50661353bb2",
+      "manifestDigest": "sha256:e865a114b85fc1186174910133c1c06553406a451708e9324ddcbb06db4974b4",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
+    },
+    {
+      "plugin": "aw-catalog-development",
+      "version": "0.1.0-beta.1",
+      "contentDigest": "sha256:39ff1d6d1dcd4eca5410b8d5f5c4998f60f7d50c6bc456c9c76fcc395ac95637",
+      "artifactDigest": "sha256:05f9f3d18145019439efabec999c9a787e6022cfef9f4e1f2c3dfec06de44391",
+      "manifestDigest": "sha256:89c220917895eb5bacd20869e669eaa8aa24d0e40793b385b05cbc0f01bd3248",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
+    },
+    {
       "plugin": "aw-plugin-development",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:16151b45c189b9f463f4dda7f2420f249aa3000eaee0e84d3e7a82374469305a",
@@ -36,6 +72,15 @@
       "manifestDigest": "sha256:1d20c9908b54335837c3688b27fec8ac8045b489ed80cd991c6c305752aca7cb",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.1"
+    },
+    {
+      "plugin": "aw-plugin-development",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:fdcd56cc0f15f5d452a25caf40fbd215af78eaee8a06fb933faf14b655e2f9a7",
+      "artifactDigest": "sha256:748d20715d63b2193cf1c7dbfe231aa53591c8912822dec030d325af2c35d230",
+      "manifestDigest": "sha256:7d7220da42f59436f470ba417630cd23df4a34acd8e6d52d40d21591cb97c95b",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
     },
     {
       "plugin": "aw-skill-eval-runner",
@@ -47,6 +92,15 @@
       "catalogVersion": "0.1.0-beta.1"
     },
     {
+      "plugin": "aw-skill-eval-runner",
+      "version": "0.1.0-beta.1",
+      "contentDigest": "sha256:5d7f713098037cf5335d2fdf8d4b49c0c41e033bfc3975da6b96c04395f42cab",
+      "artifactDigest": "sha256:f83722c735104f2dfe9b219f190cea6bbd93626aa5bd2f1870eef0c77ab4a715",
+      "manifestDigest": "sha256:9d45bca307dd0305924f37aa78dca45d005a48916a1ac240c759a67e40838552",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
+    },
+    {
       "plugin": "codex-enhance",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:4ab35d6cfbc2d653563c81220b9fcac42f15b15b09eb3a33568bd26ebd102bb1",
@@ -54,6 +108,15 @@
       "manifestDigest": "sha256:e6f0c4e0664e101581c720253c30c77b417ab211274e8e761b95599014291b07",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.1"
+    },
+    {
+      "plugin": "codex-enhance",
+      "version": "0.1.0-beta.1",
+      "contentDigest": "sha256:4ab35d6cfbc2d653563c81220b9fcac42f15b15b09eb3a33568bd26ebd102bb1",
+      "artifactDigest": "sha256:96e144409a82f7fa27aeb42d09072380ef5f323ac4512aac3c470a3e6e3211cc",
+      "manifestDigest": "sha256:e6f0c4e0664e101581c720253c30c77b417ab211274e8e761b95599014291b07",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
     },
     {
       "plugin": "dev-workflow",
@@ -65,6 +128,15 @@
       "catalogVersion": "0.1.0-beta.1"
     },
     {
+      "plugin": "dev-workflow",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:6d7682cb361503ab9883428fbb773df3e13e0240364f0599c4be2b70b092b895",
+      "artifactDigest": "sha256:e68ea35875d105fe3dfee19cd78d27ef442bfd7a6930fabc605702f29028309b",
+      "manifestDigest": "sha256:49063d7dd7bf8d1534edb7a63b5ed13f23d8855b1bfe68e753b397126fb99c63",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
+    },
+    {
       "plugin": "git-toolkit",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:8d6118dfa740a6ea9e015192ac103a684008b6a0575ac00d53c48b35fe451c42",
@@ -72,6 +144,15 @@
       "manifestDigest": "sha256:c8575019b6628a41225d1a42de30146f5a553a7da4c7f282d49f8bc050d5b338",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.1"
+    },
+    {
+      "plugin": "git-toolkit",
+      "version": "0.1.0-beta.1",
+      "contentDigest": "sha256:8d6118dfa740a6ea9e015192ac103a684008b6a0575ac00d53c48b35fe451c42",
+      "artifactDigest": "sha256:2bf91bc2075ce56e117f46118186298d24cda99efac5b2c77c89633f9a864c54",
+      "manifestDigest": "sha256:c8575019b6628a41225d1a42de30146f5a553a7da4c7f282d49f8bc050d5b338",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.2"
     }
   ]
 }

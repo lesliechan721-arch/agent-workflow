@@ -1,0 +1,7 @@
+interface:
+  display_name: "Author AW Catalog"
+  short_description: "维护 Catalog Workspace、inventory、依赖和聚合验证"
+  default_prompt: "使用 $author-aw-catalog 维护当前 AW Catalog Workspace。"
+
+policy:
+  allow_implicit_invocation: true
