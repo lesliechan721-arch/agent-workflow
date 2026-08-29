@@ -62,7 +62,7 @@
         ],
         "checks": [
           "trace 按顺序调用 aw self check、无 target override 的 catalog context、显式 root/remote/branch 的 catalog status --preflight",
-          "公共 self check receipt 来自 run-owned 真实 CLI；context/status 分别符合 schema 1/schema 2，且不含 fixture 私有 evidence 字段",
+          "公共 self check receipt 来自 run-owned 真实 CLI；context/status 均符合 schema 2，且不含 fixture 私有 evidence 字段",
           "授权问题展示 context/preflight 返回的绝对 root、origin、catalog 和完整 descriptor digest；拒绝后私有 trace 无 publish 且 state 不存在"
         ]
       }

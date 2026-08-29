@@ -1697,7 +1697,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
     .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
     .option('--branch <name>', 'explicit Catalog publication branch')
-    .requiredOption('--json', 'emit one schema 1 JSON object')
+    .requiredOption('--json', 'emit one schema 2 JSON object')
     .action(async (rawOptions: { workspaceRoot?: string; remote?: string; branch?: string }) => {
       const receipt = await getCatalogContext({
         cwd,
@@ -1922,7 +1922,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogDev
     .command('status')
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
-    .requiredOption('--json', 'emit one schema 1 JSON receipt')
+    .requiredOption('--json', 'emit one schema 2 JSON receipt')
     .action(async (rawOptions: { workspaceRoot?: string }) => {
       const receipt = await getCatalogDevSourceStatus({
         cwd,

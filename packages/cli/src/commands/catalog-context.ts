@@ -98,7 +98,7 @@ export async function getCatalogContext(options: {
   const capabilities = [...options.capabilities].sort()
   let suggestedSourceId = suggestedCatalogDevSourceId(inspectionRoot)
   let existingSourceId: string | null = null
-  let active = false
+  let configured = false
   if (workspaceIdentity !== null) {
     try {
       const sourceConfig = await readCatalogSourcesConfigSnapshot(options.env)
@@ -113,7 +113,7 @@ export async function getCatalogContext(options: {
         })
       } else if (owned.length === 1) {
         existingSourceId = owned[0]!.id
-        active = owned[0]!.path === path.join(inspectionRoot, '.aw', 'catalog')
+        configured = owned[0]!.path === path.join(inspectionRoot, '.aw', 'catalog')
         suggestedSourceId = owned[0]!.id
       } else {
         suggestedSourceId = suggestedCatalogDevSourceId(
@@ -131,7 +131,7 @@ export async function getCatalogContext(options: {
     }
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     command: 'catalog:context',
     toolchain: {
       awVersion: options.awVersion,
@@ -166,7 +166,7 @@ export async function getCatalogContext(options: {
       snapshotPath: path.join(inspectionRoot, '.aw', 'catalog'),
       suggestedSourceId,
       existingSourceId,
-      active,
+      configured,
     },
     issues,
   }

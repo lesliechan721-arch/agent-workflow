@@ -133,7 +133,7 @@ describe('Catalog context and unified inference', () => {
 
     expect(await runCli(['catalog', 'context', '--json'], { cwd: root, io: output.io })).toBe(0)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'catalog:context',
       toolchain: { capabilities: expect.arrayContaining(['aw.catalog-context.v1']), digest: expect.stringMatching(/^sha256:/u) },
       workspace: { found: true, root, resolvedFrom: 'workspace-marker' },
@@ -145,8 +145,11 @@ describe('Catalog context and unified inference', () => {
         branchResolvedFrom: 'default',
         ambiguous: false,
       },
-      developmentSource: { existingSourceId: null, active: false },
+      developmentSource: { existingSourceId: null, configured: false },
     })
+    expect(Object.keys(JSON.parse(output.stdout()).developmentSource).sort()).toEqual([
+      'configured', 'existingSourceId', 'snapshotPath', 'suggestedSourceId',
+    ])
     expect(output.stderr()).toBe('')
     expect((await execFileAsync('git', ['status', '--porcelain=v1'], { cwd: root })).stdout).toBe(before)
     expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('')
@@ -183,7 +186,7 @@ describe('Catalog context and unified inference', () => {
       io: contextOutput.io,
     })).toBe(1)
     expect(JSON.parse(contextOutput.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'catalog:context',
       initialization: { suggestedRoot: null, resolvedFrom: null },
       issues: [{ code: 'workspaceInvalid', blocking: true }],

@@ -101,7 +101,7 @@ aw catalog dev status --workspace-root "$workspace" --json
 aw catalog dev deactivate --workspace-root "$workspace" --json
 ```
 
-`activate` 会在 snapshot absent、stale、invalid 或显式要求时 build/complete validate，再原子提交 managed path source 并 refresh。config 提交后的 refresh 失败返回 partial receipt，不回滚 source；重跑 refresh 或 activate 可以恢复。`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。低层 `catalog source add/update` 不能声明 managed ownership。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
+`activate` 会在 snapshot absent、stale、invalid 或显式要求时 build/complete validate，再原子提交 managed path source 并 refresh。config 提交后的 refresh 失败返回 partial receipt，不回滚 source；重跑 refresh 或 activate 可以恢复。Development status schema v2 的 `ok` 只表示诊断可靠完成；`ready` 只在 snapshot current、唯一 managed source、path 匹配、cache current 且 cache digest 匹配 snapshot 时为 `true`。`ok: true, ready: false` 仍以 exit 0 返回，并用 blocking issues 说明未就绪原因。`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。低层 `catalog source add/update` 不能声明 managed ownership。context schema v2 的 `developmentSource.configured` 只检查唯一 owned managed source 及其 path，不替代 readiness。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
 
 ```bash
 aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json

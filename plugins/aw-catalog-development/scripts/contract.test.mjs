@@ -161,7 +161,10 @@ test('Catalog author uses context and Catalog development-source commands', asyn
   assert.match(author, /只在 root 缺失或歧义时询问/u);
   assert.match(author, /initialization\.suggestedRoot/u);
   assert.match(author, /aw catalog dev activate --workspace-root <workspace\.root> --json/u);
-  assert.match(author, /catalog dev status/u);
+  assert.match(author, /aw catalog dev status --workspace-root <workspace\.root> --json/u);
+  assert.match(author, /`ok` 和 `ready` 都为 `true`/u);
+  assert.match(author, /`ok: false` 是诊断失败/u);
+  assert.match(author, /`ok: true, ready: false`/u);
   assert.match(author, /catalog dev deactivate/u);
   assert.doesNotMatch(author, /aw catalog source/u);
   assert.match(author, /受影响插件及其反向依赖闭包/u);
@@ -376,6 +379,11 @@ test('Publisher Eval fixture separates public receipts from private remote evide
       const context = await runEvalFixture({ fixture, cliEntry, cwd: root, args: contextArgs });
       assert.equal(context.exitCode, 0, context.stderr);
       const contextReceipt = parseSingleJson(context.stdout, `${evalCase.id}: context`);
+      assert.equal(contextReceipt.schemaVersion, 2);
+      assert.equal(contextReceipt.developmentSource.configured, false);
+      assert.deepEqual(Object.keys(contextReceipt.developmentSource).sort(), [
+        'configured', 'existingSourceId', 'snapshotPath', 'suggestedSourceId',
+      ]);
       assert.deepEqual(Object.keys(contextReceipt).sort(), [
         'command', 'developmentSource', 'git', 'initialization', 'issues',
         'publication', 'schemaVersion', 'toolchain', 'workspace',
