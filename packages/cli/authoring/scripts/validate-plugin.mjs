@@ -29,7 +29,7 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 8;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 9;
 let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;

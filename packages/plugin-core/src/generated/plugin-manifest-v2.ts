@@ -15,6 +15,7 @@ export type PluginPath = string
  * via the `definition` "stringArray".
  */
 export type StringArray = string[]
+export type Capabilities = string[]
 /**
  * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
  * via the `definition` "lifecycleDefinition".
@@ -205,6 +206,8 @@ digest: string
 providerPluginId: string
 providerVersion: Semver
 source: string
+requiredCapabilities: Capabilities
+capabilitySetDigest: string
 }
 }[]
 }
@@ -239,6 +242,7 @@ codex?: {
 runtimeExports?: {
 name: string
 source: string
+requires: RuntimeExportRequires
 }[]
 buildImports?: {
 plugin: string
@@ -274,6 +278,15 @@ codex: (string | boolean)
 export interface FileRules {
 include: StringArray
 exclude: StringArray
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * via the `definition` "runtimeExportRequires".
+ */
+export interface RuntimeExportRequires {
+aw: {
+capabilities: Capabilities
+}
 }
 /**
  * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema

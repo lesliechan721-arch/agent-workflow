@@ -16,6 +16,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.catalog-source.v2',
   'aw.catalog-dev-source.v1',
   'aw.catalog-publication.v1',
+  'aw.review-publication.v1',
   'aw.catalog-snapshot.v5',
   'aw.self-check.v1',
 ] as const

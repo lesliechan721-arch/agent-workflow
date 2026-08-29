@@ -77,6 +77,11 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, AwCapabilityId>> = {
   'catalog build': 'aw.catalog-authoring.v1',
   'catalog validate': 'aw.catalog-authoring.v1',
   'catalog publish': 'aw.catalog-publication.v1',
+  'review publish': 'aw.review-publication.v1',
+  'review digest': 'aw.review-publication.v1',
+  'review verify': 'aw.review-publication.v1',
+  'review list': 'aw.review-publication.v1',
+  'review show': 'aw.review-publication.v1',
 }
 
 function commandCapabilities(group: string, command: string | undefined, tail: string): AwCapabilityId[] {

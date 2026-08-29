@@ -103,6 +103,7 @@ test('AW reviewer production and materialized closures use registered current de
   assert.deepEqual(manifest.buildConfig.buildImports ?? [], []);
   assert.deepEqual(manifest.buildConfig.generatedSkillRuntimeFiles ?? [], []);
   assert.equal(manifest.scripts.node?.build, undefined);
+  assert.ok(!manifest.requires.aw.capabilities.includes('aw.review-publication.v1'));
   assert.deepEqual(
     manifest.buildConfig.skillRuntimeFiles
       .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])

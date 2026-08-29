@@ -70,7 +70,10 @@ try {
     version: '1.0.0',
     description: 'Fixture provider.',
     extensions: { instructions: [{ name: 'provider', title: 'Provider', content: 'Provider.' }] },
-    buildConfig: { runtimeExports: [{ name: 'generated-guide', source: './generated.md' }] },
+    buildConfig: { runtimeExports: [{
+      name: 'generated-guide', source: './generated.md',
+      requires: { aw: { capabilities: [] } },
+    }] },
     marketplace: {
       category: 'workflow', strict: true,
       policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },

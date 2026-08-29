@@ -9,6 +9,7 @@ import {
   type PluginStagingRunner,
 } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
+import { createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import type { PluginMeta } from '../../src/types.js';
 
@@ -147,13 +148,16 @@ describe('catalog runtime projection', () => {
     })).rejects.toThrow('markdown-link target "nested.md"');
   });
 
-  it('copies portable runtime projections and artifact imports into the consumer bundle', async () => {
+  it('propagates used Skill runtime export capabilities to the bundle, Catalog entry, and every Skill receipt', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-runtime-projection-'));
     tempRoots.push(root);
     const provider = await createPlugin({
       root,
       name: 'portable-provider',
-      buildConfig: { runtimeExports: [{ name: 'registry', source: './registry.json' }] },
+      buildConfig: { runtimeExports: [{
+        name: 'registry', source: './registry.json',
+        requires: { aw: { capabilities: ['aw.review-publication.v1'] } },
+      }] },
       files: { 'registry.json': '{"portable":true}\n' },
     });
     const consumer = await createPlugin({
@@ -197,15 +201,76 @@ describe('catalog runtime projection', () => {
     expect(result.runtimeProjection.skillRuntimeFiles).toMatchObject([{
       distribution: 'agent-skills',
       provider: 'portable-provider',
+      requiredCapabilities: ['aw.review-publication.v1'],
+      capabilitySetDigest: expect.stringMatching(/^sha256:/u),
     }]);
     const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
+    expect(consumer.manifest.requires?.aw.capabilities ?? []).not.toContain('aw.review-publication.v1');
+    expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-publication.v1');
     const resolvedImport = bundleManifest.artifacts.targets[0].runtimeImports[0].resolved;
     expect(resolvedImport).toMatchObject({
       providerPluginId: 'portable-provider',
       source: './registry.json',
+      requiredCapabilities: ['aw.review-publication.v1'],
+      capabilitySetDigest: expect.stringMatching(/^sha256:/u),
     });
     await expect(fs.readFile(path.join(outputRoot, resolvedImport.path), 'utf8'))
       .resolves.toBe('{"portable":true}\n');
+    const bundledPlugin = await readPluginManifest(outputRoot, { mode: 'bundle' });
+    await expect(createCatalogManifestV5Entry(bundledPlugin, outputRoot))
+      .resolves.toMatchObject({
+        requires: { aw: { capabilities: expect.arrayContaining(['aw.review-publication.v1']) } },
+      });
+    for (const receiptPath of [
+      'claude/skills/demo/aw-plugin-requirements.json',
+      'codex/skills/demo/aw-plugin-requirements.json',
+      'agent-skills/skills/demo/aw-plugin-requirements.json',
+    ]) {
+      await expect(fs.readJson(path.join(outputRoot, receiptPath))).resolves.toMatchObject({
+        requiredCapabilities: expect.arrayContaining(['aw.review-publication.v1']),
+      });
+    }
+  });
+
+  it('propagates artifact runtime import capabilities without a Skill runtime import', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-artifact-runtime-capability-'));
+    tempRoots.push(root);
+    const provider = await createPlugin({
+      root,
+      name: 'artifact-provider',
+      buildConfig: { runtimeExports: [{
+        name: 'registry', source: './registry.json',
+        requires: { aw: { capabilities: ['aw.review-publication.v1'] } },
+      }] },
+      files: { 'registry.json': '{}\n' },
+    });
+    const consumer = await createPlugin({
+      root,
+      name: 'artifact-consumer',
+      distributions: { agentSkills: {} },
+      artifacts: {
+        targets: [{
+          id: 'dynamic',
+          distribution: 'agent-skills',
+          target: 'agent-skills.skill',
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'dynamic',
+          runtimeImports: [{ name: 'registry', plugin: 'artifact-provider', export: 'registry' }],
+        }],
+      },
+    });
+    const outputRoot = path.join(root, 'artifact-bundle');
+
+    await bundleLocalPlugin(consumer, outputRoot, {
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    });
+
+    const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
+    expect(bundleManifest.requires.aw.capabilities).toContain('aw.review-publication.v1');
+    expect(bundleManifest.artifacts.targets[0].runtimeImports[0].resolved)
+      .toMatchObject({ requiredCapabilities: ['aw.review-publication.v1'] });
   });
 
   it('rejects removed CLI virtual capability providers', async () => {
@@ -267,7 +332,16 @@ describe('catalog runtime projection', () => {
       root,
       name: 'provider',
       buildConfig: {
-        runtimeExports: [{ name: 'registry', source: './registry.json' }],
+        runtimeExports: [
+          {
+            name: 'registry', source: './registry.json',
+            requires: { aw: { capabilities: [] } },
+          },
+          {
+            name: 'build-input', source: './registry.json',
+            requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
+          },
+        ],
       },
       files: { 'registry.json': '{"provider":1}\n' },
     });
@@ -278,7 +352,7 @@ describe('catalog runtime projection', () => {
         cacheable: true,
         buildImports: [{
           plugin: 'provider',
-          export: 'registry',
+          export: 'build-input',
           env: 'AW_PLUGIN_IMPORT_REGISTRY',
         }],
         skillRuntimeFiles: [
@@ -318,7 +392,11 @@ describe('catalog runtime projection', () => {
       .resolves.toBe('generated\n');
     await expect(fs.readFile(path.join(outputRoot, 'claude', 'skills', 'demo', 'assets', 'generated.txt'), 'utf8'))
       .resolves.toBe('generated\n');
-    expect(result.runtimeProjection.buildImports).toMatchObject([{ provider: 'provider', name: 'registry' }]);
+    expect(result.runtimeProjection.buildImports).toMatchObject([{
+      provider: 'provider',
+      name: 'build-input',
+      requiredCapabilities: ['aw.future-feature.v3'],
+    }]);
     expect(result.runtimeProjection.skillRuntimeFiles).toHaveLength(4);
     for (const entry of result.runtimeProjection.skillRuntimeFiles) {
       expect(entry.targetDigest).toBe(entry.sourceDigest);
@@ -328,6 +406,7 @@ describe('catalog runtime projection', () => {
     expect(runtimeManifest.buildConfig?.buildImports).toBeUndefined();
     expect(runtimeManifest.buildConfig?.skillRuntimeFiles).toBeUndefined();
     expect(runtimeManifest.buildConfig?.cacheable).toBeUndefined();
+    expect(runtimeManifest.requires.aw.capabilities).not.toContain('aw.future-feature.v3');
 
     await fs.writeFile(path.join(provider.rootDir, 'registry.json'), '{"provider":2}\n');
     const changedResult = await bundleLocalPlugin(consumer, path.join(root, 'changed-bundle'), {
@@ -343,6 +422,92 @@ describe('catalog runtime projection', () => {
     )).resolves.toBe('{"provider":2}\n');
   });
 
+  it('changes final requirements and Catalog identity when export metadata changes without byte changes', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-metadata-identity-'));
+    tempRoots.push(root);
+    const provider = await createPlugin({
+      root,
+      name: 'metadata-provider',
+      buildConfig: { runtimeExports: [{
+        name: 'registry', source: './registry.json',
+        requires: { aw: { capabilities: [] } },
+      }] },
+      files: { 'registry.json': '{"stable":true}\n' },
+    });
+    const consumer = await createPlugin({
+      root,
+      name: 'metadata-consumer',
+      buildConfig: { skillRuntimeFiles: [{
+        skill: 'demo',
+        target: 'references/registry.json',
+        import: { plugin: 'metadata-provider', export: 'registry' },
+      }] },
+    });
+    const firstRoot = path.join(root, 'first-bundle');
+    const first = await bundleLocalPlugin(consumer, firstRoot, {
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    });
+    const firstBundlePlugin = await readPluginManifest(firstRoot, { mode: 'bundle' });
+    const firstEntry = await createCatalogManifestV5Entry(firstBundlePlugin, firstRoot);
+
+    const providerManifestPath = path.join(provider.rootDir, '.agents-plugin', 'plugin.json');
+    const providerManifest = await fs.readJson(providerManifestPath);
+    providerManifest.buildConfig.runtimeExports[0].requires.aw.capabilities = [
+      'aw.review-publication.v1',
+    ];
+    await fs.writeJson(providerManifestPath, providerManifest, { spaces: 2 });
+    const changedProvider = await readPluginManifest(provider.rootDir);
+    const secondRoot = path.join(root, 'second-bundle');
+    const second = await bundleLocalPlugin(consumer, secondRoot, {
+      runtimeResolver: createCatalogRuntimeImportResolver([changedProvider, consumer]),
+    });
+    const secondBundlePlugin = await readPluginManifest(secondRoot, { mode: 'bundle' });
+    const secondEntry = await createCatalogManifestV5Entry(secondBundlePlugin, secondRoot);
+
+    expect(second.runtimeProjection.skillRuntimeFiles[0]?.sourceDigest)
+      .toBe(first.runtimeProjection.skillRuntimeFiles[0]?.sourceDigest);
+    expect(second.runtimeProjection.skillRuntimeFiles[0]?.capabilitySetDigest)
+      .not.toBe(first.runtimeProjection.skillRuntimeFiles[0]?.capabilitySetDigest);
+    expect(firstBundlePlugin.manifest.requires?.aw.capabilities ?? [])
+      .not.toContain('aw.review-publication.v1');
+    expect(secondBundlePlugin.manifest.requires?.aw.capabilities ?? [])
+      .toContain('aw.review-publication.v1');
+    expect(secondEntry.manifestDigest).not.toBe(firstEntry.manifestDigest);
+    expect(secondEntry.contentDigest).not.toBe(firstEntry.contentDigest);
+  });
+
+  it('blocks an unsupported propagated capability before completing a bundle', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-unsupported-'));
+    tempRoots.push(root);
+    const provider = await createPlugin({
+      root,
+      name: 'future-provider',
+      buildConfig: { runtimeExports: [{
+        name: 'registry', source: './registry.json',
+        requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
+      }] },
+      files: { 'registry.json': '{}\n' },
+    });
+    const consumer = await createPlugin({
+      root,
+      name: 'future-consumer',
+      buildConfig: { skillRuntimeFiles: [{
+        skill: 'demo',
+        target: 'references/registry.json',
+        import: { plugin: 'future-provider', export: 'registry' },
+      }] },
+    });
+    const outputRoot = path.join(root, 'unsupported-bundle');
+
+    await expect(bundleLocalPlugin(consumer, outputRoot, {
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    })).rejects.toMatchObject({
+      code: 'awCapabilityUnsupported',
+      missingCapabilities: ['aw.future-feature.v3'],
+    });
+    await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
+  });
+
   it.each(['provider'] as const)(
     'rejects a %s build import that changes during a successful build and removes partial state',
     async (providerKind) => {
@@ -352,7 +517,10 @@ describe('catalog runtime projection', () => {
         root,
         name: 'provider',
         buildConfig: {
-          runtimeExports: [{ name: 'registry', source: './registry.json' }],
+          runtimeExports: [{
+            name: 'registry', source: './registry.json',
+            requires: { aw: { capabilities: [] } },
+          }],
         },
         files: { 'registry.json': '{"version":"a"}\n' },
       });
@@ -405,7 +573,10 @@ describe('catalog runtime projection', () => {
             root,
             name: 'provider',
             buildConfig: {
-              runtimeExports: [{ name: 'registry', source: './registry.json' }],
+              runtimeExports: [{
+                name: 'registry', source: './registry.json',
+                requires: { aw: { capabilities: [] } },
+              }],
             },
             files: { 'registry.json': '{"version":"a"}\n' },
           })
@@ -458,7 +629,10 @@ describe('catalog runtime projection', () => {
       root,
       name: 'provider',
       products: ['CODEX'],
-      buildConfig: { runtimeExports: [{ name: 'registry', source: './registry.json' }] },
+      buildConfig: { runtimeExports: [{
+        name: 'registry', source: './registry.json',
+        requires: { aw: { capabilities: [] } },
+      }] },
       files: { 'registry.json': '{}\n' },
     });
     const consumer = await createPlugin({

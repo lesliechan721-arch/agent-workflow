@@ -173,7 +173,10 @@ async function writeDirectProvider(root: string): Promise<void> {
       strict: true,
       policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
     },
-    buildConfig: { runtimeExports: [{ name: 'standard', source: './standard.txt' }] },
+    buildConfig: { runtimeExports: [{
+      name: 'standard', source: './standard.txt',
+      requires: { aw: { capabilities: [] } },
+    }] },
   });
   await fs.outputFile(path.join(root, 'standard.txt'), 'provider bytes\n');
   await fs.outputFile(

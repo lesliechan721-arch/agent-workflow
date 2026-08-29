@@ -21,11 +21,14 @@ import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
   assertManifestPlatformSupport,
   assertPluginInputTree,
+  checkAwCapabilitySupport,
+  computeAwCapabilitySetDigest,
   createAwPluginRequirementsReceipt,
   createBundleSourceManifest,
   createPlatformManifestBase,
   isIgnoredPluginInputDirectory,
   normalizePluginRelativePath,
+  normalizeAwCapabilities,
   readPluginManifest,
   resolvePluginRequirements,
 } from '../utils/manifest.js';
@@ -108,6 +111,8 @@ export interface RuntimeImportProvenance {
   name: string;
   source: string;
   sourceDigest: string;
+  requiredCapabilities: string[];
+  capabilitySetDigest: string;
 }
 
 export interface SkillRuntimeFileProvenance extends RuntimeImportProvenance {
@@ -122,6 +127,8 @@ interface SkillRuntimeFileProjection {
   provenance: SkillRuntimeFileProvenance;
   bindingKey: string;
   canonicalSource: CanonicalRuntimeSourceIdentity;
+  sourcePath: string;
+  targetPath: string;
 }
 
 interface BuildImportProjection {
@@ -494,9 +501,24 @@ async function resolveArtifactRuntimeImports(options: {
   plugin: PluginMeta;
   outputRoot: string;
   resolver?: CatalogRuntimeImportResolver;
-  requiredCapabilities: readonly string[];
-}): Promise<PluginMeta['manifest']> {
-  const manifest = createBundleSourceManifest(options.plugin, options.requiredCapabilities);
+}): Promise<{
+  manifest: PluginMeta['manifest'];
+  requiredCapabilities: string[];
+  projections: Array<{
+    sourcePath: string;
+    targetPath: string;
+    sourceDigest: string;
+    label: string;
+  }>;
+}> {
+  const manifest = createBundleSourceManifest(options.plugin);
+  const requiredCapabilities: string[] = [];
+  const projections: Array<{
+    sourcePath: string;
+    targetPath: string;
+    sourceDigest: string;
+    label: string;
+  }> = [];
   for (const [targetIndex, target] of (manifest.artifacts?.targets ?? []).entries()) {
     for (const [importIndex, runtimeImport] of (target.runtimeImports ?? []).entries()) {
       if (!options.resolver) {
@@ -509,27 +531,52 @@ async function resolveArtifactRuntimeImports(options: {
         reference: runtimeImport,
         purpose: 'artifact-runtime',
       });
+      requiredCapabilities.push(...resolution.requiredCapabilities);
       const relativePath = `./.agents-plugin/runtime-imports/${target.id}/${runtimeImport.name}`;
       const targetPath = path.join(options.outputRoot, stripDotSlash(relativePath));
-      await fs.ensureDir(path.dirname(targetPath));
-      await fs.copyFile(resolution.sourcePath, targetPath);
-      const digest = await calculateFileDigest(targetPath);
-      if (digest !== resolution.sourceDigest) {
-        throw new Error(`Artifact runtime import digest mismatch at "${target.id}/${runtimeImport.name}".`);
-      }
+      const digest = resolution.sourceDigest;
+      projections.push({
+        sourcePath: resolution.sourcePath,
+        targetPath,
+        sourceDigest: resolution.sourceDigest,
+        label: `${target.id}/${runtimeImport.name}`,
+      });
       runtimeImport.resolved = {
         path: relativePath,
         digest,
         providerPluginId: resolution.provider,
         providerVersion: resolution.providerVersion,
         source: resolution.source,
+        requiredCapabilities: resolution.requiredCapabilities,
+        capabilitySetDigest: resolution.capabilitySetDigest,
       };
     }
   }
   if (manifest.distributions?.agentSkills?.skills) {
     manifest.distributions.agentSkills.skills = './agent-skills/skills';
   }
-  return manifest;
+  return {
+    manifest,
+    requiredCapabilities: normalizeAwCapabilities(requiredCapabilities),
+    projections,
+  };
+}
+
+async function materializeArtifactRuntimeImports(
+  projections: readonly {
+    sourcePath: string;
+    targetPath: string;
+    sourceDigest: string;
+    label: string;
+  }[],
+): Promise<void> {
+  for (const projection of projections) {
+    await fs.ensureDir(path.dirname(projection.targetPath));
+    await fs.copyFile(projection.sourcePath, projection.targetPath);
+    if (await calculateFileDigest(projection.targetPath) !== projection.sourceDigest) {
+      throw new Error(`Artifact runtime import digest mismatch at "${projection.label}".`);
+    }
+  }
 }
 
 async function injectRequirementsReceipts(options: {
@@ -1129,6 +1176,8 @@ function toRuntimeImportProvenance(
     name: resolution.name,
     source: resolution.source,
     sourceDigest: resolution.sourceDigest,
+    requiredCapabilities: resolution.requiredCapabilities,
+    capabilitySetDigest: resolution.capabilitySetDigest,
   };
 }
 
@@ -1273,6 +1322,8 @@ async function projectSkillRuntimeFiles(options: {
           name: entry.source,
           source: entry.source,
           sourceDigest,
+          requiredCapabilities: [],
+          capabilitySetDigest: computeAwCapabilitySetDigest([]),
         };
       } else {
         if (!entry.import || !options.resolver) {
@@ -1300,32 +1351,43 @@ async function projectSkillRuntimeFiles(options: {
         entry.skill,
         ...entry.target.split('/'),
       );
-      if (await fs.pathExists(targetPath)) {
-        throw new Error(
-          `Invalid buildConfig.skillRuntimeFiles: bundle target already exists at "${claim}".`,
-        );
-      }
-      await fs.ensureDir(path.dirname(targetPath));
-      await fs.copyFile(sourcePath, targetPath);
-      const targetDigest = await calculateFileDigest(targetPath);
-      if (sourceDigest !== targetDigest) {
-        throw new Error(`Invalid buildConfig.skillRuntimeFiles: digest mismatch at "${claim}".`);
-      }
       projections.push({
         bindingKey,
         canonicalSource,
+        sourcePath,
+        targetPath,
         provenance: {
           ...runtimeProvenance,
           platform,
           distribution,
           skill: entry.skill,
           target: entry.target,
-          targetDigest,
+          targetDigest: sourceDigest,
         },
       });
     }
   }
   return projections;
+}
+
+async function materializeSkillRuntimeFiles(
+  projections: readonly SkillRuntimeFileProjection[],
+): Promise<void> {
+  for (const projection of projections) {
+    if (await fs.pathExists(projection.targetPath)) {
+      const surface = projection.provenance.platform ?? projection.provenance.distribution;
+      throw new Error(
+        `Invalid buildConfig.skillRuntimeFiles: bundle target already exists at "${surface}:${projection.provenance.skill}/${projection.provenance.target}".`,
+      );
+    }
+    await fs.ensureDir(path.dirname(projection.targetPath));
+    await fs.copyFile(projection.sourcePath, projection.targetPath);
+    if (await calculateFileDigest(projection.targetPath) !== projection.provenance.sourceDigest) {
+      throw new Error(
+        `Canonical source "${projection.provenance.source}" changed during runtime Skill projection.`,
+      );
+    }
+  }
 }
 
 function hasSameCanonicalSource(
@@ -1352,6 +1414,9 @@ async function validateSkillRuntimeProjectionSources(
         || existing.provenance.name !== projection.provenance.name
         || existing.provenance.source !== projection.provenance.source
         || existing.provenance.sourceDigest !== projection.provenance.sourceDigest
+        || existing.provenance.capabilitySetDigest !== projection.provenance.capabilitySetDigest
+        || JSON.stringify(existing.provenance.requiredCapabilities)
+          !== JSON.stringify(projection.provenance.requiredCapabilities)
         || !hasSameCanonicalSource(existing.canonicalSource, projection.canonicalSource)
       )
     ) {
@@ -1400,6 +1465,9 @@ async function validateBuildImportProjectionSources(
         || existing.provenance.name !== projection.provenance.name
         || existing.provenance.source !== projection.provenance.source
         || existing.provenance.sourceDigest !== projection.provenance.sourceDigest
+        || existing.provenance.capabilitySetDigest !== projection.provenance.capabilitySetDigest
+        || JSON.stringify(existing.provenance.requiredCapabilities)
+          !== JSON.stringify(projection.provenance.requiredCapabilities)
         || !hasSameCanonicalSource(existing.canonicalSource, projection.canonicalSource)
       )
     ) {
@@ -1643,6 +1711,19 @@ function assertPluginRequirementsSupported(
   }
 }
 
+function assertRequiredCapabilitiesSupported(
+  pluginName: string,
+  requiredCapabilities: readonly string[],
+): void {
+  const support = checkAwCapabilitySupport(
+    requiredCapabilities,
+    IMPLEMENTED_AW_CAPABILITIES,
+  );
+  if (!support.supported) {
+    throw new AwCapabilityUnsupportedError(pluginName, support.missing);
+  }
+}
+
 export async function bundleLocalPlugin(
   plugin: PluginMeta,
   outputRoot: string,
@@ -1673,9 +1754,47 @@ export async function bundleLocalPlugin(
     });
     assertPluginRequirementsSupported(plugin.manifest.name, requirements);
     assertManifestPlatformSupport(plugin.manifest.name, plugin.manifest);
-    await fs.ensureDir(outputRoot);
     const supportedPlatforms = resolveSupportedPlatforms(plugin.manifest);
     await assertSkillRuntimeProjectionTargets(plugin);
+    const skillRuntimeFileProjections = await projectSkillRuntimeFiles({
+      plugin,
+      outputRoot,
+      supportedPlatforms,
+      resolver: buildPlugin.runtimeContext.resolver,
+    });
+    const skillRuntimeFiles = skillRuntimeFileProjections.map(({ provenance }) => provenance);
+    const portableRuntimeFiles = skillRuntimeFiles
+      .filter((entry) => entry.distribution === 'agent-skills')
+      .map((entry) => ({
+        skill: entry.skill,
+        target: entry.target,
+        path: `./agent-skills/skills/${entry.skill}/${entry.target}`,
+        digest: entry.targetDigest,
+        provider: entry.provider,
+        providerVersion: entry.providerVersion,
+        exportName: entry.name,
+        source: entry.source,
+        sourceDigest: entry.sourceDigest,
+        requiredCapabilities: entry.requiredCapabilities,
+        capabilitySetDigest: entry.capabilitySetDigest,
+      }));
+    const artifactRuntimeProjection = await resolveArtifactRuntimeImports({
+      plugin,
+      outputRoot,
+      resolver: buildPlugin.runtimeContext.resolver,
+    });
+    const finalEffective = normalizeAwCapabilities([
+      ...requirements.effective,
+      ...skillRuntimeFiles.flatMap((entry) => entry.requiredCapabilities),
+      ...artifactRuntimeProjection.requiredCapabilities,
+    ]);
+    assertRequiredCapabilitiesSupported(plugin.manifest.name, finalEffective);
+    artifactRuntimeProjection.manifest.requires = {
+      aw: { capabilities: finalEffective },
+    };
+    const bundleManifest = artifactRuntimeProjection.manifest;
+
+    await fs.ensureDir(outputRoot);
     const platformFiles: Partial<Record<PlatformName, Set<string>>> = {};
     const platformManifests: Partial<Record<PlatformName, PlatformPluginManifest>> = {};
     const buildConfig = plugin.manifest.buildConfig;
@@ -1870,26 +1989,7 @@ export async function bundleLocalPlugin(
       }
     }
 
-    const skillRuntimeFileProjections = await projectSkillRuntimeFiles({
-      plugin,
-      outputRoot,
-      supportedPlatforms,
-      resolver: buildPlugin.runtimeContext.resolver,
-    });
-    const skillRuntimeFiles = skillRuntimeFileProjections.map(({ provenance }) => provenance);
-    const portableRuntimeFiles = skillRuntimeFiles
-      .filter((entry) => entry.distribution === 'agent-skills')
-      .map((entry) => ({
-        skill: entry.skill,
-        target: entry.target,
-        path: `./agent-skills/skills/${entry.skill}/${entry.target}`,
-        digest: entry.targetDigest,
-        provider: entry.provider,
-        providerVersion: entry.providerVersion,
-        exportName: entry.name,
-        source: entry.source,
-        sourceDigest: entry.sourceDigest,
-      }));
+    await materializeSkillRuntimeFiles(skillRuntimeFileProjections);
 
     await copyPortableStaticSkills(plugin, outputRoot);
 
@@ -1901,13 +2001,7 @@ export async function bundleLocalPlugin(
     }
     await copyArtifactSourceDirectories(plugin, outputRoot);
     await copyProductionPackageRoot(plugin, outputRoot);
-
-    const bundleManifest = await resolveArtifactRuntimeImports({
-      plugin,
-      outputRoot,
-      resolver: buildPlugin.runtimeContext.resolver,
-      requiredCapabilities: requirements.effective,
-    });
+    await materializeArtifactRuntimeImports(artifactRuntimeProjection.projections);
     await writeJsonFile(
       path.join(outputRoot, '.agents-plugin', 'plugin.json'),
       bundleManifest,
@@ -1931,7 +2025,7 @@ export async function bundleLocalPlugin(
     await injectRequirementsReceipts({
       outputRoot,
       plugin,
-      requiredCapabilities: requirements.effective,
+      requiredCapabilities: finalEffective,
     });
 
     await validateSkillRuntimeProjectionSources(skillRuntimeFileProjections);

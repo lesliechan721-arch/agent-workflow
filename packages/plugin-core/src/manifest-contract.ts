@@ -2,7 +2,10 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import fs from 'fs-extra';
-import { normalizeAwCapabilities } from './aw-capabilities.js';
+import {
+  computeAwCapabilitySetDigest,
+  normalizeAwCapabilities,
+} from './aw-capabilities.js';
 import {
   normalizePluginManifestSchemaVersion,
   PLUGIN_MANIFEST_SCHEMA_VERSION,
@@ -942,15 +945,24 @@ function normalizeRuntimeExports(
   return value.map((entry, index) => {
     const entryField = `${fieldName}[${index}]`;
     const input = assertObject(entry, entryField);
-    assertAllowedKeys(input, entryField, ['name', 'source']);
+    assertAllowedKeys(input, entryField, ['name', 'source', 'requires']);
     const name = normalizeRuntimeExportName(input.name, `${entryField}.name`);
     if (names.has(name)) {
       throw new Error(`Invalid ${fieldName}: duplicate export name "${name}".`);
     }
     names.add(name);
+    const requires = normalizePluginRequirements(
+      input.requires,
+      `${entryField}.requires`,
+      { allowMissing: false },
+    )!;
+    if (requires.aw.capabilities === undefined) {
+      throw new Error(`Invalid ${entryField}.requires.aw.capabilities: expected an array.`);
+    }
     return {
       name,
       source: normalizeCanonicalPluginFilePath(pluginRoot, input.source, `${entryField}.source`),
+      requires: { aw: { capabilities: requires.aw.capabilities } },
     };
   });
 }
@@ -2028,13 +2040,30 @@ function normalizeArtifactRuntimeImports(
       const resolvedInput = assertObject(input.resolved, `${entryField}.resolved`);
       assertAllowedKeys(resolvedInput, `${entryField}.resolved`, [
         'path', 'digest', 'providerPluginId', 'providerVersion', 'source',
+        'requiredCapabilities', 'capabilitySetDigest',
       ]);
+      if (!Array.isArray(resolvedInput.requiredCapabilities)) {
+        throw new Error(`Invalid ${entryField}.resolved.requiredCapabilities: expected an array.`);
+      }
+      const requiredCapabilities = normalizeAwCapabilities(
+        resolvedInput.requiredCapabilities,
+        `${entryField}.resolved.requiredCapabilities`,
+      );
+      const capabilitySetDigest = ensureDigestString(
+        resolvedInput.capabilitySetDigest,
+        `${entryField}.resolved.capabilitySetDigest`,
+      );
+      if (capabilitySetDigest !== computeAwCapabilitySetDigest(requiredCapabilities)) {
+        throw new Error(`Invalid ${entryField}.resolved.capabilitySetDigest: digest does not match requiredCapabilities.`);
+      }
       resolved = {
         path: normalizePluginChildPath('', ensureString(resolvedInput.path, `${entryField}.resolved.path`), `${entryField}.resolved.path`),
         digest: ensureDigestString(resolvedInput.digest, `${entryField}.resolved.digest`),
         providerPluginId: ensureString(resolvedInput.providerPluginId, `${entryField}.resolved.providerPluginId`),
         providerVersion: assertStrictSemVer(resolvedInput.providerVersion, `${entryField}.resolved.providerVersion`),
         source: ensureString(resolvedInput.source, `${entryField}.resolved.source`),
+        requiredCapabilities,
+        capabilitySetDigest,
       };
     }
     return {
@@ -3626,6 +3655,9 @@ export function createBundleSourceManifest(
   return {
     ...plugin.manifest,
     buildConfig,
+    distributions: plugin.manifest.distributions
+      ? structuredClone(plugin.manifest.distributions)
+      : undefined,
     requires: requiredCapabilities === undefined
       ? structuredClone(plugin.manifest.requires)
       : { aw: { capabilities: normalizeAwCapabilities(requiredCapabilities) } },

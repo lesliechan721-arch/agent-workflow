@@ -56,6 +56,7 @@ describe('AW capability contracts', () => {
       'aw.catalog-source.v2',
       'aw.catalog-dev-source.v1',
       'aw.catalog-publication.v1',
+      'aw.review-publication.v1',
       'aw.catalog-snapshot.v5',
       'aw.self-check.v1',
     ]
@@ -103,7 +104,10 @@ describe('AW capability contracts', () => {
     expect(deriveAwCapabilitiesFromManifest(manifest({
       skills: './skills',
       buildConfig: {
-        runtimeExports: [{ name: 'shared', source: './shared.mjs' }],
+        runtimeExports: [{
+          name: 'shared', source: './shared.mjs',
+          requires: { aw: { capabilities: [] } },
+        }],
       },
       config: { schema: {} },
       scripts: { lifecycle: { install: { default: { runner: 'node', path: './scripts/install.mjs' } } } },
@@ -247,6 +251,28 @@ describe('AW capability contracts', () => {
       expect.objectContaining({ command: 'aw unknown regex' }),
       expect.objectContaining({ command: 'aw unknown template-text' }),
     ]))
+  })
+
+  it('maps every review publication command to one capability', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-review-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(
+      path.join(pluginRoot, 'scripts', 'review.sh'),
+      ['publish', 'digest', 'verify', 'list', 'show']
+        .map((command) => `aw review ${command}\n`)
+        .join(''),
+    )
+
+    const result = await scanPluginAwCliRequirements({ pluginRoot, manifest: manifest() })
+    expect(result.detected).toEqual(['aw.review-publication.v1'])
+    expect(result.observations).toHaveLength(5)
+    expect(result.observations).toEqual(expect.arrayContaining(
+      ['publish', 'digest', 'verify', 'list', 'show'].map((command) => expect.objectContaining({
+        code: 'aw-command-detected',
+        command: `aw review ${command}`,
+        capability: 'aw.review-publication.v1',
+      })),
+    ))
   })
 
   it('keeps a production promisified execFile AW argv observation non-blocking', async () => {

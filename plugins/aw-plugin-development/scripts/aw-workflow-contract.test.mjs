@@ -39,7 +39,11 @@ async function plugin(root, name, imports = [], exports = [`${name}-export`], op
         export: typeof dependency === 'string' ? `${dependency}-export` : dependency.export,
         env: 'X',
       })),
-      runtimeExports: exports.map((exportName) => ({ name: exportName, source: './x.json' })),
+      runtimeExports: exports.map((exportName) => ({
+        name: exportName,
+        source: './x.json',
+        requires: { aw: { capabilities: [] } },
+      })),
     },
     marketplace: { policy: { products: options.products ?? ['CODEX', 'CLAUDE'] } },
   }));

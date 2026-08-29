@@ -2,6 +2,8 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
+  computeAwCapabilitySetDigest,
+  normalizeAwCapabilities,
   resolveCanonicalRuntimeSourceIdentity as resolveCoreRuntimeSourceIdentity,
   validateRuntimeExportSource,
   type CanonicalRuntimeSourceIdentity,
@@ -30,6 +32,8 @@ export interface CatalogRuntimeExportResolution {
   source: string;
   sourcePath: string;
   sourceDigest: string;
+  requiredCapabilities: string[];
+  capabilitySetDigest: string;
   canonicalSource: CanonicalRuntimeSourceIdentity;
   supportedPlatforms: ReadonlySet<PlatformName>;
   virtual: boolean;
@@ -48,12 +52,17 @@ export async function resolveRuntimeExportSource(options: {
   plugin: PluginMeta;
   name: string;
   source: string;
+  requiredCapabilities: readonly unknown[];
 }): Promise<CatalogRuntimeExportResolution> {
   const canonicalSource = await validateRuntimeExportSource({
     pluginRoot: options.plugin.rootDir,
     name: options.name,
     source: options.source,
   });
+  const requiredCapabilities = normalizeAwCapabilities(
+    options.requiredCapabilities,
+    `buildConfig.runtimeExports export "${options.name}" requires.aw.capabilities`,
+  );
   return {
     provider: options.plugin.manifest.name,
     providerVersion: options.plugin.manifest.version,
@@ -61,6 +70,8 @@ export async function resolveRuntimeExportSource(options: {
     source: options.source,
     sourcePath: canonicalSource.sourceRealPath,
     sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
+    requiredCapabilities,
+    capabilitySetDigest: computeAwCapabilitySetDigest(requiredCapabilities),
     canonicalSource,
     supportedPlatforms: resolveSupportedPlatforms(options.plugin.manifest),
     virtual: false,
@@ -96,6 +107,7 @@ async function resolveEvalVirtualExport(
     './dist/corpus-digest.js',
     '@aw/agent-skill-eval runtime export "case-corpus-digest"',
   );
+  const requiredCapabilities: string[] = [];
   return {
     provider: '@aw/agent-skill-eval',
     providerVersion: packageJson.version,
@@ -103,6 +115,8 @@ async function resolveEvalVirtualExport(
     source: './dist/corpus-digest.js',
     sourcePath: canonicalSource.sourceRealPath,
     sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
+    requiredCapabilities,
+    capabilitySetDigest: computeAwCapabilitySetDigest(requiredCapabilities),
     canonicalSource,
     supportedPlatforms: new Set<PlatformName>(['claude', 'codex']),
     virtual: true,
@@ -154,6 +168,7 @@ export function createCatalogRuntimeImportResolver(
         plugin: provider,
         name: exports[0]!.name,
         source: exports[0]!.source,
+        requiredCapabilities: exports[0]!.requires.aw.capabilities,
       });
       if (platform && !resolution.supportedPlatforms.has(platform)) {
         throw new Error(

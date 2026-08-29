@@ -9,11 +9,21 @@
     "runtimeExports": [
       {
         "name": "content-rules",
-        "source": "./standards/rules.json"
+        "source": "./standards/rules.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "reference-audit-result-schema",
-        "source": "./schemas/reference-audit-result.schema.json"
+        "source": "./schemas/reference-audit-result.schema.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       }
     ],
     "skillRuntimeFiles": [
