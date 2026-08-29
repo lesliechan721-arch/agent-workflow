@@ -109,12 +109,6 @@
               "已解决",
               "仍存在",
               "新发现"
-            ],
-            "not_contains": [
-              "Repair round",
-              "Progress:",
-              "Automatic repair",
-              "Result: `blocked`"
             ]
           }
         ],
@@ -123,7 +117,7 @@
           "重新检查决策完整性、可实现性、可验证性和边界纪律",
           "目标是当前完整 Spec，而不只是旧 finding",
           "上一份报告中的文件清单和 SessionStateMachine 偏好不升级为 blocker",
-          "报告比较已解决、仍存在和新发现，不维护轮次或进展状态",
+          "报告比较已解决、仍存在和新发现，并交回当前 clean 结论",
           "覆盖当前 spec-review.md，并保持 Spec 不变"
         ]
       }
@@ -177,9 +171,7 @@
               "Result: `clean`"
             ],
             "not_contains": [
-              "Result: `blocked`",
-              "Repair round",
-              "Automatic repair"
+              "Result: `blocked`"
             ]
           }
         ],

@@ -76,23 +76,81 @@
             "minLength": 1
           },
           "target": {
-            "type": "object",
-            "required": [
-              "kind",
-              "value"
-            ],
-            "properties": {
-              "kind": {
-                "enum": [
-                  "dom",
-                  "point",
-                  "text",
-                  "node"
-                ]
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "value"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "dom",
+                      "text",
+                      "node"
+                    ]
+                  },
+                  "value": {
+                    "type": "object",
+                    "required": [
+                      "optionId",
+                      "elementId"
+                    ],
+                    "properties": {
+                      "optionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "elementId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
               },
-              "value": {}
-            },
-            "additionalProperties": false
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "value"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "point"
+                  },
+                  "value": {
+                    "type": "object",
+                    "required": [
+                      "optionId",
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "optionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "x": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
           },
           "category": {
             "type": "string"

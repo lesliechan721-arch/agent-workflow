@@ -6,9 +6,18 @@
 
 1. 视觉选择题：2–4 个候选、`都不接受`、额外评论。
 2. 引导式问题：围绕信息层级、主操作、风险和可删除内容。
-3. 局部标注：DOM、图片、文本或流程节点。
-4. 受控编辑：仅使用 Prototype 声明的 editable tokens。
+3. 局部标注：DOM、图片、文本块或流程节点。
+4. 受控编辑：仅使用 Prototype 声明的 CSS 变量。
 5. 高保真：只有真实操作感受是决定依据时使用。
+
+这些能力可以按当前问题组合，不需要声明互斥模式。`prototype.json` 使用以下字段表达能力：
+
+- `guidedQuestions` 存在时提供非空的引导问题；
+- `allowAnnotations` 只在需要局部反馈时设为 `true`；
+- `editableCssVariables` 只为静态 HTML 声明非空的 `--*` 候选值；每组第一项是 Review Shell 应用并记录的初始值；
+- `htmlExecution` 默认为 `static`；只有脚本交互是决定依据时使用 `sandboxed`。
+
+脚本型 HTML 使用不带 same-origin 权限的 sandbox。它不能使用 DOM 标注或 CSS 变量控制；这两项能力使用静态 HTML。
 
 ## Bundle
 
@@ -36,7 +45,7 @@ node scripts/serve-review-bundle.mjs --root <prototype-dir>
 
 - HTML 关键元素使用 `data-prototype-id`。
 - 图片使用归一化坐标。
-- 文本和流程使用稳定 block/node ID。
+- 文本块和流程节点使用 `data-prototype-id`，并分别设置 `data-prototype-kind="text"` 或 `data-prototype-kind="node"`。
 - 新 revision 不自动继承无法重新定位的旧标注。
 
 ## 反馈结论
@@ -48,4 +57,4 @@ node scripts/serve-review-bundle.mjs --root <prototype-dir>
 - `rejected`：当前候选空间不成立；
 - `new-material-question`：反馈暴露了无法在当前 Prototype 内解决的更大问题。
 
-这些值是网页与脚本的数据合同，不是 Skill 间的聊天返回协议。
+这些值只写入 `feedback.json`，由 Review Shell 和后续 Prototype revision 读取。

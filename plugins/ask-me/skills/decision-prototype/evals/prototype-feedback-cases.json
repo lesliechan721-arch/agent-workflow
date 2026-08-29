@@ -111,7 +111,7 @@
           "SKILL.md"
         ],
         "confidence": "high",
-        "allowed_variance": "可以使用直接反馈或 Review Shell，但不能要求宏 Skill 提供输入协议。",
+        "allowed_variance": "可以使用直接反馈或 Review Shell；用户必须能体验 Prototype，并得到本问题的独立决定记录。",
         "minimal_counterexample": "如果用户要求对多个相互依赖的决定进行完整塑形，并由宏能力选择访谈或 Prototype，则不应只使用 decision-prototype。"
       },
       "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个 API consumer 示例，让我判断接口是否易用。不要使用其它 Skill。",
@@ -124,7 +124,7 @@
           "unexpected_question_answer": "只判断当前 API consumer 示例；接受当前接口。"
         }
       ],
-      "expected_output": "自行识别问题、制作原型、取得反馈并形成独立决定记录。",
+      "expected_output": "用户能看到或操作 Prototype，反馈形成当前问题的独立决定记录；本次任务不需要其它 Skill 才能完成。",
       "sandbox": "workspace-write",
       "review": {
         "platforms": [
@@ -148,7 +148,7 @@
         "checks": [
           "独立完成",
           "不依赖 decision-shape",
-          "不返回面向其它 Skill 的固定状态对象"
+          "向用户交付当前问题的独立决定记录"
         ]
       }
     },
@@ -175,10 +175,10 @@
       "scripted_replies": [],
       "expected_output": "拒绝静默应用旧反馈，要求重新定位或重新确认。",
       "workspace_files": {
-        "prototypes/revision-check/prototype.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"mode\":\"choice\",\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
+        "prototypes/revision-check/prototype.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
         "prototypes/revision-check/artifact/index.html": "<!doctype html><section data-prototype-id=\"risk-summary\">风险摘要 revision 3</section>\n",
-        "prototypes/revision-check/review/config.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"mode\":\"choice\",\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
-        "prototypes/revision-check/feedback.json": "{\"schemaVersion\":1,\"prototypeId\":\"revision-check\",\"prototypeRevision\":2,\"verdict\":\"revise\",\"answers\":[],\"annotations\":[{\"id\":\"a-1\",\"target\":{\"kind\":\"dom\",\"value\":\"risk-summary\"},\"comment\":\"移到顶部\"}]}\n"
+        "prototypes/revision-check/review/config.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"htmlExecution\":\"static\",\"allowOther\":true,\"allowAnnotations\":false,\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
+        "prototypes/revision-check/feedback.json": "{\"schemaVersion\":1,\"prototypeId\":\"revision-check\",\"prototypeRevision\":2,\"verdict\":\"revise\",\"answers\":[],\"annotations\":[{\"id\":\"a-1\",\"target\":{\"kind\":\"dom\",\"value\":{\"optionId\":\"top\",\"elementId\":\"risk-summary\"}},\"comment\":\"移到顶部\"}]}\n"
       },
       "review": {
         "platforms": [

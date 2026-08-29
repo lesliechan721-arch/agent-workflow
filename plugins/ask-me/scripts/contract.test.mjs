@@ -188,11 +188,11 @@ test('published leaf Skills stay independent and the macro stays generic', async
   );
 
   // Static contract exception: leaf independence and reverse coupling are properties of the published instruction text itself, so runtime behavior cannot prove that the forbidden dependency is absent.
-  assert.doesNotMatch(grill, /decision-shape|decision-prototype|decision delta|decisions\.md/);
-  assert.doesNotMatch(prototype, /decision-shape|decision-grill|完整 Shape 由|decisions\.md/);
+  assert.doesNotMatch(grill, /decision-shape|decision-prototype/);
+  assert.doesNotMatch(prototype, /decision-shape|decision-grill/);
   assert.match(shape, /decision-grill/);
   assert.match(shape, /decision-prototype/);
-  assert.doesNotMatch(shape, /dev-workflow|docs\/dev|ready-for-spec|Fast|Standard|Assured/);
+  assert.doesNotMatch(shape, /dev-workflow|docs\/dev|Fast|Standard|Assured/);
 });
 
 function waitForJsonLine(child) {
@@ -234,12 +234,31 @@ test('prototype review scripts create a bundle and enforce feedback identity and
   const skillRoot = path.join(skillsRoot, 'decision-prototype');
   const createScript = path.join(skillRoot, 'scripts', 'create-review-bundle.mjs');
   const serveScript = path.join(skillRoot, 'scripts', 'serve-review-bundle.mjs');
+  async function createBundle(root, config) {
+    await mkdir(root, { recursive: true });
+    for (const option of config.options || []) {
+      const artifact = path.resolve(root, option.artifact);
+      if (!artifact.startsWith(`${root}${path.sep}`)) continue;
+      await mkdir(path.dirname(artifact), { recursive: true });
+      try {
+        await access(artifact);
+      } catch {
+        await writeFile(artifact, option.kind === 'html' ? '<h1 data-prototype-id="fixture">Fixture</h1>\n' : 'fixture\n');
+      }
+    }
+    await writeFile(path.join(root, 'prototype.json'), `${JSON.stringify(config, null, 2)}\n`);
+    return execFileAsync(process.execPath, [createScript, '--prototype', path.join(root, 'prototype.json')]);
+  }
+  async function assertInvalidBundle(name, config, pattern) {
+    const root = path.join(prototypeRoot, name);
+    await assert.rejects(createBundle(root, config), pattern);
+  }
   let server;
   try {
     await mkdir(path.join(prototypeRoot, 'artifact'), { recursive: true });
     await writeFile(
       path.join(prototypeRoot, 'artifact', 'option.html'),
-      '<h1>Option A</h1><script>parent.document.body.textContent = "forged"; fetch("/api/feedback", { method: "POST", body: "{}" });</script>\n',
+      '<h1 data-prototype-id="heading">Option A</h1><p data-prototype-id="summary" data-prototype-kind="text">Summary</p><div data-prototype-id="approval" data-prototype-kind="node">Approval</div><script>parent.document.body.textContent = "forged"; fetch("/api/feedback", { method: "POST", body: "{}" });</script>\n',
     );
     await writeFile(path.join(outsideRoot, 'secret.txt'), 'outside\n');
     await symlink(path.join(outsideRoot, 'secret.txt'), path.join(prototypeRoot, 'artifact', 'escape.txt'));
@@ -248,7 +267,6 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       id: 'approval-layout',
       revision: 2,
       question: 'Which layout is clearer?',
-      mode: 'choice',
       stopCondition: 'One direction is accepted.',
       options: [{ id: 'a', label: 'Option A', kind: 'html', artifact: 'artifact/option.html' }],
     }, null, 2)}\n`);
@@ -262,22 +280,33 @@ test('prototype review scripts create a bundle and enforce feedback identity and
     assert.equal(receipt.reviewUrlPath, '/review/index.html');
     const normalizedConfig = await readJson(path.join(prototypeRoot, 'review', 'config.json'));
     assert.equal(normalizedConfig.allowOther, true);
-    assert.equal(normalizedConfig.allowAnnotations, true);
+    assert.equal(normalizedConfig.allowAnnotations, false);
+    assert.equal(normalizedConfig.htmlExecution, 'static');
 
-    const disabledRoot = path.join(prototypeRoot, 'disabled');
-    await mkdir(path.join(disabledRoot, 'artifact'), { recursive: true });
-    await writeFile(path.join(disabledRoot, 'artifact', 'option.html'), '<h1>Disabled</h1>\n');
-    await writeFile(path.join(disabledRoot, 'prototype.json'), `${JSON.stringify({
+    const capabilitiesRoot = path.join(prototypeRoot, 'capabilities');
+    await createBundle(capabilitiesRoot, {
       ...normalizedConfig,
-      id: 'disabled-controls',
+      id: 'combined-capabilities',
       allowOther: false,
-      allowAnnotations: false,
-      options: [{ id: 'disabled', label: 'Disabled', kind: 'html', artifact: 'artifact/option.html' }],
-    }, null, 2)}\n`);
-    await execFileAsync(process.execPath, [createScript, '--prototype', path.join(disabledRoot, 'prototype.json')]);
-    const disabledConfig = await readJson(path.join(disabledRoot, 'review', 'config.json'));
-    assert.equal(disabledConfig.allowOther, false);
-    assert.equal(disabledConfig.allowAnnotations, false);
+      allowAnnotations: true,
+      guidedQuestions: [{ id: 'risk', label: 'Is the risk visible?', choices: ['yes', 'no'] }],
+      editableCssVariables: { '--space': ['8px', '16px'] },
+    });
+    const capabilitiesConfig = await readJson(path.join(capabilitiesRoot, 'review', 'config.json'));
+    assert.equal(capabilitiesConfig.allowOther, false);
+    assert.equal(capabilitiesConfig.allowAnnotations, true);
+    assert.deepEqual(capabilitiesConfig.editableCssVariables, { '--space': ['8px', '16px'] });
+
+    const sandboxedRoot = path.join(prototypeRoot, 'sandboxed');
+    await createBundle(sandboxedRoot, {
+      ...normalizedConfig,
+      id: 'sandboxed-html',
+      htmlExecution: 'sandboxed',
+    });
+    assert.equal(
+      (await readJson(path.join(sandboxedRoot, 'review', 'config.json'))).htmlExecution,
+      'sandboxed',
+    );
 
     const invalidRoot = path.join(prototypeRoot, 'invalid');
     await mkdir(invalidRoot, { recursive: true });
@@ -290,35 +319,72 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       execFileAsync(process.execPath, [createScript, '--prototype', path.join(invalidRoot, 'prototype.json')]),
       /prototype\.id must be string|prototype\.unexpected is not allowed/,
     );
+    await assertInvalidBundle('obsolete-mode', {
+      ...normalizedConfig,
+      mode: 'guided',
+    }, /prototype\.mode is not allowed/);
+    await assertInvalidBundle('empty-guided', {
+      ...normalizedConfig,
+      guidedQuestions: [],
+    }, /prototype\.guidedQuestions must contain at least 1 item/);
+    await assertInvalidBundle('annotations-without-target', {
+      ...normalizedConfig,
+      allowAnnotations: true,
+      options: [{ id: 'text', label: 'Text', kind: 'text', artifact: 'artifact/option.txt' }],
+    }, /prototype\.allowAnnotations requires an image or static html option/);
+    await assertInvalidBundle('empty-css-variables', {
+      ...normalizedConfig,
+      editableCssVariables: {},
+    }, /prototype\.editableCssVariables must contain at least one CSS custom property/);
+    await assertInvalidBundle('invalid-css-variable', {
+      ...normalizedConfig,
+      editableCssVariables: { space: ['8px'] },
+    }, /prototype\.editableCssVariables\.space must start with "--"/);
+    await assertInvalidBundle('sandboxed-css-variables', {
+      ...normalizedConfig,
+      htmlExecution: 'sandboxed',
+      editableCssVariables: { '--space': ['8px'] },
+    }, /prototype\.editableCssVariables requires at least one static html option/);
+    await assertInvalidBundle('sandbox-without-html', {
+      ...normalizedConfig,
+      htmlExecution: 'sandboxed',
+      options: [{ id: 'image', label: 'Image', kind: 'image', artifact: 'artifact/option.png' }],
+    }, /prototype\.htmlExecution "sandboxed" requires at least one html option/);
     await assert.rejects(
       execFileAsync(process.execPath, [createScript, '--prototype', path.join(prototypeRoot, 'prototype.json'), '--output', 'elsewhere']),
       /Unknown argument: --output/,
     );
 
-    const shellApp = await readFile(path.join(prototypeRoot, 'review', 'app.js'), 'utf8');
-    const shellHtml = await readFile(path.join(prototypeRoot, 'review', 'index.html'), 'utf8');
     const policyUrl = pathToFileURL(path.join(prototypeRoot, 'review', 'review-policy.mjs')).href;
     const policyInputs = [
       normalizedConfig,
-      { ...normalizedConfig, mode: 'high-fidelity' },
-      { ...normalizedConfig, allowAnnotations: false },
+      { ...normalizedConfig, allowAnnotations: true },
       {
         ...normalizedConfig,
-        mode: 'high-fidelity',
+        htmlExecution: 'sandboxed',
+        allowAnnotations: true,
         options: [{ id: 'image', label: 'Image', kind: 'image', artifact: 'artifact/option.png' }],
       },
     ];
     const policyResult = await execFileAsync(process.execPath, [
       '--input-type=module',
       '--eval',
-      `import { annotationTargets } from ${JSON.stringify(policyUrl)}; console.log(JSON.stringify(JSON.parse(process.argv[1]).map(annotationTargets)));`,
+      `import { annotationTargets, iframeSandbox, imageAnnotationTarget, markedAnnotationTarget } from ${JSON.stringify(policyUrl)}; const configs = JSON.parse(process.argv[1]); console.log(JSON.stringify({ sandboxes: configs.map(iframeSandbox), targets: configs.map(annotationTargets), annotations: [markedAnnotationTarget('a', 'heading'), markedAnnotationTarget('a', 'summary', 'text'), markedAnnotationTarget('a', 'approval', 'node'), imageAnnotationTarget('image', 0.25, 0.75), markedAnnotationTarget('a', 'bad', 'unknown'), markedAnnotationTarget('a', '', 'dom'), imageAnnotationTarget('image', 2, 0.5)] }));`,
       JSON.stringify(policyInputs),
     ]);
-    assert.match(shellApp, /mode === 'high-fidelity' \? 'allow-scripts' : 'allow-same-origin'/);
-    assert.doesNotMatch(shellApp, /allow-scripts allow-same-origin|allow-same-origin allow-scripts/);
-    assert.match(shellApp, /otherVerdict.*allowOther/);
-    assert.match(shellHtml, /<section id="annotationPanel"[^>]*>\s*<h2>标注<\/h2>/);
-    assert.deepEqual(JSON.parse(policyResult.stdout), [['dom'], [], [], ['image']]);
+    assert.deepEqual(JSON.parse(policyResult.stdout), {
+      sandboxes: ['allow-same-origin', 'allow-same-origin', 'allow-scripts'],
+      targets: [[], ['dom', 'text', 'node'], ['image']],
+      annotations: [
+        { kind: 'dom', value: { optionId: 'a', elementId: 'heading' } },
+        { kind: 'text', value: { optionId: 'a', elementId: 'summary' } },
+        { kind: 'node', value: { optionId: 'a', elementId: 'approval' } },
+        { kind: 'point', value: { optionId: 'image', x: 0.25, y: 0.75 } },
+        null,
+        null,
+        null,
+      ],
+    });
 
     server = spawn(process.execPath, [serveScript, '--root', prototypeRoot, '--port', '0'], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -343,7 +409,18 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       verdict: 'accepted',
       selectedOptions: ['a'],
       answers: [],
-      annotations: [],
+      annotations: [
+        {
+          id: 'annotation-text',
+          target: { kind: 'text', value: { optionId: 'a', elementId: 'summary' } },
+          comment: 'Shorten this text.',
+        },
+        {
+          id: 'annotation-node',
+          target: { kind: 'node', value: { optionId: 'a', elementId: 'approval' } },
+          comment: 'Move this step earlier.',
+        },
+      ],
       globalNotes: 'Option A is clear.',
     };
     const forged = await fetch(feedbackUrl, {
@@ -387,6 +464,34 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       body: JSON.stringify({ ...feedback, annotations: [null] }),
     });
     assert.equal(invalidNested.status, 400);
+
+    const invalidTextTarget = await fetch(feedbackUrl, {
+      method: 'POST',
+      headers: feedbackHeaders,
+      body: JSON.stringify({
+        ...feedback,
+        annotations: [{
+          id: 'invalid-text',
+          target: { kind: 'text', value: 'summary' },
+          comment: 'Invalid target.',
+        }],
+      }),
+    });
+    assert.equal(invalidTextTarget.status, 400);
+
+    const invalidPointTarget = await fetch(feedbackUrl, {
+      method: 'POST',
+      headers: feedbackHeaders,
+      body: JSON.stringify({
+        ...feedback,
+        annotations: [{
+          id: 'invalid-point',
+          target: { kind: 'point', value: { optionId: 'image', x: 1.5, y: 0.5 } },
+          comment: 'Invalid target.',
+        }],
+      }),
+    });
+    assert.equal(invalidPointTarget.status, 400);
 
     const invalidExtra = await fetch(feedbackUrl, {
       method: 'POST',

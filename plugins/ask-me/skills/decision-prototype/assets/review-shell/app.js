@@ -1,6 +1,6 @@
-import { annotationTargets } from './review-policy.mjs';
+import { annotationTargets, iframeSandbox, imageAnnotationTarget, markedAnnotationTarget } from './review-policy.mjs';
 
-const state = { config: null, sessionToken: null, selectedOptions: new Set(), answers: [], annotations: [], tokenValues: {}, verdict: 'revise' };
+const state = { config: null, sessionToken: null, selectedOptions: new Set(), answers: [], annotations: [], cssVariableValues: {}, verdict: 'revise' };
 const $ = (id) => document.getElementById(id);
 
 function artifactUrl(path) {
@@ -64,11 +64,11 @@ function renderOption(option) {
     iframe.src = artifactUrl(option.artifact);
     iframe.title = option.label;
     iframe.referrerPolicy = 'no-referrer';
-    iframe.setAttribute('sandbox', state.config.mode === 'high-fidelity' ? 'allow-scripts' : 'allow-same-origin');
+    iframe.setAttribute('sandbox', iframeSandbox(state.config));
     iframe.onload = () => {
-      for (const [name, value] of Object.entries(state.tokenValues)) {
+      for (const [name, value] of Object.entries(state.cssVariableValues)) {
         try {
-          if (name.startsWith('--')) iframe.contentDocument.documentElement.style.setProperty(name, value);
+          iframe.contentDocument.documentElement.style.setProperty(name, value);
         } catch {
           // Cross-origin iframes remain view-only.
         }
@@ -76,10 +76,16 @@ function renderOption(option) {
       if (!state.config.allowAnnotations) return;
       try {
         iframe.contentDocument.addEventListener('click', (event) => {
+          const element = event.target.closest?.('[data-prototype-id]');
+          if (!element) return;
+          const target = markedAnnotationTarget(
+            option.id,
+            element.getAttribute('data-prototype-id'),
+            element.getAttribute('data-prototype-kind'),
+          );
+          if (!target) return;
           event.preventDefault();
-          const element = event.target.closest('[data-prototype-id]') || event.target;
-          const value = element.getAttribute?.('data-prototype-id') || element.tagName.toLowerCase();
-          addAnnotation({ kind: 'dom', value: { optionId: option.id, elementId: value } });
+          addAnnotation(target);
         }, true);
       } catch {
         // Cross-origin iframes remain view-only.
@@ -93,7 +99,12 @@ function renderOption(option) {
     if (state.config.allowAnnotations) {
       image.onclick = (event) => {
         const rect = image.getBoundingClientRect();
-        addAnnotation({ kind: 'point', value: { optionId: option.id, x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height } });
+        const target = imageAnnotationTarget(
+          option.id,
+          (event.clientX - rect.left) / rect.width,
+          (event.clientY - rect.top) / rect.height,
+        );
+        if (target) addAnnotation(target);
       };
     }
     card.append(image);
@@ -137,19 +148,19 @@ function renderGuided() {
   });
 }
 
-function applyToken(name, value) {
-  state.tokenValues[name] = value;
+function applyCssVariable(name, value) {
+  state.cssVariableValues[name] = value;
   for (const iframe of document.querySelectorAll('.option iframe')) {
     try {
-      if (name.startsWith('--')) iframe.contentDocument.documentElement.style.setProperty(name, value);
+      iframe.contentDocument.documentElement.style.setProperty(name, value);
     } catch {
       // Cross-origin iframes remain view-only.
     }
   }
 }
 
-function renderEditableTokens() {
-  const entries = Object.entries(state.config.editableTokens || {});
+function renderEditableCssVariables() {
+  const entries = Object.entries(state.config.editableCssVariables || {});
   if (!entries.length) return;
   $('tokens').hidden = false;
   const heading = document.createElement('h2');
@@ -157,9 +168,9 @@ function renderEditableTokens() {
   $('tokens').append(heading);
   for (const [name, values] of entries) {
     if (!Array.isArray(values) || values.length === 0) continue;
-    const answer = { questionId: `token:${name}`, selected: [String(values[0])], comment: '' };
+    const answer = { questionId: `css-variable:${name}`, selected: [String(values[0])], comment: '' };
     state.answers.push(answer);
-    applyToken(name, String(values[0]));
+    applyCssVariable(name, String(values[0]));
     const label = document.createElement('label');
     label.textContent = name;
     const select = document.createElement('select');
@@ -171,7 +182,7 @@ function renderEditableTokens() {
     }
     select.onchange = () => {
       answer.selected = [select.value];
-      applyToken(name, select.value);
+      applyCssVariable(name, select.value);
     };
     label.append(select);
     $('tokens').append(label);
@@ -220,7 +231,7 @@ const [configResponse, sessionResponse] = await Promise.all([fetch('./config.jso
 state.config = await configResponse.json();
 state.sessionToken = (await sessionResponse.json()).token;
 $('question').textContent = state.config.question;
-$('meta').textContent = `${state.config.id} · revision ${state.config.revision} · ${state.config.mode}`;
+$('meta').textContent = `${state.config.id} · revision ${state.config.revision}`;
 if (state.config.decisionFrame) {
   $('frame').hidden = false;
   const heading = document.createElement('h2');
@@ -231,14 +242,14 @@ if (state.config.decisionFrame) {
 }
 for (const option of state.config.options) $('options').append(renderOption(option));
 renderGuided();
-renderEditableTokens();
+renderEditableCssVariables();
 $('otherVerdict').hidden = !state.config.allowOther;
 const supportedAnnotationTargets = annotationTargets(state.config);
 $('annotationPanel').hidden = supportedAnnotationTargets.length === 0;
 if (supportedAnnotationTargets.length > 0) {
   const labels = [];
   if (supportedAnnotationTargets.includes('image')) labels.push('图片');
-  if (supportedAnnotationTargets.includes('dom')) labels.push('带有 data-prototype-id 的页面元素');
+  if (supportedAnnotationTargets.includes('dom')) labels.push('带有稳定标记的页面元素、文本块或流程节点');
   $('annotationHelp').textContent = `点击${labels.join('或')}可添加标注。`;
 }
 for (const button of document.querySelectorAll('[data-verdict]')) button.onclick = () => save(button.dataset.verdict);
