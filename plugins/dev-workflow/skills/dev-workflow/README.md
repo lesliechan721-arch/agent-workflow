@@ -1,15 +1,11 @@
 # Dev Workflow
 
-可选的结构化开发宏入口。它选择 Fast、Standard 或 Assured，并根据已有决策、Prototype、Spec、Review、`work.md` 和代码状态选择当前阶段。
+按保障等级和生命周期 gate 组织开发任务。它从最早未满足阶段继续，不把用户的“实现”措辞直接等同于 implementation-ready。
 
-每个专业 Skill 都可以直接调用。只有用户希望自动选路、跨阶段继续或恢复一个已有任务时使用本入口。
+Shape 阶段只调用 `decision-shape`；该 Skill 的内部问答和 Prototype 组合不由本入口管理。
 
-入口组合：
+固定生命周期是 Shape → Spec → Spec Review → User Approval → Build → Code Review → Delivery。Fast / Standard / Assured 只决定需要经过哪些 gate 和保障强度，不直接决定当前 Skill。
 
-- `decision-grill`：通过讨论解决材料决定。
-- `decision-prototype`：通过体验或实验取得决策证据。
-- `dev-spec`、`dev-review-spec`、`dev-implement`、`dev-review-code`：完成规格、审查、实现与交付。
+只有用户可观察结果、范围与非目标、验证方式都清楚，且没有材料未决、体验证据需求或高风险时，任务才可以走 Fast。新功能请求没有 Shape、Spec 或明确验收时，会先进入 `decision-shape`。
 
-Review 的根路由只消费 `clean / blocked / incomplete / stop`。只有已有 blocked 正式 Review 且用户授权自动继续时，才按需加载一次修复与完整复审的条件规则。
-
-Standard 和 Assured 没有仓库约定时，默认任务目录为 `docs/dev/<task-slug>/`。
+其它专业 Skill 仍可被直接调用。路由时会简短说明当前保障、阶段、下一能力和依据。该说明是用户导航，不是 Skill 间固定返回对象。

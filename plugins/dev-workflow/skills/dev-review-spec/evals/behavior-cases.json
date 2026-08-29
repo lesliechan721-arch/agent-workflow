@@ -150,7 +150,8 @@
           "assets/spec-review-template.md"
         ],
         "confidence": "high",
-        "allowed_variance": "可以省略偏好性建议或放入非阻塞建议；不得因此输出 blocked。"
+        "allowed_variance": "可以省略偏好性建议或放入非阻塞建议；不得因此输出 blocked。",
+        "minimal_counterexample": "如果当前 Spec 仍缺少会改变用户行为、实现边界或可验证验收的材料内容，则应输出 blocked。"
       },
       "prompt": "重新正式审查 docs/dev/session-expiry/spec.md。上一轮材料 blocker 已修复；覆盖当前 spec-review.md，不要修改 Spec。",
       "scripted_replies": [],
