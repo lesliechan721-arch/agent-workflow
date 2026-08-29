@@ -131,7 +131,7 @@ export interface CatalogSourceResolution {
   manifestDigest: string;
   snapshotDigest: string;
   cacheEntryKey: string;
-  source: 'remote' | 'cache' | 'path';
+  source: 'remote' | 'cache' | 'path' | 'active';
   cacheFallback: boolean;
   remoteFailure?: string;
 }
@@ -208,6 +208,8 @@ export interface CatalogGenerationRefreshResult {
   sourceIdentity: SourceIdentity;
   logicalIdentity: string;
   outcome: CatalogGenerationRefreshOutcome;
+  activeChanged: boolean;
+  activeGenerationKey?: string;
   active?: CatalogGenerationPointerV1;
   candidate?: CatalogGenerationCandidateV1;
   lastCheck: CatalogGenerationLastCheckV1;

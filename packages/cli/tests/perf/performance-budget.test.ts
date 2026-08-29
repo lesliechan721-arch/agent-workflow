@@ -119,7 +119,7 @@ describe('multi-source performance budgets', () => {
     const durations = await sample(async () => {
       await withResolvedMultiSourceCatalog({
         cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', configSnapshot, env,
-        consume: (catalog) => { expect(catalog.sources[0]?.resolution?.source).toBe('path'); },
+        consume: (catalog) => { expect(catalog.sources[0]?.resolution?.source).toBe('active'); },
       });
     });
     const summary = createPerfSummary('path-source-resolution-warm', durations, BUDGET_MS);
@@ -259,7 +259,7 @@ describe('multi-source performance budgets', () => {
         selector: 'git-a/demo',
         consume: ({ pluginId, source }) => ({ pluginId, resolutionSource: source.source }),
       });
-      expect(selected).toEqual({ pluginId: 'git-a/demo', resolutionSource: 'cache' });
+      expect(selected).toEqual({ pluginId: 'git-a/demo', resolutionSource: 'active' });
     });
     const summary = createPerfSummary('git-source-current-snapshot-warm', durations, BUDGET_MS);
     printPerfSummary(summary);

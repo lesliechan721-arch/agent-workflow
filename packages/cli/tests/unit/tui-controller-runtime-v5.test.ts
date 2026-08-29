@@ -64,7 +64,7 @@ vi.mock('../../src/utils/plugin-config-write.js', () => ({
 
 function target(
   scope: 'user' | 'project',
-  state: 'present' | 'partial' | 'error',
+  state: 'absent' | 'present' | 'partial' | 'error',
 ): StatusV5Payload['targets'][number] {
   return {
     pluginName: 'demo',
@@ -77,7 +77,9 @@ function target(
     cwd: '/workspace',
     state,
     components: [],
-    errors: state === 'error' ? [{ code: 'targetError', message: 'safe failure' }] : [],
+    errors: state === 'error'
+      ? [{ code: 'targetError', message: 'safe failure', severity: 'blocking' }]
+      : [],
   };
 }
 
@@ -85,7 +87,7 @@ function bundleUnavailableStatus(
   configDigest = 'sha256:config',
 ): Awaited<ReturnType<typeof runtimeMocks.statusCommandV5>> {
   const orphan = target('user', 'error');
-  orphan.errors = [{ code: 'bundleUnavailable', message: 'safe failure' }];
+  orphan.errors = [{ code: 'bundleUnavailable', message: 'safe failure', severity: 'blocking' }];
   return {
     payload: {
       schemaVersion: 5,
@@ -580,7 +582,7 @@ describe('TUI controller runtime scope conflict validation', () => {
           pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
           version: '0.0.0', platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
           state: 'absent', components: [],
-          errors: [{ code: 'artifactCollision', message: 'safe collision' }],
+          errors: [{ code: 'artifactCollision', message: 'safe collision', severity: 'blocking' }],
         }],
       },
       pluginSummaries: [{
@@ -601,6 +603,47 @@ describe('TUI controller runtime scope conflict validation', () => {
     }, new AbortController().signal, (stage) => { stages.push(stage); }))
       .rejects.toMatchObject({ code: 'artifactCollision' });
     expect(stages).toEqual(['status']);
+  });
+
+  it.each([
+    ['install', 'absent', undefined, true],
+    ['upgrade', 'present', 'upgradeAvailable', true],
+    ['reinstall', 'partial', undefined, true],
+    ['uninstall', 'present', undefined, false],
+    ['cleanup', 'partial', undefined, false],
+  ] as const)('%s runtime validation applies the collision boundary for %s', async (
+    action,
+    state,
+    revisionState,
+    blocked,
+  ) => {
+    const collisionTarget = target('user', state);
+    collisionTarget.errors = [{
+      code: 'artifactCollision',
+      message: 'safe collision',
+      severity: 'blocking',
+    }];
+    runtimeMocks.statusCommandV5.mockResolvedValue({
+      payload: { targets: [collisionTarget] },
+      targetRevisions: revisionState ? [{
+        pluginId: 'official/demo',
+        platform: 'codex',
+        scope: 'user',
+        revision: { state: revisionState, availableVersion: '2.0.0', installedVersion: '1.0.0' },
+      }] : [],
+    });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const validation = dependencies.validateIntent!({
+      kind: 'pluginWrite', action, pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    }, new AbortController().signal);
+
+    if (blocked) await expect(validation).rejects.toMatchObject({ code: 'artifactCollision' });
+    else await expect(validation).resolves.toBeUndefined();
   });
 
   it('uses one source mutation preflight for review validation and evidence', async () => {

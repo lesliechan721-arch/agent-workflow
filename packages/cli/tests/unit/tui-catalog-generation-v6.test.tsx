@@ -108,7 +108,7 @@ function loadResult(catalogGenerations: CatalogSourceGenerationViewModel[]): Tui
           catalogVersion: source.active.catalogVersion,
           channel: source.active.channel,
         } : {}),
-        freshness: source.sourceType === 'path' ? 'path' : 'cache',
+        freshness: 'active',
       })),
     },
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
@@ -119,6 +119,8 @@ function loadResult(catalogGenerations: CatalogSourceGenerationViewModel[]): Tui
     payload,
     pluginSummaries: summaries,
     catalogGenerations,
+    sessionGenerationKeys: Object.fromEntries(catalogGenerations.flatMap((source) =>
+      source.active ? [[source.sourceId, source.active.generationKey]] : [])),
     sourceDetails: catalogGenerations.map((source) => ({
       id: source.sourceId,
       type: source.sourceType,
@@ -133,7 +135,7 @@ function loadResult(catalogGenerations: CatalogSourceGenerationViewModel[]): Tui
         catalogVersion: source.active.catalogVersion,
         channel: source.active.channel,
       } : {}),
-      freshness: source.sourceType === 'path' ? 'path' : 'cache',
+      freshness: 'active',
       configDigest: payload.catalog.configDigest,
     })),
   };
@@ -214,7 +216,10 @@ describe('Catalog refresh coordinator', () => {
         await gate.promise;
         running -= 1;
         if (sourceId === 'bad') throw new Error('source failed');
-        return { source: generation({ sourceId, policy: 'startup', state: 'upToDate' }) };
+        return {
+          source: generation({ sourceId, policy: 'startup', state: 'upToDate' }),
+          activeChanged: false,
+        };
       },
     });
     coordinator.start([
@@ -249,7 +254,7 @@ describe('Catalog refresh coordinator', () => {
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true });
         });
-        return { source: generation() };
+        return { source: generation(), activeChanged: false };
       },
     });
     const first = coordinator.refresh('first');
@@ -259,6 +264,25 @@ describe('Catalog refresh coordinator', () => {
     await Promise.all([first, second]);
     expect(signals[0]!.aborted).toBe(true);
     expect(signals).toHaveLength(1);
+  });
+
+  it('forwards the complete Active-change event to the Controller boundary', async () => {
+    const result = {
+      source: generation({ state: 'upToDate' }),
+      activeChanged: true,
+      activeGenerationKey: `${'a'.repeat(64)}/${'2'.repeat(64)}`,
+    };
+    const onResult = vi.fn();
+    const coordinator = new CatalogRefreshCoordinator({
+      onUpdate: () => undefined,
+      execute: async () => result,
+      onResult,
+    });
+
+    await coordinator.refresh('official');
+
+    expect(onResult).toHaveBeenCalledWith(result);
+    coordinator.dispose();
   });
 });
 
@@ -273,7 +297,7 @@ describe('Catalog generation TUI', () => {
         onState('checking');
         await refresh.promise;
         signal.throwIfAborted();
-        return { source: updated };
+        return { source: updated, activeChanged: false };
       },
     }));
     const observed: string[] = [];
@@ -289,6 +313,7 @@ describe('Catalog generation TUI', () => {
     const pluginIds = controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId);
     refresh.resolve();
     await waitFor(() => controller.listCatalogCandidates().length === 1, 'Candidate badge');
+    expect(controller.isCatalogReloadRequired('official')).toBe(false);
     expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId)).toEqual(pluginIds);
     await waitFor(() => instance.lastFrame()?.includes('Catalog 有更新') === true, 'Candidate home card');
     expect(instance.lastFrame()).toContain('当前操作仍使用 1.0.0');
@@ -330,7 +355,7 @@ describe('Catalog generation TUI', () => {
       expect(instance.lastFrame()).toContain('1.0.0');
       expect(instance.lastFrame()).toContain('1.1.0');
       expect(instance.lastFrame()).toContain('使用 1.1.0');
-      expect(instance.lastFrame()).toContain('使用缓存');
+      expect(instance.lastFrame()).not.toContain('使用缓存');
       expect(instance.lastFrame()).toContain('refs/heads/catalog/latest');
       expect(instance.lastFrame()).toContain('仅手动');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(size.rows);
@@ -398,7 +423,7 @@ describe('Catalog generation TUI', () => {
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true });
         });
-        return { source: current };
+        return { source: current, activeChanged: false };
       },
     }));
     await controller.load();
@@ -441,14 +466,54 @@ describe('Catalog generation TUI', () => {
   });
 
   it('keeps Path refresh manual and exposes an explicit local refresh action without K04', async () => {
+    const initialSource = generation({ sourceType: 'path', policy: 'manual' });
     const refreshedSource = generation({ sourceType: 'path', policy: 'manual', state: 'upToDate' });
-    refreshedSource.active = { ...refreshedSource.active!, catalogVersion: '2.0.0' };
+    refreshedSource.active = {
+      ...refreshedSource.active!,
+      catalogVersion: '2.0.0',
+      generationKey: `${'a'.repeat(64)}/${'2'.repeat(64)}`,
+    };
     const refreshed = vi.fn(async () => ({
       source: refreshedSource,
+      activeChanged: true,
+      activeGenerationKey: refreshedSource.active!.generationKey,
     }));
+    const reloaded = loadResult([refreshedSource]);
+    reloaded.pluginSummaries[0] = {
+      ...reloaded.pluginSummaries[0]!,
+      displayName: 'Updated Agent Toolkit',
+      version: '0.2.0',
+    };
+    reloaded.payload.targets = [{
+      pluginName: 'toolkit',
+      pluginId: 'official/toolkit',
+      sourceId: 'official',
+      sourceIdentity: 'identity:official',
+      version: '0.2.0',
+      platform: 'codex',
+      scope: 'user',
+      cwd: '/workspace',
+      state: 'present',
+      components: [],
+      errors: [],
+    }];
+    reloaded.dependencyOverviews = [{
+      pluginId: 'official/toolkit',
+      summary: {
+        directCount: 1, transitiveCount: 0, totalCount: 1,
+        readyCount: 1, missingCount: 0, issueCount: 0,
+      },
+      dependencies: [], dependents: [], blockers: [],
+    }];
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(loadResult([initialSource]))
+      .mockResolvedValue(reloaded);
+    const beginCatalogSession = vi.fn();
     const controller = new TuiController(dependencies({
-      initial: generation({ sourceType: 'path', policy: 'manual' }),
+      initial: initialSource,
       refreshCatalogSource: refreshed,
+      loadStatus,
+      beginCatalogSession,
     }));
     await controller.load();
     await new Promise((resolve) => setImmediate(resolve));
@@ -464,10 +529,120 @@ describe('Catalog generation TUI', () => {
       name: 'catalogRefresh', sourceId: 'official',
     });
     await waitFor(() => instance.lastFrame()?.includes('Catalog 已是最新') === true, 'Path refresh completion');
+    expect(controller.isCatalogReloadRequired('official')).toBe(true);
+    expect(instance.lastFrame()).toContain('新 Active Catalog 2.0.0');
+    expect(instance.lastFrame()).toContain('本次会话仍使用 Catalog 1.0.0');
+    expect(instance.lastFrame()).toContain('重新加载Catalog');
+    expect(controller.getPluginOverview('official/toolkit')?.displayName).toBe('Agent Toolkit');
     instance.stdin.write('\r');
     await waitFor(() => controller.snapshot.router.current.route.name === 'sourceDetail', 'Path source detail');
-    expect(instance.lastFrame()).toContain('Catalog 1.0.0');
-    expect(instance.lastFrame()).not.toContain('Catalog 2.0.0');
+    expect(loadStatus).toHaveBeenCalledTimes(2);
+    expect(beginCatalogSession).toHaveBeenLastCalledWith({ bootstrapMissingActive: false });
+    expect(controller.isCatalogReloadRequired('official')).toBe(false);
+    expect(instance.lastFrame()).toContain('Catalog 2.0.0');
+    expect(controller.getPluginOverview('official/toolkit')?.displayName).toBe('Updated Agent Toolkit');
+    expect(controller.getPlatformPlacement('official/toolkit', 'codex')).toMatchObject({
+      state: 'installed', scope: 'user', health: 'ready',
+    });
+    expect(controller.getPluginDependencyOverview('official/toolkit')?.summary.totalCount).toBe(1);
+    controller.dispose();
+  });
+
+  it('keeps the first background Git Active outside the fixed session until explicit reload', async () => {
+    const missing = generation({ policy: 'startup' });
+    delete missing.active;
+    const bootstrapped = generation({ policy: 'startup', state: 'upToDate' });
+    const initialLoad = loadResult([missing]);
+    const reloaded = loadResult([bootstrapped]);
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(initialLoad)
+      .mockResolvedValue(reloaded);
+    const controller = new TuiController(dependencies({
+      initial: missing,
+      loadStatus,
+      refreshCatalogSource: async () => ({
+        source: bootstrapped,
+        activeChanged: true,
+        activeGenerationKey: bootstrapped.active!.generationKey,
+      }),
+    }));
+    await controller.load();
+    await waitFor(() => controller.isCatalogReloadRequired('official'), 'background bootstrap reload');
+    controller.push({ name: 'sourceDetail', sourceId: 'official' });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 60, rows: 18 }} />);
+    await waitFor(() => instance.lastFrame()?.includes('重新加载Catalog') === true, 'bootstrap reload action');
+    expect(instance.lastFrame()).toContain('新 Active Catalog 1.0.0');
+    expect(instance.lastFrame()).toContain('本次会话 Catalog 未加');
+
+    await controller.reloadCatalog({
+      sourceId: 'official',
+      dirtyDraft: { kind: 'config', label: '当前设置草稿' },
+    });
+    expect(controller.snapshot.router.current.route).toMatchObject({
+      name: 'catalogActivationBlocked',
+      operation: 'reload',
+      reason: 'configDraft',
+      preservedLabel: '当前设置草稿',
+    });
+    expect(loadStatus).toHaveBeenCalledOnce();
+    controller.back();
+    await expect(controller.reloadCatalog({ sourceId: 'official' })).resolves.toBe(true);
+    expect(loadStatus).toHaveBeenCalledTimes(2);
+    expect(controller.isCatalogReloadRequired('official')).toBe(false);
+    controller.dispose();
+  });
+
+  it('requires reload only after an explicit Active-change event', async () => {
+    const initial = generation({ policy: 'manual' });
+    const changed = generation({ policy: 'manual', state: 'upToDate' });
+    changed.active = {
+      ...changed.active!,
+      catalogVersion: '2.0.0',
+      generationKey: `${'a'.repeat(64)}/${'2'.repeat(64)}`,
+    };
+    const incompatible = loadResult([initial]);
+    incompatible.sessionGenerationKeys = {};
+    incompatible.payload.catalog.sources[0] = {
+      ...incompatible.payload.catalog.sources[0]!,
+      error: 'safe incompatible Active',
+      errorCode: 'awCapabilityUnsupported',
+    };
+    const refreshed = [
+      { source: { ...changed, refreshState: 'candidateReady' as const }, activeChanged: false },
+      { source: { ...changed, refreshState: 'upToDate' as const }, activeChanged: false },
+      { source: { ...changed, refreshState: 'channelRollback' as const }, activeChanged: false },
+      {
+        source: changed,
+        activeChanged: true,
+        activeGenerationKey: changed.active.generationKey,
+      },
+    ];
+    const reloadFailure = loadResult([changed]);
+    reloadFailure.sessionGenerationKeys = {};
+    reloadFailure.payload.catalog.sources[0] = {
+      ...reloadFailure.payload.catalog.sources[0]!,
+      error: 'safe source load failure',
+      errorCode: 'catalogSourceUnavailable',
+    };
+    const controller = new TuiController(dependencies({
+      initial,
+      loadStatus: vi.fn()
+        .mockResolvedValueOnce(incompatible)
+        .mockResolvedValueOnce(reloadFailure),
+      refreshCatalogSource: vi.fn(async () => refreshed.shift()!),
+    }));
+    await controller.load();
+    expect(controller.isCatalogReloadRequired('official')).toBe(false);
+    for (const _state of ['candidateReady', 'upToDate', 'channelRollback']) {
+      await controller.refreshSource('official');
+      expect(controller.isCatalogReloadRequired('official')).toBe(false);
+    }
+    await controller.refreshSource('official');
+    expect(controller.isCatalogReloadRequired('official')).toBe(true);
+
+    await expect(controller.reloadCatalog({ sourceId: 'official' })).resolves.toBe(true);
+    expect(controller.isCatalogReloadRequired('official')).toBe(false);
+    expect(controller.getSourceOverview('official').health?.state).toBe('unavailable');
     controller.dispose();
   });
 
@@ -481,7 +656,7 @@ describe('Catalog generation TUI', () => {
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true });
         });
-        return { source: generation({ state: 'upToDate' }) };
+        return { source: generation({ state: 'upToDate' }), activeChanged: false };
       },
     }));
     await controller.load();
@@ -639,6 +814,7 @@ describe('Catalog generation TUI', () => {
     expect(beginCatalogSession).toHaveBeenLastCalledWith({ bootstrapMissingActive: false });
     expect(controller.getCatalogGeneration('official')?.active?.catalogVersion).toBe('1.1.0');
     expect(controller.getCatalogGeneration('official')?.candidate).toBeUndefined();
+    expect(controller.isCatalogReloadRequired('official')).toBe(false);
 
     const review = await controller.buildOperationReview({
       kind: 'configSave',

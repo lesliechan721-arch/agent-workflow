@@ -77,7 +77,7 @@ describe('multi-source read commands', () => {
       ok: false,
       primarySourceId: 'good',
       sources: expect.arrayContaining([
-        expect.objectContaining({ id: 'good', ok: true, freshness: 'path' }),
+        expect.objectContaining({ id: 'good', ok: true, freshness: 'active' }),
         expect.objectContaining({
           id: 'bad',
           ok: false,
@@ -129,9 +129,16 @@ describe('multi-source read commands', () => {
       catalog: {
         sources: [expect.objectContaining({
           id: 'local',
-          freshness: 'path',
+          freshness: 'active',
         })],
       },
+      targets: expect.arrayContaining([expect.objectContaining({
+        state: 'error',
+        errors: [expect.objectContaining({
+          code: 'awCapabilityUnsupported',
+          severity: 'warning',
+        })],
+      })]),
     });
   });
 
@@ -157,7 +164,7 @@ describe('multi-source read commands', () => {
         configDigest: expect.stringMatching(/^sha256:/),
         compositeDigest: expect.stringMatching(/^sha256:/),
         sources: expect.arrayContaining([
-          expect.objectContaining({ id: 'good', freshness: 'path' }),
+          expect.objectContaining({ id: 'good', freshness: 'active' }),
           expect.objectContaining({
             id: 'bad',
             error: expect.any(String),
@@ -357,6 +364,7 @@ describe('multi-source read commands', () => {
         state: 'absent',
         errors: expect.arrayContaining([expect.objectContaining({
           code: 'artifactCollision',
+          severity: 'blocking',
           collision: expect.objectContaining({
             reason: 'unownedContent',
             artifactKind: 'skill-directory',
@@ -369,11 +377,21 @@ describe('multi-source read commands', () => {
           state: 'foreign',
           error: expect.objectContaining({
             code: 'artifactCollision',
+            severity: 'blocking',
             message: expect.any(String),
           }),
         })]),
       })],
     });
+    expect(await statusCommandV5({
+      plugins: ['team/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      json: true,
+      verbose: true,
+    })).toMatchObject({ hasErrors: true });
     expect(JSON.stringify(brokenPayload.targets[0]!.components)).not.toContain(isolation.layout.rootDir);
 
     const collisionHuman = createCapturedCliIo();

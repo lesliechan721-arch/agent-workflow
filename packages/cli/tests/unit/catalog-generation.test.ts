@@ -405,13 +405,20 @@ describe('Catalog immutable generations', () => {
     const bootstrap = await refreshCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     });
-    expect(bootstrap).toMatchObject({ outcome: 'activeReady', active: { catalogVersion: '1.0.0' } });
+    expect(bootstrap).toMatchObject({
+      outcome: 'activeReady',
+      activeChanged: true,
+      activeGenerationKey: expect.any(String),
+      active: { catalogVersion: '1.0.0' },
+    });
     const activeDigest = bootstrap.active!.snapshotDigest;
 
     await expect(refreshCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     })).resolves.toMatchObject({
       outcome: 'upToDate',
+      activeChanged: false,
+      activeGenerationKey: bootstrap.active!.generationKey,
       active: { snapshotDigest: activeDigest },
     });
 
@@ -421,6 +428,8 @@ describe('Catalog immutable generations', () => {
     });
     expect(candidate).toMatchObject({
       outcome: 'candidateReady',
+      activeChanged: false,
+      activeGenerationKey: bootstrap.active!.generationKey,
       active: { catalogVersion: '1.0.0', snapshotDigest: activeDigest },
       candidate: { catalogVersion: '1.1.0', candidateKind: 'upgrade' },
     });
@@ -970,7 +979,9 @@ describe('Catalog immutable generations', () => {
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     });
     expect(rollback).toMatchObject({
-      outcome: 'channelRollback', active: { catalogVersion: '3.0.0' },
+      outcome: 'channelRollback', activeChanged: false,
+      activeGenerationKey: expect.any(String),
+      active: { catalogVersion: '3.0.0' },
     });
     expect(rollback.candidate).toBeUndefined();
 
@@ -1118,6 +1129,8 @@ describe('Catalog immutable generations', () => {
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     })).resolves.toMatchObject({
       outcome: 'channelRollback',
+      activeChanged: false,
+      activeGenerationKey: expect.any(String),
       active: { catalogVersion: '1.0.0' },
       candidate: { catalogVersion: '3.0.0' },
     });
@@ -1154,7 +1167,9 @@ describe('Catalog immutable generations', () => {
       sourceId: 'local', cliVersion: '1.0.0', env: isolation.env, runtime,
     });
     expect(refreshed).toMatchObject({
-      outcome: 'activeReady', active: { catalogVersion: '1.0.0' },
+      outcome: 'activeReady', activeChanged: true,
+      activeGenerationKey: expect.any(String),
+      active: { catalogVersion: '1.0.0' },
     });
     expect(refreshed.candidate).toBeUndefined();
     expect(refreshed.active!.snapshotDigest).not.toBe(initial.active!.snapshotDigest);

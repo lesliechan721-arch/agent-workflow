@@ -61,6 +61,8 @@ export interface CatalogSourceGenerationViewModel {
 
 export interface CatalogRefreshExecutionResult {
   source: CatalogSourceGenerationViewModel;
+  activeChanged: boolean;
+  activeGenerationKey?: string;
 }
 
 export interface CatalogRefreshCoordinatorOptions {
@@ -70,7 +72,7 @@ export interface CatalogRefreshCoordinatorOptions {
     onState: (state: Extract<CatalogRefreshState, 'checking' | 'downloading' | 'validating'>) => void,
   ) => Promise<CatalogRefreshExecutionResult>;
   onUpdate: (sourceId: string, state: CatalogRefreshState, errorCode?: string) => void;
-  onResult?: (source: CatalogSourceGenerationViewModel) => void;
+  onResult?: (result: CatalogRefreshExecutionResult) => void;
   maxConcurrency?: number;
 }
 
@@ -298,9 +300,10 @@ export class CatalogRefreshCoordinator {
       this.options.onUpdate(task.sourceId, 'checking');
       void this.options.execute(task.sourceId, task.abort.signal, (state) => {
         if (!task.abort.signal.aborted) this.options.onUpdate(task.sourceId, state);
-      }).then(({ source }) => {
+      }).then((result) => {
+        const { source } = result;
         if (!task.abort.signal.aborted) {
-          this.options.onResult?.(source);
+          this.options.onResult?.(result);
           this.#finish(task, source.refreshState, source.lastCheckCode);
         }
         else this.#finish(task, task.restoreState);

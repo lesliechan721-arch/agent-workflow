@@ -278,7 +278,8 @@ function assertIntentIsLegal(
     if (intent.action === 'install' && otherScopeInstalled) {
       throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
     }
-    if (intent.action === 'install' && targetHasArtifactCollision(selected)) {
+    if ((intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')
+      && targetHasArtifactCollision(selected)) {
       throw new TuiOperationBlockedError(
         'artifactCollision',
         '所选位置存在输出冲突。请先移除或迁移冲突内容。',
@@ -490,7 +491,8 @@ async function loadDependencyOverviews(options: {
       return 'notInstalled' as const;
     }
     return placements.some((placement) => placement.state === 'scopeConflict'
-      || (placement.state === 'installed' && placement.health !== 'ready'))
+      || (placement.state === 'installed'
+        && (placement.health !== 'ready' || placement.blockingReason !== undefined)))
       ? 'needsAttention' as const
       : 'ready' as const;
   };
@@ -727,6 +729,10 @@ export function createTuiControllerDependencies(
         dependencyOverviews,
         portablePluginIds,
         catalogGenerations,
+        sessionGenerationKeys: Object.fromEntries(
+          (catalogOperationContext?.generationSet.sources ?? [])
+            .map((source) => [source.sourceId, source.generationKey]),
+        ),
         sourceDetails: configured.sources.map((source) => {
           const status = statusById.get(source.id);
           return {
@@ -1350,9 +1356,9 @@ export function createTuiControllerDependencies(
     },
     async refreshCatalogSource(sourceId, signal, onState) {
       let refreshError: unknown;
-      let refreshCompleted = false;
+      let refreshResult: Awaited<ReturnType<typeof refreshCatalogSourceGeneration>> | undefined;
       try {
-        await refreshCatalogSourceGeneration({
+        refreshResult = await refreshCatalogSourceGeneration({
           sourceId,
           cliVersion: (await readCliPackageInfo()).version,
           env: context.env,
@@ -1362,7 +1368,6 @@ export function createTuiControllerDependencies(
             onProgress: (event) => onState(event.state),
           },
         });
-        refreshCompleted = true;
       } catch (error) {
         refreshError = error;
       }
@@ -1376,9 +1381,13 @@ export function createTuiControllerDependencies(
       if (refreshError && source.refreshState !== 'failed'
         && source.refreshState !== 'immutableViolation') throw refreshError;
       return {
-        source: refreshCompleted && source.refreshState === 'idle'
+        source: refreshResult && source.refreshState === 'idle'
           ? { ...source, refreshState: 'upToDate' }
           : source,
+        activeChanged: refreshResult?.activeChanged ?? false,
+        ...(refreshResult?.activeGenerationKey
+          ? { activeGenerationKey: refreshResult.activeGenerationKey }
+          : {}),
       };
     },
     async setCatalogRefreshPolicy(sourceId, refreshPolicy) {

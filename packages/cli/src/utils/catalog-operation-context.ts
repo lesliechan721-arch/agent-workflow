@@ -224,7 +224,7 @@ async function createCatalogOperationContext(options: {
       manifestDigest: generation.manifestDigest,
       snapshotDigest: generation.snapshotDigest,
       cacheEntryKey: generation.generationKey,
-      source: source.type === 'path' ? 'path' : 'cache',
+      source: 'active',
       cacheFallback: false,
     };
     return { sourceId: generation.sourceId, resolution };

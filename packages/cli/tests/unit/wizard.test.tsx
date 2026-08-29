@@ -43,13 +43,17 @@ function expectTuiTextProjected(frame: string): void {
 }
 
 describe('command wizard', () => {
-  it('does not offer absent collision targets for install and keeps ordinary absent selectable', () => {
-    const candidate = (errors: Array<{ code: string; message: string }>) => ({
+  it('rejects blocking collision targets for constructive writes and keeps removal writes available', () => {
+    const candidate = (errors: Array<{
+      code: string;
+      message: string;
+      severity: 'warning' | 'blocking';
+    }>, state: 'absent' | 'present' | 'partial' = 'absent') => ({
       pluginName: 'official/demo',
       targets: [{
         pluginName: 'demo', sourceId: 'official', sourceIdentity: 'identity:official',
         pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const, cwd: '/fixture',
-        state: 'absent' as const,
+        state,
         components: [],
         errors,
       }],
@@ -59,9 +63,29 @@ describe('command wizard', () => {
     expect(writeCandidateEligibility('install', candidate([]), selection)).toEqual({ selectable: true });
     expect(writeCandidateEligibility(
       'install',
-      candidate([{ code: 'artifactCollision', message: 'arbitrary text' }]),
+      candidate([{ code: 'artifactCollision', message: 'arbitrary text', severity: 'blocking' }]),
       selection,
     )).toEqual({ selectable: false, reason: 'live status 不允许 install' });
+    for (const [command, state] of [
+      ['upgrade', 'present'],
+      ['reinstall', 'partial'],
+    ] as const) {
+      expect(writeCandidateEligibility(
+        command,
+        candidate([{ code: 'artifactCollision', message: 'arbitrary text', severity: 'blocking' }], state),
+        selection,
+      )).toEqual({ selectable: false, reason: `live status 不允许 ${command}` });
+    }
+    for (const [command, state] of [
+      ['uninstall', 'present'],
+      ['cleanup', 'partial'],
+    ] as const) {
+      expect(writeCandidateEligibility(
+        command,
+        candidate([{ code: 'artifactCollision', message: 'arbitrary text', severity: 'blocking' }], state),
+        selection,
+      )).toEqual({ selectable: true });
+    }
   });
 
   it.each([
