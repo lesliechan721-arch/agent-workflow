@@ -902,11 +902,11 @@ export async function preparePublishedCatalogWorkspace(options: {
   const catalogVersion = catalogWorkspace.metadata.catalog.version;
   const channel = deriveCatalogChannel(catalogVersion);
   const previous = options.previousSnapshotRoot
-    ? await validatePublishedCatalogSnapshot(options.previousSnapshotRoot)
+    ? await validatePublishedCatalogPublicationParent(options.previousSnapshotRoot)
     : null;
-  if (previous && compareStrictSemVer(catalogVersion, previous.manifest.catalogVersion) <= 0) {
+  if (previous && compareStrictSemVer(catalogVersion, previous.catalogVersion) <= 0) {
     throw new Error(
-      `Catalog version ${catalogVersion} must be higher than published ${previous.manifest.catalogVersion}.`,
+      `Catalog version ${catalogVersion} must be higher than published ${previous.catalogVersion}.`,
     );
   }
   const previousLedger = previous?.ledger ?? {
@@ -1125,7 +1125,13 @@ async function digestDirectory(root: string): Promise<string> {
   return `sha256:${crypto.createHash('sha256').update(entries.join('\n')).digest('hex')}`;
 }
 
-export async function validateCatalogSnapshotTransport(snapshotDirectory: string): Promise<{
+async function validateCatalogSnapshotTransportInternal(
+  snapshotDirectory: string,
+  options: {
+    rawManifest?: Record<string, unknown>;
+    legacyV4PublicationParent?: boolean;
+  } = {},
+): Promise<{
   rootDir: string;
   manifest: CatalogManifestV5;
   ledger?: PluginReleaseLedger;
@@ -1182,7 +1188,8 @@ export async function validateCatalogSnapshotTransport(snapshotDirectory: string
   await readRegularJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), 'Codex marketplace');
   await readRegularJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), 'Claude marketplace');
   const snapshotDigest = await digestDirectory(rootDir);
-  const raw = await fs.readJson(path.join(rootDir, CATALOG_MANIFEST_FILENAME)) as Record<string, unknown>;
+  const raw = options.rawManifest
+    ?? await fs.readJson(path.join(rootDir, CATALOG_MANIFEST_FILENAME)) as Record<string, unknown>;
   const allowedManifestKeys = new Set([
     'schemaVersion', 'catalogVersion', 'channel', 'requires', 'marketplace', 'release', 'entries',
   ]);
@@ -1237,6 +1244,9 @@ export async function validateCatalogSnapshotTransport(snapshotDirectory: string
       contentDigest: await calculateEntryDigest(pluginRoot, true),
     };
     for (const field of Object.keys(expectedDigests) as Array<keyof typeof expectedDigests>) {
+      // V4 used a normalized Manifest v1 digest. The artifact digest still binds the raw manifest bytes,
+      // and the release ledger must still match the preserved v4 manifestDigest.
+      if (field === 'manifestDigest' && options.legacyV4PublicationParent) continue;
       if (entry[field] !== expectedDigests[field]) {
         throw new Error(`Catalog entry ${field} for ${JSON.stringify(name)} does not match its plugin bundle.`);
       }
@@ -1322,6 +1332,165 @@ export async function validateCatalogSnapshotTransport(snapshotDirectory: string
       )
     : undefined;
   return { rootDir, manifest, ...(ledger ? { ledger } : {}), snapshotDigest };
+}
+
+export async function validateCatalogSnapshotTransport(snapshotDirectory: string): Promise<{
+  rootDir: string;
+  manifest: CatalogManifestV5;
+  ledger?: PluginReleaseLedger;
+  snapshotDigest: string;
+}> {
+  return validateCatalogSnapshotTransportInternal(snapshotDirectory);
+}
+
+function normalizeLegacyCatalogCompatibility(value: unknown, fieldName: string): { aw: { minVersion: string } } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an object.`);
+  }
+  const compatibility = value as Record<string, unknown>;
+  if (!isDeepStrictEqual(Object.keys(compatibility), ['aw'])) {
+    throw new Error(`Invalid ${fieldName}: unknown field.`);
+  }
+  if (!compatibility.aw || typeof compatibility.aw !== 'object' || Array.isArray(compatibility.aw)) {
+    throw new Error(`Invalid ${fieldName}.aw: expected an object.`);
+  }
+  const aw = compatibility.aw as Record<string, unknown>;
+  if (!isDeepStrictEqual(Object.keys(aw), ['minVersion'])) {
+    throw new Error(`Invalid ${fieldName}.aw: unknown field.`);
+  }
+  return { aw: { minVersion: assertStrictSemVer(aw.minVersion, `${fieldName}.aw.minVersion`) } };
+}
+
+function normalizeLegacyPublishedCatalogManifestV4(raw: Record<string, unknown>): Record<string, unknown> {
+  const allowedManifestKeys = new Set([
+    'schemaVersion', 'catalogVersion', 'channel', 'compatibility', 'marketplace', 'release', 'entries',
+  ]);
+  for (const key of Object.keys(raw)) {
+    if (!allowedManifestKeys.has(key)) throw new Error(`Invalid legacy catalog manifest: unknown field ${JSON.stringify(key)}.`);
+  }
+  if (raw.schemaVersion !== 4) throw new Error('Invalid legacy catalog manifest schemaVersion: expected 4.');
+  const catalogVersion = assertCatalogVersion(raw.catalogVersion, 'legacy catalog manifest v4.catalogVersion');
+  if (raw.channel !== 'latest' && raw.channel !== 'beta') {
+    throw new Error('Invalid legacy catalog manifest v4.channel: expected "latest" or "beta".');
+  }
+  const channel = raw.channel;
+  const isBetaVersion = catalogVersion.includes('-beta.');
+  if ((channel === 'latest' && isBetaVersion) || (channel === 'beta' && !isBetaVersion)) {
+    throw new Error('Invalid legacy catalog manifest v4 catalogVersion channel.');
+  }
+  const compatibility = normalizeLegacyCatalogCompatibility(
+    raw.compatibility,
+    'legacy catalog manifest v4.compatibility',
+  );
+  const marketplace = normalizeCatalogMarketplaceIdentity(raw.marketplace, 'legacy catalog manifest v4.marketplace');
+  if (!Array.isArray(raw.entries)) throw new Error('Invalid legacy catalog manifest v4.entries: expected an array.');
+  const allowedEntryKeys = new Set([
+    'name', 'version', 'description', 'interface', 'category', 'tags', 'strict', 'policy',
+    'compatibility', 'source', 'artifactDigest', 'manifestDigest', 'contentDigest',
+  ]);
+  const translatedEntryInputs = raw.entries.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`Invalid legacy catalog manifest v4.entries[${index}]: expected an object.`);
+    }
+    const entry = value as Record<string, unknown>;
+    for (const key of Object.keys(entry)) {
+      if (!allowedEntryKeys.has(key)) {
+        throw new Error(`Invalid legacy catalog manifest v4.entries[${index}]: unknown field ${JSON.stringify(key)}.`);
+      }
+    }
+    const entryCompatibility = normalizeLegacyCatalogCompatibility(
+      entry.compatibility,
+      `legacy catalog manifest v4.entries[${index}].compatibility`,
+    );
+    if (compareStrictSemVer(entryCompatibility.aw.minVersion, compatibility.aw.minVersion) < 0) {
+      throw new Error(`Invalid legacy catalog manifest v4.entries[${index}].compatibility.aw.minVersion.`);
+    }
+    const translated = { ...entry };
+    delete translated.compatibility;
+    delete translated.contentDigest;
+    return {
+      ...translated,
+      dependencies: [],
+      requires: { aw: { capabilities: [] } },
+    };
+  });
+  const translatedBase = normalizeCatalogManifestBase({
+    catalogVersion,
+    channel,
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
+  }, 'legacy catalog manifest v4 translation');
+  const normalizedEntries = normalizeCatalogManifestEntries(
+    translatedEntryInputs,
+    translatedBase,
+    'legacy catalog manifest v4 translation',
+  ).map((entry, index) => {
+    const contentDigest = (raw.entries as Array<Record<string, unknown>>)[index]!.contentDigest;
+    if (typeof contentDigest !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(contentDigest)) {
+      throw new Error(`Invalid legacy catalog manifest v4.entries[${index}].contentDigest.`);
+    }
+    return { ...entry, contentDigest };
+  });
+  const release = normalizeCatalogRelease(raw.release, catalogVersion);
+  if (release.state !== 'published') {
+    throw new Error('Legacy Catalog publication parent must have release.state published.');
+  }
+  const legacyContentDigest = sha256(stableStringify({
+    schemaIdentity: { schemaVersion: 4 },
+    marketplaceMetadata: { name: 'aw', owner: marketplace.owner, interface: marketplace.interface },
+    compatibility,
+    plugins: normalizedEntries.map((entry) => ({
+      name: entry.name,
+      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+      contentDigest: entry.contentDigest,
+    })).sort((left, right) => left.name.localeCompare(right.name)),
+  }));
+  if (release.contentDigest !== legacyContentDigest) {
+    throw new Error('Published legacy catalog release contentDigest does not match the snapshot.');
+  }
+  const translatedManifest: CatalogManifestV5 = {
+    schemaVersion: 5,
+    catalogVersion,
+    channel,
+    requires: translatedBase.requires,
+    marketplace,
+    release,
+    entries: normalizedEntries,
+  };
+  return {
+    ...translatedManifest,
+    release: { ...release, contentDigest: publishedContentDigest(translatedManifest) },
+  };
+}
+
+export async function validatePublishedCatalogPublicationParent(snapshotDirectory: string): Promise<{
+  rootDir: string;
+  catalogVersion: string;
+  ledger: PluginReleaseLedger;
+  snapshotDigest: string;
+}> {
+  const raw = await readRegularJson(
+    path.join(snapshotDirectory, CATALOG_MANIFEST_FILENAME),
+    'Catalog publication parent manifest',
+  ) as Record<string, unknown>;
+  const validation = raw.schemaVersion === 4
+    ? await validateCatalogSnapshotTransportInternal(
+        snapshotDirectory,
+        {
+          rawManifest: normalizeLegacyPublishedCatalogManifestV4(raw),
+          legacyV4PublicationParent: true,
+        },
+      )
+    : await validatePublishedCatalogSnapshot(snapshotDirectory);
+  if (validation.manifest.release.state !== 'published') {
+    throw new Error('Catalog publication parent must have release.state published.');
+  }
+  if (!validation.ledger) throw new Error('Catalog publication parent must include a plugin release ledger.');
+  return {
+    rootDir: validation.rootDir,
+    catalogVersion: validation.manifest.catalogVersion,
+    ledger: validation.ledger,
+    snapshotDigest: validation.snapshotDigest,
+  };
 }
 
 type CatalogSnapshotValidationResult = {

@@ -7,9 +7,17 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import type { PluginMeta } from '../../src/types.js';
 import { createRebuildIntegration } from '../../src/commands/rebuild-integration.js';
-import { createCommandExecutionContext } from '../../src/commands/runtime.js';
+import {
+  createCliExecutionContext,
+  createCommandExecutionContext,
+} from '../../src/commands/runtime.js';
 import { loadConsoleItemsResult, statusCommandV5 } from '../../src/commands/status-v5.js';
+import { installWriteCommand } from '../../src/commands/write-commands.js';
+import type { CommandEvent } from '../../src/output/model.js';
+import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
+import { TuiController } from '../../src/tui/controller.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
@@ -18,23 +26,29 @@ import {
   withResolvedMultiSourceCatalog,
 } from '../../src/utils/multi-source-catalog.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
-import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import {
+  refreshCatalogSourceGeneration,
+  setCatalogSourceRefreshPolicy,
+} from '../../src/utils/catalog-generation-service.js';
 import {
   NativeCliError,
   SYSTEM_CODEX_MANAGER,
   setNativeCliRunnerOverrideForTests,
 } from '../../src/utils/native-cli.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  createDependencyCatalogSnapshotFixture,
+} from '../helpers/catalog-source-fixture.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
 
 const SAMPLES = 20;
 const BUDGET_MS = 500;
 const execFileAsync = promisify(execFile);
 
-async function sample(operation: () => Promise<void>): Promise<number[]> {
+async function sample(operation: () => Promise<void>, samples = SAMPLES): Promise<number[]> {
   await operation();
   const durations: number[] = [];
-  for (let index = 0; index < SAMPLES; index += 1) {
+  for (let index = 0; index < samples; index += 1) {
     const startedAt = performance.now();
     await operation();
     durations.push(performance.now() - startedAt);
@@ -47,6 +61,13 @@ describe('multi-source performance budgets', () => {
   let sourceRoot: string;
   let env: NodeJS.ProcessEnv;
   let fanoutEnv: NodeJS.ProcessEnv;
+  let fanoutProviderInvocations = 0;
+
+  const fakeNativeRunner = async () => ({
+    exitCode: 0,
+    stdout: 'codex-cli 99.0.0',
+    stderr: '',
+  });
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-multi-source-perf-'));
@@ -67,10 +88,37 @@ describe('multi-source performance budgets', () => {
     const gitRemote = path.join(root, 'catalog.git');
     const firstPath = path.join(root, 'catalog-path-a');
     const secondPath = path.join(root, 'catalog-path-b');
+    const agentPlugin = (name: string) => ({
+      name,
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.extensions = {
+          agents: [{ name: `${name}-role`, description: `${name} role.`, prompt: `${name}.` }],
+        };
+      },
+    });
+    await createDependencyCatalogSnapshotFixture(gitWork, [
+      agentPlugin('leaf'),
+      { ...agentPlugin('root'), dependencies: ['leaf'] },
+      { name: 'write-leaf' },
+      { name: 'write-root', dependencies: ['write-leaf'] },
+      {
+        name: 'config-target',
+        configureManifest: (manifest) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.extensions = {
+            instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.' }],
+          };
+          manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+        },
+      },
+      ...Array.from({ length: 20 }, (_, index) => ({
+        name: `bulk-${String(index).padStart(2, '0')}`,
+      })),
+    ]);
     await Promise.all([
-      createCatalogSnapshotFixture(gitWork),
-      createCatalogSnapshotFixture(firstPath),
-      createCatalogSnapshotFixture(secondPath),
+      fs.copy(gitWork, firstPath),
+      fs.copy(gitWork, secondPath),
     ]);
     await execFileAsync('git', ['init', '--initial-branch=main', '--quiet'], { cwd: gitWork });
     await execFileAsync('git', ['config', 'user.email', 'perf@example.test'], { cwd: gitWork });
@@ -107,6 +155,37 @@ describe('multi-source performance budgets', () => {
     });
     await Promise.all(['git-a', 'git-b', 'path-a', 'path-b'].map((sourceId) =>
       refreshCatalogSourceGeneration({ sourceId, cliVersion: '1.0.0', env: fanoutEnv })));
+    const candidateManifestPath = path.join(gitWork, 'catalog-manifest.json');
+    const candidateManifest = await fs.readJson(candidateManifestPath) as Record<string, unknown>;
+    candidateManifest.catalogVersion = '2.0.0';
+    await fs.writeJson(candidateManifestPath, candidateManifest, { spaces: 2 });
+    await execFileAsync('git', ['add', '.'], { cwd: gitWork });
+    await execFileAsync('git', ['commit', '--quiet', '-m', 'catalog candidate'], { cwd: gitWork });
+    await execFileAsync('git', ['push', '--quiet', gitRemote, 'main'], { cwd: gitWork });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'git-a', cliVersion: '1.0.0', env: fanoutEnv,
+    });
+    await Promise.all(['git-a', 'git-b'].map((sourceId) => setCatalogSourceRefreshPolicy({
+      sourceId,
+      refreshPolicy: 'manual',
+      env: fanoutEnv,
+    })));
+    const writeRuntime = {
+      env: fanoutEnv,
+      nativeCliRunner: fakeNativeRunner,
+    };
+    await installWriteCommand(['path-a/root'], {
+      cwd: root, platform: 'codex', scope: 'project',
+    }, writeRuntime);
+    await installWriteCommand(['path-a/write-root'], {
+      cwd: root, platform: 'codex', scope: 'project',
+    }, writeRuntime);
+    await installWriteCommand(['path-a/config-target'], {
+      cwd: root, platform: 'codex', scope: 'project',
+    }, writeRuntime);
+    const leafAgent = path.join(root, '.codex', 'agents', 'aw-leaf-leaf-role.toml');
+    await fs.remove(leafAgent);
+    await fs.ensureDir(leafAgent);
   });
 
   afterAll(async () => {
@@ -119,7 +198,7 @@ describe('multi-source performance budgets', () => {
     const durations = await sample(async () => {
       await withResolvedMultiSourceCatalog({
         cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', configSnapshot, env,
-        consume: (catalog) => { expect(catalog.sources[0]?.resolution?.source).toBe('path'); },
+        consume: (catalog) => { expect(catalog.sources[0]?.resolution?.source).toBe('active'); },
       });
     });
     const summary = createPerfSummary('path-source-resolution-warm', durations, BUDGET_MS);
@@ -256,10 +335,10 @@ describe('multi-source performance budgets', () => {
         freshnessPolicy: 'cacheFirst',
         configSnapshot,
         env: fanoutEnv,
-        selector: 'git-a/demo',
+        selector: 'git-a/root',
         consume: ({ pluginId, source }) => ({ pluginId, resolutionSource: source.source }),
       });
-      expect(selected).toEqual({ pluginId: 'git-a/demo', resolutionSource: 'cache' });
+      expect(selected).toEqual({ pluginId: 'git-a/root', resolutionSource: 'active' });
     });
     const summary = createPerfSummary('git-source-current-snapshot-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
@@ -295,6 +374,160 @@ describe('multi-source performance budgets', () => {
     const summary = createPerfSummary('active-four-source-read-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
+
+  it('keeps a large Active and Candidate TUI load plus Review within the local budget', async () => {
+    fanoutProviderInvocations = 0;
+    const catalogGenerationRuntime = {
+      providers: {
+        git: async () => {
+          fanoutProviderInvocations += 1;
+          throw new Error('Warm TUI load invoked the Git provider.');
+        },
+        path: async () => {
+          fanoutProviderInvocations += 1;
+          throw new Error('Warm TUI load invoked the Path provider.');
+        },
+      },
+    };
+    const catalogStageDurations: number[] = [];
+    const durations = await sample(async () => {
+      const events: CommandEvent[] = [];
+      const context = createCliExecutionContext({
+        cwd: root,
+        env: fanoutEnv,
+        interactive: false,
+        nativeCliRunner: fakeNativeRunner,
+        debugLogger: { log: (event) => { events.push(event); } },
+      });
+      const controller = new TuiController(createTuiControllerDependencies(
+        context,
+        undefined,
+        { catalogGenerationRuntime },
+      ));
+      try {
+        await controller.load();
+        const collision = controller.listUserIssues().find((issue) =>
+          issue.category === 'artifactCollision'
+          && issue.pluginId === 'path-a/leaf'
+          && issue.platform === 'codex'
+          && issue.scope === 'project');
+        expect(collision).toMatchObject({
+          relationship: 'direct',
+          affectedTargets: expect.arrayContaining([
+            expect.objectContaining({ pluginId: 'path-a/root', relationship: 'consumer' }),
+          ]),
+        });
+        await controller.buildOperationReview({
+          kind: 'configSave',
+          pluginId: 'path-a/config-target',
+          scope: 'project',
+          projectLayer: 'shared',
+          updates: { mode: 'strict' },
+        });
+      } finally {
+        controller.dispose();
+      }
+      const contextStages = events.filter((event) =>
+        event.type === 'performance:stage' && event.data?.name === 'catalog.context');
+      const validationStages = events.filter((event) =>
+        event.type === 'performance:stage' && event.data?.name === 'catalog.validation');
+      expect(contextStages).toHaveLength(1);
+      expect(contextStages[0]?.data).toMatchObject({ sourceCount: 4 });
+      expect(validationStages).toHaveLength(1);
+      expect(validationStages[0]?.data).toMatchObject({
+        pointerCount: 5,
+        fullValidationCount: 1,
+        reusedValidationCount: 4,
+      });
+      catalogStageDurations.push([...contextStages, ...validationStages].reduce(
+        (total, event) => total
+          + (typeof event.data?.durationMs === 'number' ? event.data.durationMs : 0),
+        0,
+      ));
+      expect(events.some((event) => event.type === 'review.prepare.config')).toBe(true);
+      expect(events.some((event) => event.type === 'review.prepare.evidence')).toBe(true);
+    }, 8);
+    expect(fanoutProviderInvocations).toBe(0);
+    const summary = createPerfSummary('tui-review-preparation-warm-large', durations, 1_000);
+    printPerfSummary(summary);
+    expect(summary.p95Ms).toBeLessThanOrEqual(1_000);
+    const catalogSummary = createPerfSummary(
+      'tui-catalog-local-stages-warm',
+      catalogStageDurations.slice(1),
+      BUDGET_MS,
+    );
+    printPerfSummary(catalogSummary);
+    expect(catalogSummary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
+
+  it('keeps a real warm install path observable with local stage budgets', async () => {
+    fanoutProviderInvocations = 0;
+    const catalogGenerationRuntime = {
+      providers: {
+        git: async () => {
+          fanoutProviderInvocations += 1;
+          throw new Error('Warm install invoked the Git provider.');
+        },
+        path: async () => {
+          fanoutProviderInvocations += 1;
+          throw new Error('Warm install invoked the Path provider.');
+        },
+      },
+    };
+    const commandDurations: number[] = [];
+    const localStageDurations: number[] = [];
+    const runInstall = async (record: boolean): Promise<void> => {
+      const events: CommandEvent[] = [];
+      const startedAt = performance.now();
+      const result = await installWriteCommand(['path-a/write-root'], {
+        cwd: root,
+        platform: 'codex',
+        scope: 'project',
+      }, {
+        env: fanoutEnv,
+        nativeCliRunner: fakeNativeRunner,
+        catalogGenerationRuntime,
+        debugLogger: { log: (event) => { events.push(event); } },
+      });
+      const durationMs = performance.now() - startedAt;
+      expect(result.overallState).toBe('succeeded');
+      const stageEvents = events.filter((event) => event.type === 'performance:stage');
+      expect(new Set(stageEvents.map((event) => event.data?.name))).toEqual(new Set([
+        'catalog.context',
+        'catalog.validation',
+        'inventory',
+        'dependency.plan',
+        'target.build',
+      ]));
+      const actionNames = new Set(events.flatMap((event) =>
+        event.type === 'rebuild:action'
+        && event.data?.phase === 'success'
+        && typeof event.data.name === 'string'
+          ? [event.data.name]
+          : []));
+      expect(actionNames.has('preflight.inspect')).toBe(true);
+      expect(actionNames.has('artifacts.write')).toBe(true);
+      expect(actionNames.has('postcheck.inspect')).toBe(true);
+      if (record) {
+        commandDurations.push(durationMs);
+        localStageDurations.push(stageEvents.reduce((total, event) =>
+          total + (typeof event.data?.durationMs === 'number' ? event.data.durationMs : 0), 0));
+      }
+    };
+    await runInstall(false);
+    for (let index = 0; index < 8; index += 1) await runInstall(true);
+    expect(fanoutProviderInvocations).toBe(0);
+    const commandSummary = createPerfSummary('install-write-command-warm', commandDurations, 1_500);
+    printPerfSummary(commandSummary);
+    expect(commandSummary.p95Ms).toBeLessThanOrEqual(1_500);
+    const localSummary = createPerfSummary(
+      'install-local-stages-warm',
+      localStageDurations,
+      BUDGET_MS,
+    );
+    printPerfSummary(localSummary);
+    expect(localSummary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
   it('fans out remote work only through explicit refresh', async () => {

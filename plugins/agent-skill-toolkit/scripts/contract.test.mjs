@@ -257,7 +257,7 @@ test('materialized audit validator matches the canonical digest for a formerly d
   ], { cwd: auditRoot, encoding: 'utf8' });
   assert.equal(
     stdout.trim(),
-    'sha256:53192c7077741c79dfc1ed2bd88956d67ca057c34b487a3ede85261b5b5bc247',
+    'sha256:49775372bbdccd493d2117883e306743c84828df3d9858af95b8597b1fa0b9a9',
   );
 });
 

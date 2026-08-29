@@ -53,6 +53,7 @@ import {
   planPluginSelectorSourceIds,
   preflightDesiredArtifactCollisions,
   withResolvedMultiSourceCatalog,
+  type DesiredArtifactSelection,
 } from '../utils/multi-source-catalog.js';
 import {
   resolveCatalogOperationContext,
@@ -135,6 +136,40 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     remove?: (target: string) => Promise<void>;
   };
 };
+
+export type CommandPerformanceStageName =
+  | 'catalog.context'
+  | 'catalog.validation'
+  | 'inventory'
+  | 'dependency.plan'
+  | 'target.build';
+
+async function measureCommandPerformanceStage<T>(
+  runtime: RebuildCommandRuntime | undefined,
+  name: CommandPerformanceStageName,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  let phase: 'success' | 'failure' = 'success';
+  try {
+    return await operation();
+  } catch (error) {
+    phase = 'failure';
+    throw error;
+  } finally {
+    await Promise.resolve().then(() => runtime?.debugLogger?.log({
+      type: 'performance:stage',
+      level: 'debug',
+      target: 'debugLog',
+      message: 'Command performance stage completed.',
+      data: {
+        name,
+        phase,
+        durationMs: Math.max(0, Date.now() - startedAt),
+      },
+    })).catch(() => undefined);
+  }
+}
 
 export interface RebuildReviewPreflightEvidence {
   command: RebuildCommand;
@@ -1157,10 +1192,14 @@ export async function runRebuildCommand(options: {
     ?? inventoryCatalogSourceReferences;
   let ordinaryInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
   const readOrdinaryInventory = async () => {
-    ordinaryInventory ??= await readInventory({
-      cwd: options.commandOptions.cwd,
-      env: runtimeEnv,
-    });
+    ordinaryInventory ??= await measureCommandPerformanceStage(
+      options.runtime,
+      'inventory',
+      () => readInventory({
+        cwd: options.commandOptions.cwd,
+        env: runtimeEnv,
+      }),
+    );
     return ordinaryInventory;
   };
   let requestedPluginNames = options.pluginNames;
@@ -1341,17 +1380,21 @@ export async function runRebuildCommand(options: {
     const catalogOperation = options.runtime?.catalogOperationContext
       ?? (options.command === 'cleanup'
         ? undefined
-        : await resolveCatalogOperationContext({
-            cliVersion: resolveRuntimeCliVersion(),
-            ...(sourceIds ? { sourceIds } : {}),
-            env: runtimeEnv,
-            ...(options.runtime?.catalogGenerationRuntime
-              ? { runtime: options.runtime.catalogGenerationRuntime }
-              : {}),
-            ...(options.runtime?.awHomeMutationToken
-              ? { bootstrapMissingActive: false }
-              : {}),
-          }));
+        : await measureCommandPerformanceStage(
+            options.runtime,
+            'catalog.context',
+            () => resolveCatalogOperationContext({
+              cliVersion: resolveRuntimeCliVersion(),
+              ...(sourceIds ? { sourceIds } : {}),
+              env: runtimeEnv,
+              ...(options.runtime?.catalogGenerationRuntime
+                ? { runtime: options.runtime.catalogGenerationRuntime }
+                : {}),
+              ...(options.runtime?.awHomeMutationToken
+                ? { bootstrapMissingActive: false }
+                : {}),
+            }),
+          ));
     if (options.runtime?.expectedGenerationSetDigest
       && catalogOperation?.generationSetDigest !== options.runtime.expectedGenerationSetDigest) {
       throw new Error('operationReviewStale: Active Catalog generation changed before mutation.');
@@ -1436,15 +1479,17 @@ export async function runRebuildCommand(options: {
             throw new AwCapabilityUnsupportedError(candidate.pluginId, support.missing);
           }
         }
-        for (const item of catalog.sources) {
-          const source = item.resolution!;
-          const names = requiredEntryClosure
-            .filter((candidate) => candidate.source.sourceId === source.sourceId)
-            .map((candidate) => candidate.entry.name);
-          if (names.length > 0) {
-            await validateCatalogSnapshotPluginEntriesComplete(source.rootDir, names);
+        await measureCommandPerformanceStage(options.runtime, 'catalog.validation', async () => {
+          for (const item of catalog.sources) {
+            const source = item.resolution!;
+            const names = requiredEntryClosure
+              .filter((candidate) => candidate.source.sourceId === source.sourceId)
+              .map((candidate) => candidate.entry.name);
+            if (names.length > 0) {
+              await validateCatalogSnapshotPluginEntriesComplete(source.rootDir, names);
+            }
           }
-        }
+        });
       }
       const available = await Promise.all(requiredEntryClosure.map(async (candidate) => {
         const plugin = await readPluginManifest(
@@ -1894,7 +1939,13 @@ export async function runRebuildCommand(options: {
       };
       if (options.runtime?.previewDependencyPlanOnly) {
         await options.runtime.onPreviewStage?.('dependencyPlan');
-        const initialPlan = dependencyEnabled ? await createPlan(stateInventory) : undefined;
+        const initialPlan = dependencyEnabled
+          ? await measureCommandPerformanceStage(
+              options.runtime,
+              'dependency.plan',
+              () => createPlan(stateInventory),
+            )
+          : undefined;
         const preview = mergeRebuildCommandResults([]);
         if (initialPlan) preview.dependencyPlan = initialPlan;
         if (await operationNeedsNativeCli('codex', initialPlan)) {
@@ -1935,7 +1986,11 @@ export async function runRebuildCommand(options: {
               candidate.name === entry.plugin.manifest.name)?.contentDigest,
           });
       }
-        const lockedPlan = await createPlan(stateInventory);
+        const lockedPlan = await measureCommandPerformanceStage(
+          options.runtime,
+          'dependency.plan',
+          () => createPlan(stateInventory),
+        );
         if (options.runtime?.expectedOperationDependencyPlan
           && JSON.stringify(lockedPlan) !== JSON.stringify(options.runtime.expectedOperationDependencyPlan)) {
           throw namespacedPreflightError(
@@ -1980,29 +2035,36 @@ export async function runRebuildCommand(options: {
         });
         const preparedTargets = new Map<string, PreparedRebuildTarget>();
         const preparedTargetErrors = new Map<string, unknown>();
-        const lockedCollisionSelections = [];
+        const lockedCollisionSelections: DesiredArtifactSelection[] = [];
         for (const { entry, platform } of executionSelections) {
           const planned = lockedPlan.targets.find((candidate) =>
             candidate.pluginId === entry.pluginId && candidate.platform === platform)!;
           if (planned.action !== 'install'
             && planned.action !== 'upgrade'
             && planned.action !== 'reinstall') continue;
+          const buildCommand = planned.relation === 'dependency'
+            ? planned.action
+            : options.command;
           const marketplaceName = marketplaceNameFor(entry, platform, planned.resolvedScope);
           try {
-            const target = await executionIntegration.buildTarget({
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              pluginId: entry.pluginId,
-              marketplaceName,
-              marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId),
-              plugin: entry.plugin,
-              platform,
-              scope: planned.resolvedScope,
-              cwd: options.commandOptions.cwd,
-              command: planned.relation === 'dependency' ? planned.action : options.command,
-              catalog: toCatalogResolution(entry.source),
-              includeHistoricalLifecycleArtifacts: true,
-            });
+            const target = await measureCommandPerformanceStage(
+              options.runtime,
+              'target.build',
+              () => executionIntegration.buildTarget({
+                sourceId: entry.source.sourceId,
+                sourceIdentity: entry.source.sourceIdentity,
+                pluginId: entry.pluginId,
+                marketplaceName,
+                marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId),
+                plugin: entry.plugin,
+                platform,
+                scope: planned.resolvedScope,
+                cwd: options.commandOptions.cwd,
+                command: buildCommand,
+                catalog: toCatalogResolution(entry.source),
+                includeHistoricalLifecycleArtifacts: true,
+              }),
+            );
             preparedTargets.set(`${entry.pluginId}\0${platform}`, {
               target,
               driver: executionIntegration.driver,

@@ -68,7 +68,7 @@ export interface StatusV5CatalogSource {
   resolvedCommit?: string;
   catalogVersion?: string;
   channel?: string;
-  freshness?: 'remote' | 'cache' | 'path';
+  freshness?: 'remote' | 'cache' | 'path' | 'active';
   error?: string;
   errorCode?: string;
 }
@@ -115,11 +115,14 @@ export interface StatusV5Component {
 export interface StatusV5TargetError {
   code: string;
   message: string;
+  severity: 'warning' | 'blocking';
   collision?: ArtifactCollisionEvidence;
   dependencyPluginId?: string;
   rootIssueId?: string;
   rootIssueCode?: string;
 }
+
+type StatusV5TargetErrorInput = Omit<StatusV5TargetError, 'severity'>;
 
 export interface StatusV5Payload {
   schemaVersion: 5;
@@ -321,17 +324,33 @@ function inventoryErrorMatchesSelection(options: {
       || selector.parsed.sourceId === relevance.sourceId));
 }
 
+function finalizeTargetError(
+  error: StatusV5TargetErrorInput | StatusV5TargetError,
+  targetState: StatusV5Target['state'],
+): StatusV5TargetError {
+  return {
+    ...error,
+    severity: error.code === 'artifactCollision'
+      || (targetState === 'error'
+        && error.code !== 'awCapabilityUnsupported'
+        && error.dependencyPluginId === undefined)
+      ? 'blocking'
+      : 'warning',
+  };
+}
+
 function projectTargetError(
-  error: StatusV5TargetError,
+  error: StatusV5TargetErrorInput | StatusV5TargetError,
   env: NodeJS.ProcessEnv,
   cwd: string,
+  targetState: StatusV5Target['state'],
 ): StatusV5TargetError {
   const sanitized = sanitizeCatalogSourceError(new Error(error.message), env, [
     getCodexHome(env),
     getClaudeHome(env),
     path.resolve(cwd),
   ]);
-  return { ...error, message: sanitized.message };
+  return finalizeTargetError({ ...error, message: sanitized.message }, targetState);
 }
 
 function sourceRequestedRef(source: CatalogSource, cliVersion: string): string {
@@ -637,7 +656,7 @@ export async function statusCommandV5(options: {
                     states[platform]![scope] = {
                       state: 'error',
                       components: [],
-                      errors: [{ code: 'awCapabilityUnsupported', message }],
+                      errors: [finalizeTargetError({ code: 'awCapabilityUnsupported', message }, 'error')],
                     };
                   }
                 }
@@ -739,10 +758,10 @@ export async function statusCommandV5(options: {
                     states[platform]![scope] = {
                       state: 'error',
                       components: [],
-                      errors: [{
+                      errors: [finalizeTargetError({
                         code: 'sourceChanged',
                         message: `sourceChanged: owner at ${changedOwner.location} has a different source identity.`,
-                      }],
+                      }, 'error')],
                     };
                     continue;
                   }
@@ -775,7 +794,7 @@ export async function statusCommandV5(options: {
                       optional: inspected.target.optionalOwnedComponents ?? [],
                     });
                     const collisionErrors: StatusV5TargetError[] = inspected.inspection.components.flatMap(
-                      (component) => component.collision ? [{
+                      (component) => component.collision ? [finalizeTargetError({
                         code: 'artifactCollision',
                         message: collisionMessage(component.collision),
                         collision: component.collision,
@@ -789,7 +808,7 @@ export async function statusCommandV5(options: {
                           collision: component.collision,
                         }),
                         rootIssueCode: 'artifactCollision',
-                      }] : [],
+                      }, liveState)] : [],
                     );
                     const dependencyErrors: StatusV5TargetError[] = [];
                     const dependencyReadiness: StatusV5DependencyReadiness[] = [];
@@ -811,13 +830,13 @@ export async function statusCommandV5(options: {
                             rootIssueId,
                             rootIssueCode: 'dependencyMissing',
                           });
-                          dependencyErrors.push({
+                          dependencyErrors.push(finalizeTargetError({
                             code: 'dependencyMissing',
                             message: `dependencyMissing: ${dependencyId} is not available in the current source snapshot.`,
                             dependencyPluginId: dependencyId,
                             rootIssueId,
                             rootIssueCode: 'dependencyMissing',
-                          });
+                          }, 'partial'));
                           continue;
                         }
                         const dependencySupport = checkAwCapabilitySupport(
@@ -832,13 +851,13 @@ export async function statusCommandV5(options: {
                             rootIssueId,
                             rootIssueCode: 'awCapabilityUnsupported',
                           });
-                          dependencyErrors.push({
+                          dependencyErrors.push(finalizeTargetError({
                             code: 'awCapabilityUnsupported',
                             message: `awCapabilityUnsupported: ${dependencyId} requires unsupported AW capabilities: ${dependencySupport.missing.join(', ')}.`,
                             dependencyPluginId: dependencyId,
                             rootIssueId,
                             rootIssueCode: 'awCapabilityUnsupported',
-                          });
+                          }, 'partial'));
                           continue;
                         }
                         const pluginCacheKey = [item.resolution!.sourceIdentity, dependencyId].join('\0');
@@ -971,15 +990,15 @@ export async function statusCommandV5(options: {
                           ...dependencyResult,
                         });
                         if (dependencyResult.state === 'absent') {
-                          dependencyErrors.push({
+                          dependencyErrors.push(finalizeTargetError({
                             code: 'dependencyMissing',
                             message: `dependencyMissing: ${dependencyId} is absent from its required live placement.`,
                             dependencyPluginId: dependencyId,
                             rootIssueId: dependencyResult.rootIssueId,
                             rootIssueCode: dependencyResult.rootIssueCode,
-                          });
+                          }, 'partial'));
                         } else if (dependencyResult.state !== 'ready') {
-                          dependencyErrors.push({
+                          dependencyErrors.push(finalizeTargetError({
                             code: 'dependencyNotReady',
                             message: `dependencyNotReady: ${dependencyId} is not ready at its required live placement.`,
                             dependencyPluginId: dependencyId,
@@ -989,16 +1008,16 @@ export async function statusCommandV5(options: {
                             ...(dependencyResult.rootIssueCode
                               ? { rootIssueCode: dependencyResult.rootIssueCode }
                               : {}),
-                          });
+                          }, 'partial'));
                         }
                       }
                     }
                     states[platform]![scope] = {
-                      state: dependencyErrors.length > 0 && liveState === 'present' ? 'partial' : liveState,
-                      errors: [...inspected.inspection.errors.map((error) => ({
+                      state: liveState,
+                      errors: [...inspected.inspection.errors.map((error) => finalizeTargetError({
                         code: 'componentInspectionFailed',
                         message: `${error.label}: ${error.message}`,
-                      })), ...collisionErrors, ...dependencyErrors],
+                      }, liveState)), ...collisionErrors, ...dependencyErrors],
                       ...(dependencyReadiness.length > 0 ? { dependencyReadiness } : {}),
                       components: options.verbose === true
                         ? inspected.inspection.components.map((component) => {
@@ -1007,12 +1026,12 @@ export async function statusCommandV5(options: {
                                   code: 'artifactCollision',
                                   message: collisionMessage(component.collision),
                                   collision: component.collision,
-                                }, env, options.cwd)
+                                }, env, options.cwd, liveState)
                               : component.diagnostic
                               ? projectTargetError({
                                   code: 'componentInspectionFailed',
                                   message: component.diagnostic,
-                                }, env, options.cwd)
+                                }, env, options.cwd, liveState)
                               : undefined;
                             return {
                               key: component.component.identity.artifactKey,
@@ -1031,7 +1050,7 @@ export async function statusCommandV5(options: {
                     states[platform]![scope] = {
                       state: 'error',
                       components: [],
-                      errors: [{ code, message }],
+                      errors: [finalizeTargetError({ code, message }, 'error')],
                     };
                   }
                 }
@@ -1173,10 +1192,10 @@ export async function statusCommandV5(options: {
         return [{
           ...target,
           state: 'error',
-          errors: [{
+          errors: [finalizeTargetError({
             code: 'codexScopePathAlias',
             message: 'codexScopePathAlias: Codex project config resolves to the user config directory. Run this command from an actual project directory.',
-          }],
+          }, 'error')],
         }];
       }
       if (entry.targets[platform][scope]) {
@@ -1189,10 +1208,10 @@ export async function statusCommandV5(options: {
           ...target,
           state: live?.state ?? 'error',
           components: live?.components ?? [],
-          errors: live?.errors ?? [{
+          errors: live?.errors ?? [finalizeTargetError({
             code: 'targetInspectionFailed',
             message: `No live inspection result exists for ${entry.source.id}/${entry.name}.`,
-          }],
+          }, 'error')],
           ...(live?.dependencyReadiness
             ? { dependencyReadiness: live.dependencyReadiness }
             : {}),
@@ -1219,22 +1238,22 @@ export async function statusCommandV5(options: {
         return [{
           ...target,
           state: 'error',
-          errors: [{
+          errors: [finalizeTargetError({
             code: sourceChanged ? 'sourceChanged' : 'noLongerSupported',
             message: sourceChanged
               ? `sourceChanged: live state for ${target.pluginId} has a different source identity.`
               : `noLongerSupported: ${target.pluginId} has live state for ${platform}/${scope}, but the current bundle no longer supports that target.`,
-          }],
+          }, 'error')],
         }];
       }
       if (!explicitTargetFilter) return [];
       return [{
         ...target,
         state: 'error',
-        errors: [{
+        errors: [finalizeTargetError({
           code: 'unsupportedTarget',
           message: `${entry.source.id}/${entry.name} does not support ${platform}/${scope}.`,
-        }],
+        }, 'error')],
       }];
     })));
   const referenceSelectors = [...plannedSelectors, ...liveOnlySelectors];
@@ -1284,10 +1303,10 @@ export async function statusCommandV5(options: {
       cwd: path.resolve(options.cwd),
       state: 'error',
       components: [],
-      errors: [{
+      errors: [finalizeTargetError({
         code: 'sourceMissing',
         message: `sourceMissing: catalog source "${reference.sourceId}" is not configured for ${pluginId}.`,
-      }],
+      }, 'error')],
     };
     return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
   })).values()];
@@ -1313,10 +1332,10 @@ export async function statusCommandV5(options: {
       cwd: path.resolve(options.cwd),
       state: 'error',
       components: [],
-      errors: [{
+      errors: [finalizeTargetError({
         code: 'catalogSourceUnavailable',
         message: `catalogSourceUnavailable: catalog source "${reference.sourceId}" is unavailable for ${pluginId}.`,
-      }],
+      }, 'error')],
     };
     return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
   })).values()];
@@ -1354,10 +1373,10 @@ export async function statusCommandV5(options: {
       cwd: path.resolve(options.cwd),
       state: 'error',
       components: [],
-      errors: [{
+      errors: [finalizeTargetError({
         code: 'bundleUnavailable',
         message: `bundleUnavailable: ${pluginId} has live state but is not present in the current source snapshot.`,
-      }],
+      }, 'error')],
     };
     return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
   })).values()];
@@ -1372,11 +1391,11 @@ export async function statusCommandV5(options: {
     ...legacyOwners.map((reference) => projectTargetError({
       code: 'legacyStateUnsupported',
       message: `legacyStateUnsupported: legacy live ${reference.kind} at ${reference.location}`,
-    }, env, options.cwd)),
+    }, env, options.cwd, 'error')),
   ];
   const projectedTargets = targets.map((target) => ({
     ...target,
-    errors: target.errors.map((error) => projectTargetError(error, env, options.cwd)),
+    errors: target.errors.map((error) => projectTargetError(error, env, options.cwd, target.state)),
   }));
   const selectedByPluginId = new Map(selected.map((entry) => [
     formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
@@ -1420,8 +1439,7 @@ export async function statusCommandV5(options: {
   };
   const hasErrors = payload.catalog.sources.some((source) => source.error !== undefined)
     || payload.errors.length > 0
-    || payload.targets.some((target) => target.state === 'error'
-      && target.errors.some((error) => error.code !== 'awCapabilityUnsupported'));
+    || payload.targets.some((target) => target.errors.some((error) => error.severity === 'blocking'));
   return {
     payload,
     output: options.json ? JSON.stringify(payload) : renderStatusV5(payload, options.verbose === true),

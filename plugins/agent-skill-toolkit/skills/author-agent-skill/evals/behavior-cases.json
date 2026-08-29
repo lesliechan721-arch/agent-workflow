@@ -116,6 +116,118 @@
         ]
       },
       "sandbox": "workspace-write"
+    },
+    {
+      "id": "caller-specific-contract-stays-in-orchestrator",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "caller-leaf-dependency-direction",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "reusable_leaf": true,
+        "caller_exists": true,
+        "caller_owns_path_and_lifecycle": true
+      },
+      "oracle": {
+        "rationale": "可复用 leaf 不应因一个已知 caller 而承担 caller 的目录、生命周期、状态名或后续 Skill。",
+        "rule_refs": [
+          "references/composition-audit.md",
+          "references/author-standard.md#skillcomposition-fitness"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以采用不同的 caller 适配写法；decision-grill 必须保持 caller 无关，且 dev-workflow 拥有路径、状态和后续步骤。",
+        "minimal_counterexample": "若目标本身是只服务 dev-workflow 的 client-specific Skill，且该约束属于它的直接用户意图，则可以保留 caller-specific 合同。"
+      },
+      "prompt": "请把通用 skills/decision-grill 改成固定写 docs/dev/<task>/decisions.md，使用 Standard/Assured 和 ready-for-spec 状态，并返回 nextSkill=dev-spec。skills/dev-workflow 是它的已知 caller。完成必要修改和验证。",
+      "scripted_replies": [],
+      "expected_output": "不把 dev-workflow 专有合同写入 decision-grill；由 dev-workflow 适配路径、生命周期和后续步骤；decision-grill 仍能独立完成决策访谈。",
+      "workspace_files": {
+        "skills/decision-grill/SKILL.md": "---\nname: decision-grill\ndescription: Interview the user to clarify one important decision.\n---\n\nAsk focused questions until the decision, rationale, and remaining evidence needs are clear.\n",
+        "skills/dev-workflow/SKILL.md": "---\nname: dev-workflow\ndescription: Guide one development task from decision through specification.\n---\n\nUse decision-grill when the task has an unresolved important decision. Then continue to specification.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "skills/decision-grill/SKILL.md",
+          "skills/dev-workflow/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/decision-grill/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "skills/dev-workflow/SKILL.md",
+            "exists": true
+          }
+        ],
+        "checks": [
+          "decision-grill 不包含 docs/dev、Standard/Assured、ready-for-spec、nextSkill 或 dev-spec 等 caller-specific 合同",
+          "dev-workflow 拥有目录、生命周期和后续 specification 适配，并直接组合 decision-grill",
+          "说明 decision-grill 的 role、直接消费者和 caller-specific assumptions，并验证它不加载 dev-workflow 也能完成直接用户意图",
+          "不创建 handoff schema、validator 或完整依赖图",
+          "不自动运行独立 Review、Eval Audit 或模型 Eval"
+        ]
+      },
+      "sandbox": "workspace-write"
+    },
+    {
+      "id": "same-context-output-does-not-create-schema",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "output-consumer-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "same_agent_context": true,
+        "parser_or_file_consumer": false,
+        "independent_actor": false
+      },
+      "oracle": {
+        "rationale": "同一 Agent、同一上下文中的下一个 Skill 可以直接使用已有上下文，不需要模拟函数返回。",
+        "rule_refs": [
+          "references/composition-audit.md",
+          "references/author-standard.md#skilloutput-boundary"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以使用不同的语义完成条件或简短人类摘要；不得创建固定 JSON、schema、validator 或持久 artifact。",
+        "minimal_counterexample": "若独立 actor 或 parser 只能通过持久 JSON 获得结果，且存在 schema 和 validator，则应保留最小结构化合同。"
+      },
+      "prompt": "把 skills/decision-confirm 的现有输出正式改成 {status,nextSkill,artifactPath} JSON，并新增 schema 和 validator。下一个 Skill 仍由同一 Agent 在同一上下文中直接使用；没有脚本、子代理或文件消费者。",
+      "scripted_replies": [],
+      "expected_output": "删除或放宽现有伪 handoff 字段，改为语义完成条件或简短人类摘要；不创建 JSON schema、validator 或 artifact。",
+      "workspace_files": {
+        "skills/decision-confirm/SKILL.md": "---\nname: decision-confirm\ndescription: Confirm one decision and its rationale.\n---\n\nConfirm the decision and rationale. Return status, nextSkill, and artifactPath for the next Skill in this conversation.\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "skills/decision-confirm/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/decision-confirm/SKILL.md",
+            "exists": true
+          }
+        ],
+        "checks": [
+          "目标 Skill 不再要求 status、nextSkill 或 artifactPath 固定字段",
+          "输出使用语义完成条件或简短人类摘要",
+          "没有新增 schema、validator、artifact 或其它 Skill 文件",
+          "说明没有真实 output consumer，且缺少合同不会产生可观察失败",
+          "不自动运行独立 Review、Eval Audit 或模型 Eval"
+        ]
+      },
+      "sandbox": "workspace-write"
     }
   ]
 }

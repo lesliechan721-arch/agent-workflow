@@ -68,8 +68,8 @@ function parsePointer(
 ): CatalogGenerationPointerV1 | CatalogGenerationCandidateV1 {
   if (!isRecord(value)) throw stateError(`Invalid ${fieldName}: expected an object.`);
   const baseKeys = [
-    'sourceConfigFingerprint', 'catalogVersion', 'channel', 'requestedRef', 'resolvedCommit', 'manifestDigest',
-    'snapshotDigest', 'generationKey', 'activatedAt',
+    'sourceConfigFingerprint', 'sourceIdentity', 'catalogVersion', 'channel', 'requestedRef',
+    'resolvedCommit', 'manifestDigest', 'snapshotDigest', 'generationKey', 'activatedAt',
   ];
   assertAllowedKeys(
     value,
@@ -79,6 +79,8 @@ function parsePointer(
   if (
     typeof value.sourceConfigFingerprint !== 'string'
     || !SHA256_DIGEST_PATTERN.test(value.sourceConfigFingerprint)
+    || typeof value.sourceIdentity !== 'string'
+    || !SHA256_DIGEST_PATTERN.test(value.sourceIdentity)
     || typeof value.catalogVersion !== 'string'
     || (value.channel !== 'latest' && value.channel !== 'beta')
     || typeof value.requestedRef !== 'string'
@@ -99,6 +101,7 @@ function parsePointer(
   }
   const pointer: CatalogGenerationPointerV1 = {
     sourceConfigFingerprint: value.sourceConfigFingerprint,
+    sourceIdentity: value.sourceIdentity,
     catalogVersion: value.catalogVersion,
     channel: value.channel,
     requestedRef: value.requestedRef,
@@ -151,26 +154,32 @@ function parseSourceState(value: unknown, fieldName: string): CatalogSourceGener
   assertAllowedKeys(value, fieldName, [
     'logicalIdentity', 'refreshPolicy', 'active', 'candidate', 'lastCheck',
   ]);
-  if (
-    typeof value.logicalIdentity !== 'string'
-    || value.logicalIdentity.trim() === ''
-    || (value.refreshPolicy !== 'startup' && value.refreshPolicy !== 'manual')
-  ) throw stateError(`Invalid ${fieldName} identity or refresh policy.`);
+  if (value.refreshPolicy !== 'startup' && value.refreshPolicy !== 'manual') {
+    throw stateError(`Invalid ${fieldName} refresh policy.`);
+  }
+  const logicalIdentity = value.logicalIdentity;
+  if (logicalIdentity !== undefined
+    && (typeof logicalIdentity !== 'string' || logicalIdentity.trim() === '')) {
+    throw stateError(`Invalid ${fieldName} logical identity.`);
+  }
   const active = value.active === undefined
     ? undefined
     : parsePointer(value.active, `${fieldName}.active`, false);
   const candidate = value.candidate === undefined
     ? undefined
     : parsePointer(value.candidate, `${fieldName}.candidate`, true);
+  if ((active || candidate) && logicalIdentity === undefined) {
+    throw stateError(`Invalid ${fieldName}: selected generations require a logical identity.`);
+  }
   for (const [pointerName, pointer] of [['active', active], ['candidate', candidate]] as const) {
     if (pointer && pointer.generationKey !== createCatalogGenerationKey(
-      value.logicalIdentity,
+      logicalIdentity!,
       pointer.snapshotDigest,
     )) throw stateError(`Invalid ${fieldName}.${pointerName} generation identity.`);
   }
   return {
-    logicalIdentity: value.logicalIdentity,
     refreshPolicy: value.refreshPolicy,
+    ...(logicalIdentity === undefined ? {} : { logicalIdentity }),
     ...(active ? { active } : {}),
     ...(candidate ? { candidate } : {}),
     ...(value.lastCheck === undefined

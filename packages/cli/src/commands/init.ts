@@ -14,7 +14,7 @@ export interface InitCatalogSourceResult {
   resolvedCommit?: string;
   catalogVersion?: string;
   channel?: string;
-  freshness?: 'remote' | 'cache' | 'path';
+  freshness?: 'remote' | 'cache' | 'path' | 'active';
   error?: string;
   errorCode?: string;
 }

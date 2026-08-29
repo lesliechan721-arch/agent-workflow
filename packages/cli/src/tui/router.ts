@@ -92,6 +92,7 @@ export type TuiRoute =
       name: 'catalogActivationBlocked';
       sourceId: string;
       reason: CatalogActivationBlockReason;
+      operation?: 'reload';
       preservedLabel?: string;
     }
   | { name: 'issueList' }

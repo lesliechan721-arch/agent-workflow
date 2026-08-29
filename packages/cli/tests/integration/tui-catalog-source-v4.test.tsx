@@ -97,7 +97,7 @@ async function configuredController(): Promise<{
 }
 
 describe('TUI v4 real catalog source boundary', () => {
-  it('refreshes a real cached local Git source after the first frame without replacing session status', async () => {
+  it('refreshes a real Active local Git source after the first frame without replacing session status', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const work = path.join(isolation.layout.fixtureCwd, 'tui-git-work');
     const remote = path.join(isolation.layout.fixtureCwd, 'tui-git-remote.git');
@@ -152,7 +152,7 @@ describe('TUI v4 real catalog source boundary', () => {
     );
 
     expect(observedRefresh).toEqual(expect.arrayContaining(['idle', 'checking', 'validating', 'upToDate']));
-    expect(observedHealth).toEqual(['cache']);
+    expect(observedHealth).toEqual(['ready']);
     expect(controller.getPluginOverview('git-local/demo')).toMatchObject({ version: '1.0.0' });
     controller.dispose();
   });
@@ -177,12 +177,12 @@ describe('TUI v4 real catalog source boundary', () => {
   it('keeps a real path source available from Active after its workspace directory is removed', async () => {
     const { controller, firstRoot } = await configuredController();
     await controller.load();
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'path' });
+    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'ready' });
 
     await fs.remove(firstRoot);
     await controller.refreshSource('local');
 
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'path' });
+    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'ready' });
     const issue = controller.listUserIssues().find((entry) => entry.sourceId === 'local');
     expect(issue).toBeUndefined();
     controller.dispose();

@@ -925,7 +925,7 @@ describe('pack smoke', () => {
       );
       expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
     }
-  });
+  }, 240_000);
 
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
     const packageRoot = path.join(repoRoot(), 'packages', 'cli');

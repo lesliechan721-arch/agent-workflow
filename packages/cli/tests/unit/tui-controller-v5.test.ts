@@ -22,7 +22,7 @@ import { TuiRouter } from '../../src/tui/router.js';
 
 function source(
   id: string,
-  options: { primary?: boolean; freshness?: 'remote' | 'cache' | 'path'; error?: string; type?: 'git' | 'path' } = {},
+  options: { primary?: boolean; freshness?: 'remote' | 'cache' | 'path' | 'active'; error?: string; type?: 'git' | 'path' } = {},
 ): StatusV5Payload['catalog']['sources'][number] {
   return {
     id,
@@ -77,7 +77,7 @@ function target(options: {
     state: options.state,
     components: [],
     errors: options.errors
-      ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure' }] : []),
+      ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure', severity: 'blocking' }] : []),
   };
 }
 
@@ -188,6 +188,104 @@ describe('TUI v4 router and ViewModel', () => {
     ]);
   });
 
+  it('projects collision-only targets as blocked without installed evidence', () => {
+    const collision = target({
+      pluginName: 'collision',
+      scope: 'user',
+      state: 'absent',
+      errors: [{
+        code: 'artifactCollision',
+        message: 'safe collision',
+        severity: 'blocking',
+      }],
+    });
+
+    expect(buildTuiViewModel({
+      status: status({ targets: [collision] }),
+      pluginSummaries: summaries(['official', 'collision']),
+    }).plugins[0]?.installedPlacements).toEqual([{
+      platform: 'codex',
+      state: 'blocked',
+      supportedScopes: ['user'],
+      reason: 'artifactCollision',
+    }]);
+  });
+
+  it('keeps add for a mixed-platform collision and makes output conflict first when all platforms block', () => {
+    const mixed = menuPlugin({
+      supportedPlatforms: ['codex', 'claude'],
+      installedPlacements: [
+        { platform: 'codex', state: 'blocked', supportedScopes: ['user'], reason: 'artifactCollision' },
+        { platform: 'claude', state: 'notInstalled', supportedScopes: ['user'] },
+      ],
+    });
+    const blocked = menuPlugin({
+      supportedPlatforms: ['codex', 'claude'],
+      installedPlacements: [
+        { platform: 'codex', state: 'blocked', supportedScopes: ['user'], reason: 'artifactCollision' },
+        { platform: 'claude', state: 'blocked', supportedScopes: ['user'], reason: 'artifactCollision' },
+      ],
+    });
+
+    expect(buildPluginPreviewActions(mixed).map((action) => action.id)).toEqual(['add', 'source']);
+    expect(buildPluginPreviewActions(blocked).map((action) => action.id)).toEqual([
+      'outputCollision', 'source', 'about',
+    ]);
+    expect(buildPlatformActions(blocked, 'codex').map((action) => action.id)).toEqual([
+      'outputCollision', 'source', 'about',
+    ]);
+  });
+
+  it.each(['present', 'partial'] as const)(
+    'keeps a blocking collision on an owned %s placement and hides constructive actions',
+    (state) => {
+      const collision = target({
+        pluginName: `collision-${state}`,
+        scope: 'user',
+        state,
+        errors: [{
+          code: 'artifactCollision',
+          message: 'safe collision',
+          severity: 'blocking',
+        }],
+      });
+      const plugin = buildTuiViewModel({
+        status: status({ targets: [collision] }),
+        pluginSummaries: summaries(['official', `collision-${state}`]),
+        targetRevisions: [{
+          pluginId: collision.pluginId,
+          platform: 'codex',
+          scope: 'user',
+          revision: {
+            state: 'upgradeAvailable',
+            availableVersion: '2.0.0',
+            installedVersion: '1.0.0',
+          },
+        }],
+      }).plugins[0]!;
+
+      expect(plugin.installedPlacements[0]).toMatchObject({
+        state: 'installed',
+        scope: 'user',
+        blockingReason: 'artifactCollision',
+      });
+      expect(buildPlatformActions(plugin, 'codex').map((action) => action.id)).toEqual([
+        'outputCollision', 'remove', 'technical',
+      ]);
+      if (state === 'present') {
+        const mixed = {
+          ...plugin,
+          supportedPlatforms: ['codex', 'claude'] as const,
+          installedPlacements: [
+            ...plugin.installedPlacements,
+            { platform: 'claude' as const, state: 'notInstalled' as const, supportedScopes: ['user' as const] },
+          ],
+        };
+        expect(buildPluginPreviewActions(mixed)[0]?.id).toBe('add');
+      }
+    },
+  );
+
   it('builds preview primary actions from live placement health and availability', () => {
     const incomplete = menuPlugin({
       aggregateStatus: 'needsAttention',
@@ -285,7 +383,7 @@ describe('TUI v4 router and ViewModel', () => {
         payload: status({ targets: [
           target({
             platform: 'codex', scope: 'user', state: 'absent',
-            errors: [{ code: 'artifactCollision', message: 'safe collision' }],
+            errors: [{ code: 'artifactCollision', message: 'safe collision', severity: 'blocking' }],
           }),
           target({ platform: 'codex', scope: 'project', state: 'absent' }),
           target({ platform: 'claude', scope: 'project', state: 'absent' }),
@@ -563,6 +661,7 @@ describe('TUI v4 router and ViewModel', () => {
     missing.errors = [{
       code: 'dependencyMissing',
       message: 'dependencyMissing: official/toolkit is absent at its recorded target.',
+      severity: 'warning',
     }];
     const view = buildTuiViewModel({
       status: status({ targets: [missing] }),
@@ -673,7 +772,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(view.issues.map((issue) => issue.issueId)).toEqual([
       'status:nativeStateUnreadable',
       'status:legacyStateUnsupported',
-      'target:official/demo:codex:user:error',
+      'diagnostic:official/demo:codex:user',
     ]);
     expect(JSON.stringify(view.issues)).not.toContain('/Users/private');
     expect(JSON.stringify(view.issues)).not.toContain('private-token');
@@ -691,6 +790,7 @@ describe('TUI v4 router and ViewModel', () => {
             errors: [{
               code: 'artifactCollision',
               message: 'safe collision',
+              severity: 'blocking',
               collision: {
                 reason: 'unownedContent',
                 artifactKind: 'skill-directory',
@@ -704,7 +804,7 @@ describe('TUI v4 router and ViewModel', () => {
           target({ pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable' }),
           target({ pluginName: 'offline-two', scope: 'project', state: 'error', errorCode: 'catalogSourceUnavailable' }),
         ],
-        errors: [{ code: 'legacyStateUnsupported', message: 'arbitrary text that does not name legacy state' }],
+        errors: [{ code: 'legacyStateUnsupported', message: 'arbitrary text that does not name legacy state', severity: 'blocking' }],
       }),
       pluginSummaries: [{
         pluginName: 'required',
@@ -720,7 +820,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
 
     expect(Object.fromEntries(view.issues.map((issue) => [issue.issueId, issue.category]))).toMatchObject({
-      'target:official/partial:codex:user:partial': 'incompleteInstallation',
+      'incompleteInstallation:official/partial:codex:user': 'incompleteInstallation',
       'target:official/collision:codex:user:absent': 'artifactCollision',
       'target:official/missing:codex:user:error': 'sourceMissing',
       'target:official/changed:codex:user:error': 'sourceIdentityChanged',
@@ -757,6 +857,7 @@ describe('TUI v4 router and ViewModel', () => {
         dependencyPluginId: 'official/leaf',
         rootIssueId: 'artifactCollision:official/leaf:codex:user:agent:leaf-role',
         rootIssueCode: 'artifactCollision',
+        severity: 'warning',
       }],
     });
     const view = buildTuiViewModel({
@@ -770,6 +871,7 @@ describe('TUI v4 router and ViewModel', () => {
               code: 'dependencyMissing',
               message: 'safe dependency evidence',
               dependencyPluginId: 'official/leaf',
+              severity: 'warning',
             }],
           }),
           target({ pluginName: 'incomplete', scope: 'user', state: 'partial' }),
@@ -848,6 +950,112 @@ describe('TUI v4 router and ViewModel', () => {
       .toBe('dependencyGraphInvalid');
     expect(view.plugins.find((plugin) => plugin.pluginId === 'official/source-configured')?.primaryAttention?.code)
       .toBe('sourceUnavailable');
+  });
+
+  it('keeps a direct root ahead of consumers and makes root aggregation order-independent', () => {
+    const rootIssueId = 'artifactCollision:official/leaf:codex:user:agent:leaf-role';
+    const direct = target({
+      pluginName: 'leaf', scope: 'user', state: 'absent', errors: [{
+        code: 'artifactCollision',
+        message: 'safe direct collision',
+        severity: 'blocking',
+        rootIssueId,
+        rootIssueCode: 'artifactCollision',
+      }],
+    });
+    const consumer = (pluginName: string, scope: 'user' | 'project') => target({
+      pluginName, scope, state: 'partial', errors: [{
+        code: 'dependencyNotReady',
+        message: 'safe dependency symptom',
+        severity: 'warning',
+        dependencyPluginId: 'official/leaf',
+        rootIssueId,
+        rootIssueCode: 'artifactCollision',
+      }],
+    });
+    const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
+    const project = (orderedTargets: StatusV5Payload['targets']) => buildTuiViewModel({
+      status: status({ targets: orderedTargets }),
+      pluginSummaries: summaries(
+        ['official', 'leaf'],
+        ['official', 'consumer-a'],
+        ['official', 'consumer-b'],
+      ),
+    }).issues.find((issue) => issue.issueId === rootIssueId);
+
+    expect(project(targets)).toMatchObject({
+      pluginId: 'official/leaf',
+      relationship: 'direct',
+      rootEntity: { pluginId: 'official/leaf', platform: 'codex', scope: 'user' },
+      affectedTargets: [
+        { pluginId: 'official/consumer-a', platform: 'codex', scope: 'user', relationship: 'consumer' },
+        { pluginId: 'official/consumer-b', platform: 'codex', scope: 'project', relationship: 'consumer' },
+        { pluginId: 'official/leaf', platform: 'codex', scope: 'user', relationship: 'direct' },
+      ],
+    });
+    expect(project([...targets].reverse())).toEqual(project(targets));
+    expect(project(targets.filter((entry) => entry.pluginId !== 'official/leaf'))).toMatchObject({
+      pluginId: 'official/leaf',
+      relationship: 'consumer',
+      rootEntity: { pluginId: 'official/leaf', platform: 'codex', scope: 'user' },
+    });
+  });
+
+  it.each([
+    {
+      state: 'partial' as const,
+      directErrors: [],
+      rootIssueId: 'incompleteInstallation:official/leaf:codex:user',
+      rootIssueCode: 'incompleteInstallation',
+      category: 'incompleteInstallation',
+    },
+    {
+      state: 'error' as const,
+      directErrors: [{
+        code: 'componentInspectionFailed',
+        message: 'safe direct diagnostic',
+        severity: 'blocking' as const,
+      }],
+      rootIssueId: 'diagnostic:official/leaf:codex:user',
+      rootIssueCode: 'diagnostic',
+      category: 'diagnostic',
+    },
+  ])('uses dependency evidence as the canonical key for a direct $state root', (fixture) => {
+    const direct = target({
+      pluginName: 'leaf', scope: 'user', state: fixture.state, errors: fixture.directErrors,
+    });
+    const consumer = (pluginName: string, scope: 'user' | 'project') => target({
+      pluginName, scope, state: 'present', errors: [{
+        code: 'dependencyNotReady',
+        message: 'safe dependency symptom',
+        severity: 'warning',
+        dependencyPluginId: 'official/leaf',
+        rootIssueId: fixture.rootIssueId,
+        rootIssueCode: fixture.rootIssueCode,
+      }],
+    });
+    const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
+    const project = (orderedTargets: StatusV5Payload['targets']) => buildTuiViewModel({
+      status: status({ targets: orderedTargets }),
+      pluginSummaries: summaries(
+        ['official', 'leaf'],
+        ['official', 'consumer-a'],
+        ['official', 'consumer-b'],
+      ),
+    }).issues.find((issue) => issue.issueId === fixture.rootIssueId);
+
+    expect(project(targets)).toMatchObject({
+      pluginId: 'official/leaf',
+      category: fixture.category,
+      relationship: 'direct',
+      rootEntity: { pluginId: 'official/leaf', platform: 'codex', scope: 'user' },
+      affectedTargets: [
+        { pluginId: 'official/consumer-a', platform: 'codex', scope: 'user', relationship: 'consumer' },
+        { pluginId: 'official/consumer-b', platform: 'codex', scope: 'project', relationship: 'consumer' },
+        { pluginId: 'official/leaf', platform: 'codex', scope: 'user', relationship: 'direct' },
+      ],
+    });
+    expect(project([...targets].reverse())).toEqual(project(targets));
   });
 
   it('selects an unavailable source before config and incomplete symptoms', () => {
@@ -1500,6 +1708,7 @@ describe('TUI v4 background source checks', () => {
   it.each([
     ['missing', undefined, 'unavailable'],
     ['error without authoritative data', source('official', { error: 'raw private error' }), 'unavailable'],
+    ['active', source('official', { freshness: 'active' }), 'ready'],
     ['cache', source('official', { freshness: 'cache' }), 'ready'],
     ['path', source('official', { freshness: 'path', type: 'path' }), 'path'],
   ] as const)('projects a successful remote reload with %s data as %s', async (_label, refreshed, expected) => {
@@ -2189,7 +2398,11 @@ describe('TUI v4 Review safety', () => {
 
   it('delegates dependency issue freshness to the locked plugin write executor', async () => {
     const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
-    consumer.errors = [{ code: 'dependencyMissing', message: 'dependencyMissing: official/toolkit is absent.' }];
+    consumer.errors = [{
+      code: 'dependencyMissing',
+      message: 'dependencyMissing: official/toolkit is absent.',
+      severity: 'warning',
+    }];
     const loaded: TuiStatusLoadResult = {
       payload: status({ targets: [consumer, target({ pluginName: 'toolkit', scope: 'user', state: 'absent' })] }),
       pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),

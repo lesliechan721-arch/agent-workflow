@@ -16,6 +16,10 @@ export const EXPECTED_PERF_SUMMARY_NAMES = [
   'catalog-source-config-warm',
   'git-source-current-snapshot-warm',
   'active-four-source-read-warm',
+  'tui-review-preparation-warm-large',
+  'tui-catalog-local-stages-warm',
+  'install-write-command-warm',
+  'install-local-stages-warm',
   'git-source-remote-deadline-cleanup',
 ];
 

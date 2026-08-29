@@ -49,6 +49,8 @@ describe('Catalog generation CLI', () => {
       sourceId: 'local',
       logicalIdentity: 'workspace:cli-generation',
       outcome: 'activeReady',
+      activeChanged: true,
+      activeGenerationKey: expect.any(String),
       active: { catalogVersion: '1.0.0' },
     });
 

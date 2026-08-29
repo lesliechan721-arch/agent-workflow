@@ -11,6 +11,7 @@ export const CATALOG_GENERATIONS_FILE = 'catalog-generations.json';
 export const CATALOG_GENERATIONS_SCHEMA_VERSION = 1;
 export const CATALOG_GENERATIONS_DIRECTORY = 'catalog-generations';
 export const CATALOG_GENERATION_METADATA_FILE = 'generation.json';
+export const CATALOG_PUBLISHED_VERSIONS_DIRECTORY = 'catalog-published-versions';
 export const OFFICIAL_CATALOG_SOURCE_URL =
   'https://github.com/lesliechan721-arch/agent-workflow.git';
 export const OFFICIAL_CATALOG_SOURCE_SSH_URL =

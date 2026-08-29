@@ -10,9 +10,10 @@ export function targetCanBeUninstalled(state: StatusV5Target['state']): boolean 
 }
 
 export function targetHasArtifactCollision(target: {
-  errors: ReadonlyArray<{ code: string }>;
+  errors: ReadonlyArray<{ code: string; severity: 'warning' | 'blocking' }>;
 }): boolean {
-  return target.errors.some((error) => error.code === 'artifactCollision');
+  return target.errors.some((error) =>
+    error.code === 'artifactCollision' && error.severity === 'blocking');
 }
 
 export function writeCandidateEligibility(
@@ -28,8 +29,9 @@ export function writeCandidateEligibility(
   }
   const selectable = targets.every((target) => ({
     install: target.state === 'absent' && !targetHasArtifactCollision(target),
-    reinstall: target.state === 'present' || target.state === 'partial',
-    upgrade: target.state === 'present',
+    reinstall: (target.state === 'present' || target.state === 'partial')
+      && !targetHasArtifactCollision(target),
+    upgrade: target.state === 'present' && !targetHasArtifactCollision(target),
     uninstall: targetCanBeUninstalled(target.state),
     cleanup: target.state !== 'absent',
     'config:list': false,
