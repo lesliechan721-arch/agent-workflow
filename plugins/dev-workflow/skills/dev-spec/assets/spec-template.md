@@ -32,7 +32,7 @@
 
 ## Evidence
 
-链接仍支撑当前决定的 Prototype、研究或 ADR。被替代方案和实验过程只在安全、兼容、迁移、回滚或避免高概率重复决策需要时保留，并留在 Evidence 或 ADR 中，不复制为规范。
+链接仍支撑当前决定的 Shape、Prototype、研究或 ADR。被替代方案和实验过程只在安全、兼容、迁移、回滚或避免高概率重复决策需要时保留，并留在 Evidence 或 ADR 中，不复制为规范。
 
 ## Open decisions
 

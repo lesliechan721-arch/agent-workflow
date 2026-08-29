@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skills = ['dev-workflow', 'dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code'];
-const decisionSkills = ['decision-grill', 'decision-prototype'];
+const decisionSkills = ['decision-shape'];
 const allParticipants = new Set([...skills, ...decisionSkills]);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
@@ -47,9 +47,10 @@ function assertCaseDocument(document) {
 
 const target = await context();
 
-test('manifest exposes the five-Skill workflow surface', async () => {
+test('manifest exposes five local Skills and declares the ask-me dependency', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
+  assert.deepEqual(manifest.dependencies, ['ask-me']);
   assert.equal(manifest.skills, './skills');
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
   for (const key of ['slashCommands', 'buildConfig', 'extensions', 'config', 'artifacts', 'lifecycle']) {
@@ -95,13 +96,48 @@ test('review behavior suites remain structurally valid', async () => {
   }
 });
 
-test('workflow routing eval references only installed participants', async () => {
+test('workflow routing eval observes leaf candidates but routes Shape through decision-shape', async () => {
   const evalRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
+  const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
+  const router = manifest.suites.find((suite) => suite.id === 'router-composed');
+  assert.ok(router);
+  assert.equal(router.skills.includes('decision-shape'), true);
+  assert.equal(router.skills.includes('decision-grill'), true);
+  assert.equal(router.skills.includes('decision-prototype'), true);
+
   const cases = assertCaseDocument(await readJson(path.join(evalRoot, 'cross-plugin-routing-cases.json')));
-  for (const entry of cases) {
-    if (!entry.id.startsWith('route_') || entry.id.includes('review')) continue;
-    assert.equal(entry.oracle.rule_refs.some((value) => value.includes('消费-review-结果')), false);
+  for (const id of [
+    'route_new_feature_intent_is_not_ready',
+    'route_fast_to_implement',
+    'route_fast_verified_to_code_review',
+    'route_decisions_to_spec',
+    'route_approved_spec_to_implement',
+    'route_shape_evidence_branch_stays_in_shape',
+    'direct_code_review_bypasses_router',
+  ]) {
+    assert.equal(cases.some((entry) => entry.id === id), true);
   }
+  for (const id of [
+    'route_new_feature_intent_is_not_ready',
+    'route_material_decisions_to_shape',
+    'route_shape_evidence_branch_stays_in_shape',
+  ]) {
+    const entry = cases.find((candidate) => candidate.id === id);
+    assert.deepEqual(entry.expected_loaded_skills, ['dev-workflow', 'decision-shape']);
+  }
+  assert.deepEqual(
+    cases.find((entry) => entry.id === 'route_fast_verified_to_code_review').expected_loaded_skills,
+    ['dev-workflow', 'dev-review-code'],
+  );
+  const composition = assertCaseDocument(
+    await readJson(path.join(evalRoot, 'composition-behavior-cases.json')),
+  );
+  for (const id of [
+    'prototype-feedback-to-default-task-root',
+    'assured-migration-stops-at-approval',
+    'second-blocked-review-stops-before-more-repair',
+    'route-summary-is-user-navigation',
+  ]) assert.equal(composition.some((entry) => entry.id === id), true);
 });
 
 test('runtime keeps all Skill roots and conditional references', async () => {

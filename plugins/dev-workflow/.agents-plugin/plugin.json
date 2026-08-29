@@ -2,12 +2,15 @@
   "schemaVersion": 1,
   "name": "dev-workflow",
   "version": "0.1.0",
-  "description": "按风险和当前阶段组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
+  "description": "按保障等级和生命周期 gate 组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
     }
   },
+  "dependencies": [
+    "ask-me"
+  ],
   "skills": "./skills",
   "marketplace": {
     "category": "workflow",
@@ -25,7 +28,7 @@
   },
   "interface": {
     "displayName": "Dev Workflow",
-    "shortDescription": "按风险和阶段组织决策、规格、实现、修复与独立审查",
+    "shortDescription": "从最早未满足的生命周期 gate 继续开发任务",
     "capabilities": [
       "Skills"
     ]

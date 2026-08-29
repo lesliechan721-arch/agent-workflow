@@ -1,0 +1,197 @@
+{
+  "skill_name": "decision-prototype",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "反馈不足会让 Prototype 无法回答决定问题；过早升级交互层级或错误复用旧 revision 反馈会增加成本并污染结论。"
+  },
+  "evals": [
+    {
+      "id": "visual-question-first",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "visual-question",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "multiple_visual_directions_are_viable": true
+      },
+      "oracle": {
+        "rationale": "方向选择优先使用视觉问答，而不是要求用户从空白描述。",
+        "rule_refs": [
+          "SKILL.md#工作流"
+        ],
+        "confidence": "high",
+        "allowed_variance": "候选数量可不同，但应有少量候选、都不接受和评论入口。"
+      },
+      "prompt": "为审批页的信息层级做一个轻量原型，使用 prototypes/approval-hierarchy/。我现在说不清样式，请先给少量候选让我选择，不要直接做生产实现。",
+      "scripted_replies": [],
+      "expected_output": "提供少量可体验候选、都不接受和补充评论方式。",
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": [
+          "codex",
+          "claude"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "prototypes/approval-hierarchy/**"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/approval-hierarchy/brief.md",
+            "exists": true,
+            "contains": [
+              "审批页"
+            ]
+          }
+        ],
+        "checks": [
+          "候选数量有限",
+          "允许都不接受",
+          "原型标记为临时"
+        ]
+      }
+    },
+    {
+      "id": "annotation-upgrade-only-when-needed",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "feedback-level",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "user_needs_spatial_feedback": true
+      },
+      "oracle": {
+        "rationale": "局部空间问题才需要标注。",
+        "rule_refs": [
+          "SKILL.md#工作流"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可选择 DOM 或图片标注，但不应一开始建立通用 WYSIWYG。",
+        "minimal_counterexample": "如果用户能用明确文字指出目标元素和期望变化，则直接记录该反馈即可，不需要局部标注。"
+      },
+      "prompt": "当前原型在 prototypes/approval-hierarchy/artifact/index.html。我选了单页方案，但风险摘要的位置不对，很难用文字说清。请说明此时应如何收集局部反馈；不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "升级到局部标注或 Review Shell，不把整个 Prototype 重做成通用编辑器。",
+      "workspace_files": {
+        "prototypes/approval-hierarchy/brief.md": "# Prototype brief\n\n- 问题：风险摘要放在哪里。\n- 当前方向：单页方案。\n- Revision: 2\n",
+        "prototypes/approval-hierarchy/artifact/index.html": "<!doctype html><button data-prototype-id=\"risk-summary\">风险摘要</button>\n"
+      },
+      "review": {
+        "platforms": [
+          "codex",
+          "claude"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "提供直接局部标注或按需启用 Review Shell",
+          "保留当前方向",
+          "不建立任意 DOM 编辑器"
+        ]
+      }
+    },
+    {
+      "id": "standalone-prototype",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "standalone",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "decision_shape_not_loaded": true
+      },
+      "oracle": {
+        "rationale": "Prototype Skill 必须独立完成用户任务。",
+        "rule_refs": [
+          "SKILL.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以使用直接反馈或 Review Shell，但不能要求宏 Skill 提供输入协议。",
+        "minimal_counterexample": "如果用户要求对多个相互依赖的决定进行完整塑形，并由宏能力选择访谈或 Prototype，则不应只使用 decision-prototype。"
+      },
+      "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个 API consumer 示例，让我判断接口是否易用。不要使用其它 Skill。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "接受当前接口。调用顺序清楚，错误处理也容易发现。"
+          ],
+          "unexpected_question_answer": "只判断当前 API consumer 示例；接受当前接口。"
+        }
+      ],
+      "expected_output": "自行识别问题、制作原型、取得反馈并形成独立决定记录。",
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": [
+          "codex",
+          "claude"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "prototypes/api-consumer/**"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/api-consumer/brief.md",
+            "exists": true,
+            "contains": [
+              "API"
+            ]
+          }
+        ],
+        "checks": [
+          "独立完成",
+          "不依赖 decision-shape",
+          "不返回面向其它 Skill 的固定状态对象"
+        ]
+      }
+    },
+    {
+      "id": "revision-bound-feedback",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "prototype-revision",
+      "unit_under_test": "scripts",
+      "preconditions": {
+        "review_shell_is_used": true
+      },
+      "oracle": {
+        "rationale": "反馈必须绑定准确 revision。",
+        "rule_refs": [
+          "references/prototype-review.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "错误信息可不同，但旧 revision 不能被静默接受。",
+        "minimal_counterexample": "如果 feedback 的 prototypeId 与 prototypeRevision 都和当前 Prototype 一致，则可以读取并应用反馈。"
+      },
+      "prompt": "读取 prototypes/revision-check/prototype.json、review/config.json 和 feedback.json。当前 Prototype 是 revision 3，但 feedback 来自 revision 2。说明应如何处理，不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "拒绝静默应用旧反馈，要求重新定位或重新确认。",
+      "workspace_files": {
+        "prototypes/revision-check/prototype.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"mode\":\"choice\",\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
+        "prototypes/revision-check/artifact/index.html": "<!doctype html><section data-prototype-id=\"risk-summary\">风险摘要 revision 3</section>\n",
+        "prototypes/revision-check/review/config.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"mode\":\"choice\",\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
+        "prototypes/revision-check/feedback.json": "{\"schemaVersion\":1,\"prototypeId\":\"revision-check\",\"prototypeRevision\":2,\"verdict\":\"revise\",\"answers\":[],\"annotations\":[{\"id\":\"a-1\",\"target\":{\"kind\":\"dom\",\"value\":\"risk-summary\"},\"comment\":\"移到顶部\"}]}\n"
+      },
+      "review": {
+        "platforms": [
+          "codex",
+          "claude"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "识别 revision mismatch",
+          "不静默迁移旧标注"
+        ]
+      }
+    }
+  ]
+}
