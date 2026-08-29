@@ -364,7 +364,10 @@ export interface SourceReferenceSummaryViewModel {
 }
 
 export interface TuiControllerDependencies {
-  beginCatalogSession?: (options?: { bootstrapMissingActive?: boolean }) => void;
+  beginCatalogSession?: (options?: {
+    bootstrapMissingActive?: boolean;
+    reuseValidatedGenerations?: boolean;
+  }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
   checkSource: (sourceId: string, signal: AbortSignal) => Promise<{
     sourceIdentity: string;
@@ -2439,9 +2442,12 @@ export class TuiController {
       this.#cancelSourceRefreshes();
       generation = ++this.#generation;
       if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogActivate') {
-        this.dependencies.beginCatalogSession?.(ticket.intent.kind === 'catalogActivate'
-          ? { bootstrapMissingActive: false }
-          : undefined);
+        this.dependencies.beginCatalogSession?.({
+          ...(ticket.intent.kind === 'catalogActivate'
+            ? { bootstrapMissingActive: false }
+            : {}),
+          reuseValidatedGenerations: true,
+        });
         try {
           this.#progressFeed?.setCurrent(
             { target: ticket.intent.kind === 'catalogActivate' ? 'Catalog generation' : 'Catalog 来源配置', phase: '读取最终状态' },

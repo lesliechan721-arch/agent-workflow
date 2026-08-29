@@ -91,6 +91,7 @@ import {
   setCatalogSourceRefreshPolicy,
   type CatalogGenerationServiceRuntime,
 } from '../utils/catalog-generation-service.js';
+import type { PublishedCatalogGeneration } from '../utils/catalog-generation-store.js';
 import { loadCatalogGenerationViewModels } from './catalog-generation.js';
 import {
   installPortableSkills,
@@ -655,6 +656,38 @@ export function createTuiControllerDependencies(
 ): TuiControllerDependencies {
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
+  const validatedCatalogGenerations = new Map<string, PublishedCatalogGeneration>();
+  const validatingCatalogGenerations = new Map<
+    string,
+    Promise<PublishedCatalogGeneration>
+  >();
+  const catalogGenerationRuntime: CatalogGenerationServiceRuntime = {
+    ...options.catalogGenerationRuntime,
+    validatedGenerations: validatedCatalogGenerations,
+    validatingGenerations: validatingCatalogGenerations,
+  };
+  const loadCatalogGenerations = async () => {
+    const generations = await loadCatalogGenerationViewModels({
+      env: context.env,
+      validatedGenerations: validatedCatalogGenerations,
+      validatingGenerations: validatingCatalogGenerations,
+      onStage: (event) => context.debugLogger.log({
+        type: 'performance:stage',
+        level: 'debug',
+        target: 'debugLog',
+        message: 'Catalog generation load stage completed.',
+        data: event,
+      }),
+    });
+    const retained = new Set(generations.flatMap((source) => [
+      source.active?.generationKey,
+      source.candidate?.generationKey,
+    ].filter((value): value is string => value !== undefined)));
+    for (const generationKey of validatedCatalogGenerations.keys()) {
+      if (!retained.has(generationKey)) validatedCatalogGenerations.delete(generationKey);
+    }
+    return generations;
+  };
   const createOperationInventoryReader = (): typeof inventoryCatalogSourceReferences => {
     let ordinaryInventory: ReturnType<typeof inventoryCatalogSourceReferences> | undefined;
     return (inventoryOptions) => {
@@ -683,7 +716,7 @@ export function createTuiControllerDependencies(
         env: context.env,
         signal,
         ...(bootstrapNextCatalogSession ? {} : { bootstrapMissingActive: false }),
-        ...(options.catalogGenerationRuntime ? { runtime: options.catalogGenerationRuntime } : {}),
+        runtime: catalogGenerationRuntime,
       }).catch(() => undefined);
     if (catalogOperationContext) sessionCatalogOperationContext = catalogOperationContext;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -694,7 +727,7 @@ export function createTuiControllerDependencies(
         verbose: context.diagnostics.verbose,
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
         ...(!catalogOperationContext ? { bootstrapMissingActive: false } : {}),
-        ...(options.catalogGenerationRuntime ? { catalogGenerationRuntime: options.catalogGenerationRuntime } : {}),
+        catalogGenerationRuntime,
         inventoryCatalogSourceReferences: readInventory,
       });
       signal.throwIfAborted();
@@ -718,7 +751,7 @@ export function createTuiControllerDependencies(
         ...(!catalogOperationContext ? { bootstrapMissingActive: false } : {}),
       });
       signal.throwIfAborted();
-      const catalogGenerations = await loadCatalogGenerationViewModels({ env: context.env });
+      const catalogGenerations = await loadCatalogGenerations();
       signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
@@ -778,7 +811,7 @@ export function createTuiControllerDependencies(
   ): Promise<OperationEvidence> => {
     if (intent.kind === 'catalogActivate') {
       signal?.throwIfAborted();
-      const source = (await loadCatalogGenerationViewModels({ env: context.env }))
+      const source = (await loadCatalogGenerations())
         .find((entry) => entry.sourceId === intent.sourceId);
       if (!source?.active || !source.candidate) {
         throw operationReviewStale('Catalog Candidate 不再可用。');
@@ -869,7 +902,7 @@ export function createTuiControllerDependencies(
               cliVersion: packageInfo.version,
               sourceIds,
               env: context.env,
-              ...(options.catalogGenerationRuntime ? { runtime: options.catalogGenerationRuntime } : {}),
+              runtime: catalogGenerationRuntime,
               ...(signal ? { signal } : {}),
               ...(!bootstrapMissingActive ? { bootstrapMissingActive: false } : {}),
             });
@@ -1032,7 +1065,7 @@ export function createTuiControllerDependencies(
         sourceIds: [parsePluginId(intent.pluginId).sourceId!],
         configSnapshot,
         env: context.env,
-        ...(options.catalogGenerationRuntime ? { runtime: options.catalogGenerationRuntime } : {}),
+        runtime: catalogGenerationRuntime,
         ...(signal ? { signal } : {}),
         ...(!bootstrapMissingActive ? { bootstrapMissingActive: false } : {}),
       });
@@ -1232,6 +1265,10 @@ export function createTuiControllerDependencies(
   const dependencies: TuiControllerDependencies = {
     beginCatalogSession(sessionOptions) {
       sessionCatalogOperationContext = undefined;
+      if (sessionOptions?.reuseValidatedGenerations !== true) {
+        validatedCatalogGenerations.clear();
+        validatingCatalogGenerations.clear();
+      }
       bootstrapNextCatalogSession = sessionOptions?.bootstrapMissingActive !== false;
     },
     loadStatus,
@@ -1364,7 +1401,7 @@ export function createTuiControllerDependencies(
           env: context.env,
           signal,
           runtime: {
-            ...options.catalogGenerationRuntime,
+            ...catalogGenerationRuntime,
             onProgress: (event) => onState(event.state),
           },
         });
@@ -1372,7 +1409,7 @@ export function createTuiControllerDependencies(
         refreshError = error;
       }
       signal.throwIfAborted();
-      const source = (await loadCatalogGenerationViewModels({ env: context.env }))
+      const source = (await loadCatalogGenerations())
         .find((entry) => entry.sourceId === sourceId);
       if (!source) throw refreshError ?? new TuiOperationBlockedError(
         'catalogGenerationSourceMissing',
@@ -1395,8 +1432,9 @@ export function createTuiControllerDependencies(
         sourceId,
         refreshPolicy,
         env: context.env,
+        runtime: catalogGenerationRuntime,
       });
-      return (await loadCatalogGenerationViewModels({ env: context.env }))
+      return (await loadCatalogGenerations())
         .find((source) => source.sourceId === sourceId)!;
     },
     captureEvidence,
@@ -1591,6 +1629,10 @@ export function createTuiControllerDependencies(
             sourceId: intent.sourceId,
             expectedCandidateGenerationKey: intent.candidateGenerationKey,
             env: context.env,
+            runtime: {
+              validatedGenerations: validatedCatalogGenerations,
+              validatingGenerations: validatingCatalogGenerations,
+            },
           });
         } catch (error) {
           if (error instanceof CatalogGenerationError
@@ -1609,6 +1651,7 @@ export function createTuiControllerDependencies(
         await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
         const packageInfo = await readCliPackageInfo();
         const runtime = {
+          generation: catalogGenerationRuntime,
           onProgress: async (event: CatalogSourceMutationProgress) => {
             const phase = SOURCE_PROGRESS_PHASES[event.stage];
             progressFeed?.setCurrent(

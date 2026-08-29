@@ -17,6 +17,7 @@ import {
 import {
   CatalogRefreshCoordinator,
   loadCatalogGenerationViewModels,
+  type CatalogGenerationLoadStageEvent,
 } from '../../src/tui/catalog-generation.js';
 import type {
   CatalogSource,
@@ -1351,6 +1352,97 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     expect(healthy.active?.catalogVersion).toBe('1.0.0');
+  });
+
+  it('loads one control snapshot and validates each unique Active or Candidate once', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const activeRoot = fixturePath('view-model-shared-active');
+    const candidateRoot = fixturePath('view-model-shared-candidate');
+    const pathRoot = fixturePath('view-model-path-active');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: activeRoot, workspaceIdentity: 'workspace:view-model-shared',
+        catalogVersion: '1.0.0', content: 'active\n',
+      }),
+      createGenerationSnapshot({
+        root: candidateRoot, workspaceIdentity: 'workspace:view-model-shared',
+        catalogVersion: '2.0.0', content: 'candidate\n',
+      }),
+      createGenerationSnapshot({
+        root: pathRoot, workspaceIdentity: 'workspace:view-model-path',
+        catalogVersion: '1.0.0', content: 'path\n',
+      }),
+    ]);
+    const sharedGit = {
+      type: 'git' as const,
+      url: 'https://example.invalid/shared-view-model.git',
+      refPolicy: { type: 'explicit' as const, ref: 'refs/heads/catalog/latest' },
+    };
+    await configureSources({
+      schemaVersion: 2,
+      sources: [
+        { id: 'git-a', primary: true, ...sharedGit },
+        { id: 'git-b', primary: false, ...sharedGit },
+        { id: 'path-a', type: 'path', primary: false, path: pathRoot },
+      ],
+    });
+    const roots = new Map([
+      ['git-a', activeRoot],
+      ['git-b', activeRoot],
+      ['path-a', pathRoot],
+    ]);
+    const commits = new Map([
+      ['git-a', '1'.repeat(40)],
+      ['git-b', '1'.repeat(40)],
+    ]);
+    const runtime = { providers: providers({ roots, commits }) };
+    await Promise.all(['git-a', 'git-b', 'path-a'].map((sourceId) =>
+      refreshCatalogSourceGeneration({
+        sourceId, cliVersion: '1.0.0', env: isolation.env, runtime,
+      })));
+    roots.set('git-a', candidateRoot);
+    roots.set('git-b', candidateRoot);
+    commits.set('git-a', '2'.repeat(40));
+    commits.set('git-b', '2'.repeat(40));
+    await Promise.all(['git-a', 'git-b'].map((sourceId) =>
+      refreshCatalogSourceGeneration({
+        sourceId, cliVersion: '1.0.0', env: isolation.env, runtime,
+      })));
+
+    const validatedGenerations = new Map();
+    const firstEvents: CatalogGenerationLoadStageEvent[] = [];
+    const first = await loadCatalogGenerationViewModels({
+      env: isolation.env,
+      validatedGenerations,
+      onStage: (event) => { firstEvents.push(event); },
+    });
+    expect(first).toHaveLength(3);
+    expect(first.filter((source) => source.candidate)).toHaveLength(2);
+    expect(firstEvents).toEqual([
+      expect.objectContaining({ name: 'catalog.context', sourceCount: 3 }),
+      expect.objectContaining({
+        name: 'catalog.validation',
+        pointerCount: 5,
+        fullValidationCount: 3,
+        reusedValidationCount: 2,
+      }),
+    ]);
+
+    const secondEvents: CatalogGenerationLoadStageEvent[] = [];
+    await loadCatalogGenerationViewModels({
+      env: isolation.env,
+      validatedGenerations,
+      onStage: (event) => { secondEvents.push(event); },
+    });
+    expect(secondEvents).toEqual([
+      expect.objectContaining({ name: 'catalog.context', sourceCount: 3 }),
+      expect.objectContaining({
+        name: 'catalog.validation',
+        pointerCount: 5,
+        fullValidationCount: 0,
+        reusedValidationCount: 5,
+      }),
+    ]);
   });
 
   it('does not reuse an old source-ID pointer after the configured source identity changes', async () => {

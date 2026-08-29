@@ -811,7 +811,10 @@ describe('Catalog generation TUI', () => {
     await waitFor(() => controller.snapshot.activeReview !== undefined, 'activation Review');
     await controller.executeOperation(controller.snapshot.activeReview!.reviewToken);
     expect(executeIntent).toHaveBeenCalledTimes(1);
-    expect(beginCatalogSession).toHaveBeenLastCalledWith({ bootstrapMissingActive: false });
+    expect(beginCatalogSession).toHaveBeenLastCalledWith({
+      bootstrapMissingActive: false,
+      reuseValidatedGenerations: true,
+    });
     expect(controller.getCatalogGeneration('official')?.active?.catalogVersion).toBe('1.1.0');
     expect(controller.getCatalogGeneration('official')?.candidate).toBeUndefined();
     expect(controller.isCatalogReloadRequired('official')).toBe(false);

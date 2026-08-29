@@ -17,9 +17,12 @@ import {
 import { CatalogGenerationError } from './catalog-generation-error.js';
 import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import {
-  readCatalogGenerationState,
   withCatalogGenerationStateTransaction,
 } from './catalog-generation-state.js';
+import {
+  readCatalogGenerationControlSnapshot,
+  type CatalogGenerationControlSnapshot,
+} from './catalog-generation-control-snapshot.js';
 import {
   discardPreparedCatalogGeneration,
   prepareCatalogGeneration,
@@ -41,6 +44,8 @@ import { catalogPathProviderInternal } from './path-catalog-provider.js';
 export interface CatalogGenerationServiceRuntime {
   providers?: CatalogSourceProviderSet;
   now?: () => Date;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
   onProgress?: (event: {
     sourceId: string;
     state: 'checking' | 'validating';
@@ -60,6 +65,12 @@ export interface CatalogGenerationStatusEntry {
 export interface CatalogGenerationStatusPayload {
   catalogGenerationStatusSchemaVersion: 1;
   sources: CatalogGenerationStatusEntry[];
+}
+
+export interface ValidatedCatalogGenerationStatusEntry {
+  status: CatalogGenerationStatusEntry;
+  activeGeneration?: PublishedCatalogGeneration;
+  candidateGeneration?: PublishedCatalogGeneration;
 }
 
 type RefreshTransactionResult =
@@ -429,6 +440,11 @@ export async function refreshCatalogSourceGeneration(options: {
 
             options.signal?.throwIfAborted();
             const published = await publishPreparedCatalogGeneration(prepared);
+            options.runtime?.validatedGenerations?.set(
+              published.metadata.generationKey,
+              published,
+            );
+            options.runtime?.validatingGenerations?.delete(published.metadata.generationKey);
             options.signal?.throwIfAborted();
             if (source.type === 'path' || !currentSource?.active) {
               const active = pointerFromGeneration({
@@ -593,6 +609,9 @@ async function assertPointerMatchesGeneration(options: {
   sourceConfigFingerprint?: string;
   sourceIdentity?: string;
   env: NodeJS.ProcessEnv;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
+  onValidation?: (kind: 'full' | 'reused') => void;
 }): Promise<PublishedCatalogGeneration> {
   if (
     options.sourceConfigFingerprint !== undefined
@@ -610,13 +629,34 @@ async function assertPointerMatchesGeneration(options: {
       message: 'Catalog generation pointer does not match the current source identity. Refresh the configured source.',
     });
   }
-  const generation = await readCatalogGeneration({
-    logicalIdentity: options.logicalIdentity,
-    snapshotDigest: options.pointer.snapshotDigest,
-    env: options.env,
-  });
+  let generation = options.validatedGenerations?.get(options.pointer.generationKey);
+  if (!generation) {
+    let pending = options.validatingGenerations?.get(options.pointer.generationKey);
+    if (!pending) {
+      pending = readCatalogGeneration({
+        logicalIdentity: options.logicalIdentity,
+        snapshotDigest: options.pointer.snapshotDigest,
+        env: options.env,
+      });
+      options.validatingGenerations?.set(options.pointer.generationKey, pending);
+      options.onValidation?.('full');
+    } else {
+      options.onValidation?.('reused');
+    }
+    try {
+      generation = await pending;
+      options.validatedGenerations?.set(options.pointer.generationKey, generation);
+    } finally {
+      if (options.validatingGenerations?.get(options.pointer.generationKey) === pending) {
+        options.validatingGenerations.delete(options.pointer.generationKey);
+      }
+    }
+  } else {
+    options.onValidation?.('reused');
+  }
   if (
-    generation.metadata.catalogVersion !== options.pointer.catalogVersion
+    generation.metadata.logicalIdentity !== options.logicalIdentity
+    || generation.metadata.catalogVersion !== options.pointer.catalogVersion
     || generation.metadata.channel !== options.pointer.channel
     || generation.metadata.manifestDigest !== options.pointer.manifestDigest
     || generation.metadata.generationKey !== options.pointer.generationKey
@@ -634,7 +674,10 @@ export async function activateCatalogSourceCandidate(options: {
   expectedCandidateGenerationKey?: string;
   env?: NodeJS.ProcessEnv;
   awHomeMutationToken?: AwHomeMutationToken;
-  runtime?: Pick<CatalogGenerationServiceRuntime, 'now'>;
+  runtime?: Pick<
+    CatalogGenerationServiceRuntime,
+    'now' | 'validatedGenerations' | 'validatingGenerations'
+  >;
 }): Promise<CatalogGenerationActivationResult> {
   const env = options.env ?? process.env;
   return withAwHomeMutationLock({
@@ -676,6 +719,8 @@ export async function activateCatalogSourceCandidate(options: {
             sourceConfigFingerprint: calculateCatalogSourceConfigFingerprint(configuredSource),
             sourceIdentity: await calculateCatalogSourceIdentity(configuredSource),
             env,
+            validatedGenerations: options.runtime?.validatedGenerations,
+            validatingGenerations: options.runtime?.validatingGenerations,
           });
           const requiredCapabilities = candidateGeneration.metadata.requiredAwCapabilities;
           const support = checkAwCapabilitySupport(
@@ -736,6 +781,10 @@ export async function setCatalogSourceRefreshPolicy(options: {
   sourceId: string;
   refreshPolicy: 'startup' | 'manual';
   env?: NodeJS.ProcessEnv;
+  runtime?: Pick<
+    CatalogGenerationServiceRuntime,
+    'validatedGenerations' | 'validatingGenerations'
+  >;
 }): Promise<CatalogGenerationStatusEntry> {
   const env = options.env ?? process.env;
   return withAwHomeMutationLock({
@@ -776,7 +825,12 @@ export async function setCatalogSourceRefreshPolicy(options: {
           };
         },
       });
-      return (await readCatalogGenerationStatus({ sourceId: options.sourceId, env })).sources[0]!;
+      return (await readCatalogGenerationStatus({
+        sourceId: options.sourceId,
+        env,
+        validatedGenerations: options.runtime?.validatedGenerations,
+        validatingGenerations: options.runtime?.validatingGenerations,
+      })).sources[0]!;
     },
   });
 }
@@ -799,13 +853,14 @@ export async function removeCatalogSourceGenerationState(options: {
 export async function readCatalogGenerationStatus(options: {
   sourceId?: string;
   env?: NodeJS.ProcessEnv;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
 } = {}): Promise<CatalogGenerationStatusPayload> {
   const env = options.env ?? process.env;
-  const [config, state] = await Promise.all([
-    readCatalogSourcesConfigSnapshot(env),
-    readCatalogGenerationState(env),
-  ]);
-  const sources = config.config.sources
+  const controlSnapshot = await readCatalogGenerationControlSnapshot({ env });
+  const validatedGenerations = options.validatedGenerations ?? new Map();
+  const validatingGenerations = options.validatingGenerations ?? new Map();
+  const sources = controlSnapshot.configSnapshot.config.sources
     .filter((source) => options.sourceId === undefined || source.id === options.sourceId)
     .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   if (options.sourceId && sources.length === 0) {
@@ -815,25 +870,62 @@ export async function readCatalogGenerationStatus(options: {
       message: `Catalog source "${options.sourceId}" is not configured.`,
     });
   }
-  const entries: CatalogGenerationStatusEntry[] = [];
-  for (const source of sources) {
-    const selected = state.sources[source.id];
-    const sourceConfigFingerprint = calculateCatalogSourceConfigFingerprint(source);
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    if (selected?.active) await assertPointerMatchesGeneration({
-      logicalIdentity: selected.logicalIdentity!,
-      pointer: selected.active,
-      sourceIdentity,
+  const entries = await Promise.all(sources.map(async (source) =>
+    (await readValidatedCatalogGenerationStatusEntry({
+      sourceId: source.id,
+      controlSnapshot,
       env,
+      validatedGenerations,
+      validatingGenerations,
+    })).status));
+  return { catalogGenerationStatusSchemaVersion: 1, sources: entries };
+}
+
+export async function readValidatedCatalogGenerationStatusEntry(options: {
+  sourceId: string;
+  controlSnapshot: CatalogGenerationControlSnapshot;
+  env?: NodeJS.ProcessEnv;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
+  onValidation?: (kind: 'full' | 'reused') => void;
+}): Promise<ValidatedCatalogGenerationStatusEntry> {
+  const env = options.env ?? process.env;
+  const source = options.controlSnapshot.configSnapshot.config.sources
+    .find((entry) => entry.id === options.sourceId);
+  if (!source) {
+    throw new CatalogGenerationError({
+      code: 'catalogGenerationSourceMissing',
+      sourceId: options.sourceId,
+      message: `Catalog source "${options.sourceId}" is not configured.`,
     });
-    if (selected?.candidate) await assertPointerMatchesGeneration({
-      logicalIdentity: selected.logicalIdentity!,
-      pointer: selected.candidate,
-      sourceConfigFingerprint,
-      sourceIdentity,
-      env,
-    });
-    entries.push({
+  }
+  const selected = options.controlSnapshot.generationState.sources[source.id];
+  const sourceIdentity = options.controlSnapshot.sourceIdentities[source.id]!;
+  const activeGeneration = selected?.active
+    ? await assertPointerMatchesGeneration({
+        logicalIdentity: selected.logicalIdentity!,
+        pointer: selected.active,
+        sourceIdentity,
+        env,
+        validatedGenerations: options.validatedGenerations,
+        validatingGenerations: options.validatingGenerations,
+        onValidation: options.onValidation,
+      })
+    : undefined;
+  const candidateGeneration = selected?.candidate
+    ? await assertPointerMatchesGeneration({
+        logicalIdentity: selected.logicalIdentity!,
+        pointer: selected.candidate,
+        sourceConfigFingerprint: calculateCatalogSourceConfigFingerprint(source),
+        sourceIdentity,
+        env,
+        validatedGenerations: options.validatedGenerations,
+        validatingGenerations: options.validatingGenerations,
+        onValidation: options.onValidation,
+      })
+    : undefined;
+  return {
+    status: {
       sourceId: source.id,
       sourceType: source.type,
       refreshPolicy: selected?.refreshPolicy ?? (source.type === 'path' ? 'manual' : 'startup'),
@@ -841,7 +933,8 @@ export async function readCatalogGenerationStatus(options: {
       ...(selected?.active ? { active: selected.active } : {}),
       ...(selected?.candidate ? { candidate: selected.candidate } : {}),
       ...(selected?.lastCheck ? { lastCheck: selected.lastCheck } : {}),
-    });
-  }
-  return { catalogGenerationStatusSchemaVersion: 1, sources: entries };
+    },
+    ...(activeGeneration ? { activeGeneration } : {}),
+    ...(candidateGeneration ? { candidateGeneration } : {}),
+  };
 }

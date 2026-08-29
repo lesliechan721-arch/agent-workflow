@@ -308,9 +308,13 @@ describe('TUI controller runtime scope conflict validation', () => {
         { pluginId: 'team/demo', platform: 'codex', scope: 'project', revision: { state: 'current', availableVersion: '1.0.0' } },
       ],
     });
-    const debugLog = vi.fn()
-      .mockImplementationOnce(() => { throw new Error('log unavailable'); })
-      .mockRejectedValueOnce(new Error('async log unavailable'));
+    let reviewLogCount = 0;
+    const debugLog = vi.fn((event: { type: string }) => {
+      if (!event.type.startsWith('review.prepare.')) return undefined;
+      reviewLogCount += 1;
+      if (reviewLogCount === 1) throw new Error('log unavailable');
+      return Promise.reject(new Error('async log unavailable'));
+    });
     const times = [10, 14, 20, 27, 31, 40];
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
@@ -340,7 +344,8 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     expect(runtimeMocks.statusCommandV5).toHaveBeenCalledOnce();
     expect(stages).toEqual(['config', 'evidence']);
-    expect(debugLog.mock.calls.map(([event]) => event)).toEqual([
+    expect(debugLog.mock.calls.map(([event]) => event)
+      .filter((event) => event.type.startsWith('review.prepare.'))).toEqual([
       expect.objectContaining({ type: 'review.prepare.config' }),
       expect.objectContaining({ type: 'review.prepare.evidence' }),
     ]);

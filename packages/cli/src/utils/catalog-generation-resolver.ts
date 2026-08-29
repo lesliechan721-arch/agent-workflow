@@ -15,7 +15,10 @@ import {
   readCatalogGenerationControlSnapshot,
   type CatalogGenerationControlSnapshot,
 } from './catalog-generation-control-snapshot.js';
-import { readCatalogGeneration } from './catalog-generation-store.js';
+import {
+  readCatalogGeneration,
+  type PublishedCatalogGeneration,
+} from './catalog-generation-store.js';
 import { checkAwCapabilitySupport } from './manifest.js';
 
 export interface ResolvedActiveCatalogGeneration extends CatalogGenerationSetSource {
@@ -27,6 +30,8 @@ async function resolveFromState(options: {
   sourceIdentity: SourceIdentity;
   state: CatalogGenerationStateFileV1;
   env: NodeJS.ProcessEnv;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
 }): Promise<ResolvedActiveCatalogGeneration> {
   const selected = options.state.sources[options.source.id];
   if (!selected?.active) {
@@ -43,11 +48,26 @@ async function resolveFromState(options: {
       message: `Active Catalog generation for source "${options.source.id}" does not match the current source identity. Confirm the configured location, run aw catalog source refresh ${options.source.id}, then reload and retry.`,
     });
   }
-  const generation = await readCatalogGeneration({
-    logicalIdentity: selected.logicalIdentity!,
-    snapshotDigest: selected.active.snapshotDigest,
-    env: options.env,
-  });
+  let generation = options.validatedGenerations?.get(selected.active.generationKey);
+  if (!generation) {
+    let pending = options.validatingGenerations?.get(selected.active.generationKey);
+    if (!pending) {
+      pending = readCatalogGeneration({
+        logicalIdentity: selected.logicalIdentity!,
+        snapshotDigest: selected.active.snapshotDigest,
+        env: options.env,
+      });
+      options.validatingGenerations?.set(selected.active.generationKey, pending);
+    }
+    try {
+      generation = await pending;
+      options.validatedGenerations?.set(selected.active.generationKey, generation);
+    } finally {
+      if (options.validatingGenerations?.get(selected.active.generationKey) === pending) {
+        options.validatingGenerations.delete(selected.active.generationKey);
+      }
+    }
+  }
   const requiredCapabilities = generation.metadata.requiredAwCapabilities;
   const support = checkAwCapabilitySupport(requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
   if (!support.supported) {
@@ -91,6 +111,8 @@ async function resolveFromState(options: {
 export async function resolveActiveCatalogGeneration(options: {
   sourceId: string;
   env?: NodeJS.ProcessEnv;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
 }): Promise<ResolvedActiveCatalogGeneration> {
   const env = options.env ?? process.env;
   const controlSnapshot = await readCatalogGenerationControlSnapshot({ env });
@@ -108,6 +130,8 @@ export async function resolveActiveCatalogGeneration(options: {
     sourceIdentity: controlSnapshot.sourceIdentities[source.id]!,
     state: controlSnapshot.generationState,
     env,
+    validatedGenerations: options.validatedGenerations,
+    validatingGenerations: options.validatingGenerations,
   });
 }
 
@@ -138,10 +162,14 @@ export async function resolveCatalogGenerationSet(options: {
   sourceIds?: string[];
   env?: NodeJS.ProcessEnv;
   controlSnapshot?: CatalogGenerationControlSnapshot;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
 } = {}): Promise<CatalogGenerationSet> {
   const env = options.env ?? process.env;
   const controlSnapshot = options.controlSnapshot
     ?? await readCatalogGenerationControlSnapshot({ env });
+  const validatedGenerations = options.validatedGenerations ?? new Map();
+  const validatingGenerations = options.validatingGenerations ?? new Map();
   const config = controlSnapshot.configSnapshot;
   const state = controlSnapshot.generationState;
   const requested = options.sourceIds ? new Set(options.sourceIds) : null;
@@ -165,6 +193,8 @@ export async function resolveCatalogGenerationSet(options: {
       sourceIdentity: controlSnapshot.sourceIdentities[source.id]!,
       state,
       env,
+      validatedGenerations,
+      validatingGenerations,
     })));
   const sources: CatalogGenerationSetSource[] = resolved.map(({ pointer: _pointer, ...source }) => source);
   const primarySourceId = config.config.sources.find((source) => source.primary)!.id;

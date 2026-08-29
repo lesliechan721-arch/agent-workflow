@@ -174,6 +174,8 @@ async function resolveGenerationSetWithBootstrap(options: {
       ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
       env: options.env,
       controlSnapshot,
+      validatedGenerations: options.runtime?.validatedGenerations,
+      validatingGenerations: options.runtime?.validatingGenerations,
     });
     return { generationSet, controlSnapshot };
   } catch (error) {
@@ -189,6 +191,8 @@ async function resolveGenerationSetWithBootstrap(options: {
       ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
       env: options.env,
       controlSnapshot,
+      validatedGenerations: options.runtime?.validatedGenerations,
+      validatingGenerations: options.runtime?.validatingGenerations,
     });
     return { generationSet, controlSnapshot };
   }
@@ -246,13 +250,18 @@ export async function resolveCatalogOperationContext(
   options: ResolveCatalogOperationContextOptions,
 ): Promise<CatalogOperationContext> {
   const env = options.env ?? process.env;
+  const runtime: CatalogGenerationServiceRuntime = {
+    ...options.runtime,
+    validatedGenerations: options.runtime?.validatedGenerations ?? new Map(),
+    validatingGenerations: options.runtime?.validatingGenerations ?? new Map(),
+  };
   options.signal?.throwIfAborted();
   const resolved = await resolveGenerationSetWithBootstrap({
     cliVersion: options.cliVersion,
     ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
     env,
     ...(options.signal ? { signal: options.signal } : {}),
-    ...(options.runtime ? { runtime: options.runtime } : {}),
+    runtime,
     ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
     ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
   });
@@ -267,6 +276,11 @@ export async function resolvePartialCatalogOperationContext(
   options: ResolveCatalogOperationContextOptions,
 ): Promise<CatalogOperationContext> {
   const env = options.env ?? process.env;
+  const runtime: CatalogGenerationServiceRuntime = {
+    ...options.runtime,
+    validatedGenerations: options.runtime?.validatedGenerations ?? new Map(),
+    validatingGenerations: options.runtime?.validatingGenerations ?? new Map(),
+  };
   options.signal?.throwIfAborted();
   let controlSnapshot = await readCatalogGenerationControlSnapshot({
     env,
@@ -282,7 +296,7 @@ export async function resolvePartialCatalogOperationContext(
         sourceIds,
         env,
         ...(options.signal ? { signal: options.signal } : {}),
-        ...(options.runtime ? { runtime: options.runtime } : {}),
+        runtime,
       });
     } catch (error) {
       if (options.signal?.aborted) throw error;
@@ -299,6 +313,8 @@ export async function resolvePartialCatalogOperationContext(
         sourceIds: [sourceId],
         env,
         controlSnapshot,
+        validatedGenerations: runtime.validatedGenerations,
+        validatingGenerations: runtime.validatingGenerations,
       });
       const context = await createCatalogOperationContext({
         generationSet,

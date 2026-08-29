@@ -361,13 +361,7 @@ export async function prepareCatalogGeneration(options: {
       { flag: 'wx', mode: 0o600 },
     );
     options.signal?.throwIfAborted();
-    const validated = await validateGenerationDirectory({
-      generationDir: stagingDir,
-      logicalIdentity,
-      snapshotDigest: validation.snapshotDigest,
-    });
-    options.signal?.throwIfAborted();
-    return { stagingDir, location, metadata, manifest: validated.manifest };
+    return { stagingDir, location, metadata, manifest: validation.manifest };
   } catch (error) {
     await fs.remove(stagingDir).catch(() => undefined);
     if (error instanceof CatalogGenerationError) throw error;
