@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prototype Review</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main id="app">
+    <header>
+      <p class="eyebrow">Prototype Review</p>
+      <h1 id="question">加载中…</h1>
+      <p id="meta"></p>
+    </header>
+    <section id="frame" class="panel" hidden></section>
+    <section id="options" class="options"></section>
+    <section id="guided" class="panel" hidden></section>
+    <section id="tokens" class="panel" hidden></section>
+    <section class="panel">
+      <h2>总体反馈</h2>
+      <textarea id="globalNotes" rows="5" placeholder="补充整体观察、无法接受的部分或其它方向。"></textarea>
+    </section>
+    <section id="annotationPanel" class="panel" hidden>
+      <h2>标注</h2>
+      <p id="annotationHelp"></p>
+      <ul id="annotations"></ul>
+    </section>
+    <footer>
+      <button data-verdict="accepted">接受</button>
+      <button data-verdict="revise">需要修改</button>
+      <button id="otherVerdict" data-verdict="rejected">都不接受</button>
+      <button data-verdict="new-material-question">出现新材料问题</button>
+      <button id="download" class="secondary">下载 feedback.json</button>
+      <span id="status"></span>
+    </footer>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

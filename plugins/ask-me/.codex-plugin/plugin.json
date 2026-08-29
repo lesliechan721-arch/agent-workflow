@@ -1,15 +1,10 @@
 {
   "name": "ask-me",
-  "version": "0.1.0-beta.1",
-  "description": "通过独立的逐轮决策访谈或可体验原型形成共享理解。",
-  "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
-  },
+  "version": "0.1.0-beta.2",
+  "description": "通过独立决策访谈、可体验原型或可选 Shape 工作流形成准确共享理解。",
   "interface": {
     "displayName": "Ask Me",
-    "shortDescription": "逐轮推演重要决定，或用可体验原型为一个决定建立证据",
+    "shortDescription": "通过问答、原型或完整 Shape 塑造重要决定",
     "capabilities": [
       "Skills"
     ]

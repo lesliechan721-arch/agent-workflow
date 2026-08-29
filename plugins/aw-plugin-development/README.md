@@ -2,7 +2,7 @@
 
 在既有合法 AW Catalog Workspace 中创建或维护单个 AW 插件，并分别评审单个插件或有界的跨插件工作流。
 
-这是 Agent-facing Developer Assistant。它依赖已经安装的 `aw` CLI 来执行公开作者命令；它不是 SDK，也不是 AW manifest、Catalog 或发布合同的规范真值。不需要 clone `agent-workflows`，也不要求目标 workspace 有本仓库的 `packages/cli` 或 `node_modules`。
+这是 Agent-facing Developer Assistant。它依赖当前 PATH 中已安装的 `aw` CLI 来执行公开作者命令；它不是 SDK，也不是 AW manifest、Catalog 或发布合同的规范真值。
 
 ## 安装
 
@@ -31,7 +31,8 @@ aw install aw-plugin-development -p both
 
 ## 边界
 
-- `author-aw-plugin` 要求既有合法 Catalog Workspace，通过当前 PATH 的 `aw plugin capabilities` 查询字段合同，并只调用公开 `aw plugin` 命令写入或验证一个 Plugin Source。普通用户删除请求必须使用 `author-aw-catalog`；只有 Catalog Author 明确交接 Workspace 和插件名后才执行删除。成功后只返回 receipt，不验证已删除插件，也不改 Catalog metadata、commit、build 或 publish。缺少 Workspace 或删除 handoff 时它停止，并要求使用 `author-aw-catalog`。
-- 两个 Reviewer 保持只读，不修改插件或 materialized 产物，也不输出发布资格。
+- 所有会调用 `aw` 的 Skill 都先从自己的实际 Skill 根运行 `aw self check --from <skill-root> --json`。检查不通过时停止并报告 receipt 中的缺失能力。
+- `author-aw-plugin` 通过 `aw catalog context --json` 取得既有 Catalog Workspace，并只调用公开 `aw plugin` 命令写入或验证一个 Plugin Source。普通用户删除请求必须使用 `author-aw-catalog`；只有 Catalog Author 明确交接插件名后才执行删除。成功后只返回 receipt，不验证已删除插件，也不改 Catalog metadata、commit、build 或 publish。缺少 Workspace 或删除 handoff 时它停止，并要求使用 `author-aw-catalog`。
+- 两个 Reviewer 通过当前 CLI context receipt 定位 Workspace，保持只读，不修改插件或 materialized 产物，也不输出发布资格。
 - 单 Skill 质量由 `review-agent-skill` 负责；通用跨 Skill 组合由 `review-agent-workflow` 负责。
 - Author 不拥有 Catalog metadata、inventory、聚合 build/validate 或 publication。`review-aw-workflow` 仍只评审跨插件业务 workflow；workflow 不等于 Catalog composition。

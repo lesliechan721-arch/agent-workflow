@@ -1,13 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "aw-skill-eval-runner",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "通过共享 aw-skill-eval CLI 执行 Agent Skill Eval plan，并生成中立的运行证据。",
-  "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -30,5 +25,13 @@
   },
   "scripts": {
     "timeoutMs": 30000
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-manifest.v2",
+        "aw.plugin-skills.v1"
+      ]
+    }
   }
 }

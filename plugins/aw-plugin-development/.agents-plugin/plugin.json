@@ -1,13 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "aw-plugin-development",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "创建或维护 AW 插件，评审单个 AW 插件，并评审有界的跨 AW 插件工作流。",
-  "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -17,6 +12,20 @@
       "products": [
         "CODEX",
         "CLAUDE"
+      ]
+    }
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.catalog-context.v1",
+        "aw.plugin-authoring.v1",
+        "aw.plugin-build-config.v1",
+        "aw.plugin-manifest.v2",
+        "aw.plugin-skills.v1",
+        "aw.runtime-imports.v1",
+        "aw.self-check.v1",
+        "aw.skill-validation.v1"
       ]
     }
   },

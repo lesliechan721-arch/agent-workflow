@@ -1,10 +1,9 @@
 ---
 name: publish-aw-catalog
 description: >-
-  仅当用户显式调用本 Skill，并明确要求把 AW Catalog 发布到其明确给出的 Git remote 和 branch 时使用。必须先运行 publication preflight、展示精确身份并取得该身份的再次授权；不自动选择目标，不自动发布，不重试失败的同一 Catalog 版本。
-compatibility: 需要 Node.js 22+、当前 PATH 中提供 catalog status/publish 的 aw CLI，以及具有明确 Git remote 的合法 Catalog Workspace。
+  当用户清晰要求发布某个 AW Catalog（包括“发布当前 Catalog”）时使用。先运行 publication preflight、展示 CLI 解析的精确身份并取得仅本次授权；普通修改、build、验证或只读 Review 不使用。
+compatibility: 需要 Node.js 22+、可用的 aw CLI，以及合法 Catalog Workspace。
 user-invocable: true
-disable-model-invocation: true
 metadata:
   short-description: 经精确授权后发布 AW Catalog
 ---
@@ -13,31 +12,52 @@ metadata:
 
 这是唯一拥有远端 Catalog publication 的 Skill。普通维护或“准备发布”不构成执行授权。
 
+## Runtime gate
+
+在首次 AW 命令前，从平台提供的本 Skill 实际根取得 `<skill-root>`：使用 Skill locator 或当前加载的 `SKILL.md` 所在根，绝不从 cwd 猜测。随后运行：
+
+```bash
+aw self check --from <skill-root> --json
+```
+
+找不到 `aw` 或 `aw self check` 命令时立即停止，并精确报告 `missing: aw` 或 `missing: aw self check`。若 JSON 的 `ok` 为 `false`，立即停止并逐项报告 `missingCapabilities`；不添加 `--require`、不维护 Skill 内 capability 列表，也不固定 executable。
+
 ## 工作流
 
-1. 要求用户明确给出 `<workspace-root>`、`<remote>` 和 `<branch>`。不得从 Git 默认值、当前 branch、官方约定或已有配置自动选择 remote/branch。运行 `aw --version`、`aw catalog status --help` 和 `aw catalog publish --help`。
-2. 告知用户 preflight 会从已提交 source HEAD 执行每个插件的公开 validator 和 build code。随后运行：
+1. 运行 `aw catalog context --json`。用户已明确给出的 root、remote 或 branch 必须分别作为 `--workspace-root <user.root>`、`--remote <user.remote>` 或 `--branch <user.branch>` 传入这一次 context。只使用 CLI JSON 的 `workspace.root`、`publication.remote` 和 `publication.branch`。
+2. Workspace 找不到、remote unavailable 或 publication ambiguous 时，询问缺少的选择。取得选择后必须运行新的 context：
 
    ```bash
-   aw catalog status --workspace-root <workspace-root> \
-     --preflight --remote <remote> --branch <branch> --json
+   aw catalog context --workspace-root <selected.workspaceRoot> \
+     --remote <selected.remote> --branch <selected.branch> --json
    ```
 
-3. Preflight 必须成功。直接从 CLI JSON 展示 `workspace.identity`、`git.sourceHead`、`catalog.version`，以及 `publication.remote`、`fetchUrl`、`pushUrl`、`branch`、`parent`、`tag`、`snapshotDigest`、`planId` 和 `descriptorDigest`。任一字段缺失时停止；不得猜测、重算或省略身份字段。
-4. 请求用户明确授权这一个 exact identity。授权必须在本次成功 preflight 之后，并与展示的全部身份相同。旧授权、笼统的“发布最新版”或只授权 remote 不足以继续。
-5. 只有精确授权后才运行：
+   丢弃先前 context receipt，只消费这个新 receipt 的 resolved root、remote 和 branch；仍不从当前 Git branch 或本 Skill 推断目标。
+3. 告知用户 preflight 会从已提交 source HEAD 执行每个插件的公开 validator 和 build code。清晰的“发布当前 Catalog”请求可进入这一步，但不授权远端写。无歧义后运行：
 
    ```bash
-   aw catalog publish --workspace-root <workspace-root> \
-     --remote <remote> --branch <branch> \
-     --expected-descriptor-digest <descriptorDigest> --yes --json
+   aw catalog status --workspace-root <context.workspace.root> \
+     --remote <context.publication.remote> \
+     --branch <context.publication.branch> --preflight --json
    ```
 
-6. 核对 receipt 的 `workspaceIdentity`、`sourceHead`、`catalogVersion`、`remote`、`fetchUrl`、`pushUrl`、`branch`、`parent`、`tag`、`snapshotDigest`、`planId` 和 `descriptorDigest` 与授权身份，并使用当前公开的只读 Git/CLI 入口验证 remote branch 和 immutable tag。证据不一致时报告失败，不修改或删除 attempt。
+4. Preflight 必须成功。直接从 JSON 展示最终绝对 `workspace.root`、`publication.remote`、`publication.branch` 和 `publication.descriptorDigest`；同时保留 CLI 返回的 source、版本和 publication receipt 字段。任一授权字段缺失时停止；不得猜测、重算或省略。
+5. 请求用户仅对这一次 identity 明确授权：绝对 root、remote、branch 和 descriptor digest 必须与本次 preflight 完全相同。旧授权、笼统的“发布最新版”或只授权 remote 不足以继续。
+6. 只有精确授权后才运行：
+
+   ```bash
+   aw catalog publish --workspace-root <preflight.workspace.root> \
+     --remote <preflight.publication.remote> \
+     --branch <preflight.publication.branch> \
+     --expected-descriptor-digest <preflight.publication.descriptorDigest> \
+     --yes --json
+   ```
+
+7. 核对 publish receipt 的 `workspaceRoot`、`remote`、`branch` 和 `descriptorDigest` 与授权 identity；保留 receipt 的其它 CLI 证据。drift 或不一致时报告失败，不修改或删除 attempt。
 
 ## 失败边界
 
-- 不自动 publish，不自动选择 remote/branch，不在授权前运行 publish。
+- 不自动 publish，不在授权前运行 publish。
 - 不删除、改写或绕过 version attempt。
-- publish 失败或结果不确定后，不重试同一 Catalog version。报告现有 receipt/错误，并把“由 Catalog Author 提升到新版本后重新 preflight”作为恢复入口。
+- 拒绝、preflight 失败、drift 或结果不确定时，报告现有 receipt/错误并停止。Catalog 不重试或 repair 同一 version；后续发布必须由 Catalog Author 选择新版本并重新 preflight。
 - 不实现或复制 CLI publication、ledger、tag 或 recovery 算法。

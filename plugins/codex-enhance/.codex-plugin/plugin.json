@@ -1,12 +1,7 @@
 {
   "name": "codex-enhance",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
-  "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
-  },
   "interface": {
     "displayName": "Codex Enhance",
     "shortDescription": "Codex 只读探索与通用子代理编排增强",

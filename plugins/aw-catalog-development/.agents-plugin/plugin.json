@@ -1,13 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "aw-catalog-development",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "创建、维护和只读评审 AW Catalog Workspace，并通过显式授权发布 Catalog。",
-  "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -17,6 +12,20 @@
       "products": [
         "CODEX",
         "CLAUDE"
+      ]
+    }
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.catalog-authoring.v1",
+        "aw.catalog-context.v1",
+        "aw.catalog-dev-source.v1",
+        "aw.catalog-publication.v1",
+        "aw.plugin-authoring.v1",
+        "aw.plugin-manifest.v2",
+        "aw.plugin-skills.v1",
+        "aw.self-check.v1"
       ]
     }
   },

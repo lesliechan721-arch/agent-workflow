@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "ask-me",
+    "version": "0.1.0-beta.2"
+  },
+  "requiredCapabilities": [
+    "aw.plugin-build-config.v1",
+    "aw.plugin-manifest.v2",
+    "aw.plugin-skills.v1"
+  ],
+  "digest": "sha256:4c2f26e578b16d8e53b2fa43e822d16bafd031b4ed18ada6d5ce6a127f0a0e94"
+}

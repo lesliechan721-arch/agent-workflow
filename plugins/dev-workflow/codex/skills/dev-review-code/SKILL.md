@@ -36,31 +36,19 @@ description: 当已有代码改动、diff、branch 或 PR，需要正式检查�
 docs/dev/<task-slug>/code-review.md
 ```
 
-报告记录 Review target、Implementation version、Spec version、Assurance、Result、Reviewer topology、两个审查轴、验证证据和建议动作。Assured 模式或用户明确要求保留历史时，额外保存到：
+Assured 模式或用户明确要求保留历史时，额外保存到：
 
 ```text
 docs/dev/<task-slug>/reviews/code/<timestamp>.md
 ```
 
-使用 [代码审查模板](assets/code-review-template.md)。
+使用 [代码审查模板](assets/code-review-template.md)。报告必须明确 `clean`、`blocked` 或 `incomplete`，并保留两个审查轴和实际验证证据。
 
 ## Finding 路由
 
 - `implementation-defect` 或 `spec-fidelity`：修复实现并运行相关验证。
 - `spec-defect`：修订 Spec，重新完成规格审查和批准，再更新实现。
-- `material-decision`：补充材料决定。
+- `material-decision`：补充材料决定或 Shape。
 - `evidence-needed`：收集体验、实验或运行证据。
 
-只有最新 Review 为 `clean` 才可以交付。`blocked` 时返回 findings 和一个能力级建议；`incomplete` 时先补足审查条件，再重新执行本 Skill。
-
-## 输出
-
-```text
-结果：clean / blocked / incomplete
-产物：<报告路径 / 无>
-审查拓扑：one dual-axis reviewer / two axis reviewers
-未解决：<阻塞问题或无>
-建议动作：<修复实现 / 修订 Spec / 补充决定 / 收集证据 / 可以交付 / 重试审查 / 请求用户决定>
-```
-
-先报告，不修改代码、测试或 Spec。
+只有最新 Review 为 `clean` 才可以交付。`blocked` 时报告 findings；`incomplete` 时说明缺失的审查条件。先报告，不修改代码、测试或 Spec。

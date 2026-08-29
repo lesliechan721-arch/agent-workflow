@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PrototypeFeedback",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "prototypeId",
+    "prototypeRevision",
+    "verdict",
+    "answers",
+    "annotations"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "prototypeId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prototypeRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "verdict": {
+      "enum": [
+        "accepted",
+        "revise",
+        "rejected",
+        "new-material-question"
+      ]
+    },
+    "selectedOptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "answers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "questionId"
+        ],
+        "properties": {
+          "questionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "comment": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "annotations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "target",
+          "comment"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "value"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "dom",
+                      "text",
+                      "node"
+                    ]
+                  },
+                  "value": {
+                    "type": "object",
+                    "required": [
+                      "optionId",
+                      "elementId"
+                    ],
+                    "properties": {
+                      "optionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "elementId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "value"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "point"
+                  },
+                  "value": {
+                    "type": "object",
+                    "required": [
+                      "optionId",
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "optionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "x": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "comment": {
+            "type": "string",
+            "minLength": 1
+          },
+          "desiredOutcome": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "globalNotes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

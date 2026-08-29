@@ -1,6 +1,6 @@
 # Build 作者策略
 
-字段合同运行 `aw plugin capabilities --surface build-config --json` 查询。build 只从已声明输入生成确定性 staging 输出；源码树和用户环境不是输出位置。
+先读取 `aw plugin capabilities --json` receipt；只有 receipt 含所需领域时，才查询该领域。build 只从已声明输入生成确定性 staging 输出；源码树和用户环境不是输出位置。
 
 - `buildImports` 复用 canonical build 输入，不形成安装依赖。
 - `skillRuntimeFiles` 投影已有 source/import 文件。

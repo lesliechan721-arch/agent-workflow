@@ -29,6 +29,15 @@
       "catalogVersion": "0.1.0-beta.3"
     },
     {
+      "plugin": "agent-content-toolkit",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:45d48c9cfa0f848ba6ba1e1aaa6b5ada0a493a19dee83546e0df87095830b420",
+      "artifactDigest": "sha256:5f5ef46fec3a5853330a7d68feb9f45e3cc24be9df0f7f5f68ce81e8a59b09a1",
+      "manifestDigest": "sha256:fe6cd7a83d913433590136c8f86a388584795c65d665c4670c1c3ca596819775",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
+    },
+    {
       "plugin": "agent-skill-toolkit",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:abeae8b59eb7cba24e65fed95e0d86392955f47876de19a29c9ed3837aacc5fd",
@@ -56,6 +65,15 @@
       "catalogVersion": "0.1.0-beta.3"
     },
     {
+      "plugin": "agent-skill-toolkit",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:a1aa98101a088c136c3e8472acdc521dea4e1c8c2ef7ecde6730ed112eeccaaf",
+      "artifactDigest": "sha256:da546b9efe19274fca6f2ea0914060dba1e19504129d84a9ecf2d7f2fd9ce062",
+      "manifestDigest": "sha256:53bbbfa2499f51da8aa649e6894d444eda9da32c37365c4baf3d104729088f47",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
+    },
+    {
       "plugin": "ask-me",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:2bf8ffcaa1de57127b4528f4a8c41c7d609589f9d4d9b7bbf983fd82ef4ae60d",
@@ -81,6 +99,15 @@
       "manifestDigest": "sha256:e865a114b85fc1186174910133c1c06553406a451708e9324ddcbb06db4974b4",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.3"
+    },
+    {
+      "plugin": "ask-me",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:175e1132fa1df8bd18a0b05814598f7dd9378e7663d1ee95c467cd9fdd33faad",
+      "artifactDigest": "sha256:ac7d1cd1751879d5deb4964ff8bb9af168eca867f58ac75caf609e84ace5060d",
+      "manifestDigest": "sha256:320b98fecadac133964f32527076f6b9f0915b7eaaceac5f6d6fbf903f94202f",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
     },
     {
       "plugin": "aw-catalog-development",
@@ -99,6 +126,15 @@
       "manifestDigest": "sha256:b4c23479c836bad5030ac900b55a5f033f26bcb1bc4ca9087dbdc74efc20196f",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.3"
+    },
+    {
+      "plugin": "aw-catalog-development",
+      "version": "0.1.0-beta.3",
+      "contentDigest": "sha256:386ef8570c1820b0ad9560a4e5b2d7e93fa6381727cce5e5f59a89c5ddaecc85",
+      "artifactDigest": "sha256:628bca7924476bbd015815f2dd0f768bca0bd5f0fadc4c8b7b63e7351fa3e176",
+      "manifestDigest": "sha256:68e22f62b6190bf81b86d3dcbb5e592fb5d78e70c3f8107ae4ac03330c58d494",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
     },
     {
       "plugin": "aw-plugin-development",
@@ -128,6 +164,15 @@
       "catalogVersion": "0.1.0-beta.3"
     },
     {
+      "plugin": "aw-plugin-development",
+      "version": "0.1.0-beta.4",
+      "contentDigest": "sha256:a34079d8d6e4ef4c7bc87d6459cb797ddc850549aa7ae1f0ea7b22f5c064eb27",
+      "artifactDigest": "sha256:14db04cead56e3d7f207f9480d0367e751c10127e9d3f4488c109fd454585c6c",
+      "manifestDigest": "sha256:1c6528cbb2819a4c565fb9267435af348f896bf394a0caaf2c644ced499567c8",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
+    },
+    {
       "plugin": "aw-skill-eval-runner",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:5d7f713098037cf5335d2fdf8d4b49c0c41e033bfc3975da6b96c04395f42cab",
@@ -155,6 +200,15 @@
       "catalogVersion": "0.1.0-beta.3"
     },
     {
+      "plugin": "aw-skill-eval-runner",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:e03deab9fe243d7ea669fb0c87282550efb719987b89343fd480b0ed88b676e0",
+      "artifactDigest": "sha256:9e50fc90e459b813bb5f40610fbe5d77a0505fa1f49ec91281bceff927fc98c8",
+      "manifestDigest": "sha256:047e70a02ea631f6833829d9841ed7bdd977f459ee371a93aab25c0af9404d7a",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
+    },
+    {
       "plugin": "codex-enhance",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:4ab35d6cfbc2d653563c81220b9fcac42f15b15b09eb3a33568bd26ebd102bb1",
@@ -180,6 +234,15 @@
       "manifestDigest": "sha256:e6f0c4e0664e101581c720253c30c77b417ab211274e8e761b95599014291b07",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.3"
+    },
+    {
+      "plugin": "codex-enhance",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:0ee92ea44017311347598b295485c9788ffaf279b811be0f648d64e51dd02444",
+      "artifactDigest": "sha256:bb18711e7f8252091c89c3aa74020bd8395ca0357a4fa4bb35843fee60bce4ee",
+      "manifestDigest": "sha256:6deaf5231f5180316941abc1c0fa66c2aee80dcdb6153acdc3e63b3709db4e0b",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
     },
     {
       "plugin": "dev-workflow",
@@ -209,6 +272,15 @@
       "catalogVersion": "0.1.0-beta.3"
     },
     {
+      "plugin": "dev-workflow",
+      "version": "0.1.0-beta.3",
+      "contentDigest": "sha256:5c3ffa9397850413720589644b9392a20a359b0a9fcdbbab76340147acf7efc2",
+      "artifactDigest": "sha256:6296fd5f47877f67045c673768a19ce021f8bf3a1e43ad594a4af7a6d888f243",
+      "manifestDigest": "sha256:9a6f806a64daf097aebb45dcbcb081802e8508a72ca636f669a18651c102b73e",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
+    },
+    {
       "plugin": "git-toolkit",
       "version": "0.1.0-beta.1",
       "contentDigest": "sha256:8d6118dfa740a6ea9e015192ac103a684008b6a0575ac00d53c48b35fe451c42",
@@ -234,6 +306,15 @@
       "manifestDigest": "sha256:c8575019b6628a41225d1a42de30146f5a553a7da4c7f282d49f8bc050d5b338",
       "channel": "beta",
       "catalogVersion": "0.1.0-beta.3"
+    },
+    {
+      "plugin": "git-toolkit",
+      "version": "0.1.0-beta.2",
+      "contentDigest": "sha256:3928c243050dc1ea92f651537a434cbef6c9047a5a0a60db8de72236ae8eb521",
+      "artifactDigest": "sha256:06a57a60cd6bfef1c747e6acfe0cf49f6773b8dab5b5ec04952325a69d9d2585",
+      "manifestDigest": "sha256:235c12faf2cce70892ccfcf05306229d29ef37f556dc9c219fd4744c42f884c7",
+      "channel": "beta",
+      "catalogVersion": "0.1.0-beta.4"
     }
   ]
 }

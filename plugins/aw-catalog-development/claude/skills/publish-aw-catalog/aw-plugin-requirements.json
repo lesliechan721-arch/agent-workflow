@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "aw-catalog-development",
+    "version": "0.1.0-beta.3"
+  },
+  "requiredCapabilities": [
+    "aw.catalog-authoring.v1",
+    "aw.catalog-context.v1",
+    "aw.catalog-dev-source.v1",
+    "aw.catalog-publication.v1",
+    "aw.plugin-authoring.v1",
+    "aw.plugin-manifest.v2",
+    "aw.plugin-skills.v1",
+    "aw.self-check.v1"
+  ],
+  "digest": "sha256:0dda9b5450756d937bb9cd7c8d8fe7685d75e5c67e096561a245ae1ace8b45a7"
+}
