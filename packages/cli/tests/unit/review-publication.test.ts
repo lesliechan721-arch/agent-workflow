@@ -76,7 +76,7 @@ async function fixture(options: { generatedRuntime?: string } = {}): Promise<str
     name: 'demo-plugin',
     version: '0.1.0',
     description: 'Demo plugin.',
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    schemaVersion: 2,
     skills: './skills',
     marketplace: {
       category: 'workflow',
@@ -166,7 +166,7 @@ async function writeDirectProvider(root: string): Promise<void> {
     name: 'runtime-provider',
     version: '0.1.0',
     description: 'Runtime provider.',
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    schemaVersion: 2,
     skills: './skills',
     marketplace: {
       category: 'workflow',

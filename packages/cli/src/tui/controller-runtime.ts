@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { CatalogSourceResolution, PlatformName } from '../types.js';
@@ -75,8 +76,9 @@ import {
   targetHasArtifactCollision,
 } from '../utils/target-eligibility.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
-import { resolvePluginsFromCatalog } from '../utils/manifest.js';
+import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   resolveCatalogOperationContext,
   resolvePartialCatalogOperationContext,
@@ -117,13 +119,24 @@ async function loadPortablePluginIds(options: {
       : {}),
     ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
     consume: async (catalog) => (await Promise.all(catalog.sources.flatMap((item) => item.resolution
-      ? [resolvePluginsFromCatalog(item.resolution.rootDir, undefined).then((plugins) => plugins
-          .filter((plugin) => plugin.manifest.distributions?.agentSkills)
-          .map((plugin) => formatPluginId({
-            sourceId: item.resolution!.sourceId,
-            pluginName: plugin.manifest.name,
-          })))]
-      : []))).flat(),
+      ? item.resolution.manifest.entries.flatMap((entry) => {
+          const support = checkAwCapabilitySupport(
+            entry.requires.aw.capabilities ?? [],
+            IMPLEMENTED_AW_CAPABILITIES,
+          );
+          return support.supported
+            ? [readPluginManifest(
+                path.join(item.resolution!.rootDir, 'plugins', entry.name),
+                { mode: 'bundle' },
+              ).then((plugin) => plugin.manifest.distributions?.agentSkills
+                ? formatPluginId({
+                    sourceId: item.resolution!.sourceId,
+                    pluginName: entry.name,
+                  })
+                : null)]
+            : [];
+        })
+      : []))).filter((pluginId): pluginId is string => pluginId !== null),
   });
 }
 
@@ -393,17 +406,17 @@ async function loadDependencyOverviews(options: {
         : {}),
       ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
       consume: async (catalog) => ({
-        nodes: (await Promise.all(catalog.sources.flatMap((item) => item.resolution
-          ? [resolvePluginsFromCatalog(item.resolution.rootDir, undefined).then((plugins) =>
-              plugins.map((plugin): DependencyCatalogNode => ({
-                pluginId: formatPluginId({
-                  sourceId: item.resolution!.sourceId,
-                  pluginName: plugin.manifest.name,
-                }),
-                displayName: plugin.manifest.interface?.displayName ?? plugin.manifest.name,
-                dependencies: (plugin.manifest.dependencies ?? []).map((pluginName) =>
-                  formatPluginId({ sourceId: item.resolution!.sourceId, pluginName })),
-              }))) ] : []))).flat(),
+        nodes: catalog.sources.flatMap((item) => item.resolution
+          ? item.resolution.manifest.entries.map((entry): DependencyCatalogNode => ({
+              pluginId: formatPluginId({
+                sourceId: item.resolution!.sourceId,
+                pluginName: entry.name,
+              }),
+              displayName: entry.interface?.displayName ?? entry.name,
+              dependencies: entry.dependencies.map((pluginName) =>
+                formatPluginId({ sourceId: item.resolution!.sourceId, pluginName })),
+            }))
+          : []),
         sourceErrors: catalog.sources.flatMap((item) => item.error
           ? [{ sourceId: item.sourceId, code: 'dependencyGraphInvalid' }]
           : []),
@@ -423,6 +436,9 @@ async function loadDependencyOverviews(options: {
   for (const target of options.status.payload.targets) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }
+  const unsupportedPluginIds = new Set(options.status.pluginSummaries
+    .filter((summary) => (summary.missingCapabilities?.length ?? 0) > 0)
+    .map((summary) => summary.pluginId));
   const placementReferences = new Map<string, DependencyPlacementReferenceViewModel[]>();
   for (const consumer of options.status.payload.targets.filter((target) => target.state !== 'absent')) {
     const consumerNode = nodes.get(consumer.pluginId);
@@ -468,7 +484,8 @@ async function loadDependencyOverviews(options: {
   };
   const aggregateFor = (pluginId: string, placements: PlatformPlacementSummary[]) => {
     const sourceId = parsePluginId(pluginId).sourceId;
-    if (graph.sourceErrors.some((error) => error.sourceId === sourceId)) return 'unavailable' as const;
+    if (graph.sourceErrors.some((error) => error.sourceId === sourceId)
+      || unsupportedPluginIds.has(pluginId)) return 'unavailable' as const;
     if (placements.length === 0 || placements.every((placement) => placement.state === 'notInstalled')) {
       return 'notInstalled' as const;
     }

@@ -4,9 +4,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type { CatalogSourceId, CliVersion, SourceIdentity } from '../types.js';
-import { compareStrictSemVer } from './manifest.js';
+import { checkAwCapabilitySupport, normalizeAwCapabilities } from './manifest.js';
 import { canonicalizePathThroughExistingAncestorSync, resolveAwHome } from './state-paths.js';
-import { validateCatalogSnapshot, type CatalogSnapshotValidation } from './catalog-snapshot.js';
+import { validateCatalogSnapshotTransport, type CatalogSnapshotValidation } from './catalog-snapshot.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
+import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 
 const SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 const SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -21,7 +23,7 @@ export interface CatalogSourceCacheMetadata {
   resolvedCommit: string;
   manifestDigest: string;
   snapshotDigest: string;
-  minAwVersion: CliVersion;
+  requiredCapabilities: string[];
   validatedAt: string;
 }
 
@@ -76,7 +78,7 @@ function isStrictObject(value: unknown, keys: string[]): value is Record<string,
 function parseMetadata(value: unknown): CatalogSourceCacheMetadata | null {
   if (!isStrictObject(value, [
     'schemaVersion', 'entryKey', 'sourceId', 'sourceIdentity', 'requestedRef',
-    'resolvedCommit', 'manifestDigest', 'snapshotDigest', 'minAwVersion', 'validatedAt',
+    'resolvedCommit', 'manifestDigest', 'snapshotDigest', 'requiredCapabilities', 'validatedAt',
   ])) return null;
   if (
     value.schemaVersion !== 2
@@ -87,8 +89,19 @@ function parseMetadata(value: unknown): CatalogSourceCacheMetadata | null {
     || typeof value.resolvedCommit !== 'string' || !COMMIT_IDENTITY_PATTERN.test(value.resolvedCommit)
     || typeof value.manifestDigest !== 'string' || !SOURCE_IDENTITY_PATTERN.test(value.manifestDigest)
     || typeof value.snapshotDigest !== 'string' || !SOURCE_IDENTITY_PATTERN.test(value.snapshotDigest)
-    || typeof value.minAwVersion !== 'string'
+    || !Array.isArray(value.requiredCapabilities)
     || typeof value.validatedAt !== 'string' || Number.isNaN(Date.parse(value.validatedAt))
+  ) return null;
+  const requiredCapabilities = (() => {
+    try {
+      return normalizeAwCapabilities(value.requiredCapabilities);
+    } catch {
+      return null;
+    }
+  })();
+  if (
+    requiredCapabilities === null
+    || JSON.stringify(requiredCapabilities) !== JSON.stringify(value.requiredCapabilities)
   ) return null;
   return value as unknown as CatalogSourceCacheMetadata;
 }
@@ -156,7 +169,6 @@ async function readSnapshotAt(options: {
       !metadata || metadata.sourceId !== options.sourceId
       || metadata.sourceIdentity !== options.sourceIdentity
       || metadata.requestedRef !== options.requestedRef
-      || compareStrictSemVer(options.cliVersion, metadata.minAwVersion) < 0
     ) return null;
     const expectedKey = digestJson({
       sourceId: metadata.sourceId,
@@ -165,20 +177,31 @@ async function readSnapshotAt(options: {
       resolvedCommit: metadata.resolvedCommit,
       manifestDigest: metadata.manifestDigest,
       snapshotDigest: metadata.snapshotDigest,
-      minAwVersion: metadata.minAwVersion,
+      requiredCapabilities: metadata.requiredCapabilities,
     });
     if (metadata.entryKey !== expectedKey) return null;
-    const validation = await validateCatalogSnapshot(snapshotRoot);
+    const validation = await validateCatalogSnapshotTransport(snapshotRoot);
     if (
       validation.manifestDigest !== metadata.manifestDigest
       || validation.snapshotDigest !== metadata.snapshotDigest
-      || validation.manifest.compatibility.aw.minVersion !== metadata.minAwVersion
+      || JSON.stringify(validation.manifest.requires.aw.capabilities ?? [])
+        !== JSON.stringify(metadata.requiredCapabilities)
     ) return null;
+    const support = checkAwCapabilitySupport(metadata.requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
+    if (!support.supported) {
+      throw new CatalogProviderCompatibilityError({
+        sourceId: options.sourceId,
+        requiredCapabilities: metadata.requiredCapabilities,
+        missingCapabilities: support.missing,
+        availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+      });
+    }
     throwIfAborted(options.signal);
     return { entryDir: options.entryDir, snapshotRoot, metadata, validation };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     if (options.signal?.aborted) throw error;
+    if (error instanceof CatalogProviderCompatibilityError) throw error;
     return null;
   }
 }
@@ -245,18 +268,19 @@ async function publishCatalogSourceCacheEntryUnlocked(
   try {
     await fs.mkdir(candidateDir);
     await fs.copy(options.snapshotRoot, candidateSnapshotRoot, { dereference: false, preserveTimestamps: true });
-    const validation = await validateCatalogSnapshot(candidateSnapshotRoot);
+    const validation = await validateCatalogSnapshotTransport(candidateSnapshotRoot);
     throwIfAborted(options.signal);
     if (
       validation.manifestDigest !== options.validation.manifestDigest
       || validation.snapshotDigest !== options.validation.snapshotDigest
-      || validation.manifest.compatibility.aw.minVersion !== options.validation.manifest.compatibility.aw.minVersion
+      || JSON.stringify(validation.manifest.requires.aw.capabilities ?? [])
+        !== JSON.stringify(options.validation.manifest.requires.aw.capabilities ?? [])
     ) throw new Error('Catalog snapshot changed before cache publication.');
     const identity = {
       sourceId: options.sourceId, sourceIdentity: options.sourceIdentity,
       requestedRef: options.requestedRef, resolvedCommit: options.resolvedCommit,
       manifestDigest: validation.manifestDigest, snapshotDigest: validation.snapshotDigest,
-      minAwVersion: validation.manifest.compatibility.aw.minVersion,
+      requiredCapabilities: normalizeAwCapabilities(validation.manifest.requires.aw.capabilities ?? []),
     };
     const metadata: CatalogSourceCacheMetadata = {
       schemaVersion: 2, entryKey: digestJson(identity), ...identity, validatedAt: new Date().toISOString(),

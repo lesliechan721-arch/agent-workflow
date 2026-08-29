@@ -21,12 +21,18 @@ import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
   assertManifestPlatformSupport,
   assertPluginInputTree,
+  createAwPluginRequirementsReceipt,
   createBundleSourceManifest,
   createPlatformManifestBase,
   isIgnoredPluginInputDirectory,
   normalizePluginRelativePath,
   readPluginManifest,
+  resolvePluginRequirements,
 } from '../utils/manifest.js';
+import {
+  AwCapabilityUnsupportedError,
+  IMPLEMENTED_AW_CAPABILITIES,
+} from '../commands/aw-capabilities.js';
 import { writeJsonFile } from '../utils/json.js';
 import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 import { renderTemplate } from '../utils/template-engine.js';
@@ -42,7 +48,10 @@ import {
   validateRuntimeSkillClosuresRoot,
   validateSkillRuntimeProjectionFreshness,
 } from '../utils/runtime-skill-closure.js';
-import { validatePortableSkillDirectoriesRoot } from '../utils/dynamic-skill-tree.js';
+import {
+  AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
+  validatePortableSkillDirectoriesRoot,
+} from '../utils/dynamic-skill-tree.js';
 import {
   renderClaudeSlashCommand,
   renderCodexSlashCommandOpenAiYaml,
@@ -417,6 +426,9 @@ async function assertArtifactSourceTreePortable(
       : entry.name;
     if (isSkillAuthorOnlyPath(relativePath)) continue;
     if (isMacOsMetadataName(entry.name)) continue;
+    if (relativePath === AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH) {
+      throw new Error(`Invalid ${fieldName}: source root cannot declare reserved file ${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}.`);
+    }
     const entryPath = path.join(rootDir, entry.name);
     if (entry.isSymbolicLink()) {
       throw new Error(`Invalid ${fieldName}: symbolic links are not supported (${entry.name}).`);
@@ -482,8 +494,9 @@ async function resolveArtifactRuntimeImports(options: {
   plugin: PluginMeta;
   outputRoot: string;
   resolver?: CatalogRuntimeImportResolver;
+  requiredCapabilities: readonly string[];
 }): Promise<PluginMeta['manifest']> {
-  const manifest = createBundleSourceManifest(options.plugin);
+  const manifest = createBundleSourceManifest(options.plugin, options.requiredCapabilities);
   for (const [targetIndex, target] of (manifest.artifacts?.targets ?? []).entries()) {
     for (const [importIndex, runtimeImport] of (target.runtimeImports ?? []).entries()) {
       if (!options.resolver) {
@@ -517,6 +530,31 @@ async function resolveArtifactRuntimeImports(options: {
     manifest.distributions.agentSkills.skills = './agent-skills/skills';
   }
   return manifest;
+}
+
+async function injectRequirementsReceipts(options: {
+  outputRoot: string;
+  plugin: PluginMeta;
+  requiredCapabilities: readonly string[];
+}): Promise<void> {
+  const receipt = createAwPluginRequirementsReceipt(
+    { name: options.plugin.manifest.name, version: options.plugin.manifest.version },
+    options.requiredCapabilities,
+  );
+  for (const relativeRoot of ['claude/skills', 'codex/skills', 'agent-skills/skills']) {
+    const skillsRoot = path.join(options.outputRoot, relativeRoot);
+    if (!(await fs.pathExists(skillsRoot))) continue;
+    for (const entry of await fs.readdir(skillsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const skillRoot = path.join(skillsRoot, entry.name);
+      if (!(await fs.pathExists(path.join(skillRoot, 'SKILL.md')))) continue;
+      const receiptPath = path.join(skillRoot, 'aw-plugin-requirements.json');
+      if (await fs.pathExists(receiptPath)) {
+        throw new Error(`Reserved runtime requirements receipt conflicts with source content: ${receiptPath}`);
+      }
+      await writeJsonFile(receiptPath, receipt);
+    }
+  }
 }
 
 async function copySlashCommandAsset(
@@ -1587,6 +1625,24 @@ export interface LocalPluginBundleResult {
   };
 }
 
+function assertPluginRequirementsSupported(
+  pluginName: string,
+  requirements: Awaited<ReturnType<typeof resolvePluginRequirements>>,
+): void {
+  if (requirements.unsupportedByCurrentAw.length > 0) {
+    throw new AwCapabilityUnsupportedError(pluginName, requirements.unsupportedByCurrentAw);
+  }
+  const blockingObservations = requirements.observations.filter((observation) => observation.blocking);
+  if (blockingObservations.length > 0) {
+    const error = new Error(
+      `Plugin "${pluginName}" has blocking AW capability scanner observations: ${blockingObservations.map((observation) => `${observation.path}: ${observation.message}`).join('; ')}`,
+    ) as Error & { code: string; observations: typeof blockingObservations };
+    error.code = 'awCapabilityScanBlocked';
+    error.observations = blockingObservations;
+    throw error;
+  }
+}
+
 export async function bundleLocalPlugin(
   plugin: PluginMeta,
   outputRoot: string,
@@ -1599,11 +1655,23 @@ export async function bundleLocalPlugin(
     preparedRuntimeContext: options.preparedRuntimeContext,
   };
   await assertPluginInputTree(plugin.rootDir);
+  const sourceRequirements = await resolvePluginRequirements({
+    pluginRoot: plugin.rootDir,
+    manifest: plugin.manifest,
+    implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+  });
+  assertPluginRequirementsSupported(plugin.manifest.name, sourceRequirements);
   await fs.remove(outputRoot);
   const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
 
   try {
     plugin = buildPlugin.plugin;
+    const requirements = await resolvePluginRequirements({
+      pluginRoot: plugin.rootDir,
+      manifest: plugin.manifest,
+      implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+    });
+    assertPluginRequirementsSupported(plugin.manifest.name, requirements);
     assertManifestPlatformSupport(plugin.manifest.name, plugin.manifest);
     await fs.ensureDir(outputRoot);
     const supportedPlatforms = resolveSupportedPlatforms(plugin.manifest);
@@ -1838,6 +1906,7 @@ export async function bundleLocalPlugin(
       plugin,
       outputRoot,
       resolver: buildPlugin.runtimeContext.resolver,
+      requiredCapabilities: requirements.effective,
     });
     await writeJsonFile(
       path.join(outputRoot, '.agents-plugin', 'plugin.json'),
@@ -1859,6 +1928,11 @@ export async function bundleLocalPlugin(
         manifest,
       );
     }
+    await injectRequirementsReceipts({
+      outputRoot,
+      plugin,
+      requiredCapabilities: requirements.effective,
+    });
 
     await validateSkillRuntimeProjectionSources(skillRuntimeFileProjections);
     await validateSkillRuntimeProjectionFreshness(

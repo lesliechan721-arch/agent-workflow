@@ -3,7 +3,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   CatalogChannel,
-  CatalogManifestV4,
+  CatalogManifestV5,
   CatalogSourceId,
   CliVersion,
   DistributionName,
@@ -108,12 +108,16 @@ export interface GitCatalogSource extends CatalogSourceBase {
 export interface PathCatalogSource extends CatalogSourceBase {
   type: 'path';
   path: string;
+  managedBy?: {
+    kind: 'catalog-workspace';
+    workspaceIdentity: string;
+  };
 }
 
 export type CatalogSource = GitCatalogSource | PathCatalogSource;
 
 export interface CatalogSourcesConfig {
-  schemaVersion: 1;
+  schemaVersion: 2;
   sources: CatalogSource[];
 }
 
@@ -123,7 +127,7 @@ export interface CatalogSourceResolution {
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
-  manifest: CatalogManifestV4;
+  manifest: CatalogManifestV5;
   manifestDigest: string;
   snapshotDigest: string;
   cacheEntryKey: string;
@@ -187,7 +191,7 @@ export interface CatalogGenerationMetadataV1 {
   manifestDigest: string;
   snapshotDigest: string;
   generationKey: string;
-  minAwVersion: string;
+  requiredAwCapabilities: string[];
   publishedAt: string;
 }
 
@@ -532,5 +536,4 @@ export interface CatalogResolution {
   source: 'local' | 'embedded' | 'remote' | 'cache';
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
-  minAwVersion?: CliVersion;
 }

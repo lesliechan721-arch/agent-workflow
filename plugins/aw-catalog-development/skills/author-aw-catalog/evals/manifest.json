@@ -25,6 +25,7 @@
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": ["validation"],
+      "forbidMultipleSkillLoads": true,
       "profiles": ["project-default"],
       "defaultRuns": 3,
       "releaseSplits": ["validation"],
@@ -41,7 +42,10 @@
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "perRunTimeoutMs": 300000,
+      "environment": {
+        "pathPrepend": ["fixtures/bin"]
+      }
     }
   ]
 }

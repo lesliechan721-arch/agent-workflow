@@ -844,7 +844,7 @@ describe('plugin script test runner', () => {
       name: 'registry-provider',
       version: '0.1.0',
       description: 'registry provider',
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      schemaVersion: 2,
       marketplace: {
         category: 'workflow',
         strict: true,

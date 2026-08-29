@@ -574,6 +574,39 @@ describe('local-plugin generator', () => {
     )).resolves.toContain('Commit report summary ships with the Skill.');
   });
 
+  it('rejects a reserved requirements receipt at a dynamic sourceDirs root', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    delete manifest.skills;
+    manifest.artifacts = {
+      targets: [{
+        id: 'dynamic-commit',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'commit',
+        sourceDirs: ['./skills/commit'],
+      }],
+    };
+    await Promise.all([
+      writeFixturePluginManifest(repoRoot, manifest),
+      fs.outputJson(
+        path.join(pluginRoot, 'skills', 'commit', 'aw-plugin-requirements.json'),
+        { reserved: true },
+      ),
+    ]);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    await expect(bundleLocalPlugin(
+      plugin,
+      path.join(repoRoot, 'out', plugin.manifest.name),
+    )).rejects.toThrow('source root cannot declare reserved file aw-plugin-requirements.json');
+  });
+
   it('does not declare a static Codex skills root for user-only dynamic codex.skill targets', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readFixturePluginManifest(repoRoot);

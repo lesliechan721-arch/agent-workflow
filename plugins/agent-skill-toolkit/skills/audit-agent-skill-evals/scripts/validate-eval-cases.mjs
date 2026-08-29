@@ -28,7 +28,6 @@ const NON_TRIGGER_HINTS = new Set([
   'agent_type',
   'model',
   'reasoning_effort',
-  'expected_loaded_skills',
   'final_output',
   'outcome',
 ]);
@@ -177,6 +176,14 @@ function validateAssertions(evalCase, caseId, diagnostics, strict, releaseReleva
 }
 
 function validateTriggerLayer(evalCase, caseId, diagnostics) {
+  if (evalCase.eval_type !== 'trigger' && Object.hasOwn(evalCase, 'expected_loaded_skills')) {
+    diagnostics.push(diagnostic(
+      'error',
+      'case.route-expectation-type',
+      'expected_loaded_skills is only valid for trigger cases.',
+      caseId,
+    ));
+  }
   if (evalCase.eval_type !== 'trigger') return;
   const topLevelSuspicious = [...NON_TRIGGER_HINTS].filter((key) => Object.hasOwn(evalCase, key));
   if (topLevelSuspicious.length > 0) {

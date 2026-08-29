@@ -6,7 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
-import type { CatalogManifestV3, PluginMeta } from '../../src/types.js';
+import type { CatalogManifestV5, PluginMeta } from '../../src/types.js';
 import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
 import {
   appendCatalogToPluginReleaseLedger,
@@ -27,10 +27,10 @@ function createPlugin(name: string, version = '1.0.0'): PluginMeta {
     rootDir: `/plugins/${name}`,
     manifestPath: `/plugins/${name}/.agents-plugin/plugin.json`,
     manifest: {
+      schemaVersion: 2,
       name,
       version,
       description: `${name} fixture`,
-      compatibility: { aw: { minVersion: '0.0.0' } },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -50,14 +50,19 @@ function createManifest(options: {
   manifestDigest?: string;
   catalogVersion?: string;
   channel?: 'latest' | 'beta';
-}): CatalogManifestV3 {
+}): CatalogManifestV5 {
   const catalogVersion = options.catalogVersion ?? '2.0.0-beta.1';
   const channel = options.channel ?? 'beta';
   return {
-    schemaVersion: 3,
+    schemaVersion: 5,
     catalogVersion,
     channel,
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
+    marketplace: {
+      owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
+      interface: { displayName: 'Fixture Marketplace' },
+    },
+    release: { state: 'development' },
     entries: [{
       name: 'ask-me',
       version: options.version,
@@ -65,7 +70,8 @@ function createManifest(options: {
       source: './plugins/ask-me',
       category: 'workflow',
       strict: true,
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      dependencies: [],
+      requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
       policy: {
         installation: 'AVAILABLE',
         authentication: 'NOT_REQUIRED',
@@ -120,14 +126,15 @@ describe('plugin release workflow', () => {
     ));
     const developmentManifest = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json'));
     expect(developmentManifest).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       catalogVersion: sourceMetadata.catalog.version,
       channel: String(sourceMetadata.catalog.version).includes('-') ? 'beta' : 'latest',
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
       release: { state: 'development' },
     });
     expect(developmentManifest.entries[0]).toMatchObject({
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      dependencies: [],
+      requires: { aw: { capabilities: expect.arrayContaining(['aw.plugin-manifest.v2']) } },
     });
     expect(developmentManifest).not.toHaveProperty('packages');
     await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json'))).resolves.toBe(false);
@@ -143,7 +150,7 @@ describe('plugin release workflow', () => {
     await expect(fs.readJson(sourceManifestPath)).resolves.toMatchObject({ version: '0.2.0' });
   });
 
-  it('uses the schema floor for a lower plugin minimum and a higher real plugin minimum when required', async () => {
+  it('projects effective plugin capabilities without changing plugin versions', async () => {
     const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-minimum-'));
     tempDirs.push(repoRoot);
     await fs.copy(path.resolve(
@@ -157,25 +164,20 @@ describe('plugin release workflow', () => {
     await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
     await expect(fs.readJson(path.join(outputRoot, 'catalog-manifest.json')))
       .resolves.toMatchObject({
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
         entries: [expect.objectContaining({
-          compatibility: { aw: { minVersion: '0.0.0' } },
+          version: '0.1.0',
+          requires: { aw: { capabilities: expect.arrayContaining(['aw.plugin-manifest.v2']) } },
         })],
       });
 
     const manifest = await fs.readJson(manifestPath);
     await fs.writeJson(manifestPath, {
       ...manifest,
-      compatibility: { aw: { minVersion: '2.0.0' } },
+      requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
     }, { spaces: 2 });
-    await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
-    await expect(fs.readJson(path.join(outputRoot, 'catalog-manifest.json')))
-      .resolves.toMatchObject({
-        compatibility: { aw: { minVersion: '2.0.0' } },
-        entries: [expect.objectContaining({
-          compatibility: { aw: { minVersion: '2.0.0' } },
-        })],
-      });
+    await expect(bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' }))
+      .rejects.toThrow('aw.future-feature.v3');
   });
 
   it('reuses a beta version for identical content and increments it for changed content', () => {
@@ -330,10 +332,7 @@ describe('plugin release workflow', () => {
       channel: 'latest',
     }).entries[0]!;
     expect(validatePluginReleaseLedgerAgainstManifest(promoted, {
-      schemaVersion: 3,
-      catalogVersion: '2.0.0',
-      channel: 'latest',
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      ...createManifest({ version: '1.1.0', catalogVersion: '2.0.0', channel: 'latest' }),
       entries: [{ ...stableEntry, contentDigest: DIGEST_A }],
     })).toEqual(promoted);
   });
@@ -473,7 +472,7 @@ describe('plugin release workflow', () => {
     }
   });
 
-  it('rejects a release ledger that does not match the schema 4 snapshot entry', () => {
+  it('rejects a release ledger that does not match the catalog snapshot entry', () => {
     expect(() => validatePluginReleaseLedgerAgainstManifest(
       {
         schemaVersion: 2,
@@ -488,10 +487,7 @@ describe('plugin release workflow', () => {
         }],
       },
       {
-        schemaVersion: 3,
-        catalogVersion: '2.0.0',
-        channel: 'latest',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        ...createManifest({ version: '1.1.0', catalogVersion: '2.0.0', channel: 'latest' }),
         entries: [{
           ...createManifest({ version: '1.1.0', catalogVersion: '2.0.0', channel: 'latest' }).entries[0]!,
           contentDigest: DIGEST_C,
@@ -502,10 +498,7 @@ describe('plugin release workflow', () => {
 
   it('rejects an extra publication record that claims the current catalog identity', () => {
     const manifest = {
-      schemaVersion: 3 as const,
-      catalogVersion: '2.0.0',
-      channel: 'latest' as const,
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      ...createManifest({ version: '1.1.0', catalogVersion: '2.0.0', channel: 'latest' }),
       entries: [{
         ...createManifest({ version: '1.1.0', catalogVersion: '2.0.0', channel: 'latest' }).entries[0]!,
         contentDigest: DIGEST_A,

@@ -57,7 +57,6 @@ function catalogPublicationDescriptor(overrides: Record<string, unknown> = {}) {
     contentDigest: sha256('catalog-content'),
     planId: sha256('catalog-plan'),
     ledgerDigest: sha256(Buffer.from('{}')),
-    minCliVersion: '1.0.0',
     pluginNames: [],
     ...overrides,
   };
@@ -104,7 +103,7 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
       } : null,
       catalog: axes.catalog ? {
         version: '2.3.0', path: 'artifacts/catalog', snapshotDigest: 'catalog-digest',
-        minCliVersion: '1.0.0', ledgerDigest: catalogLedgerDigest,
+        ledgerDigest: catalogLedgerDigest,
         publication: catalogPublication,
       } : null,
     },
@@ -129,7 +128,7 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
       : file.endsWith('core.tgz') ? 'core-tree' : 'cli-tree',
     catalogModules: {
       catalogSnapshot: {
-        validateCatalogSnapshot: async () => ({ snapshotDigest: 'catalog-digest', manifest: {} }),
+        validateCatalogSnapshotComplete: async () => ({ snapshotDigest: 'catalog-digest', manifest: {} }),
       },
       pluginStaging: {
         validatePluginReleaseLedgerAgainstManifest: () => undefined,
@@ -740,10 +739,8 @@ describe('local prepared release', () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
-  it('publishes Catalog-only without an npm compatibility provider gate', async () => {
+  it('publishes Catalog-only without an npm version provider gate', async () => {
     const fixture = await publicationFixture({ cli: false, catalog: true });
-    fixture.descriptor.catalog!.minCliVersion = '9.0.0';
-    fixture.descriptor.catalog!.publication.minCliVersion = '9.0.0';
     const publishCatalog = vi.fn();
     const readPublishedCliVersion = vi.fn(async () => {
       throw new Error('npm compatibility must not be queried');
@@ -755,19 +752,6 @@ describe('local prepared release', () => {
     })).resolves.toBe(fixture.descriptor);
     expect(readPublishedCliVersion).not.toHaveBeenCalled();
     expect(publishCatalog).toHaveBeenCalledOnce();
-  });
-
-  it('rejects a prepared Catalog compatibility floor that differs from its publication binding', async () => {
-    const fixture = await publicationFixture({ cli: false, catalog: true });
-    fixture.descriptor.catalog!.minCliVersion = '0.1.0';
-    fixture.descriptor.catalog!.publication.minCliVersion = '9.0.0';
-    const publishCatalog = vi.fn();
-
-    await expect(publishPreparedRelease({
-      ...publishOptions(fixture),
-      publishCatalog,
-    })).rejects.toThrow('compatibility binding changed');
-    expect(publishCatalog).not.toHaveBeenCalled();
   });
 
   it('rejects Catalog ledger drift', async () => {

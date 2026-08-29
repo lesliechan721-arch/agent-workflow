@@ -9,11 +9,13 @@ import type {
   CatalogSourceGenerationStateV1,
   CatalogSourceResolution,
 } from '../types.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   withAwHomeMutationLock,
   type AwHomeMutationToken,
 } from './aw-home-mutation-lock.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
+import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import {
   readCatalogGenerationState,
   withCatalogGenerationStateTransaction,
@@ -29,7 +31,7 @@ import {
 import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
 import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import { catalogGitProviderInternal } from './git-catalog-provider.js';
-import { compareStrictSemVer } from './manifest.js';
+import { checkAwCapabilitySupport, compareStrictSemVer } from './manifest.js';
 import type { CatalogSourceProviderSet } from './multi-source-catalog.js';
 import { catalogPathProviderInternal } from './path-catalog-provider.js';
 
@@ -154,9 +156,11 @@ async function recordRefreshFailure(options: {
   env: NodeJS.ProcessEnv;
   checkedAt: string;
   errorCode: string;
+  awHomeMutationToken?: AwHomeMutationToken;
 }): Promise<void> {
   await withAwHomeMutationLock({
     env: options.env,
+    token: options.awHomeMutationToken,
     action: async () => {
       const config = await readCatalogSourcesConfigSnapshot(options.env);
       const configured = config.config.sources.find((source) => source.id === options.sourceId);
@@ -208,6 +212,7 @@ export async function refreshCatalogSourceGeneration(options: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
+  awHomeMutationToken?: AwHomeMutationToken;
 }): Promise<CatalogGenerationRefreshResult> {
   const env = options.env ?? process.env;
   const config = await readCatalogSourcesConfigSnapshot(env);
@@ -242,6 +247,9 @@ export async function refreshCatalogSourceGeneration(options: {
       errorCode: error instanceof CatalogGenerationError
         ? error.code
         : 'catalogGenerationRefreshFailed',
+      ...(options.awHomeMutationToken
+        ? { awHomeMutationToken: options.awHomeMutationToken }
+        : {}),
     });
     throw error;
   }
@@ -267,6 +275,9 @@ export async function refreshCatalogSourceGeneration(options: {
       errorCode: error instanceof CatalogGenerationError
         ? error.code
         : 'catalogGenerationPublishFailed',
+      ...(options.awHomeMutationToken
+        ? { awHomeMutationToken: options.awHomeMutationToken }
+        : {}),
     });
     throw error;
   }
@@ -276,6 +287,7 @@ export async function refreshCatalogSourceGeneration(options: {
     const transaction = await withAwHomeMutationLock({
       env,
       signal: options.signal,
+      token: options.awHomeMutationToken,
       action: async () => {
         options.signal?.throwIfAborted();
         const currentConfig = await readCatalogSourcesConfigSnapshot(env);
@@ -576,12 +588,25 @@ export async function activateCatalogSourceCandidate(options: {
               message: `Catalog source "${options.sourceId}" Candidate changed after Review. Review the new Candidate before activation.`,
             });
           }
-          await assertPointerMatchesGeneration({
+          const candidateGeneration = await assertPointerMatchesGeneration({
             logicalIdentity: source.logicalIdentity,
             pointer: source.candidate,
             sourceConfigFingerprint: calculateCatalogSourceConfigFingerprint(configuredSource),
             env,
           });
+          const requiredCapabilities = candidateGeneration.metadata.requiredAwCapabilities;
+          const support = checkAwCapabilitySupport(
+            requiredCapabilities,
+            IMPLEMENTED_AW_CAPABILITIES,
+          );
+          if (!support.supported) {
+            throw new CatalogProviderCompatibilityError({
+              sourceId: options.sourceId,
+              requiredCapabilities,
+              missingCapabilities: support.missing,
+              availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+            });
+          }
           const active: CatalogGenerationPointerV1 = {
             sourceConfigFingerprint: source.candidate.sourceConfigFingerprint,
             catalogVersion: source.candidate.catalogVersion,

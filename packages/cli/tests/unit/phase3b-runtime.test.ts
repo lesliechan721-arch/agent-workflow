@@ -361,7 +361,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
     await Promise.all([
       createCatalogSnapshotFixture(primaryRoot, 'primary-demo'),
-      createCatalogSnapshotFixture(teamRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      createCatalogSnapshotFixture(teamRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.config = {
           schema: {
             mode: { type: 'string', title: 'Mode' },
@@ -372,7 +372,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'primary', type: 'path', primary: true, path: primaryRoot },
           { id: 'team', type: 'path', primary: false, path: teamRoot },
@@ -683,14 +683,14 @@ describe('phase 3B namespaced runtime stores', () => {
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'rollback-team');
     await Promise.all([
       createCatalogSnapshotFixture(primaryRoot, 'primary-demo'),
-      createCatalogSnapshotFixture(teamRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      createCatalogSnapshotFixture(teamRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.marketplace.policy.products = ['CLAUDE'];
       }),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'primary', type: 'path', primary: true, path: primaryRoot },
           { id: 'team', type: 'path', primary: false, path: teamRoot },
@@ -728,7 +728,7 @@ describe('phase 3B namespaced runtime stores', () => {
   it('keeps live state and stored config when a configured source drops the plugin bundle', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'bundle-removed-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
       manifest.extensions = {
         instructions: [{ name: 'policy', title: 'Policy', content: 'Use policy.' }],
@@ -738,7 +738,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -878,7 +878,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'good', type: 'path', primary: true, path: goodRoot },
           { id: 'bad', type: 'path', primary: false, path: badRoot },
@@ -960,7 +960,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'bad', type: 'path', primary: true, path: missingRoot }],
       },
       expectedDigest: initial.digest,
@@ -1245,7 +1245,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -1367,7 +1367,7 @@ describe('phase 3B namespaced runtime stores', () => {
   it('keeps unrelated legacy state while planning and installing a namespaced plugin', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'legacy-install-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.extensions = {
         instructions: [{ name: 'policy', title: 'Policy', content: 'Use policy.' }],
       };
@@ -1376,7 +1376,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -1479,7 +1479,7 @@ describe('phase 3B namespaced runtime stores', () => {
         path.join(sourceRoot, 'plugins', 'demo', 'skills', 'demo-skill', 'agents', 'openai.yaml'),
         'policy:\n  allow_implicit_invocation: true\n',
       );
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.marketplace.policy.products = [platform === 'codex' ? 'CODEX' : 'CLAUDE'];
         manifest.skills = './skills';
         manifest.extensions = {
@@ -1489,7 +1489,7 @@ describe('phase 3B namespaced runtime stores', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: initial.digest,
@@ -1709,13 +1709,13 @@ describe('phase 3B namespaced runtime stores', () => {
     async (namespacedCollision) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, 'double-marketplace-collision-source');
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
       });
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: initial.digest,
@@ -1774,7 +1774,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -1849,7 +1849,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -1913,7 +1913,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'primary', type: 'path', primary: true, path: primaryRoot }],
       },
       expectedDigest: initial.digest,
@@ -1969,7 +1969,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2025,14 +2025,14 @@ describe('phase 3B namespaced runtime stores', () => {
   it('keeps live targets whose current bundle no longer supports their platform', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'revoked-platform-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
     });
     const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -2092,7 +2092,7 @@ describe('phase 3B namespaced runtime stores', () => {
       path.join(sourceRoot, 'plugins', 'demo', 'skills', 'managed', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n',
     );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.skills = './skills';
     });
@@ -2100,7 +2100,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -2156,13 +2156,13 @@ describe('phase 3B namespaced runtime stores', () => {
   ] as const)('reports unreadable Claude native state from %s without writing state', async (_label, filePath) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, `invalid-claude-${_label}`);
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2213,14 +2213,14 @@ describe('phase 3B namespaced runtime stores', () => {
         path.join(sourceRoot, 'plugins', 'demo', 'skills', 'managed', 'agents', 'openai.yaml'),
         'policy:\n  allow_implicit_invocation: true\n',
       );
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
         manifest.skills = './skills';
       });
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: initial.digest,
@@ -2236,7 +2236,7 @@ describe('phase 3B namespaced runtime stores', () => {
         scope: 'project',
       }, runtime);
       expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.marketplace.policy.products = ['CLAUDE'];
       });
 
@@ -2265,7 +2265,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'race-source');
     const replacementRoot = path.join(isolation.layout.fixtureCwd, 'race-replacement');
     await Promise.all([
-      createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.extensions = {
           instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
         };
@@ -2276,7 +2276,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     const configured = await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2349,7 +2349,7 @@ describe('phase 3B namespaced runtime stores', () => {
       path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'uninstall.mjs'),
       'throw new Error("cleanup must not run uninstall lifecycle");\n',
     );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.scripts = {
         timeoutMs: 10_000,
         lifecycle: {
@@ -2360,7 +2360,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           ...initial.config.sources,
           { id: 'team', type: 'path' as const, primary: false, path: sourceRoot },
@@ -2438,7 +2438,7 @@ describe('phase 3B namespaced runtime stores', () => {
       path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'uninstall.mjs'),
       'throw new Error("uninstall lifecycle must not run without live ownership");\n',
     );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.scripts = {
         timeoutMs: 10_000,
         lifecycle: {

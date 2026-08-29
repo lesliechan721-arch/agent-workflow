@@ -69,6 +69,42 @@ describe('dynamic skill tree', () => {
     );
   });
 
+  it('injects the requirements receipt into the tree digest and rejects source and renderer collisions', async () => {
+    const root = await makeTempRoot();
+    const source = path.join(root, 'source');
+    await fs.outputFile(path.join(source, 'SKILL.md'), '# skill\n');
+    await fs.outputFile(
+      path.join(source, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    const artifact = {
+      target: 'codex.skill' as const,
+      skillKey: 'example',
+      state: 'present' as const,
+      content: { files: {} },
+    };
+    const receipt = Buffer.from('{"schemaVersion":1}\n');
+    const withoutReceipt = await createDynamicSkillExpectedTree({ artifact, sourceDirs: [source] });
+    const withReceipt = await createDynamicSkillExpectedTree({
+      artifact,
+      sourceDirs: [source],
+      requirementsReceipt: receipt,
+    });
+    expect(withReceipt.files['aw-plugin-requirements.json']).toEqual(receipt);
+    expect(createDynamicSkillTreeContentDigest(withReceipt))
+      .not.toBe(createDynamicSkillTreeContentDigest(withoutReceipt));
+
+    await fs.outputFile(path.join(source, 'aw-plugin-requirements.json'), '{}\n');
+    await expect(createDynamicSkillExpectedTree({ artifact, sourceDirs: [source] }))
+      .rejects.toThrow('aw-plugin-requirements.json');
+    await expect(createDynamicSkillExpectedTree({
+      artifact: {
+        ...artifact,
+        content: { files: { 'aw-plugin-requirements.json': '{}\n' } },
+      },
+    })).rejects.toThrow('aw-plugin-requirements.json');
+  });
+
   it('excludes top-level author directories and preserves nested domain directories', async () => {
     const root = await makeTempRoot();
     const source = path.join(root, 'source');

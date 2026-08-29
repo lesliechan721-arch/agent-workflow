@@ -89,13 +89,13 @@ async function configureCatalog(): Promise<{
   const currentRoot = path.join(isolation.layout.fixtureCwd, 'current');
   const candidateRoot = path.join(isolation.layout.fixtureCwd, 'candidate');
   await Promise.all([
-    createCatalogSnapshotFixture(currentRoot, 'demo', '0.0.0', 'demo\n', configureDemoManifest),
-    createCatalogSnapshotFixture(candidateRoot, 'demo', '0.0.0', 'demo v2\n', configureDemoManifest),
+    createCatalogSnapshotFixture(currentRoot, 'demo', [], 'demo\n', configureDemoManifest),
+    createCatalogSnapshotFixture(candidateRoot, 'demo', [], 'demo v2\n', configureDemoManifest),
   ]);
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: currentRoot }],
     },
     expectedDigest: snapshot.digest,
@@ -124,8 +124,8 @@ describe('public AW_HOME mutation command lock', () => {
     const secondSourceRoot = path.join(isolation.layout.fixtureCwd, 'cross-process-second-source');
     await Promise.all([
       fs.ensureDir(physicalHome),
-      createCatalogSnapshotFixture(firstSourceRoot, 'first-plugin', '0.0.0', 'first\n'),
-      createCatalogSnapshotFixture(secondSourceRoot, 'second-plugin', '0.0.0', 'second\n'),
+      createCatalogSnapshotFixture(firstSourceRoot, 'first-plugin', [], 'first\n'),
+      createCatalogSnapshotFixture(secondSourceRoot, 'second-plugin', [], 'second\n'),
     ]);
     await fs.symlink(physicalParent, aliasParent);
     const firstStarted = path.join(isolation.layout.fixtureCwd, 'first-started');

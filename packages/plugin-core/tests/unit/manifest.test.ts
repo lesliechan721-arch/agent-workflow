@@ -24,31 +24,33 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
   }
 }
 
-describe('plugin manifest v1 structure', () => {
-  it('accepts explicit v1 and canonicalizes a legacy manifest without mutating it', () => {
-    const explicit = manifest({ schemaVersion: 1 })
-    expect(() => assertPluginManifestStructure(explicit)).not.toThrow()
-
-    const legacy = manifest()
-    expect(normalizePluginManifestSchemaVersion(legacy)).toEqual({
-      ...legacy,
-      schemaVersion: 1,
+describe('plugin manifest v2 structure', () => {
+  it('requires explicit v2 and accepts unknown valid capability IDs', () => {
+    const explicit = manifest({
+      schemaVersion: 2,
+      requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
     })
-    expect(legacy).not.toHaveProperty('schemaVersion')
+    expect(() => assertPluginManifestStructure(explicit)).not.toThrow()
+    expect(normalizePluginManifestSchemaVersion(explicit)).toEqual(explicit)
+    expect(() => assertPluginManifestStructure(manifest())).toThrow(/schemaVersion/u)
   })
 
   it('rejects unknown versions and invalid structures', () => {
-    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2 })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 1 })))
       .toThrow(/Unsupported plugin manifest schemaVersion/u)
-    expect(() => assertPluginManifestStructure(manifest({ unexpected: true })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2, unexpected: true })))
       .toThrow(PluginManifestStructureError)
-    expect(() => assertPluginManifestStructure(manifest({ marketplace: [] })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2, marketplace: [] })))
       .toThrow(/Invalid plugin manifest structure/u)
+    expect(() => assertPluginManifestStructure(manifest({
+      schemaVersion: 2,
+      requires: { aw: { capabilities: ['future-feature'] } },
+    }))).toThrow(/capabilities/u)
   })
 
   it('fails closed for reserved imports and accepts only injected exports', () => {
     const withImport = (exportName: string) => manifest({
-      schemaVersion: 1,
+      schemaVersion: 2,
       buildConfig: {
         buildImports: [{
           plugin: '@host/runtime',
@@ -88,7 +90,6 @@ describe('plugin manifest v1 structure', () => {
     }],
     ['portable Skill collection', {
       mcpServers: './mcp.json',
-      compatibility: { aw: { minVersion: '0.1.0' } },
       distributions: { agentSkills: { skills: './portable/.git/skills' } },
     }],
     ['plugin script', {
@@ -101,7 +102,7 @@ describe('plugin manifest v1 structure', () => {
     }],
   ])('rejects ignored source segments in a %s declaration', (_label, override) => {
     expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 1,
+      schemaVersion: 2,
       ...override,
     }))).toThrow(/source paths must not enter (?:\.git|node_modules)/u)
   })

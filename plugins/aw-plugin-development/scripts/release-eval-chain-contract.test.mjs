@@ -86,10 +86,10 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
   await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
   await writeFile(path.join(plugin, 'README.md'), '# Demo Plugin\n');
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    schemaVersion: 2,
     name: 'demo-plugin',
     version: '1.0.0',
     description: 'Demo plugin.',
-    compatibility: { aw: { minVersion: '0.1.0' } },
     artifacts: {
       targets: [
         { id: 'demo-codex', target: 'codex.skill', skillKey: 'demo', scopes: ['project'], sourceDirs: ['./skills/demo'] },

@@ -26,7 +26,7 @@ describe('Catalog generation CLI', () => {
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+      schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: root }],
       },
       expectedDigest: current.digest,

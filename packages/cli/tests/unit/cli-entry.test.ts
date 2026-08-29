@@ -81,13 +81,27 @@ describe('CLI entry v4', () => {
     expect(output.stdout()).toContain('--codex-metadata');
   });
 
-  it('documents the Catalog status preflight execution boundary', async () => {
-    const output = capture();
-    expect(await runCli(['catalog', 'status', '--help'], { io: output.io })).toBe(0);
-    expect(output.stdout()).toContain('--preflight');
-    expect(output.stdout()).toContain('executes plugin');
-    expect(output.stdout()).toContain('--remote');
-    expect(output.stdout()).toContain('--branch');
+  it('documents Workspace and publication defaults on representative authoring help', async () => {
+    // Static contract exception: incorrect help sends authors to the wrong Workspace or remote; behavior tests cannot verify the text that users read before execution.
+    for (const [command, expected] of [
+      [['plugin', 'init'], 'nearest ancestor from current directory'],
+      [['plugin', 'validate'], 'nearest ancestor from plugin directory'],
+      [['plugin', 'status'], 'nearest ancestor from current directory'],
+      [['catalog', 'init'], 'then Git worktree root'],
+      [['catalog', 'build'], 'nearest ancestor from current directory'],
+      [['catalog', 'publish'], 'otherwise sole remote'],
+    ] as const) {
+      const output = capture();
+      expect(await runCli([...command, '--help'], { io: output.io })).toBe(0);
+      expect(output.stdout().replace(/\s+/gu, ' ')).toContain(expected);
+    }
+
+    const status = capture();
+    expect(await runCli(['catalog', 'status', '--help'], { io: status.io })).toBe(0);
+    expect(status.stdout()).toContain('--preflight');
+    expect(status.stdout()).toContain('executes plugin');
+    expect(status.stdout().replace(/\s+/gu, ' ')).toContain('otherwise sole remote');
+    expect(status.stdout()).toContain('--branch');
   });
 
   it.each(['init', 'add-skill'])('keeps plugin %s help on public authoring commands', async (command) => {

@@ -1,0 +1,288 @@
+#!/usr/bin/env node
+
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+
+const node = process.env.AW_PLUGIN_EVAL_CLI_NODE;
+const entry = process.env.AW_PLUGIN_EVAL_CLI_ENTRY;
+if (!node || !entry) {
+  process.stderr.write('Publisher Eval fixture requires the run-owned AW CLI entry.\n');
+  process.exit(9);
+}
+
+const args = process.argv.slice(2);
+const root = process.cwd();
+const scenario = readFileSync('fixtures/scenario.txt', 'utf8').trim().replace(/^scenario=/u, '');
+const tracePath = path.join(root, 'fixtures', 'publisher-trace.jsonl');
+const statePath = path.join(root, 'fixtures', 'publisher-state.json');
+const descriptorDigest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const snapshotDigest = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const sourceHead = '0123456789abcdef0123456789abcdef01234567';
+const remote = scenario === 'default-authorization' ? 'origin' : 'staging';
+const remoteResolvedFrom = scenario === 'default-authorization' ? 'origin' : 'explicit';
+const branch = scenario === 'default-authorization' ? 'catalog' : 'catalogs/team';
+const branchResolvedFrom = scenario === 'default-authorization' ? 'default' : 'explicit';
+const toolchain = {
+  awVersion: '0.1.0',
+  coreVersion: '0.1.0',
+  capabilities: [
+    'aw.catalog-authoring.v1',
+    'aw.catalog-context.v1',
+    'aw.catalog-dev-source.v1',
+    'aw.catalog-publication.v1',
+    'aw.catalog-snapshot.v5',
+    'aw.catalog-source.v2',
+    'aw.dynamic-artifacts.v2',
+    'aw.plugin-authoring.v1',
+    'aw.plugin-build-config.v1',
+    'aw.plugin-config.v1',
+    'aw.plugin-lifecycle.v1',
+    'aw.plugin-manifest.v2',
+    'aw.plugin-skills.v1',
+    'aw.portable-skills.v1',
+    'aw.runtime-imports.v1',
+    'aw.self-check.v1',
+    'aw.skill-validation.v1',
+  ],
+};
+const toolchainDigest = `sha256:${createHash('sha256').update(JSON.stringify(toolchain)).digest('hex')}`;
+
+const command = args.slice(0, 2).join(' ');
+appendFileSync(tracePath, `${JSON.stringify({ command, args })}\n`, 'utf8');
+
+function emit(receipt) {
+  process.stdout.write(`${JSON.stringify(receipt)}\n`);
+}
+
+function optionValue(name) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+function hasOption(name) {
+  return args.includes(name);
+}
+
+function statusReceipt({ ok, issue = null }) {
+  return {
+    schemaVersion: 2,
+    command: 'catalog:status',
+    ok,
+    workspaceRoot: root,
+    workspaceRootResolvedFrom: 'explicit',
+    workspace: {
+      root,
+      resolvedFrom: 'explicit',
+      valid: true,
+      identity: 'publisher-fixture',
+    },
+    catalog: {
+      valid: true,
+      version: '0.4.0',
+      channel: 'latest',
+      ownerName: 'Fixture Owner',
+      ownerUrl: 'https://example.invalid/catalog-owner',
+      displayName: 'Publisher Fixture',
+    },
+    plugins: [{
+      name: 'fixture-plugin',
+      version: '0.1.0',
+      dependencies: [],
+      sourceValid: true,
+    }],
+    dependencyGraph: { valid: true, order: ['fixture-plugin'] },
+    git: { checked: true, sourceHead, clean: true },
+    snapshot: {
+      path: path.join(root, '.aw', 'catalog'),
+      state: 'absent',
+      valid: false,
+      catalogVersion: null,
+      snapshotDigest: null,
+      sourceIdentityMatches: null,
+    },
+    publication: {
+      checked: true,
+      remote,
+      remoteResolvedFrom,
+      remoteUrl: 'https://example.invalid/catalog.git',
+      fetchUrl: 'https://example.invalid/catalog.git',
+      pushUrl: 'https://example.invalid/catalog.git',
+      branch,
+      branchResolvedFrom,
+      publishedVersion: null,
+      parent: null,
+      tag: 'catalog-v0.4.0',
+      tagAvailable: issue === null ? true : null,
+      attemptAvailable: issue === null ? true : null,
+      snapshotDigest: issue === null ? snapshotDigest : null,
+      planId: issue === null ? 'plan-fixture-0.4.0' : null,
+      descriptorDigest: issue === null ? descriptorDigest : null,
+      publishable: issue === null,
+    },
+    issues: issue === null ? [] : [issue],
+  };
+}
+
+function recordPublishState(attemptState, remoteResult) {
+  const previous = existsSync(statePath)
+    ? JSON.parse(readFileSync(statePath, 'utf8'))
+    : { publishCalls: 0 };
+  const publishCalls = previous.publishCalls + 1;
+  const state = {
+    publishCalls,
+    catalogVersion: '0.4.0',
+    attemptState,
+    remoteResult,
+    sameVersionRetry: publishCalls > 1,
+  };
+  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  return state;
+}
+
+function failPublish(message, attemptState, remoteResult) {
+  recordPublishState(attemptState, remoteResult);
+  emit({ command: 'catalog:publish', ok: false, errors: [{ message }] });
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+if (command === 'self check') {
+  const result = spawnSync(node, [entry, ...args], { env: process.env, stdio: 'inherit' });
+  if (result.error) {
+    process.stderr.write(`${result.error.message}\n`);
+    process.exit(9);
+  }
+  process.exit(result.status ?? 9);
+}
+
+if (command === 'catalog context') {
+  emit({
+    schemaVersion: 1,
+    command: 'catalog:context',
+    toolchain: { ...toolchain, digest: toolchainDigest },
+    workspace: {
+      found: true,
+      root,
+      identity: 'publisher-fixture',
+      resolvedFrom: 'workspace-marker',
+    },
+    initialization: { suggestedRoot: root, resolvedFrom: 'workspace-marker' },
+    git: {
+      repositoryRoot: root,
+      sourceHead,
+      clean: true,
+      remotes: [remote],
+    },
+    publication: {
+      remote,
+      remoteResolvedFrom,
+      branch,
+      branchResolvedFrom,
+      ambiguous: false,
+    },
+    developmentSource: {
+      snapshotPath: path.join(root, '.aw', 'catalog'),
+      suggestedSourceId: 'publisher-fixture-dev',
+      existingSourceId: null,
+      active: false,
+    },
+    issues: [],
+  });
+  process.exit(0);
+}
+
+if (command === 'catalog status') {
+  const argumentsValid = optionValue('--workspace-root') === root &&
+    optionValue('--remote') === remote &&
+    optionValue('--branch') === branch &&
+    hasOption('--preflight') &&
+    hasOption('--json');
+  if (!argumentsValid) {
+    emit(statusReceipt({
+      ok: false,
+      issue: {
+        code: 'fixturePreflightArgumentsInvalid',
+        message: 'Publisher did not pass the exact context identity to preflight.',
+        blocking: true,
+      },
+    }));
+    process.exit(1);
+  }
+  if (scenario === 'preflight-failure') {
+    emit(statusReceipt({
+      ok: false,
+      issue: {
+        code: 'pluginBuildFailed',
+        message: 'Fixture plugin build failed during publication preflight.',
+        blocking: true,
+      },
+    }));
+    process.exit(1);
+  }
+  emit(statusReceipt({ ok: true }));
+  process.exit(0);
+}
+
+if (command === 'catalog publish') {
+  const argumentsValid = optionValue('--workspace-root') === root &&
+    optionValue('--remote') === remote &&
+    optionValue('--branch') === branch &&
+    optionValue('--expected-descriptor-digest') === descriptorDigest &&
+    hasOption('--yes') &&
+    hasOption('--json');
+  if (!argumentsValid) {
+    failPublish(
+      'Catalog publish arguments do not match the authorized preflight.',
+      'none',
+      'not-started',
+    );
+  }
+  if (scenario === 'descriptor-drift') {
+    failPublish(
+      'Catalog publication descriptor does not match the authorized preflight.',
+      'none',
+      'not-started',
+    );
+  }
+  if (scenario === 'result-uncertain') {
+    failPublish(
+      'Catalog atomic push failed or its result is uncertain. Do not retry 0.4.0; run aw catalog version <higher>.',
+      'attempted',
+      'unknown',
+    );
+  }
+  if (scenario === 'publish-success') {
+    recordPublishState('published', 'confirmed');
+    emit({
+      command: 'catalog:publish',
+      ok: true,
+      workspaceRoot: root,
+      workspaceRootResolvedFrom: 'explicit',
+      workspaceIdentity: 'publisher-fixture',
+      catalogVersion: '0.4.0',
+      channel: 'latest',
+      remote,
+      remoteResolvedFrom,
+      remoteUrl: 'https://example.invalid/catalog.git',
+      fetchUrl: 'https://example.invalid/catalog.git',
+      pushUrl: 'https://example.invalid/catalog.git',
+      branch,
+      branchResolvedFrom,
+      parent: null,
+      tag: 'catalog-v0.4.0',
+      commit: 'fedcba9876543210fedcba9876543210fedcba98',
+      sourceHead,
+      pluginCount: 1,
+      snapshotDigest,
+      planId: 'plan-fixture-0.4.0',
+      descriptorDigest,
+    });
+    process.exit(0);
+  }
+  failPublish('Unexpected Catalog publish in this fixture scenario.', 'none', 'not-started');
+}
+
+process.stderr.write(`Unexpected Publisher Eval fixture command: ${args.join(' ')}\n`);
+process.exit(9);

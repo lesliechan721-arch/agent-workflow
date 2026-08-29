@@ -21,6 +21,7 @@ import {
   calculateCatalogSourcesConfigDigest,
   CatalogSourcesConfigConflictError,
   createDefaultCatalogSourcesConfig,
+  isDefaultOfficialCatalogSource,
   readCatalogSourcesConfig,
   readCatalogSourcesConfigSnapshot,
   removeCatalogSource,
@@ -60,10 +61,10 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
 
-describe('catalog sources config v1', () => {
+describe('catalog sources config v2', () => {
   it('validates the source union, ID, primary invariant, and stable ID order', () => {
     const config = validateCatalogSourcesConfig({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         {
           id: 'z-local',
@@ -83,33 +84,65 @@ describe('catalog sources config v1', () => {
 
     expect(config.sources.map((source) => source.id)).toEqual(['official', 'z-local']);
     expect(calculateCatalogSourcesConfigDigest({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [...config.sources].reverse(),
     })).toBe(calculateCatalogSourcesConfigDigest(config));
-    expect(() => validateCatalogSourcesConfig({ schemaVersion: 2, sources: config.sources }))
+    expect(() => validateCatalogSourcesConfig({ schemaVersion: 1, sources: config.sources }))
       .toThrow('schemaVersion');
-    expect(() => validateCatalogSourcesConfig({ schemaVersion: 1, sources: [] }))
+    expect(() => validateCatalogSourcesConfig({ schemaVersion: 2, sources: [] }))
       .toThrow('at least one source');
     expect(() => validateCatalogSourcesConfig({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ ...config.sources.find((source) => source.type === 'path'), path: './catalog' }],
     })).toThrow('canonical absolute path');
     expect(() => validateCatalogSourcesConfig({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ ...config.sources[0], id: 'Bad_ID' }],
     })).toThrow('sources[0].id');
     expect(() => validateCatalogSourcesConfig({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [config.sources[0], config.sources[0]],
     })).toThrow('source IDs must be unique');
     expect(() => validateCatalogSourcesConfig({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: config.sources.map((source) => ({ ...source, primary: false })),
     })).toThrow('exactly one primary');
     expect(() => validateCatalogSourcesConfig({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: config.sources.map((source) => ({ ...source, primary: true })),
     })).toThrow('exactly one primary');
+  });
+
+  it('accepts managed ownership only on path sources and rejects malformed ownership', () => {
+    const root = path.join(os.tmpdir(), 'managed-catalog');
+    expect(validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{
+        id: 'managed',
+        type: 'path',
+        primary: true,
+        path: root,
+        managedBy: { kind: 'catalog-workspace', workspaceIdentity: 'workspace-1' },
+      }],
+    }).sources[0]).toMatchObject({
+      managedBy: { kind: 'catalog-workspace', workspaceIdentity: 'workspace-1' },
+    });
+    expect(() => validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{
+        id: 'official', type: 'git', primary: true,
+        url: 'https://example.test/catalog.git',
+        refPolicy: { type: 'cliChannel' },
+        managedBy: { kind: 'catalog-workspace', workspaceIdentity: 'workspace-1' },
+      }],
+    })).toThrow('unknown field "managedBy"');
+    expect(() => validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{
+        id: 'managed', type: 'path', primary: true, path: root,
+        managedBy: { kind: 'other', workspaceIdentity: 'workspace-1' },
+      }],
+    })).toThrow('managedBy.kind');
   });
 
   it('returns the virtual official primary without creating a file', async () => {
@@ -134,6 +167,23 @@ describe('catalog sources config v1', () => {
       ? config.sources[0].url
       : '').protocol).toBe('https:');
     await expect(fs.pathExists(configPath)).resolves.toBe(false);
+  });
+
+  it('recognizes only the exact default official source identity', () => {
+    const official = createDefaultCatalogSourcesConfig().sources[0]!;
+    expect(isDefaultOfficialCatalogSource({ ...official, primary: false })).toBe(true);
+    expect(isDefaultOfficialCatalogSource({
+      ...official,
+      url: 'https://example.test/catalog.git',
+    })).toBe(false);
+    expect(isDefaultOfficialCatalogSource({
+      ...official,
+      refPolicy: { type: 'explicit', ref: 'catalog/latest' },
+    })).toBe(false);
+    expect(isDefaultOfficialCatalogSource({
+      ...official,
+      subdir: 'catalog',
+    })).toBe(false);
   });
 
   it('does not downgrade a materialized config when an existence probe hides an operational error', async () => {
@@ -425,7 +475,7 @@ describe('catalog source identity v1', () => {
       path: root,
     })).resolves.toBe(direct);
     expect(() => validateCatalogSourcesConfig({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'invalid',
         type: 'path',

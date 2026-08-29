@@ -58,13 +58,18 @@ import {
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import {
+  calculateCatalogEntryArtifactDigest,
+  calculateCatalogEntryContentDigest,
+  calculateCatalogEntryManifestDigest,
+} from '../../src/utils/catalog-digests.js';
+import {
   activateCatalogSourceCandidate,
   refreshCatalogSourceGeneration,
 } from '../../src/utils/catalog-generation-service.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
-import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
+import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 import { CodexManagerError } from '../../src/utils/codex-manager.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
@@ -74,7 +79,7 @@ async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTes
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: root }],
     },
     expectedDigest: snapshot.digest,
@@ -92,7 +97,7 @@ async function configureCodexAliasCatalog(options: {
   const env = { ...isolation.env, AW_CODEX_HOME: options.userConfig };
   const sourceRoot = path.join(isolation.layout.fixtureCwd, options.sourceName);
   await fs.ensureDir(options.cwd);
-  await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+  await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
     manifest.marketplace.policy.products = ['CODEX'];
     manifest.extensions = {
       instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
@@ -101,7 +106,7 @@ async function configureCodexAliasCatalog(options: {
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
     },
     expectedDigest: snapshot.digest,
@@ -145,7 +150,7 @@ describe('five namespaced write commands', () => {
   it('keeps warm write, config, status, and TUI operations provider-free', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'warm-active-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'warm\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'warm\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Warm.' }],
@@ -155,7 +160,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -230,7 +235,7 @@ describe('five namespaced write commands', () => {
       detail.startsWith('Catalog generation：'))!;
     await expect(controller.executeOperation(review.reviewToken))
       .resolves.toMatchObject({ state: 'succeeded' });
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'changed\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'changed\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Changed.' }],
@@ -266,8 +271,8 @@ describe('five namespaced write commands', () => {
       manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
     };
     await Promise.all([
-      createCatalogSnapshotFixture(httpsRoot, 'demo', '0.0.0', 'https\n', configureManifest),
-      createCatalogSnapshotFixture(sshRoot, 'demo', '0.0.0', 'ssh\n', configureManifest),
+      createCatalogSnapshotFixture(httpsRoot, 'demo', [], 'https\n', configureManifest),
+      createCatalogSnapshotFixture(sshRoot, 'demo', [], 'ssh\n', configureManifest),
     ]);
     const sshManifestPath = path.join(sshRoot, 'catalog-manifest.json');
     const sshManifest = await fs.readJson(sshManifestPath) as Record<string, unknown>;
@@ -287,7 +292,7 @@ describe('five namespaced write commands', () => {
     } as const;
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [httpsSource] },
+      config: { schemaVersion: 2, sources: [httpsSource] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -296,7 +301,7 @@ describe('five namespaced write commands', () => {
     const resolvedTransports: string[] = [];
     const gitProvider = async (source: CatalogSource): Promise<CatalogSourceResolution> => {
       if (source.type === 'git') resolvedTransports.push(source.url);
-      const validation = await validateCatalogSnapshot(currentRoot);
+      const validation = await validateCatalogSnapshotTransport(currentRoot);
       return {
         sourceId: source.id,
         sourceIdentity: await calculateCatalogSourceIdentity(source),
@@ -384,7 +389,7 @@ describe('five namespaced write commands', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'partial-session-good');
     const writeGoodSource = (version: string, field: string, content: string) =>
-      createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', `${content}\n`, (manifest) => {
+      createCatalogSnapshotFixture(sourceRoot, 'demo', [], `${content}\n`, (manifest) => {
         manifest.version = version;
         manifest.marketplace.policy.products = ['CODEX'];
         manifest.extensions = {
@@ -401,7 +406,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'good', type: 'path', primary: true, path: sourceRoot },
           {
@@ -627,7 +632,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -670,7 +675,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -711,6 +716,230 @@ describe('five namespaced write commands', () => {
     ]));
   });
 
+  it('installs a supported target without parsing an unrelated future bundle', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-future-install-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'root' },
+      { name: 'future', requiredCapabilities: ['aw.future-feature.v3'] },
+    ]);
+    const futureRoot = path.join(sourceRoot, 'plugins', 'future');
+    const futureManifestPath = path.join(futureRoot, '.agents-plugin', 'plugin.json');
+    const futureManifest = await fs.readJson(futureManifestPath);
+    futureManifest.schemaVersion = 99;
+    await fs.writeJson(futureManifestPath, futureManifest, { spaces: 2 });
+    const catalogManifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const catalogManifest = await fs.readJson(catalogManifestPath);
+    const futureEntry = catalogManifest.entries.find((entry: { name: string }) =>
+      entry.name === 'future');
+    futureEntry.artifactDigest = await calculateCatalogEntryArtifactDigest(futureRoot);
+    futureEntry.manifestDigest = calculateCatalogEntryManifestDigest(futureManifest);
+    futureEntry.contentDigest = await calculateCatalogEntryContentDigest(futureRoot);
+    await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+
+    const result = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    });
+
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result.dependencyPlan?.resolvedPluginIds).toEqual(['team/root']);
+  });
+
+  it('lists supported and future entries in status and TUI without parsing the future bundle', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-future-status-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf', 'future'] },
+      { name: 'future', requiredCapabilities: ['aw.future-feature.v3'] },
+    ]);
+    const futureRoot = path.join(sourceRoot, 'plugins', 'future');
+    const futureManifestPath = path.join(futureRoot, '.agents-plugin', 'plugin.json');
+    const futureManifest = await fs.readJson(futureManifestPath);
+    futureManifest.schemaVersion = 99;
+    await fs.writeJson(futureManifestPath, futureManifest, { spaces: 2 });
+    const catalogManifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const catalogManifest = await fs.readJson(catalogManifestPath);
+    const futureEntry = catalogManifest.entries.find((entry: { name: string }) =>
+      entry.name === 'future');
+    futureEntry.artifactDigest = await calculateCatalogEntryArtifactDigest(futureRoot);
+    futureEntry.manifestDigest = calculateCatalogEntryManifestDigest(futureManifest);
+    futureEntry.contentDigest = await calculateCatalogEntryContentDigest(futureRoot);
+    await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+
+    const status = await statusCommandV5({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      json: true,
+    });
+    expect(status.payload.catalog.sources).toEqual([
+      expect.not.objectContaining({ error: expect.anything() }),
+    ]);
+    expect(status.pluginSummaries.map((entry) => entry.pluginId).sort()).toEqual([
+      'team/future',
+      'team/leaf',
+      'team/root',
+    ]);
+    expect(status.pluginSummaries.find((entry) => entry.pluginId === 'team/future'))
+      .toMatchObject({ missingCapabilities: ['aw.future-feature.v3'] });
+    expect(status.payload.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'team/future',
+        state: 'error',
+        errors: [expect.objectContaining({ code: 'awCapabilityUnsupported' })],
+      }),
+    ]));
+
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      interactive: false,
+    })));
+    await controller.load();
+    expect(controller.snapshot.phase).toBe('ready');
+    expect(controller.snapshot.viewModel?.plugins.map((entry) => entry.pluginId).sort()).toEqual([
+      'team/future',
+      'team/leaf',
+      'team/root',
+    ]);
+    expect(controller.snapshot.viewModel?.plugins.find((entry) => entry.pluginId === 'team/future'))
+      .toMatchObject({ aggregateStatus: 'unavailable', missingCapabilities: ['aw.future-feature.v3'] });
+    expect(controller.snapshot.viewModel?.plugins.find((entry) => entry.pluginId === 'team/root'))
+      .toMatchObject({ dependencySummary: { directCount: 2, totalCount: 2 } });
+    expect(controller.snapshot.viewModel?.dependencyOverviews.find((entry) =>
+      entry.pluginId === 'team/root')?.dependencies.find((entry) =>
+        entry.pluginId === 'team/future')).toMatchObject({ aggregateStatus: 'unavailable' });
+  });
+
+  it('reports an unsupported direct dependency as a stable dependency root', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'future-live-dependency-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+
+    const leafRoot = path.join(sourceRoot, 'plugins', 'leaf');
+    const leafManifestPath = path.join(leafRoot, '.agents-plugin', 'plugin.json');
+    const leafManifest = await fs.readJson(leafManifestPath);
+    leafManifest.requires.aw.capabilities.push('aw.future-feature.v3');
+    await fs.writeJson(leafManifestPath, leafManifest, { spaces: 2 });
+    const catalogManifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const catalogManifest = await fs.readJson(catalogManifestPath);
+    const leafEntry = catalogManifest.entries.find((entry: { name: string }) => entry.name === 'leaf');
+    leafEntry.requires = leafManifest.requires;
+    leafEntry.artifactDigest = await calculateCatalogEntryArtifactDigest(leafRoot);
+    leafEntry.manifestDigest = calculateCatalogEntryManifestDigest(leafManifest);
+    leafEntry.contentDigest = await calculateCatalogEntryContentDigest(leafRoot);
+    await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+
+    await expect(statusCommandV5({
+      plugins: ['team/root'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      platform: 'codex',
+      scope: 'project',
+      json: true,
+    })).resolves.toMatchObject({
+      payload: { targets: [expect.objectContaining({
+        pluginId: 'team/root',
+        state: 'partial',
+        dependency: { directCount: 1, issueCount: 1 },
+        dependencyReadiness: [{
+          dependencyPluginId: 'team/leaf',
+          state: 'error',
+          rootIssueId: 'awCapabilityUnsupported:team/leaf',
+          rootIssueCode: 'awCapabilityUnsupported',
+        }],
+        errors: [expect.objectContaining({
+          code: 'awCapabilityUnsupported',
+          dependencyPluginId: 'team/leaf',
+          rootIssueId: 'awCapabilityUnsupported:team/leaf',
+          rootIssueCode: 'awCapabilityUnsupported',
+        })],
+      })] },
+    });
+  });
+
+  it('fails a selected dependency closure with the exact unsupported plugin and capabilities', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unsupported-dependency-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf', requiredCapabilities: ['aw.future-feature.v3'] },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+
+    const result = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    });
+
+    expect(result.overallState).toBe('failed');
+    expect(JSON.stringify(result)).toContain('team/leaf');
+    expect(JSON.stringify(result)).toContain('aw.future-feature.v3');
+    expect(JSON.stringify(result)).toContain('awCapabilityUnsupported');
+  });
+
   it('reuses ordinary inventory across write discovery and keeps historical consumer scans separate', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'inventory-reuse-source');
@@ -723,7 +952,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -768,7 +997,7 @@ describe('five namespaced write commands', () => {
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'remaining', type: 'path', primary: true, path: remainingRoot }],
       },
       expectedDigest: configured.digest,
@@ -807,7 +1036,7 @@ describe('five namespaced write commands', () => {
     await createDependencyCatalogSnapshotFixture(sourceRoot, plugins);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -863,7 +1092,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -926,7 +1155,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -982,7 +1211,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -1048,7 +1277,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -1113,7 +1342,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -1161,7 +1390,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1214,7 +1443,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1253,7 +1482,7 @@ describe('five namespaced write commands', () => {
     ]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1291,7 +1520,7 @@ describe('five namespaced write commands', () => {
     ]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1326,7 +1555,7 @@ describe('five namespaced write commands', () => {
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1371,7 +1600,7 @@ describe('five namespaced write commands', () => {
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1421,7 +1650,7 @@ describe('five namespaced write commands', () => {
     ]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1458,7 +1687,7 @@ describe('five namespaced write commands', () => {
       const isolation = getCurrentSourceTestIsolation();
       const workRoot = path.join(isolation.layout.fixtureCwd, `tui-${provider}-review-work`);
       const sourceRoot = provider === 'git' ? path.join(workRoot, 'catalog') : workRoot;
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'review A\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'review A\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
       });
       let source: CatalogSource;
@@ -1479,7 +1708,7 @@ describe('five namespaced write commands', () => {
       }
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
-        config: { schemaVersion: 1, sources: [source] },
+        config: { schemaVersion: 2, sources: [source] },
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
@@ -1493,7 +1722,7 @@ describe('five namespaced write commands', () => {
         kind: 'pluginWrite', action: 'install', pluginId: 'team/demo', platform: 'codex', scope: 'project',
       } as const;
       const evidence = await dependencies.captureEvidence(intent);
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'review B\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'review B\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
       });
       if (provider === 'git') {
@@ -1532,7 +1761,7 @@ describe('five namespaced write commands', () => {
     const writeSource = async (content: string): Promise<void> => createCatalogSnapshotFixture(
       sourceRoot,
       'demo',
-      '0.0.0',
+      [],
       `${content}\n`,
       (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
@@ -1546,7 +1775,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -1619,7 +1848,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1653,7 +1882,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -1704,7 +1933,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1734,7 +1963,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1785,7 +2014,7 @@ describe('five namespaced write commands', () => {
       const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
-        config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+        config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
       });
       const runtime = {
         env: isolation.env,
@@ -1824,7 +2053,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1853,7 +2082,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -1890,7 +2119,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const marketplaceRoots = new Map<string, string>();
     const runtime = { env: isolation.env, nativeCliRunner: async (invocation: NativeCliInvocation) => {
@@ -1984,7 +2213,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const nativeCliRunner = vi.fn(async () => ({
       exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
@@ -2003,7 +2232,7 @@ describe('five namespaced write commands', () => {
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'remaining', type: 'path', primary: true, path: remainingSourceRoot }],
       },
       expectedDigest: configured.digest,
@@ -2067,7 +2296,7 @@ describe('five namespaced write commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2082,7 +2311,7 @@ describe('five namespaced write commands', () => {
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'remaining', type: 'path', primary: true, path: remainingSourceRoot }],
       },
       expectedDigest: configured.digest,
@@ -2136,7 +2365,7 @@ describe('five namespaced write commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'remaining', type: 'path', primary: true, path: remainingSourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -2208,7 +2437,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -2264,7 +2493,7 @@ describe('five namespaced write commands', () => {
   it('cleans a Codex project target when unrelated Codex user config inventory is damaged', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'damaged-user-inventory-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.extensions = {
         instructions: [{ name: 'cleanup-test', title: 'Cleanup test', content: 'owned content' }],
@@ -2273,7 +2502,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -2337,7 +2566,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'team', type: 'path', primary: true, path: sourceRoot },
           { id: 'other', type: 'path', primary: false, path: otherRoot },
@@ -2501,7 +2730,7 @@ describe('five namespaced write commands', () => {
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceA }],
         },
         expectedDigest: snapshot.digest,
@@ -2545,7 +2774,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceA }],
       },
       expectedDigest: snapshot.digest,
@@ -2713,7 +2942,7 @@ describe('five namespaced write commands', () => {
         path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'uninstall.mjs'),
         'await Promise.resolve();\n',
       );
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.scripts = {
           lifecycle: {
             uninstall: { default: { runner: 'node', path: './scripts/uninstall.mjs' } },
@@ -2726,7 +2955,7 @@ describe('five namespaced write commands', () => {
       const sourceIdentity = await calculateCatalogSourceIdentity(source);
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
-        config: { schemaVersion: 1, sources: [source] },
+        config: { schemaVersion: 2, sources: [source] },
         expectedDigest: snapshot.digest,
         env: isolation.env,
       });
@@ -2889,7 +3118,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3089,7 +3318,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -3119,7 +3348,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -3156,7 +3385,7 @@ describe('five namespaced write commands', () => {
       const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
         },
         expectedDigest: snapshot.digest,
@@ -3218,7 +3447,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -3328,7 +3557,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'target', type: 'path', primary: true, path: targetRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3364,7 +3593,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -3396,7 +3625,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      config: { schemaVersion: 2, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
     });
     const runtime = {
       env: isolation.env,
@@ -3439,7 +3668,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3467,7 +3696,7 @@ describe('five namespaced write commands', () => {
   it('projects dynamic config and saves or resets it only through the real Controller review bridge', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-config-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
         schema: {
           level: { type: 'enum', values: ['fast', 'strict'], title: '审查级别' },
@@ -3485,7 +3714,7 @@ describe('five namespaced write commands', () => {
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -3615,7 +3844,7 @@ describe('five namespaced write commands', () => {
       '  skillKey: "review", content: { files }',
       '}] }));',
     ].join('\n'));
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
       manifest.scripts = {
         artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
@@ -3636,7 +3865,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3734,7 +3963,7 @@ describe('five namespaced write commands', () => {
   it('blocks a reviewed install when the other scope is installed concurrently', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-scope-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.extensions = {
         instructions: [{ name: 'review', title: 'Review', content: 'scope evidence' }],
@@ -3743,7 +3972,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3788,7 +4017,7 @@ describe('five namespaced write commands', () => {
       '  content: { files: { "SKILL.md": "---\\nname: review\\ndescription: Review.\\n---\\n", "README.md": "Review.\\n", "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n" } }',
       '}] }));',
     ].join('\n'));
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
       manifest.artifacts = { targets: [{
@@ -3803,7 +4032,7 @@ describe('five namespaced write commands', () => {
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -3856,7 +4085,7 @@ describe('five namespaced write commands', () => {
   it('returns a new Review when source evidence changes before dispatch', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-stale-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.extensions = {
         instructions: [{ name: 'review', title: 'Review', content: 'must not be written' }],
@@ -3865,7 +4094,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -3885,7 +4114,7 @@ describe('five namespaced write commands', () => {
         platform: 'codex',
         scope: 'project',
       });
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'changed\n', (manifest) => {
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'changed\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
         manifest.extensions = {
           instructions: [{ name: 'review', title: 'Review', content: 'changed content' }],
@@ -3913,7 +4142,7 @@ describe('five namespaced write commands', () => {
   it('removes the generated marketplace root only after the last platform consumer', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-root-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.extensions = {
         instructions: [{ name: 'policy', title: 'Policy', content: 'Managed policy.' }],
       };
@@ -3922,7 +4151,7 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -4077,7 +4306,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'team', type: 'path', primary: teamInitiallyPrimary, path: teamRoot },
           { id: 'other', type: 'path', primary: !teamInitiallyPrimary, path: otherRoot },
@@ -4161,13 +4390,13 @@ describe('five namespaced write commands', () => {
         '}] }));',
       ].join('\n'));
     await Promise.all([
-      createCatalogSnapshotFixture(codexRoot, 'codex-only', '0.0.0', 'codex\n', (manifest) => {
+      createCatalogSnapshotFixture(codexRoot, 'codex-only', [], 'codex\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
       }),
-      createCatalogSnapshotFixture(claudeRoot, 'claude-only', '0.0.0', 'claude\n', (manifest) => {
+      createCatalogSnapshotFixture(claudeRoot, 'claude-only', [], 'claude\n', (manifest) => {
         manifest.marketplace.policy.products = ['CLAUDE'];
       }),
-      createCatalogSnapshotFixture(dualRoot, 'config-dual', '0.0.0', 'dual\n', (manifest) => {
+      createCatalogSnapshotFixture(dualRoot, 'config-dual', [], 'dual\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
         manifest.config = {
           schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
@@ -4191,7 +4420,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'codex', type: 'path', primary: true, path: codexRoot },
           { id: 'claude', type: 'path', primary: false, path: claudeRoot },
@@ -4459,7 +4688,7 @@ describe('five namespaced write commands', () => {
   it('blocks a config reapply that would overwrite a same-name unbound Claude record', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'claude-config-collision-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'config-native', '0.0.0', 'config\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'config-native', [], 'config\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.config = {
         schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
@@ -4468,7 +4697,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -4556,7 +4785,7 @@ describe('five namespaced write commands', () => {
   it('deduplicates bare, qualified, and repeated selectors by canonical target identity', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dedupe-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.extensions = {
         instructions: [{ name: 'dedupe', title: 'Dedupe', content: 'One write.' }],
@@ -4565,7 +4794,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -4611,7 +4840,7 @@ describe('five namespaced write commands', () => {
       path.join(pluginRoot, 'scripts', 'uninstall.mjs'),
       'await import("node:fs/promises").then((fs) => fs.writeFile("uninstall-ran", "ran"));\n',
     );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.scripts = {
         lifecycle: {
@@ -4623,7 +4852,7 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
@@ -4687,12 +4916,12 @@ describe('five namespaced write commands', () => {
     const firstRoot = path.join(isolation.layout.fixtureCwd, 'first-source');
     const secondRoot = path.join(isolation.layout.fixtureCwd, 'second-source');
     await Promise.all([
-      createCatalogSnapshotFixture(firstRoot, 'demo', '0.0.0', 'first\n', (manifest) => {
+      createCatalogSnapshotFixture(firstRoot, 'demo', [], 'first\n', (manifest) => {
         manifest.extensions = {
           instructions: [{ name: 'first-policy', title: 'First', content: 'First.' }],
         };
       }),
-      createCatalogSnapshotFixture(secondRoot, 'demo', '0.0.0', 'second\n', (manifest) => {
+      createCatalogSnapshotFixture(secondRoot, 'demo', [], 'second\n', (manifest) => {
         manifest.extensions = {
           instructions: [{ name: 'second-policy', title: 'Second', content: 'Second.' }],
         };
@@ -4701,7 +4930,7 @@ describe('five namespaced write commands', () => {
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'first', type: 'path', primary: true, path: firstRoot },
           { id: 'second', type: 'path', primary: false, path: secondRoot },
@@ -4749,7 +4978,7 @@ describe('five namespaced write commands', () => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.skills = './skills';
     };
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', configureManifest);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', configureManifest);
     const skillRoot = path.join(sourceRoot, 'plugins', 'demo', 'skills', 'demo-skill');
     await Promise.all([
       fs.outputFile(
@@ -4761,11 +4990,11 @@ describe('five namespaced write commands', () => {
         'policy:\n  allow_implicit_invocation: true\n',
       ),
     ]);
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', configureManifest);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', configureManifest);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: snapshot.digest,
@@ -4917,7 +5146,7 @@ describe('five namespaced write commands', () => {
       '  refreshKeys: ["mode"], content: `mode=${mode}`',
       '}] }));',
     ].join('\n'));
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
         schema: {
           mode: { type: 'enum', values: ['safe', 'fast', 'fail'], default: 'safe' },
@@ -4943,7 +5172,7 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: before.digest,
       env: isolation.env,
     });

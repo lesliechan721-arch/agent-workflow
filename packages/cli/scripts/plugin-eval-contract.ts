@@ -38,6 +38,10 @@ export interface PluginEvalPluginInstallation {
   config: Record<string, unknown>;
 }
 
+export interface PluginEvalEnvironment {
+  pathPrepend: string[];
+}
+
 export interface PluginEvalCommandSuite {
   id: string;
   kind: 'command';
@@ -74,6 +78,7 @@ export interface PluginEvalConversationSuite {
   requiredForRelease: boolean;
   perRunTimeoutMs: number;
   isolation: PluginEvalIsolation;
+  environment?: PluginEvalEnvironment;
 }
 
 export interface PluginEvalTriggerSuite {
@@ -256,7 +261,8 @@ function parseEvalWorkspacePath(
     candidate.includes('?') ||
     candidate.includes('[') ||
     candidate.includes(']') ||
-    path.isAbsolute(candidate) ||
+    path.posix.isAbsolute(candidate) ||
+    path.win32.isAbsolute(candidate) ||
     path.posix.normalize(candidate) !== candidate ||
     candidate.split('/').includes('..')
   ) {
@@ -324,6 +330,30 @@ function assertRealPathInside(
   const canonicalCandidate = fs.realpathSync(candidate);
   if (!isPathInsideOrEqual(canonicalBoundary, canonicalCandidate)) {
     throw new Error(`${label} must stay inside the ${boundaryLabel}.`);
+  }
+}
+
+function assertEvalFixtureTreeSafe(
+  fixtureRoot: string,
+  target: string,
+  label: string,
+): void {
+  const relativePath = path.relative(fixtureRoot, target);
+  let currentPath = fixtureRoot;
+  for (const segment of relativePath.split(path.sep).filter(Boolean)) {
+    currentPath = path.join(currentPath, segment);
+    if (fs.lstatSync(currentPath).isSymbolicLink()) {
+      throw new Error(`${label} must not contain symbolic links.`);
+    }
+  }
+  assertRealPathInside(fixtureRoot, target, label, 'Eval fixture root');
+  const stat = fs.lstatSync(target);
+  if (stat.isFile()) return;
+  if (!stat.isDirectory()) {
+    throw new Error(`${label} must reference a regular file or directory fixture.`);
+  }
+  for (const entry of fs.readdirSync(target)) {
+    assertEvalFixtureTreeSafe(fixtureRoot, path.join(target, entry), label);
   }
 }
 
@@ -405,10 +435,51 @@ function validateConversationWorkspaceFiles(value: unknown, label: string): void
   }
 }
 
+function evalWorkspaceTargetsOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function validateConversationEnvironment(
+  value: unknown,
+  label: string,
+  fixtureRoot: string,
+  occupiedTargets = new Set<string>(),
+): PluginEvalEnvironment | undefined {
+  if (value === undefined) return undefined;
+  const environment = expectRecord(value, label);
+  expectOnlyKeys(environment, ['pathPrepend'], label);
+  const pathPrepend = parseStringArray(
+    environment.pathPrepend,
+    `${label}.pathPrepend`,
+  ).map((entry, index) => parseEvalWorkspacePath(
+    entry,
+    `${label}.pathPrepend[${index}]`,
+    { allowTreePattern: false },
+  ));
+  if (new Set(pathPrepend).size !== pathPrepend.length) {
+    throw new Error(`${label}.pathPrepend must not contain duplicates.`);
+  }
+  pathPrepend.forEach((relativePath, index) => {
+    const absolutePath = path.resolve(fixtureRoot, relativePath);
+    if (!fs.pathExistsSync(absolutePath)) {
+      throw new Error(`${label}.pathPrepend[${index}] must reference an existing fixture.`);
+    }
+    assertEvalFixtureTreeSafe(fixtureRoot, absolutePath, `${label}.pathPrepend[${index}]`);
+    if ([...occupiedTargets].some((target) =>
+      evalWorkspaceTargetsOverlap(relativePath, target))) {
+      throw new Error(`${label}.pathPrepend[${index}] conflicts with another PATH fixture target.`);
+    }
+    occupiedTargets.add(relativePath);
+  });
+  return { pathPrepend };
+}
+
 export function validatePluginEvalConversationCaseDocument(
   value: unknown,
   expectedSkill: string,
   label = 'conversation cases',
+  fixtureRoot = process.cwd(),
+  suitePathPrepend: string[] = [],
 ): Array<Record<string, unknown>> {
   const document = expectRecord(value, label);
   const skill = expectString(document.skill_name, `${label}.skill_name`);
@@ -447,6 +518,12 @@ export function validatePluginEvalConversationCaseDocument(
     validateConversationWorkspaceFiles(
       row.workspace_files,
       `${label}.evals[${index}].workspace_files`,
+    );
+    validateConversationEnvironment(
+      row.environment,
+      `${label}.evals[${index}].environment`,
+      fixtureRoot,
+      new Set(suitePathPrepend),
     );
     const review = expectRecord(row.review, `${label}.evals[${index}].review`);
     parseStringArray(review.checks, `${label}.evals[${index}].review.checks`);
@@ -674,7 +751,7 @@ function parseSuite(
   if (kind === 'conversation') {
     expectOnlyKeys(row, [
       'id', 'kind', 'skills', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
-      'requiredForRelease', 'perRunTimeoutMs', 'isolation',
+      'requiredForRelease', 'perRunTimeoutMs', 'isolation', 'environment',
     ], `suites[${index}]`);
     return {
       ...common,
@@ -686,6 +763,13 @@ function parseSuite(
         `suites[${index}].cases`,
       ),
       isolation: parseIsolation(row.isolation, `suites[${index}].isolation`),
+      ...(row.environment === undefined ? {} : {
+        environment: validateConversationEnvironment(
+          row.environment,
+          `suites[${index}].environment`,
+          evalRoot,
+        ),
+      }),
     };
   }
 
@@ -1107,6 +1191,8 @@ export async function readPluginEvalManifest(
         await fs.readJson(casesPath),
         suite.skill,
         `conversation cases for suite "${suite.id}"`,
+        path.dirname(casesPath),
+        suite.environment?.pathPrepend,
       );
     } else if (suite.cases) {
       const casesPath = path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, ''));

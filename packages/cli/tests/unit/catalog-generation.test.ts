@@ -48,7 +48,7 @@ import {
   replaceCatalogSourcesConfig,
   resolveCatalogSourceRef,
 } from '../../src/utils/catalog-sources.js';
-import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
+import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 import {
   withResolvedMultiSourceCatalog,
   type CatalogSourceProviderSet,
@@ -87,17 +87,21 @@ async function createGenerationSnapshot(options: {
   workspaceIdentity: string;
   catalogVersion: string;
   content: string;
+  requiredAwCapabilities?: string[];
 }): Promise<void> {
   await createCatalogSnapshotFixture(
     options.root,
     'demo',
-    '0.1.0',
+    [],
     options.content,
   );
   const manifestPath = path.join(options.root, 'catalog-manifest.json');
   const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
   manifest.catalogVersion = options.catalogVersion;
   manifest.channel = options.catalogVersion.includes('-beta.') ? 'beta' : 'latest';
+  if (options.requiredAwCapabilities) {
+    manifest.requires = { aw: { capabilities: options.requiredAwCapabilities } };
+  }
   await Promise.all([
     fs.writeJson(manifestPath, manifest, { spaces: 2 }),
     fs.writeJson(path.join(options.root, '.aw-generated.json'), {
@@ -124,7 +128,7 @@ async function resolutionFor(
   root: string,
   commit: string,
 ): Promise<CatalogSourceResolution> {
-  const validation = await validateCatalogSnapshot(root);
+  const validation = await validateCatalogSnapshotTransport(root);
   return {
     sourceId: source.id,
     sourceIdentity: await calculateCatalogSourceIdentity(source),
@@ -164,6 +168,83 @@ function providers(options: {
 }
 
 describe('Catalog immutable generations', () => {
+  it('rejects unsupported Active and Candidate generations after an AW downgrade', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const futureActive = fixturePath('future-active');
+    const supportedActive = fixturePath('supported-active');
+    const futureCandidate = fixturePath('future-candidate');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: futureActive,
+        workspaceIdentity: 'workspace:future-active',
+        catalogVersion: '1.0.0',
+        content: 'future active\n',
+        requiredAwCapabilities: ['aw.catalog-snapshot.v5', 'aw.future-feature.v3'],
+      }),
+      createGenerationSnapshot({
+        root: supportedActive,
+        workspaceIdentity: 'workspace:candidate',
+        catalogVersion: '1.0.0',
+        content: 'supported active\n',
+      }),
+      createGenerationSnapshot({
+        root: futureCandidate,
+        workspaceIdentity: 'workspace:candidate',
+        catalogVersion: '1.1.0',
+        content: 'future candidate\n',
+        requiredAwCapabilities: ['aw.catalog-snapshot.v5', 'aw.future-feature.v3'],
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 2,
+      sources: [
+        {
+          id: 'future', type: 'git', primary: true, url: 'https://example.invalid/future.git',
+          refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+        },
+        {
+          id: 'candidate', type: 'git', primary: false, url: 'https://example.invalid/candidate.git',
+          refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+        },
+      ],
+    });
+    const roots = new Map([
+      ['future', futureActive],
+      ['candidate', supportedActive],
+    ]);
+    const runtime = { providers: providers({ roots }) };
+    await refreshCatalogSourceGeneration({
+      sourceId: 'future', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'candidate', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    roots.set('candidate', futureCandidate);
+    await refreshCatalogSourceGeneration({
+      sourceId: 'candidate', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+
+    await expect(resolveActiveCatalogGeneration({ sourceId: 'future', env: isolation.env }))
+      .rejects.toMatchObject({
+        code: 'awCapabilityUnsupported',
+        sourceId: 'future',
+        missingCapabilities: ['aw.future-feature.v3'],
+      });
+    await expect(activateCatalogSourceCandidate({ sourceId: 'candidate', env: isolation.env }))
+      .rejects.toMatchObject({
+        code: 'awCapabilityUnsupported',
+        sourceId: 'candidate',
+        missingCapabilities: ['aw.future-feature.v3'],
+      });
+    await expect(readCatalogGenerationStatus({ sourceId: 'candidate', env: isolation.env }))
+      .resolves.toMatchObject({
+        sources: [{
+          active: { catalogVersion: '1.0.0' },
+          candidate: { catalogVersion: '1.1.0' },
+        }],
+      });
+  });
+
   it('cancels a staged refresh while it waits for the AW_HOME mutation lock', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('lock-cancel-first');
@@ -181,7 +262,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: 'https://example.invalid/team.git',
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -297,7 +378,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: 'https://example.invalid/team.git',
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -353,7 +434,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         {
           id: 'team', type: 'git', primary: true, url: 'https://example.invalid/policy.git',
@@ -406,7 +487,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: 'https://example.invalid/candidate-drift.git',
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -447,7 +528,7 @@ describe('Catalog immutable generations', () => {
       root, workspaceIdentity: 'workspace:cancel-refresh', catalogVersion: '1.0.0', content: 'active\n',
     });
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: 'https://example.invalid/cancel-refresh.git',
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -500,7 +581,7 @@ describe('Catalog immutable generations', () => {
     await execFileAsync('git', ['remote', 'add', 'origin', remoteRoot], { cwd: workRoot });
     await execFileAsync('git', ['push', 'origin', 'HEAD:refs/heads/catalog/latest'], { cwd: workRoot });
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: remoteRoot,
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -545,7 +626,7 @@ describe('Catalog immutable generations', () => {
     const oldUrl = 'https://old.example.invalid/catalog.git';
     const newUrl = 'https://new.example.invalid/catalog.git';
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: oldUrl,
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -605,7 +686,7 @@ describe('Catalog immutable generations', () => {
     ]);
     const removedUrl = 'https://removed.example.invalid/catalog.git';
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         { id: 'primary', type: 'path', primary: true, path: primaryRoot },
         {
@@ -655,7 +736,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         {
           id: 'alias-a', type: 'git', primary: true, url: 'https://example.invalid/shared.git',
@@ -702,7 +783,7 @@ describe('Catalog immutable generations', () => {
       url: 'https://example.invalid/rollback.git',
       refPolicy: { type: 'explicit' as const, ref: 'refs/heads/catalog/latest' },
     };
-    await configureSources({ schemaVersion: 1, sources: [source] });
+    await configureSources({ schemaVersion: 2, sources: [source] });
     const roots = new Map([['team', current]]);
     const runtime = { providers: providers({ roots }) };
     await refreshCatalogSourceGeneration({
@@ -720,7 +801,7 @@ describe('Catalog immutable generations', () => {
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+      schemaVersion: 2,
         sources: [{ ...source, refPolicy: { type: 'explicit', ref: 'refs/heads/legacy' } }],
       },
       expectedDigest: before.digest,
@@ -757,7 +838,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: first }],
     });
     const roots = new Map([['local', first]]);
@@ -789,7 +870,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: 'https://example.invalid/atomic.git',
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -834,7 +915,7 @@ describe('Catalog immutable generations', () => {
     const beforeConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+      schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: pathFirst }],
       },
       expectedDigest: beforeConfig.digest,
@@ -846,7 +927,7 @@ describe('Catalog immutable generations', () => {
       sourceId: 'local', cliVersion: '1.0.0', env: isolation.env, runtime: pathRuntime,
     });
     pathRoots.set('local', pathChanged);
-    const changedValidation = await validateCatalogSnapshot(pathChanged);
+    const changedValidation = await validateCatalogSnapshotTransport(pathChanged);
     const blocked = resolveCatalogGenerationLocation({
       logicalIdentity: 'workspace:publish',
       snapshotDigest: changedValidation.snapshotDigest,
@@ -868,7 +949,7 @@ describe('Catalog immutable generations', () => {
       root, workspaceIdentity: 'workspace:damaged', catalogVersion: '1.0.0', content: 'content\n',
     });
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: root }],
     });
     const runtime = { providers: providers({ roots: new Map([['local', root]]) }) };
@@ -909,7 +990,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         { id: 'healthy', type: 'path', primary: true, path: healthyRoot },
         { id: 'damaged', type: 'path', primary: false, path: damagedRoot },
@@ -959,7 +1040,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: first }],
     });
     await refreshCatalogSourceGeneration({
@@ -994,7 +1075,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         { id: 'a', type: 'path', primary: true, path: first },
         { id: 'b', type: 'path', primary: false, path: second },
@@ -1011,7 +1092,7 @@ describe('Catalog immutable generations', () => {
     expect(after.sources.map((source) => source.sourceId)).toEqual(['a', 'b']);
     for (const source of after.sources) {
       expect(source.snapshotPath).toContain(path.join(isolation.env.AW_HOME!, 'catalog-generations'));
-      await expect(validateCatalogSnapshot(source.snapshotPath)).resolves.toMatchObject({
+      await expect(validateCatalogSnapshotTransport(source.snapshotPath)).resolves.toMatchObject({
         snapshotDigest: source.snapshotDigest,
       });
     }
@@ -1030,7 +1111,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{
         id: 'team', type: 'git', primary: true, url: 'https://example.invalid/operation.git',
         refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
@@ -1089,7 +1170,7 @@ describe('Catalog immutable generations', () => {
       refPolicy: { type: 'cliChannel' },
     } as const;
     const sshSource = { ...httpsSource, url: OFFICIAL_CATALOG_SOURCE_SSH_URL };
-    await configureSources({ schemaVersion: 1, sources: [httpsSource] });
+    await configureSources({ schemaVersion: 2, sources: [httpsSource] });
     const roots = new Map([['official', first]]);
     const runtime = { providers: providers({ roots }) };
     const bootstrapped = await refreshCatalogSourceGeneration({
@@ -1154,7 +1235,7 @@ describe('Catalog immutable generations', () => {
       }),
     ]);
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         { id: 'active', type: 'path', primary: true, path: activeRoot },
         {
@@ -1205,7 +1286,7 @@ describe('Catalog immutable generations', () => {
       content: 'active\n',
     });
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         { id: 'active', type: 'path', primary: true, path: activeRoot },
         {
@@ -1254,7 +1335,7 @@ describe('Catalog immutable generations', () => {
       root, workspaceIdentity: 'workspace:operation-damaged', catalogVersion: '1.0.0', content: 'content\n',
     });
     await configureSources({
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: root }],
     });
     const runtime = { providers: providers({ roots: new Map([['local', root]]) }) };

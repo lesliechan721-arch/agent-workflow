@@ -634,19 +634,6 @@ test('AW workflow inventory checks native platforms when Skill runtime imports t
   })), [{ reason: 'incomplete-product-coverage', missingPlatforms: ['codex'] }]);
 });
 
-test('AW reviewers have non-overlapping boundaries', async () => {
-  // Static contract exception: installed AW reviewer instructions must expose non-overlapping review units; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
-  const pluginReview = await readFile(
-    path.join(runtimeRoot, 'skills', 'review-aw-plugin', 'SKILL.md'), 'utf8');
-  const workflowReview = await readFile(
-    path.join(runtimeRoot, 'skills', 'review-aw-workflow', 'SKILL.md'), 'utf8');
-  assert.match(pluginReview, /只评审一个 `.agents-plugin\/plugin.json`/u);
-  assert.match(pluginReview, /不评审跨多个 AW 插件/u);
-  assert.match(workflowReview, /跨多个 AW 插件/u);
-  assert.match(workflowReview, /## Scope Admission/u);
-  assert.doesNotMatch(pluginReview, /target_level=plugin/u);
-});
-
 test('release-required workflow archive fixture delegates component digests to the capsule CLI', async () => {
   const fixtureDocument = JSON.parse(await readFile(
     path.join(sourceRoot, 'skills/review-aw-workflow/evals/behavior-cases.json'),

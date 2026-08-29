@@ -462,24 +462,24 @@ describe('Codex native trigger eval driver', () => {
     ).passed).toBe(false);
   });
 
-  it('scores an exact multi-Skill route and rejects any combined load', () => {
+  it('rejects a Catalog owner route when a sibling Skill is also loaded', () => {
     const routingSuite = suite({
-      skill: 'decision-grill',
-      skills: ['decision-grill', 'requirements-clarifier'],
+      skill: 'author-aw-catalog',
+      skills: ['author-aw-catalog', 'review-aw-catalog'],
       observeSpawnAgent: false,
       minimumPassRate: 0.9,
       forbidMultipleSkillLoads: true,
     });
     const evalCase: PluginEvalTriggerCase = {
-      id: 'implementation_scope',
+      id: 'catalog_review',
       split: 'validation',
-      query: 'Implement export, but its range is undecided.',
-      expected_loaded_skills: ['requirements-clarifier'],
+      query: 'Review the Catalog inventory and dependency graph.',
+      expected_loaded_skills: ['review-aw-catalog'],
     };
     const correct = runEvidence({
-      first_loaded_skill: 'requirements-clarifier',
-      all_loaded_skills: ['requirements-clarifier'],
-      load_evidence_by_skill: { 'requirements-clarifier': 'read requirements' },
+      first_loaded_skill: 'review-aw-catalog',
+      all_loaded_skills: ['review-aw-catalog'],
+      load_evidence_by_skill: { 'review-aw-catalog': 'read Catalog review Skill' },
     });
     const oneMiss = summarizeTriggerCase(
       routingSuite,
@@ -487,13 +487,13 @@ describe('Codex native trigger eval driver', () => {
       [...Array.from({ length: 9 }, () => correct), runEvidence({})],
     );
     expect(oneMiss).toMatchObject({
-      expected: { loaded_skills: ['requirements-clarifier'] },
+      expected: { loaded_skills: ['review-aw-catalog'] },
       observed: {
         route_match_rate: 0.9,
         multiple_skill_loads: 0,
         skill_load_rates: {
-          'decision-grill': 0,
-          'requirements-clarifier': 0.9,
+          'author-aw-catalog': 0,
+          'review-aw-catalog': 0.9,
         },
       },
       passed: true,
@@ -501,11 +501,11 @@ describe('Codex native trigger eval driver', () => {
 
     const combined = runEvidence({
       loaded: true,
-      first_loaded_skill: 'decision-grill',
-      all_loaded_skills: ['decision-grill', 'requirements-clarifier'],
+      first_loaded_skill: 'author-aw-catalog',
+      all_loaded_skills: ['author-aw-catalog', 'review-aw-catalog'],
       load_evidence_by_skill: {
-        'decision-grill': 'read decision',
-        'requirements-clarifier': 'read requirements',
+        'author-aw-catalog': 'read Catalog author Skill',
+        'review-aw-catalog': 'read Catalog review Skill',
       },
     });
     expect(summarizeTriggerCase(

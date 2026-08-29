@@ -3,7 +3,7 @@ import type {
   CatalogGenerationLastCheckV1,
   CatalogGenerationPointerV1,
   CatalogGenerationRefreshPolicy,
-  CatalogManifestV4,
+  CatalogManifestV5,
 } from '../types.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
@@ -13,7 +13,7 @@ import {
 } from '../utils/catalog-generation-service.js';
 import { readCatalogGeneration } from '../utils/catalog-generation-store.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
-import { validateCatalogSnapshot } from '../utils/catalog-snapshot.js';
+import { validateCatalogSnapshotTransport } from '../utils/catalog-snapshot.js';
 
 export type CatalogRefreshState =
   | 'idle'
@@ -113,13 +113,13 @@ function generationViewModel(pointer: CatalogGenerationPointerV1): CatalogGenera
   };
 }
 
-function manifestEntryMap(manifest: CatalogManifestV4): Map<string, CatalogManifestV4['entries'][number]> {
+function manifestEntryMap(manifest: CatalogManifestV5): Map<string, CatalogManifestV5['entries'][number]> {
   return new Map(manifest.entries.map((entry) => [entry.name, entry]));
 }
 
 export function countCatalogPluginChanges(
-  active: CatalogManifestV4,
-  candidate: CatalogManifestV4,
+  active: CatalogManifestV5,
+  candidate: CatalogManifestV5,
 ): CatalogPluginChangesViewModel {
   const activeEntries = manifestEntryMap(active);
   const candidateEntries = manifestEntryMap(candidate);
@@ -141,13 +141,13 @@ async function readGenerationManifest(options: {
   logicalIdentity: string;
   pointer: CatalogGenerationPointerV1;
   env: NodeJS.ProcessEnv;
-}): Promise<CatalogManifestV4> {
+}): Promise<CatalogManifestV5> {
   const generation = await readCatalogGeneration({
     logicalIdentity: options.logicalIdentity,
     snapshotDigest: options.pointer.snapshotDigest,
     env: options.env,
   });
-  return (await validateCatalogSnapshot(generation.snapshotRoot)).manifest;
+  return (await validateCatalogSnapshotTransport(generation.snapshotRoot)).manifest;
 }
 
 export async function loadCatalogGenerationViewModels(options: {

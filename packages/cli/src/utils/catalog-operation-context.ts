@@ -18,7 +18,7 @@ import {
   readCatalogSourcesConfigSnapshot,
   type CatalogSourcesConfigSnapshot,
 } from './catalog-sources.js';
-import { validateCatalogSnapshot } from './catalog-snapshot.js';
+import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
 import type { MultiSourceCatalogResolution } from './multi-source-catalog.js';
 
 export interface CatalogOperationContext {
@@ -201,7 +201,7 @@ export async function resolveCatalogOperationContext(
         message: `Active Catalog generation for source "${generation.sourceId}" changed while the operation context was being resolved. Retry the operation.`,
       });
     }
-    const validation = await validateCatalogSnapshot(generation.snapshotPath);
+    const validation = await validateCatalogSnapshotTransport(generation.snapshotPath);
     if (validation.manifestDigest !== generation.manifestDigest
       || validation.snapshotDigest !== generation.snapshotDigest) {
       throw new CatalogGenerationError({

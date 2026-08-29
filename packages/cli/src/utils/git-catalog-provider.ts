@@ -16,10 +16,11 @@ import {
   catalogSourceCacheInternal,
 } from './catalog-source-cache.js';
 import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
-import { validateCatalogSnapshot } from './catalog-snapshot.js';
+import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
 import { resolveCatalogSourceRef } from './catalog-sources.js';
-import { compareStrictSemVer } from './manifest.js';
+import { checkAwCapabilitySupport } from './manifest.js';
 import { NativeCliError, runNativeCli } from './native-cli.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 
 const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DEFAULT_REMOTE_TIMEOUT_MS = 180_000;
@@ -564,16 +565,16 @@ async function resolveGitCatalogSourceDirect(
       env,
       deadline,
     });
-    const validation = await validateCatalogSnapshot(stagingRoot);
+    const validation = await validateCatalogSnapshotTransport(stagingRoot);
     throwIfAborted(deadline.signal);
-    if (compareStrictSemVer(
-      options.cliVersion,
-      validation.manifest.compatibility.aw.minVersion,
-    ) < 0) {
+    const requiredCapabilities = validation.manifest.requires.aw.capabilities ?? [];
+    const support = checkAwCapabilitySupport(requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
+    if (!support.supported) {
       throw new CatalogProviderCompatibilityError({
         sourceId: source.id,
-        minAwVersion: validation.manifest.compatibility.aw.minVersion,
-        selection: source.refPolicy.type,
+        requiredCapabilities,
+        missingCapabilities: support.missing,
+        availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
       });
     }
     const entry = await publishCatalogSourceCacheEntry({

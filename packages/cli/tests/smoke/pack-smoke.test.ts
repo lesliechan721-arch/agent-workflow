@@ -11,6 +11,11 @@ import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
+import {
+  createAwPluginRequirementsReceipt,
+  readPluginManifest,
+} from '../../src/utils/manifest.js';
 
 const execFileAsync = promisify(execFile);
 const sharedTempBase = os.tmpdir();
@@ -591,26 +596,36 @@ describe('pack smoke', () => {
       stderr: '',
     });
     const externalPathSource = await execFileAsync(awBin, [
-      'catalog', 'source', 'add', 'packed-local', '--path', path.join(standaloneWorkspace, '.aw', 'catalog'),
-      '--primary', '--json',
+      'catalog', 'dev', 'activate', '--workspace-root', standaloneWorkspace, '--primary', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
-    expect(JSON.parse(externalPathSource.stdout)).toMatchObject({ ok: true, sourceId: 'packed-local' });
+    const developmentSourceReceipt = JSON.parse(externalPathSource.stdout);
+    expect(developmentSourceReceipt).toMatchObject({
+      command: 'catalog:dev:activate', ok: true,
+      snapshot: { action: 'reused' },
+      source: { action: 'added', primary: true },
+    });
+    const developmentSourceId = developmentSourceReceipt.source.id as string;
     const externalInstall = await execFileAsync(awBin, [
-      'install', 'packed-local/packed-build', '-p', 'both', '--scope', 'project', '--json',
+      'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(externalInstall.stdout)).toMatchObject({
       ok: true,
       command: 'install',
       overallState: 'succeeded',
       targets: expect.arrayContaining([
-        expect.objectContaining({ pluginId: 'packed-local/packed-build', platform: 'codex', scope: 'project' }),
-        expect.objectContaining({ pluginId: 'packed-local/packed-build', platform: 'claude', scope: 'project' }),
+        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'project' }),
+        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project' }),
       ]),
     });
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.claude', 'settings.json'))).resolves.toBe(true);
     await expect(fs.readJson(path.join(externalAuthoringEnv.AW_HOME, 'catalog-sources.json')))
       .resolves.toMatchObject({
-        sources: expect.arrayContaining([expect.objectContaining({ id: 'packed-local', type: 'path' })]),
+        schemaVersion: 2,
+        sources: expect.arrayContaining([expect.objectContaining({
+          id: developmentSourceId,
+          type: 'path',
+          managedBy: expect.objectContaining({ kind: 'catalog-workspace' }),
+        })]),
       });
     const claudeInstalledPlugins = await fs.readJson(
       path.join(externalAuthoringEnv.AW_CLAUDE_HOME, 'plugins', 'installed_plugins.json'),
@@ -620,6 +635,15 @@ describe('pack smoke', () => {
       scope: 'project',
       projectPath: await fs.realpath(standaloneWorkspace),
     }));
+    const developmentSourceRemoval = await execFileAsync(awBin, [
+      'catalog', 'dev', 'deactivate', '--workspace-root', standaloneWorkspace, '--json',
+    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
+    expect(JSON.parse(developmentSourceRemoval.stdout)).toMatchObject({
+      command: 'catalog:dev:deactivate', ok: true,
+      source: { id: developmentSourceId, action: 'removed', previousPrimary: true },
+      replacementPrimarySourceId: 'official',
+    });
+    await expect(fs.pathExists(path.join(standaloneWorkspace, '.aw', 'catalog'))).resolves.toBe(true);
     const packedCatalogRemote = path.join(tempRoot, 'packed-catalog.git');
     registerSmokeWritableRoot(packedCatalogRemote, 'packed CLI Catalog publication remote');
     await execFileAsync('git', ['init', '--bare', packedCatalogRemote], { env: process.env });
@@ -712,7 +736,6 @@ describe('pack smoke', () => {
     const portablePluginRoot = path.join(authorRepo, 'plugins', 'validate-fixture');
     const portableManifestPath = path.join(portablePluginRoot, '.agents-plugin', 'plugin.json');
     const portableManifest = await fs.readJson(portableManifestPath);
-    portableManifest.compatibility.aw.minVersion = '0.1.0';
     portableManifest.extensions = {
       instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
     };
@@ -748,7 +771,7 @@ describe('pack smoke', () => {
     await createCatalogSnapshotFixture(
       portableCatalog,
       'portable-pack',
-      '0.1.0',
+      [],
       '# Portable pack plugin\n',
       (manifest) => {
         manifest.extensions = {
@@ -757,6 +780,28 @@ describe('pack smoke', () => {
         manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
       },
     );
+    const catalogPortablePluginRoot = path.join(portableCatalog, 'plugins', 'portable-pack');
+    const portablePlugin = await readPluginManifest(catalogPortablePluginRoot, { mode: 'bundle' });
+    await fs.outputJson(
+      path.join(
+        catalogPortablePluginRoot,
+        'agent-skills',
+        'skills',
+        'packed-portable',
+        'aw-plugin-requirements.json',
+      ),
+      createAwPluginRequirementsReceipt(
+        { name: portablePlugin.manifest.name, version: portablePlugin.manifest.version },
+        portablePlugin.manifest.requires?.aw.capabilities ?? [],
+      ),
+      { spaces: 2 },
+    );
+    const portableCatalogManifestPath = path.join(portableCatalog, 'catalog-manifest.json');
+    const portableCatalogManifest = await fs.readJson(portableCatalogManifestPath);
+    portableCatalogManifest.entries = [
+      await createCatalogManifestV5Entry(portablePlugin, portablePlugin.rootDir),
+    ];
+    await fs.writeJson(portableCatalogManifestPath, portableCatalogManifest, { spaces: 2 });
     const portableCwd = path.join(tempRoot, 'portable-project');
     const portableHome = path.join(tempRoot, 'portable-aw-home');
     const fakeBin = path.join(tempRoot, 'fake-skills-bin');
@@ -767,7 +812,7 @@ describe('pack smoke', () => {
       fs.ensureDir(portableCwd),
       fs.ensureDir(fakeBin),
       fs.outputJson(path.join(portableHome, 'catalog-sources.json'), {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: portableCatalog }],
       }),
     ]);

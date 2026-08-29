@@ -75,6 +75,10 @@ function failedWriteCommandResult(
   error: unknown,
 ): RebuildCommandResult {
   const message = error instanceof Error ? error.message : String(error);
+  const codedError = (error as { code?: unknown }).code;
+  const errorCode = typeof codedError === 'string' && /^[A-Za-z][A-Za-z0-9]*$/u.test(codedError)
+    ? codedError
+    : writeErrorCode(message);
   const namespacedTargets = (error as {
     namespacedTargets?: Array<{
       pluginId: string;
@@ -164,7 +168,7 @@ function failedWriteCommandResult(
       action: command,
       state: 'failed',
       message,
-      errorCode: writeErrorCode(message),
+      errorCode,
     })),
     overallState: 'failed',
     nativePlugins: {},

@@ -19,18 +19,29 @@ import { validateArtifactPlan } from '../utils/artifact-plan.js';
 import { runArtifactRenderer, resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
 import {
+  AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
   parsePortableSkillFrontmatter,
   validatePortableSkillDirectory,
   type DynamicSkillTree,
 } from '../utils/dynamic-skill-tree.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
-import { resolvePluginsFromCatalog } from '../utils/manifest.js';
+import {
+  createAwPluginRequirementsReceipt,
+  parseAwPluginRequirementsReceipt,
+  checkAwCapabilitySupport,
+  readPluginManifest,
+} from '../utils/manifest.js';
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
 import { collectSensitivePluginConfigValues } from '../utils/plugin-scripts.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 import { isSkillAuthorOnlyPath } from '../utils/skill-authoring.js';
+import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
+import {
+  AwCapabilityUnsupportedError,
+  IMPLEMENTED_AW_CAPABILITIES,
+} from '../commands/aw-capabilities.js';
 
 export interface PortableMaterializationProvenance {
   schemaVersion: 1;
@@ -50,6 +61,7 @@ export interface MaterializePortableSkillsOptions {
   env?: NodeJS.ProcessEnv;
   outputRoot?: string;
   signal?: AbortSignal;
+  inputMode?: 'source' | 'bundle';
 }
 
 export interface MaterializedPortableSkills {
@@ -233,6 +245,7 @@ async function materializePluginCandidates(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  inputMode: 'source' | 'bundle';
   recordConfigDigest: (pluginId: string, configDigest: string) => void;
 }): Promise<CandidateTree[]> {
   options.signal?.throwIfAborted();
@@ -287,10 +300,44 @@ async function materializePluginCandidates(options: {
     }
   }
 
-  if (dynamicTargets.length === 0) {
+  const finalizeCandidates = (): CandidateTree[] => {
     const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, config.values);
-    for (const candidate of output) assertNoSensitiveValues(candidate, sensitiveValues);
+    const receipt = createAwPluginRequirementsReceipt(
+      { name: options.plugin.manifest.name, version: options.plugin.manifest.version },
+      options.plugin.manifest.requires?.aw.capabilities ?? [],
+    );
+    const receiptBytes = Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+    for (const candidate of output) {
+      const existingReceipt = candidate.tree.files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
+      if (existingReceipt && options.inputMode !== 'bundle') {
+        throw new Error(
+          `Portable Skill "${candidate.tree.skillKey}" cannot declare reserved file "${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}".`,
+        );
+      }
+      if (existingReceipt) {
+        let parsedReceipt: ReturnType<typeof parseAwPluginRequirementsReceipt>;
+        try {
+          parsedReceipt = parseAwPluginRequirementsReceipt(JSON.parse(existingReceipt.toString('utf8')));
+        } catch {
+          throw new Error(
+            `Portable Skill "${candidate.tree.skillKey}" has an invalid reserved requirements receipt.`,
+          );
+        }
+        if (JSON.stringify(parsedReceipt) !== JSON.stringify(receipt)) {
+          throw new Error(
+            `Portable Skill "${candidate.tree.skillKey}" has a mismatched reserved requirements receipt.`,
+          );
+        }
+      } else {
+        candidate.tree.files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH] = receiptBytes;
+      }
+      assertNoSensitiveValues(candidate, sensitiveValues);
+    }
     return output;
+  };
+
+  if (dynamicTargets.length === 0) {
+    return finalizeCandidates();
   }
   await assertRuntimeImports(options.plugin);
   const rendered = await runArtifactRenderer({
@@ -349,6 +396,9 @@ async function materializePluginCandidates(options: {
           `Portable dynamic Skill "${artifact.skillKey}" renderer returned author-only path "${relativePath}".`,
         );
       }
+      if (relativePath === AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH) {
+        throw new Error(`Portable dynamic Skill renderer cannot declare reserved file "${AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH}".`);
+      }
       files[relativePath] = Buffer.from(content, 'utf8');
     }
     const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-tree-'));
@@ -365,11 +415,7 @@ async function materializePluginCandidates(options: {
       await fs.remove(stagingRoot);
     }
   }
-  const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, config.values);
-  for (const candidate of output) {
-    assertNoSensitiveValues(candidate, sensitiveValues);
-  }
-  return output;
+  return finalizeCandidates();
 }
 
 export async function materializePortableSkillsFromCatalog(
@@ -390,7 +436,30 @@ export async function materializePortableSkillsFromCatalog(
         ? { operationContext: options.catalogOperationContext }
         : {}),
       consume: async ({ pluginId: resolvedPluginId, source, plugin: requestedPlugin }) => {
-        const plugins = await resolvePluginsFromCatalog(source.rootDir);
+        const entriesByName = new Map(source.manifest.entries.map((entry) => [entry.name, entry]));
+        const closureNames: string[] = [];
+        const seen = new Set<string>();
+        const visit = (name: string): void => {
+          if (seen.has(name)) return;
+          const entry = entriesByName.get(name);
+          if (!entry) throw new Error(`Portable plugin "${name}" is missing from its catalog source.`);
+          seen.add(name);
+          for (const dependency of entry.dependencies) visit(dependency);
+          const support = checkAwCapabilitySupport(
+            entry.requires.aw.capabilities ?? [],
+            IMPLEMENTED_AW_CAPABILITIES,
+          );
+          if (!support.supported) {
+            throw new AwCapabilityUnsupportedError(`${source.sourceId}/${name}`, support.missing);
+          }
+          closureNames.push(name);
+        };
+        visit(requestedPlugin.manifest.name);
+        await validateCatalogSnapshotPluginEntriesComplete(source.rootDir, closureNames);
+        const plugins = await Promise.all(closureNames.map((name) => readPluginManifest(
+          path.join(source.rootDir, 'plugins', name),
+          { mode: 'bundle' },
+        )));
         for (const plugin of plugins) {
           plugin.sourceId = source.sourceId;
           plugin.sourceIdentity = source.sourceIdentity;
@@ -404,6 +473,7 @@ export async function materializePortableSkillsFromCatalog(
           env: options.env,
           outputRoot,
           signal: options.signal,
+          inputMode: 'bundle',
         });
         return {
           pluginId: materialized.pluginId,
@@ -463,6 +533,7 @@ export async function materializePortableSkills(
         cwd: options.cwd,
         env,
         signal: options.signal,
+        inputMode: options.inputMode ?? 'source',
         recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),
       }));
     }

@@ -1,4 +1,4 @@
-import type { PluginManifestSourceV1 } from './generated/plugin-manifest-v1.js';
+import type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js';
 
 export type PlatformName = 'codex' | 'claude';
 export type DistributionName = 'agent-skills';
@@ -18,7 +18,7 @@ export type CodexProjectManagedKind =
   | 'hook'
   | 'agent';
 
-export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV1['interface']>;
+export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV2['interface']>;
 
 export interface MarketplaceOwner { name: string; url: string }
 export interface MarketplaceInterfaceMeta { displayName: string }
@@ -27,9 +27,9 @@ export interface MarketplaceSourceMeta {
   interface: MarketplaceInterfaceMeta;
   catalog: { version: string };
 }
-export type MarketplacePolicy = PluginManifestSourceV1['marketplace']['policy'];
+export type MarketplacePolicy = PluginManifestSourceV2['marketplace']['policy'];
 export type MarketplaceAuthenticationPolicy = MarketplacePolicy['authentication'];
-export type PluginMarketplaceMeta = PluginManifestSourceV1['marketplace'];
+export type PluginMarketplaceMeta = PluginManifestSourceV2['marketplace'];
 
 export type TemplateValue = string | boolean;
 export interface TemplateVarByPlatform { claude: TemplateValue; codex: TemplateValue }
@@ -202,15 +202,14 @@ export interface PluginArtifactTargetDefinition {
 export interface PluginArtifactsConfig { targets?: PluginArtifactTargetDefinition[] }
 export interface PluginAgentSkillsDistribution { skills?: string }
 export interface PluginDistributionsConfig { agentSkills?: PluginAgentSkillsDistribution }
-export interface PluginCompatibility { aw: { minVersion: CliVersion } }
+export interface PluginRequirements { aw: { capabilities?: string[] } }
 
-export type PluginManifestSource = PluginManifestSourceV1;
+export type PluginManifestSource = PluginManifestSourceV2;
 export type NormalizedPluginManifest = Omit<
-  PluginManifestSourceV1,
-  'schemaVersion' | 'compatibility' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config'
+  PluginManifestSourceV2,
+  'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config'
 > & {
-  schemaVersion: 1;
-  compatibility: PluginCompatibility;
+  requires?: PluginRequirements;
   extensions?: PluginExtensions;
   artifacts?: PluginArtifactsConfig;
   buildConfig?: BuildConfig;
@@ -237,9 +236,10 @@ export interface MarketplaceManifest {
 export interface CatalogManifestEntry {
   name: string; version: PluginVersion; description: string; interface?: PluginInterfaceMeta;
   category: string; tags?: string[]; strict: boolean; policy: MarketplacePolicy;
-  compatibility: PluginCompatibility; source: string; artifactDigest: string; manifestDigest: string;
+  dependencies: PluginId[]; requires: PluginRequirements;
+  source: string; artifactDigest: string; manifestDigest: string;
 }
-export interface CatalogManifestV4Entry extends CatalogManifestEntry {
+export interface CatalogManifestV5Entry extends CatalogManifestEntry {
   name: PluginId;
   contentDigest: string;
 }
@@ -247,7 +247,7 @@ export interface CatalogMarketplaceIdentity {
   owner: MarketplaceOwner;
   interface: MarketplaceInterfaceMeta;
 }
-export type CatalogManifestV4Release =
+export type CatalogManifestV5Release =
   | { state: 'development' }
   | {
       state: 'published';
@@ -256,17 +256,17 @@ export type CatalogManifestV4Release =
       sourceHead: string;
       contentDigest: string;
     };
-export interface CatalogManifestV4 {
-  schemaVersion: 4;
+export interface CatalogManifestV5 {
+  schemaVersion: 5;
   catalogVersion: string;
   channel: CatalogChannel;
-  compatibility: PluginCompatibility;
+  requires: PluginRequirements;
   marketplace: CatalogMarketplaceIdentity;
-  release: CatalogManifestV4Release;
-  entries: CatalogManifestV4Entry[];
+  release: CatalogManifestV5Release;
+  entries: CatalogManifestV5Entry[];
 }
 export interface PlatformPluginManifest {
-  name: string; version: PluginVersion; description: string; compatibility: PluginCompatibility;
+  name: string; version: PluginVersion; description: string;
   skills?: string; mcpServers?: string; apps?: string; interface?: PluginInterfaceMeta;
   agents?: string[]; hooks?: string | RenderedHooksManifest; commands?: string; outputStyles?: string;
   lspServers?: string | Array<string | Record<string, unknown>> | Record<string, unknown>;

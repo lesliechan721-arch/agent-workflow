@@ -29,7 +29,8 @@ const CLI_PACKAGE_ROOT = path.basename(authoringRuntimeRoot) === 'dist'
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 7;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 8;
+let capabilityDiagnostic = null;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -409,11 +410,23 @@ async function tryLoadCliManifestTools() {
     'utils',
     'catalog-runtime-projection.js',
   );
-  if (!fs.existsSync(manifestModulePath) || !fs.existsSync(runtimeProjectionModulePath)) return null;
+  const capabilityModulePath = path.join(
+    CLI_PACKAGE_ROOT,
+    'dist',
+    'src',
+    'commands',
+    'aw-capabilities.js',
+  );
+  if (
+    !fs.existsSync(manifestModulePath)
+    || !fs.existsSync(runtimeProjectionModulePath)
+    || !fs.existsSync(capabilityModulePath)
+  ) return null;
   try {
-    const [manifestModule, runtimeProjectionModule] = await Promise.all([
+    const [manifestModule, runtimeProjectionModule, capabilityModule] = await Promise.all([
       import(pathToFileURL(manifestModulePath).href),
       import(pathToFileURL(runtimeProjectionModulePath).href),
+      import(pathToFileURL(capabilityModulePath).href),
     ]);
     if (
       manifestModule.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
@@ -426,6 +439,8 @@ async function tryLoadCliManifestTools() {
       validateSourcePluginManifest: manifestModule.validateSourcePluginManifest ?? null,
       readPluginManifest: manifestModule.readPluginManifest ?? null,
       discoverPlugins: manifestModule.discoverPlugins ?? null,
+      resolvePluginRequirements: manifestModule.resolvePluginRequirements ?? null,
+      implementedCapabilities: capabilityModule.IMPLEMENTED_AW_CAPABILITIES ?? null,
       createRuntimeResolver: runtimeProjectionModule.createCatalogRuntimeImportResolver ?? null,
     };
   } catch {
@@ -588,11 +603,12 @@ function validateManifestLightweight(manifest) {
     error('top-level "commands" has been removed; use "slashCommands" instead');
   }
   validateAllowedKeys(input, 'plugin manifest', [
+    'schemaVersion',
     'name',
     'version',
     'description',
     'dependencies',
-    'compatibility',
+    'requires',
     'skills',
     'slashCommands',
     'mcpServers',
@@ -709,7 +725,7 @@ function validatePortableNativeArtifactCapabilityLightweight(manifest) {
     && Array.isArray(target.states)
     && target.states.includes('present'));
   if (!hasOtherNativeDeclaration && !hasPresentNativeArtifact) {
-    const message = 'Invalid plugin manifest: portable-only plugins are not supported in V1. Declare at least one non-empty native capability.';
+    const message = 'Invalid plugin manifest: portable-only plugins are not supported. Declare at least one non-empty native capability.';
     if (!errors.includes(message)) error(message);
   }
 }
@@ -1148,7 +1164,8 @@ function validateEvalWorkspacePath(value, fieldName, options = {}) {
     candidate.includes('?') ||
     candidate.includes('[') ||
     candidate.includes(']') ||
-    path.isAbsolute(candidate) ||
+    path.posix.isAbsolute(candidate) ||
+    path.win32.isAbsolute(candidate) ||
     path.posix.normalize(candidate) !== candidate ||
     candidate.split('/').includes('..')
   ) {
@@ -1163,6 +1180,71 @@ function validateEvalWorkspacePath(value, fieldName, options = {}) {
   return raw;
 }
 
+function validateEvalFixtureTree(evalRoot, target, fieldName) {
+  const relativePath = path.relative(evalRoot, target);
+  let currentPath = evalRoot;
+  for (const segment of relativePath.split(path.sep).filter(Boolean)) {
+    currentPath = path.join(currentPath, segment);
+    const stat = fs.lstatSync(currentPath);
+    if (stat.isSymbolicLink()) {
+      error(`${fieldName} must not contain symbolic links`);
+      return false;
+    }
+  }
+  if (!validateRealPathBoundary(evalRoot, target, fieldName, 'Eval fixture root')) {
+    return false;
+  }
+  const stat = fs.lstatSync(target);
+  if (stat.isFile()) return true;
+  if (!stat.isDirectory()) {
+    error(`${fieldName} must reference a regular file or directory fixture`);
+    return false;
+  }
+  return fs.readdirSync(target).every((entry) =>
+    validateEvalFixtureTree(evalRoot, path.join(target, entry), fieldName));
+}
+
+function evalWorkspaceTargetsOverlap(left, right) {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function validateConversationEnvironment(value, fieldName, fixtureRoot, occupiedTargets = new Set()) {
+  if (value === undefined) return [];
+  const environment = expectRecord(value, fieldName);
+  if (!environment) return [];
+  validateAllowedKeys(environment, fieldName, ['pathPrepend']);
+  if (!Array.isArray(environment.pathPrepend) || environment.pathPrepend.length === 0) {
+    error(`${fieldName}.pathPrepend must be a non-empty array`);
+    return [];
+  }
+  const targets = environment.pathPrepend
+    .map((entry, index) => ({
+      index,
+      relativePath: validateEvalWorkspacePath(entry, `${fieldName}.pathPrepend[${index}]`, {
+        allowTreePattern: false,
+      }),
+    }))
+    .filter((entry) => entry.relativePath !== null);
+  if (new Set(targets.map((entry) => entry.relativePath)).size !== targets.length) {
+    error(`${fieldName}.pathPrepend must not contain duplicates`);
+  }
+  targets.forEach(({ index, relativePath }) => {
+    const target = path.resolve(fixtureRoot, relativePath);
+    if (!fs.existsSync(target)) {
+      error(`${fieldName}.pathPrepend[${index}] must reference an existing fixture`);
+      return;
+    }
+    validateEvalFixtureTree(fixtureRoot, target, `${fieldName}.pathPrepend[${index}]`);
+    if ([...occupiedTargets].some((occupiedTarget) =>
+      evalWorkspaceTargetsOverlap(relativePath, occupiedTarget))) {
+      error(`${fieldName}.pathPrepend[${index}] conflicts with another PATH fixture target`);
+      return;
+    }
+    occupiedTargets.add(relativePath);
+  });
+  return targets.map((entry) => entry.relativePath);
+}
+
 function evalWorkspacePathMatchesPattern(relativePath, pattern) {
   if (pattern.endsWith('/**')) {
     const prefix = pattern.slice(0, -3);
@@ -1171,7 +1253,7 @@ function evalWorkspacePathMatchesPattern(relativePath, pattern) {
   return relativePath === pattern;
 }
 
-function validateConversationCaseCorpus(evalDir, suite, fieldName) {
+function validateConversationCaseCorpus(evalDir, suite, fieldName, suitePathPrepend = []) {
   const casesPath = validateEvalRelativeFile(evalDir, suite.cases, `${fieldName}.cases`);
   if (!casesPath) return;
   let document;
@@ -1239,6 +1321,12 @@ function validateConversationCaseCorpus(evalDir, suite, fieldName) {
       });
     }
     validateNonEmptyString(entry.expected_output, `${caseField}.expected_output`);
+    validateConversationEnvironment(
+      entry.environment,
+      `${caseField}.environment`,
+      path.dirname(casesPath),
+      new Set(suitePathPrepend),
+    );
     if (entry.workspace_files !== undefined) {
       const workspaceFiles = expectRecord(
         entry.workspace_files,
@@ -1760,12 +1848,22 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
       if (suite.kind === 'conversation') {
         validateAllowedKeys(suite, fieldName, [
           'id', 'kind', 'skills', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
-          'requiredForRelease', 'perRunTimeoutMs', 'isolation',
+          'requiredForRelease', 'perRunTimeoutMs', 'isolation', 'environment',
         ]);
         if (Array.isArray(suite.releaseSplits) && suite.releaseSplits.length > 0) {
           error(`${fieldName} cannot declare releaseSplits because conversation cases do not support split filtering`);
         }
-        validateConversationCaseCorpus(evalDir, normalizedSuite, fieldName);
+        const suitePathPrepend = validateConversationEnvironment(
+          suite.environment,
+          `${fieldName}.environment`,
+          evalDir,
+        );
+        validateConversationCaseCorpus(
+          evalDir,
+          normalizedSuite,
+          fieldName,
+          suitePathPrepend,
+        );
       } else {
         validateAllowedKeys(suite, fieldName, [
           'id', 'kind', 'skills', 'cases', 'fixtureModule', 'observeSpawnAgent', 'isolation',
@@ -2328,41 +2426,6 @@ function validateDeclaredNativeAssets(pluginDir, manifest) {
         `"${filename}" exists but manifest does not declare "${field}" — declare it or remove the file`,
       );
     }
-  }
-}
-
-function validatePluginVersionContracts(manifest, options) {
-  if (manifest.compatibility === undefined) {
-    error('Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.');
-    return;
-  }
-  const compatibility = expectRecord(manifest.compatibility, 'compatibility');
-  if (!compatibility) {
-    return;
-  }
-
-  validateAllowedKeys(compatibility, 'compatibility', ['aw']);
-  if (compatibility.aw === undefined) {
-    error('Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.');
-    return;
-  }
-  const aw = expectRecord(compatibility.aw, 'compatibility.aw');
-  if (!aw) {
-    return;
-  }
-  validateAllowedKeys(aw, 'compatibility.aw', ['minVersion']);
-  const pluginMinVersion = validateStrictSemVerString(
-    aw.minVersion,
-    'compatibility.aw.minVersion',
-  );
-  if (!pluginMinVersion || !options.catalogMinVersion) {
-    return;
-  }
-
-  if (compareStrictSemVer(pluginMinVersion, options.catalogMinVersion) > 0) {
-    error(
-      `Invalid compatibility.aw.minVersion for plugin "${pluginNameForError(manifest)}": received ${JSON.stringify(pluginMinVersion)}, which is higher than target catalog minimum ${JSON.stringify(options.catalogMinVersion)}.`,
-    );
   }
 }
 
@@ -4670,8 +4733,6 @@ function printUsage() {
   aw plugin validate <plugin-directory> [options]
 
 Options:
-  --catalog-min-version <semver>
-                               Validate compatibility.aw.minVersion against a target catalog.
   --strict-agent-skills        Allow only Agent Skills portable core frontmatter.
   --claude-skill-profile <minimum|current>
                                Validate Claude fields at AW minimum 2.1.88 (default) or current docs.
@@ -4749,7 +4810,24 @@ async function validatePluginDir(pluginDir, options) {
 
   const skillValidationTools = await tryLoadCliSkillValidationTools();
   try {
-    await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+    const normalizedManifest = await cliManifestTools.validateSourcePluginManifest(pluginDir, manifest);
+    const requirements = await cliManifestTools.resolvePluginRequirements({
+      pluginRoot: pluginDir,
+      manifest: normalizedManifest,
+      implementedCapabilities: cliManifestTools.implementedCapabilities,
+    });
+    const blockingObservations = requirements.observations.filter((observation) => observation.blocking);
+    if (requirements.unsupportedByCurrentAw.length > 0) {
+      capabilityDiagnostic = {
+        errorCode: 'awCapabilityUnsupported',
+        missingCapabilities: requirements.unsupportedByCurrentAw,
+        availableCapabilities: [...cliManifestTools.implementedCapabilities].sort(),
+      };
+      error(`[awCapabilityUnsupported] missingCapabilities=${JSON.stringify(requirements.unsupportedByCurrentAw)}`);
+    }
+    for (const observation of blockingObservations) {
+      error(`[awCapabilityScanBlocked] ${observation.path}: ${observation.message}`);
+    }
   } catch (e) {
     error(e.message);
   }
@@ -4760,7 +4838,6 @@ async function validatePluginDir(pluginDir, options) {
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
   validateCanonicalSkillLayout(pluginDir, manifest);
-  validatePluginVersionContracts(manifest, options);
   validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
   const runtimeImports = await resolveAuthorRuntimeImports({
@@ -4823,7 +4900,6 @@ function parseArgs(argv) {
   const args = argv.slice(2);
   const options = {
     pluginDir: null,
-    catalogMinVersion: null,
     strictAgentSkills: false,
     claudeSkillProfile: 'minimum',
     versionBase: 'HEAD',
@@ -4885,22 +4961,6 @@ function parseArgs(argv) {
       exitCliError(`Unknown argument: ${arg}`, options.json);
     }
 
-    if (arg === '--catalog-min-version') {
-      const value = args[index + 1];
-      if (!value || value.startsWith('--')) {
-        exitCliError('--catalog-min-version requires a value.', options.json);
-      }
-      index += 1;
-      if (!STRICT_SEMVER_PATTERN.test(value)) {
-        exitCliError(
-          `Invalid --catalog-min-version: expected a strict SemVer 2.0.0 string. Received ${JSON.stringify(value)}.`,
-          options.json,
-        );
-      }
-      options.catalogMinVersion = value;
-      continue;
-    }
-
     exitCliError(`Unknown option: ${arg}`, options.json);
   }
 
@@ -4935,7 +4995,6 @@ async function main() {
   const gitRoot = discoverCanonicalRepoRoot(findRepoRootCandidate(resolved));
 
   await validatePluginDir(resolved, {
-    catalogMinVersion: args.catalogMinVersion,
     strictAgentSkills: args.strictAgentSkills,
     claudeSkillProfile: args.claudeSkillProfile,
     versionBase: args.versionBase,
@@ -4950,9 +5009,12 @@ async function main() {
       profile: args.strictAgentSkills ? 'agent-skills-portable-core' : 'aw-source',
       claudeSkillProfile: args.claudeSkillProfile,
       pluginDirectory: resolved,
+      workspaceRoot: process.env.AW_AUTHORING_WORKSPACE_ROOT ?? repoRoot,
+      workspaceRootResolvedFrom: process.env.AW_AUTHORING_WORKSPACE_ROOT_RESOLVED_FROM ?? 'explicit',
       versionCheck: pluginVersionCheckResult,
       warnings,
       errors,
+      ...(capabilityDiagnostic ?? {}),
     }, null, 2));
     if (errors.length > 0) {
       process.exit(1);

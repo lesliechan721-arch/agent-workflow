@@ -5,7 +5,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  compareStrictSemVer as compareSemVer,
   parseStrictSemVer as parseSemVer,
 } from './lib/semver.mjs';
 import {
@@ -69,25 +68,12 @@ function parseStrictSemVer(value, fieldName) {
   }
 }
 
-function compareStrictSemVer(left, right) {
-  try {
-    return compareSemVer(left, right);
-  } catch (error) {
-    fail(error.message);
-  }
-}
-
-function buildPluginManifest(pluginName, version, minVersion, description, displayName, shortDescription, opts) {
+function buildPluginManifest(pluginName, version, description, displayName, shortDescription, opts) {
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name: pluginName,
     version,
     description,
-    compatibility: {
-      aw: {
-        minVersion,
-      },
-    },
   };
 
   if (!opts.noSkills) {
@@ -292,9 +278,6 @@ Options:
                                 Initial skill UI summary (25-64 characters). Default: --skill-description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
   --version <semver>            Plugin version. Default: 0.1.0
-  --min-version <semver>        Plugin compatibility.aw.minVersion. Default: --catalog-min-version or 0.0.0
-  --catalog-min-version <semver>
-                                Target catalog compatibility.aw.minVersion used for authoring-time validation.
   --workspace-root <path>            Workspace root. Default: current directory.
   --no-skills                   Create plugin without skills directory.
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
@@ -408,12 +391,6 @@ function parseArgs(argv) {
       case '--version':
         options.version = value;
         break;
-      case '--min-version':
-        options.minVersion = value;
-        break;
-      case '--catalog-min-version':
-        options.catalogMinVersion = value;
-        break;
       case '--workspace-root':
         options.repoRoot = value;
         break;
@@ -444,18 +421,6 @@ function main() {
     fail('--version must be a stable SemVer without prerelease or build metadata.');
   }
   const version = parsedVersion.raw;
-  const catalogMinVersion = args.catalogMinVersion === undefined
-    ? null
-    : parseStrictSemVer(args.catalogMinVersion, '--catalog-min-version').raw;
-  const minVersion = parseStrictSemVer(
-    args.minVersion ?? catalogMinVersion ?? '0.0.0',
-    '--min-version',
-  ).raw;
-  if (catalogMinVersion && compareStrictSemVer(minVersion, catalogMinVersion) > 0) {
-    fail(
-      `compatibility.aw.minVersion cannot exceed the target catalog minimum: compatibility.aw.minVersion=${JSON.stringify(minVersion)}, target catalog minimum=${JSON.stringify(catalogMinVersion)}.`,
-    );
-  }
   const displayName = args.displayName || titleCaseSlug(pluginName);
   const shortDescription = args.shortDescription || args.description;
   const initialSkillName = args.noSkills
@@ -490,7 +455,6 @@ function main() {
   const pluginManifest = buildPluginManifest(
     pluginName,
     version,
-    minVersion,
     args.description,
     displayName,
     shortDescription,

@@ -48,7 +48,7 @@ async function createFixture(): Promise<{
     name: 'claude-native-only',
     version: '1.0.0',
     description: 'Claude native-only config fixture',
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    schemaVersion: 2,
     marketplace: {
       category: 'test',
       strict: true,

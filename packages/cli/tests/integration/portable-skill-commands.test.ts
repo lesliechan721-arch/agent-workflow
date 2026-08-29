@@ -10,17 +10,26 @@ import {
   preparePortableInstall,
   setPortableCommandTestHooksForTests,
 } from '../../src/portable/commands.js';
-import { createCatalogManifestV4, createCatalogManifestV4Entry } from '../../src/utils/catalog-manifest-v4.js';
+import { createCatalogManifestV5, createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
-import { readPluginManifest } from '../../src/utils/manifest.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  createAwPluginRequirementsReceipt,
+  readPluginManifest,
+} from '../../src/utils/manifest.js';
+import {
+  createCatalogSnapshotFixture,
+  createDependencyCatalogSnapshotFixture,
+} from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-async function configurePortableCatalog(): Promise<{
+async function configurePortableCatalog(options: {
+  targetCapabilities?: string[];
+  dependencyCapability?: string;
+} = {}): Promise<{
   cwd: string;
   env: NodeJS.ProcessEnv;
   sourceRoot: string;
@@ -28,11 +37,35 @@ async function configurePortableCatalog(): Promise<{
 }> {
   const isolation = getCurrentSourceTestIsolation();
   const sourceRoot = path.join(isolation.layout.fixtureCwd, 'portable-source');
-  await createCatalogSnapshotFixture(sourceRoot, 'portable', '0.1.0', 'portable\n', (manifest) => {
+  const configureManifest = (manifest: Parameters<NonNullable<Parameters<typeof createCatalogSnapshotFixture>[4]>>[0]) => {
     manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
     manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
-  });
+  };
+  if (options.dependencyCapability) {
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      {
+        name: 'portable',
+        dependencies: ['future'],
+        requiredCapabilities: options.targetCapabilities,
+        configureManifest,
+      },
+      { name: 'future', requiredCapabilities: [options.dependencyCapability] },
+    ]);
+  } else {
+    await createCatalogSnapshotFixture(
+      sourceRoot,
+      'portable',
+      options.targetCapabilities ?? [],
+      'portable\n',
+      configureManifest,
+    );
+  }
   const pluginRoot = path.join(sourceRoot, 'plugins', 'portable');
+  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+  const receipt = createAwPluginRequirementsReceipt(
+    { name: plugin.manifest.name, version: plugin.manifest.version },
+    plugin.manifest.requires?.aw.capabilities ?? [],
+  );
   for (const name of ['alpha', 'beta']) {
     await fs.outputFile(
       path.join(pluginRoot, 'agent-skills', 'skills', name, 'SKILL.md'),
@@ -42,23 +75,33 @@ async function configurePortableCatalog(): Promise<{
       path.join(pluginRoot, 'agent-skills', 'skills', name, 'README.md'),
       `# ${name}\n`,
     );
+    await fs.outputJson(
+      path.join(pluginRoot, 'agent-skills', 'skills', name, 'aw-plugin-requirements.json'),
+      receipt,
+      { spaces: 2 },
+    );
   }
-  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV4({
+  const pluginNames = options.dependencyCapability ? ['future', 'portable'] : ['portable'];
+  const entries = await Promise.all(pluginNames.map(async (name) => {
+    const root = path.join(sourceRoot, 'plugins', name);
+    return createCatalogManifestV5Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
+  }));
+  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV5({
     catalogVersion: '1.0.0',
     channel: 'latest',
     marketplace: {
       owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
       interface: { displayName: 'Fixture Marketplace' },
     },
-    compatibility: { aw: { minVersion: '0.1.0' } },
+    schemaVersion: 5,
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
     release: { state: 'development' },
-    entries: [await createCatalogManifestV4Entry(plugin, pluginRoot)],
+    entries,
   }));
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
     },
     expectedDigest: snapshot.digest,
@@ -155,7 +198,7 @@ describe('portable skill public commands', () => {
       );
       await fs.outputFile(path.join(externalRoot, 'leaked-skill', 'README.md'), '# Private\n');
       const plugin = await readPluginManifest(fixture.pluginRoot, { mode: 'bundle' });
-      const entry = await createCatalogManifestV4Entry(plugin, fixture.pluginRoot);
+      const entry = await createCatalogManifestV5Entry(plugin, fixture.pluginRoot);
       if (malformedNode === 'root symlink') {
         await fs.remove(skillsRoot);
         await fs.symlink(externalRoot, skillsRoot, 'dir');
@@ -168,14 +211,15 @@ describe('portable skill public commands', () => {
           'dir',
         );
       }
-      await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV4({
+      await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV5({
         catalogVersion: '1.0.0',
         channel: 'latest',
         marketplace: {
           owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
           interface: { displayName: 'Fixture Marketplace' },
         },
-        compatibility: { aw: { minVersion: '0.1.0' } },
+        schemaVersion: 5,
+        requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
         release: { state: 'development' },
         entries: [entry],
       }));
@@ -508,6 +552,44 @@ describe('portable skill public commands', () => {
     )).toBe(0);
     await expect(fs.pathExists(path.join(out, 'skills', 'alpha'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(out, 'skills', 'beta', 'SKILL.md'))).resolves.toBe(true);
+  });
+
+  it('preserves target capability diagnostics in materialize JSON', async () => {
+    const fixture = await configurePortableCatalog({
+      targetCapabilities: ['aw.future-portable.v1'],
+    });
+    const io = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-output'), '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: io.io },
+    )).toBe(1);
+    expect(JSON.parse(io.readStdout())).toMatchObject({
+      errors: [{
+        code: 'awCapabilityUnsupported',
+        plugin: 'local/portable',
+        missingCapabilities: ['aw.future-portable.v1'],
+        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v5']),
+      }],
+    });
+  });
+
+  it('preserves transitive dependency capability diagnostics in materialize JSON', async () => {
+    const fixture = await configurePortableCatalog({
+      dependencyCapability: 'aw.future-dependency.v1',
+    });
+    const io = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', path.join(fixture.cwd, 'future-dependency-output'), '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: io.io },
+    )).toBe(1);
+    expect(JSON.parse(io.readStdout())).toMatchObject({
+      errors: [{
+        code: 'awCapabilityUnsupported',
+        plugin: 'local/future',
+        missingCapabilities: ['aw.future-dependency.v1'],
+        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v5']),
+      }],
+    });
   });
 
   it('rejects foreign, mismatched, and symlink output without changing the existing target', async () => {

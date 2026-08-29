@@ -75,7 +75,7 @@ async function configuredController(): Promise<{
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: firstRoot }],
     },
     expectedDigest: snapshot.digest,
@@ -112,7 +112,7 @@ describe('TUI v4 real catalog source boundary', () => {
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{
           id: 'git-local',
           type: 'git',
@@ -257,7 +257,7 @@ describe('TUI v4 real catalog source boundary', () => {
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'local', type: 'path', primary: true, path: firstRoot },
           { id: 'team', type: 'path', primary: false, path: secondRoot },

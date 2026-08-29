@@ -68,7 +68,7 @@ async function createReviewRepository(): Promise<string> {
     name: 'custom-plugin',
     version: '0.1.0',
     description: 'Custom plugin root fixture.',
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    schemaVersion: 2,
     skills: './skills',
     marketplace: {
       category: 'workflow',
@@ -89,7 +89,7 @@ async function createReviewRepository(): Promise<string> {
       name: 'runtime-provider',
       version: '0.1.0',
       description: 'Runtime provider fixture.',
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      schemaVersion: 2,
       skills: './skills',
       marketplace: {
         category: 'workflow',
@@ -379,7 +379,7 @@ describe('review publication public CLI', () => {
         name: 'broken-provider',
         version: 'broken',
         description: 'Broken required provider.',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        schemaVersion: 2,
         skills: './skills',
       },
     );

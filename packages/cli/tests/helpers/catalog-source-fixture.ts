@@ -7,10 +7,14 @@ import fs from 'fs-extra';
 
 import type { PluginMeta } from '../../src/types.js';
 import {
-  createCatalogManifestV4,
-  createCatalogManifestV4Entry,
-} from '../../src/utils/catalog-manifest-v4.js';
-import { compareStrictSemVer, readPluginManifest } from '../../src/utils/manifest.js';
+  createCatalogManifestV5,
+  createCatalogManifestV5Entry,
+} from '../../src/utils/catalog-manifest-v5.js';
+import {
+  deriveAwCapabilitiesFromManifest,
+  normalizeAwCapabilities,
+  readPluginManifest,
+} from '../../src/utils/manifest.js';
 import { resolvePlatformEntries } from '../../src/utils/platform-entries.js';
 
 const execFileAsync = promisify(execFile);
@@ -18,7 +22,7 @@ const execFileAsync = promisify(execFile);
 export async function createCatalogSnapshotFixture(
   rootDir: string,
   pluginName = 'demo',
-  minAwVersion = '0.0.0',
+  requiredCapabilities: readonly string[] = [],
   readme = `${pluginName}\n`,
   configureManifest?: (manifest: PluginMeta['manifest']) => void,
 ): Promise<void> {
@@ -30,10 +34,10 @@ export async function createCatalogSnapshotFixture(
   const pluginRoot = path.join(rootDir, 'plugins', pluginName);
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest: PluginMeta['manifest'] = {
+    schemaVersion: 2,
     name: pluginName,
     version: '1.0.0',
     description: `${pluginName} plugin`,
-    compatibility: { aw: { minVersion: minAwVersion } },
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -44,6 +48,14 @@ export async function createCatalogSnapshotFixture(
     },
   };
   configureManifest?.(manifest);
+  manifest.requires = {
+    aw: {
+      capabilities: normalizeAwCapabilities([
+        ...requiredCapabilities,
+        ...deriveAwCapabilitiesFromManifest(manifest),
+      ]),
+    },
+  };
   const marketplaceEntry = {
     name: manifest.name,
     source: `./plugins/${manifest.name}`,
@@ -69,7 +81,6 @@ export async function createCatalogSnapshotFixture(
       name: manifest.name,
       version: manifest.version,
       description: manifest.description,
-      compatibility: manifest.compatibility,
       ...(manifest.interface ? { interface: manifest.interface } : {}),
     } as Record<string, unknown>;
     if (platform === 'claude') {
@@ -104,18 +115,15 @@ export async function createCatalogSnapshotFixture(
   ]);
   await fs.outputFile(path.join(pluginRoot, 'README.md'), readme);
   const plugin: PluginMeta = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-  const entry = await createCatalogManifestV4Entry(plugin, pluginRoot);
-  const catalogMinAwVersion = compareStrictSemVer(minAwVersion, '0.0.0') < 0
-    ? '0.0.0'
-    : minAwVersion;
-  await fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV4({
+  const entry = await createCatalogManifestV5Entry(plugin, pluginRoot);
+  await fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV5({
     catalogVersion: '1.0.0',
     channel: 'latest',
     marketplace: {
       owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
       interface: { displayName: 'Fixture Marketplace' },
     },
-    compatibility: { aw: { minVersion: catalogMinAwVersion } },
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
     release: { state: 'development' },
     entries: [entry],
   }), { spaces: 2 });
@@ -132,6 +140,7 @@ export async function createDependencyCatalogSnapshotFixture(
   plugins: Array<{
     name: string;
     dependencies?: string[];
+    requiredCapabilities?: string[];
     configureManifest?: (manifest: PluginMeta['manifest']) => void;
   }>,
 ): Promise<void> {
@@ -139,7 +148,7 @@ export async function createDependencyCatalogSnapshotFixture(
     await createCatalogSnapshotFixture(
       rootDir,
       plugin.name,
-      '0.1.0',
+      plugin.requiredCapabilities ?? [],
       `${plugin.name}\n`,
       (manifest) => {
         if (plugin.dependencies) manifest.dependencies = plugin.dependencies;
@@ -158,7 +167,7 @@ export async function createDependencyCatalogSnapshotFixture(
     readPluginManifest(path.join(rootDir, 'plugins', plugin.name), { mode: 'bundle' }))))
     .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   const entries = await Promise.all(metas.map((meta) =>
-    createCatalogManifestV4Entry(meta, meta.rootDir)));
+    createCatalogManifestV5Entry(meta, meta.rootDir)));
   const marketplaceEntry = (meta: PluginMeta) => ({
     name: meta.manifest.name,
     source: `./plugins/${meta.manifest.name}`,
@@ -179,14 +188,14 @@ export async function createDependencyCatalogSnapshotFixture(
   await Promise.all([
     fs.writeJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
     fs.writeJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), marketplace('CLAUDE'), { spaces: 2 }),
-    fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV4({
+    fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV5({
       catalogVersion: '1.0.0',
       channel: 'latest',
       marketplace: {
         owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
         interface: { displayName: 'Fixture Marketplace' },
       },
-      compatibility: { aw: { minVersion: '0.1.0' } },
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
       release: { state: 'development' },
       entries,
     }), { spaces: 2 }),

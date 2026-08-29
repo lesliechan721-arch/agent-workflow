@@ -118,7 +118,7 @@ describe('command wizard', () => {
         name: 'real-chain',
         version: '1.0.0',
         description: 'fixture',
-        compatibility: { aw: { minVersion: '0.0.0' } },
+        schemaVersion: 2,
         marketplace: {
           category: 'test',
           strict: true,

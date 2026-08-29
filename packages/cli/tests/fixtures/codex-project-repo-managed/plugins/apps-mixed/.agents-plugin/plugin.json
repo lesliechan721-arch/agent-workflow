@@ -1,12 +1,8 @@
 {
+  "schemaVersion": 2,
   "name": "apps-mixed",
   "version": "0.1.0",
   "description": "Fixture plugin combining a repo skill with Codex apps; project scope must reject the whole plugin.",
-  "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
-  },
   "skills": "./skills",
   "apps": "./.app.json",
   "marketplace": {

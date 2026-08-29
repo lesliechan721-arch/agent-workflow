@@ -19,6 +19,43 @@ function fixturePath(name: string): string {
 }
 
 describe('catalog source mutation v4', () => {
+  it('protects Workspace-managed sources in public commands and preflight', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('managed-first');
+    const second = fixturePath('managed-second');
+    await createCatalogSnapshotFixture(first);
+    await createCatalogSnapshotFixture(second);
+    const source = {
+      id: 'managed-dev',
+      type: 'path' as const,
+      path: first,
+      primary: false,
+      managedBy: { kind: 'catalog-workspace' as const, workspaceIdentity: 'workspace-1' },
+    };
+    await expect(addCatalogSourceCommand({
+      source, cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).rejects.toMatchObject({ code: 'managedSourceProtected' });
+    await addCatalogSourceCommand({
+      source, cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      managedByWorkspaceIdentity: 'workspace-1',
+    });
+    for (const request of [
+      { action: 'update' as const, sourceId: source.id, update: { type: 'path' as const, path: second } },
+      { action: 'remove' as const, sourceId: source.id },
+    ]) {
+      await expect(preflightCatalogSourceMutation({
+        request, cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      })).rejects.toMatchObject({ code: 'managedSourceProtected' });
+    }
+    await expect(updateCatalogSourceCommand({
+      sourceId: source.id, update: { type: 'path', path: second },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).rejects.toMatchObject({ code: 'managedSourceProtected' });
+    await expect(removeCatalogSourceCommand({
+      sourceId: source.id, cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).rejects.toMatchObject({ code: 'managedSourceProtected' });
+  });
+
   it('preflights only config evidence and does not scan live or historical references', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('preflight-source');

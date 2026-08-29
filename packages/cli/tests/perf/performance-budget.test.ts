@@ -58,7 +58,7 @@ describe('multi-source performance budgets', () => {
       AW_CLAUDE_HOME: path.join(root, 'claude-home'),
     };
     await fs.outputJson(path.join(env.AW_HOME!, 'catalog-sources.json'), {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
     });
 
@@ -84,7 +84,7 @@ describe('multi-source performance budgets', () => {
       AW_CLAUDE_HOME: path.join(root, 'fanout-claude-home'),
     };
     await fs.outputJson(path.join(fanoutEnv.AW_HOME!, 'catalog-sources.json'), {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         {
           id: 'git-a',

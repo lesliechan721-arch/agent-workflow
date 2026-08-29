@@ -1,13 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "ask-me",
   "version": "0.1.0",
   "description": "通过独立决策访谈、可体验原型或可选 Shape 工作流形成准确共享理解。",
-  "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
-  },
   "skills": "./skills",
   "marketplace": {
     "category": "workflow",

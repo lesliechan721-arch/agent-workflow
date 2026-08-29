@@ -204,7 +204,6 @@ async function validateClaudeManifest(
       'name',
       'version',
       'description',
-      'compatibility',
       'skills',
       'mcpServers',
       'interface',
@@ -220,7 +219,6 @@ async function validateClaudeManifest(
     }
   }
   assertStrictSemVer(manifest.version, 'claude manifest.version');
-  assertStrictSemVer(manifest.compatibility.aw.minVersion, 'claude manifest.compatibility.aw.minVersion');
 
   if (manifest.skills) {
     await validateClaudeSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
@@ -289,7 +287,6 @@ async function validateCodexManifest(
       'name',
       'version',
       'description',
-      'compatibility',
       'skills',
       'mcpServers',
       'apps',
@@ -300,7 +297,6 @@ async function validateCodexManifest(
     }
   }
   assertStrictSemVer(manifest.version, 'codex manifest.version');
-  assertStrictSemVer(manifest.compatibility.aw.minVersion, 'codex manifest.compatibility.aw.minVersion');
 
   if (manifest.skills) {
     await validateCodexSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
@@ -386,7 +382,10 @@ async function validateClaudeSkillsTree(
     const skillRoot = path.join(skillsRoot, skillName);
     await assertSkillEntryExists(skillRoot, skillName, 'SKILL.md', 'claude.skills');
     await validateRuntimeSkillClosure(skillRoot);
-    await validateSkillDirectory(skillRoot, 'claude.skill', { ownerMarkerPolicy });
+    await validateSkillDirectory(skillRoot, 'claude.skill', {
+      ownerMarkerPolicy,
+      requirementsReceiptPolicy: 'allow',
+    });
   }
 }
 
@@ -411,7 +410,10 @@ async function validateCodexSkillsTree(
       'codex.skills',
     );
     await validateRuntimeSkillClosure(skillRoot);
-    await validateSkillDirectory(skillRoot, 'codex.skill', { ownerMarkerPolicy });
+    await validateSkillDirectory(skillRoot, 'codex.skill', {
+      ownerMarkerPolicy,
+      requirementsReceiptPolicy: 'allow',
+    });
   }
 }
 

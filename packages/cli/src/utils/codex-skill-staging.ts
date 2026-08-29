@@ -11,6 +11,8 @@ export async function createCodexSkillExpectedTree(options: {
   artifact: Pick<CodexSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'>;
   sourceDirs?: string[];
   requireReadme?: boolean;
+  requirementsReceipt?: Buffer;
+  sourceRequirementsReceiptPolicy?: 'reject' | 'allow' | 'ignore';
 }): Promise<CodexSkillStagingTree> {
   return createDynamicSkillExpectedTree(options);
 }

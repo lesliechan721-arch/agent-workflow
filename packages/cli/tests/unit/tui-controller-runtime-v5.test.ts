@@ -265,13 +265,13 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('prepares config review from loaded session evidence without another status or remote stage', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-config-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -347,13 +347,13 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('keeps Review, stale fingerprints, and writer reapply targets on one config affected-target rule', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-config-targets-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
       manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -488,11 +488,11 @@ describe('TUI controller runtime scope conflict validation', () => {
   ] as const)('prepares one legal %s Review with one status entry', async (action, state, revisionState) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, `runtime-review-${action}-source`);
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -562,11 +562,11 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('rejects an absent collision before install Review preparation', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-collision-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
       },
       expectedDigest: initial.digest,
@@ -629,6 +629,28 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
     expect(stages).toEqual(['validate', 'evidence']);
     expect(runtimeMocks.statusCommandV5).not.toHaveBeenCalled();
+  });
+
+  it('stops a managed source mutation when public preflight rejects it', async () => {
+    runtimeMocks.preflightCatalogSourceMutation.mockRejectedValue(Object.assign(
+      new Error('Catalog source "workspace-dev" is managed by a Catalog Workspace.'),
+      { code: 'managedSourceProtected' },
+    ));
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+
+    await expect(dependencies.prepareReviewEvidence!({
+      kind: 'sourceMutation',
+      action: 'remove',
+      sourceId: 'workspace-dev',
+    }, new AbortController().signal, () => undefined)).rejects.toMatchObject({
+      code: 'managedSourceProtected',
+    });
+    expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
   });
 
   it('does not return source evidence after cancellation during an unsupported preflight boundary', async () => {

@@ -35,11 +35,7 @@ async function createTempPlugin(
   await fs.writeJson(
     path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
     {
-      compatibility: {
-        aw: {
-          minVersion: '0.1.0',
-        },
-      },
+      schemaVersion: 2,
       ...manifest,
     },
     { spaces: 2 },
@@ -135,6 +131,19 @@ describe('slashCommands source and bundle contract', () => {
     );
     expect(skillContent).not.toContain('$ARGUMENTS');
     expect(skillContent).not.toContain('```!');
+    await expect(fs.readJson(path.join(
+      outputRoot,
+      'codex',
+      'skills',
+      'review',
+      'aw-plugin-requirements.json',
+    ))).resolves.toMatchObject({
+      schemaVersion: 1,
+      kind: 'aw-plugin-requirements',
+      plugin: { name: 'slash-commands-only', version: '0.1.0' },
+      requiredCapabilities: expect.arrayContaining(['aw.plugin-manifest.v2']),
+      digest: expect.stringMatching(/^sha256:/u),
+    });
 
     const openAiYaml = YAML.parse(
       await fs.readFile(

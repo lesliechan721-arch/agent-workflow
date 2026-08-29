@@ -52,7 +52,7 @@ function createManifest(options: {
     name: 'active-plugin',
     version: options.version ?? '1.0.0',
     description: 'Lifecycle active store fixture',
-    compatibility: { aw: { minVersion: '0.1.0' } },
+    schemaVersion: 2,
     marketplace: {
       category: 'test',
       strict: true,

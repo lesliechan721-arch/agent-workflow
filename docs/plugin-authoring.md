@@ -16,11 +16,11 @@
 
 具体目录由 manifest 声明。所有 source path 必须留在插件根内，不能进入任意深度的 `.git` 或 `node_modules`。只维护 source 文件；`.aw/plugins/`、Catalog snapshot、digest 和 platform marketplace 是生成物，不手改。
 
-每个 manifest 使用 `schemaVersion: 1`。不要混淆：
+每个 source manifest 必须使用 Plugin Manifest v2，即显式写入 `schemaVersion: 2`。当前作者工具不接受早期 manifest schema。不要混淆：
 
 - `schemaVersion`：manifest 结构版本。
 - `version`：单插件稳定 artifact 版本。
-- `compatibility.aw.minVersion`：插件要求的最低 AW 版本。
+- `requires.aw.capabilities`：插件显式要求的 AW capability ID；插件版本只标识 artifact。
 
 字段、类型、required 条件和 accepted values 通过当前 CLI 查询：
 
@@ -28,7 +28,9 @@
 aw plugin capabilities --surface manifest --json
 ```
 
-其它 surface 以 `aw plugin capabilities --help` 为准。不要从 development plugin 文档缓存字段表。
+其它 surface 以当前 CLI 帮助为准。不要从 development plugin 文档缓存字段表。
+
+已安装 Author 在开始工作时运行 `aw self check --from <skill-root> --json`。CLI 优先读取同层 `aw-plugin-requirements.json` runtime receipt，再回退到 Manifest；`missingCapabilities` 非空时停止。`aw plugin requirements <plugin-directory> --json` 分开报告 declared、derived、detected 和 effective requirements。`requires.aw.capabilities` 只声明生产行为真正需要的最小集合，不能用 CLI 版本字符串替代 capability compatibility。
 
 同一 Catalog source 内的运行时依赖只在 manifest `dependencies` 中声明，值为裸插件名。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。依赖集合、缺失节点和环由 Catalog 作者聚合验证；本指南只定义单插件声明。
 
@@ -36,7 +38,7 @@ aw plugin capabilities --surface manifest --json
 
 开始前确认 `<workspace-root>` 已有合法 `.aw-workspace.json` 和 `plugins/marketplace-source.json`。没有合法 Workspace 时停止，并使用 [Catalog 作者指南](catalog-authoring.md)初始化，不要由 Plugin Author 隐式创建。
 
-每次先运行对应的 `--help`：
+使用当前公开命令：
 
 ```bash
 workspace=/absolute/path/to/workspace
@@ -75,7 +77,7 @@ Workspace 必须位于有有效 HEAD 的 Git worktree 中，也可以是仓库�
 
 若其它当前 plugin manifest 的 `dependencies` 包含目标，命令列出反向依赖者并停止。所有检查在删除前完成；缺少 `--yes` 时不修改文件。成功只删除 plugin root，不修改 `catalog.version`，也不 commit、build 或 publish。命令没有 `--force`。删除阶段发生 I/O 失败时，诊断会给出从已核验 HEAD 恢复目标的 Git 命令。
 
-Agent 删除由 Catalog Author 编排：普通用户删除请求先进入 Catalog Author；它先确认用户明确给出的 Workspace 和插件名、当前 inventory 与反向依赖，再明确交接这一个命令给 Plugin Author。没有该 handoff 时 Plugin Author 停止并指向 Catalog Author。Plugin Author 先查询 `aw --version` 和 `aw plugin remove --help`，只执行公开参数的删除命令并返回 JSON receipt；成功后不对已删除对象运行 validate、test、build 或 status。Catalog Author 重新读取 inventory 和依赖，并验证剩余插件。
+Agent 删除由 Catalog Author 编排：普通用户删除请求先进入 Catalog Author；它先确认用户明确给出的 Workspace 和插件名、当前 inventory 与反向依赖，再明确交接这一个命令给 Plugin Author。没有该 handoff 时 Plugin Author 停止并指向 Catalog Author。Plugin Author 通过 runtime compatibility check 后，只执行公开参数的删除命令并返回 JSON receipt；成功后不对已删除对象运行 validate、test、build 或 status。Catalog Author 重新读取 inventory 和依赖，并验证剩余插件。
 
 ## Build、Portable 和信任边界
 

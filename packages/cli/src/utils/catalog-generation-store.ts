@@ -12,8 +12,8 @@ import type {
   CatalogSourceResolution,
 } from '../types.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
-import { validateCatalogSnapshot } from './catalog-snapshot.js';
-import { compareStrictSemVer, parseStrictSemVer } from './manifest.js';
+import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
+import { normalizeAwCapabilities, parseStrictSemVer } from './manifest.js';
 import {
   canonicalizePathThroughExistingAncestorSync,
   ensureRegularDirectoryPath,
@@ -117,7 +117,7 @@ function parseGenerationMetadata(value: unknown): CatalogGenerationMetadataV1 {
     'manifestDigest',
     'snapshotDigest',
     'generationKey',
-    'minAwVersion',
+    'requiredAwCapabilities',
     'publishedAt',
   ])) {
     throw new CatalogGenerationError({
@@ -130,7 +130,8 @@ function parseGenerationMetadata(value: unknown): CatalogGenerationMetadataV1 {
     || typeof value.logicalIdentity !== 'string'
     || value.logicalIdentity.trim() === ''
     || typeof value.catalogVersion !== 'string'
-    || typeof value.minAwVersion !== 'string'
+    || !Array.isArray(value.requiredAwCapabilities)
+    || value.requiredAwCapabilities.some((capability) => typeof capability !== 'string')
     || (value.channel !== 'latest' && value.channel !== 'beta')
     || typeof value.manifestDigest !== 'string'
     || !SHA256_DIGEST_PATTERN.test(value.manifestDigest)
@@ -148,7 +149,10 @@ function parseGenerationMetadata(value: unknown): CatalogGenerationMetadataV1 {
   }
   try {
     parseStrictSemVer(value.catalogVersion, 'Catalog generation catalogVersion');
-    parseStrictSemVer(value.minAwVersion, 'Catalog generation minAwVersion');
+    if (JSON.stringify(normalizeAwCapabilities(value.requiredAwCapabilities))
+      !== JSON.stringify(value.requiredAwCapabilities)) {
+      throw new Error('Catalog generation required capabilities are not normalized.');
+    }
   } catch (error) {
     throw new CatalogGenerationError({
       code: 'catalogGenerationMetadataInvalid',
@@ -218,9 +222,9 @@ async function validateGenerationDirectory(options: {
 }): Promise<PublishedCatalogGeneration> {
   const metadata = await readGenerationMetadataAt(options);
   const snapshotRoot = path.join(options.generationDir, 'snapshot');
-  let validation: Awaited<ReturnType<typeof validateCatalogSnapshot>>;
+  let validation: Awaited<ReturnType<typeof validateCatalogSnapshotTransport>>;
   try {
-    validation = await validateCatalogSnapshot(snapshotRoot);
+    validation = await validateCatalogSnapshotTransport(snapshotRoot);
   } catch (error) {
     throw new CatalogGenerationError({
       code: 'catalogGenerationMetadataInvalid',
@@ -231,7 +235,8 @@ async function validateGenerationDirectory(options: {
   if (
     validation.manifest.catalogVersion !== metadata.catalogVersion
     || validation.manifest.channel !== metadata.channel
-    || validation.manifest.compatibility.aw.minVersion !== metadata.minAwVersion
+    || JSON.stringify(validation.manifest.requires.aw.capabilities ?? [])
+      !== JSON.stringify(metadata.requiredAwCapabilities)
     || validation.manifestDigest !== metadata.manifestDigest
     || validation.snapshotDigest !== metadata.snapshotDigest
     || await readCatalogLogicalIdentity(snapshotRoot) !== metadata.logicalIdentity
@@ -310,7 +315,7 @@ export async function prepareCatalogGeneration(options: {
       },
     });
     options.signal?.throwIfAborted();
-    const validation = await validateCatalogSnapshot(snapshotRoot);
+    const validation = await validateCatalogSnapshotTransport(snapshotRoot);
     options.signal?.throwIfAborted();
     if (
       validation.manifestDigest !== options.resolution.manifestDigest
@@ -322,16 +327,6 @@ export async function prepareCatalogGeneration(options: {
         code: 'catalogGenerationPublishFailed',
         sourceId: options.resolution.sourceId,
         message: `Catalog source "${options.resolution.sourceId}" changed before generation publication. Refresh the source again.`,
-      });
-    }
-    if (compareStrictSemVer(
-      options.cliVersion,
-      validation.manifest.compatibility.aw.minVersion,
-    ) < 0) {
-      throw new CatalogGenerationError({
-        code: 'catalogGenerationRefreshFailed',
-        sourceId: options.resolution.sourceId,
-        message: `Catalog source "${options.resolution.sourceId}" requires AW ${validation.manifest.compatibility.aw.minVersion} or newer.`,
       });
     }
     const logicalIdentity = await readCatalogLogicalIdentity(snapshotRoot);
@@ -348,7 +343,9 @@ export async function prepareCatalogGeneration(options: {
       manifestDigest: validation.manifestDigest,
       snapshotDigest: validation.snapshotDigest,
       generationKey: location.generationKey,
-      minAwVersion: validation.manifest.compatibility.aw.minVersion,
+      requiredAwCapabilities: normalizeAwCapabilities(
+        validation.manifest.requires.aw.capabilities ?? [],
+      ),
       publishedAt: (options.now?.() ?? new Date()).toISOString(),
     };
     await fs.writeFile(

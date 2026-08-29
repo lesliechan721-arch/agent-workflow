@@ -87,13 +87,15 @@ const VERSIONED_PLUGIN_MANIFEST_PATHS = new Set([
   '.claude-plugin/plugin.json',
   '.codex-plugin/plugin.json',
 ]);
+const AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME = 'aw-plugin-requirements.json';
 
 async function calculateContentPathDigest(
   pluginRoot: string,
   relativePath: string,
   node: Awaited<ReturnType<typeof resolveCatalogDigestNode>>,
 ): Promise<string> {
-  if (!VERSIONED_PLUGIN_MANIFEST_PATHS.has(relativePath)) {
+  if (!VERSIONED_PLUGIN_MANIFEST_PATHS.has(relativePath)
+    && path.posix.basename(relativePath) !== AW_PLUGIN_REQUIREMENTS_RECEIPT_FILENAME) {
     return calculateArtifactPathDigest(path.join(pluginRoot, relativePath), node);
   }
   const filePath = path.join(pluginRoot, relativePath);
@@ -101,7 +103,16 @@ async function calculateContentPathDigest(
     return createSha256Digest(await fs.readlink(filePath));
   }
   const manifest = await fs.readJson(filePath) as Record<string, unknown>;
-  return createSha256Digest(stableStringify({ ...manifest, version: '<plugin-version>' }));
+  if (VERSIONED_PLUGIN_MANIFEST_PATHS.has(relativePath)) {
+    return createSha256Digest(stableStringify({ ...manifest, version: '<plugin-version>' }));
+  }
+  const plugin = manifest.plugin && typeof manifest.plugin === 'object' && !Array.isArray(manifest.plugin)
+    ? manifest.plugin as Record<string, unknown>
+    : {};
+  return createSha256Digest(stableStringify({
+    ...manifest,
+    plugin: { ...plugin, version: '<plugin-version>' },
+  }));
 }
 
 export function calculateCatalogEntryManifestDigest(

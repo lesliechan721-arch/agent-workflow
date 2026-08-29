@@ -14,6 +14,7 @@ import {
   discoverPlugins,
   formatMarketplaceProductsForError,
   formatSupportedPlatforms,
+  matchesPluginTestEntryGlob,
   prepareLocalPluginBundleSource,
   readPluginManifest,
   redactPluginScriptOutput,
@@ -156,35 +157,6 @@ function normalizeRelativePath(value: string): string {
   return stripDotSlash(value).split(path.sep).join('/');
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
-}
-
-function globToRegExp(glob: string): RegExp {
-  const normalized = normalizeRelativePath(glob);
-  let output = '^';
-  for (let index = 0; index < normalized.length; index += 1) {
-    const char = normalized[index];
-    const next = normalized[index + 1];
-    if (char === '*' && next === '*') {
-      const after = normalized[index + 2];
-      if (after === '/') {
-        output += '(?:.*\\/)?';
-        index += 2;
-      } else {
-        output += '.*';
-        index += 1;
-      }
-    } else if (char === '*') {
-      output += '[^/]*';
-    } else {
-      output += escapeRegExp(char);
-    }
-  }
-  output += '$';
-  return new RegExp(output);
-}
-
 async function listFiles(rootDir: string): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
   const files: string[] = [];
@@ -208,8 +180,7 @@ async function matchTestEntries(rootDir: string, globs: string[] | undefined): P
     return [];
   }
   const files = await listFiles(rootDir);
-  const patterns = globs.map(globToRegExp);
-  return files.filter((file) => patterns.some((pattern) => pattern.test(file))).sort();
+  return files.filter((file) => globs.some((glob) => matchesPluginTestEntryGlob(file, glob))).sort();
 }
 
 async function resolvePluginRuntimeSourceSet(

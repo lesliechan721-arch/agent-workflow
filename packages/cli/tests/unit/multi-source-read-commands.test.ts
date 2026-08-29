@@ -30,7 +30,7 @@ async function configureTwoPaths(validRoot: string, invalidRoot: string): Promis
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sources: [
         { id: 'good', type: 'path', primary: true, path: validRoot },
         { id: 'bad', type: 'path', primary: false, path: invalidRoot },
@@ -49,7 +49,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(root);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
+      config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -90,14 +90,14 @@ describe('multi-source read commands', () => {
     expect(result.compositeDigest).toMatch(/^sha256:/);
   });
 
-  it('keeps path compatibility codes in init and status JSON', async () => {
+  it('keeps a source loadable when one catalog entry requires a future capability', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const incompatible = fixturePath('incompatible');
-    await createCatalogSnapshotFixture(incompatible, 'demo', '99.0.0');
+    await createCatalogSnapshotFixture(incompatible, 'demo', ['aw.future-feature.v99']);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: incompatible }],
       },
       expectedDigest: initial.digest,
@@ -110,11 +110,11 @@ describe('multi-source read commands', () => {
       env: isolation.env,
       io: initOutput.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(0);
     expect(JSON.parse(initOutput.readStdout())).toMatchObject({
       sources: [expect.objectContaining({
         id: 'local',
-        errorCode: 'catalogGenerationUnavailable',
+        ok: true,
       })],
     });
 
@@ -124,12 +124,12 @@ describe('multi-source read commands', () => {
       env: isolation.env,
       io: statusOutput.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(0);
     expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
       catalog: {
         sources: [expect.objectContaining({
           id: 'local',
-          errorCode: 'catalogGenerationUnavailable',
+          freshness: 'path',
         })],
       },
     });
@@ -186,12 +186,12 @@ describe('multi-source read commands', () => {
   it('keeps typed config preflight details internal and isolates a safe read diagnostic', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('status-config-preflight');
-    await createCatalogSnapshotFixture(root, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = { schema: { rules: { type: 'string', title: '规则', required: true } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [{ id: 'good', type: 'path', primary: true, path: root }] },
+      config: { schemaVersion: 2, sources: [{ id: 'good', type: 'path', primary: true, path: root }] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -228,7 +228,7 @@ describe('multi-source read commands', () => {
       path.join(sourceRoot, 'plugins', 'demo', 'skills', 'review', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n',
     );
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.skills = './skills';
     });
@@ -236,7 +236,7 @@ describe('multi-source read commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -403,7 +403,7 @@ describe('multi-source read commands', () => {
         'policy:\n  allow_implicit_invocation: true\n',
       );
     }
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.skills = './skills';
     });
@@ -411,7 +411,7 @@ describe('multi-source read commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -493,7 +493,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -540,7 +540,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'first', type: 'path', primary: true, path: first },
           { id: 'second', type: 'path', primary: false, path: second },
@@ -565,7 +565,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [
           { id: 'first', type: 'path', primary: true, path: first },
           { id: 'second', type: 'path', primary: false, path: second },
@@ -675,7 +675,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -709,7 +709,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -744,14 +744,14 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       claudeOnly,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => { manifest.marketplace.policy.products = ['CLAUDE']; },
     );
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: claudeOnly }],
       },
       expectedDigest: initial.digest,
@@ -820,14 +820,14 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       codexOnly,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => { manifest.marketplace.policy.products = ['CODEX']; },
     );
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: codexOnly }],
       },
       expectedDigest: initial.digest,
@@ -862,7 +862,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       projectCapable,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
@@ -872,7 +872,7 @@ describe('multi-source read commands', () => {
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: projectCapable }],
       },
       expectedDigest: current.digest,
@@ -897,7 +897,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'local', type: 'path', primary: true, path: missing }],
       },
       expectedDigest: initial.digest,
@@ -933,7 +933,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -985,7 +985,7 @@ describe('multi-source read commands', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'good', type: 'path', primary: true, path: good }],
         },
         expectedDigest: initial.digest,
@@ -1027,7 +1027,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -1068,7 +1068,7 @@ describe('multi-source read commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 1, sources: [source] },
+      config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
@@ -1128,7 +1128,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,
@@ -1171,7 +1171,7 @@ describe('multi-source read commands', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'good', type: 'path', primary: true, path: good }],
         },
         expectedDigest: initial.digest,
@@ -1202,7 +1202,7 @@ describe('multi-source read commands', () => {
       await createCatalogSnapshotFixture(
         good,
         'demo',
-        '0.0.0',
+        [],
         'demo\n',
         (manifest) => {
           manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };
@@ -1211,7 +1211,7 @@ describe('multi-source read commands', () => {
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({
         config: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           sources: [{ id: 'good', type: 'path', primary: true, path: good }],
         },
         expectedDigest: initial.digest,
@@ -1261,7 +1261,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{
           id: 'broken',
           type: 'git',
@@ -1301,7 +1301,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'private-path', type: 'path', primary: true, path: missingSource }],
       },
       expectedDigest: initial.digest,
@@ -1333,7 +1333,7 @@ describe('multi-source read commands', () => {
     await createCatalogSnapshotFixture(
       good,
       'demo',
-      '0.0.0',
+      [],
       'demo\n',
       (manifest) => {
         manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };
@@ -1342,7 +1342,7 @@ describe('multi-source read commands', () => {
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [{ id: 'good', type: 'path', primary: true, path: good }],
       },
       expectedDigest: initial.digest,

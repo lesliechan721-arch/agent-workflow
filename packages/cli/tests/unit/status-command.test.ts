@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
 import { statusCommandV5 } from '../../src/commands/status-v5.js';
+import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -21,8 +22,13 @@ async function configurePathSource(
   const source = { id: sourceId, type: 'path', primary: true, path: sourceRoot } as const;
   const current = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
-    config: { schemaVersion: 1, sources: [source] },
+    config: { schemaVersion: 2, sources: [source] },
     expectedDigest: current.digest,
+    env: isolation.env,
+  });
+  await refreshCatalogSourceGeneration({
+    sourceId,
+    cliVersion: '1.0.0',
     env: isolation.env,
   });
   return {
@@ -60,7 +66,7 @@ describe('status v5 current behavior', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'capability-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.apps = './.app.json';
     });
@@ -72,7 +78,13 @@ describe('status v5 current behavior', () => {
     });
 
     expect(result.payload.schemaVersion).toBe(5);
-    expect(result.payload.targets).toEqual([]);
+    expect(result.payload.targets).toEqual([
+      expect.objectContaining({
+        pluginId: 'local/demo',
+        state: 'error',
+        errors: [expect.objectContaining({ code: 'unsupportedTarget' })],
+      }),
+    ]);
   });
 
   it('keeps a partial target when another Catalog source fails', async () => {
@@ -87,7 +99,7 @@ describe('status v5 current behavior', () => {
       path.join(good, 'plugins', 'demo', 'skills', 'review', 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: true\n',
     );
-    await createCatalogSnapshotFixture(good, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(good, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.skills = './skills';
     });
@@ -96,10 +108,15 @@ describe('status v5 current behavior', () => {
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         sources: [goodSource, { id: 'bad', type: 'path', primary: false, path: bad }],
       },
       expectedDigest: current.digest,
+      env: isolation.env,
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'good',
+      cliVersion: '1.0.0',
       env: isolation.env,
     });
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
@@ -150,7 +167,7 @@ describe('status v5 current behavior', () => {
       'fs.writeFileSync(process.env.AW_RENDER_SENTINEL, "renderer ran\\n");',
       'console.log(JSON.stringify({ version: 2, artifacts: [] }));',
     ].join('\n'));
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.scripts = {
         artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },

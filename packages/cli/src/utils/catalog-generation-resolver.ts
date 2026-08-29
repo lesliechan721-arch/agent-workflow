@@ -7,11 +7,14 @@ import type {
   CatalogGenerationStateFileV1,
   CatalogSource,
 } from '../types.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
+import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import { readCatalogGenerationState } from './catalog-generation-state.js';
 import { readCatalogGeneration } from './catalog-generation-store.js';
 import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
 import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
+import { checkAwCapabilitySupport } from './manifest.js';
 
 export interface ResolvedActiveCatalogGeneration extends CatalogGenerationSetSource {
   pointer: CatalogGenerationPointerV1;
@@ -45,6 +48,16 @@ async function resolveFromState(options: {
     snapshotDigest: selected.active.snapshotDigest,
     env: options.env,
   });
+  const requiredCapabilities = generation.metadata.requiredAwCapabilities;
+  const support = checkAwCapabilitySupport(requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
+  if (!support.supported) {
+    throw new CatalogProviderCompatibilityError({
+      sourceId: options.source.id,
+      requiredCapabilities,
+      missingCapabilities: support.missing,
+      availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+    });
+  }
   if (
     generation.metadata.logicalIdentity !== selected.logicalIdentity
     || generation.metadata.catalogVersion !== selected.active.catalogVersion

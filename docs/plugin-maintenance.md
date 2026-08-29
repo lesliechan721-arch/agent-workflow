@@ -7,7 +7,8 @@
 - 插件源码位于 `plugins/`，`plugins/<name>/.agents-plugin/plugin.json` 是源码 manifest 真值。
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 内置插件作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、release ledger 或 source cache。
-- 作者声明真实的 `compatibility.aw.minVersion`；发布器会把所有插件声明与 schema 4 的 `0.0.0` floor 取最大值。当前没有 dependency 或 Portable 专用版本门槛。
+- 作者用 Plugin Manifest v2 的 `requires.aw.capabilities` 声明真实要求。未知但语法合法的 capability 是合法数据；当前 AW 未实现时，validator 报告 `awCapabilityUnsupported`。
+- Catalog 生成和消费只使用 snapshot schema 5；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
 
@@ -29,6 +30,7 @@ Review 维度、Eval Audit、Eval run bundle 和 Quality Review schema 由 `agen
 - Plugin Author/Reviewer 只处理既有合法 Catalog Workspace 中的 canonical `<workspace-root>/plugins/<name>`。缺少 Workspace 时 Plugin Author 停止并指向 Catalog Author。不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - `aw-plugin-development` 是 Agent-facing Developer Assistant，不是 SDK 或规范真值。它只能编排已安装 `aw` CLI 的公开作者命令；第三方 workspace 不要求有本仓库的 `packages/cli`、`node_modules` 或 release 脚本。
 - 确定性 Plugin 作者工具统一使用公开 CLI：`aw plugin capabilities`、`aw plugin init`、`aw plugin add-skill`、`aw plugin remove`、`aw plugin validate`、`aw plugin test`、`aw plugin build`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。Catalog 作者工具使用公开 `aw catalog` 命令。Agent 插件不保存第二份 manifest、Catalog 或 Skill frontmatter 实现。
+- 已安装作者 Skill 先用 `aw self check --from <skill-root> --json` 消费同层 runtime requirements receipt；不使用 CLI 版本字符串推断兼容性。每个 runtime receipt 必须来自最终 materialized Skill，不能由 source 文档手写替代。
 - Workspace v1 插件根固定为 `<workspace-root>/plugins/<plugin-name>`。所有作者命令使用 `--workspace-root`，不接受任意 `--plugin-root`。`validate`、`test` 和 `build` 仍接受 plugin directory 参数，但该目录必须是 workspace inventory 中的 canonical plugin。作者命令拒绝 workspace/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型。`status --base` 和 `remove` 要求 Git；`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
 - Reviewer 默认只在聊天中交付 Quality Review。用户明确要求归档时，只有本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。修订已有记录时创建新 record 并使用 `--supersedes`。Quality Review 不拥有 readiness；独立生成的 `release-check.json` 只能作为可选附件。
@@ -47,7 +49,7 @@ manifest `dependencies` 声明安装或升级某插件时必须同时满足的�
 - `@aw/cli` 没有 reserved runtime export。Eval corpus digest 只用 reserved `{ "plugin": "@aw/agent-skill-eval", "export": "case-corpus-digest" }` build import 或 `skillRuntimeFiles.import`，投影公开 Eval 包中的自包含 canonical 实现。reserved provider 不支持 artifact runtime。
 - 只有确定性、输出完全由 registered build input 决定的 `scripts.node.build` 才声明 `buildConfig.cacheable: true`。该字段不接受 `false`，也不能在没有 build script 时使用。
 - Portable Agent Skills 使用 `distributions.agentSkills.skills` 声明独立的 `./` plugin-relative Skill root。`buildConfig.skillRuntimeFiles.distributions: ["agent-skills"]` 只投影到 portable surface；字段缺失时保持既有 native 行为，同时声明 `platforms` 和 `distributions` 时投影到两组明确 surface。`agent-skills.skill` dynamic target 必须由 `distributions.agentSkills` 门禁，并可用 `runtimeImports` 引用 build-time runtime export；bundle 保存其 bytes、digest 和 provenance，renderer materialize 时只读 consumer bundle-local 文件。
-- 使用 Portable 字段的 source manifest 仍必须声明严格 SemVer 的 `compatibility.aw.minVersion`。V1 要求同一插件至少有一个非空 native capability；空 `extensions` 和空 native 数组不满足该门禁。static portable root 的每个直接子目录必须是有效 `portable-agent-skills` Skill，并包含 production `README.md`。
+- 使用 Portable 字段的 source manifest 必须是 Manifest v2，并保留至少一个非空 native capability；空 `extensions` 和空 native 数组不满足该门禁。static portable root 的每个直接子目录必须是有效 `portable-agent-skills` Skill，并包含 production `README.md`。构建器负责注入保留的 runtime requirements receipt，源码和 renderer 不得声明该文件。
 - `agent-skills.skill` 必须显式声明 `distribution: "agent-skills"`、`skillKey`、`scopes`、`states` 和 `refreshKeys`；不得从 native target 或 marketplace product 推导 distribution。作者 validator 以 distribution surface 运行 renderer fixture，设置 `AW_PLUGIN_DISTRIBUTION=agent-skills`，不设置第三种 `AW_PLUGIN_PLATFORM`。最终树按 `sourceDirs → distribution skillRuntimeFiles → renderer files` 合并，并拒绝无效 Skill、名字冲突、author-only 内容、未解析模板、sensitive config 和缺失 runtime file。
 - 消费者使用 `aw skill install <plugin> --scope <project|user>` 通过兼容的外部 `skills` CLI 安装 portable Skill，或使用 `aw skill materialize <plugin> --scope <project|user> --out <dir>` 安全导出。两个入口都先验证完整依赖闭包和全部候选；`--skill` 只过滤最终选择，不缩小验证边界。
 

@@ -29,10 +29,10 @@ async function createPlugin(options: {
   const pluginRoot = path.join(options.root, options.name);
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
   await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+    schemaVersion: 2,
     name: options.name,
     version: '0.1.0',
     description: options.name,
-    compatibility: { aw: { minVersion: options.distributions ? '0.1.0' : '0.0.0' } },
     ...(!options.omitNativeSkills ? { skills: './skills' } : {}),
     marketplace: {
       category: 'workflow',

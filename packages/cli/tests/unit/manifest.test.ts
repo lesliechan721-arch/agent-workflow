@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   compareStrictSemVer,
   createBundleSourceManifest,
-  DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
   normalizeManifestDigestInput,
   createPlatformManifestBase,
   parseStrictSemVer,
@@ -160,7 +159,7 @@ describe('manifest utils', () => {
       },
     });
     expect(plugin.manifest.marketplace.policy.products).toBeUndefined();
-    expect(plugin.manifest.schemaVersion).toBe(1);
+    expect(plugin.manifest.schemaVersion).toBe(2);
     expect(plugin.manifest.extensions?.hooks?.[0]).toMatchObject({
       event: 'before_tool',
       matcher: 'Bash',
@@ -170,43 +169,24 @@ describe('manifest utils', () => {
   it('rejects an unknown manifest schema version through the CLI bridge', async () => {
     const repoRoot = await makeTempRepo();
     const rawManifest = await readFixturePluginManifest(repoRoot);
-    await writeFixturePluginManifest(repoRoot, { ...rawManifest, schemaVersion: 2 });
+    await writeFixturePluginManifest(repoRoot, { ...rawManifest, schemaVersion: 1 });
 
     await expect(readPluginManifest(
       path.join(repoRoot, 'plugins', 'git-commit'),
     )).rejects.toThrow('Unsupported plugin manifest schemaVersion');
   });
 
-  it('defaults source plugin minVersion but requires it for remote bundle manifests', async () => {
+  it('preserves declared capabilities in source and bundle manifests', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const rawManifest = await readFixturePluginManifest(repoRoot);
+    rawManifest.requires = { aw: { capabilities: ['aw.future-feature.v3'] } };
+    await writeFixturePluginManifest(repoRoot, rawManifest);
     const plugin = await readPluginManifest(pluginRoot);
 
-    expect(plugin.manifest.compatibility).toEqual({
-      aw: {
-        minVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
-      },
-    });
-    expect(createBundleSourceManifest(plugin).compatibility).toEqual({
-      aw: {
-        minVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
-      },
-    });
-
-    const manifestWithoutCompatibility = structuredClone(rawManifest);
-    delete (manifestWithoutCompatibility as { compatibility?: unknown }).compatibility;
-
-    expect(() => validatePluginManifest('/tmp/plugin', manifestWithoutCompatibility, {
-      compatibilityMode: 'required',
-    })).toThrow(
-      'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
-    );
-
-    manifestWithoutCompatibility.distributions = { agentSkills: {} };
-    await expect(validateSourcePluginManifest(pluginRoot, manifestWithoutCompatibility)).rejects.toThrow(
-      'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
-    );
+    expect(plugin.manifest.requires?.aw.capabilities).toEqual(['aw.future-feature.v3']);
+    expect(createBundleSourceManifest(plugin).requires?.aw.capabilities)
+      .toEqual(['aw.future-feature.v3']);
   });
 
   it('rejects deprecated top-level claude block', async () => {
@@ -470,7 +450,7 @@ describe('manifest utils', () => {
       },
     };
     manifest.dependencies = ['shared-runtime'];
-    manifest.compatibility = { aw: { minVersion: '0.1.0' } };
+    manifest.requires = { aw: { capabilities: ['aw.future-feature.v3'] } };
     manifest.artifacts = {
       targets: [
         {
@@ -1949,11 +1929,6 @@ describe('manifest utils', () => {
     const manifest = await fs.readJson(
       path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
     );
-    manifest.compatibility = {
-      aw: {
-        minVersion: '0.0.0',
-      },
-    };
     delete manifest.skills;
     await fs.writeJson(
       path.join(bundlePluginRoot, '.agents-plugin', 'plugin.json'),
@@ -1979,10 +1954,10 @@ describe('manifest utils', () => {
     const fixtureManifest = await readFixturePluginManifest(repoRoot);
     const pluginRoot = path.join(repoRoot, 'portable-inventory');
     const manifest = {
+      schemaVersion: 2,
       name: 'portable-inventory',
       version: '1.0.0',
       description: 'Portable inventory fixture.',
-      compatibility: { aw: { minVersion: '0.1.0' } },
       marketplace: fixtureManifest.marketplace,
       skills: './skills',
       distributions: { agentSkills: { skills: './portable-skills' } },

@@ -1,45 +1,211 @@
 {
   "skill_name": "review-aw-catalog",
+  "audit_status": "not assessed",
   "policy": {
     "optimization": "precision-first",
     "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "只读边界和 finding owner 必须稳定。"
+    "false_positive_cost": "critical",
+    "rationale": "Reviewer 可以保留 unknown，但不能把 dirty、current 或 stale 证据误作另一种状态，也不能越过只读边界。"
   },
   "evals": [
     {
-      "id": "composition-review-does-not-cross-boundary",
+      "id": "dirty-workspace-remains-static-reviewable",
       "eval_type": "behavior",
+      "test_layer": "conversation",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "catalog-review-scope",
-      "unit_under_test": "full-skill",
-      "preconditions": { "snapshot_exists": true, "plugin_prompt_visible": true },
+      "scenario_family": "catalog-dirty-static-review",
+      "unit_under_test": "review-aw-catalog static status boundary",
+      "preconditions": { "workspace_valid": true, "git_dirty": true, "snapshot_state": "absent" },
       "oracle": {
-        "rationale": "Catalog Reviewer 只能报告 composition finding，并把插件内部质量留给下层 Reviewer。",
-        "rule_refs": ["SKILL.md#工作流", "references/catalog-review.md"],
+        "rationale": "Dirty Git 是静态事实，不阻止只读 composition Review；Reviewer 必须报告它但不能运行 preflight 或 build。",
+        "rule_refs": ["SKILL.md#工作流-2", "SKILL.md#边界", "docs/architecture.md#Distribution-and-Runtime-State"],
         "confidence": "high",
-        "allowed_variance": "可以报告缺失依赖和版本冲突；不得运行 build/preflight，不得评审 Skill prompt 或业务 workflow。"
+        "allowed_variance": "可把 determinism 和 snapshot projection 标为 unknown；不得把 dirty 当作 status 失败或执行修复。",
+        "minimal_counterexample": "若 marker 或 metadata 无效，则应报告 Workspace composition 错误，而不是继续视为合法 dirty Workspace。"
       },
-      "prompt": "使用 $review-aw-catalog 只读评审当前 Catalog。重点检查 identity、metadata、inventory、dependency graph、版本一致性和已有 .aw/catalog 投影。plugins/worker 的 SKILL.md 也可见，但不要评审 prompt 质量。没有 determinism 运行证据时标记 unknown。",
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "critical",
+        "rationale": "误把 dirty 当 blocker 会诱发越界 mutation；忽略 dirty 会漏掉发布前风险。"
+      },
+      "prompt": "使用 $review-aw-catalog 只读评审当前 dirty Catalog Workspace。消费静态 context/status；报告 Git dirty 和 snapshot absent，但不要 build、preflight、test 或修改任何文件。",
       "scripted_replies": [],
-      "expected_output": "只输出 Catalog composition findings；静态 status；无 build/preflight/publish；单插件内部问题只交给 review-aw-plugin 摘要。",
+      "expected_output": "完成只读 composition Review；把 dirty 和 absent 作为静态证据，determinism 标 unknown。",
       "workspace_files": {
-        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"review-fixture\"}\n",
-        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture\"},\"interface\":{\"displayName\":\"Review Fixture\"},\"catalog\":{\"version\":\"0.2.0\"}}\n",
-        "plugins/worker/.agents-plugin/plugin.json": "{\"schemaVersion\":1,\"name\":\"worker\",\"version\":\"0.1.0\",\"description\":\"Worker.\",\"dependencies\":[\"missing-provider\"],\"compatibility\":{\"aw\":{\"minVersion\":\"0.0.0\"}},\"skills\":\"./skills\"}\n",
-        "plugins/worker/skills/work/SKILL.md": "---\nname: work\ndescription: Do too many unrelated things.\n---\n\nWork.\n",
-        "plugins/worker/skills/work/README.md": "# work\n\nWork.\n"
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"dirty-review-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Dirty Review Fixture\"},\"catalog\":{\"version\":\"0.2.0\"}}\n",
+        "plugins/worker/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"worker\",\"version\":\"0.1.0\",\"description\":\"Dirty review fixture.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"worker\",\"title\":\"Worker\",\"content\":\"Worker instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/worker/README.md": "# Worker\n"
       },
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "报告 missing-provider 为 dependency composition finding",
-          "determinism 无既有证据时为 unknown",
-          "不评价 work Skill 的 prompt 质量，不给跨插件业务 workflow 结论",
-          "trace 没有 plugin test/build、catalog build/validate、preflight 或 publish"
+          "只调用 runtime check、catalog context 和静态 catalog status",
+          "明确报告 git.clean=false 与 snapshot.state=absent，但仍完成 composition Review",
+          "没有 plugin validate/test/build、catalog build、status --preflight、publish 或文件修改"
+        ]
+      }
+    },
+    {
+      "id": "current-snapshot-is-existing-positive-evidence",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "catalog-current-snapshot",
+      "unit_under_test": "review-aw-catalog snapshot evidence",
+      "preconditions": { "workspace_valid": true, "snapshot_state": "current", "snapshot_complete_valid": true },
+      "oracle": {
+        "rationale": "Current snapshot 只证明现有 source identity 与可验证 projection 一致；Reviewer 可以消费它，但不能把它扩张为 build determinism 运行证据。",
+        "rule_refs": ["SKILL.md#工作流-2", "SKILL.md#工作流-3", "references/catalog-review.md"],
+        "confidence": "high",
+        "allowed_variance": "可以运行只读 catalog validate；determinism 仍应标 unknown，除非已有独立重复构建证据。",
+        "minimal_counterexample": "source identity 不匹配时必须报告 stale，不能继续称 current。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "把 current 误报 stale 会浪费恢复操作；把投影一致误报 determinism 会夸大证据。"
+      },
+      "prompt": "使用 $review-aw-catalog 只读评审当前 Catalog，并检查已有 current snapshot。可以先用 catalog validate --help 确认只读，再验证现有 snapshot；不要 build、refresh 或 preflight。",
+      "scripted_replies": [],
+      "expected_output": "报告 snapshot current/valid 和 source identity match；只消费现有投影，determinism 无独立证据时为 unknown。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"sha256:000c1c4b7a0957dbcb1f98b2635b76f489d8f702b31a337ef812d68b7cc95387\"\n}\n",
+        "plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture Owner\",\n    \"url\": \"https://example.invalid/catalog-owner\"\n  },\n  \"interface\": {\n    \"displayName\": \"Review Fixture\"\n  },\n  \"catalog\": {\n    \"version\": \"0.2.0\"\n  }\n}\n",
+        "plugins/worker/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 2,\n  \"name\": \"worker\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Review fixture plugin.\",\n  \"marketplace\": {\n    \"category\": \"workflow\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"interface\": {\n    \"displayName\": \"Worker\",\n    \"shortDescription\": \"Review fixture plugin.\"\n  },\n  \"extensions\": {\n    \"instructions\": [],\n    \"permissions\": [],\n    \"hooks\": [],\n    \"agents\": []\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-manifest.v2\"\n      ]\n    }\n  }\n}\n",
+        "plugins/worker/README.md": "# Worker\n\nReview fixture plugin.\n\n## 什么时候使用\n\n- 当你需要Review fixture plugin时使用。\n\n## 包含的能力\n\n| 能力 | 用途 | 使用方式 |\n| --- | --- | --- |\n\n\n## 快速开始\n\n```bash\naw install worker -p both -s user\n```\n\n示例请求：\n\n- “Review fixture plugin”\n- “安装后列出 worker 提供的能力”\n\n## 平台与安装范围\n\n支持 Codex 和 Claude Code 的 user scope 与 project scope。\n\n## 权限和边界\n\n- 插件只在请求匹配能力或用户显式调用后工作。\n- 插件不会自行扩大当前会话的文件、网络或工具权限。\n",
+        ".aw/catalog/.aw-generated.json": "{\"schemaVersion\":1,\"kind\":\"catalog\",\"workspaceIdentity\":\"sha256:000c1c4b7a0957dbcb1f98b2635b76f489d8f702b31a337ef812d68b7cc95387\",\"sourceIdentity\":\"sha256:8212da11c48c1748c13df22c011259a69f88bb00d2cc9e0f3b419fd372c3e181\"}\n",
+        ".aw/catalog/catalog-manifest.json": "{\"schemaVersion\":5,\"catalogVersion\":\"0.2.0\",\"channel\":\"latest\",\"requires\":{\"aw\":{\"capabilities\":[\"aw.catalog-snapshot.v5\"]}},\"marketplace\":{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Review Fixture\"}},\"release\":{\"state\":\"development\"},\"entries\":[{\"name\":\"worker\",\"source\":\"./plugins/worker\",\"description\":\"Review fixture plugin.\",\"interface\":{\"displayName\":\"Worker\",\"shortDescription\":\"Review fixture plugin.\"},\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"},\"version\":\"0.1.0\",\"dependencies\":[],\"requires\":{\"aw\":{\"capabilities\":[\"aw.plugin-manifest.v2\"]}},\"artifactDigest\":\"sha256:1f8c68a066ee19859c53afc339ad5015af5929776d8987b1069a7d22b17951db\",\"manifestDigest\":\"sha256:f450e72004a648e5a93b5016281a249552154ec4e8ff8df3132a7a77187be8a7\",\"contentDigest\":\"sha256:18dba2ea43e354c69788e7b94064f2df6733b7ab8ab4b72a6039d6b9fb9dca72\"}]}\n",
+        ".aw/catalog/.agents/plugins/marketplace.json": "{\"name\":\"aw\",\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Review Fixture\"},\"plugins\":[{\"name\":\"worker\",\"source\":\"./plugins/worker\",\"description\":\"Review fixture plugin.\",\"interface\":{\"displayName\":\"Worker\",\"shortDescription\":\"Review fixture plugin.\"},\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"}}]}\n",
+        ".aw/catalog/.claude-plugin/marketplace.json": "{\"name\":\"aw\",\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Review Fixture\"},\"plugins\":[{\"name\":\"worker\",\"source\":\"./plugins/worker\",\"description\":\"Review fixture plugin.\",\"interface\":{\"displayName\":\"Worker\",\"shortDescription\":\"Review fixture plugin.\"},\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"}}]}\n",
+        ".aw/catalog/plugins/worker/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 2,\n  \"name\": \"worker\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Review fixture plugin.\",\n  \"marketplace\": {\n    \"category\": \"workflow\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-manifest.v2\"\n      ]\n    }\n  },\n  \"interface\": {\n    \"displayName\": \"Worker\",\n    \"shortDescription\": \"Review fixture plugin.\"\n  },\n  \"extensions\": {\n    \"instructions\": [],\n    \"permissions\": [],\n    \"hooks\": [],\n    \"agents\": []\n  }\n}\n",
+        ".aw/catalog/plugins/worker/.claude-plugin/plugin.json": "{\n  \"name\": \"worker\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Review fixture plugin.\",\n  \"interface\": {\n    \"displayName\": \"Worker\",\n    \"shortDescription\": \"Review fixture plugin.\"\n  }\n}\n",
+        ".aw/catalog/plugins/worker/.codex-plugin/plugin.json": "{\n  \"name\": \"worker\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Review fixture plugin.\",\n  \"interface\": {\n    \"displayName\": \"Worker\",\n    \"shortDescription\": \"Review fixture plugin.\"\n  }\n}\n",
+        ".aw/catalog/plugins/worker/README.md": "# Worker\n\nReview fixture plugin.\n\n## 什么时候使用\n\n- 当你需要Review fixture plugin时使用。\n\n## 包含的能力\n\n| 能力 | 用途 | 使用方式 |\n| --- | --- | --- |\n\n\n## 快速开始\n\n```bash\naw install worker -p both -s user\n```\n\n示例请求：\n\n- “Review fixture plugin”\n- “安装后列出 worker 提供的能力”\n\n## 平台与安装范围\n\n支持 Codex 和 Claude Code 的 user scope 与 project scope。\n\n## 权限和边界\n\n- 插件只在请求匹配能力或用户显式调用后工作。\n- 插件不会自行扩大当前会话的文件、网络或工具权限。\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "静态 status 报 snapshot.state=current、valid=true、sourceIdentityMatches=true",
+          "若运行 catalog validate，先确认 --help 且只验证已有 snapshot path",
+          "不把 current projection 推断成 build determinism；无独立证据时仍为 unknown",
+          "没有 build、refresh、preflight、plugin test 或 publish"
+        ]
+      }
+    },
+    {
+      "id": "stale-snapshot-is-not-current-evidence",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "catalog-stale-snapshot",
+      "unit_under_test": "review-aw-catalog stale evidence handling",
+      "preconditions": { "workspace_valid": true, "snapshot_state": "stale", "source_changed_after_build": true },
+      "oracle": {
+        "rationale": "Stale snapshot 可作为历史投影证据，但不能证明当前 source；Reviewer 必须区分结构有效与 source identity 不匹配。",
+        "rule_refs": ["SKILL.md#工作流-2", "references/catalog-review.md"],
+        "confidence": "high",
+        "allowed_variance": "可以报告 snapshot 本身仍可验证；不得把 stale 描述为 current 或运行 build 修复。",
+        "minimal_counterexample": "source identity 匹配且 complete validation 通过时，应报告 current。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "把 stale 当 current 会让评审结论绑定错误的 source。"
+      },
+      "prompt": "使用 $review-aw-catalog 只读评审当前 Catalog。已有 snapshot 是 stale；区分 snapshot 自身验证与当前 source identity，不要 build、refresh、preflight 或修改文件。",
+      "scripted_replies": [],
+      "expected_output": "报告 stale 与 source identity mismatch；不把旧投影当当前证据，也不修复它。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"sha256:000c1c4b7a0957dbcb1f98b2635b76f489d8f702b31a337ef812d68b7cc95387\"\n}\n",
+        "plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture Owner\",\n    \"url\": \"https://example.invalid/catalog-owner\"\n  },\n  \"interface\": {\n    \"displayName\": \"Review Fixture\"\n  },\n  \"catalog\": {\n    \"version\": \"0.2.0\"\n  }\n}\n",
+        "plugins/worker/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"worker\",\"version\":\"0.1.0\",\"description\":\"Changed after the snapshot build.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"}},\"interface\":{\"displayName\":\"Worker\",\"shortDescription\":\"Review fixture plugin.\"},\"extensions\":{\"instructions\":[],\"permissions\":[],\"hooks\":[],\"agents\":[]},\"requires\":{\"aw\":{\"capabilities\":[\"aw.plugin-manifest.v2\"]}}}\n",
+        "plugins/worker/README.md": "# Worker\n\nReview fixture plugin.\n\n## 什么时候使用\n\n- 当你需要Review fixture plugin时使用。\n\n## 包含的能力\n\n| 能力 | 用途 | 使用方式 |\n| --- | --- | --- |\n\n\n## 快速开始\n\n```bash\naw install worker -p both -s user\n```\n\n示例请求：\n\n- “Review fixture plugin”\n- “安装后列出 worker 提供的能力”\n\n## 平台与安装范围\n\n支持 Codex 和 Claude Code 的 user scope 与 project scope。\n\n## 权限和边界\n\n- 插件只在请求匹配能力或用户显式调用后工作。\n- 插件不会自行扩大当前会话的文件、网络或工具权限。\n",
+        ".aw/catalog/.aw-generated.json": "{\"schemaVersion\":1,\"kind\":\"catalog\",\"workspaceIdentity\":\"sha256:000c1c4b7a0957dbcb1f98b2635b76f489d8f702b31a337ef812d68b7cc95387\",\"sourceIdentity\":\"sha256:8212da11c48c1748c13df22c011259a69f88bb00d2cc9e0f3b419fd372c3e181\"}\n",
+        ".aw/catalog/catalog-manifest.json": "{\"schemaVersion\":5,\"catalogVersion\":\"0.2.0\",\"channel\":\"latest\",\"requires\":{\"aw\":{\"capabilities\":[\"aw.catalog-snapshot.v5\"]}},\"marketplace\":{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Review Fixture\"}},\"release\":{\"state\":\"development\"},\"entries\":[{\"name\":\"worker\",\"source\":\"./plugins/worker\",\"description\":\"Review fixture plugin.\",\"interface\":{\"displayName\":\"Worker\",\"shortDescription\":\"Review fixture plugin.\"},\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"},\"version\":\"0.1.0\",\"dependencies\":[],\"requires\":{\"aw\":{\"capabilities\":[\"aw.plugin-manifest.v2\"]}},\"artifactDigest\":\"sha256:1f8c68a066ee19859c53afc339ad5015af5929776d8987b1069a7d22b17951db\",\"manifestDigest\":\"sha256:f450e72004a648e5a93b5016281a249552154ec4e8ff8df3132a7a77187be8a7\",\"contentDigest\":\"sha256:18dba2ea43e354c69788e7b94064f2df6733b7ab8ab4b72a6039d6b9fb9dca72\"}]}\n",
+        ".aw/catalog/.agents/plugins/marketplace.json": "{\"name\":\"aw\",\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Review Fixture\"},\"plugins\":[{\"name\":\"worker\",\"source\":\"./plugins/worker\",\"description\":\"Review fixture plugin.\",\"interface\":{\"displayName\":\"Worker\",\"shortDescription\":\"Review fixture plugin.\"},\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"}}]}\n",
+        ".aw/catalog/.claude-plugin/marketplace.json": "{\"name\":\"aw\",\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Review Fixture\"},\"plugins\":[{\"name\":\"worker\",\"source\":\"./plugins/worker\",\"description\":\"Review fixture plugin.\",\"interface\":{\"displayName\":\"Worker\",\"shortDescription\":\"Review fixture plugin.\"},\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"}}]}\n",
+        ".aw/catalog/plugins/worker/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 2,\n  \"name\": \"worker\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Review fixture plugin.\",\n  \"marketplace\": {\n    \"category\": \"workflow\",\n    \"strict\": true,\n    \"policy\": {\n      \"installation\": \"AVAILABLE\",\n      \"authentication\": \"ON_INSTALL\"\n    }\n  },\n  \"requires\": {\n    \"aw\": {\n      \"capabilities\": [\n        \"aw.plugin-manifest.v2\"\n      ]\n    }\n  },\n  \"interface\": {\n    \"displayName\": \"Worker\",\n    \"shortDescription\": \"Review fixture plugin.\"\n  },\n  \"extensions\": {\n    \"instructions\": [],\n    \"permissions\": [],\n    \"hooks\": [],\n    \"agents\": []\n  }\n}\n",
+        ".aw/catalog/plugins/worker/.claude-plugin/plugin.json": "{\n  \"name\": \"worker\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Review fixture plugin.\",\n  \"interface\": {\n    \"displayName\": \"Worker\",\n    \"shortDescription\": \"Review fixture plugin.\"\n  }\n}\n",
+        ".aw/catalog/plugins/worker/.codex-plugin/plugin.json": "{\n  \"name\": \"worker\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Review fixture plugin.\",\n  \"interface\": {\n    \"displayName\": \"Worker\",\n    \"shortDescription\": \"Review fixture plugin.\"\n  }\n}\n",
+        ".aw/catalog/plugins/worker/README.md": "# Worker\n\nReview fixture plugin.\n\n## 什么时候使用\n\n- 当你需要Review fixture plugin时使用。\n\n## 包含的能力\n\n| 能力 | 用途 | 使用方式 |\n| --- | --- | --- |\n\n\n## 快速开始\n\n```bash\naw install worker -p both -s user\n```\n\n示例请求：\n\n- “Review fixture plugin”\n- “安装后列出 worker 提供的能力”\n\n## 平台与安装范围\n\n支持 Codex 和 Claude Code 的 user scope 与 project scope。\n\n## 权限和边界\n\n- 插件只在请求匹配能力或用户显式调用后工作。\n- 插件不会自行扩大当前会话的文件、网络或工具权限。\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "静态 status 报 snapshot.state=stale 且 sourceIdentityMatches=false",
+          "清楚区分 snapshot 自身结构验证与当前 source projection",
+          "不把 stale 证据升级为 current，也不 build、refresh、preflight 或修改 Workspace"
+        ]
+      }
+    },
+    {
+      "id": "explicit-plugin-target-keeps-workspace-b",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "catalog-explicit-target-resolution",
+      "unit_under_test": "review-aw-catalog Workspace target selection",
+      "preconditions": {
+        "cwd_workspace": "A",
+        "canonical_plugin_target_workspace": "B",
+        "workspace_roots_differ": true
+      },
+      "oracle": {
+        "rationale": "明确的 canonical plugin target 已唯一确定 Workspace B；首次 context 和后续只读命令都必须使用 B，不能静默回退到 cwd 的 Workspace A。",
+        "rule_refs": [
+          "SKILL.md#工作流-1",
+          "docs/architecture.md#Distribution-and-Runtime-State"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以用绝对路径或先规范化相对 target；resolved Workspace 必须始终是 B，且不应询问已明确的 root。",
+        "minimal_counterexample": "若请求只说评审 current Workspace，且没有 target 或 handoff，则首次 context 可以不传 --workspace-root 并使用 cwd 的 A。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "critical",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "错误回退到 cwd 会让只读结论绑定另一套 identity、inventory 和依赖图。"
+      },
+      "prompt": "使用 $review-aw-catalog 只读评审 canonical target targets/catalog-b/plugins/worker 所属的 Catalog。当前 cwd 本身是另一个合法 Catalog A；不要评审 A。首次 context 和后续 status 都必须显式保持 target Workspace B。不要 build、preflight 或修改文件。",
+      "scripted_replies": [],
+      "expected_output": "context 和 status 均绑定 Workspace B；报告 B 的 identity、inventory 和 snapshot absent，不读取 A 作为目标。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"cwd-workspace-a\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Workspace A Owner\",\"url\":\"https://example.invalid/a\"},\"interface\":{\"displayName\":\"Workspace A\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+        "targets/catalog-b/.aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"target-workspace-b\"}\n",
+        "targets/catalog-b/plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Workspace B Owner\",\"url\":\"https://example.invalid/b\"},\"interface\":{\"displayName\":\"Workspace B\"},\"catalog\":{\"version\":\"0.2.0\"}}\n",
+        "targets/catalog-b/plugins/worker/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"worker\",\"version\":\"0.1.0\",\"description\":\"Workspace B worker.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\"}},\"extensions\":{\"instructions\":[{\"name\":\"worker\",\"title\":\"Worker\",\"content\":\"Worker instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "targets/catalog-b/plugins/worker/README.md": "# Worker\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "首次 catalog context 显式传入 targets/catalog-b，并返回 Workspace B 的绝对 root",
+          "后续 catalog status 继续使用 receipt 的 Workspace B root，不使用 cwd Workspace A",
+          "不询问已由 canonical target 唯一确定的 root；若 receipt 与 target path 不一致则停止",
+          "保持只读，没有 build、preflight、test、publish 或文件修改"
         ]
       }
     }

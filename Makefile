@@ -7,7 +7,7 @@ PNPM ?= pnpm
 help:
 	@printf '%s\n' \
 		'make install                         安装工作区依赖' \
-		'make build                           编译 CLI 与 schema 4 本地 catalog snapshot' \
+		'make build                           编译 CLI 与 schema 5 本地 catalog snapshot' \
 		'make test                            运行单元/集成测试' \
 		'make verify-local                    校验 CLI 本地发布链路（runtime/pack smoke）' \
 		'make verify-cli                      校验 CLI-only 发布链路' \

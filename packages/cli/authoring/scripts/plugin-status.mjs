@@ -78,7 +78,11 @@ function parseArgs(argv) {
 async function main() {
   const options = parseArgs(process.argv);
   const result = await checkPluginVersions(options);
-  if (options.json) console.log(JSON.stringify(result, null, 2));
+  if (options.json) console.log(JSON.stringify({
+    ...result,
+    workspaceRoot: process.env.AW_AUTHORING_WORKSPACE_ROOT ?? options.repoRoot,
+    workspaceRootResolvedFrom: process.env.AW_AUTHORING_WORKSPACE_ROOT_RESOLVED_FROM ?? 'explicit',
+  }, null, 2));
   else console.log(formatPluginVersionCheck(result));
   if (!result.ok) process.exitCode = 1;
 }

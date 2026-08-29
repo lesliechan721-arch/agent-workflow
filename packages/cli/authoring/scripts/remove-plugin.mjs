@@ -273,6 +273,7 @@ function createReceipt(options = {}) {
     command: 'plugin:remove',
     ok: options.ok ?? false,
     workspaceRoot: options.workspaceRoot ?? null,
+    workspaceRootResolvedFrom: process.env.AW_AUTHORING_WORKSPACE_ROOT_RESOLVED_FROM ?? null,
     baseCommit: options.baseCommit ?? null,
     plugin: options.plugin ?? null,
     removed: options.removed ?? false,

@@ -210,6 +210,34 @@ afterEach(async () => {
 });
 
 describe('bundle layout validation', () => {
+  it('rejects unsupported declared AW capabilities before producing a bundle', async () => {
+    const repoRoot = await makeTempRepo();
+    await updateFixturePluginManifest(repoRoot, (manifest) => {
+      manifest.requires = { aw: { capabilities: ['aw.future-feature.v3'] } };
+    });
+
+    await expect(createSyntheticEmbeddedRoot(repoRoot)).rejects.toMatchObject({
+      code: 'awCapabilityUnsupported',
+      missingCapabilities: ['aw.future-feature.v3'],
+    });
+  });
+
+  it('rejects blocking AW capability scanner observations during bundle build', async () => {
+    const repoRoot = await makeTempRepo();
+    await fs.outputFile(
+      path.join(repoRoot, 'plugins', 'git-commit', 'scripts', 'unknown-command.sh'),
+      'aw unknown command\n',
+    );
+
+    await expect(createSyntheticEmbeddedRoot(repoRoot)).rejects.toMatchObject({
+      code: 'awCapabilityScanBlocked',
+      observations: [expect.objectContaining({
+        code: 'aw-command-unmapped',
+        command: 'aw unknown command',
+      })],
+    });
+  });
+
   it('omits .DS_Store path segments from the plugin bundle but keeps other hidden files', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
@@ -265,7 +293,6 @@ describe('bundle layout validation', () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.compatibility.aw.minVersion = '0.1.0';
       manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
       manifest.artifacts = { targets: [{
         id: 'portable-source',
@@ -433,16 +460,23 @@ describe('bundle layout validation', () => {
       .resolves.toMatchObject({ catalogVersion: '2.3.0-beta.4', channel: 'beta' });
   });
 
-  it('rejects portable source manifests without an explicit AW minimum before catalog output', async () => {
+  it('rejects a source-owned reserved receipt before catalog output', async () => {
     const repoRoot = await makeTempRepo();
     const outputRoot = path.join(repoRoot, 'embedded');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      delete manifest.compatibility;
       manifest.distributions = { agentSkills: {} };
     });
+    await fs.outputJson(path.join(
+      repoRoot,
+      'plugins',
+      'git-commit',
+      'skills',
+      'commit',
+      'aw-plugin-requirements.json',
+    ), {});
 
     await expect(bundlePlugins({ repoRoot, outputRoot })).rejects.toThrow(
-      'Invalid compatibility.aw.minVersion: expected a strict SemVer 2.0.0 string. Received undefined.',
+      'aw-plugin-requirements.json',
     );
     await expect(fs.pathExists(path.join(outputRoot, 'catalog-manifest.json'))).resolves.toBe(false);
   });

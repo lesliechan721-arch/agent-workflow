@@ -1,6 +1,6 @@
 # AW Catalog Workspace 作者指南
 
-本指南适用于官方和第三方 Catalog Workspace。官方仓库也是普通 Workspace v1；它使用相同的公开 Catalog metadata、build、validate、preflight、publisher 和失败恢复合同。
+本指南适用于官方和第三方 Catalog Workspace。官方仓库也是普通 Catalog Workspace；它使用相同的公开 Catalog metadata、build、validate、preflight、publisher 和失败恢复合同。当前组合合同是 Plugin Manifest v2、Catalog snapshot schema 5 和 Catalog Sources Config schema 2。
 
 当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是 marker、metadata、snapshot、ledger 和 publication 的机器真值。先运行对应命令的 `--help`，不要从本文复制易变字段或实现发布算法。
 
@@ -24,11 +24,14 @@ Catalog Author 拥有 Workspace identity、metadata、inventory、依赖 composi
 
 ## 状态、版本和聚合验证
 
-静态状态不运行插件代码、不 build，也不创建 `.aw`：
+先用只读 context 接受显式 `--workspace-root`，或让 CLI 从 cwd 向上选择最近的合法 marker。没有祖先 Workspace 时，context 只报告 Git worktree root 或 cwd 作为 `initialization.suggestedRoot`；它不创建文件。静态 status 使用 schema v2，不运行插件代码、不 build，也不创建 `.aw`：
 
 ```bash
+aw catalog context --workspace-root "$workspace" --json
 aw catalog status --workspace-root "$workspace" --json
 ```
+
+静态 receipt 分开报告 Workspace、metadata/inventory/dependency graph、Git 和 snapshot 的 `absent|current|stale|invalid` 证据。只有显式 `--preflight` 才运行 committed source HEAD 中的 validator/build 和 publication preparation。
 
 Catalog version 只通过公开 mutation 设置：
 
@@ -43,7 +46,7 @@ aw catalog version --bump patch --workspace-root "$workspace"
 
 Catalog Author 是删除意图和 Workspace 编排 owner。先确认用户明确给出 `<workspace-root>` 和 `<plugin-name>`，读取当前 inventory、目标 manifest dependency graph 和反向依赖。依据 Workspace 版本策略和已有发布证据，决定删除是否关联 Catalog version；`aw plugin remove` 不会修改 version，策略或授权不足时不要猜测 mutation。
 
-实际删除只交给 `author-aw-plugin`：它先查询 `aw --version` 与 `aw plugin remove --help`，再调用公开的 `aw plugin remove <name> --workspace-root <root> --yes --json`。它不直接删除目录、不使用 `--force`、不修改 Catalog metadata、也不 commit、build 或 publish。成功 receipt 返回后，Catalog Author 必须重新读取 inventory 和依赖图；不再验证已删除对象。对每个剩余 canonical plugin 运行 validate/test，并在需要时运行 build/status；若 inventory 为空，记录 empty inventory，不运行 plugin 命令。然后执行聚合验证。普通删除不创建 tombstone、retirement metadata 或 release ledger。
+实际删除只交给 `author-aw-plugin`：它通过 runtime compatibility check 后，调用公开的 `aw plugin remove <name> --workspace-root <root> --yes --json`。它不直接删除目录、不使用 `--force`、不修改 Catalog metadata、也不 commit、build 或 publish。成功 receipt 返回后，Catalog Author 必须重新读取 inventory 和依赖图；不再验证已删除对象。对每个剩余 canonical plugin 运行 validate/test，并在需要时运行 build/status；若 inventory 为空，记录 empty inventory，不运行 plugin 命令。然后执行聚合验证。普通删除不创建 tombstone、retirement metadata 或 release ledger。
 
 先逐个完成当前 inventory 中插件的 `aw plugin validate`、`aw plugin test` 和必要的 `aw plugin build/status`，再执行：
 
@@ -56,7 +59,7 @@ aw catalog validate "$workspace/.aw/catalog" --json
 
 ## Publication preflight 和授权
 
-远端发布只由用户显式调用 `publish-aw-catalog`。Remote 和 branch 必须由用户明确给出，不能从当前 Git branch、默认 remote 或官方命名自动选择。
+远端发布只由用户显式调用 `publish-aw-catalog`。先用 `aw catalog context --json` 检查 CLI 解析的精确目标。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须显式选择。Branch 使用显式参数或固定默认 `catalog`，绝不从当前 Git branch 推断。
 
 先说明 preflight 会从 committed source HEAD 执行所有插件的公开 validator 和 build code，再运行：
 
@@ -90,7 +93,15 @@ Catalog 没有同版本 repair。Development snapshot 和 Catalog cache 是可�
 
 ## Source consumption 和信任
 
-Path source 消费本地 development snapshot；Git source 消费 published snapshot。两者使用同一 Catalog schema。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
+Path source 消费本地 development snapshot；Git source 消费 published snapshot。两者都使用 Catalog schema 5，source config 只使用 schema 2。Transport validation 负责安全消费 snapshot；producer、publication 和发布后核验使用 complete validation。安装先计算所选插件的 dependency closure，对闭包内每个 entry 检查 capability compatibility，再只对该闭包执行完整 plugin validation。当前 Workspace 的日常 development source 使用稳定 marker identity 管理：
+
+```bash
+aw catalog dev activate --workspace-root "$workspace" --json
+aw catalog dev status --workspace-root "$workspace" --json
+aw catalog dev deactivate --workspace-root "$workspace" --json
+```
+
+`activate` 会在 snapshot absent、stale、invalid 或显式要求时 build/complete validate，再原子提交 managed path source 并 refresh。config 提交后的 refresh 失败返回 partial receipt，不回滚 source；重跑 refresh 或 activate 可以恢复。`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。低层 `catalog source add/update` 不能声明 managed ownership。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
 
 ```bash
 aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json

@@ -19,8 +19,9 @@ metadata:
 
 ## 普通 Review
 
-1. 由调用方显式给出非 Git workspace 根。不得从 cwd 或 Git 推断 workspace。
-2. 发现 source 和调用方提供的 materialized targets。发现器先固定运行 PATH 上的 `aw plugin validate <plugin-root> --workspace-root <workspace-root> --json`；失败时停止，不读取 manifest 派生的 collection：
+1. 从平台 Skill locator 或当前加载的 `SKILL.md` 确定本 Skill 的真实 `<skill-root>`，不从 cwd 推断。首次 AW 命令必须是 `aw self check --from <skill-root> --json`。命令不可用时停止并报告 `aw` 缺失；receipt 的 `ok` 为 false 时停止并精确报告其 `missingCapabilities`。
+2. 先确定本次 context target：依次使用用户明确的 Workspace root、从 canonical `<root>/plugins/<name>` target 推导的 root、或上游 handoff 的 resolved root；只有任务明确指向 current Workspace 时才不传 root。首次运行 `aw catalog context [--workspace-root <target-root>] --json`，只读取单一 JSON receipt。receipt 的 `workspace.root` 必须与所选 target 一致，并在存在 canonical target 或 handoff path 时与其一致；不一致时停止，只在 root 缺失或歧义时询问。`workspace.found` 为 true 时使用其 root；Workspace 缺失时停止并报告 receipt，再在该 root 下解析用户给出的插件名或 path。
+3. 发现 source 和调用方提供的 materialized targets。发现器先运行 PATH 上的 `aw plugin validate <plugin-root> --workspace-root <workspace-root> --json`；失败时停止，不读取 manifest 派生的 collection：
 
    ```bash
    node scripts/discover-aw-review-targets.mjs <plugin-root> \
@@ -30,10 +31,10 @@ metadata:
      --format json
    ```
 
-3. 读取 `references/plugin-composition-review.md`，评审 manifest/source truth、组件职责、共享脚本、build/materialization、profile 差异和插件依赖。插件 common path 由本 Skill 判断，不把插件包装成 `review-agent-skill` 的 target level。
-4. 只有需要具体定位、source/final 内容不同或用户要求逐 Skill 结论时，才按 `uniqueReviews[]` 使用 `review-agent-skill`；相同 digest 最多评审一次。
-5. 大型 reference 可按需使用 `review-agent-content`。
-6. 输出 AW 机器错误、插件级 design/complexity、必要 leaf findings、真实 source/final 差异、最多 3 个高价值改进和关键 unknown。
+4. 读取 `references/plugin-composition-review.md`，评审 manifest/source truth、组件职责、共享脚本、build/materialization、profile 差异和插件依赖。插件 common path 由本 Skill 判断，不把插件包装成 `review-agent-skill` 的 target level。
+5. 只有需要具体定位、source/final 内容不同或用户要求逐 Skill 结论时，才按 `uniqueReviews[]` 使用 `review-agent-skill`；相同 digest 最多评审一次。
+6. 大型 reference 可按需使用 `review-agent-content`。
+7. 输出 AW 机器错误、插件级 design/complexity、必要 leaf findings、真实 source/final 差异、最多 3 个高价值改进和关键 unknown。
 
 leaf inventory 为空的条件是：合法 manifest 未声明 `skills`，且 `artifacts.targets` 也没有 `codex.skill` 或 `claude.skill`。此时仍评审插件级 composition target。动态 Skill 按 manifest 的 `skillKey`、platform 和 scopes 绑定对应 materialized final，不虚构 source Skill leaf。没有 materialized final 时，只评价当前可见 source 和插件组合质量；不声明 release readiness。跨多个插件共同完成一个用户结果时，不给完整结论。
 
@@ -66,5 +67,6 @@ release checker 只调用 `PATH` 上已安装的 `aw`，并只执行自身 bundl
 ## 边界
 
 - 不修改 Skill、Eval case、README、manifest 或 materialized final。
+- `aw catalog context --json` 是唯一允许的 Catalog 命令，且只读取 receipt。不得运行任何 Catalog mutation、`catalog build`、`catalog status`（含 `--preflight`）、`catalog validate` 或 `catalog publish`；也不得因 Review 运行 `plugin test` 或 `plugin build`。
 - 不生成旧版结构化 handoff 或旧版插件摘要。
 - 不评审跨多个 AW 插件的完整用户工作流。

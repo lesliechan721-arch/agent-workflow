@@ -4,4 +4,4 @@ interface:
   default_prompt: "使用 $publish-aw-catalog 发布用户明确指定的 AW Catalog。"
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

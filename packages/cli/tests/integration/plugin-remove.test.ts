@@ -178,6 +178,7 @@ describe('aw plugin remove', () => {
       command: 'plugin:remove',
       ok: true,
       workspaceRoot: canonicalWorkspaceRoot,
+      workspaceRootResolvedFrom: 'explicit',
       baseCommit,
       plugin: {
         name: 'remove-me',

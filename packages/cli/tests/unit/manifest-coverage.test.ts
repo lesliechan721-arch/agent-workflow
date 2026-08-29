@@ -17,7 +17,7 @@ import {
   validateMarketplaceSourceMeta,
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
-import { validateCatalogManifestV4 } from '../../src/utils/catalog-manifest-v4.js';
+import { validateCatalogManifestV5 } from '../../src/utils/catalog-manifest-v5.js';
 import type { PluginMeta } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -53,14 +53,10 @@ function sha256(char: string): string {
 
 function createCatalogManifestFixture() {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     catalogVersion: '1.2.3',
     channel: 'latest',
-    compatibility: {
-      aw: {
-        minVersion: '0.1.0',
-      },
-    },
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
     marketplace: {
       owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
       interface: { displayName: 'Fixture Marketplace' },
@@ -77,11 +73,8 @@ function createCatalogManifestFixture() {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
         },
-        compatibility: {
-          aw: {
-            minVersion: '0.0.0',
-          },
-        },
+        dependencies: [],
+        requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
         source: './plugins/demo',
         artifactDigest: sha256('a'),
         manifestDigest: sha256('b'),
@@ -98,6 +91,7 @@ afterEach(async () => {
 describe('manifest coverage', () => {
   it('accepts object-based channels and rejects plugin paths that escape the root', () => {
     const manifest = validatePluginManifest('/tmp/plugin', {
+      schemaVersion: 2,
       name: 'demo-object-channels',
       version: '0.1.0',
       description: 'demo',
@@ -130,6 +124,7 @@ describe('manifest coverage', () => {
 
     expect(() =>
       validatePluginManifest('/tmp/plugin', {
+        schemaVersion: 2,
         name: 'bad-demo',
         version: '0.1.0',
         description: 'demo',
@@ -147,6 +142,7 @@ describe('manifest coverage', () => {
 
     expect(() =>
       validatePluginManifest('/tmp/plugin', {
+        schemaVersion: 2,
         name: 'bad-demo-abs',
         version: '0.1.0',
         description: 'demo',
@@ -170,6 +166,7 @@ describe('manifest coverage', () => {
     await fs.writeJson(
       path.join(alphaRoot, '.agents-plugin', 'plugin.json'),
       {
+        schemaVersion: 2,
         name: 'alpha-note',
         version: '0.1.0',
         description: 'alpha plugin',
@@ -303,43 +300,43 @@ describe('manifest coverage', () => {
     });
   });
 
-  it('accepts schema 4 and rejects schema 1 or history fields', () => {
-    expect(validateCatalogManifestV4(createCatalogManifestFixture()).schemaVersion).toBe(4);
+  it('accepts schema 5 and rejects schema 1 or history fields', () => {
+    expect(validateCatalogManifestV5(createCatalogManifestFixture()).schemaVersion).toBe(5);
 
     const schemaOne = createCatalogManifestFixture();
     schemaOne.schemaVersion = 1;
-    expect(() => validateCatalogManifestV4(schemaOne)).toThrow('schemaVersion: expected 4');
+    expect(() => validateCatalogManifestV5(schemaOne)).toThrow('schemaVersion: expected 5');
 
     const schemaOneWithHistory = createCatalogManifestFixture() as Record<string, unknown>;
     schemaOneWithHistory.schemaVersion = 1;
     schemaOneWithHistory.history = {};
-    expect(() => validateCatalogManifestV4(schemaOneWithHistory)).toThrow();
+    expect(() => validateCatalogManifestV5(schemaOneWithHistory)).toThrow();
 
     const withHistory = createCatalogManifestFixture() as Record<string, unknown>;
     withHistory.history = {};
-    expect(() => validateCatalogManifestV4(withHistory)).toThrow('unknown field "history"');
+    expect(() => validateCatalogManifestV5(withHistory)).toThrow('unknown field "history"');
   });
 
   it('rejects invalid catalog manifest channel, prerelease, and digest', () => {
 
     const badDigest = createCatalogManifestFixture();
     badDigest.entries[0]!.manifestDigest = 'sha256:not-hex';
-    expect(() => validateCatalogManifestV4(badDigest)).toThrow('manifestDigest');
+    expect(() => validateCatalogManifestV5(badDigest)).toThrow('manifestDigest');
 
     const betaStableCatalog = createCatalogManifestFixture();
     betaStableCatalog.channel = 'beta';
-    expect(() => validateCatalogManifestV4(betaStableCatalog)).toThrow('beta catalog requires a prerelease catalog version');
+    expect(() => validateCatalogManifestV5(betaStableCatalog)).toThrow('beta catalog requires a prerelease catalog version');
   });
 
-  it('rejects plugin minVersion and duplicate snapshot names that violate catalog bounds', () => {
-    const pluginMinAboveCatalog = createCatalogManifestFixture();
-    pluginMinAboveCatalog.entries[0]!.compatibility.aw.minVersion = '0.1.1';
-    pluginMinAboveCatalog.compatibility.aw.minVersion = '0.1.0';
-    expect(() => validateCatalogManifestV4(pluginMinAboveCatalog)).toThrow('higher than catalog minimum');
+  it('accepts unknown entry capabilities and rejects duplicate snapshot names', () => {
+    const future = createCatalogManifestFixture();
+    future.entries[0]!.requires.aw.capabilities.push('aw.future-feature.v3');
+    expect(validateCatalogManifestV5(future).entries[0]!.requires.aw.capabilities)
+      .toContain('aw.future-feature.v3');
 
     const duplicateEntry = createCatalogManifestFixture();
     duplicateEntry.entries.push(structuredClone(duplicateEntry.entries[0]!));
-    expect(() => validateCatalogManifestV4(duplicateEntry)).toThrow('duplicate plugin "demo"');
+    expect(() => validateCatalogManifestV5(duplicateEntry)).toThrow('duplicate plugin "demo"');
   });
 
 });

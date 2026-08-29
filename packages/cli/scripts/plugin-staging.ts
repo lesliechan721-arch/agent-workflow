@@ -49,6 +49,7 @@ export {
   validatePluginReleaseLedger,
 } from '../src/utils/plugin-release.js';
 export {
+  matchesPluginTestEntryGlob,
   scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
 } from '../src/utils/plugin-script-contract.js';
@@ -70,22 +71,20 @@ import {
 } from '../src/utils/bundle-layout.js';
 import type {
   CatalogChannel,
-  CatalogManifestV4,
+  CatalogManifestV5,
   MarketplaceManifest,
-  PluginMeta,
 } from '../src/types.js';
 import {
-  compareStrictSemVer,
   readMarketplaceSourceMeta,
   resolvePluginsFromCatalog,
 } from '../src/utils/manifest.js';
 import {
-  createCatalogManifestV4,
-  createCatalogManifestV4Entry,
-  CATALOG_SCHEMA_4_CLI_FLOOR,
-  validateCatalogManifestV4,
-} from '../src/utils/catalog-manifest-v4.js';
-import { validateCatalogSnapshot } from '../src/utils/catalog-snapshot.js';
+  createCatalogManifestV5,
+  createCatalogManifestV5Entry,
+  CATALOG_SCHEMA_5_CAPABILITY,
+  validateCatalogManifestV5,
+} from '../src/utils/catalog-manifest-v5.js';
+import { validateCatalogSnapshotComplete } from '../src/utils/catalog-snapshot.js';
 import { validatePluginMetaDependencyGraph } from '../src/utils/plugin-dependencies.js';
 import { readJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
@@ -109,26 +108,14 @@ export interface CatalogStageOptions {
 }
 
 export interface CatalogStageResult {
-  manifest: CatalogManifestV4;
+  manifest: CatalogManifestV5;
   canonicalManifestPath: string;
 }
 
-export { CATALOG_SCHEMA_4_CLI_FLOOR };
-export const CATALOG_SCHEMA_3_CLI_FLOOR = CATALOG_SCHEMA_4_CLI_FLOOR;
+export { CATALOG_SCHEMA_5_CAPABILITY };
 
 function detectCatalogChannel(version: string): CatalogChannel {
   return version.includes('-') ? 'beta' : 'latest';
-}
-
-function resolveCatalogMinAwVersion(plugins: readonly PluginMeta[]): string {
-  let current = CATALOG_SCHEMA_4_CLI_FLOOR;
-  for (const plugin of plugins) {
-    const pluginMinVersion = plugin.manifest.compatibility!.aw.minVersion;
-    if (compareStrictSemVer(pluginMinVersion, current) > 0) {
-      current = pluginMinVersion;
-    }
-  }
-  return current;
 }
 
 async function writeCanonicalJsonFile(filePath: string, value: unknown): Promise<string> {
@@ -154,25 +141,24 @@ export async function stageCatalogArtifacts(
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }
   const plugins = sourcePlugins;
-  const minAwVersion = resolveCatalogMinAwVersion(plugins);
   const entries = await Promise.all(plugins.map((plugin) =>
-    createCatalogManifestV4Entry(
+    createCatalogManifestV5Entry(
       plugin,
       path.join(options.outputRoot, 'plugins', plugin.manifest.name),
     )));
   const marketplace = await readJsonFile<MarketplaceManifest>(
     path.join(options.outputRoot, '.agents', 'plugins', 'marketplace.json'),
   );
-  const manifest = createCatalogManifestV4({
+  const manifest = createCatalogManifestV5({
     catalogVersion,
     channel,
     marketplace: {
       owner: marketplace.owner,
       interface: marketplace.interface,
     },
-    compatibility: {
+    requires: {
       aw: {
-        minVersion: minAwVersion,
+        capabilities: [CATALOG_SCHEMA_5_CAPABILITY],
       },
     },
     release: { state: 'development' },
@@ -188,7 +174,7 @@ export async function stageCatalogArtifacts(
     canonicalManifestPath,
     manifest,
   );
-  await validateCatalogSnapshot(options.outputRoot);
+  await validateCatalogSnapshotComplete(options.outputRoot);
 
   return {
     manifest,
@@ -198,8 +184,8 @@ export async function stageCatalogArtifacts(
 
 export async function readStagedCatalogManifest(
   outputRoot: string,
-): Promise<CatalogManifestV4> {
-  return validateCatalogManifestV4(
+): Promise<CatalogManifestV5> {
+  return validateCatalogManifestV5(
     await readJsonFile<unknown>(path.join(outputRoot, CATALOG_MANIFEST_FILENAME)),
   );
 }

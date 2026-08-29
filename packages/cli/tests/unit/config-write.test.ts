@@ -99,7 +99,7 @@ async function createFixture(
     name: pluginName,
     version: '1.0.0',
     description: 'Config apply test plugin',
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    schemaVersion: 2,
     marketplace: {
       category: 'test',
       strict: true,

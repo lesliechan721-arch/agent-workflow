@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.agent-workflows.dev/plugin-manifest-v1.json",
-  "title": "PluginManifestSourceV1",
+  "$id": "https://schemas.agent-workflows.dev/plugin-manifest-v2.json",
+  "title": "PluginManifestSourceV2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "version", "description", "marketplace"],
+  "required": ["schemaVersion", "name", "version", "description", "marketplace"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "name": {
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
@@ -22,7 +22,7 @@
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
       }
     },
-    "compatibility": { "$ref": "#/$defs/compatibility" },
+    "requires": { "$ref": "#/$defs/requires" },
     "skills": { "$ref": "#/$defs/pluginPath" },
     "slashCommands": { "$ref": "#/$defs/pluginPath" },
     "mcpServers": { "$ref": "#/$defs/pluginPath" },
@@ -45,7 +45,7 @@
       "type": "string",
       "pattern": "^\\./"
     },
-    "compatibility": {
+    "requires": {
       "type": "object",
       "additionalProperties": false,
       "required": ["aw"],
@@ -53,9 +53,15 @@
         "aw": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["minVersion"],
           "properties": {
-            "minVersion": { "$ref": "#/$defs/semver" }
+            "capabilities": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^aw\\.[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*\\.v[1-9][0-9]*$"
+              }
+            }
           }
         }
       }

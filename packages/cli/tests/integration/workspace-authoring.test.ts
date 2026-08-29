@@ -422,6 +422,7 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
 
   it('reports current status without Git and requires Git only for an explicit base', async () => {
     const root = await createRoot();
+    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
     await fs.ensureDir(path.join(root, 'plugins', 'demo', '.agents-plugin'));
     await fs.writeJson(path.join(root, 'plugins', 'demo', '.agents-plugin', 'plugin.json'), {
       schemaVersion: 1,
@@ -1015,11 +1016,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root });
     await fs.ensureDir(path.join(outside, '.agents-plugin'));
     await fs.writeJson(path.join(outside, '.agents-plugin', 'plugin.json'), {
-      schemaVersion: 1,
       name: 'linked-plugin',
       version: '0.1.0',
       description: 'Linked plugin.',
-      compatibility: { aw: { minVersion: '0.0.0' } },
+      schemaVersion: 2,
       scripts: { tests: { node: ['scripts/external.test.mjs'] } },
       marketplace: {
         category: 'workflow',

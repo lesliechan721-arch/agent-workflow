@@ -14,10 +14,11 @@ import {
   readCatalogWorkspace,
   resolveCatalogVersionMutation,
   resolveCatalogWorkspaceOutputPath,
-  validateCatalogSnapshot,
+  validateCatalogSnapshotComplete,
   validatePublishedCatalogSnapshot,
 } from '../../src/workspace.js'
 import { validateMarketplaceSourceMeta } from '../../src/manifest-contract.js'
+import { createAwPluginRequirementsReceipt } from '../../src/aw-capabilities.js'
 
 const temporaryRoots: string[] = []
 
@@ -44,11 +45,10 @@ async function createWorkspace(): Promise<string> {
 async function writeSourcePlugin(root: string, name = 'atomic-plugin'): Promise<Record<string, unknown>> {
   const pluginRoot = path.join(root, 'plugins', name)
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name,
     version: '0.1.0',
     description: 'Atomic plugin.',
-    compatibility: { aw: { minVersion: '0.0.0' } },
     mcpServers: './.mcp.json',
     marketplace: {
       category: 'workflow',
@@ -63,8 +63,12 @@ async function writeSourcePlugin(root: string, name = 'atomic-plugin'): Promise<
 }
 
 async function writeBundle(outputRoot: string, manifest: Record<string, unknown>): Promise<void> {
+  const bundleManifest = {
+    ...manifest,
+    requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+  }
   await fs.ensureDir(path.join(outputRoot, '.agents-plugin'))
-  await fs.writeJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'), manifest)
+  await fs.writeJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'), bundleManifest)
   for (const platform of ['claude', 'codex']) {
     await fs.ensureDir(path.join(outputRoot, `.${platform}-plugin`))
     await fs.ensureDir(path.join(outputRoot, platform))
@@ -73,9 +77,61 @@ async function writeBundle(outputRoot: string, manifest: Record<string, unknown>
       name: manifest.name,
       version: manifest.version,
       description: manifest.description,
-      compatibility: manifest.compatibility,
       mcpServers: `./${platform}/.mcp.json`,
     })
+  }
+}
+
+async function writeNativeAndPortableSkillBundle(
+  outputRoot: string,
+  manifest: Record<string, unknown>,
+  receiptVersion = String(manifest.version),
+): Promise<void> {
+  await writeBundle(outputRoot, manifest)
+  const capabilities = [
+    'aw.plugin-manifest.v2',
+    'aw.plugin-skills.v1',
+    'aw.portable-skills.v1',
+  ]
+  const sourceManifestPath = path.join(outputRoot, '.agents-plugin', 'plugin.json')
+  const sourceManifest = await fs.readJson(sourceManifestPath)
+  await fs.writeJson(sourceManifestPath, {
+    ...sourceManifest,
+    requires: { aw: { capabilities } },
+  })
+  for (const platform of ['claude', 'codex'] as const) {
+    const platformManifestPath = path.join(outputRoot, `.${platform}-plugin`, 'plugin.json')
+    const platformManifest = await fs.readJson(platformManifestPath)
+    await fs.writeJson(platformManifestPath, {
+      ...platformManifest,
+      skills: `./${platform}/skills`,
+    })
+  }
+  const skill = [
+    '---',
+    'name: example',
+    'description: Example Skill.',
+    '---',
+    '',
+    '# Example',
+    '',
+  ].join('\n')
+  const receipt = `${JSON.stringify(createAwPluginRequirementsReceipt(
+    { name: String(manifest.name), version: receiptVersion },
+    capabilities,
+  ), null, 2)}\n`
+  for (const relative of [
+    'claude/skills/example',
+    'codex/skills/example',
+    'agent-skills/skills/example',
+  ]) {
+    await fs.outputFile(path.join(outputRoot, relative, 'SKILL.md'), skill)
+    await fs.outputFile(path.join(outputRoot, relative, 'README.md'), '# Example\n')
+    await fs.outputFile(
+      path.join(outputRoot, relative, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    )
+    await fs.outputFile(path.join(outputRoot, relative, 'aw-plugin-requirements.json'), receipt)
   }
 }
 
@@ -318,8 +374,26 @@ describe('AW Catalog Workspace v1', () => {
     expect(rebuiltPlugin.outputRoot).toBe(firstPlugin.outputRoot)
     await expect(fs.readJson(path.join(rebuiltPlugin.outputRoot, '.agents-plugin', 'plugin.json')))
       .resolves.toMatchObject({ description: 'Changed source plugin.' })
-    await expect(validateCatalogSnapshot(rebuiltCatalog.outputRoot)).resolves.toMatchObject({
+    await expect(validateCatalogSnapshotComplete(rebuiltCatalog.outputRoot)).resolves.toMatchObject({
       manifest: { catalogVersion: '0.2.0' },
+    })
+  })
+
+  it('builds a complete schema 5 snapshot for an empty plugin inventory', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    let adapterCalls = 0
+
+    const built = await buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: { async build() { adapterCalls += 1 } },
+    })
+
+    expect(adapterCalls).toBe(0)
+    expect(built.pluginNames).toEqual([])
+    await expect(fs.readdir(path.join(built.outputRoot, 'plugins'))).resolves.toEqual([])
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
+      manifest: { schemaVersion: 5, catalogVersion: '0.1.0', entries: [] },
     })
   })
 
@@ -338,7 +412,7 @@ describe('AW Catalog Workspace v1', () => {
         workspaceRoot: root,
         adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
       })
-      validations.push(await validateCatalogSnapshot(built.outputRoot))
+      validations.push(await validateCatalogSnapshotComplete(built.outputRoot))
     }
 
     expect(validations[0]!.snapshotDigest).toBe(validations[1]!.snapshotDigest)
@@ -371,19 +445,19 @@ describe('AW Catalog Workspace v1', () => {
       workspaceRoot: root,
       adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
     })
-    await expect(validateCatalogSnapshot(built.outputRoot)).resolves.toMatchObject({
-      manifest: { schemaVersion: 4, catalogVersion: '0.1.0' },
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
+      manifest: { schemaVersion: 5, catalogVersion: '0.1.0' },
     })
     const agentsPath = path.join(built.outputRoot, '.agents', 'plugins', 'marketplace.json')
     const validMarketplace = await fs.readFile(agentsPath)
     await fs.writeFile(agentsPath, '{ invalid')
-    await expect(validateCatalogSnapshot(built.outputRoot)).rejects.toThrow()
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).rejects.toThrow()
     await fs.writeFile(agentsPath, validMarketplace)
     const claudePath = path.join(built.outputRoot, '.claude-plugin', 'marketplace.json')
     const claude = await fs.readJson(claudePath)
     claude.plugins.push({ ...claude.plugins[0], name: 'ghost', source: '../outside' })
     await fs.writeJson(claudePath, claude)
-    await expect(validateCatalogSnapshot(built.outputRoot))
+    await expect(validateCatalogSnapshotComplete(built.outputRoot))
       .rejects.toThrow(/Claude marketplace metadata or plugin inventory/u)
   })
 
@@ -423,7 +497,7 @@ describe('AW Catalog Workspace v1', () => {
     catalogManifest.channel = channel
     await fs.writeJson(catalogManifestPath, catalogManifest)
 
-    await expect(validateCatalogSnapshot(built.outputRoot)).rejects.toThrow(
+    await expect(validateCatalogSnapshotComplete(built.outputRoot)).rejects.toThrow(
       /stable SemVer or an exact x\.y\.z-beta\.N/u,
     )
   })
@@ -448,10 +522,10 @@ describe('AW Catalog Workspace v1', () => {
     const firstLedgerPath = path.join(first.outputRoot, 'plugin-release-ledger.json')
     const firstLedger = await fs.readFile(firstLedgerPath)
     await fs.remove(firstLedgerPath)
-    await expect(validateCatalogSnapshot(first.outputRoot)).rejects.toThrow(/must include plugin-release-ledger/u)
+    await expect(validateCatalogSnapshotComplete(first.outputRoot)).rejects.toThrow(/must include plugin-release-ledger/u)
     await fs.writeFile(firstLedgerPath, firstLedger)
     await fs.writeJson(firstLedgerPath, { schemaVersion: 2, records: [] })
-    await expect(validateCatalogSnapshot(first.outputRoot)).rejects.toThrow(/does not match catalog entry/u)
+    await expect(validateCatalogSnapshotComplete(first.outputRoot)).rejects.toThrow(/does not match catalog entry/u)
     await fs.writeFile(firstLedgerPath, firstLedger)
 
     await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
@@ -495,7 +569,7 @@ describe('AW Catalog Workspace v1', () => {
         owner: { name: 'Tampered Owner', url: 'https://example.invalid/tampered' },
         interface: { displayName: 'Tampered Catalog' },
       },
-      compatibility: publishedManifest.compatibility,
+      requires: publishedManifest.requires,
       plugins: publishedManifest.entries.map((entry: Record<string, string>) => ({
         name: entry.name,
         targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
@@ -505,7 +579,7 @@ describe('AW Catalog Workspace v1', () => {
     publishedManifest.release.contentDigest = changedContentDigest
     publishedManifest.release.planId = changedContentDigest
     await fs.writeJson(manifestPath, publishedManifest)
-    await expect(validateCatalogSnapshot(second.outputRoot)).rejects.toThrow(
+    await expect(validateCatalogSnapshotComplete(second.outputRoot)).rejects.toThrow(
       /marketplace metadata or plugin inventory/u,
     )
   })
@@ -534,6 +608,120 @@ describe('AW Catalog Workspace v1', () => {
     await expect(readCatalogWorkspace(root)).resolves.toMatchObject({
       metadata: { catalog: { version: '2.0.0-beta.3' } },
     })
+  })
+
+  it('rewrites native and portable requirements receipts while keeping beta content identity stable', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    manifest.skills = './skills'
+    manifest.distributions = { agentSkills: { skills: './portable-skills' } }
+    await fs.writeJson(
+      path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
+      manifest,
+    )
+    for (const relative of ['skills/example', 'portable-skills/example']) {
+      await fs.outputFile(path.join(root, 'plugins', 'atomic-plugin', relative, 'SKILL.md'), [
+        '---',
+        'name: example',
+        'description: Example Skill.',
+        '---',
+        '',
+        '# Example',
+        '',
+      ].join('\n'))
+      await fs.outputFile(
+        path.join(root, 'plugins', 'atomic-plugin', relative, 'README.md'),
+        '# Example\n',
+      )
+      await fs.outputFile(
+        path.join(root, 'plugins', 'atomic-plugin', relative, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      )
+    }
+    const adapter = {
+      build: ({ outputRoot }: { outputRoot: string }) =>
+        writeNativeAndPortableSkillBundle(outputRoot, manifest),
+    }
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0-beta.1' })
+    const first = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '5'.repeat(40),
+      adapter,
+    })
+    const firstValidation = await validatePublishedCatalogSnapshot(first.outputRoot)
+    expect(firstValidation.manifest.entries[0]?.version).toBe('0.1.0-beta.1')
+    const firstContentDigest = firstValidation.manifest.entries[0]?.contentDigest
+    for (const relative of [
+      'claude/skills/example',
+      'codex/skills/example',
+      'agent-skills/skills/example',
+    ]) {
+      await expect(fs.readJson(path.join(
+        first.outputRoot,
+        'plugins',
+        'atomic-plugin',
+        relative,
+        'aw-plugin-requirements.json',
+      ))).resolves.toMatchObject({
+        plugin: { name: 'atomic-plugin', version: '0.1.0-beta.1' },
+        requiredCapabilities: [
+          'aw.plugin-manifest.v2',
+          'aw.plugin-skills.v1',
+          'aw.portable-skills.v1',
+        ],
+      })
+    }
+
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0-beta.2' })
+    const second = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '6'.repeat(40),
+      previousSnapshotRoot: first.outputRoot,
+      adapter,
+    })
+    const secondValidation = await validatePublishedCatalogSnapshot(second.outputRoot)
+    expect(secondValidation.manifest.entries[0]).toMatchObject({
+      version: '0.1.0-beta.1',
+      contentDigest: firstContentDigest,
+    })
+  })
+
+  it('rejects a bundle runtime requirements receipt that does not match its manifest', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    manifest.skills = './skills'
+    manifest.distributions = { agentSkills: { skills: './portable-skills' } }
+    await fs.writeJson(
+      path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
+      manifest,
+    )
+    for (const relative of ['skills/example', 'portable-skills/example']) {
+      await fs.outputFile(path.join(root, 'plugins', 'atomic-plugin', relative, 'SKILL.md'), [
+        '---',
+        'name: example',
+        'description: Example Skill.',
+        '---',
+        '',
+      ].join('\n'))
+      await fs.outputFile(path.join(root, 'plugins', 'atomic-plugin', relative, 'README.md'), '# Example\n')
+      await fs.outputFile(
+        path.join(root, 'plugins', 'atomic-plugin', relative, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      )
+    }
+
+    await expect(buildCatalogWorkspace({
+      workspaceRoot: root,
+      adapter: {
+        build: ({ outputRoot }) => writeNativeAndPortableSkillBundle(
+          outputRoot,
+          manifest,
+          '9.9.9',
+        ),
+      },
+    })).rejects.toThrow(/mismatched runtime requirements receipt/u)
   })
 
   it('rejects reuse of a published plugin version for different content', async () => {
