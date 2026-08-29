@@ -2889,7 +2889,17 @@ describe('authoring tools', () => {
   it('validate_plugin.mjs validates optional plugin eval manifests', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-authoring-'));
     tempDirs.push(tempRoot);
-    const pluginDir = path.join(tempRoot, 'eval-demo');
+    const pluginDir = path.join(tempRoot, 'plugins', 'eval-demo');
+    await fs.writeJson(path.join(tempRoot, '.aw-workspace.json'), {
+      schemaVersion: 1,
+      kind: 'aw-catalog-workspace',
+      workspaceIdentity: 'eval-authoring-workspace',
+    });
+    await fs.outputJson(path.join(tempRoot, 'plugins', 'marketplace-source.json'), {
+      owner: { name: 'Eval Authoring', url: 'https://example.invalid/eval-authoring' },
+      interface: { displayName: 'Eval Authoring' },
+      catalog: { version: '0.1.0' },
+    });
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'eval-demo', 'agents'));
     const evalDir = path.join(pluginDir, 'skills', 'eval-demo', 'evals');
@@ -3029,6 +3039,16 @@ describe('authoring tools', () => {
     }
 
     const conversationCasesPath = path.join(evalDir, 'conversation-cases.json');
+    await fs.outputFile(
+      path.join(evalDir, 'fixtures', 'bin', 'eval-suite-fixture'),
+      '#!/bin/sh\nexit 0\n',
+      { mode: 0o644 },
+    );
+    await fs.outputFile(
+      path.join(evalDir, 'case-fixtures', 'bin', 'eval-case-fixture'),
+      '#!/bin/sh\nexit 0\n',
+      { mode: 0o644 },
+    );
     const conversationSuite = {
       id: 'behavior',
       kind: 'conversation',
@@ -3040,6 +3060,7 @@ describe('authoring tools', () => {
       releaseSplits: [],
       requiredForRelease: true,
       perRunTimeoutMs: 10_000,
+      environment: { pathPrepend: ['fixtures/bin'] },
     };
     const conversationManifest = {
       ...validEvalManifest,
@@ -3053,6 +3074,7 @@ describe('authoring tools', () => {
       workspace_files: {
         'docs/eval-context.md': 'Known project fact.\n',
       },
+      environment: { pathPrepend: ['case-fixtures/bin'] },
       review: { checks: ['Reviews the fixture.'], workspace_unchanged: true },
     };
     await fs.writeJson(conversationCasesPath, {
@@ -3063,6 +3085,100 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
+    if (process.platform !== 'win32') {
+      expect((await fs.stat(path.join(
+        evalDir,
+        'fixtures',
+        'bin',
+        'eval-suite-fixture',
+      ))).mode & 0o111).toBe(0);
+    }
+
+    for (const [pathPrepend, expectedError] of [
+      [['fixtures/missing'], 'must reference an existing fixture'],
+      [['../outside'], 'must be a normalized POSIX path inside the eval workspace'],
+      [[path.join(evalDir, 'fixtures', 'bin')], 'must be a normalized POSIX path inside the eval workspace'],
+      [['fixtures/bin', 'fixtures/bin'], 'must not contain duplicates'],
+    ] as const) {
+      await fs.writeJson(evalManifestPath, {
+        ...conversationManifest,
+        suites: [{ ...conversationSuite, environment: { pathPrepend } }],
+      }, { spaces: 2 });
+      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining(expectedError),
+      });
+    }
+    await fs.writeJson(evalManifestPath, conversationManifest, { spaces: 2 });
+
+    await fs.writeJson(evalManifestPath, {
+      ...conversationManifest,
+      suites: [{
+        ...conversationSuite,
+        environment: { pathPrepend: ['fixtures'] },
+      }],
+    }, { spaces: 2 });
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [{
+        ...validConversationCase,
+        environment: { pathPrepend: ['fixtures/bin'] },
+      }],
+    }, { spaces: 2 });
+    const publicFailure = await execFileAsync('node', [
+      path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js'),
+      'plugin',
+      'validate',
+      pluginDir,
+      '--workspace-root', tempRoot,
+      '--json',
+    ], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    }).catch((error: unknown) => error as { stdout: string });
+    expect(JSON.parse(publicFailure.stdout)).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringContaining('conflicts with another PATH fixture target'),
+      ]),
+    });
+    await fs.writeJson(evalManifestPath, conversationManifest, { spaces: 2 });
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [validConversationCase],
+    });
+
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [{
+        ...validConversationCase,
+        environment: { pathPrepend: ['fixtures/bin'] },
+      }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('conflicts with another PATH fixture target'),
+    });
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [validConversationCase],
+    }, { spaces: 2 });
+
+    if (process.platform !== 'win32') {
+      const linkedFixture = path.join(evalDir, 'fixtures', 'linked-bin');
+      await fs.symlink('bin', linkedFixture);
+      await fs.writeJson(evalManifestPath, {
+        ...conversationManifest,
+        suites: [{
+          ...conversationSuite,
+          environment: { pathPrepend: ['fixtures/linked-bin'] },
+        }],
+      }, { spaces: 2 });
+      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining('symbolic links are not supported'),
+      });
+      await fs.remove(linkedFixture);
+      await fs.writeJson(evalManifestPath, conversationManifest, { spaces: 2 });
+    }
 
     const invalidWorkspaceFiles = [
       {

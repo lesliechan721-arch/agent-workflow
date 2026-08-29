@@ -133,21 +133,26 @@ describe('Catalog Workspace development source', () => {
     await expect(fs.pathExists(path.join(movedRoot, '.aw', 'catalog'))).resolves.toBe(true);
   });
 
-  it('moves primary ownership back to official before removing the managed source', async () => {
+  it('prefers the exact default official source when multiple replacements exist', async () => {
     const { workspaceRoot, env } = await fixture();
     const activated = await jsonCommand([
       'catalog', 'dev', 'activate', '--primary', '--json',
     ], workspaceRoot, env);
     expect(activated.exitCode, activated.stderr).toBe(0);
     expect(activated.receipt.source.primary).toBe(true);
+    const snapshotPath = path.join(workspaceRoot, '.aw', 'catalog');
+    expect((await jsonCommand([
+      'catalog', 'source', 'add', 'backup', '--path', snapshotPath, '--json',
+    ], workspaceRoot, env)).exitCode).toBe(0);
 
     const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(deactivated.exitCode, deactivated.stderr).toBe(0);
     expect(deactivated.receipt).toMatchObject({ replacementPrimarySourceId: 'official' });
     const config = await readCatalogSourcesConfigSnapshot(env);
-    expect(config.config.sources).toEqual([
+    expect(config.config.sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'official', primary: true }),
-    ]);
+      expect.objectContaining({ id: 'backup', primary: false }),
+    ]));
   });
 
   it('rejects public update and remove for a Workspace-managed source', async () => {
@@ -327,6 +332,84 @@ describe('Catalog Workspace development source', () => {
     expect((await readCatalogSourcesConfigSnapshot(env)).config.sources).toEqual([
       expect.objectContaining({ id: 'backup', primary: true }),
     ]);
+  });
+
+  it('treats a rewritten official source as the unique ordinary replacement', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await activateCatalogDevSource({
+      cwd: workspaceRoot, cliVersion: '1.0.0', env, primary: true,
+    });
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    const managed = current.config.sources.find((source) => source.id === activated.source.id)!;
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          managed,
+          {
+            id: 'official',
+            type: 'git',
+            primary: false,
+            url: 'https://example.test/third-party.git',
+            refPolicy: { type: 'cliChannel' },
+          },
+        ],
+      },
+      expectedDigest: current.digest,
+      env,
+    });
+
+    const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
+    expect(deactivated.exitCode, deactivated.stderr).toBe(0);
+    expect(deactivated.receipt).toMatchObject({ replacementPrimarySourceId: 'official' });
+    expect((await readCatalogSourcesConfigSnapshot(env)).config.sources).toEqual([
+      expect.objectContaining({ id: 'official', primary: true }),
+    ]);
+  });
+
+  it('does not prefer a rewritten official source over another replacement or modify config', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await activateCatalogDevSource({
+      cwd: workspaceRoot, cliVersion: '1.0.0', env, primary: true,
+    });
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    const managed = current.config.sources.find((source) => source.id === activated.source.id)!;
+    const configured = await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          managed,
+          {
+            id: 'official',
+            type: 'git',
+            primary: false,
+            url: 'https://example.test/third-party.git',
+            refPolicy: { type: 'cliChannel' },
+          },
+          {
+            id: 'backup',
+            type: 'path',
+            path: path.join(workspaceRoot, '.aw', 'catalog'),
+            primary: false,
+          },
+        ],
+      },
+      expectedDigest: current.digest,
+      env,
+    });
+    const configPath = path.join(env.AW_HOME!, 'catalog-sources.json');
+    const before = await fs.readFile(configPath);
+
+    const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
+    expect(deactivated.exitCode).toBe(1);
+    expect(deactivated.receipt.errors).toEqual([
+      expect.objectContaining({
+        code: 'replacementPrimaryAmbiguous',
+        message: expect.stringContaining('backup, official'),
+      }),
+    ]);
+    await expect(fs.readFile(configPath)).resolves.toEqual(before);
+    expect((await readCatalogSourcesConfigSnapshot(env)).digest).toBe(configured.digest);
   });
 
   it('refuses an ambiguous primary replacement and lists the candidates without modifying config', async () => {

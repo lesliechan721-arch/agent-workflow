@@ -167,6 +167,71 @@ test('materialized audit validator runs with its projected dependency closure', 
   }
 });
 
+test('Eval case validator admits exact trigger routes only at the trigger layer', async () => {
+  const validator = path.join(
+    runtimeRoot,
+    'skills/audit-agent-skill-evals/scripts/validate-eval-cases.mjs',
+  );
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-case-route-contract-'));
+  const routeCase = {
+    id: 'catalog_review_route',
+    split: 'validation',
+    eval_type: 'trigger',
+    test_layer: 'trigger',
+    case_role: 'regression',
+    provenance: 'derived',
+    scenario_family: 'catalog-routing',
+    unit_under_test: 'Catalog trigger description',
+    preconditions: { target_available: true },
+    expected_loaded_skills: ['review-aw-catalog'],
+    oracle: {
+      rationale: 'A Catalog composition review has one exact owner.',
+      rule_refs: ['SKILL.md description'],
+      confidence: 'high',
+      allowed_variance: 'The route may explain the boundary but must load only the owner.',
+      minimal_counterexample: 'A Catalog write request routes to the Catalog Author.',
+    },
+  };
+  const document = {
+    policy: {
+      optimization: 'precision-first',
+      false_negative_cost: 'high',
+      false_positive_cost: 'critical',
+      rationale: 'Sibling co-load crosses a critical ownership boundary.',
+    },
+    cases: [routeCase],
+  };
+  try {
+    const triggerPath = path.join(temporary, 'trigger.json');
+    await writeFile(triggerPath, JSON.stringify(document));
+    const { stdout } = await execFileAsync(process.execPath, [
+      validator, triggerPath, '--strict', '--format', 'json',
+    ], { encoding: 'utf8' });
+    const triggerResult = JSON.parse(stdout);
+    assert.equal(triggerResult.valid, true);
+    assert.equal(triggerResult.summary.errors, 0);
+    assert.equal(triggerResult.summary.warnings, 0);
+
+    const behaviorPath = path.join(temporary, 'behavior.json');
+    await writeFile(behaviorPath, JSON.stringify({
+      ...document,
+      cases: [{ ...routeCase, eval_type: 'behavior', test_layer: 'conversation' }],
+    }));
+    await assert.rejects(
+      execFileAsync(process.execPath, [
+        validator, behaviorPath, '--strict', '--format', 'json',
+      ], { encoding: 'utf8' }),
+      (error) => {
+        const result = JSON.parse(error.stdout);
+        return result.diagnostics.some((entry) =>
+          entry.code === 'case.route-expectation-type' && entry.level === 'error');
+      },
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test('materialized audit validator matches the canonical digest for a formerly divergent corpus', async () => {
   if (!context) return;
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');

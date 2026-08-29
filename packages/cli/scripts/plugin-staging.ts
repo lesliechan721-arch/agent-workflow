@@ -49,6 +49,7 @@ export {
   validatePluginReleaseLedger,
 } from '../src/utils/plugin-release.js';
 export {
+  matchesPluginTestEntryGlob,
   scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
 } from '../src/utils/plugin-script-contract.js';

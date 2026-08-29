@@ -7,6 +7,12 @@ import {
   normalizeAwCapabilities,
   type AwCapabilityId,
 } from './aw-capabilities.js'
+import {
+  matchesPluginTestEntryGlob,
+  scanNodeImportContract,
+  tokenizeJavaScriptImports,
+} from './plugin-script-contract.js'
+import { isSkillCollectionAuthorOnlyPath } from './skill-authoring.js'
 import type { NormalizedPluginManifest, PluginManifestSource } from './types.js'
 
 export interface PluginRequirementObservation {
@@ -73,7 +79,8 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, AwCapabilityId>> = {
   'catalog publish': 'aw.catalog-publication.v1',
 }
 
-function commandCapabilities(group: string, command: string, tail: string): AwCapabilityId[] {
+function commandCapabilities(group: string, command: string | undefined, tail: string): AwCapabilityId[] {
+  if (command === undefined) return []
   if (group === 'config') return ['aw.plugin-config.v1']
   if (group === 'catalog' && command === 'source') return ['aw.catalog-source.v2']
   if (group === 'catalog' && command === 'dev') return ['aw.catalog-dev-source.v1']
@@ -86,57 +93,20 @@ function commandCapabilities(group: string, command: string, tail: string): AwCa
 
 interface AwCommandLiteral {
   group: string
-  command: string
+  command?: string
   tail: string
 }
 
-const AW_COMMAND_AT_START = /^\s*(?:\$\s+)?aw[ \t]+([a-z][a-z0-9-]*)[ \t]+([a-z][a-z0-9-]*)(.*)$/u
+const AW_COMMAND_AT_START = /^\s*(?:\$\s+)?aw[ \t]+([a-z][a-z0-9-]*)(?:[ \t]+([a-z][a-z0-9-]*))?(.*)$/u
 
 function parseAwCommandAtStart(value: string): AwCommandLiteral | null {
   const match = AW_COMMAND_AT_START.exec(value)
   if (!match) return null
-  return { group: match[1]!, command: match[2]!, tail: match[3] ?? '' }
-}
-
-function parseStaticStringArray(value: string): string[] | null {
-  const source = value.trim()
-  if (!source.startsWith('[') || !source.endsWith(']')) return null
-  const values: string[] = []
-  let index = 1
-  while (index < source.length - 1) {
-    while (/\s/u.test(source[index] ?? '')) index += 1
-    if (source[index] === ']') break
-    const quote = source[index]
-    if (quote !== '"' && quote !== "'") return null
-    index += 1
-    let token = ''
-    let closed = false
-    while (index < source.length - 1) {
-      const character = source[index]!
-      if (character === '\\') {
-        index += 1
-        if (index >= source.length - 1) return null
-        token += source[index]!
-        index += 1
-      } else if (character === quote) {
-        index += 1
-        closed = true
-        break
-      } else {
-        token += character
-        index += 1
-      }
-    }
-    if (!closed) return null
-    values.push(token)
-    while (/\s/u.test(source[index] ?? '')) index += 1
-    if (source[index] === ',') {
-      index += 1
-      continue
-    }
-    if (source[index] !== ']') return null
+  return {
+    group: match[1]!,
+    ...(match[2] === undefined ? {} : { command: match[2] }),
+    tail: match[3] ?? '',
   }
-  return values
 }
 
 function markdownCommandLiterals(content: string): AwCommandLiteral[] {
@@ -155,7 +125,7 @@ function markdownCommandLiterals(content: string): AwCommandLiteral[] {
 function shellCommandLiterals(content: string): AwCommandLiteral[] {
   const literals: AwCommandLiteral[] = []
   for (const line of content.split(/\r?\n/u)) {
-    const pattern = /(?:^|&&|\|\||[;|&])\s*(aw[ \t]+[a-z][a-z0-9-]*[ \t]+[a-z][a-z0-9-]*.*?)(?=\s*(?:&&|\|\||[;|&]|$))/gu
+    const pattern = /(?:^|&&|\|\||[;|&])\s*(aw[ \t]+[a-z][a-z0-9-]*(?:[ \t]+[a-z][a-z0-9-]*)?.*?)(?=\s*(?:&&|\|\||[;|&]|$))/gu
     for (const match of line.matchAll(pattern)) {
       const literal = parseAwCommandAtStart(match[1] ?? '')
       if (literal) literals.push(literal)
@@ -166,14 +136,47 @@ function shellCommandLiterals(content: string): AwCommandLiteral[] {
 
 function nodeProcessCalls(content: string): Array<AwCommandLiteral | 'dynamic'> {
   const calls: Array<AwCommandLiteral | 'dynamic'> = []
-  const pattern = /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(\s*(["'])aw\1\s*(?:,\s*(\[[^\]]*\]|[^)\r\n]*))?/gu
-  for (const match of content.matchAll(pattern)) {
-    const argv = match[2] ? parseStaticStringArray(match[2]) : null
-    if (!argv || argv.length < 2) {
+  const tokens = tokenizeJavaScriptImports(content)
+  const processFunctions = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'execFileAsync'])
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!
+    if (
+      token.kind !== 'identifier'
+      || !processFunctions.has(token.value)
+      || tokens[index + 1]?.value !== '('
+      || tokens[index + 2]?.kind !== 'string'
+      || tokens[index + 2]?.value !== 'aw'
+    ) continue
+    if (tokens[index + 3]?.value !== ',' || tokens[index + 4]?.value !== '[') {
       calls.push('dynamic')
       continue
     }
-    calls.push({ group: argv[0]!, command: argv[1]!, tail: argv.slice(2).join(' ') })
+    const argv: string[] = []
+    let cursor = index + 5
+    let staticArray = true
+    while (tokens[cursor]?.value !== ']') {
+      const argument = tokens[cursor]
+      if (argument?.kind !== 'string') {
+        staticArray = false
+        break
+      }
+      argv.push(argument.value)
+      cursor += 1
+      if (tokens[cursor]?.value === ',') cursor += 1
+      else if (tokens[cursor]?.value !== ']') {
+        staticArray = false
+        break
+      }
+    }
+    if (!staticArray || tokens[cursor]?.value !== ']' || argv.length === 0) {
+      calls.push('dynamic')
+      continue
+    }
+    calls.push({
+      group: argv[0]!,
+      ...(argv[1] === undefined ? {} : { command: argv[1] }),
+      tail: argv.slice(2).join(' '),
+    })
   }
   return calls
 }
@@ -189,6 +192,7 @@ async function listFiles(root: string, predicate: (relativePath: string) => bool
   const result: string[] = []
   const visit = async (current: string): Promise<void> => {
     for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      if (entry.isDirectory() && (entry.name === '.git' || entry.name === 'node_modules')) continue
       const absolute = path.join(current, entry.name)
       if (entry.isDirectory()) await visit(absolute)
       else if (entry.isFile()) {
@@ -201,20 +205,139 @@ async function listFiles(root: string, predicate: (relativePath: string) => bool
   return result.sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
 }
 
+function pluginRelativePath(value: string | undefined): string | null {
+  if (value === undefined) return null
+  const normalized = path.posix.normalize(value.replace(/^\.\//u, ''))
+  return normalized === '.'
+    || normalized === '..'
+    || normalized.startsWith('../')
+    || path.posix.isAbsolute(normalized)
+    ? null
+    : normalized
+}
+
+type ScriptScanMode = 'node' | 'shell'
+
+function inferredScriptScanMode(value: string): ScriptScanMode {
+  return /\.(?:js|mjs|cjs)$/u.test(value) ? 'node' : 'shell'
+}
+
+function declaredPluginScriptPaths(
+  manifest: PluginManifestSource | NormalizedPluginManifest,
+): { productionModes: Map<string, Set<ScriptScanMode>>; productionNodeEntries: Set<string>; testGlobs: string[] } {
+  const productionModes = new Map<string, Set<ScriptScanMode>>()
+  const productionNodeEntries = new Set<string>()
+  const addProduction = (value: string | undefined, mode?: ScriptScanMode): void => {
+    const relative = pluginRelativePath(value)
+    if (!relative) return
+    const resolvedMode = mode ?? inferredScriptScanMode(relative)
+    const modes = productionModes.get(relative) ?? new Set<ScriptScanMode>()
+    modes.add(resolvedMode)
+    productionModes.set(relative, modes)
+    if (resolvedMode === 'node') productionNodeEntries.add(relative)
+  }
+  for (const definition of Object.values(manifest.scripts?.lifecycle ?? {})) {
+    if (typeof definition === 'string') {
+      addProduction(definition)
+    } else {
+      for (const entry of Object.values(definition ?? {})) {
+        addProduction(
+          entry?.path,
+          entry?.runner === 'auto' || entry === undefined
+            ? undefined
+            : entry.runner === 'node' ? 'node' : 'shell',
+        )
+      }
+    }
+  }
+  addProduction(manifest.scripts?.helpers?.config, 'node')
+  addProduction(manifest.scripts?.node?.build?.path, 'node')
+  addProduction(manifest.scripts?.artifacts?.render?.path, 'node')
+  for (const entry of manifest.buildConfig?.skillRuntimeFiles ?? []) {
+    if (entry.source !== undefined && entry.target.startsWith('scripts/')) {
+      addProduction(entry.source)
+    }
+  }
+  return {
+    productionModes,
+    productionNodeEntries,
+    testGlobs: [...(manifest.scripts?.tests?.node ?? [])],
+  }
+}
+
+async function productionNodeImportClosure(
+  pluginRoot: string,
+  entryFiles: ReadonlySet<string>,
+): Promise<Set<string>> {
+  if (entryFiles.size === 0) return new Set()
+  const absoluteFiles = await listFiles(pluginRoot, () => true)
+  const filePaths = absoluteFiles.map((file) => path.relative(pluginRoot, file).split(path.sep).join('/'))
+  const files: Record<string, string> = {}
+  await Promise.all(absoluteFiles.map(async (file, index) => {
+    const relative = filePaths[index]!
+    if (
+      entryFiles.has(relative)
+      || /\.(?:js|mjs|cjs)$/u.test(relative)
+      || path.posix.basename(relative) === 'package.json'
+    ) {
+      files[relative] = await fs.readFile(file, 'utf8')
+    }
+  }))
+  const scan = scanNodeImportContract({
+    files,
+    filePaths,
+    entryFiles: [...entryFiles],
+  })
+  return new Set(scan.files.filter((file) => (
+    entryFiles.has(file) || /\.(?:js|mjs|cjs)$/u.test(file)
+  )))
+}
+
+function skillSourceRoot(pluginRoot: string, value: string): string | null {
+  const root = path.resolve(pluginRoot, value)
+  const relative = path.relative(pluginRoot, root)
+  return relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+    ? null
+    : root
+}
+
+function isScannableSkillFile(relativePath: string): boolean {
+  if (isSkillCollectionAuthorOnlyPath(relativePath)) return false
+  const segments = relativePath.split('/')
+  if (segments.at(-1) === 'SKILL.md') return true
+  return segments[1] === 'scripts' && /\.(?:js|mjs|cjs|sh|bash|ps1|cmd|bat)$/u.test(relativePath)
+}
+
 export async function scanPluginAwCliRequirements(options: {
   pluginRoot: string
   manifest: PluginManifestSource | NormalizedPluginManifest
 }): Promise<{ detected: AwCapabilityId[]; observations: PluginRequirementObservation[] }> {
-  const roots: Array<{ root: string; predicate: (relativePath: string) => boolean }> = [
-    {
-      root: path.join(options.pluginRoot, 'skills'),
-      predicate: (relativePath) => relativePath.endsWith('/SKILL.md') || relativePath === 'SKILL.md',
-    },
-    {
-      root: path.join(options.pluginRoot, 'scripts'),
-      predicate: (relativePath) => /\.(?:js|mjs|cjs|sh|bash|ps1)$/u.test(relativePath),
-    },
-  ]
+  const roots: Array<{ root: string; predicate: (relativePath: string) => boolean }> = []
+  const staticSkillRoots = new Set([
+    options.manifest.skills,
+    options.manifest.distributions?.agentSkills?.skills,
+  ].filter((value): value is string => value !== undefined))
+  for (const value of staticSkillRoots) {
+    const root = skillSourceRoot(options.pluginRoot, value)
+    if (root) roots.push({ root, predicate: isScannableSkillFile })
+  }
+  const pluginScripts = declaredPluginScriptPaths(options.manifest)
+  const productionNodeFiles = await productionNodeImportClosure(
+    options.pluginRoot,
+    pluginScripts.productionNodeEntries,
+  )
+  for (const relativePath of productionNodeFiles) {
+    const modes = pluginScripts.productionModes.get(relativePath) ?? new Set<ScriptScanMode>()
+    modes.add('node')
+    pluginScripts.productionModes.set(relativePath, modes)
+  }
+  roots.push({
+    root: path.join(options.pluginRoot, 'scripts'),
+    predicate: (relativePath) => /\.(?:js|mjs|cjs|sh|bash|ps1|cmd|bat)$/u.test(relativePath)
+      && !pluginScripts.testGlobs.some((glob) => (
+        matchesPluginTestEntryGlob(`scripts/${relativePath}`, glob)
+      )),
+  })
   if (options.manifest.slashCommands) {
     roots.push({
       root: path.join(options.pluginRoot, options.manifest.slashCommands.replace(/^\.\//u, '')),
@@ -223,6 +346,10 @@ export async function scanPluginAwCliRequirements(options: {
   }
 
   const files = (await Promise.all(roots.map(({ root, predicate }) => listFiles(root, predicate)))).flat()
+  for (const relativePath of pluginScripts.productionModes.keys()) {
+    const file = path.join(options.pluginRoot, relativePath)
+    if ((await fs.stat(file).catch(() => null))?.isFile()) files.push(file)
+  }
   const observations: PluginRequirementObservation[] = []
   const observationKeys = new Set<string>()
   const detected: string[] = []
@@ -235,7 +362,7 @@ export async function scanPluginAwCliRequirements(options: {
     observations.push(observation)
   }
   const recordLiteral = (relativePath: string, literal: AwCommandLiteral): void => {
-    const command = `${literal.group} ${literal.command}`
+    const command = [literal.group, literal.command].filter(Boolean).join(' ')
     const capabilities = commandCapabilities(literal.group, literal.command, literal.tail)
     if (capabilities.length > 0) {
       for (const capability of capabilities) {
@@ -258,9 +385,15 @@ export async function scanPluginAwCliRequirements(options: {
     const relativePath = path.relative(options.pluginRoot, file).split(path.sep).join('/')
     const content = await fs.readFile(file, 'utf8')
     const extension = path.extname(file).toLowerCase()
-    if (extension === '.md') {
+    const declaredModes = pluginScripts.productionModes.get(relativePath)
+    const nodeMode = declaredModes?.has('node') ?? ['.js', '.mjs', '.cjs'].includes(extension)
+    const shellMode = declaredModes?.has('shell') ?? (
+      extension !== '.md' && !['.js', '.mjs', '.cjs'].includes(extension)
+    )
+    if (extension === '.md' && declaredModes === undefined) {
       for (const literal of markdownCommandLiterals(content)) recordLiteral(relativePath, literal)
-    } else if (['.js', '.mjs', '.cjs'].includes(extension)) {
+    }
+    if (nodeMode) {
       for (const call of nodeProcessCalls(content)) {
         if (call === 'dynamic') {
           observe({
@@ -271,14 +404,15 @@ export async function scanPluginAwCliRequirements(options: {
           recordLiteral(relativePath, call)
         }
       }
-    } else {
-      for (const literal of shellCommandLiterals(content)) recordLiteral(relativePath, literal)
     }
-    if (containsDynamicAwCommand(content)) {
-      observe({
-        code: 'aw-command-dynamic', blocking: false, path: relativePath,
-        message: 'Dynamic AW CLI command construction cannot be mapped; declare its capability in requires.aw.capabilities.',
-      })
+    if (shellMode) {
+      for (const literal of shellCommandLiterals(content)) recordLiteral(relativePath, literal)
+      if (containsDynamicAwCommand(content)) {
+        observe({
+          code: 'aw-command-dynamic', blocking: false, path: relativePath,
+          message: 'Dynamic AW CLI command construction cannot be mapped; declare its capability in requires.aw.capabilities.',
+        })
+      }
     }
   }
   return { detected: normalizeAwCapabilities(detected), observations }

@@ -1164,7 +1164,8 @@ function validateEvalWorkspacePath(value, fieldName, options = {}) {
     candidate.includes('?') ||
     candidate.includes('[') ||
     candidate.includes(']') ||
-    path.isAbsolute(candidate) ||
+    path.posix.isAbsolute(candidate) ||
+    path.win32.isAbsolute(candidate) ||
     path.posix.normalize(candidate) !== candidate ||
     candidate.split('/').includes('..')
   ) {
@@ -1179,6 +1180,71 @@ function validateEvalWorkspacePath(value, fieldName, options = {}) {
   return raw;
 }
 
+function validateEvalFixtureTree(evalRoot, target, fieldName) {
+  const relativePath = path.relative(evalRoot, target);
+  let currentPath = evalRoot;
+  for (const segment of relativePath.split(path.sep).filter(Boolean)) {
+    currentPath = path.join(currentPath, segment);
+    const stat = fs.lstatSync(currentPath);
+    if (stat.isSymbolicLink()) {
+      error(`${fieldName} must not contain symbolic links`);
+      return false;
+    }
+  }
+  if (!validateRealPathBoundary(evalRoot, target, fieldName, 'Eval fixture root')) {
+    return false;
+  }
+  const stat = fs.lstatSync(target);
+  if (stat.isFile()) return true;
+  if (!stat.isDirectory()) {
+    error(`${fieldName} must reference a regular file or directory fixture`);
+    return false;
+  }
+  return fs.readdirSync(target).every((entry) =>
+    validateEvalFixtureTree(evalRoot, path.join(target, entry), fieldName));
+}
+
+function evalWorkspaceTargetsOverlap(left, right) {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function validateConversationEnvironment(value, fieldName, fixtureRoot, occupiedTargets = new Set()) {
+  if (value === undefined) return [];
+  const environment = expectRecord(value, fieldName);
+  if (!environment) return [];
+  validateAllowedKeys(environment, fieldName, ['pathPrepend']);
+  if (!Array.isArray(environment.pathPrepend) || environment.pathPrepend.length === 0) {
+    error(`${fieldName}.pathPrepend must be a non-empty array`);
+    return [];
+  }
+  const targets = environment.pathPrepend
+    .map((entry, index) => ({
+      index,
+      relativePath: validateEvalWorkspacePath(entry, `${fieldName}.pathPrepend[${index}]`, {
+        allowTreePattern: false,
+      }),
+    }))
+    .filter((entry) => entry.relativePath !== null);
+  if (new Set(targets.map((entry) => entry.relativePath)).size !== targets.length) {
+    error(`${fieldName}.pathPrepend must not contain duplicates`);
+  }
+  targets.forEach(({ index, relativePath }) => {
+    const target = path.resolve(fixtureRoot, relativePath);
+    if (!fs.existsSync(target)) {
+      error(`${fieldName}.pathPrepend[${index}] must reference an existing fixture`);
+      return;
+    }
+    validateEvalFixtureTree(fixtureRoot, target, `${fieldName}.pathPrepend[${index}]`);
+    if ([...occupiedTargets].some((occupiedTarget) =>
+      evalWorkspaceTargetsOverlap(relativePath, occupiedTarget))) {
+      error(`${fieldName}.pathPrepend[${index}] conflicts with another PATH fixture target`);
+      return;
+    }
+    occupiedTargets.add(relativePath);
+  });
+  return targets.map((entry) => entry.relativePath);
+}
+
 function evalWorkspacePathMatchesPattern(relativePath, pattern) {
   if (pattern.endsWith('/**')) {
     const prefix = pattern.slice(0, -3);
@@ -1187,7 +1253,7 @@ function evalWorkspacePathMatchesPattern(relativePath, pattern) {
   return relativePath === pattern;
 }
 
-function validateConversationCaseCorpus(evalDir, suite, fieldName) {
+function validateConversationCaseCorpus(evalDir, suite, fieldName, suitePathPrepend = []) {
   const casesPath = validateEvalRelativeFile(evalDir, suite.cases, `${fieldName}.cases`);
   if (!casesPath) return;
   let document;
@@ -1255,6 +1321,12 @@ function validateConversationCaseCorpus(evalDir, suite, fieldName) {
       });
     }
     validateNonEmptyString(entry.expected_output, `${caseField}.expected_output`);
+    validateConversationEnvironment(
+      entry.environment,
+      `${caseField}.environment`,
+      path.dirname(casesPath),
+      new Set(suitePathPrepend),
+    );
     if (entry.workspace_files !== undefined) {
       const workspaceFiles = expectRecord(
         entry.workspace_files,
@@ -1776,12 +1848,22 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
       if (suite.kind === 'conversation') {
         validateAllowedKeys(suite, fieldName, [
           'id', 'kind', 'skills', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
-          'requiredForRelease', 'perRunTimeoutMs', 'isolation',
+          'requiredForRelease', 'perRunTimeoutMs', 'isolation', 'environment',
         ]);
         if (Array.isArray(suite.releaseSplits) && suite.releaseSplits.length > 0) {
           error(`${fieldName} cannot declare releaseSplits because conversation cases do not support split filtering`);
         }
-        validateConversationCaseCorpus(evalDir, normalizedSuite, fieldName);
+        const suitePathPrepend = validateConversationEnvironment(
+          suite.environment,
+          `${fieldName}.environment`,
+          evalDir,
+        );
+        validateConversationCaseCorpus(
+          evalDir,
+          normalizedSuite,
+          fieldName,
+          suitePathPrepend,
+        );
       } else {
         validateAllowedKeys(suite, fieldName, [
           'id', 'kind', 'skills', 'cases', 'fixtureModule', 'observeSpawnAgent', 'isolation',

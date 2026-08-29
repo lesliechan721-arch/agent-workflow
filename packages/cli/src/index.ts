@@ -1069,7 +1069,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('requirements')
     .description('Inspect or update effective AW capabilities required by a plugin')
     .argument('<plugin-directory>', 'plugin source directory')
-    .option('--workspace-root <root>', 'Catalog workspace root')
+    .option('--workspace-root <root>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
     .option('--add <capability>', 'add one declared AW capability')
     .option('--remove <capability>', 'remove one declared AW capability')
     .requiredOption('--json', 'emit one machine-readable JSON object')
@@ -1482,7 +1482,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill-short-description <text>', 'initial Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
     .option('--version <semver>', 'initial stable plugin version (default: 0.1.0)')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
     .option('--no-skills', 'create the plugin without a skills directory')
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
@@ -1504,13 +1504,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill-description <text>', 'Skill goal and discovery description (required)')
     .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
     .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)');
 
   plugin
     .command('remove')
     .description('Remove one committed and unchanged canonical plugin source tree')
     .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
     .option('--yes', 'confirm plugin source deletion', false)
     .option('--json', 'emit one schema 1 JSON object', false);
 
@@ -1521,14 +1521,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--strict-agent-skills', 'allow only Agent Skills portable core frontmatter', false)
     .option('--claude-skill-profile <profile>', 'minimum | current (default: minimum)')
     .option('--version-base <git-ref>', 'production bundle comparison base (default: HEAD)')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
     .option('--json', 'emit one machine-readable JSON result', false);
 
   plugin
     .command('test')
     .description('Run deterministic Node tests declared by one source plugin')
     .argument('<plugin-directory>', 'source plugin directory')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (pluginDirectory: string, rawOptions: {
       workspaceRoot?: string;
@@ -1558,7 +1558,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('build')
     .description('Build and inspect one source plugin bundle')
     .argument('<plugin-directory>', 'source plugin directory')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from plugin directory)')
     .option('--out <path>', 'output path inside the Catalog Workspace')
     .option('--force', 'replace an existing generated output', false)
     .option('--json', 'emit one machine-readable JSON result', false)
@@ -1597,7 +1597,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--all', 'check every current Catalog Workspace plugin', false)
     .option('--base <git-ref>', 'explicit Git comparison base')
     .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)');
 
   skill
     .command('validate')
@@ -1617,7 +1617,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalog
     .command('init')
     .description('Initialize a local AW Catalog Workspace')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor, then Git worktree root, then current directory)')
     .option('--owner-name <name>', 'catalog owner name')
     .option('--owner-url <url>', 'catalog owner URL')
     .option('--display-name <name>', 'catalog display name')
@@ -1656,7 +1656,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('context')
     .description('Inspect resolved Catalog Workspace and publication context without network access')
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
-    .option('--remote <name>', 'explicit configured Git remote name')
+    .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
     .option('--branch <name>', 'explicit Catalog publication branch')
     .requiredOption('--json', 'emit one schema 1 JSON object')
     .action(async (rawOptions: { workspaceRoot?: string; remote?: string; branch?: string }) => {
@@ -1678,7 +1678,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .description('Read or set the Catalog version')
     .argument('[version]', 'stable or x.y.z-beta.N catalog version')
     .option('--bump <level>', 'bump the stable SemVer base: patch, minor, or major')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (version: string | undefined, rawOptions: {
       workspaceRoot?: string;
@@ -1709,7 +1709,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalog
     .command('build')
     .description('Build a deterministic development Catalog snapshot')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
     .option('--out <path>', 'output path inside the Catalog Workspace')
     .option('--force', 'replace an existing generated output', false)
     .option('--json', 'emit one machine-readable JSON result', false)
@@ -1758,8 +1758,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalog
     .command('status')
     .description('Inspect a Catalog Workspace; --preflight executes plugin validation and build code')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
-    .option('--remote <name>', 'configured Git remote name for preflight (default: origin)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
+    .option('--remote <name>', 'Git remote for preflight (default: origin, otherwise sole remote; explicit if ambiguous)')
     .option('--branch <name>', 'dedicated Catalog branch for preflight (default: catalog)')
     .option('--preflight', 'run publication validation and temporary plugin builds (executes plugin code)', false)
     .option('--json', 'emit one machine-readable JSON status object', false)
@@ -1786,8 +1786,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalog
     .command('publish')
     .description('Publish a versioned Catalog snapshot to a configured Git remote')
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)')
-    .option('--remote <name>', 'configured Git remote name (default: origin)')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
+    .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
     .option('--branch <name>', 'dedicated Catalog branch (default: catalog)')
     .option('--expected-descriptor-digest <digest>', 'required exact descriptor returned by publication preflight')
     .option('-y, --yes', 'confirm publication without a prompt', false)

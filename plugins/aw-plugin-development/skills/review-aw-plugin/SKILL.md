@@ -20,7 +20,7 @@ metadata:
 ## 普通 Review
 
 1. 从平台 Skill locator 或当前加载的 `SKILL.md` 确定本 Skill 的真实 `<skill-root>`，不从 cwd 推断。首次 AW 命令必须是 `aw self check --from <skill-root> --json`。命令不可用时停止并报告 `aw` 缺失；receipt 的 `ok` 为 false 时停止并精确报告其 `missingCapabilities`。
-2. 运行 `aw catalog context --json`，只读取单一 JSON receipt。`workspace.found` 为 true 时使用其 `workspace.root`；Workspace 缺失时停止并报告 context receipt。由用户给出的插件名或 canonical plugin path 在该 root 下解析，不要求调用方提供 workspace root。
+2. 先确定本次 context target：依次使用用户明确的 Workspace root、从 canonical `<root>/plugins/<name>` target 推导的 root、或上游 handoff 的 resolved root；只有任务明确指向 current Workspace 时才不传 root。首次运行 `aw catalog context [--workspace-root <target-root>] --json`，只读取单一 JSON receipt。receipt 的 `workspace.root` 必须与所选 target 一致，并在存在 canonical target 或 handoff path 时与其一致；不一致时停止，只在 root 缺失或歧义时询问。`workspace.found` 为 true 时使用其 root；Workspace 缺失时停止并报告 receipt，再在该 root 下解析用户给出的插件名或 path。
 3. 发现 source 和调用方提供的 materialized targets。发现器先运行 PATH 上的 `aw plugin validate <plugin-root> --workspace-root <workspace-root> --json`；失败时停止，不读取 manifest 派生的 collection：
 
    ```bash

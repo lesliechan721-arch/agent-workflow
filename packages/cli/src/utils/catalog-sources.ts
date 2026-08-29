@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import fs from 'fs-extra';
 
@@ -199,6 +200,11 @@ export function createDefaultCatalogSourcesConfig(): CatalogSourcesConfig {
       refPolicy: { type: 'cliChannel' },
     }],
   };
+}
+
+export function isDefaultOfficialCatalogSource(source: CatalogSource): boolean {
+  const official = createDefaultCatalogSourcesConfig().sources[0]!;
+  return isDeepStrictEqual({ ...source, primary: official.primary }, official);
 }
 
 export function validateCatalogSourcesConfig(rawConfig: unknown): CatalogSourcesConfig {

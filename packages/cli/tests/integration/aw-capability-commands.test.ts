@@ -171,6 +171,8 @@ describe('AW capability CLI commands', () => {
       schemaVersion: 1,
       command: 'plugin:requirements',
       plugin: { name: 'git-commit' },
+      workspaceRoot: await fs.realpath(root),
+      workspaceRootResolvedFrom: 'explicit',
       declared: [],
       derived: expect.any(Array),
       detected: expect.any(Array),
@@ -223,8 +225,8 @@ describe('AW capability CLI commands', () => {
   it('uses CLI reserved imports for plugin requirements', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-reserved-'))
     tempDirs.push(root)
-    const pluginRoot = path.join(root, 'plugin')
-    await fs.copy(fixturePath('repo-template', 'plugins', 'git-commit'), pluginRoot)
+    await fs.copy(fixturePath('repo-template'), root)
+    const pluginRoot = path.join(root, 'plugins', 'git-commit')
     await addReservedEvalImport(pluginRoot)
 
     const result = await runCliEntry([
@@ -244,8 +246,8 @@ describe('AW capability CLI commands', () => {
   it('emits one blocking plugin requirements JSON object with exit 1 and empty stderr', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-blocking-'))
     tempDirs.push(root)
-    const pluginRoot = path.join(root, 'plugin')
-    await fs.copy(fixturePath('repo-template', 'plugins', 'git-commit'), pluginRoot)
+    await fs.copy(fixturePath('repo-template'), root)
+    const pluginRoot = path.join(root, 'plugins', 'git-commit')
     await fs.appendFile(
       path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'),
       '\nRun `aw unknown command` when needed.\n',
@@ -266,8 +268,8 @@ describe('AW capability CLI commands', () => {
   it('emits one plugin requirements error JSON object with exit 1 and empty stderr', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-error-'))
     tempDirs.push(root)
-    const pluginRoot = path.join(root, 'plugin')
-    await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'))
+    await fs.copy(fixturePath('repo-template'), root)
+    const pluginRoot = path.join(root, 'plugins', 'git-commit')
     await fs.writeFile(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), '{broken', 'utf8')
 
     const result = await runCliEntry(['plugin', 'requirements', pluginRoot, '--json'], { cwd: root })
@@ -279,5 +281,65 @@ describe('AW capability CLI commands', () => {
       ok: false,
       error: expect.any(String),
     })
+  })
+
+  it('resolves only canonical Workspace inventory targets before inspection or mutation', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-boundary-'))
+    tempDirs.push(root)
+    const workspaceRoot = path.join(root, 'workspace')
+    await fs.copy(fixturePath('repo-template'), workspaceRoot)
+    const pluginRoot = path.join(workspaceRoot, 'plugins', 'git-commit')
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
+    const before = await fs.readFile(manifestPath)
+
+    const invalidRoot = path.join(root, 'invalid-workspace')
+    await fs.ensureDir(invalidRoot)
+    await fs.writeFile(path.join(invalidRoot, '.aw-workspace.json'), '{broken', 'utf8')
+    const invalidExplicit = await runCliEntry([
+      'plugin', 'requirements', pluginRoot, '--workspace-root', invalidRoot,
+      '--add', 'aw.future-feature.v3', '--json',
+    ], { cwd: workspaceRoot })
+    expect(invalidExplicit.exitCode).toBe(1)
+    expect(invalidExplicit.parseJsonStdout()).toMatchObject({
+      command: 'plugin:requirements',
+      ok: false,
+      error: expect.stringContaining('Invalid Catalog Workspace marker'),
+    })
+    expect(await fs.readFile(manifestPath)).toEqual(before)
+
+    const outsidePlugin = path.join(root, 'outside-plugin')
+    await fs.copy(fixturePath('repo-template', 'plugins', 'git-commit'), outsidePlugin)
+    const outside = await runCliEntry([
+      'plugin', 'requirements', outsidePlugin, '--workspace-root', workspaceRoot, '--json',
+    ], { cwd: workspaceRoot })
+    expect(outside.exitCode).toBe(1)
+    expect(outside.parseJsonStdout()).toMatchObject({
+      command: 'plugin:requirements',
+      ok: false,
+      error: expect.stringContaining('not a canonical plugin'),
+    })
+
+    const deepCwd = path.join(pluginRoot, 'skills', 'commit')
+    const discovered = await runCliEntry([
+      'plugin', 'requirements', '../..', '--json',
+    ], { cwd: deepCwd })
+    expect(discovered.exitCode).toBe(0)
+    expect(discovered.parseJsonStdout()).toMatchObject({
+      pluginDirectory: await fs.realpath(pluginRoot),
+      workspaceRoot: await fs.realpath(workspaceRoot),
+      workspaceRootResolvedFrom: 'workspace-marker',
+    })
+
+    await fs.writeFile(path.join(pluginRoot, '.aw-workspace.json'), '{broken', 'utf8')
+    const damagedNearest = await runCliEntry([
+      'plugin', 'requirements', pluginRoot, '--json',
+    ], { cwd: workspaceRoot })
+    expect(damagedNearest.exitCode).toBe(1)
+    expect(damagedNearest.parseJsonStdout()).toMatchObject({
+      command: 'plugin:requirements',
+      ok: false,
+      error: expect.stringContaining('Invalid Catalog Workspace marker'),
+    })
+    expect(await fs.readFile(manifestPath)).toEqual(before)
   })
 })

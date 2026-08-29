@@ -19,6 +19,7 @@ import {
   calculateCatalogSourcesConfigDigest,
   CatalogSourcesConfigConflictError,
   createDefaultCatalogSourcesConfig,
+  isDefaultOfficialCatalogSource,
   readCatalogSourcesConfig,
   readCatalogSourcesConfigSnapshot,
   removeCatalogSource,
@@ -164,6 +165,23 @@ describe('catalog sources config v2', () => {
       ? config.sources[0].url
       : '').protocol).toBe('https:');
     await expect(fs.pathExists(configPath)).resolves.toBe(false);
+  });
+
+  it('recognizes only the exact default official source identity', () => {
+    const official = createDefaultCatalogSourcesConfig().sources[0]!;
+    expect(isDefaultOfficialCatalogSource({ ...official, primary: false })).toBe(true);
+    expect(isDefaultOfficialCatalogSource({
+      ...official,
+      url: 'https://example.test/catalog.git',
+    })).toBe(false);
+    expect(isDefaultOfficialCatalogSource({
+      ...official,
+      refPolicy: { type: 'explicit', ref: 'catalog/latest' },
+    })).toBe(false);
+    expect(isDefaultOfficialCatalogSource({
+      ...official,
+      subdir: 'catalog',
+    })).toBe(false);
   });
 
   it('does not downgrade a materialized config when an existence probe hides an operational error', async () => {

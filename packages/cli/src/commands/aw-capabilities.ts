@@ -1,5 +1,12 @@
+import crypto from 'node:crypto'
 import path from 'node:path'
 
+import {
+  readCatalogWorkspace,
+  resolveCatalogWorkspaceRoot,
+  type CatalogWorkspaceResolvedFrom,
+  type PluginMeta,
+} from '@lesliechan721/aw-plugin-core'
 import {
   checkAwCapabilitySupport,
   createAwPluginRequirementsReceipt,
@@ -13,7 +20,7 @@ import {
 } from '@lesliechan721/aw-plugin-core/manifest'
 import fs from 'fs-extra'
 
-import { readPluginManifest } from '../utils/manifest.js'
+import { CLI_RESERVED_IMPORTS, readPluginManifest } from '../utils/manifest.js'
 
 export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-manifest.v2',
@@ -209,10 +216,71 @@ export interface PluginRequirementsResult extends PluginRequirementsResolution {
   command: 'plugin:requirements'
   plugin: { name: string; version: string }
   pluginDirectory: string
+  workspaceRoot: string
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom
   mutation?: {
     action: 'add' | 'remove'
     capability: string
     changed: boolean
+  }
+}
+
+async function resolveCanonicalPluginRequirementsTarget(options: {
+  pluginDirectory: string
+  workspaceRoot?: string
+  cwd: string
+}): Promise<{
+  plugin: PluginMeta
+  workspaceRoot: string
+  workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom
+}> {
+  const requestedPluginRoot = path.resolve(options.cwd, options.pluginDirectory)
+  const workspaceResolution = await resolveCatalogWorkspaceRoot({
+    cwd: requestedPluginRoot,
+    ...(options.workspaceRoot === undefined
+      ? {}
+      : { explicitRoot: path.resolve(options.cwd, options.workspaceRoot) }),
+    mode: 'existing',
+  })
+  const workspace = await readCatalogWorkspace(workspaceResolution.workspaceRoot, {
+    reservedImports: CLI_RESERVED_IMPORTS,
+  })
+  const stat = await fs.lstat(requestedPluginRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null
+    throw error
+  })
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`Plugin directory must be a regular non-symbolic-link directory: ${requestedPluginRoot}`)
+  }
+  const canonicalPluginRoot = await fs.realpath(requestedPluginRoot)
+  const plugin = workspace.plugins.find((entry) => entry.rootDir === canonicalPluginRoot)
+  const expectedPluginRoot = plugin
+    ? path.join(workspace.workspaceRoot, 'plugins', plugin.manifest.name)
+    : null
+  if (
+    !plugin
+    || expectedPluginRoot !== canonicalPluginRoot
+  ) {
+    throw new Error(`Plugin directory is not a canonical plugin in this Catalog Workspace: ${requestedPluginRoot}`)
+  }
+  return {
+    plugin,
+    workspaceRoot: workspace.workspaceRoot,
+    workspaceRootResolvedFrom: workspaceResolution.workspaceRootResolvedFrom,
+  }
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${crypto.randomUUID()}.tmp`,
+  )
+  await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' })
+  try {
+    await fs.rename(temporaryPath, filePath)
+  } catch (error) {
+    await fs.remove(temporaryPath)
+    throw error
   }
 }
 
@@ -223,19 +291,27 @@ export async function inspectPluginRequirements(options: {
   add?: string
   remove?: string
 }): Promise<PluginRequirementsResult> {
-  const workspaceRoot = path.resolve(options.cwd, options.workspaceRoot ?? '.')
-  const pluginRoot = path.resolve(workspaceRoot, options.pluginDirectory)
   if (options.add !== undefined && options.remove !== undefined) {
     throw new Error('Use exactly one of --add or --remove.')
   }
-  let plugin = await readPluginManifest(pluginRoot, { mode: 'source' })
+  const target = await resolveCanonicalPluginRequirementsTarget(options)
+  const pluginRoot = target.plugin.rootDir
+  let plugin = target.plugin
   let mutation: PluginRequirementsResult['mutation']
   const action = options.add === undefined
     ? (options.remove === undefined ? undefined : 'remove')
     : 'add'
   const capability = options.add ?? options.remove
+  const initialResolution = await resolvePluginRequirements({
+    pluginRoot,
+    manifest: plugin.manifest,
+    implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+  })
   if (action && capability) {
     const normalizedCapability = normalizeAwCapabilities([capability], `--${action}`)[0]!
+    if (initialResolution.observations.some((observation) => observation.blocking)) {
+      throw new Error('Cannot mutate plugin requirements while an unmapped AW CLI command literal is present.')
+    }
     const before = normalizeAwCapabilities(plugin.manifest.requires?.aw.capabilities ?? [])
     const after = action === 'add'
       ? normalizeAwCapabilities([...before, normalizedCapability])
@@ -244,27 +320,24 @@ export async function inspectPluginRequirements(options: {
     if (changed) {
       const raw = await fs.readJson(plugin.manifestPath) as Record<string, unknown>
       raw.requires = { aw: { capabilities: after } }
-      const temporaryPath = `${plugin.manifestPath}.${process.pid}.tmp`
-      await fs.writeJson(temporaryPath, raw, { spaces: 2 })
-      try {
-        await fs.rename(temporaryPath, plugin.manifestPath)
-      } catch (error) {
-        await fs.remove(temporaryPath)
-        throw error
-      }
+      await writeJsonAtomic(plugin.manifestPath, raw)
       plugin = await readPluginManifest(pluginRoot, { mode: 'source' })
     }
     mutation = { action, capability: normalizedCapability, changed }
   }
-  const resolution = await resolvePluginRequirements({
-    pluginRoot,
-    manifest: plugin.manifest,
-    implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
-  })
+  const resolution = mutation?.changed
+    ? await resolvePluginRequirements({
+        pluginRoot,
+        manifest: plugin.manifest,
+        implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
+      })
+    : initialResolution
   return {
     command: 'plugin:requirements',
     plugin: { name: plugin.manifest.name, version: plugin.manifest.version },
     pluginDirectory: pluginRoot,
+    workspaceRoot: target.workspaceRoot,
+    workspaceRootResolvedFrom: target.workspaceRootResolvedFrom,
     ...(mutation ? { mutation } : {}),
     ...resolution,
   }

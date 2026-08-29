@@ -14,7 +14,11 @@ import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import { catalogSourceCacheInternal } from '../utils/catalog-source-cache.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
-import { CATALOG_SOURCE_ID_PATTERN, readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import {
+  CATALOG_SOURCE_ID_PATTERN,
+  isDefaultOfficialCatalogSource,
+  readCatalogSourcesConfigSnapshot,
+} from '../utils/catalog-sources.js';
 import {
   addCatalogSourceCommand,
   refreshCatalogSourceCommand,
@@ -522,7 +526,7 @@ export async function deactivateCatalogDevSource(options: {
   let replacementPrimarySourceId: string | null = null;
   if (source.primary) {
     const otherSources = config.config.sources.filter((entry) => entry.id !== source.id);
-    const official = otherSources.find((entry) => entry.id === 'official');
+    const official = otherSources.find(isDefaultOfficialCatalogSource);
     if (official) replacementPrimarySourceId = official.id;
     else if (otherSources.length === 1) replacementPrimarySourceId = otherSources[0]!.id;
     else {

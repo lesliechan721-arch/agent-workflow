@@ -155,7 +155,10 @@ test('Catalog author uses context and Catalog development-source commands', asyn
   const author = await readRuntimeSkill('author-aw-catalog');
 
   // Static contract exception: these installed commands prevent a Catalog author from mutating a generic source; behavior test is not suitable because source mutation is intentionally outside this deterministic package test.
-  assert.match(author, /aw catalog context --json/u);
+  assert.match(author, /aw catalog context \[--workspace-root <target-root>\] --json/u);
+  assert.match(author, /用户明确的 Workspace root.*canonical.*上游 handoff.*current Workspace/su);
+  assert.match(author, /receipt 的 `workspace\.root` 必须与 target 或 handoff path 一致/u);
+  assert.match(author, /只在 root 缺失或歧义时询问/u);
   assert.match(author, /initialization\.suggestedRoot/u);
   assert.match(author, /aw catalog dev activate --workspace-root <workspace\.root> --json/u);
   assert.match(author, /catalog dev status/u);
@@ -170,11 +173,58 @@ test('Catalog reviewer only consumes static context, status, and an existing sna
   const reviewer = await readRuntimeSkill('review-aw-catalog');
 
   // Static contract exception: these installed prohibitions preserve the Review read-only boundary; behavior test is not suitable because executing a prohibited command would itself violate that boundary.
-  assert.match(reviewer, /aw catalog context --json/u);
+  assert.match(reviewer, /aw catalog context \[--workspace-root <target-root>\] --json/u);
+  assert.match(reviewer, /用户明确的 Workspace root.*canonical.*上游 handoff.*current Workspace/su);
+  assert.match(reviewer, /receipt 的 `workspace\.root` 必须与 target 或 handoff path 一致/u);
+  assert.match(reviewer, /只在 root 缺失或歧义时询问/u);
   assert.match(reviewer, /aw catalog status --workspace-root <workspace\.root> --json/u);
   assert.match(reviewer, /absent.*current.*stale.*invalid/u);
   assert.match(reviewer, /aw catalog validate <snapshot\.path> --json/u);
   assert.match(reviewer, /不运行 plugin test\/build、catalog build、`catalog status --preflight`、publish 或其它 mutation/u);
+});
+
+test('explicit-target behavior fixture keeps context and status on Workspace B instead of cwd A', async () => {
+  const repoRoot = path.resolve(sourceRoot, '..', '..');
+  const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+  const evalCase = (await readBehaviorCases('review-aw-catalog'))
+    .find((entry) => entry.id === 'explicit-plugin-target-keeps-workspace-b');
+  assert.ok(evalCase);
+  const cwdRoot = await mkdtemp(path.join(os.tmpdir(), 'aw-catalog-target-a-'));
+  try {
+    await materializeWorkspaceFiles(cwdRoot, evalCase.workspace_files);
+    const targetRoot = path.join(cwdRoot, 'targets', 'catalog-b');
+    const cwdContext = await execFileAsync(process.execPath, [
+      cliEntry, 'catalog', 'context', '--json',
+    ], { cwd: cwdRoot, maxBuffer: 10 * 1024 * 1024 });
+    assert.equal(
+      parseSingleJson(cwdContext.stdout, 'cwd context').workspace.root,
+      await realpath(cwdRoot),
+      'no-argument context resolves Workspace A',
+    );
+
+    const targetContext = await execFileAsync(process.execPath, [
+      cliEntry, 'catalog', 'context', '--workspace-root', targetRoot, '--json',
+    ], { cwd: cwdRoot, maxBuffer: 10 * 1024 * 1024 });
+    const targetReceipt = parseSingleJson(targetContext.stdout, 'target context');
+    assert.equal(targetReceipt.workspace.root, path.resolve(targetRoot));
+
+    const status = await execFileAsync(process.execPath, [
+      cliEntry,
+      'catalog',
+      'status',
+      '--workspace-root', targetReceipt.workspace.root,
+      '--json',
+    ], { cwd: cwdRoot, maxBuffer: 10 * 1024 * 1024 });
+    const statusReceipt = parseSingleJson(status.stdout, 'target status');
+    assert.equal(
+      await realpath(statusReceipt.workspace.root),
+      await realpath(targetRoot),
+      'the follow-up command stays on Workspace B',
+    );
+    assert.deepEqual(statusReceipt.plugins.map((plugin) => plugin.name), ['worker']);
+  } finally {
+    await rm(cwdRoot, { recursive: true, force: true });
+  }
 });
 
 test('Catalog publisher preflights and binds the user authorization to the receipt', async () => {
@@ -401,6 +451,20 @@ test('Publisher Eval fixture separates public receipts from private remote evide
 test('workspace_valid Eval fixtures pass the public Catalog and plugin preflight', async () => {
   const repoRoot = path.resolve(sourceRoot, '..', '..');
   const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+  const owningValidation = await execFileAsync(process.execPath, [
+    cliEntry,
+    'plugin',
+    'validate',
+    sourceRoot,
+    '--workspace-root', repoRoot,
+    '--json',
+  ], { cwd: repoRoot, maxBuffer: 10 * 1024 * 1024 });
+  assert.equal(owningValidation.stderr, '', 'owning plugin validate stderr');
+  assert.equal(
+    parseSingleJson(owningValidation.stdout, 'owning plugin validate').ok,
+    true,
+    'owning plugin must pass its public validator before fixture preflight',
+  );
   const expectedReviewerSnapshots = new Map([
     ['dirty-workspace-remains-static-reviewable', {
       state: 'absent', valid: false, sourceIdentityMatches: null,

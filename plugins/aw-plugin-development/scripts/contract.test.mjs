@@ -46,6 +46,28 @@ async function runJson(file, args = []) {
   }
 }
 
+test('non-Publisher Skills preserve an explicit Workspace target across context and commands', async () => {
+  const skills = await Promise.all([
+    'author-aw-plugin',
+    'review-aw-plugin',
+    'review-aw-workflow',
+  ].map((name) => readFile(path.join(runtimeRoot, 'skills', name, 'SKILL.md'), 'utf8')));
+
+  // Static contract exception: a target outside cwd must reach the first context command and all later public commands unchanged; behavior execution is covered by the explicit-target Eval fixture because this package test only receives final instruction text.
+  for (const skill of skills) {
+    assert.match(skill, /aw catalog context \[--workspace-root <target-root>\] --json/u);
+    assert.match(skill, /用户明确的 Workspace root.*canonical.*上游 handoff.*current Workspace/su);
+    assert.match(skill, /receipt 的 `workspace\.root` 必须与所选 target 一致/u);
+    assert.match(skill, /canonical targets? 或 handoff paths? 时?与其一致|所有 canonical targets 或 handoff paths 一致/u);
+    assert.match(skill, /不一致时停止/u);
+    assert.match(skill, /只在 root 缺失或歧义时询问/u);
+    assert.match(
+      skill,
+      /--workspace-root <workspace-root>|--plugin <workspace-root>\/plugins/u,
+    );
+  }
+});
+
 test('review adapter manifest and runtime contain only current quality and release tools', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
   const targets = manifest.buildConfig.skillRuntimeFiles

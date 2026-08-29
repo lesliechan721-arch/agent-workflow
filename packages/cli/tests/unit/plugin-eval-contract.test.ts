@@ -325,11 +325,12 @@ describe('plugin eval contract and materialization', () => {
     );
   });
 
-  it('accepts safe conversation PATH fixtures and rejects missing or escaping fixtures', async () => {
+  it('accepts safe conversation PATH fixtures and rejects unsafe or colliding declarations', async () => {
     const pluginRoot = await createStaticEvalPlugin();
     const fixtureDirectory = skillEvalPath(pluginRoot, 'fixtures', 'bin');
     await fs.ensureDir(fixtureDirectory);
     await fs.writeFile(path.join(fixtureDirectory, 'aw'), '#!/bin/sh\nexit 0\n', 'utf8');
+    await fs.ensureDir(skillEvalPath(pluginRoot, 'fixtures-alt'));
     const casesPath = skillEvalPath(pluginRoot, 'cases', 'conversation-cases.json');
     await fs.ensureDir(path.dirname(casesPath));
     await fs.ensureDir(path.join(path.dirname(casesPath), 'case-fixtures', 'bin'));
@@ -338,6 +339,8 @@ describe('plugin eval contract and materialization', () => {
       '#!/bin/sh\nexit 0\n',
       'utf8',
     );
+    await fs.ensureDir(path.join(path.dirname(casesPath), 'case-fixtures-alt'));
+    await fs.ensureDir(path.join(path.dirname(casesPath), 'fixtures', 'bin'));
     await fs.writeJson(casesPath, {
       skill_name: 'eval-fixture',
       evals: [{
@@ -382,6 +385,83 @@ describe('plugin eval contract and materialization', () => {
     await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
       'must be a normalized POSIX path inside the eval workspace',
     );
+
+    manifest.suites[0].environment.pathPrepend = [fixtureDirectory];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must be a normalized POSIX path inside the eval workspace',
+    );
+
+    manifest.suites[0].environment.pathPrepend = ['fixtures/bin', 'fixtures/bin'];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must not contain duplicates',
+    );
+
+    const casesDocument = await fs.readJson(casesPath);
+    for (const pathPrepend of [
+      ['fixtures', 'fixtures/bin'],
+      ['fixtures/bin', 'fixtures'],
+    ]) {
+      manifest.suites[0].environment.pathPrepend = pathPrepend;
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+        'conflicts with another PATH fixture target',
+      );
+    }
+
+    manifest.suites[0].environment.pathPrepend = ['fixtures/bin'];
+    for (const pathPrepend of [
+      ['case-fixtures', 'case-fixtures/bin'],
+      ['case-fixtures/bin', 'case-fixtures'],
+    ]) {
+      casesDocument.evals[0].environment = { pathPrepend };
+      await fs.writeJson(casesPath, casesDocument, { spaces: 2 });
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+        'conflicts with another PATH fixture target',
+      );
+    }
+
+    for (const [suitePath, casePath] of [
+      ['fixtures', 'fixtures/bin'],
+      ['fixtures/bin', 'fixtures'],
+    ]) {
+      manifest.suites[0].environment.pathPrepend = [suitePath];
+      casesDocument.evals[0].environment = { pathPrepend: [casePath] };
+      await fs.writeJson(casesPath, casesDocument, { spaces: 2 });
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+        'conflicts with another PATH fixture target',
+      );
+    }
+
+    manifest.suites[0].environment.pathPrepend = ['fixtures/bin', 'fixtures-alt'];
+    casesDocument.evals[0].environment = {
+      pathPrepend: ['case-fixtures/bin', 'case-fixtures-alt'],
+    };
+    await fs.writeJson(casesPath, casesDocument, { spaces: 2 });
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).resolves.toBeDefined();
+
+    manifest.suites[0].environment.pathPrepend = ['fixtures/bin'];
+    casesDocument.evals[0].environment = { pathPrepend: ['fixtures/bin'] };
+    await fs.writeJson(casesPath, casesDocument, { spaces: 2 });
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'conflicts with another PATH fixture target',
+    );
+
+    if (process.platform !== 'win32') {
+      delete casesDocument.evals[0].environment;
+      await fs.writeJson(casesPath, casesDocument, { spaces: 2 });
+      await fs.symlink('bin', skillEvalPath(pluginRoot, 'fixtures', 'linked-bin'));
+      manifest.suites[0].environment.pathPrepend = ['fixtures/linked-bin'];
+      await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+        'must not contain symbolic links',
+      );
+    }
   });
 
   it('accepts bounded conversation workspace files and rejects unsafe paths', async () => {

@@ -41,6 +41,44 @@ export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 30_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 300_000;
 
+function normalizePluginTestEntryPath(value: string): string {
+  const withoutDotSlash = value.startsWith('./') ? value.slice(2) : value;
+  return withoutDotSlash.split(path.sep).join('/');
+}
+
+function escapePluginTestGlobSegment(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function compilePluginTestEntryGlob(glob: string): RegExp {
+  const normalized = normalizePluginTestEntryPath(glob);
+  let output = '^';
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    const next = normalized[index + 1];
+    if (char === '*' && next === '*') {
+      const after = normalized[index + 2];
+      if (after === '/') {
+        output += '(?:.*\\/)?';
+        index += 2;
+      } else {
+        output += '.*';
+        index += 1;
+      }
+    } else if (char === '*') {
+      output += '[^/]*';
+    } else {
+      output += escapePluginTestGlobSegment(char ?? '');
+    }
+  }
+  output += '$';
+  return new RegExp(output);
+}
+
+export function matchesPluginTestEntryGlob(filePath: string, glob: string): boolean {
+  return compilePluginTestEntryGlob(glob).test(normalizePluginTestEntryPath(filePath));
+}
+
 export function isPluginLifecycleOsSelector(value: string): boolean {
   return (PLUGIN_LIFECYCLE_OS_SELECTORS as readonly string[]).includes(value);
 }
@@ -167,7 +205,7 @@ function decodeJavaScriptEscape(source: string, index: number): { value: string;
   return { value: escaped ?? '', next: Math.min(index + 1, source.length) };
 }
 
-function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
+export function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
   const tokens: JavaScriptToken[] = [];
   let index = 0;
   let previousToken: JavaScriptToken | undefined;
