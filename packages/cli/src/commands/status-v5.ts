@@ -825,9 +825,19 @@ export async function statusCommandV5(options: {
                           IMPLEMENTED_AW_CAPABILITIES,
                         );
                         if (!dependencySupport.supported) {
+                          const rootIssueId = `awCapabilityUnsupported:${dependencyId}`;
+                          dependencyReadiness.push({
+                            dependencyPluginId: dependencyId,
+                            state: 'error',
+                            rootIssueId,
+                            rootIssueCode: 'awCapabilityUnsupported',
+                          });
                           dependencyErrors.push({
                             code: 'awCapabilityUnsupported',
                             message: `awCapabilityUnsupported: ${dependencyId} requires unsupported AW capabilities: ${dependencySupport.missing.join(', ')}.`,
+                            dependencyPluginId: dependencyId,
+                            rootIssueId,
+                            rootIssueCode: 'awCapabilityUnsupported',
                           });
                           continue;
                         }
@@ -1172,7 +1182,9 @@ export async function statusCommandV5(options: {
       if (entry.targets[platform][scope]) {
         const live = entry.states[platform]?.[scope];
         const dependencyIssueCount = (live?.errors ?? []).filter((error) =>
-          error.code.startsWith('dependency') || error.code === 'sourceChanged').length;
+          error.code.startsWith('dependency')
+          || error.code === 'awCapabilityUnsupported'
+          || error.code === 'sourceChanged').length;
         return [{
           ...target,
           state: live?.state ?? 'error',

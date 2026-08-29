@@ -87,6 +87,7 @@ async function createGenerationSnapshot(options: {
   workspaceIdentity: string;
   catalogVersion: string;
   content: string;
+  requiredAwCapabilities?: string[];
 }): Promise<void> {
   await createCatalogSnapshotFixture(
     options.root,
@@ -98,6 +99,9 @@ async function createGenerationSnapshot(options: {
   const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
   manifest.catalogVersion = options.catalogVersion;
   manifest.channel = options.catalogVersion.includes('-beta.') ? 'beta' : 'latest';
+  if (options.requiredAwCapabilities) {
+    manifest.requires = { aw: { capabilities: options.requiredAwCapabilities } };
+  }
   await Promise.all([
     fs.writeJson(manifestPath, manifest, { spaces: 2 }),
     fs.writeJson(path.join(options.root, '.aw-generated.json'), {
@@ -164,6 +168,83 @@ function providers(options: {
 }
 
 describe('Catalog immutable generations', () => {
+  it('rejects unsupported Active and Candidate generations after an AW downgrade', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const futureActive = fixturePath('future-active');
+    const supportedActive = fixturePath('supported-active');
+    const futureCandidate = fixturePath('future-candidate');
+    await Promise.all([
+      createGenerationSnapshot({
+        root: futureActive,
+        workspaceIdentity: 'workspace:future-active',
+        catalogVersion: '1.0.0',
+        content: 'future active\n',
+        requiredAwCapabilities: ['aw.catalog-snapshot.v5', 'aw.future-feature.v3'],
+      }),
+      createGenerationSnapshot({
+        root: supportedActive,
+        workspaceIdentity: 'workspace:candidate',
+        catalogVersion: '1.0.0',
+        content: 'supported active\n',
+      }),
+      createGenerationSnapshot({
+        root: futureCandidate,
+        workspaceIdentity: 'workspace:candidate',
+        catalogVersion: '1.1.0',
+        content: 'future candidate\n',
+        requiredAwCapabilities: ['aw.catalog-snapshot.v5', 'aw.future-feature.v3'],
+      }),
+    ]);
+    await configureSources({
+      schemaVersion: 2,
+      sources: [
+        {
+          id: 'future', type: 'git', primary: true, url: 'https://example.invalid/future.git',
+          refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+        },
+        {
+          id: 'candidate', type: 'git', primary: false, url: 'https://example.invalid/candidate.git',
+          refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+        },
+      ],
+    });
+    const roots = new Map([
+      ['future', futureActive],
+      ['candidate', supportedActive],
+    ]);
+    const runtime = { providers: providers({ roots }) };
+    await refreshCatalogSourceGeneration({
+      sourceId: 'future', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'candidate', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+    roots.set('candidate', futureCandidate);
+    await refreshCatalogSourceGeneration({
+      sourceId: 'candidate', cliVersion: '1.0.0', env: isolation.env, runtime,
+    });
+
+    await expect(resolveActiveCatalogGeneration({ sourceId: 'future', env: isolation.env }))
+      .rejects.toMatchObject({
+        code: 'awCapabilityUnsupported',
+        sourceId: 'future',
+        missingCapabilities: ['aw.future-feature.v3'],
+      });
+    await expect(activateCatalogSourceCandidate({ sourceId: 'candidate', env: isolation.env }))
+      .rejects.toMatchObject({
+        code: 'awCapabilityUnsupported',
+        sourceId: 'candidate',
+        missingCapabilities: ['aw.future-feature.v3'],
+      });
+    await expect(readCatalogGenerationStatus({ sourceId: 'candidate', env: isolation.env }))
+      .resolves.toMatchObject({
+        sources: [{
+          active: { catalogVersion: '1.0.0' },
+          candidate: { catalogVersion: '1.1.0' },
+        }],
+      });
+  });
+
   it('cancels a staged refresh while it waits for the AW_HOME mutation lock', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('lock-cancel-first');

@@ -836,6 +836,78 @@ describe('five namespaced write commands', () => {
         entry.pluginId === 'team/future')).toMatchObject({ aggregateStatus: 'unavailable' });
   });
 
+  it('reports an unsupported direct dependency as a stable dependency root', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'future-live-dependency-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+
+    const leafRoot = path.join(sourceRoot, 'plugins', 'leaf');
+    const leafManifestPath = path.join(leafRoot, '.agents-plugin', 'plugin.json');
+    const leafManifest = await fs.readJson(leafManifestPath);
+    leafManifest.requires.aw.capabilities.push('aw.future-feature.v3');
+    await fs.writeJson(leafManifestPath, leafManifest, { spaces: 2 });
+    const catalogManifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const catalogManifest = await fs.readJson(catalogManifestPath);
+    const leafEntry = catalogManifest.entries.find((entry: { name: string }) => entry.name === 'leaf');
+    leafEntry.requires = leafManifest.requires;
+    leafEntry.artifactDigest = await calculateCatalogEntryArtifactDigest(leafRoot);
+    leafEntry.manifestDigest = calculateCatalogEntryManifestDigest(leafManifest);
+    leafEntry.contentDigest = await calculateCatalogEntryContentDigest(leafRoot);
+    await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+
+    await expect(statusCommandV5({
+      plugins: ['team/root'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      platform: 'codex',
+      scope: 'project',
+      json: true,
+    })).resolves.toMatchObject({
+      payload: { targets: [expect.objectContaining({
+        pluginId: 'team/root',
+        state: 'partial',
+        dependency: { directCount: 1, issueCount: 1 },
+        dependencyReadiness: [{
+          dependencyPluginId: 'team/leaf',
+          state: 'error',
+          rootIssueId: 'awCapabilityUnsupported:team/leaf',
+          rootIssueCode: 'awCapabilityUnsupported',
+        }],
+        errors: [expect.objectContaining({
+          code: 'awCapabilityUnsupported',
+          dependencyPluginId: 'team/leaf',
+          rootIssueId: 'awCapabilityUnsupported:team/leaf',
+          rootIssueCode: 'awCapabilityUnsupported',
+        })],
+      })] },
+    });
+  });
+
   it('fails a selected dependency closure with the exact unsupported plugin and capabilities', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unsupported-dependency-source');
