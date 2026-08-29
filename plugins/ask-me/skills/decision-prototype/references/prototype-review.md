@@ -39,6 +39,8 @@ node scripts/create-review-bundle.mjs --prototype <prototype.json>
 node scripts/serve-review-bundle.mjs --root <prototype-dir>
 ```
 
+创建器只会自动替换带有有效 ownership marker 的 `review/`。已有目录不是本工具生成时，先将它移走或删除，再重新创建 bundle。
+
 服务只绑定 `127.0.0.1`。反馈绑定 Prototype ID 和 revision，并写入 `feedback.json`。
 
 ## 标注

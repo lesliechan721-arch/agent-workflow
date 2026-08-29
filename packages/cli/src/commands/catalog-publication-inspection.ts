@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import {
   preparePublishedCatalogWorkspace,
   readCatalogWorkspace,
+  validatePublishedCatalogPublicationParent,
   validatePublishedCatalogSnapshot,
   type CatalogWorkspace,
   type CatalogWorkspaceBuildAdapter,
@@ -430,8 +431,8 @@ export async function prepareCatalogPublicationInspection(options: {
         '--work-tree', previousSnapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
       ], env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
       try {
-        const previous = await validatePublishedCatalogSnapshot(previousSnapshotRoot);
-        publishedVersion = previous.manifest.catalogVersion;
+        const previous = await validatePublishedCatalogPublicationParent(previousSnapshotRoot);
+        publishedVersion = previous.catalogVersion;
       } catch (error) {
         throw inspectionError('remoteSnapshotInvalid', error);
       }

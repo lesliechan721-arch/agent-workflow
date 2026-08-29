@@ -4,7 +4,6 @@ type KillSignal = 'SIGTERM' | 'SIGKILL';
 type PosixSignal = KillSignal | 'SIGSTOP';
 const DEFAULT_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
 const PROCESS_TREE_COMMAND_TIMEOUT_MS = 1_000;
-const PROCESS_TREE_LOOKUP_TIMEOUT_MS = 250;
 const PROCESS_TREE_OBSERVATION_INTERVAL_MS = 50;
 const PROCESS_TREE_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
@@ -137,7 +136,7 @@ async function readPosixProcessTable(
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
   markerEnvironmentVariable: string,
   marker?: string,
-  timeoutMs: number = PROCESS_TREE_LOOKUP_TIMEOUT_MS,
+  timeoutMs: number = PROCESS_TREE_COMMAND_TIMEOUT_MS,
 ): Promise<PosixProcessSnapshot | null> {
   const [identityOutput, markerOutput] = await Promise.all([
     runCommand(
@@ -478,7 +477,7 @@ async function terminatePosixProcessTree(
       execFileImpl,
       state.markerEnvironmentVariable,
       state.marker,
-      Math.min(PROCESS_TREE_LOOKUP_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+      Math.max(1, deadline - Date.now()),
     );
     if (!next) break;
     markerLookupEverFailed ||=

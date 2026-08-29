@@ -91,6 +91,22 @@ function validate(value, schema, location, errors) {
 function validatePrototypeCapabilities(value, label, errors) {
   if (!matchesType(value, 'object') || !Array.isArray(value.options)) return;
 
+  const optionIds = new Set();
+  for (const option of value.options) {
+    if (typeof option?.id !== 'string') continue;
+    if (optionIds.has(option.id)) errors.push(`${label}.options contains duplicate id ${JSON.stringify(option.id)}`);
+    optionIds.add(option.id);
+  }
+
+  const questionIds = new Set();
+  if (Array.isArray(value.guidedQuestions)) {
+    for (const question of value.guidedQuestions) {
+      if (typeof question?.id !== 'string') continue;
+      if (questionIds.has(question.id)) errors.push(`${label}.guidedQuestions contains duplicate id ${JSON.stringify(question.id)}`);
+      questionIds.add(question.id);
+    }
+  }
+
   const hasHtml = value.options.some((option) => option?.kind === 'html');
   const hasImage = value.options.some((option) => option?.kind === 'image');
   const hasStaticHtml = hasHtml && value.htmlExecution === 'static';
@@ -113,9 +129,115 @@ function validatePrototypeCapabilities(value, label, errors) {
     if (!name.startsWith('--') || name.length === 2) {
       errors.push(`${label}.editableCssVariables.${name} must start with "--" and include a name`);
     }
+    const questionId = `css-variable:${name}`;
+    if (questionIds.has(questionId)) {
+      errors.push(`${label}.guidedQuestions id ${JSON.stringify(questionId)} conflicts with an editable CSS variable`);
+    }
   }
   if (!hasStaticHtml) {
     errors.push(`${label}.editableCssVariables requires at least one static html option`);
+  }
+}
+
+function duplicateValues(values) {
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const value of values) {
+    if (seen.has(value)) duplicates.add(value);
+    seen.add(value);
+  }
+  return duplicates;
+}
+
+function validateFeedbackReferences(value, prototype, label, errors) {
+  if (!matchesType(value, 'object') || !matchesType(prototype, 'object')) return;
+
+  if (!prototype.allowOther && value.verdict === 'rejected') {
+    errors.push(`${label}.verdict "rejected" is not allowed by the Prototype config`);
+  }
+
+  const options = new Map(
+    Array.isArray(prototype.options)
+      ? prototype.options.filter((option) => typeof option?.id === 'string').map((option) => [option.id, option])
+      : [],
+  );
+  const questions = new Map();
+  if (Array.isArray(prototype.guidedQuestions)) {
+    for (const question of prototype.guidedQuestions) {
+      if (typeof question?.id !== 'string') continue;
+      questions.set(question.id, { kind: 'guided', values: question.choices || [] });
+    }
+  }
+  if (matchesType(prototype.editableCssVariables, 'object')) {
+    for (const [name, values] of Object.entries(prototype.editableCssVariables)) {
+      questions.set(`css-variable:${name}`, { kind: 'css-variable', values });
+    }
+  }
+
+  if (Array.isArray(value.selectedOptions)) {
+    for (const duplicate of duplicateValues(value.selectedOptions)) {
+      errors.push(`${label}.selectedOptions contains duplicate option ${JSON.stringify(duplicate)}`);
+    }
+    for (const optionId of value.selectedOptions) {
+      if (typeof optionId === 'string' && !options.has(optionId)) {
+        errors.push(`${label}.selectedOptions references unknown option ${JSON.stringify(optionId)}`);
+      }
+    }
+  }
+
+  const answerIds = new Set();
+  if (Array.isArray(value.answers)) {
+    for (const [index, answer] of value.answers.entries()) {
+      if (!matchesType(answer, 'object') || typeof answer.questionId !== 'string') continue;
+      const answerLabel = `${label}.answers[${index}]`;
+      if (answerIds.has(answer.questionId)) {
+        errors.push(`${label}.answers contains duplicate questionId ${JSON.stringify(answer.questionId)}`);
+      }
+      answerIds.add(answer.questionId);
+      const question = questions.get(answer.questionId);
+      if (!question) {
+        errors.push(`${answerLabel}.questionId references unknown question ${JSON.stringify(answer.questionId)}`);
+        continue;
+      }
+      if (question.kind === 'css-variable' && (!Array.isArray(answer.selected) || answer.selected.length !== 1)) {
+        errors.push(`${answerLabel}.selected must contain exactly one CSS variable value`);
+      }
+      if (!Array.isArray(answer.selected)) continue;
+      for (const duplicate of duplicateValues(answer.selected)) {
+        errors.push(`${answerLabel}.selected contains duplicate value ${JSON.stringify(duplicate)}`);
+      }
+      const allowedValues = new Set(question.values);
+      for (const selected of answer.selected) {
+        if (typeof selected === 'string' && !allowedValues.has(selected)) {
+          errors.push(`${answerLabel}.selected contains undeclared value ${JSON.stringify(selected)}`);
+        }
+      }
+    }
+  }
+
+  if (!Array.isArray(value.annotations)) return;
+  if (value.annotations.length > 0 && !prototype.allowAnnotations) {
+    errors.push(`${label}.annotations are not allowed by the Prototype config`);
+  }
+  for (const [index, annotation] of value.annotations.entries()) {
+    const target = annotation?.target;
+    const optionId = target?.value?.optionId;
+    if (typeof optionId !== 'string' || typeof target?.kind !== 'string') continue;
+    const annotationLabel = `${label}.annotations[${index}].target`;
+    const option = options.get(optionId);
+    if (!option) {
+      errors.push(`${annotationLabel} references unknown option ${JSON.stringify(optionId)}`);
+      continue;
+    }
+    if (target.kind === 'point' && option.kind !== 'image') {
+      errors.push(`${annotationLabel} point annotations require an image option`);
+    }
+    if (
+      ['dom', 'text', 'node'].includes(target.kind)
+      && (option.kind !== 'html' || prototype.htmlExecution !== 'static')
+    ) {
+      errors.push(`${annotationLabel} ${target.kind} annotations require a static html option`);
+    }
   }
 }
 
@@ -133,4 +255,11 @@ export function normalizeAndValidate(value, schema, label) {
   }
   if (errors.length > 0) throw new Error(errors.join('; '));
   return normalized;
+}
+
+export function validateFeedbackAgainstPrototype(value, prototype, label = 'feedback') {
+  const errors = [];
+  validateFeedbackReferences(value, prototype, label, errors);
+  if (errors.length > 0) throw new Error(errors.join('; '));
+  return value;
 }
