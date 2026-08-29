@@ -21,6 +21,7 @@ import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provid
 import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import {
   NativeCliError,
+  SYSTEM_CODEX_MANAGER,
   setNativeCliRunnerOverrideForTests,
 } from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
@@ -169,8 +170,8 @@ describe('multi-source performance budgets', () => {
         '',
       ] : []),
     ].join('\n'));
-    const integration = createRebuildIntegration({
-      context: createCommandExecutionContext({
+    const context = {
+      ...createCommandExecutionContext({
         env,
         nativeCliRunner: async (invocation) => {
           if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
@@ -188,7 +189,9 @@ describe('multi-source performance budgets', () => {
           return { exitCode: 0, stdout: '', stderr: '' };
         },
       }),
-    });
+      codexManager: SYSTEM_CODEX_MANAGER,
+    };
+    const integration = createRebuildIntegration({ context });
     const target = await integration.buildTarget({
       sourceId: 'local',
       sourceIdentity: `sha256:${'1'.repeat(64)}`,
