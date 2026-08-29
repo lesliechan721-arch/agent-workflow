@@ -16,10 +16,12 @@
       "unit_under_test": "full-skill",
       "preconditions": {
         "components": 4,
-        "persistent_handoffs": 6
+        "persistent_handoffs": 6,
+        "same_agent_context": true,
+        "intermediate_consumers": 0
       },
       "oracle": {
-        "rationale": "多个 leaf 局部有效不能抵消重复 target/digest/readiness handoff。",
+        "rationale": "多个 leaf 局部有效不能抵消同一上下文中没有独立 consumer 的重复 goal/status/path 和 target/digest/readiness handoff。",
         "rule_refs": [
           "references/workflow-review.md"
         ],
@@ -29,9 +31,9 @@
       },
       "prompt": "审核这套有入口和参与组件清单的 Skill Review 工作流，先看完整 common path。",
       "scripted_replies": [],
-      "expected_output": "scope admitted；识别重复状态，给 machine check → quality review → optional release check 的最小架构。",
+      "expected_output": "scope admitted；识别同一上下文中没有 consumer 的重复状态，给 machine check → quality review → optional release check 的最小架构。",
       "workspace_files": {
-        "workflow/README.md": "Outcome: publish one review. Entry: inspect. Components: inspect, review, eval, publish. Representative path: inspect.json -> stage.json -> bundle.json -> review.json -> summary.json. External dependencies: local deterministic validator. Explicit exclusions: report publication and real model execution. User decision: whether to remove the duplicated stage and bundle handoffs.\n"
+        "workflow/README.md": "Outcome: publish one review. Entry: inspect. Components: inspect, review, eval, publish. Representative path: inspect.json -> stage.json -> bundle.json -> review.json -> summary.json. The same Agent uses every step in one context. Each intermediate JSON repeats goal, status, path, target, digest, and readiness. No parser, independent actor, or human consumes stage.json or bundle.json; the local deterministic validator reads only the final review.json. External dependencies: local deterministic validator. Explicit exclusions: report publication and real model execution. User decision: whether to remove the duplicated stage and bundle handoffs.\n"
       },
       "review": {
         "platforms": [
@@ -41,6 +43,8 @@
         "workspace_unchanged": true,
         "checks": [
           "先评 common path",
+          "明确同一上下文不自动构成 handoff boundary",
+          "逐项确认 stage.json 和 bundle.json 没有真实 consumer",
           "给最小架构"
         ]
       }
