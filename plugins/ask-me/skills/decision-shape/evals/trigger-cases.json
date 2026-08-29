@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "skill": "decision-shape",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏触发会让复杂决策缺少统一塑形；误触发会给单一问题增加不必要流程。"
+  },
+  "cases": [
+    {
+      "id": "shape_complex_product_direction",
+      "split": "validation",
+      "query": "把这个新的团队协作产品方向通过问答和必要原型完整塑形，最后形成共享理解。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "complex-shape",
+      "unit_under_test": "description",
+      "preconditions": {},
+      "oracle": {
+        "rationale": "用户明确要求完整塑形并允许问答和原型。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以使用不同措辞，但应加载 decision-shape。"
+      }
+    },
+    {
+      "id": "shape_architecture_with_evidence",
+      "split": "validation",
+      "query": "帮我把新的运行时架构想清楚。有些问题需要讨论，有些需要做小实验。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "complex-shape",
+      "unit_under_test": "description",
+      "preconditions": {},
+      "oracle": {
+        "rationale": "主题包含多轮决策和证据分支。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "应选择宏 Shape，而不是只选一个叶子。"
+      }
+    },
+    {
+      "id": "single_grill_near_miss",
+      "split": "sanity",
+      "query": "围绕权限模型逐轮问我，直到失败路径和取舍都清楚。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "leaf-near-miss",
+      "unit_under_test": "description",
+      "preconditions": {},
+      "oracle": {
+        "rationale": "这是明确的单一访谈任务，应由 decision-grill 独立完成。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "不得因为问题复杂就自动升级宏 Shape。",
+        "minimal_counterexample": "如果用户要求同时塑形多个相互依赖的决定，并允许在问答与 Prototype 之间选择，则应加载 decision-shape。"
+      }
+    },
+    {
+      "id": "single_prototype_near_miss",
+      "split": "sanity",
+      "query": "做两个审批页面方案让我点一下选。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "leaf-near-miss",
+      "unit_under_test": "description",
+      "preconditions": {},
+      "oracle": {
+        "rationale": "这是一个明确 Prototype 问题。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "应由 decision-prototype 处理。",
+        "minimal_counterexample": "如果页面候选只是多个相互依赖决定中的一个证据分支，并要求形成完整共享理解，则应加载 decision-shape。"
+      }
+    },
+    {
+      "id": "one_shot_analysis_near_miss",
+      "split": "validation",
+      "query": "一次性比较这三个架构方案并给出建议。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "one-shot",
+      "unit_under_test": "description",
+      "preconditions": {},
+      "oracle": {
+        "rationale": "一次性比较不是多轮 Shape。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "直接回答或使用其它评估能力。",
+        "minimal_counterexample": "如果用户要求逐轮校准多个决定、按需制作 Prototype 并维护当前 Shape，则应加载 decision-shape。"
+      }
+    }
+  ]
+}

@@ -94,6 +94,22 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "decision-frame",
+      "kind": "conversation",
+      "skills": [
+        "decision-grill"
+      ],
+      "cases": "./decision-frame-cases.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
     }
   ]
 }

@@ -11,7 +11,7 @@
     {
       "id": "route_fast_to_implement",
       "split": "validation",
-      "query": "使用 dev-workflow 处理一个明确、低风险且有现成测试的小改动。",
+      "query": "使用 dev-workflow 修复一个明确的低风险 bug：用户名末尾空格未去除。范围只限现有 normalizeName；非目标是不改公开接口。没有未解决材料决定，也不需要 Prototype、实验或测量。有稳定失败测试，改动可逆且一个上下文可完成。",
       "expected_loaded_skills": ["dev-workflow", "dev-implement"],
       "eval_type": "routing",
       "case_role": "representative",
@@ -20,17 +20,75 @@
       "unit_under_test": "full-skill",
       "preconditions": {"participant_skills_available": true},
       "oracle": {
-        "rationale": "Fast 任务直接进入实现。",
-        "rule_refs": ["SKILL.md#1-选择最低足够保障", "SKILL.md#3-选择当前能力"],
+        "rationale": "七项 Fast readiness 都已明确，任务直接进入实现。",
+        "rule_refs": ["SKILL.md#3-得出必需-gate", "SKILL.md#4-进入最早未满足-gate"],
         "confidence": "high",
-        "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
+        "allowed_variance": "只加载 dev-implement；不得仅因缺少流程工件进入 Shape。",
+        "minimal_counterexample": "同一 bug 的结果、范围、风险和验证方式都不变，但预计需要多个上下文时，不满足 Fast；若 Shape 已完整且没有 Spec，应进入 dev-spec。"
       }
     },
     {
-      "id": "route_material_decisions_to_grill",
+      "id": "route_fast_exceeds_single_context_to_spec",
+      "split": "validation",
+      "query": "使用 dev-workflow 修复用户名末尾空格未去除的问题。结果、范围和非目标已清楚，没有材料未决，不需要体验或实验，改动低风险、可逆且有稳定失败测试；但仓库很大，预计需要多个上下文才能完成。Shape 已完整，当前没有 Spec。",
+      "expected_loaded_skills": ["dev-workflow", "dev-spec"],
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "fast-readiness",
+      "unit_under_test": "full-skill",
+      "preconditions": {"participant_skills_available": true},
+      "oracle": {
+        "rationale": "只有单上下文完成这一项不满足，因此任务不能进入 Fast；Shape 已完整，Standard 的最早未满足 gate 是 Spec。",
+        "rule_refs": ["SKILL.md#3-得出必需-gate", "SKILL.md#4-进入最早未满足-gate"],
+        "confidence": "high",
+        "allowed_variance": "只加载 dev-spec，不得直接进入 dev-implement。",
+        "minimal_counterexample": "同一任务若预计一个上下文可完成，则七项 Fast readiness 全部满足，可以进入 dev-implement。"
+      }
+    },
+    {
+      "id": "route_fast_verified_to_code_review",
+      "split": "validation",
+      "query": "使用 dev-workflow 继续这个 Fast 任务：实现已经完成，可靠验证已经通过，当前还没有 Code Review。",
+      "expected_loaded_skills": ["dev-workflow", "dev-review-code"],
+      "eval_type": "routing",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "fast-readiness",
+      "unit_under_test": "full-skill",
+      "preconditions": {"participant_skills_available": true},
+      "oracle": {
+        "rationale": "Fast 的实现和验证 gate 已满足，最早未满足 gate 是正式 Code Review。",
+        "rule_refs": ["SKILL.md#3-得出必需-gate", "SKILL.md#4-进入最早未满足-gate"],
+        "confidence": "high",
+        "allowed_variance": "只加载 dev-review-code，不得直接宣告 Delivery。",
+        "minimal_counterexample": "如果当前 Code Review 已为 clean，则可以进入 Delivery，不需要再次加载 Review。"
+      }
+    },
+    {
+      "id": "route_new_feature_intent_is_not_ready",
+      "split": "validation",
+      "query": "使用 dev-workflow 实现一个新的团队权限功能。当前没有 Shape、Spec 或明确验收。",
+      "expected_loaded_skills": ["dev-workflow", "decision-shape"],
+      "eval_type": "routing",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "fast-readiness",
+      "unit_under_test": "full-skill",
+      "preconditions": {"participant_skills_available": true},
+      "oracle": {
+        "rationale": "实现意图不能代替范围、材料决定和验收；最早未满足 gate 是 Shape。",
+        "rule_refs": ["SKILL.md#3-得出必需-gate", "SKILL.md#4-进入最早未满足-gate"],
+        "confidence": "high",
+        "allowed_variance": "只加载 decision-shape，不直接加载两个叶子或 dev-implement。",
+        "minimal_counterexample": "同一团队权限功能若已明确可观察结果、范围与非目标、材料决定、无需体验证据、低风险可逆边界、可靠验证方式和单上下文规模，则可以进入 dev-implement。"
+      }
+    },
+    {
+      "id": "route_material_decisions_to_shape",
       "split": "validation",
       "query": "使用 dev-workflow 组织新的权限模型；多个材料决定相互依赖。",
-      "expected_loaded_skills": ["dev-workflow", "decision-grill"],
+      "expected_loaded_skills": ["dev-workflow", "decision-shape"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
@@ -38,17 +96,17 @@
       "unit_under_test": "full-skill",
       "preconditions": {"participant_skills_available": true},
       "oracle": {
-        "rationale": "相互依赖的材料决定使用 decision-grill。",
-        "rule_refs": ["SKILL.md#3-选择当前能力"],
+        "rationale": "宏入口只识别 Shape 未完成，不直接选择内部访谈叶子。",
+        "rule_refs": ["SKILL.md#4-进入最早未满足-gate"],
         "confidence": "high",
-        "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
+        "allowed_variance": "只加载 decision-shape；内部问答方式由它负责。"
       }
     },
     {
-      "id": "route_evidence_decision_to_prototype",
+      "id": "route_shape_evidence_branch_stays_in_shape",
       "split": "validation",
-      "query": "使用 dev-workflow 处理审批页布局；我必须操作候选方案后才能决定。",
-      "expected_loaded_skills": ["dev-workflow", "decision-prototype"],
+      "query": "使用 dev-workflow 继续：Shape 仍有一个审批页信息层级问题，必须操作候选页面后才能决定。",
+      "expected_loaded_skills": ["dev-workflow", "decision-shape"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
@@ -56,16 +114,16 @@
       "unit_under_test": "full-skill",
       "preconditions": {"participant_skills_available": true},
       "oracle": {
-        "rationale": "需要体验证据的决定使用 decision-prototype。",
-        "rule_refs": ["SKILL.md#3-选择当前能力"],
+        "rationale": "需要体验证据说明 Shape 尚未完成；顶层不直接选择 Prototype 叶子。",
+        "rule_refs": ["SKILL.md#4-进入最早未满足-gate"],
         "confidence": "high",
-        "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
+        "allowed_variance": "只加载 decision-shape，不直接加载 decision-prototype。"
       }
     },
     {
       "id": "route_decisions_to_spec",
       "split": "validation",
-      "query": "使用 dev-workflow 继续：决定已确认，当前还没有 Spec。",
+      "query": "使用 dev-workflow 继续：Shape 已完整且没有开放材料决定，当前还没有 Spec。",
       "expected_loaded_skills": ["dev-workflow", "dev-spec"],
       "eval_type": "routing",
       "case_role": "representative",
@@ -74,10 +132,28 @@
       "unit_under_test": "full-skill",
       "preconditions": {"participant_skills_available": true},
       "oracle": {
-        "rationale": "稳定决定进入 Spec。",
-        "rule_refs": ["SKILL.md#3-选择当前能力"],
+        "rationale": "Shape gate 已满足，最早未满足 gate 是 Spec。",
+        "rule_refs": ["SKILL.md#4-进入最早未满足-gate"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
+      }
+    },
+    {
+      "id": "route_approved_spec_to_implement",
+      "split": "validation",
+      "query": "使用 dev-workflow 继续：Spec Review 为 clean，用户已经明确批准，当前尚未实现。",
+      "expected_loaded_skills": ["dev-workflow", "dev-implement"],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "workflow-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {"participant_skills_available": true},
+      "oracle": {
+        "rationale": "Shape、Spec、Spec Review 和批准 gate 已满足，当前进入 Build。",
+        "rule_refs": ["SKILL.md#4-进入最早未满足-gate"],
+        "confidence": "high",
+        "allowed_variance": "只加载 dev-implement。"
       }
     },
     {
@@ -93,7 +169,7 @@
       "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "Spec 修订后重新正式审查。",
-        "rule_refs": ["SKILL.md#3-选择当前能力", "SKILL.md#4-消费-review-结果"],
+        "rule_refs": ["SKILL.md#4-进入最早未满足-gate", "SKILL.md#6-Review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -111,7 +187,7 @@
       "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "实现缺陷进入修复。",
-        "rule_refs": ["SKILL.md#4-消费-review-结果"],
+        "rule_refs": ["SKILL.md#6-Review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -129,7 +205,7 @@
       "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "代码变化后重新双轴 Review。",
-        "rule_refs": ["SKILL.md#4-消费-review-结果"],
+        "rule_refs": ["SKILL.md#6-Review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -147,7 +223,7 @@
       "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "Spec 缺陷先修订 Spec。",
-        "rule_refs": ["SKILL.md#4-消费-review-结果"],
+        "rule_refs": ["SKILL.md#6-Review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }

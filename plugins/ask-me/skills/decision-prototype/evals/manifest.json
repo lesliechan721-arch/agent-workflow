@@ -90,6 +90,22 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "feedback",
+      "kind": "conversation",
+      "skills": [
+        "decision-prototype"
+      ],
+      "cases": "./prototype-feedback-cases.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
     }
   ]
 }

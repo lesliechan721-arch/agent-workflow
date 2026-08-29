@@ -198,7 +198,8 @@
           "assets/code-review-template.md"
         ],
         "confidence": "high",
-        "allowed_variance": "finding 标题可不同；必须指出过程历史泄漏、说明材料影响，并给出正面当前态改写的可验证关闭条件。"
+        "allowed_variance": "finding 标题可不同；必须指出过程历史泄漏、说明材料影响，并给出正面当前态改写的可验证关闭条件。",
+        "minimal_counterexample": "如果历史原因是理解当前安全、兼容、迁移或回滚约束所必需的 Evidence，则可以保留该必要理由而不构成 blocker。"
       },
       "prompt": "以 Standard 保障正式审查 skills/session-expiry/SKILL.md 是否符合 docs/specs/session-expiry.md，并检查工程质量。不要修改文件。",
       "scripted_replies": [],

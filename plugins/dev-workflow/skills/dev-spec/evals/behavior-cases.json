@@ -134,6 +134,88 @@
           "保留文件、函数和测试组织的实现自由"
         ]
       }
+    },
+    {
+      "id": "open-material-decision-stops-spec",
+      "eval_type": "outcome",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "spec-readiness-stop",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "material_open_decision_exists": true,
+        "target_spec_absent": true
+      },
+      "oracle": {
+        "rationale": "服务端拒绝还是自动补发会材料性改变用户行为和验收；决定未确认时不得写 Spec 或代替用户选择。",
+        "rule_refs": [
+          "SKILL.md#开始",
+          "SKILL.md#工作流"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以用问题或阻塞摘要说明缺口；不得创建目标 Spec 或静默选择方案。",
+        "minimal_counterexample": "如果输入明确确认过期邀请由服务端拒绝并允许用户重新邀请，则可以把该决定写入 Spec。"
+      },
+      "prompt": "读取 decisions/invitation-expiry-open.md，整理为 docs/specs/invitation-expiry-open.md。若仍有会材料性改变结果的开放决定，请停止并指出缺口，不要代替我选择。",
+      "scripted_replies": [],
+      "expected_output": "识别过期处理仍未决定，停止写 Spec，并向用户说明需要确认服务端拒绝还是自动补发。",
+      "workspace_files": {
+        "decisions/invitation-expiry-open.md": "# 当前决定\n\n- 团队邀请创建后 7 天过期。\n- 用户必须看到明确提示。\n\n## Open decisions\n\n- 过期接受请求由服务端直接拒绝，还是自动发送新邀请。这个选择会改变用户行为和验收。\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "识别会材料性改变用户行为和验收的开放决定",
+          "不创建 docs/specs/invitation-expiry-open.md",
+          "不替用户选择服务端拒绝或自动补发",
+          "清楚说明关闭缺口所需的决定"
+        ]
+      }
+    },
+    {
+      "id": "required-evidence-gap-stops-spec",
+      "eval_type": "outcome",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "spec-readiness-stop",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "material_evidence_missing": true,
+        "target_spec_absent": true
+      },
+      "oracle": {
+        "rationale": "输入明确要求用尚不存在的基准证据确定材料阈值；Spec 作者不能发明测量结果或阈值。",
+        "rule_refs": [
+          "SKILL.md#开始",
+          "SKILL.md#工作流"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以请求基准结果或让调用者返回 Shape；不得创建目标 Spec 或发明阈值。",
+        "minimal_counterexample": "如果输入包含基准结果和已经确认的 p95 阈值，则可以把该证据与阈值写入 Spec。"
+      },
+      "prompt": "读取 decisions/search-latency.md，整理为 docs/specs/search-latency.md。若所需证据不存在，请停止并说明缺口，不要猜测指标。",
+      "scripted_replies": [],
+      "expected_output": "识别缺少基准结果，停止写 Spec，并说明需要取得证据后才能确认 p95 验收阈值。",
+      "workspace_files": {
+        "decisions/search-latency.md": "# 搜索延迟决定\n\n- 搜索索引保留在公司环境内。\n- 发布验收必须包含 p95 延迟阈值。\n- 阈值必须根据尚未执行的生产规模基准测试确定。\n- 当前没有基准结果，不得猜测阈值。\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "识别材料证据缺口",
+          "不创建 docs/specs/search-latency.md",
+          "不发明基准结果或 p95 阈值",
+          "说明继续写 Spec 前需要的证据"
+        ]
+      }
     }
   ]
 }
