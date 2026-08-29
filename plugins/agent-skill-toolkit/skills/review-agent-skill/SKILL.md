@@ -29,7 +29,7 @@ metadata:
 | 到达条件 | 读取 |
 | --- | --- |
 | 仅 `full` | `references/review-rubric.md`、`references/review-dimensions.md` 和 `references/scoring-model.md` |
-| 任一模式；用户问题或证据涉及独立职责、权限或证据生命周期 | `references/composition-fitness.md` |
+| 任一模式；用户问题或证据涉及独立职责、caller-specific 假设、固定机器输出字段、跨 Skill handoff、权限或证据生命周期 | `references/composition-fitness.md` |
 | 任一模式；Skill 涉及异步状态、重试、跨 actor 协议、权限或复杂工具编排 | `references/architecture-boundaries.md` |
 | 任一模式；目标包含本地脚本或重复实现确定性逻辑 | `references/scripts-and-resources.md` |
 | 任一模式；准备 critical/major finding，或证据类型有争议 | `references/evidence-and-severity.md` |

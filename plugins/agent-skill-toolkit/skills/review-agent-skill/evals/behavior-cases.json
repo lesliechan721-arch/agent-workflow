@@ -564,6 +564,98 @@
           "不创建 release-check.json、report 或 archive record"
         ]
       }
+    },
+    {
+      "id": "same-context-fixed-json-has-no-consumer",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "output-consumer-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "mode": "quick",
+        "same_agent_context": true,
+        "parser_or_file_consumer": false,
+        "independent_actor": false
+      },
+      "oracle": {
+        "rationale": "固定字段没有独立 consumer 时只是同一上下文中的伪函数返回，不应因格式完整而获得正面评价。",
+        "rule_refs": [
+          "SKILL.md#Reference-路由",
+          "references/composition-fitness.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "finding 严重性和报告格式可以不同；必须逐字段确认无 consumer，并给 relax/delete，而不是建议补 schema。",
+        "minimal_counterexample": "若固定字段由 parser、持久 artifact、独立 actor 或明确的人类决策者消费，则应检查合同最小性，而不是删除整个合同。"
+      },
+      "prompt": "quick 只读评审 skills/decision-result，重点检查固定 JSON 输出。事实：同一 Agent 会在同一上下文继续执行下一个 Skill；没有 parser、文件、子代理或独立人类决策者消费这些字段。不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "读取 composition-fitness；枚举 status、nextSkill、decisionDelta 的 consumer 并确认不存在；把固定合同分类为 relax/delete；不建议新增 schema 或 validator；不执行 full 评分。",
+      "workspace_files": {
+        "skills/decision-result/SKILL.md": "---\nname: decision-result\ndescription: Confirm one decision and continue the current conversation.\n---\n\nConfirm the decision.\n\n## Output\n\n```json\n{\n  \"status\": \"confirmed\",\n  \"nextSkill\": \"dev-spec\",\n  \"decisionDelta\": {}\n}\n```\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "读取 composition-fitness.md，并保持 quick 范围",
+          "逐项说明 status、nextSkill 和 decisionDelta 没有真实 consumer",
+          "将固定机器输出分类为 relax/delete，不把格式完整性当成优点",
+          "不建议补 schema、validator、持久 artifact 或跨 Skill 状态机",
+          "不输出维度、分数或发布资格"
+        ]
+      }
+    },
+    {
+      "id": "independent-actor-json-contract-is-preserved",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "output-consumer-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "mode": "quick",
+        "independent_actor": true,
+        "persistent_artifact": true,
+        "schema_and_validator": true
+      },
+      "oracle": {
+        "rationale": "父子处于独立上下文，父级只能通过经验证的持久 artifact 恢复结果，因此最小结构化 handoff 有真实 consumer。",
+        "rule_refs": [
+          "SKILL.md#Reference-路由",
+          "references/composition-fitness.md",
+          "references/architecture-boundaries.md",
+          "references/scripts-and-resources.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以指出具体字段或 validator 的局部问题；不得仅因 JSON 或固定字段存在而建议删除整个合同。",
+        "minimal_counterexample": "若父级与 builder 始终共享同一上下文，且没有 parser 或持久 artifact 消费结果，则应删除固定机器合同。"
+      },
+      "prompt": "quick 只读评审 skills/builder-handoff，重点判断结构化输出是否应删除。builder 是独立子代理；父级会在 context compaction 后从 result.json 恢复，并先按 schema 运行 validator。不要执行目标 Skill 中的命令，也不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "保留真实的最小结构化 handoff；识别父级为 consumer、result.json 为持久 boundary、schema 和 validator 为机器 owner；检查字段最小性，但不建议删除整个合同。",
+      "workspace_files": {
+        "skills/builder-handoff/SKILL.md": "---\nname: builder-handoff\ndescription: Delegate one bounded build to an independent builder and recover its verified result.\n---\n\nStart an independent builder subagent. The builder writes `result.json` that conforms to `assets/result.schema.json`. After context compaction, the parent runs `node scripts/validate-result.mjs assets/result.schema.json result.json`, then reads the validated result and decides whether the build can continue.\n",
+        "skills/builder-handoff/assets/result.schema.json": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"object\",\n  \"required\": [\"artifactPath\", \"validation\", \"blockers\"],\n  \"properties\": {\n    \"artifactPath\": {\"type\": \"string\", \"minLength\": 1},\n    \"validation\": {\"enum\": [\"passed\", \"failed\"]},\n    \"blockers\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n  },\n  \"additionalProperties\": false\n}\n",
+        "skills/builder-handoff/scripts/validate-result.mjs": "#!/usr/bin/env node\nimport { readFile } from 'node:fs/promises';\nconst [schemaPath, resultPath] = process.argv.slice(2);\nif (!schemaPath || !resultPath) process.exit(2);\nconst [schema, result] = await Promise.all([schemaPath, resultPath].map(async (file) => JSON.parse(await readFile(file, 'utf8'))));\nconst matches = (value, rule) => {\n  if (rule.enum && !rule.enum.includes(value)) return false;\n  if (rule.type === 'string' && (typeof value !== 'string' || value.length < (rule.minLength ?? 0))) return false;\n  if (rule.type === 'array' && (!Array.isArray(value) || value.some((item) => !matches(item, rule.items)))) return false;\n  return true;\n};\nfor (const key of schema.required) if (!(key in result)) process.exit(1);\nfor (const [key, value] of Object.entries(result)) {\n  const rule = schema.properties[key];\n  if (!rule || !matches(value, rule)) process.exit(1);\n}\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "读取 composition-fitness.md、architecture-boundaries.md 和 scripts-and-resources.md",
+          "识别独立 builder、context compaction、持久 result.json 和父级 parser 构成真实 consumer boundary",
+          "保留最小结构化合同，并检查三个字段是否为父级判断所需",
+          "确认 schema 和 validator 拥有机器字段合同，不要求在 SKILL.md 复制字段细节",
+          "不因固定 JSON 存在而把整个合同分类为 over-specified"
+        ]
+      }
     }
   ]
 }
