@@ -142,7 +142,7 @@ TUI 只在首屏使用已绑定 Active 和 live status 发布后，对 `refreshP
 
 Review 仍是用户确认边界。Review evidence 包含 `generationSetDigest` 和所需 source generation 证据。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。Execute 在同一个 `AW_HOME` mutation lock 内重新解析当前 Active set，验证绑定的 generation 目录和 metadata 仍存在，并比较 Review digest。source config 改变或 Candidate 被 activate 后，Execute 必须在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或新 Review。该检查不访问远端 branch。
 
-Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。Codex project scope 不使用 native manager。用户级正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt/status v4，也不成为 `operationReviewStale` 证据。
+Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。Codex project scope 不使用 native manager。用户级正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt/status v5，也不成为 `operationReviewStale` 证据。
 
 TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 

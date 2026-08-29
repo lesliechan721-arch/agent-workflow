@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
-import { statusCommandV4 } from '../../src/commands/status-v4.js';
+import { statusCommandV5 } from '../../src/commands/status-v5.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -66,7 +66,7 @@ describe('status v5 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'project', json: true,
     });
@@ -121,7 +121,7 @@ describe('status v5 current behavior', () => {
       },
     });
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       platform: 'codex', scope: 'project', verbose: true, json: true,
     });
@@ -170,7 +170,7 @@ describe('status v5 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
       env: { ...env, AW_RENDER_SENTINEL: sentinel },
       platform: 'codex', scope: 'project', verbose: true,
@@ -202,7 +202,7 @@ describe('status v5 current behavior', () => {
       },
     });
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'project', json: true,
     });
@@ -221,13 +221,13 @@ describe('status v5 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'read-only-source');
     await createCatalogSnapshotFixture(sourceRoot);
     const { env } = await configurePathSource(sourceRoot);
-    await statusCommandV4({
+    await statusCommandV5({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'claude', scope: 'project', json: true,
     });
     const before = await filesystemSnapshot(isolation.layout.fixtureCwd);
 
-    const result = await statusCommandV4({
+    const result = await statusCommandV5({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'claude', scope: 'project', json: true,
     });
