@@ -63,6 +63,7 @@ import {
   buildCodexPluginListInvocation,
   buildCodexPluginRemoveInvocation,
   runNativeCliChecked,
+  type CodexManager,
   type NativeCliRunner,
 } from '../utils/native-cli.js';
 import {
@@ -164,10 +165,21 @@ export interface PreparedRebuildTarget {
 export interface RebuildExecutionContext {
   env: NodeJS.ProcessEnv;
   nativeCliRunner: NativeCliRunner;
+  codexManager?: CodexManager;
   reporter: CommandReporter;
   debugLogger: DebugLogger;
   expectedCatalogConfigDigest?: string;
 }
+
+function requireCodexManager(manager: CodexManager | undefined): CodexManager {
+  if (!manager) {
+    throw new Error('codexManagerRequired: Codex native operation has no resolved manager.');
+  }
+  return manager;
+}
+
+const CODEX_REMOVE_RECOVERY =
+  'Codex residue was retained. Retry cleanup or uninstall, upgrade AW, or install a compatible official Codex CLI.';
 
 function ownerIdentity(
   plugin: string,
@@ -2175,6 +2187,29 @@ async function inspectCodexNativeResidue(options: {
         };
 }
 
+export async function codexNativeRemovalRequired(options: {
+  pluginName: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  marketplaceName?: string;
+  marketplaceRoot?: string;
+}): Promise<boolean> {
+  const residue = await inspectCodexNativeResidue(options);
+  if (residue.state === 'present') return true;
+  if (residue.state === 'foreign') return false;
+  const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
+  const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
+  const config = await readCodexConfigFile(
+    resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
+  );
+  const marketplace = config.snapshot.marketplaces[marketplaceName];
+  const canonical = marketplace?.sourceType === 'local'
+    && !marketplace.sourcePointsToManifest
+    && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
+  if (!canonical) return false;
+  return (await discoverCodexNativeResidueNames(options)).length === 0;
+}
+
 export async function discoverCodexNativeResidueNames(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -2370,6 +2405,7 @@ async function ensureCodexActiveSkillsManifest(options: {
 
 function createCodexMarketplaceComponent(options: {
   pluginName: string;
+  codexManager?: CodexManager;
   cwd: string;
   env: NodeJS.ProcessEnv;
   runner: NativeCliRunner;
@@ -2434,14 +2470,27 @@ function createCodexMarketplaceComponent(options: {
       if (await inspectCanonicalMarketplace() !== 'present'
         || currentResidue.state === 'present'
         || await hasRemainingPlugins()) return;
-      await runNativeCliChecked(
-        buildCodexMarketplaceRemoveInvocation(options.marketplaceName, options.cwd, options.env),
-        options.runner,
-      );
-      await runNativeCliChecked(
-        buildCodexMarketplaceListInvocation(options.cwd, options.env),
-        options.runner,
-      );
+      try {
+        await runNativeCliChecked(
+          buildCodexMarketplaceRemoveInvocation(
+            requireCodexManager(options.codexManager),
+            options.marketplaceName,
+            options.cwd,
+            options.env,
+          ),
+          options.runner,
+        );
+        await runNativeCliChecked(
+          buildCodexMarketplaceListInvocation(
+            requireCodexManager(options.codexManager),
+            options.cwd,
+            options.env,
+          ),
+          options.runner,
+        );
+      } catch {
+        throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
+      }
     },
   };
 }
@@ -3169,6 +3218,7 @@ function createNativeDriver(options: {
   scriptTimeoutMs?: number;
 }): RebuildTargetDriver {
   const runner = options.context.nativeCliRunner;
+  const codexManager = options.context.codexManager;
   const mirrorTransactions = new WeakMap<DesiredTarget, Awaited<ReturnType<typeof mirrorCatalog>>>();
   const finalizeNamespacedCleanup = async (target: DesiredTarget): Promise<void> => {
     const { sourceId, sourceIdentity, marketplaceRoot, marketplaceName } = target.identity;
@@ -3308,10 +3358,19 @@ function createNativeDriver(options: {
           throw new Error(`Codex native owner 为 foreign，拒绝调用 plugin remove：${before.labels.join('，')}`);
         }
         if (before.state === 'absent') return;
-        await runNativeCliChecked(
-          buildCodexPluginRemoveInvocation(component.pluginId, target.identity.cwd, options.context.env),
-          runner,
-        );
+        try {
+          await runNativeCliChecked(
+            buildCodexPluginRemoveInvocation(
+              requireCodexManager(codexManager),
+              component.pluginId,
+              target.identity.cwd,
+              options.context.env,
+            ),
+            runner,
+          );
+        } catch {
+          throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
+        }
         const residue = await inspectCodexNativeResidue({
           pluginName: target.identity.pluginName,
           cwd: target.identity.cwd,
@@ -3320,7 +3379,7 @@ function createNativeDriver(options: {
           marketplaceRoot: target.identity.marketplaceRoot,
         });
         if (residue.state !== 'absent') {
-          throw new Error(`Codex native remove 后仍有残留：${residue.labels.join('，')}`);
+          throw new Error(`codexNativeRemoveIncomplete: ${CODEX_REMOVE_RECOVERY}`);
         }
       } else {
         await runNativeCliChecked({
@@ -3410,20 +3469,38 @@ function createNativeDriver(options: {
           const marketplace = config.snapshot.marketplaces[marketplaceName];
           if (path.normalize(marketplace?.source ?? '') !== path.normalize(marketplaceRoot)) {
             await runNativeCliChecked(
-              buildCodexMarketplaceAddInvocation(marketplaceRoot, target.identity.cwd, options.context.env),
+              buildCodexMarketplaceAddInvocation(
+                requireCodexManager(codexManager),
+                marketplaceRoot,
+                target.identity.cwd,
+                options.context.env,
+              ),
               runner,
             );
           }
           await runNativeCliChecked(
-            buildCodexMarketplaceListInvocation(target.identity.cwd, options.context.env),
+            buildCodexMarketplaceListInvocation(
+              requireCodexManager(codexManager),
+              target.identity.cwd,
+              options.context.env,
+            ),
             runner,
           );
           await runNativeCliChecked(
-            buildCodexPluginAddInvocation(pluginId, target.identity.cwd, options.context.env),
+            buildCodexPluginAddInvocation(
+              requireCodexManager(codexManager),
+              pluginId,
+              target.identity.cwd,
+              options.context.env,
+            ),
             runner,
           );
           await runNativeCliChecked(
-            buildCodexPluginListInvocation(target.identity.cwd, options.context.env),
+            buildCodexPluginListInvocation(
+              requireCodexManager(codexManager),
+              target.identity.cwd,
+              options.context.env,
+            ),
             runner,
           );
           await assertCodexNativeInstallState({
@@ -3693,6 +3770,7 @@ export function createRebuildIntegration(options: {
       const marketplace = input.platform === 'codex' && input.scope === 'user'
         ? [createCodexMarketplaceComponent({
             pluginName: input.plugin.manifest.name,
+            codexManager: options.context.codexManager,
             cwd: input.cwd,
             env: options.context.env,
             runner: options.context.nativeCliRunner,

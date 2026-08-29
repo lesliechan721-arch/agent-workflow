@@ -163,20 +163,24 @@ async function runPublicWriteCommand(options: {
   all?: boolean;
 }): Promise<RebuildCommandResult> {
   const runtime = options.runtime;
+  const executionRuntime = options.commandOptions.allowManagedCodexInstall === true
+    && !runtime.managedCodexAuthorizer
+    ? { ...runtime, managedCodexAuthorizer: async () => true }
+    : runtime;
   const execute = (token: AwHomeMutationToken | undefined) => runRebuildCommand({
     command: options.command,
     pluginNames: options.pluginNames,
     commandOptions: options.commandOptions,
     runtime: token === undefined
-      ? runtime
-      : { ...runtime, awHomeMutationToken: token },
+      ? executionRuntime
+      : { ...executionRuntime, awHomeMutationToken: token },
     ...(options.all === undefined ? {} : { all: options.all }),
   });
-  const execution = runtime.previewDependencyPlanOnly === true
-    ? execute(runtime.awHomeMutationToken)
+  const execution = executionRuntime.previewDependencyPlanOnly === true
+    ? execute(executionRuntime.awHomeMutationToken)
     : withAwHomeMutationLock({
-        env: runtime.env,
-        token: runtime.awHomeMutationToken,
+        env: executionRuntime.env,
+        token: executionRuntime.awHomeMutationToken,
         action: execute,
       });
   return execution.catch((error) => failedWriteCommandResult(

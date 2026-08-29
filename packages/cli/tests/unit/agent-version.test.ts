@@ -85,6 +85,48 @@ describe('agent-version', () => {
     expect(result.rawOutput).toContain('0.145.0');
   });
 
+  it('passes the effective Codex home and agent kind only to Codex version probes', async () => {
+    const codexEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      CODEX_HOME: '/ignored/codex-home',
+      HOME: '/preserved/home',
+      USERPROFILE: 'C:\\preserved\\profile',
+    };
+    const claudeEnv: NodeJS.ProcessEnv = {
+      HOME: '/claude/home',
+      USERPROFILE: 'C:\\claude\\profile',
+      PATH: process.env.PATH,
+    };
+    let codexInvocation: NativeCliInvocation | undefined;
+    let claudeInvocation: NativeCliInvocation | undefined;
+
+    await probeAgentVersion('codex', {
+      env: codexEnv,
+      runner: async (invocation) => {
+        codexInvocation = invocation;
+        return { exitCode: 0, stdout: 'codex-cli 0.145.0', stderr: '' };
+      },
+    });
+    await probeAgentVersion('claude', {
+      env: claudeEnv,
+      runner: async (invocation) => {
+        claudeInvocation = invocation;
+        return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
+      },
+    });
+
+    expect(codexInvocation).toMatchObject({
+      agentKind: 'codex',
+      env: {
+        CODEX_HOME: process.env.AW_CODEX_HOME,
+        HOME: '/preserved/home',
+        USERPROFILE: 'C:\\preserved\\profile',
+      },
+    });
+    expect(claudeInvocation?.env).toEqual(claudeEnv);
+    expect(claudeInvocation?.env?.CODEX_HOME).toBeUndefined();
+  });
+
   it('caches matching probes within the current process', async () => {
     let calls = 0;
     const runner = async () => {
@@ -97,12 +139,12 @@ describe('agent-version', () => {
     };
     const first = await probeAgentVersion('codex', {
       cwd: '/repo',
-      env: { PATH: '/bin' },
+      env: { ...process.env, PATH: '/bin' },
       runner,
     });
     const second = await probeAgentVersion('codex', {
       cwd: '/repo',
-      env: { PATH: '/bin' },
+      env: { ...process.env, PATH: '/bin' },
       runner,
     });
 

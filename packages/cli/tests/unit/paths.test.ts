@@ -126,6 +126,19 @@ describe('project key paths', () => {
     } as NodeJS.ProcessEnv)).toBe(unsafeAwHome);
   });
 
+  it('resolves Codex home from the test override, public override, and default in priority order', () => {
+    setTestPathFenceHookForTests(null);
+
+    expect(getCodexHome({
+      AW_CODEX_HOME: '/tmp/aw-codex-home',
+      CODEX_HOME: '/tmp/public-codex-home',
+    } as NodeJS.ProcessEnv)).toBe('/tmp/aw-codex-home');
+    expect(getCodexHome({
+      CODEX_HOME: '/tmp/public-codex-home',
+    } as NodeJS.ProcessEnv)).toBe('/tmp/public-codex-home');
+    expect(getCodexHome({} as NodeJS.ProcessEnv)).toBe(path.join(os.homedir(), '.codex'));
+  });
+
   it('normalizes symlink and realpath aliases to the same Claude/Codex project key', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-paths-'));
     tempDirs.push(root);

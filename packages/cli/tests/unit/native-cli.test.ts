@@ -6,12 +6,21 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   NativeCliError,
+  SYSTEM_CODEX_MANAGER,
+  buildCodexMarketplaceAddInvocation,
+  buildCodexMarketplaceListInvocation,
+  buildCodexMarketplaceRemoveInvocation,
+  buildCodexPluginAddInvocation,
+  buildCodexPluginListInvocation,
+  buildCodexPluginRemoveInvocation,
   createExecFileNativeCliRunner,
   execFileNativeCliRunner,
   isNativeCliExecutableMissingError,
   isNativeCliTimeoutError,
   runNativeCli,
   summarizeNativeCliFailure,
+  type CodexManager,
+  type NativeCliInvocation,
 } from '../../src/utils/native-cli.js';
 import { TestNativeCliGuardError } from '../helpers/native-guard.js';
 
@@ -78,6 +87,63 @@ describe('native-cli', () => {
       expect.objectContaining({ command: '/usr/local/bin/codex', timeoutMs: 60_000 }),
       expect.objectContaining({ command: 'C:\\Tools\\Claude.EXE', timeoutMs: 60_000 }),
     ]);
+  });
+
+  it('builds system Codex plugin and marketplace invocations with unchanged arguments and the effective home', () => {
+    const cwd = '/tmp/workspace';
+    const codexHome = process.env.AW_CODEX_HOME!;
+    const env = { ...process.env, CODEX_HOME: '/ignored/codex-home' };
+
+    const invocations = [
+      buildCodexPluginAddInvocation(SYSTEM_CODEX_MANAGER, 'demo@aw', cwd, env),
+      buildCodexPluginListInvocation(SYSTEM_CODEX_MANAGER, cwd, env),
+      buildCodexPluginRemoveInvocation(SYSTEM_CODEX_MANAGER, 'demo@aw', cwd, env),
+      buildCodexMarketplaceAddInvocation(SYSTEM_CODEX_MANAGER, '/tmp/aw-home', cwd, env),
+      buildCodexMarketplaceListInvocation(SYSTEM_CODEX_MANAGER, cwd, env),
+      buildCodexMarketplaceRemoveInvocation(SYSTEM_CODEX_MANAGER, 'aw', cwd, env),
+    ];
+
+    expect(invocations.map(({ command, args, agentKind, cwd: invocationCwd, env: invocationEnv }) => ({
+      command,
+      args,
+      agentKind,
+      cwd: invocationCwd,
+      codexHome: invocationEnv?.CODEX_HOME,
+    }))).toEqual([
+      { command: 'codex', args: ['plugin', 'add', 'demo@aw'], agentKind: 'codex', cwd, codexHome },
+      { command: 'codex', args: ['plugin', 'list'], agentKind: 'codex', cwd, codexHome },
+      { command: 'codex', args: ['plugin', 'remove', 'demo@aw'], agentKind: 'codex', cwd, codexHome },
+      { command: 'codex', args: ['plugin', 'marketplace', 'add', '/tmp/aw-home'], agentKind: 'codex', cwd, codexHome },
+      { command: 'codex', args: ['plugin', 'marketplace', 'list'], agentKind: 'codex', cwd, codexHome },
+      { command: 'codex', args: ['plugin', 'marketplace', 'remove', 'aw'], agentKind: 'codex', cwd, codexHome },
+    ]);
+  });
+
+  it('runs an AW-managed Codex invocation through its launcher prefix with the Codex default timeout', async () => {
+    const manager: CodexManager = {
+      kind: 'aw-managed',
+      version: '0.145.0',
+      command: process.execPath,
+      argsPrefix: ['/tmp/codex-launcher.js'],
+      runtimeRoot: '/tmp/codex-runtime',
+    };
+    let receivedInvocation: NativeCliInvocation | undefined;
+
+    await runNativeCli(
+      buildCodexPluginListInvocation(manager, '/tmp/workspace', process.env),
+      async (invocation) => {
+        receivedInvocation = invocation;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    );
+
+    expect(receivedInvocation).toMatchObject({
+      command: process.execPath,
+      args: ['/tmp/codex-launcher.js', 'plugin', 'list'],
+      agentKind: 'codex',
+      timeoutMs: 60_000,
+      env: { CODEX_HOME: process.env.AW_CODEX_HOME },
+    });
   });
 
   it.each([

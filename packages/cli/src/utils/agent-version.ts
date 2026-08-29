@@ -12,6 +12,7 @@ import type {
   PlatformName,
 } from '../types.js';
 import { compareStrictSemVer, tryParseStrictSemVer } from './manifest.js';
+import { getCodexHome } from './state-paths.js';
 import {
   getDefaultNativeCliRunner,
   isNativeCliExecutableMissingError,
@@ -21,6 +22,9 @@ import {
 } from './native-cli.js';
 
 export interface ProbeAgentVersionOptions {
+  argsPrefix?: string[];
+  cache?: boolean;
+  command?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   runner?: NativeCliRunner;
@@ -78,8 +82,8 @@ function buildProbeCacheKey(
   const env = options.env ?? process.env;
   return JSON.stringify({
     platform,
-    command: requirement.command,
-    args: VERSION_ARGUMENTS,
+    command: options.command ?? requirement.command,
+    args: [...(options.argsPrefix ?? []), ...VERSION_ARGUMENTS],
     cwd: options.cwd ?? process.cwd(),
     timeoutMs: options.timeoutMs ?? DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
     minVersion: requirement.minVersion,
@@ -131,6 +135,9 @@ export async function probeAgentVersion(
 ): Promise<AgentVersionProbeResult> {
   const requirement = getAgentVersionRequirement(platform);
   const runner = options.runner ?? getDefaultNativeCliRunner();
+  if (options.cache === false) {
+    return probeAgentVersionUncached(requirement, runner, options);
+  }
   const cacheKey = buildProbeCacheKey(platform, requirement, options);
   let runnerCache = probeCacheByRunner.get(runner);
   if (!runnerCache) {
@@ -158,12 +165,16 @@ async function probeAgentVersionUncached(
   options: ProbeAgentVersionOptions,
 ): Promise<AgentVersionProbeResult> {
   try {
+    const env = options.env ?? process.env;
     const result = await runNativeCli(
       {
-        command: requirement.command,
-        args: VERSION_ARGUMENTS,
+        command: options.command ?? requirement.command,
+        args: [...(options.argsPrefix ?? []), ...VERSION_ARGUMENTS],
         cwd: options.cwd,
-        env: options.env,
+        env: requirement.platform === 'codex'
+          ? { ...env, CODEX_HOME: getCodexHome(env) }
+          : options.env,
+        ...(requirement.platform === 'codex' ? { agentKind: 'codex' as const } : {}),
         timeoutMs: options.timeoutMs ?? DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
       },
       runner,
