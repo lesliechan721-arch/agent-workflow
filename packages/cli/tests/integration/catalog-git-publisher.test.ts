@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -20,6 +21,19 @@ const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 const service = { ...inspectionService, ...publicationService };
 const placeholderDescriptorDigest = `sha256:${'0'.repeat(64)}`;
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value: unknown): string {
+  return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`;
+}
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
@@ -65,6 +79,50 @@ async function commitCatalogVersion(root: string, version: string): Promise<void
     '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
     'commit', '--quiet', '-m', 'catalog version',
   ], { cwd: root });
+}
+
+async function convertRemoteBranchToLegacyV4(remote: string, branch: string): Promise<string> {
+  const checkout = await temporaryRoot('aw-legacy-catalog-parent-');
+  await execFileAsync('git', ['clone', '--quiet', '--branch', branch, remote, checkout]);
+  const manifestPath = path.join(checkout, 'catalog-manifest.json');
+  const manifest = await fs.readJson(manifestPath);
+  const compatibility = { aw: { minVersion: '0.0.0' } };
+  const entries = manifest.entries.map((entry: Record<string, unknown>) => {
+    const legacy = { ...entry };
+    delete legacy.dependencies;
+    delete legacy.requires;
+    return { ...legacy, compatibility };
+  });
+  const contentDigest = sha256({
+    schemaIdentity: { schemaVersion: 4 },
+    marketplaceMetadata: {
+      name: 'aw',
+      owner: manifest.marketplace.owner,
+      interface: manifest.marketplace.interface,
+    },
+    compatibility,
+    plugins: entries.map((entry: Record<string, string>) => ({
+      name: entry.name,
+      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+      contentDigest: entry.contentDigest,
+    })).sort((left: { name: string }, right: { name: string }) => left.name.localeCompare(right.name)),
+  });
+  await fs.writeJson(manifestPath, {
+    schemaVersion: 4,
+    catalogVersion: manifest.catalogVersion,
+    channel: manifest.channel,
+    compatibility,
+    marketplace: manifest.marketplace,
+    release: { ...manifest.release, planId: contentDigest, contentDigest },
+    entries,
+  });
+  await execFileAsync('git', ['add', 'catalog-manifest.json'], { cwd: checkout });
+  await execFileAsync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    'commit', '--quiet', '-m', 'legacy v4 catalog parent',
+  ], { cwd: checkout });
+  await execFileAsync('git', ['push', '--quiet', 'origin', `HEAD:${branch}`], { cwd: checkout });
+  return (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: checkout })).stdout.trim();
 }
 
 describe('common Catalog publisher used by official release', () => {
@@ -187,6 +245,50 @@ describe('common Catalog publisher used by official release', () => {
       ])).stdout.trim()).toBe(published.commit);
     } finally {
       await disposeCatalogRelease(preparation, { catalogPublicationService: service });
+    }
+  });
+
+  it('prepares a v5 beta publication from a validated v4 remote parent', async () => {
+    const { root, remote } = await createWorkspace('0.1.0-beta.1');
+    const initial = await prepareCatalogRelease('beta', {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    });
+    try {
+      await publishCatalogRelease({
+        descriptor: initial.descriptor,
+        stagedRoot: initial.prepared.outputRoot,
+      }, {
+        repoRoot: root,
+        remoteUrl: remote,
+        catalogPublicationService: service,
+      });
+    } finally {
+      await disposeCatalogRelease(initial, { catalogPublicationService: service });
+    }
+    const legacyParent = await convertRemoteBranchToLegacyV4(remote, 'catalog/beta');
+    await commitCatalogVersion(root, '0.1.0-beta.2');
+
+    const update = await prepareCatalogRelease('beta', {
+      repoRoot: root,
+      remoteUrl: remote,
+      catalogPublicationService: service,
+    });
+    try {
+      expect(update.descriptor).toMatchObject({
+        parent: legacyParent,
+        catalogVersion: '0.1.0-beta.2',
+      });
+      await expect(fs.readJson(path.join(update.prepared.outputRoot, 'catalog-manifest.json')))
+        .resolves.toMatchObject({
+          schemaVersion: 5,
+          entries: [{ version: '0.1.0-beta.1' }],
+        });
+      await expect(fs.readJson(path.join(update.prepared.outputRoot, 'plugin-release-ledger.json')))
+        .resolves.toMatchObject({ schemaVersion: 2 });
+    } finally {
+      await disposeCatalogRelease(update, { catalogPublicationService: service });
     }
   });
 
