@@ -89,7 +89,6 @@ docs/dev/<task-slug>/
 
 ## 输出与工件
 
-- 路由摘要是给用户看的说明，不是 Skill 间函数返回。
-- Spec、work 和 Review 报告是跨会话工件。
-- Review 报告保留 `clean / blocked / incomplete`，因为它是实际门槛。
-- 非 Review Skill 不维护状态枚举或固定下一 Skill 字段。
+- 入口用简短说明告诉用户当前 gate、判断依据和是否需要参与。
+- Spec、work 和 Review 报告只在跨会话或交接有价值时持久化。
+- Review 报告使用 `clean / blocked / incomplete` 表示批准或交付门槛。

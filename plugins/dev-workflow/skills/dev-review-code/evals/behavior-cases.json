@@ -158,12 +158,6 @@
               "已解决",
               "仍存在",
               "新发现"
-            ],
-            "not_contains": [
-              "Repair round",
-              "Progress:",
-              "Automatic repair",
-              "Result: `blocked`"
             ]
           }
         ],
@@ -171,7 +165,7 @@
           "trace 读取 references/rereview.md 并创建一个新的 fresh reviewer",
           "reviewer 重新覆盖 Spec fidelity 与 Engineering quality，而不是只验证旧 finding",
           "ExpiryPolicy 或其它更优抽象偏好不升级为 blocker",
-          "报告比较已解决、仍存在和新发现，不维护轮次或进展状态",
+          "报告比较已解决、仍存在和新发现，并交回当前 clean 结论",
           "覆盖当前 code-review.md，不修改代码、测试或 Spec",
           "结论 clean 时明确可以交付"
         ]

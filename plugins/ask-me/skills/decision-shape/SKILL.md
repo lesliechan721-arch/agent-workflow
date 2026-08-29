@@ -1,6 +1,6 @@
 ---
 name: decision-shape
-description: 当一个复杂需求、计划、方案或重要决定需要通过多轮问答和按需原型，塑造成完整、当前有效的共享理解时使用。它可以按需组合 decision-grill 和 decision-prototype，也可以在调用者提供路径时维护一份 Shape 记录。一次性决策访谈使用 decision-grill；单一原型问题使用 decision-prototype。
+description: 当复杂需求、计划、方案或重要决定需要在多轮问答与可体验证据之间切换，并形成完整、当前有效的共享理解，或需要跨会话维护当前 Shape 时使用。仅需一次有界决策访谈、一个单一原型或一次性分析即可完成时不要使用。
 ---
 
 # Decision Shape

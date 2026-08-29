@@ -107,6 +107,182 @@
         "allowed_variance": "只加载 decision-prototype。",
         "minimal_counterexample": "如果 Prototype 只是整体决策塑形中的一个证据分支，并且还要归一其它开放决定，则应先加载 decision-shape。"
       }
+    },
+    {
+      "id": "semantic_macro_routes_discussion",
+      "split": "validation",
+      "query": "帮我把明年的产品定价方向完整塑形。当前最上游的是增长和简单性的取舍，这一题可以通过逐轮讨论决定。",
+      "expected_loaded_skills": [
+        "decision-shape",
+        "decision-grill"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "semantic-shape-routing",
+      "unit_under_test": "description-and-full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "query_has_no_skill_name": true,
+        "multiple_material_decisions_exist": true
+      },
+      "oracle": {
+        "rationale": "完整 Shape 的当前问题可以通过讨论解决，因此先选宏能力，再只进入访谈叶子。",
+        "rule_refs": [
+          "SKILL.md description",
+          "SKILL.md#工作方式"
+        ],
+        "confidence": "high",
+        "allowed_variance": "只加载 decision-shape 和 decision-grill；不得同时加载 Prototype 叶子。",
+        "minimal_counterexample": "若用户只要求围绕一个有界决定进行访谈，不要求完整塑形，则只应加载 decision-grill。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "漏掉宏会丢失整体 Shape；多加载 Prototype 会增加无关流程。"
+      }
+    },
+    {
+      "id": "semantic_macro_routes_evidence",
+      "split": "validation",
+      "query": "帮我把新的审批体验完整想清楚。当前最上游的是信息层级，必须让我实际操作两个候选页面后才能决定。",
+      "expected_loaded_skills": [
+        "decision-shape",
+        "decision-prototype"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "semantic-shape-routing",
+      "unit_under_test": "description-and-full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "query_has_no_skill_name": true,
+        "multiple_material_decisions_exist": true
+      },
+      "oracle": {
+        "rationale": "完整 Shape 的当前问题必须取得体验证据，因此先选宏能力，再只进入 Prototype 叶子。",
+        "rule_refs": [
+          "SKILL.md description",
+          "SKILL.md#工作方式"
+        ],
+        "confidence": "high",
+        "allowed_variance": "只加载 decision-shape 和 decision-prototype；不得同时加载访谈叶子。",
+        "minimal_counterexample": "若用户只需操作一个候选原型来完成单一决定，则只应加载 decision-prototype。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "漏掉宏会丢失整体 Shape；多加载访谈叶子会增加无关流程。"
+      }
+    },
+    {
+      "id": "semantic_single_interview_stays_leaf",
+      "split": "sanity",
+      "query": "围绕权限模型逐轮问我，把失败路径和核心取舍收住，并交付这一个决定的记录。",
+      "expected_loaded_skills": [
+        "decision-grill"
+      ],
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "semantic-leaf-routing",
+      "unit_under_test": "description",
+      "preconditions": {
+        "participant_skills_available": true,
+        "query_has_no_skill_name": true,
+        "single_bounded_decision": true
+      },
+      "oracle": {
+        "rationale": "这是一个有界访谈结果，叶子可以独立完成，不需要宏 Shape。",
+        "rule_refs": [
+          "decision-shape/SKILL.md description",
+          "decision-grill/SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "只加载 decision-grill。",
+        "minimal_counterexample": "若还要在多个相互依赖决定和 Prototype 证据之间切换并维护整体共享理解，则应加载 decision-shape。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "误加载宏会给单一访谈增加不必要流程。"
+      }
+    },
+    {
+      "id": "semantic_single_prototype_stays_leaf",
+      "split": "sanity",
+      "query": "做两个审批页面候选让我实际点一下，收集反馈后确定这一处信息层级。",
+      "expected_loaded_skills": [
+        "decision-prototype"
+      ],
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "semantic-leaf-routing",
+      "unit_under_test": "description",
+      "preconditions": {
+        "participant_skills_available": true,
+        "query_has_no_skill_name": true,
+        "single_prototype_question": true
+      },
+      "oracle": {
+        "rationale": "这是一个单一 Prototype 问题，叶子可以独立完成，不需要宏 Shape。",
+        "rule_refs": [
+          "decision-shape/SKILL.md description",
+          "decision-prototype/SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "只加载 decision-prototype。",
+        "minimal_counterexample": "若这一原型只是多个相互依赖决定中的一个证据分支，并要求维护整体共享理解，则应加载 decision-shape。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "误加载宏会给单一 Prototype 增加不必要流程。"
+      }
+    },
+    {
+      "id": "semantic_one_shot_analysis_loads_none",
+      "split": "sanity",
+      "query": "一次性比较这三个架构方案，说明主要取舍并给出建议。",
+      "expected_loaded_skills": [],
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "semantic-near-miss-routing",
+      "unit_under_test": "description",
+      "preconditions": {
+        "participant_skills_available": true,
+        "query_has_no_skill_name": true,
+        "one_shot_answer_is_sufficient": true
+      },
+      "oracle": {
+        "rationale": "一次性分析不需要访谈、Prototype 或持续 Shape。",
+        "rule_refs": [
+          "decision-shape/SKILL.md description",
+          "decision-grill/SKILL.md description",
+          "decision-prototype/SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "直接回答或使用范围外的分析能力；不得加载三个 Ask Me Skill。",
+        "minimal_counterexample": "若用户要求逐轮校准多个决定并按需取得体验证据，则应加载 decision-shape。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "medium",
+        "false_negative_cost": "low",
+        "false_positive_cost": "high",
+        "rationale": "误触发任一 Ask Me Skill 会给一次性分析增加不必要流程。"
+      }
     }
   ]
 }

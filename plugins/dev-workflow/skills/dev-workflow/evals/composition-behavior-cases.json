@@ -170,7 +170,7 @@
         "checks": [
           "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code；本次请求没有新的自动修复授权",
           "不读取 review-repair.md；根据当前 blocked Review 和无新授权进入用户检查点",
-          "向用户说明最新 blocker 和可选动作，不维护轮次预算或进展枚举",
+          "向用户说明最新 blocker、关闭条件和需要重新决定的动作；没有新授权时停止",
           "用户选择停止后不修改 Spec、Review 或产品代码"
         ]
       }
@@ -188,24 +188,24 @@
         "spec_missing": true
       },
       "oracle": {
-        "rationale": "宏路由摘要服务用户导航，不应模拟 Skill 函数返回对象。",
+        "rationale": "宏路由摘要必须让用户理解当前 gate、为什么它最早未满足、接下来会发生什么，以及是否需要参与。",
         "rule_refs": [
           "dev-workflow/SKILL.md"
         ],
         "confidence": "high",
-        "allowed_variance": "可以使用短段落或列表，但不能机械输出固定 status、next-skill 或 return object。",
-        "minimal_counterexample": "如果结果要由工具读取、跨独立上下文交接或保存为持久 Review artifact，则应使用相应的真实结构化合同。"
+        "allowed_variance": "可以使用短段落或列表；用户必须能识别当前 gate、判断依据、下一步和参与要求。",
+        "minimal_counterexample": "若当前 gate 需要用户批准，则摘要必须明确请求批准，而不是继续后续能力。"
       },
       "prompt": "使用 dev-workflow 判断这个任务的下一阶段。Shape 已完整，没有 Spec。只说明路由结果和理由；不要修改工作区。",
       "scripted_replies": [],
-      "expected_output": "自然说明当前进入 Spec、使用 dev-spec 及其依据，不输出固定函数式返回对象。",
+      "expected_output": "说明当前最早未满足的是 Spec gate、接下来使用 dev-spec、判断依据，以及本次不需要用户参与。",
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "说明当前阶段、下一能力和主要依据",
-          "不机械输出固定 status、next-skill 或 return object",
+          "说明当前最早未满足的 gate 和主要依据",
+          "说明下一能力、接下来会发生什么以及用户是否需要参与",
           "不修改工作区"
         ]
       }

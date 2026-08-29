@@ -132,12 +132,12 @@
           "SKILL.md#收尾"
         ],
         "confidence": "high",
-        "allowed_variance": "记录结构可不同，但不能要求宏 Skill 消费 delta。",
+        "allowed_variance": "记录结构可不同，但本次任务必须直接向用户交付完整、可独立理解的决定记录。",
         "minimal_counterexample": "如果用户明确要求塑形多个相互依赖的决定，并允许在访谈和 Prototype 之间选择，则该任务超出单一 decision-grill 访谈。"
       },
       "prompt": "只使用 decision-grill 帮我完成迁移范围决定，并在用户确认后返回完整决策记录。不要使用其它 Skill。",
       "scripted_replies": [],
-      "expected_output": "能够独立访谈并交付完整决策记录，不引用 decision-shape、decision-prototype 或 decision delta。",
+      "expected_output": "直接向用户交付完整、可独立理解的决策记录；完成任务不需要其它 Skill 提供输入或继续处理。",
       "files": [],
       "review": {
         "platforms": [

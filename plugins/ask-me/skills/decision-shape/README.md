@@ -21,6 +21,6 @@ Skill 会先调查事实并建立 Decision frame，再选择当前最重要的�
 - 不内置开发目录、Spec 生命周期或保障等级。
 - 不实现、审查、提交或发布结果。
 - Shape 不记录完整问答、模型思考或 Prototype 修改日志。
-- 同一时刻只组合一个叶子 Skill，不要求叶子返回函数式对象。
+- 同一时刻只组合一个叶子 Skill。
 
 主要指令见 [`SKILL.md`](SKILL.md)，模板见 [`assets/shape-template.md`](assets/shape-template.md)，评测材料见 [`evals/`](evals/)。

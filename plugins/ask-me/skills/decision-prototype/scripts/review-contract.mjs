@@ -11,6 +11,7 @@ function matchesType(value, expected) {
   if (expected === 'object') return value !== null && typeof value === 'object' && !Array.isArray(value);
   if (expected === 'array') return Array.isArray(value);
   if (expected === 'integer') return Number.isInteger(value);
+  if (expected === 'number') return typeof value === 'number' && Number.isFinite(value);
   return typeof value === expected;
 }
 
@@ -36,6 +37,15 @@ function applyDefaults(value, schema) {
 
 function validate(value, schema, location, errors) {
   if (!schema || typeof schema !== 'object') return;
+  if (Array.isArray(schema.oneOf)) {
+    const matches = schema.oneOf.filter((candidate) => {
+      const candidateErrors = [];
+      validate(value, candidate, location, candidateErrors);
+      return candidateErrors.length === 0;
+    });
+    if (matches.length !== 1) errors.push(`${location} must match exactly one allowed shape`);
+    return;
+  }
   if (schema.const !== undefined && !Object.is(value, schema.const)) {
     errors.push(`${location} must equal ${JSON.stringify(schema.const)}`);
     return;
@@ -51,8 +61,11 @@ function validate(value, schema, location, errors) {
   if (schema.type === 'string' && schema.minLength !== undefined && value.length < schema.minLength) {
     errors.push(`${location} must contain at least ${schema.minLength} character(s)`);
   }
-  if (schema.type === 'integer' && schema.minimum !== undefined && value < schema.minimum) {
+  if ((schema.type === 'integer' || schema.type === 'number') && schema.minimum !== undefined && value < schema.minimum) {
     errors.push(`${location} must be at least ${schema.minimum}`);
+  }
+  if ((schema.type === 'integer' || schema.type === 'number') && schema.maximum !== undefined && value > schema.maximum) {
+    errors.push(`${location} must be at most ${schema.maximum}`);
   }
   if (schema.type === 'array') {
     if (schema.minItems !== undefined && value.length < schema.minItems) {
@@ -75,6 +88,37 @@ function validate(value, schema, location, errors) {
   }
 }
 
+function validatePrototypeCapabilities(value, label, errors) {
+  if (!matchesType(value, 'object') || !Array.isArray(value.options)) return;
+
+  const hasHtml = value.options.some((option) => option?.kind === 'html');
+  const hasImage = value.options.some((option) => option?.kind === 'image');
+  const hasStaticHtml = hasHtml && value.htmlExecution === 'static';
+
+  if (value.htmlExecution === 'sandboxed' && !hasHtml) {
+    errors.push(`${label}.htmlExecution "sandboxed" requires at least one html option`);
+  }
+  if (value.allowAnnotations && !hasImage && !hasStaticHtml) {
+    errors.push(`${label}.allowAnnotations requires an image or static html option`);
+  }
+  if (value.editableCssVariables === undefined) return;
+
+  const names = matchesType(value.editableCssVariables, 'object')
+    ? Object.keys(value.editableCssVariables)
+    : [];
+  if (names.length === 0) {
+    errors.push(`${label}.editableCssVariables must contain at least one CSS custom property`);
+  }
+  for (const name of names) {
+    if (!name.startsWith('--') || name.length === 2) {
+      errors.push(`${label}.editableCssVariables.${name} must start with "--" and include a name`);
+    }
+  }
+  if (!hasStaticHtml) {
+    errors.push(`${label}.editableCssVariables requires at least one static html option`);
+  }
+}
+
 export async function readJsonSchema(schemaPath) {
   return JSON.parse(await readFile(schemaPath, 'utf8'));
 }
@@ -84,6 +128,9 @@ export function normalizeAndValidate(value, schema, label) {
   applyDefaults(normalized, schema);
   const errors = [];
   validate(normalized, schema, label, errors);
+  if (schema.title === 'PrototypeReviewConfig') {
+    validatePrototypeCapabilities(normalized, label, errors);
+  }
   if (errors.length > 0) throw new Error(errors.join('; '));
   return normalized;
 }
