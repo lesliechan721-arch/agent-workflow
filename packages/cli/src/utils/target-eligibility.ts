@@ -1,12 +1,18 @@
-import type { StatusV4Target } from '../commands/status-v4.js';
+import type { StatusV5Target } from '../commands/status-v5.js';
 import type {
   CommandWizardCommand,
   CommandWizardPluginCandidate,
   CommandWizardSelection,
 } from '../commands/wizard.js';
 
-export function targetCanBeUninstalled(state: StatusV4Target['state']): boolean {
+export function targetCanBeUninstalled(state: StatusV5Target['state']): boolean {
   return state === 'present' || state === 'partial';
+}
+
+export function targetHasArtifactCollision(target: {
+  errors: ReadonlyArray<{ code: string }>;
+}): boolean {
+  return target.errors.some((error) => error.code === 'artifactCollision');
 }
 
 export function writeCandidateEligibility(
@@ -21,7 +27,7 @@ export function writeCandidateEligibility(
     return { selectable: false, reason: 'current bundle 不支持所选平台和范围' };
   }
   const selectable = targets.every((target) => ({
-    install: target.state === 'absent',
+    install: target.state === 'absent' && !targetHasArtifactCollision(target),
     reinstall: target.state === 'present' || target.state === 'partial',
     upgrade: target.state === 'present',
     uninstall: targetCanBeUninstalled(target.state),

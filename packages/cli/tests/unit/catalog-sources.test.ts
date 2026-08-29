@@ -8,9 +8,11 @@ import {
   CATALOG_BETA_REF,
   CATALOG_LATEST_REF,
   CATALOG_SOURCE_IDENTITY_VERSION,
+  OFFICIAL_CATALOG_SOURCE_SSH_URL,
   OFFICIAL_CATALOG_SOURCE_URL,
 } from '../../src/constants.js';
 import {
+  calculateCatalogSourceConfigFingerprint,
   calculateCatalogSourceIdentity,
   canonicalizeCatalogGitUrl,
 } from '../../src/utils/catalog-source-identity.js';
@@ -278,6 +280,38 @@ describe('catalog sources config v1', () => {
 });
 
 describe('catalog source identity v1', () => {
+  it('shares identity only between the exact official HTTPS and SSH aliases', async () => {
+    const officialHttps = {
+      id: 'official', type: 'git', primary: true, url: OFFICIAL_CATALOG_SOURCE_URL,
+      refPolicy: { type: 'cliChannel' },
+    } as const;
+    const officialSsh = { ...officialHttps, url: OFFICIAL_CATALOG_SOURCE_SSH_URL };
+    const secondIdHttps = { ...officialHttps, id: 'second-https', primary: false };
+    const secondIdSsh = { ...officialSsh, id: 'second-ssh', primary: false };
+
+    expect(await calculateCatalogSourceIdentity(officialHttps))
+      .toBe('sha256:f82790a0557050cf03d9340d9ce46f436706a47917650e02b00d770eebdf851e');
+    expect(await calculateCatalogSourceIdentity(officialSsh))
+      .toBe(await calculateCatalogSourceIdentity(officialHttps));
+    expect(calculateCatalogSourceConfigFingerprint(officialHttps))
+      .not.toBe(calculateCatalogSourceConfigFingerprint(officialSsh));
+    expect(await calculateCatalogSourceIdentity(secondIdHttps))
+      .toBe(await calculateCatalogSourceIdentity(officialHttps));
+    expect(await calculateCatalogSourceIdentity(secondIdSsh))
+      .toBe(await calculateCatalogSourceIdentity(officialHttps));
+    expect(await calculateCatalogSourceIdentity({
+      ...officialHttps,
+      url: 'ssh://git@github.com/lesliechan721-arch/agent-workflow.git',
+    })).not.toBe(await calculateCatalogSourceIdentity(officialHttps));
+    expect(await calculateCatalogSourceIdentity({
+      ...officialHttps,
+      url: 'https://github.com/lesliechan721-arch/other.git',
+    })).not.toBe(await calculateCatalogSourceIdentity({
+      ...officialHttps,
+      url: 'git@github.com:lesliechan721-arch/other.git',
+    }));
+  });
+
   it('matches the v1 golden and isolates internal duplicate Git path slashes', async () => {
     expect(CATALOG_SOURCE_IDENTITY_VERSION).toBe(1);
     const golden = await calculateCatalogSourceIdentity({

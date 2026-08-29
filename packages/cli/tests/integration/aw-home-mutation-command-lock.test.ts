@@ -27,6 +27,7 @@ import {
   getCurrentSourceTestIsolation,
   getSourceTestRepositoryCwd,
 } from '../setup/test-isolation.js';
+import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 
 function deferred(): {
   promise: Promise<void>;
@@ -159,7 +160,7 @@ describe('public AW_HOME mutation command lock', () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     await expect(fs.pathExists(secondEntered)).resolves.toBe(false);
     expect((await readCatalogSourcesConfigSnapshot({ ...isolation.env, AW_HOME: physicalHome }))
-      .config.sources.map((source) => source.id)).toContain('first');
+      .config.sources.map((source) => source.id)).toEqual(['official']);
 
     await fs.outputFile(releaseFirst, 'release\n');
     const [firstOutcome, secondOutcome] = await Promise.all([
@@ -173,7 +174,7 @@ describe('public AW_HOME mutation command lock', () => {
       .config.sources.map((source) => source.id).sort()).toEqual(['first', 'official', 'second']);
   });
 
-  it('keeps a plugin write behind an in-flight source mutation for the same AW_HOME', async () => {
+  it('releases the mutation lock before a committed source begins refresh', async () => {
     const { isolation, candidateRoot } = await configureCatalog();
     const sourceEntered = deferred();
     const releaseSource = deferred();
@@ -191,28 +192,26 @@ describe('public AW_HOME mutation command lock', () => {
     });
     await sourceEntered.promise;
 
-    let pluginSettled = false;
-    const pluginWrite = installWriteCommand(['team/missing'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, {
+    let lockAcquired = false;
+    await withAwHomeMutationLock({
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      action: async () => {
+        lockAcquired = true;
+      },
     });
-    void pluginWrite.then(() => { pluginSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(pluginSettled).toBe(false);
+    expect(lockAcquired).toBe(true);
 
     releaseSource.resolve();
     await expect(sourceMutation).resolves.toMatchObject({ ok: true, changed: true });
-    const pluginResult = await pluginWrite;
-    expect(pluginResult.overallState).toBe('failed');
-    expect(pluginSettled).toBe(true);
   });
 
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
     const { isolation } = await configureCatalog();
+    await refreshCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
     const result = await withAwHomeMutationLock({
       env: isolation.env,
       action: () => installWriteCommand(['team/demo'], {
@@ -230,7 +229,7 @@ describe('public AW_HOME mutation command lock', () => {
     expect(result.dependencyPlan?.requestedPluginIds).toEqual(['team/demo']);
   });
 
-  it('re-resolves config identity after a source update releases the mutation lock', async () => {
+  it('re-resolves config identity while a committed source refresh is still pending', async () => {
     const { isolation, candidateRoot } = await configureCatalog();
     const oldIdentity = (await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity;
     const sourceEntered = deferred();
@@ -251,7 +250,6 @@ describe('public AW_HOME mutation command lock', () => {
     await sourceEntered.promise;
 
     const captured = createCapturedCliIo();
-    let configSettled = false;
     const configSet = runCli([
       'config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'user', '--json',
     ], {
@@ -260,13 +258,10 @@ describe('public AW_HOME mutation command lock', () => {
       io: captured.io,
       interactive: false,
     });
-    void configSet.then(() => { configSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(configSettled).toBe(false);
+    await expect(configSet).resolves.toBe(0);
 
     releaseSource.resolve();
     await expect(sourceMutation).resolves.toMatchObject({ ok: true, changed: true });
-    await expect(configSet).resolves.toBe(0);
     const payload = JSON.parse(captured.readStdout());
     const newIdentity = (await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity;
     expect(newIdentity).not.toBe(oldIdentity);

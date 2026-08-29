@@ -153,6 +153,7 @@ export interface RebuildIntegration {
     catalog: CatalogResolution;
     includeHistoricalLifecycleArtifacts: boolean;
     readOnlyInspectionPlan?: boolean;
+    includeNativeCleanupCandidate?: boolean;
   }): Promise<DesiredTarget>;
 }
 
@@ -844,6 +845,8 @@ async function scanOwnedTextFiles(options: {
       if (
         parsed?.identity.plugin !== options.pluginName
         || (options.sourceId !== undefined && parsed.identity.sourceId !== options.sourceId)
+        || (options.sourceIdentity !== undefined
+          && parsed.identity.sourceIdentity !== options.sourceIdentity)
         || parsed.identity.platform !== options.platform
         || parsed.identity.scope !== options.scope
       ) continue;
@@ -881,6 +884,7 @@ async function scanOwnedSkills(options: {
       if (
         marker?.plugin === options.pluginName
         && (options.sourceId === undefined || marker.sourceId === options.sourceId)
+        && (options.sourceIdentity === undefined || marker.sourceIdentity === options.sourceIdentity)
         && marker.platform === options.platform
         && marker.scope === options.scope
       ) {
@@ -3756,7 +3760,8 @@ export function createRebuildIntegration(options: {
           });
       const nativeRequired = input.platform === 'claude'
         || (input.scope === 'user' && requiresCodexNativePlugin(input.plugin, input.scope));
-      const nativeCleanupCandidate = input.platform === 'claude' || input.scope === 'user';
+      const nativeCleanupCandidate = (input.platform === 'claude' || input.scope === 'user')
+        && input.includeNativeCleanupCandidate !== false;
       const nativePlugin = (nativeRequired || nativeCleanupCandidate)
         ? [{
             kind: 'native-plugin' as const,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { StatusV4Payload, StatusV4PluginSummary } from '../../src/commands/status-v4.js';
+import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/status-v5.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
@@ -23,7 +23,7 @@ import { TuiRouter } from '../../src/tui/router.js';
 function source(
   id: string,
   options: { primary?: boolean; freshness?: 'remote' | 'cache' | 'path'; error?: string; type?: 'git' | 'path' } = {},
-): StatusV4Payload['catalog']['sources'][number] {
+): StatusV5Payload['catalog']['sources'][number] {
   return {
     id,
     identity: `identity:${id}`,
@@ -36,12 +36,12 @@ function source(
 }
 
 function status(options: {
-  sources?: StatusV4Payload['catalog']['sources'];
-  targets?: StatusV4Payload['targets'];
-  errors?: StatusV4Payload['errors'];
-} = {}): StatusV4Payload {
+  sources?: StatusV5Payload['catalog']['sources'];
+  targets?: StatusV5Payload['targets'];
+  errors?: StatusV5Payload['errors'];
+} = {}): StatusV5Payload {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     catalog: {
       primarySourceId: 'official',
       configDigest: 'sha256:config',
@@ -61,7 +61,8 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-}): StatusV4Payload['targets'][number] {
+  errors?: StatusV5Payload['targets'][number]['errors'];
+}): StatusV5Payload['targets'][number] {
   const pluginName = options.pluginName ?? 'demo';
   const sourceId = options.sourceId ?? 'official';
   return {
@@ -75,11 +76,12 @@ function target(options: {
     cwd: '/workspace',
     state: options.state,
     components: [],
-    errors: options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure' }] : [],
+    errors: options.errors
+      ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure' }] : []),
   };
 }
 
-function summaries(...entries: Array<[string, string]>): StatusV4PluginSummary[] {
+function summaries(...entries: Array<[string, string]>): StatusV5PluginSummary[] {
   return entries.map(([sourceId, pluginName]) => ({
     pluginName,
     pluginId: `${sourceId}/${pluginName}`,
@@ -281,7 +283,10 @@ describe('TUI v4 router and ViewModel', () => {
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue({
         payload: status({ targets: [
-          target({ platform: 'codex', scope: 'user', state: 'absent' }),
+          target({
+            platform: 'codex', scope: 'user', state: 'absent',
+            errors: [{ code: 'artifactCollision', message: 'safe collision' }],
+          }),
           target({ platform: 'codex', scope: 'project', state: 'absent' }),
           target({ platform: 'claude', scope: 'project', state: 'absent' }),
         ] }),
@@ -294,7 +299,7 @@ describe('TUI v4 router and ViewModel', () => {
     await controller.load();
 
     expect(controller.listInstallTargets('official/demo', 'user')).toEqual([
-      { platform: 'codex', compatible: true },
+      { platform: 'codex', compatible: false, disabled: '存在输出冲突；请先移除或迁移占用内容' },
       { platform: 'claude', compatible: false, disabled: '不支持所选位置' },
     ]);
     expect(controller.listInstallTargets('official/demo', 'project')).toEqual([
@@ -666,9 +671,9 @@ describe('TUI v4 router and ViewModel', () => {
     });
 
     expect(view.issues.map((issue) => issue.issueId)).toEqual([
-      'target:official/demo:codex:user:error',
-      'status:legacyStateUnsupported',
       'status:nativeStateUnreadable',
+      'status:legacyStateUnsupported',
+      'target:official/demo:codex:user:error',
     ]);
     expect(JSON.stringify(view.issues)).not.toContain('/Users/private');
     expect(JSON.stringify(view.issues)).not.toContain('private-token');
@@ -679,6 +684,21 @@ describe('TUI v4 router and ViewModel', () => {
       status: status({
         targets: [
           target({ pluginName: 'partial', scope: 'user', state: 'partial' }),
+          target({
+            pluginName: 'collision',
+            scope: 'user',
+            state: 'absent',
+            errors: [{
+              code: 'artifactCollision',
+              message: 'safe collision',
+              collision: {
+                reason: 'unownedContent',
+                artifactKind: 'skill-directory',
+                artifactKey: 'review',
+                expectedOwner: 'official/collision',
+              },
+            }],
+          }),
           target({ pluginName: 'missing', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
           target({ pluginName: 'changed', scope: 'user', state: 'error', errorCode: 'sourceChanged' }),
           target({ pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable' }),
@@ -701,6 +721,7 @@ describe('TUI v4 router and ViewModel', () => {
 
     expect(Object.fromEntries(view.issues.map((issue) => [issue.issueId, issue.category]))).toMatchObject({
       'target:official/partial:codex:user:partial': 'incompleteInstallation',
+      'target:official/collision:codex:user:absent': 'artifactCollision',
       'target:official/missing:codex:user:error': 'sourceMissing',
       'target:official/changed:codex:user:error': 'sourceIdentityChanged',
       'config:official/required:required': 'requiredConfigMissing',
@@ -708,6 +729,13 @@ describe('TUI v4 router and ViewModel', () => {
       'source:official:cache': 'sourceDegraded',
     });
     expect(JSON.stringify(view.issues)).not.toContain('arbitrary text');
+    const collision = view.issues.find((issue) => issue.category === 'artifactCollision');
+    expect(collision).toMatchObject({
+      title: expect.stringContaining('输出冲突'),
+      explanation: expect.stringContaining('不会覆盖或删除'),
+      actions: [{ id: 'viewTechnical' }, { id: 'retryLater' }],
+      technicalDetails: [{ code: 'artifactCollision', message: '目标包含没有 AW owner 标记的内容。' }],
+    });
     expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.actions.map((action) => action.id))
       .toContain('continueWithCache');
     expect(view.issues.filter((issue) => issue.sourceId === 'official'
@@ -716,9 +744,129 @@ describe('TUI v4 router and ViewModel', () => {
       '2 个安装位置受此来源根问题影响。',
     );
     expect(view.issues.find((issue) => issue.category === 'sourceMissing')?.actions.map((action) => action.id))
-      .toEqual(['reAddSource', 'viewTechnical']);
+      .toEqual(['cleanup', 'reAddSource', 'viewTechnical']);
     expect(view.issues.find((issue) => issue.category === 'sourceIdentityChanged')?.actions.map((action) => action.id))
       .toEqual(['viewSourceChange', 'viewTechnical']);
+  });
+
+  it('selects one stable primary reason and orders issue root groups', () => {
+    const consumer = target({
+      pluginName: 'consumer', scope: 'project', state: 'partial', errors: [{
+        code: 'dependencyNotReady',
+        message: 'safe dependency symptom',
+        dependencyPluginId: 'official/leaf',
+        rootIssueId: 'artifactCollision:official/leaf:codex:user:agent:leaf-role',
+        rootIssueCode: 'artifactCollision',
+      }],
+    });
+    const view = buildTuiViewModel({
+      status: status({
+        targets: [
+          target({ pluginName: 'removed', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
+          consumer,
+          target({ sourceId: 'team', pluginName: 'graph', scope: 'user', state: 'absent' }),
+          target({
+            pluginName: 'dependency', scope: 'user', state: 'partial', errors: [{
+              code: 'dependencyMissing',
+              message: 'safe dependency evidence',
+              dependencyPluginId: 'official/leaf',
+            }],
+          }),
+          target({ pluginName: 'incomplete', scope: 'user', state: 'partial' }),
+        ],
+      }),
+      pluginSummaries: [
+        ...summaries(
+          ['official', 'removed'],
+          ['official', 'consumer'],
+          ['official', 'leaf'],
+          ['team', 'graph'],
+          ['official', 'dependency'],
+          ['official', 'incomplete'],
+          ['official', 'available'],
+        ),
+        {
+          pluginName: 'configured',
+          pluginId: 'team/configured',
+          description: 'config fixture',
+          configIssues: [{
+            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+          }],
+        },
+        {
+          pluginName: 'source-configured',
+          pluginId: 'official/source-configured',
+          description: 'source config fixture',
+          configIssues: [{
+            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+          }],
+        },
+      ],
+      sourceHealth: new Map([['official', {
+        sourceId: 'official', state: 'degraded', issueId: 'source:official:cache',
+      }]]),
+      dependencyOverviews: [{
+        pluginId: 'team/graph',
+        summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 0, missingCount: 0, issueCount: 1 },
+        dependencies: [],
+        dependents: [],
+        blockers: [{
+          code: 'dependencyGraphInvalid',
+          title: '依赖关系无效',
+          explanation: '依赖关系形成环。',
+        }],
+      }],
+    });
+
+    expect(view.issues.map((issue) => issue.group)).toEqual([
+      'sourceRemoved',
+      'artifactCollision',
+      'sourceUnavailable',
+      'dependency',
+      'dependency',
+      'config',
+      'config',
+      'installation',
+    ]);
+    expect(view.issues.filter((issue) =>
+      issue.issueId === 'artifactCollision:official/leaf:codex:user:agent:leaf-role')).toHaveLength(1);
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/consumer')?.primaryAttention)
+      .toEqual({
+        severity: 'error',
+        code: 'artifactCollision',
+        message: '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。',
+      });
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'team/configured')?.primaryAttention?.code)
+      .toBe('invalidConfig');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/available')?.primaryAttention)
+      .toMatchObject({ severity: 'warning', code: 'sourceUnavailable' });
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/incomplete')?.primaryAttention?.code)
+      .toBe('sourceUnavailable');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/dependency')?.primaryAttention?.code)
+      .toBe('sourceUnavailable');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'team/graph')?.primaryAttention?.code)
+      .toBe('dependencyGraphInvalid');
+    expect(view.plugins.find((plugin) => plugin.pluginId === 'official/source-configured')?.primaryAttention?.code)
+      .toBe('sourceUnavailable');
+  });
+
+  it('selects an unavailable source before config and incomplete symptoms', () => {
+    const view = buildTuiViewModel({
+      status: status({ targets: [target({ pluginName: 'offline', scope: 'user', state: 'partial' })] }),
+      pluginSummaries: [{
+        pluginName: 'offline',
+        pluginId: 'official/offline',
+        description: 'offline fixture',
+        configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
+      }],
+      sourceHealth: new Map([['official', {
+        sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
+      }]]),
+    });
+
+    expect(view.plugins[0]?.primaryAttention).toMatchObject({
+      severity: 'error', code: 'sourceUnavailable',
+    });
   });
 
   it('keeps bundleUnavailable as a plugin target issue beside a degraded source root', () => {
@@ -1571,18 +1719,12 @@ describe('TUI v4 Review safety', () => {
     });
   });
 
-  it('single-flights repeated execution while validation and evidence capture are delayed', async () => {
-    const validation = deferred<void>();
-    const capture = deferred<OperationEvidence>();
+  it('single-flights plugin execution without a second pre-dispatch freshness scan', async () => {
     const executeIntent = vi.fn().mockResolvedValue({
       targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
     });
-    const validateIntent = vi.fn()
-      .mockResolvedValueOnce(undefined)
-      .mockImplementationOnce(() => validation.promise);
-    const captureEvidence = vi.fn()
-      .mockResolvedValueOnce(baseEvidence)
-      .mockImplementationOnce(() => capture.promise);
+    const validateIntent = vi.fn().mockResolvedValue(undefined);
+    const captureEvidence = vi.fn().mockResolvedValue(baseEvidence);
     const controller = new TuiController(dependencies({
       validateIntent,
       captureEvidence,
@@ -1601,12 +1743,11 @@ describe('TUI v4 Review safety', () => {
     const second = controller.executeOperation(review.reviewToken);
     expect(second).toBe(first);
     expect(controller.snapshot.router.current.route).toEqual({ name: 'progress', operationId: review.operationId });
-    validation.resolve();
-    await nextTurn();
-    capture.resolve(baseEvidence);
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
     expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(validateIntent).toHaveBeenCalledTimes(1);
+    expect(captureEvidence).toHaveBeenCalledTimes(1);
     expect(firstResult).toEqual(secondResult);
     expect(firstResult.operationId).toBe(review.operationId);
     expect(observedCodes).not.toContain('reviewTicketInvalid');
@@ -2046,7 +2187,7 @@ describe('TUI v4 Review safety', () => {
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
-  it('revalidates both sides of a dependency issue at execution entry and performs zero writes when it changes', async () => {
+  it('delegates dependency issue freshness to the locked plugin write executor', async () => {
     const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
     consumer.errors = [{ code: 'dependencyMissing', message: 'dependencyMissing: official/toolkit is absent.' }];
     const loaded: TuiStatusLoadResult = {
@@ -2070,7 +2211,9 @@ describe('TUI v4 Review safety', () => {
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('operationReviewStale: consumer issue changed'));
     const captureEvidence = vi.fn().mockResolvedValue(baseEvidence);
-    const executeIntent = vi.fn();
+    const executeIntent = vi.fn().mockRejectedValue(new Error(
+      'operationReviewStale: dependency issue changed under the mutation lock',
+    ));
     const value = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue(loaded), validateIntent, captureEvidence, executeIntent,
     }));
@@ -2092,7 +2235,7 @@ describe('TUI v4 Review safety', () => {
       state: 'blocked', code: 'operationReviewStale',
     });
     expect(captureEvidence).toHaveBeenCalledTimes(1);
-    expect(executeIntent).not.toHaveBeenCalled();
+    expect(executeIntent).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -2401,9 +2544,11 @@ describe('TUI v4 Review safety', () => {
     expect(newest.reviewToken).not.toBe(cancelled.reviewToken);
   });
 
-  it('performs zero writes and shows a blocked result after fresh status makes the stale intent illegal', async () => {
+  it('rebuilds a plugin Review after the locked executor reports that the intent became illegal', async () => {
     const changedEvidence = { ...baseEvidence, targetFingerprint: 'sha256:changed' };
-    const executeIntent = vi.fn();
+    const executeIntent = vi.fn().mockRejectedValue(new Error(
+      'operationReviewStale: locked target evidence changed',
+    ));
     const validateIntent = vi.fn()
       .mockResolvedValueOnce(undefined)
       .mockRejectedValue(new Error('targetAlreadyInstalled: new state is not legal'));
@@ -2427,7 +2572,7 @@ describe('TUI v4 Review safety', () => {
 
     const result = await controller.executeOperation(review.reviewToken);
 
-    expect(executeIntent).not.toHaveBeenCalled();
+    expect(executeIntent).toHaveBeenCalledTimes(1);
     expect(validateIntent).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       state: 'blocked',
@@ -2474,6 +2619,7 @@ describe('TUI v4 Review safety', () => {
           projectLayer: 'shared',
           schemaIdentity: 'sha256:schema',
           storeDigest: 'sha256:store',
+          affectedTargets: [],
         },
       }),
     }));
@@ -2490,6 +2636,42 @@ describe('TUI v4 Review safety', () => {
     expect(visible).not.toContain(secret);
     expect(visible).toContain('已设置 → 将更新');
     expect(visible).not.toContain('/Users/');
+  });
+
+  it.each([
+    ['user and current project', 'user', [
+      { platform: 'codex', scope: 'user' },
+      { platform: 'codex', scope: 'project' },
+    ], ['Codex · 所有项目', 'Codex · 当前项目']],
+    ['project only', 'project', [
+      { platform: 'claude', scope: 'project' },
+    ], ['Claude Code · 当前项目']],
+    ['user only', 'user', [
+      { platform: 'claude', scope: 'user' },
+    ], ['Claude Code · 所有项目']],
+  ] as const)('uses evidence-owned affected targets for a %s config Review', async (_label, scope, affectedTargets, labels) => {
+    const evidence: OperationEvidence = {
+      ...baseEvidence,
+      config: {
+        scope,
+        projectLayer: 'shared',
+        schemaIdentity: 'sha256:schema',
+        storeDigest: 'sha256:store',
+        affectedTargets: [...affectedTargets],
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+    }));
+
+    const review = await controller.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/demo', scope,
+      projectLayer: 'shared', updates: { mode: 'safe' },
+      changes: [{ key: 'mode', title: '模式', before: '旧值', after: '新值' }],
+    });
+
+    expect(review.changes.filter((change) => change.group === 'configImpact').map((change) => change.title))
+      .toEqual(labels.map((label) => `重新应用 ${label}`));
   });
 
   it('passes the canonical plugin identity to the write executor', async () => {
@@ -2721,8 +2903,8 @@ describe('TUI v4 Review safety', () => {
       changes: [{ title: '本地目录', private: true }],
     });
 
-    expect(review.technicalDetails).toContain('候选配置：sha256:candidate');
-    expect(review.technicalDetails).toContain('引用清单：sha256:inventory · 0 项');
+    expect(review.technicalDetails).toContain('候选配置：candidat');
+    expect(review.technicalDetails).toContain('引用清单：inventor · 0 项');
     expect(JSON.stringify(controller.snapshot)).not.toContain(privatePath);
     await controller.executeOperation(review.reviewToken);
     expect(controller.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'sourceMutation' });
@@ -2748,7 +2930,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(result).toMatchObject({ state: 'stale' });
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(controller.snapshot.activeReview?.technicalDetails).toContain('候选配置：sha256:candidate-two');
+    expect(controller.snapshot.activeReview?.technicalDetails).toContain('候选配置：candidat');
   });
 
   it('maps a source config CAS conflict to the same typed stale Review', async () => {

@@ -11,7 +11,7 @@ import {
   discoverRebuildTargetNames,
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
-import { projectTargetRevision, statusCommandV4 } from '../../src/commands/status-v4.js';
+import { projectTargetRevision, statusCommandV5 } from '../../src/commands/status-v5.js';
 import {
   executeRebuildOperation,
   type RebuildActiveStore,
@@ -531,10 +531,15 @@ describe('rebuild adapter integration', () => {
         nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
       }),
     });
-    expect(inspected.inspection.state).toBe('partial');
+    expect(inspected.inspection.state).toBe('absent');
     expect(inspected.inspection.components).toContainEqual(expect.objectContaining({
-      state: 'partial',
+      state: 'foreign',
       diagnostic: expect.stringContaining('foreign collision'),
+      collision: expect.objectContaining({
+        reason: 'unownedContent',
+        artifactKind: 'skill-directory',
+        artifactKey: 'decision-grill',
+      }),
     }));
   });
 
@@ -3702,7 +3707,7 @@ describe('rebuild adapter integration', () => {
         expectedDigest: sourceSnapshot.digest,
         env: isolation.env,
       });
-      const beforeStatus = await statusCommandV4({
+      const beforeStatus = await statusCommandV5({
         cwd, env: isolation.env, platform: 'codex', scope: 'project', json: true,
       });
       expect(beforeStatus.payload.targets).toEqual([]);
@@ -3729,7 +3734,7 @@ describe('rebuild adapter integration', () => {
         }),
       });
       expect(status.inspection.state).toBe('absent');
-      const afterStatus = await statusCommandV4({
+      const afterStatus = await statusCommandV5({
         cwd, env: isolation.env, platform: 'codex', scope: 'project', json: true,
       });
       expect(afterStatus.payload.targets).toEqual([]);

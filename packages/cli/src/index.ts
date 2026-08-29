@@ -18,6 +18,12 @@ import {
   type CatalogSourceMutationReceipt,
 } from './commands/catalog-source.js';
 import {
+  activateCatalogSourceCandidateCommand,
+  catalogGenerationStatusCommand,
+  refreshCatalogSourceGenerationCommand,
+  setCatalogSourceRefreshPolicyCommand,
+} from './commands/catalog-generation.js';
+import {
   cleanupWriteCommand as cleanupCommand,
   installWriteCommand as installCommand,
   reinstallWriteCommand as reinstallCommand,
@@ -45,7 +51,7 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult, statusCommandV4 } from './commands/status-v4.js';
+import { loadConsoleItemsResult, statusCommandV5 } from './commands/status-v5.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
@@ -99,6 +105,12 @@ import {
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
+import { catalogGenerationErrorCode } from './utils/catalog-generation-error.js';
+import {
+  bootstrapCatalogOperationSources,
+  resolveCatalogOperationContext,
+  type CatalogOperationContext,
+} from './utils/catalog-operation-context.js';
 import {
   formatConfigCommandValue,
   parseConfigValue,
@@ -1755,6 +1767,28 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     commandExitState.exitCode = 1;
   };
 
+  const writeCatalogGenerationFailure = (
+    command: 'catalog:source:refresh' | 'catalog:source:activate-candidate'
+      | 'catalog:source:generation-status' | 'catalog:source:refresh-policy',
+    sourceId: string | undefined,
+    json: boolean,
+    error: unknown,
+  ): void => {
+    const failure = sanitizeCatalogSourceError(error, env);
+    const message = redactString(failure.message);
+    if (json) {
+      writeJsonReceipt(io.stdout, {
+        catalogGenerationSchemaVersion: 1,
+        command,
+        ok: false,
+        ...(sourceId ? { sourceId } : {}),
+        errors: [{ code: catalogGenerationErrorCode(error), message }],
+      });
+    }
+    writeLine(io.stderr, message);
+    commandExitState.exitCode = 1;
+  };
+
   const writeConfigMutationFailure = (
     command: 'config:set' | 'config:unset' | 'config:reset',
     plugin: string | undefined,
@@ -1762,7 +1796,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     error: unknown,
   ): void => {
     const message = error instanceof Error ? error.message : String(error);
-    const code = message.includes('legacyStateUnsupported')
+    const generationCode = catalogGenerationErrorCode(error);
+    const code = generationCode === 'catalogGenerationUnavailable'
+      || generationCode === 'catalogGenerationSourceMissing'
+      ? 'catalogSourceUnavailable'
+      : generationCode !== 'catalogGenerationFailed'
+        ? generationCode
+        : message.includes('legacyStateUnsupported')
       ? 'legacyStateUnsupported'
       : message.includes('sourceChanged')
         ? 'sourceChanged'
@@ -1791,17 +1831,39 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     consume: (
       resolution: ResolvedCatalogPlugin,
       awHomeMutationToken: AwHomeMutationToken,
+      catalogOperationContext: CatalogOperationContext,
     ) => Promise<T> | T,
-  ) => withAwHomeMutationLock({
-    env: context.env,
-    action: (awHomeMutationToken) => withResolvedCatalogPlugin({
-      selector,
+  ) => (async () => {
+    const parsed = parsePluginId(selector);
+    await bootstrapCatalogOperationSources({
       cliVersion: resolveCliVersion(),
-      freshnessPolicy: 'requireRemote',
+      ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
       env: context.env,
-      consume: (resolution) => consume(resolution, awHomeMutationToken),
-    }),
-  });
+    });
+    return withAwHomeMutationLock({
+      env: context.env,
+      action: async (awHomeMutationToken) => {
+        const catalogOperationContext = await resolveCatalogOperationContext({
+          cliVersion: resolveCliVersion(),
+          ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
+          env: context.env,
+          bootstrapMissingActive: false,
+        });
+        return withResolvedCatalogPlugin({
+          selector,
+          cliVersion: resolveCliVersion(),
+          freshnessPolicy: 'cacheFirst',
+          operationContext: catalogOperationContext,
+          env: context.env,
+          consume: (resolution) => consume(
+            resolution,
+            awHomeMutationToken,
+            catalogOperationContext,
+          ),
+        });
+      },
+    });
+  })();
 
   catalogSource
     .command('list')
@@ -1815,6 +1877,125 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeLine(io.stdout, `Primary source: ${payload.primarySourceId}`);
       for (const source of payload.sources) {
         writeLine(io.stdout, `${source.primary ? '*' : '-'} ${source.id} ${source.type} ${source.sourceIdentity}`);
+      }
+    });
+
+  catalogSource
+    .command('refresh')
+    .argument('<id>')
+    .option('-j, --json', 'print the generation refresh result as JSON', false)
+    .action(async (id: string, rawOptions: { json?: boolean }) => {
+      try {
+        const result = await refreshCatalogSourceGenerationCommand({
+          sourceId: id,
+          cliVersion: resolveCliVersion(),
+          env,
+        });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, {
+            ...result,
+            command: 'catalog:source:refresh',
+            ok: true,
+          });
+        } else {
+          writeLine(io.stdout, `Catalog source ${id}: ${result.outcome}.`);
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:refresh',
+          id,
+          rawOptions.json === true,
+          error,
+        );
+      }
+    });
+
+  catalogSource
+    .command('activate-candidate')
+    .argument('<id>')
+    .option('-j, --json', 'print the generation activation result as JSON', false)
+    .action(async (id: string, rawOptions: { json?: boolean }) => {
+      try {
+        const result = await activateCatalogSourceCandidateCommand({ sourceId: id, env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, {
+            ...result,
+            command: 'catalog:source:activate-candidate',
+            ok: true,
+          });
+        } else {
+          writeLine(io.stdout, `Catalog source ${id} Candidate activated.`);
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:activate-candidate',
+          id,
+          rawOptions.json === true,
+          error,
+        );
+      }
+    });
+
+  catalogSource
+    .command('generation-status')
+    .argument('[id]')
+    .option('-j, --json', 'print Catalog generation status as JSON', false)
+    .action(async (id: string | undefined, rawOptions: { json?: boolean }) => {
+      try {
+        const result = await catalogGenerationStatusCommand({ sourceId: id, env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, result);
+        } else {
+          for (const source of result.sources) {
+            const active = source.active ? `Active ${source.active.catalogVersion}` : 'no Active';
+            const candidate = source.candidate
+              ? `, Candidate ${source.candidate.catalogVersion}`
+              : '';
+            writeLine(io.stdout, `${source.sourceId}: ${active}${candidate} (${source.refreshPolicy})`);
+          }
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:generation-status',
+          id,
+          rawOptions.json === true,
+          error,
+        );
+      }
+    });
+
+  catalogSource
+    .command('refresh-policy')
+    .argument('<id>')
+    .argument('<policy>', 'startup or manual')
+    .option('-j, --json', 'print Catalog refresh policy result as JSON', false)
+    .action(async (id: string, policy: string, rawOptions: { json?: boolean }) => {
+      try {
+        if (policy !== 'startup' && policy !== 'manual') {
+          throw new Error('Catalog refresh policy must be startup or manual.');
+        }
+        const result = await setCatalogSourceRefreshPolicyCommand({
+          sourceId: id,
+          refreshPolicy: policy,
+          env,
+        });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, {
+            catalogGenerationSchemaVersion: 1,
+            command: 'catalog:source:refresh-policy',
+            ok: true,
+            ...result,
+          });
+        } else {
+          writeLine(io.stdout, `Catalog source ${id} refresh policy: ${result.refreshPolicy}.`);
+        }
+      } catch (error) {
+        writeCatalogGenerationFailure(
+          'catalog:source:refresh-policy',
+          id,
+          rawOptions.json === true,
+          error,
+        );
       }
     });
 
@@ -2380,7 +2561,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken) => {
+            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
         if (!plugin.manifest.config?.schema) {
           throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" does not declare an AW config schema.`);
         }
@@ -2395,7 +2576,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: { ...context, awHomeMutationToken },
+          rebuildRuntime: {
+            ...context,
+            awHomeMutationToken,
+            catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+          },
           awHomeMutationToken,
           request: {
             updates: { [selectedKey]: inputValue },
@@ -2527,7 +2713,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken) => {
+            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
         if (plugin.manifest.config?.schema && !plugin.manifest.config.schema[selectedKey]) {
           throw new Error(`Unknown config key "${selectedKey}".`);
         }
@@ -2550,7 +2736,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: { ...context, awHomeMutationToken },
+          rebuildRuntime: {
+            ...context,
+            awHomeMutationToken,
+            catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+          },
           awHomeMutationToken,
           request: {
             removeKeys: [selectedKey],
@@ -2663,7 +2854,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           return withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken) => {
+            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
         const affectedFields = await describeResetAffectedFields({
           pluginName: plugin.manifest.name,
           plugin,
@@ -2679,7 +2870,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: { ...context, awHomeMutationToken },
+          rebuildRuntime: {
+            ...context,
+            awHomeMutationToken,
+            catalogOperationContext,
+            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+          },
           awHomeMutationToken,
           plugin,
         });
@@ -2823,7 +3019,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('status', rawOptions);
       const result = await runActionWithContext(
         context,
-        () => statusCommandV4({
+        () => statusCommandV5({
           plugins: plugins ?? [],
           cwd,
           env: context.env,

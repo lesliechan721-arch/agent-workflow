@@ -29,7 +29,8 @@ it('runs one public Catalog source mutation in a child process', async () => {
     cwd,
     env: process.env,
     runtime: {
-      beforeRefresh: async () => {
+      onProgress: async (event) => {
+        if (event.stage !== 'savingConfig') return;
         await fs.outputFile(enteredPath, `${sourceId}\n`);
         if (releasePath) await waitForRelease(releasePath);
       },

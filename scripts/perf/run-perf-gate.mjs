@@ -15,7 +15,7 @@ export const EXPECTED_PERF_SUMMARY_NAMES = [
   'multi-source-status-console-warm',
   'catalog-source-config-warm',
   'git-source-current-snapshot-warm',
-  'local-four-source-git-path-fanout',
+  'active-four-source-read-warm',
   'git-source-remote-deadline-cleanup',
 ];
 

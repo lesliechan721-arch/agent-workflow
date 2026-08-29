@@ -132,6 +132,108 @@ export interface CatalogSourceResolution {
   remoteFailure?: string;
 }
 
+export type CatalogGenerationRefreshPolicy = 'startup' | 'manual';
+export type CatalogGenerationCandidateKind = 'upgrade' | 'refChange';
+export type CatalogGenerationCheckState =
+  | 'upToDate'
+  | 'activeReady'
+  | 'candidateReady'
+  | 'failed'
+  | 'immutableViolation'
+  | 'channelRollback';
+
+export interface CatalogGenerationPointerV1 {
+  sourceConfigFingerprint: string;
+  catalogVersion: string;
+  channel: CatalogChannel;
+  requestedRef: string;
+  resolvedCommit: string;
+  manifestDigest: string;
+  snapshotDigest: string;
+  generationKey: string;
+  activatedAt?: string;
+}
+
+export interface CatalogGenerationCandidateV1 extends CatalogGenerationPointerV1 {
+  candidateKind: CatalogGenerationCandidateKind;
+  downloadedAt: string;
+}
+
+export interface CatalogGenerationLastCheckV1 {
+  checkedAt: string;
+  state: CatalogGenerationCheckState;
+  remoteCommit?: string;
+  errorCode?: string;
+}
+
+export interface CatalogSourceGenerationStateV1 {
+  logicalIdentity: string;
+  refreshPolicy: CatalogGenerationRefreshPolicy;
+  active?: CatalogGenerationPointerV1;
+  candidate?: CatalogGenerationCandidateV1;
+  lastCheck?: CatalogGenerationLastCheckV1;
+}
+
+export interface CatalogGenerationStateFileV1 {
+  schemaVersion: 1;
+  sources: Record<string, CatalogSourceGenerationStateV1>;
+}
+
+export interface CatalogGenerationMetadataV1 {
+  schemaVersion: 1;
+  logicalIdentity: string;
+  catalogVersion: string;
+  channel: CatalogChannel;
+  manifestDigest: string;
+  snapshotDigest: string;
+  generationKey: string;
+  minAwVersion: string;
+  publishedAt: string;
+}
+
+export type CatalogGenerationRefreshOutcome =
+  | 'activeReady'
+  | 'candidateReady'
+  | 'upToDate'
+  | 'channelRollback';
+
+export interface CatalogGenerationRefreshResult {
+  catalogGenerationSchemaVersion: 1;
+  sourceId: CatalogSourceId;
+  sourceIdentity: SourceIdentity;
+  logicalIdentity: string;
+  outcome: CatalogGenerationRefreshOutcome;
+  active?: CatalogGenerationPointerV1;
+  candidate?: CatalogGenerationCandidateV1;
+  lastCheck: CatalogGenerationLastCheckV1;
+}
+
+export interface CatalogGenerationActivationResult {
+  catalogGenerationSchemaVersion: 1;
+  sourceId: CatalogSourceId;
+  logicalIdentity: string;
+  outcome: 'activated';
+  active: CatalogGenerationPointerV1;
+}
+
+export interface CatalogGenerationSetSource {
+  sourceId: CatalogSourceId;
+  sourceConfigFingerprint: string;
+  logicalIdentity: string;
+  catalogVersion: string;
+  resolvedCommit: string;
+  manifestDigest: string;
+  snapshotDigest: string;
+  generationKey: string;
+  snapshotPath: string;
+}
+
+export interface CatalogGenerationSet {
+  generationSetDigest: string;
+  primarySourceId: CatalogSourceId;
+  sources: CatalogGenerationSetSource[];
+}
+
 export interface CatalogProviderRuntimeOptions {
   cliVersion: CliVersion;
   freshnessPolicy: CatalogFreshnessPolicy;
@@ -423,7 +525,7 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
 }
 
 
-export type CatalogFreshnessPolicy = 'cacheFirst' | 'requireRemote' | 'forceRemote';
+export type CatalogFreshnessPolicy = 'cacheFirst' | 'forceRemote';
 
 export interface CatalogResolution {
   rootDir: string;

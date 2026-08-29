@@ -94,10 +94,14 @@ Path source 消费本地 development snapshot；Git source 消费 published snap
 
 ```bash
 aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json
+aw catalog source refresh local-example --json
+aw catalog source generation-status local-example --json
 aw install local-example/example-plugin -p both --json
 ```
 
-Catalog 可以包含 executable plugin software。添加 source 或安装前检查 source、transport、插件代码和授权边界。Source config 原子提交，但 refresh 和平台安装允许部分失败；使用 receipt、source refresh、`reinstall` 或安全 cleanup 恢复。
+Path source 的 add/refresh 会把完整验证后的本地 snapshot 发布为 immutable local generation，并直接切换 Active；同一 Catalog version 的本地内容可以再次 refresh。Git source 首次 refresh 建立 Active，后续新版本只建立 Candidate；先用 `generation-status` 检查，再显式运行 `aw catalog source activate-candidate <id> --json`。Git 同一 Workspace identity 和 Catalog version 的不同 snapshot digest 会返回 `catalogImmutableVersionViolation`，必须发布更高版本，不能覆盖或绕过。
+
+Catalog 可以包含 executable plugin software。添加 source 或安装前检查 source、transport、插件代码和授权边界。Source config 原子提交，但 refresh 和平台安装允许部分失败；原 Active 在 refresh 或 activation 失败时保留。使用 receipt、source refresh、`reinstall` 或安全 cleanup 恢复。
 
 ## Related documents
 
