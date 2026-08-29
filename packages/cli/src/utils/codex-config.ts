@@ -5,7 +5,7 @@ import { ParseError, parseTOML, type AST } from 'toml-eslint-parser';
 
 import {
   atomicReplaceConfigFile,
-  withConfigFileLock,
+  withConfigFileMutation,
 } from './plugin-config.js';
 
 const AW_MANAGED_PREFIX = '[[aw-managed:';
@@ -1495,7 +1495,7 @@ async function updateCodexConfigFile(
   configPath: string,
   update: (content: string) => string,
 ): Promise<CodexConfigSnapshot> {
-  return withConfigFileLock({
+  return withConfigFileMutation({
     filePath: configPath,
     allowedRoot: path.dirname(configPath),
     action: async () => {
@@ -1513,7 +1513,7 @@ export async function applyCodexConfigTransactionFile(
   configPath: string,
   transaction: CodexConfigTransaction,
 ): Promise<CodexConfigTransactionResult> {
-  return withConfigFileLock({
+  return withConfigFileMutation({
     filePath: configPath,
     allowedRoot: path.dirname(configPath),
     action: async () => {
@@ -1547,7 +1547,7 @@ export async function applyConditionalCodexConfigTransactionFile(
     content: string,
   ) => CodexConfigTransaction | null | Promise<CodexConfigTransaction | null>,
 ): Promise<ConditionalCodexConfigTransactionResult> {
-  return withConfigFileLock({
+  return withConfigFileMutation({
     filePath: configPath,
     allowedRoot: path.dirname(configPath),
     action: async () => {

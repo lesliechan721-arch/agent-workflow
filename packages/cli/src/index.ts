@@ -51,8 +51,7 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult } from './commands/status.js';
-import { statusCommandV5 } from './commands/status-v5.js';
+import { loadConsoleItemsResult, statusCommandV5 } from './commands/status-v5.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
@@ -160,6 +159,7 @@ import {
   parsePluginCapabilitySurface,
   renderPluginCapabilities,
 } from './commands/plugin-capabilities.js';
+import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -337,6 +337,9 @@ export function buildEquivalentWriteCommandTokens(
     selection.platform ?? 'both',
     '--scope',
     selection.scope ?? 'user',
+    ...(rawOptions.allowManagedCodexInstall === true
+      ? ['--allow-managed-codex-install']
+      : []),
     ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
     ...(!all && selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
   ];
@@ -441,7 +444,6 @@ async function loadWizardCandidates(
     cwd: context.cwd,
     scope: rawOptions.scope as Scope | undefined,
     platform: rawOptions.platform as PlatformSelection | undefined,
-    includeCatalogOnly: true,
   }, context);
   return toWizardCandidates(loaded.items);
 }
@@ -654,6 +656,23 @@ interface RawWriteWizardOptions extends RawDiagnosticsOptions {
   scriptTimeout?: string;
   json?: boolean;
   force?: boolean;
+  allowManagedCodexInstall?: boolean;
+}
+
+export function createManagedCodexAuthorizer(
+  rawOptions: Pick<RawWriteWizardOptions, 'allowManagedCodexInstall' | 'json'>,
+  context: Pick<CliExecutionContext, 'interactive' | 'isTty' | 'isCi' | 'prompt'>,
+): ManagedCodexAuthorizer | undefined {
+  if (rawOptions.allowManagedCodexInstall === true) return async () => true;
+  if (!(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true)
+    || !context.prompt.confirm) return undefined;
+  return async () => {
+    const response = await context.prompt.confirm!({
+      message: '系统中没有可用的 Codex CLI。是否获取本次操作所需的 AW-managed Codex runtime？',
+      defaultValue: false,
+    });
+    return !response.cancelled && response.value === true;
+  };
 }
 
 async function executeWriteCommand(
@@ -676,12 +695,17 @@ async function executeWriteCommand(
     type: 'options:normalized',
     data: { plugins: pluginNames, options: commandOptions },
   });
+  const managedCodexAuthorizer = createManagedCodexAuthorizer(rawOptions, context);
+  const runtime = {
+    ...context,
+    ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
+  };
   switch (command) {
-    case 'install': return installCommand(pluginNames, commandOptions, context);
-    case 'upgrade': return upgradeCommand(pluginNames, commandOptions, context);
-    case 'uninstall': return uninstallCommand(pluginNames, commandOptions, context);
-    case 'cleanup': return cleanupCommand(pluginNames, commandOptions, context);
-    case 'reinstall': return reinstallCommand(pluginNames, commandOptions, context);
+    case 'install': return installCommand(pluginNames, commandOptions, runtime);
+    case 'upgrade': return upgradeCommand(pluginNames, commandOptions, runtime);
+    case 'uninstall': return uninstallCommand(pluginNames, commandOptions, runtime);
+    case 'cleanup': return cleanupCommand(pluginNames, commandOptions, runtime);
+    case 'reinstall': return reinstallCommand(pluginNames, commandOptions, runtime);
   }
 }
 
@@ -723,7 +747,6 @@ async function runWriteCommandAction(
     cwd: context.cwd,
     scope: rawOptions.scope,
     platform: rawOptions.platform,
-    includeCatalogOnly: true,
   }, context);
   if (loaded.catalogUnavailable) {
     throw new Error(
@@ -1509,15 +1532,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--json', 'emit one schema v3 JSON document', false)
     .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
 
-  plugin
-    .command('check-versions')
-    .description('Deprecated alias for plugin status')
-    .argument('[plugin-name]', 'one explicit plugin name')
-    .option('--all', 'check every plugin changed relative to the Git base', false)
-    .option('--base <git-ref>', 'explicit Git comparison base')
-    .option('--json', 'emit one schema v3 JSON document', false)
-    .option('--workspace-root <path>', 'Catalog Workspace root (default: current directory)');
-
   skill
     .command('validate')
     .description('Validate one Agent Skill directory')
@@ -2185,6 +2199,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2196,6 +2211,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope?: string;
           platform?: string;
           scriptTimeout?: string;
+          allowManagedCodexInstall?: boolean;
           json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
@@ -2222,6 +2238,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2232,6 +2249,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope?: string;
         platform?: string;
         scriptTimeout?: string;
+        allowManagedCodexInstall?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
@@ -2258,6 +2276,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2270,6 +2289,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           scope?: string;
           platform?: string;
           scriptTimeout?: string;
+          allowManagedCodexInstall?: boolean;
           json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
@@ -2297,6 +2317,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('-j, --json', 'print cleanup result as JSON', false)
     .option('--force', 'remove exclusively owned plugin output without dependency protection', false)
+    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
@@ -2307,6 +2328,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         platform?: string;
         json?: boolean;
         force?: boolean;
+        allowManagedCodexInstall?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('cleanup', rawOptions);
@@ -2331,6 +2353,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2341,6 +2364,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope?: string;
         platform?: string;
         scriptTimeout?: string;
+        allowManagedCodexInstall?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
@@ -3063,7 +3087,6 @@ export async function runCli(
       remove: 'remove-plugin.mjs',
       validate: 'validate-plugin.mjs',
       status: 'plugin-status.mjs',
-      'check-versions': 'check-plugin-versions.mjs',
     };
     const authoringScript = argv[0] === 'plugin'
       ? authoringScriptByCommand[argv[1] ?? '']

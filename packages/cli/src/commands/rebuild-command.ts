@@ -14,6 +14,12 @@ import type {
 import fs from 'fs-extra';
 import type { RebuildActionEvent } from '../output/model.js';
 import { probeAgentVersion } from '../utils/agent-version.js';
+import {
+  previewCodexManager,
+  resolveCodexManager,
+  type CodexManagerPreview,
+  type ManagedCodexAuthorizer,
+} from '../utils/codex-manager.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { createNoopReporter } from '../output/reporter.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
@@ -25,7 +31,6 @@ import { hasCodexProjectManagedArtifacts } from '../utils/codex-project-surface.
 import {
   createRebuildActiveStore,
   executeRebuildOperation,
-  releaseRebuildOperationLease,
   type RebuildCommand,
   type RebuildFailure,
   type RebuildResult,
@@ -33,6 +38,7 @@ import {
 } from './rebuild-operations.js';
 import {
   assertNoClaudeUnboundNativeNameCollision,
+  codexNativeRemovalRequired,
   createRebuildIntegration,
   discoverRebuildTargetNames,
   inspectNativeMarketplaceRegistrations,
@@ -106,10 +112,12 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     string,
     Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>
   >;
-  operationLeaseHeld?: boolean;
   bypassDependencyPlan?: boolean;
   dependencyReviewPreflightHandled?: boolean;
   previewDependencyPlanOnly?: boolean;
+  managedCodexAuthorizer?: ManagedCodexAuthorizer;
+  codexManagerResolver?: typeof resolveCodexManager;
+  codexManagerPreviewer?: typeof previewCodexManager;
   onPreviewStage?: (stage: 'catalog' | 'inventory' | 'dependencyPlan') => Promise<void> | void;
   targetBuiltHookHandled?: boolean;
   preparedTarget?: PreparedRebuildTarget;
@@ -151,13 +159,10 @@ export interface RebuildCommandResult {
     scope: Scope;
   }>;
   dependencyPlan?: DependencyOperationPlan;
+  codexManagerPreview?: CodexManagerPreview;
 }
 
 export interface RebuildCommandTestHooks {
-  beforeOperationLockAcquire?: (options: {
-    command: RebuildCommand;
-    identity: RebuildTargetIdentity;
-  }) => Promise<void>;
   afterTargetBuilt?: (options: {
     command: RebuildCommand;
     identity: RebuildTargetIdentity;
@@ -174,55 +179,6 @@ async function emitRebuildActionEvent(
     Promise.resolve().then(() => runtime.reporter.event(event)),
     Promise.resolve().then(() => runtime.debugLogger.log(event)),
   ]);
-}
-
-async function withRebuildActionEvent<T>(options: {
-  runtime: RebuildExecutionContext;
-  command: RebuildCommand;
-  identity: RebuildTargetIdentity;
-  name: 'operation.lock' | 'operation.release';
-  operation: () => Promise<T>;
-}): Promise<T> {
-  const source = {
-    plugin: options.identity.pluginName,
-    platform: options.identity.platform,
-    scope: options.identity.scope,
-    action: options.command,
-  };
-  const startedAt = Date.now();
-  await emitRebuildActionEvent(options.runtime, {
-    type: 'rebuild:action',
-    source,
-    data: { name: options.name, phase: 'start' },
-  });
-  let result: T;
-  try {
-    result = await options.operation();
-  } catch (error) {
-    await emitRebuildActionEvent(options.runtime, {
-      type: 'rebuild:action',
-      source,
-      data: {
-        name: options.name,
-        phase: 'failure',
-        durationMs: Math.max(0, Date.now() - startedAt),
-        message: options.name === 'operation.lock'
-          ? '获取操作锁失败。'
-          : '释放操作锁失败。',
-      },
-    });
-    throw error;
-  }
-  await emitRebuildActionEvent(options.runtime, {
-    type: 'rebuild:action',
-    source,
-    data: {
-      name: options.name,
-      phase: 'success',
-      durationMs: Math.max(0, Date.now() - startedAt),
-    },
-  });
-  return result;
 }
 
 export function setRebuildCommandTestHooksForTests(
@@ -276,20 +232,6 @@ function failedResult(
   };
 }
 
-function appendOperationReleaseFailure(
-  result: RebuildResult,
-  message: string,
-): RebuildResult {
-  result.actions.push({ name: 'operation.release', status: 'failed' });
-  result.failures.push({ phase: 'operation.release', message });
-  if (result.status === 'failed') return result;
-  return {
-    ...result,
-    status: 'failed',
-    error: { phase: 'operation.release', message },
-  };
-}
-
 function toTargetResult(result: RebuildResult): ReceiptTargetResult {
   return {
     target: {
@@ -308,21 +250,20 @@ function toTargetResult(result: RebuildResult): ReceiptTargetResult {
   };
 }
 
-async function assertAgentVersions(options: {
+async function assertClaudeVersion(options: {
   platforms: PlatformName[];
   cwd: string;
   env: NodeJS.ProcessEnv;
   runtime: RebuildExecutionContext;
 }): Promise<void> {
+  if (!options.platforms.includes('claude')) return;
   const failures = [];
-  for (const platform of options.platforms) {
-    const result = await probeAgentVersion(platform, {
-      cwd: options.cwd,
-      env: options.env,
-      runner: options.runtime.nativeCliRunner,
-    });
-    if (result.status !== 'supported') failures.push(result);
-  }
+  const result = await probeAgentVersion('claude', {
+    cwd: options.cwd,
+    env: options.env,
+    runner: options.runtime.nativeCliRunner,
+  });
+  if (result.status !== 'supported') failures.push(result);
   if (failures.length > 0) {
     throw new Error(failures.map((failure) =>
       `${failure.command} 版本检查失败：${failure.details ?? failure.status}；最低版本 ${failure.requiredMinVersion}。`)
@@ -369,8 +310,7 @@ async function runSingleSourceRebuildCommand(options: {
     nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
     reporter: options.runtime?.reporter ?? createNoopReporter(),
     debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
-    runtimeLeaseHeld: options.runtime?.runtimeLeaseHeld,
-    lifecycleLeaseHeld: options.runtime?.lifecycleLeaseHeld,
+    ...(options.runtime?.codexManager ? { codexManager: options.runtime.codexManager } : {}),
     expectedCatalogConfigDigest: options.runtime?.expectedCatalogConfigDigest,
   };
   const env = runtime.env;
@@ -417,12 +357,14 @@ async function runSingleSourceRebuildCommand(options: {
   }
   const platforms = selected.filter((platform) =>
     (requestedByPlatform.get(platform)?.length ?? 0) > 0);
-  await assertAgentVersions({
-    platforms,
-    cwd: options.commandOptions.cwd,
-    env,
-    runtime,
-  });
+  if (options.runtime?.bypassDependencyPlan) {
+    await assertClaudeVersion({
+      platforms,
+      cwd: options.commandOptions.cwd,
+      env,
+      runtime,
+    });
+  }
   const integration = options.runtime?.preparedTarget
     ? {
         driver: options.runtime.preparedTarget.driver,
@@ -435,7 +377,6 @@ async function runSingleSourceRebuildCommand(options: {
   const activeStore = createRebuildActiveStore({
     env,
     loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-    isLifecycleLeaseHeld: () => runtime.lifecycleLeaseHeld === true,
   });
   const targets = [];
   const results: RebuildResult[] = [];
@@ -533,30 +474,6 @@ async function runSingleSourceRebuildCommand(options: {
         ));
         continue;
       }
-      let operationLock;
-      if (!options.runtime?.operationLeaseHeld) {
-        try {
-          await rebuildCommandTestHooks?.beforeOperationLockAcquire?.({
-            command: options.command,
-            identity,
-          });
-          operationLock = await withRebuildActionEvent({
-            runtime,
-            command: options.command,
-            identity,
-            name: 'operation.lock',
-            operation: () => activeStore.acquireOperation!(identity),
-          });
-        } catch (error) {
-          results.push(failedResult(
-            options.command,
-            identity,
-            error instanceof Error ? error.message : String(error),
-            'operation.lock',
-          ));
-          continue;
-        }
-      }
       let result: RebuildResult;
       try {
         if (options.runtime?.preparedTargetError) throw options.runtime.preparedTargetError;
@@ -590,12 +507,11 @@ async function runSingleSourceRebuildCommand(options: {
             ...options.runtime.resolvedReviewEvidenceByPlugin?.[pluginName],
           });
         }
-        const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
         result = await executeRebuildOperation({
           command: options.command,
           target,
           driver: integration.driver,
-          activeStore: operationHeldStore,
+          activeStore,
           onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
         });
       } catch (error) {
@@ -605,24 +521,6 @@ async function runSingleSourceRebuildCommand(options: {
             error instanceof Error ? error.message : String(error),
             'preflight',
           );
-      }
-      result.actions.unshift({ name: 'operation.lock', status: 'succeeded' });
-      if (operationLock) {
-        try {
-          await withRebuildActionEvent({
-            runtime,
-            command: options.command,
-            identity,
-            name: 'operation.release',
-            operation: () => releaseRebuildOperationLease(operationLock),
-          });
-          result.actions.push({ name: 'operation.release', status: 'succeeded' });
-        } catch (error) {
-          result = appendOperationReleaseFailure(
-            result,
-            error instanceof Error ? error.message : String(error),
-          );
-        }
       }
       results.push(result);
     }
@@ -700,6 +598,9 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
     receiptTargets: results.flatMap((result) => result.receiptTargets),
     ...(results.find((result) => result.dependencyPlan)?.dependencyPlan
       ? { dependencyPlan: results.find((result) => result.dependencyPlan)!.dependencyPlan }
+      : {}),
+    ...(results.find((result) => result.codexManagerPreview)?.codexManagerPreview
+      ? { codexManagerPreview: results.find((result) => result.codexManagerPreview)!.codexManagerPreview }
       : {}),
   };
 }
@@ -934,6 +835,9 @@ async function cleanupOfflineOwnedComponents(options: {
   force: boolean;
   removeObsoleteInstallationContracts?: (directory: string) => Promise<void>;
   nativeCliRunner?: NativeCliRunner;
+  codexManager?: RebuildExecutionContext['codexManager'];
+  codexManagerResolver?: typeof resolveCodexManager;
+  managedCodexAuthorizer?: ManagedCodexAuthorizer;
   corruptExclusiveDirectoryOperations?: RebuildCommandRuntime['corruptExclusiveDirectoryOperations'];
 }): Promise<RebuildCommandResult> {
   if (options.targets.some((target) => target.marketplaceIdentityUnresolved)) {
@@ -944,9 +848,41 @@ async function cleanupOfflineOwnedComponents(options: {
   }
   const results: RebuildResult[] = [];
   const warnings: string[] = [];
+  const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
+  let codexManager = options.codexManager;
+  const codexManagerNeedFailures = new Map<LiveCleanupTarget, Error>();
+  if (!codexManager) {
+    const codexManagerRequired = (await Promise.all(options.targets.map(async (target) => {
+      if (target.platform !== 'codex' || target.scope !== 'user') return false;
+      try {
+        return await codexNativeRemovalRequired({
+          pluginName: target.pluginName,
+          cwd: options.cwd,
+          env: options.env,
+          marketplaceName: target.marketplaceName,
+          marketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces', target.sourceId),
+        });
+      } catch (error) {
+        codexManagerNeedFailures.set(target, new Error(
+          'codexNativeResidueProbeFailed: Codex native residue was retained because its config or cache evidence could not be read. Repair the damaged Codex weak state, then retry cleanup; you can also upgrade AW or install a compatible official Codex CLI.',
+          { cause: error },
+        ));
+        return false;
+      }
+    }))).some(Boolean);
+    if (codexManagerRequired) {
+      codexManager = await (options.codexManagerResolver ?? resolveCodexManager)({
+        cwd: options.cwd,
+        env: options.env,
+        runner: nativeCliRunner,
+        authorizer: options.managedCodexAuthorizer,
+      });
+    }
+  }
   const context: RebuildExecutionContext = {
     env: options.env,
-    nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+    nativeCliRunner,
+    ...(codexManager ? { codexManager } : {}),
     reporter: createNoopReporter(),
     debugLogger: createNoopDebugLogger(),
   };
@@ -954,7 +890,6 @@ async function cleanupOfflineOwnedComponents(options: {
   const activeStore = createRebuildActiveStore({
     env: options.env,
     loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-    isLifecycleLeaseHeld: () => context.lifecycleLeaseHeld === true,
   });
   for (const target of options.targets) {
     const exclusiveRecovery: CleanupResult = {
@@ -1007,6 +942,7 @@ async function cleanupOfflineOwnedComponents(options: {
     plugin.pluginId = target.pluginId;
     const marketplaceName = target.marketplaceName ?? 'aw';
     plugin.marketplaceName = marketplaceName;
+    const codexManagerNeedFailure = codexManagerNeedFailures.get(target);
     const desired = await integration.buildTarget({
       sourceId: target.sourceId,
       sourceIdentity: target.sourceIdentity,
@@ -1026,20 +962,36 @@ async function cleanupOfflineOwnedComponents(options: {
         minAwVersion: '0.0.0',
       },
       includeHistoricalLifecycleArtifacts: false,
-      includeNativeCleanupCandidate: target.nativeRegistration === true,
+      includeNativeCleanupCandidate: target.nativeRegistration === true && !codexManagerNeedFailure,
     });
-    let result: RebuildResult;
-    const operationLock = await activeStore.acquireOperation!(desired.identity);
-    try {
-      const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
-      result = await executeRebuildOperation({
-        command: 'cleanup',
-        target: desired,
-        driver: integration.driver,
-        activeStore: operationHeldStore,
-      });
-    } finally {
-      await releaseRebuildOperationLease(operationLock);
+    const driver = codexManagerNeedFailure && integration.driver.probeNative
+      ? {
+          ...integration.driver,
+          probeNative: async () => {
+            throw codexManagerNeedFailure;
+          },
+        }
+      : integration.driver;
+    let result = await executeRebuildOperation({
+      command: 'cleanup',
+      target: desired,
+      driver,
+      activeStore,
+    });
+    if (codexManagerNeedFailure) {
+      const residual = `${target.pluginName}@${marketplaceName}`;
+      result = {
+        ...result,
+        status: 'failed',
+        actions: [...result.actions, { name: 'cleanup.owned', status: 'failed' }],
+        residual: [...new Set([...result.residual, residual])],
+        failures: [...result.failures, {
+          phase: 'cleanup.owned',
+          label: residual,
+          message: codexManagerNeedFailure.message,
+        }],
+        error: { phase: 'cleanup.owned', message: codexManagerNeedFailure.message },
+      };
     }
     const exclusiveResidual = (await Promise.all(exclusiveRecovery.residual.map(async (entry) =>
       await fs.pathExists(entry) ? entry : null))).filter((entry): entry is string => entry !== null);
@@ -1098,6 +1050,45 @@ async function cleanupOfflineOwnedComponents(options: {
       scope: result.target.scope,
     })),
   });
+}
+
+async function previewOfflineOwnedComponents(options: {
+  targets: LiveCleanupTarget[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  nativeCliRunner?: NativeCliRunner;
+  codexManagerPreviewer?: typeof previewCodexManager;
+  onPreviewStage?: RebuildCommandRuntime['onPreviewStage'];
+}): Promise<RebuildCommandResult> {
+  if (options.targets.some((target) => target.marketplaceIdentityUnresolved)) {
+    throw namespacedPreflightError(
+      'marketplaceIdentityUnavailable: Cannot uniquely recover the native marketplace name from live inventory or a canonical native registration path.',
+      options.targets,
+    );
+  }
+  await options.onPreviewStage?.('inventory');
+  const preview = mergeRebuildCommandResults([]);
+  const codexManagerRequired = (await Promise.all(options.targets.flatMap((target) =>
+    target.platform === 'codex' && target.scope === 'user'
+      ? [codexNativeRemovalRequired({
+          pluginName: target.pluginName,
+          cwd: options.cwd,
+          env: options.env,
+          marketplaceName: target.marketplaceName,
+          marketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces', target.sourceId),
+        })]
+      : []))).some(Boolean);
+  await options.onPreviewStage?.('dependencyPlan');
+  if (codexManagerRequired) {
+    preview.codexManagerPreview = await (
+      options.codexManagerPreviewer ?? previewCodexManager
+    )({
+      cwd: options.cwd,
+      env: options.env,
+      runner: options.nativeCliRunner,
+    });
+  }
+  return preview;
 }
 
 async function assertOfflineCleanupDependents(options: {
@@ -1234,6 +1225,16 @@ export async function runRebuildCommand(options: {
     liveTargets = cleanupLiveTargets;
   }
   if (cleanupHasDamagedExclusiveTarget) {
+    if (options.runtime?.previewDependencyPlanOnly) {
+      return previewOfflineOwnedComponents({
+        targets: cleanupLiveTargets,
+        cwd: options.commandOptions.cwd,
+        env: runtimeEnv,
+        nativeCliRunner: options.runtime.nativeCliRunner,
+        codexManagerPreviewer: options.runtime.codexManagerPreviewer,
+        onPreviewStage: options.runtime.onPreviewStage,
+      });
+    }
     return cleanupOfflineOwnedComponents({
       targets: cleanupLiveTargets,
       cwd: options.commandOptions.cwd,
@@ -1241,6 +1242,9 @@ export async function runRebuildCommand(options: {
       force: true,
       removeObsoleteInstallationContracts: options.runtime?.removeObsoleteInstallationContracts,
       nativeCliRunner: options.runtime?.nativeCliRunner,
+      codexManager: options.runtime?.codexManager,
+      codexManagerResolver: options.runtime?.codexManagerResolver,
+      managedCodexAuthorizer: options.runtime?.managedCodexAuthorizer,
       corruptExclusiveDirectoryOperations: options.runtime?.corruptExclusiveDirectoryOperations,
     });
   }
@@ -1577,8 +1581,6 @@ export async function runRebuildCommand(options: {
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
         reporter: options.runtime?.reporter ?? createNoopReporter(),
         debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
-        runtimeLeaseHeld: options.runtime?.runtimeLeaseHeld,
-        lifecycleLeaseHeld: options.runtime?.lifecycleLeaseHeld,
         expectedCatalogConfigDigest: catalog.configDigest,
       };
       const inspection = createRebuildIntegration({
@@ -1757,11 +1759,83 @@ export async function runRebuildCommand(options: {
           targets,
         });
       };
+      const operationNeedsNativeCli = async (
+        platform: PlatformName,
+        plan?: DependencyOperationPlan,
+      ): Promise<boolean> => {
+        for (const { entry, platform: selectedPlatform } of executionSelections) {
+          if (selectedPlatform !== platform) continue;
+          const planned = plan?.targets.find((target) =>
+            target.pluginId === entry.pluginId && target.platform === selectedPlatform);
+          if (dependencyEnabled && (!planned
+            || planned.action === 'keep'
+            || planned.action === 'block')) continue;
+          const scope = planned?.resolvedScope ?? options.commandOptions.scope;
+          const marketplaceName = marketplaceNameFor(entry, selectedPlatform, scope);
+          entry.plugin.marketplaceName = marketplaceName;
+          const marketplaceRoot = path.join(
+            resolveAwHome(runtimeEnv),
+            'marketplaces',
+            entry.source.sourceId,
+          );
+          if (!dependencyEnabled && selectedPlatform === 'codex') {
+            if (scope === 'user' && await codexNativeRemovalRequired({
+              pluginName: entry.plugin.manifest.name,
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+              marketplaceName,
+              marketplaceRoot,
+            })) return true;
+            continue;
+          }
+          const target = await inspection.buildTarget({
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            pluginId: entry.pluginId,
+            marketplaceName,
+            marketplaceRoot,
+            plugin: entry.plugin,
+            platform: selectedPlatform,
+            scope,
+            cwd: options.commandOptions.cwd,
+            command: dependencyEnabled
+              ? planned!.action as 'install' | 'upgrade' | 'reinstall'
+              : options.command,
+            catalog: toCatalogResolution(entry.source),
+            includeHistoricalLifecycleArtifacts: false,
+            readOnlyInspectionPlan: true,
+          });
+          if (dependencyEnabled && target.requiresNative) return true;
+          const nativeComponents = target.ownedComponents.filter((component) =>
+            component.kind === 'native-plugin'
+            || (component.kind === 'shared-config'
+              && component.identity.artifactKey.startsWith('marketplace-')));
+          if (nativeComponents.length === 0) continue;
+          const nativeInspection = await inspectOwnedComponents({
+            components: nativeComponents,
+            nativeProbe: inspection.driver.probeNative,
+          });
+          if (nativeInspection.components.some((component) =>
+            component.state === 'present' || component.state === 'partial')) {
+            return true;
+          }
+        }
+        return false;
+      };
       if (options.runtime?.previewDependencyPlanOnly) {
         await options.runtime.onPreviewStage?.('dependencyPlan');
-        const initialPlan = await createPlan(stateInventory);
+        const initialPlan = dependencyEnabled ? await createPlan(stateInventory) : undefined;
         const preview = mergeRebuildCommandResults([]);
-        preview.dependencyPlan = initialPlan;
+        if (initialPlan) preview.dependencyPlan = initialPlan;
+        if (await operationNeedsNativeCli('codex', initialPlan)) {
+          preview.codexManagerPreview = await (
+            options.runtime.codexManagerPreviewer ?? previewCodexManager
+          )({
+            cwd: options.commandOptions.cwd,
+            env: runtimeEnv,
+            runner: options.runtime?.nativeCliRunner,
+          });
+        }
         return preview;
       }
       for (const { entry, platform } of executionSelections.filter((selection) =>
@@ -1812,17 +1886,27 @@ export async function runRebuildCommand(options: {
             env: runtimeEnv,
           });
         }
-        await assertAgentVersions({
-          platforms: [...new Set(executionSelections.flatMap(({ entry, platform }) =>
-            supportsPlatform(entry.plugin.manifest, platform) ? [platform] : []))],
+        const codexManagerRequired = await operationNeedsNativeCli('codex', lockedPlan);
+        const claudeCliRequired = await operationNeedsNativeCli('claude', lockedPlan);
+        if (codexManagerRequired) {
+          executionContext.codexManager = await (
+            options.runtime?.codexManagerResolver ?? resolveCodexManager
+          )({
+            cwd: options.commandOptions.cwd,
+            env: runtimeEnv,
+            runner: executionContext.nativeCliRunner,
+            authorizer: options.runtime?.managedCodexAuthorizer,
+          });
+        }
+        await assertClaudeVersion({
+          platforms: claudeCliRequired ? ['claude'] : [],
           cwd: options.commandOptions.cwd,
           env: runtimeEnv,
-          runtime: {
-            env: runtimeEnv,
-            nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
-            reporter: options.runtime?.reporter ?? createNoopReporter(),
-            debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
-          },
+          runtime: executionContext,
+        });
+        const executionIntegration = createRebuildIntegration({
+          context: executionContext,
+          scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
         });
         const preparedTargets = new Map<string, PreparedRebuildTarget>();
         const preparedTargetErrors = new Map<string, unknown>();
@@ -1835,7 +1919,7 @@ export async function runRebuildCommand(options: {
             && planned.action !== 'reinstall') continue;
           const marketplaceName = marketplaceNameFor(entry, platform, planned.resolvedScope);
           try {
-            const target = await inspection.buildTarget({
+            const target = await executionIntegration.buildTarget({
               sourceId: entry.source.sourceId,
               sourceIdentity: entry.source.sourceIdentity,
               pluginId: entry.pluginId,
@@ -1851,7 +1935,7 @@ export async function runRebuildCommand(options: {
             });
             preparedTargets.set(`${entry.pluginId}\0${platform}`, {
               target,
-              driver: inspection.driver,
+              driver: executionIntegration.driver,
               context: executionContext,
             });
             if (selectedIds.has(entry.pluginId)) {
@@ -2122,9 +2206,11 @@ export async function runRebuildCommand(options: {
           runtime: {
             ...options.runtime,
             env: runtimeEnv,
+            ...(executionContext.codexManager
+              ? { codexManager: executionContext.codexManager }
+              : {}),
             catalogResolution: toCatalogResolution(entry.source),
             namespacedSource,
-            operationLeaseHeld: true,
             dependencyReviewPreflightHandled: true,
             targetBuiltHookHandled: true,
             preparedTarget: preparedTargets.get(`${entry.pluginId}\0${platform}`),
@@ -2156,7 +2242,7 @@ export async function runRebuildCommand(options: {
       return leaseSafeRebuildResult(merged);
     },
     });
-    if (cleanupForce) {
+    if (cleanupForce && !options.runtime?.previewDependencyPlanOnly) {
       try {
         await (options.runtime?.removeObsoleteInstallationContracts ?? fs.remove)(
           path.join(resolveAwHome(runtimeEnv), 'installation-contracts'),
@@ -2200,6 +2286,16 @@ export async function runRebuildCommand(options: {
           readInventory,
         });
       }
+      if (options.runtime?.previewDependencyPlanOnly) {
+        return previewOfflineOwnedComponents({
+          targets: cleanupLiveTargets,
+          cwd: options.commandOptions.cwd,
+          env: runtimeEnv,
+          nativeCliRunner: options.runtime.nativeCliRunner,
+          codexManagerPreviewer: options.runtime.codexManagerPreviewer,
+          onPreviewStage: options.runtime.onPreviewStage,
+        });
+      }
       return cleanupOfflineOwnedComponents({
         targets: cleanupLiveTargets,
         cwd: options.commandOptions.cwd,
@@ -2207,6 +2303,9 @@ export async function runRebuildCommand(options: {
         force: cleanupForce && !expectedOfflineCleanup,
         removeObsoleteInstallationContracts: options.runtime?.removeObsoleteInstallationContracts,
         nativeCliRunner: options.runtime?.nativeCliRunner,
+        codexManager: options.runtime?.codexManager,
+        codexManagerResolver: options.runtime?.codexManagerResolver,
+        managedCodexAuthorizer: options.runtime?.managedCodexAuthorizer,
         corruptExclusiveDirectoryOperations: options.runtime?.corruptExclusiveDirectoryOperations,
       });
     }

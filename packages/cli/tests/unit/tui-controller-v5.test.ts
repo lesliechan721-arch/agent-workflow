@@ -4,6 +4,7 @@ import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
+  operationEvidenceFingerprint,
   userIssueKey,
   type OperationEvidence,
   type TuiControllerDependencies,
@@ -1529,6 +1530,97 @@ describe('TUI v4 background source checks', () => {
 });
 
 describe('TUI v4 Review safety', () => {
+  it('shows managed Codex acquisition without making manager selection stale evidence', async () => {
+    const evidence: OperationEvidence = {
+      ...baseEvidence,
+      codexManager: {
+        state: 'requires-install',
+        packageName: '@openai/codex',
+        version: '0.150.1',
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+    }));
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo',
+      platform: 'codex', scope: 'user',
+    });
+
+    expect(review.changes).toContainEqual(expect.objectContaining({
+      kind: 'add',
+      group: 'runtime',
+      title: '获取 Codex runtime',
+      description: '@openai/codex@0.150.1 · AW-managed 缓存',
+    }));
+    expect(review.equivalentCommand).toContain('--allow-managed-codex-install');
+    expect(operationEvidenceFingerprint(evidence)).toBe(operationEvidenceFingerprint({
+      ...baseEvidence,
+      codexManager: { state: 'system', packageName: '@openai/codex', version: '0.200.0' },
+    }));
+  });
+
+  it.each([
+    {
+      label: 'managed acquisition failure',
+      managerState: 'requires-install' as const,
+      errorCode: 'managedCodexUnavailable' as const,
+      recovery: '升级 AW',
+    },
+    {
+      label: 'cached Review followed by a missing runtime',
+      managerState: 'cached' as const,
+      errorCode: 'managedCodexAuthorizationRequired' as const,
+      recovery: '--allow-managed-codex-install',
+    },
+  ])('reports $label as a Codex pre-write blocker', async ({ managerState, errorCode, recovery }) => {
+    const evidence: OperationEvidence = {
+      ...baseEvidence,
+      codexManager: {
+        state: managerState,
+        packageName: '@openai/codex',
+        version: '0.150.1',
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'failed',
+        targetResults: [{
+          target: {
+            pluginId: 'official/demo',
+            platform: 'codex',
+            scope: 'user',
+          },
+          action: 'install',
+          state: 'failed',
+          errorCode,
+        }],
+      }),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo',
+      platform: 'codex', scope: 'user',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'blocked',
+      code: errorCode,
+      message: expect.stringContaining('插件写入前停止'),
+      summary: {
+        code: 'operationFailed',
+        targets: [expect.objectContaining({ errorCode })],
+      },
+    });
+    expect(result.message).toContain(recovery);
+    expect(result).not.toHaveProperty('writeMayHaveCompleted');
+  });
+
   it('groups the frozen dependency plan and projects target-level partial evidence', async () => {
     const dependencyPlan = {
       dependencyPlanSchemaVersion: 1 as const,

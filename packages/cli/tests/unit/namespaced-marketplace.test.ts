@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   projectMarketplaceManifestForPlatform,
@@ -20,16 +20,8 @@ import {
 } from '../../src/utils/orphan-marketplace-cleanup.js';
 import { discoverCodexNativeResidueNames } from '../../src/commands/rebuild-integration.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
-import {
-  setActiveMarketplaceCoordinationBeforeReleaseHookForTests,
-  withActiveMarketplaceRuntimeLease,
-} from '../../src/utils/active-marketplace-runtime-lock.js';
 
 const sourceIdentity = `sha256:${'a'.repeat(64)}`;
-
-afterEach(() => {
-  setActiveMarketplaceCoordinationBeforeReleaseHookForTests(undefined);
-});
 
 async function createMarketplaceRoot(rootDir: string): Promise<void> {
   await Promise.all([
@@ -354,36 +346,6 @@ describe('namespaced marketplace root', () => {
         'team',
         'generation.txt',
       ), 'utf8')).resolves.toBe('old\n');
-    },
-  );
-
-  it.each(['EBUSY', 'EPERM'])(
-    'keeps a durable marketplace commit successful when runtime lease release stays %s',
-    async (code) => {
-      const isolation = getCurrentSourceTestIsolation();
-      const backupRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team.backup-runtime');
-      const teamIdentity = `sha256:${'c'.repeat(64)}`;
-      await createMarketplaceRoot(backupRoot);
-      const privateReleasePath = path.join(isolation.layout.fixtureCwd, 'private', 'operation.lock');
-      setActiveMarketplaceCoordinationBeforeReleaseHookForTests(async () => {
-        throw Object.assign(new Error(`${privateReleasePath}: injected runtime release ${code}`), { code });
-      });
-      const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
-
-      await expect(withActiveMarketplaceRuntimeLease(isolation.env, () =>
-        commitMarketplaceGenerationBackup({
-          backupRoot,
-          sourceId: 'team',
-          sourceIdentity: teamIdentity,
-          marketplaceName: 'aw-team',
-          env: isolation.env,
-        }))).resolves.toBeUndefined();
-      await expect(fs.pathExists(backupRoot)).resolves.toBe(false);
-      expect(JSON.stringify(warning.mock.calls)).not.toContain(privateReleasePath);
-      expect(warning).toHaveBeenCalledWith(
-        expect.stringContaining('lease release failed'),
-        expect.objectContaining({ code: 'AW_COORDINATION_LOCK_RELEASE_FAILED' }),
-      );
     },
   );
 

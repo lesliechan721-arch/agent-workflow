@@ -141,6 +141,11 @@ export interface OperationEvidence {
   targetFingerprint?: string;
   offlineCleanup?: OfflineCleanupTargetEvidence;
   dependencyPlan?: DependencyOperationPlan;
+  codexManager?: {
+    state: 'system' | 'cached' | 'requires-install';
+    packageName: '@openai/codex';
+    version: string;
+  };
   config?: {
     scope: Scope;
     projectLayer: ProjectConfigStoreLayer;
@@ -171,7 +176,7 @@ export interface OperationEvidence {
 
 export interface OperationReviewChange {
   kind: 'add' | 'change' | 'remove' | 'keep' | 'warning';
-  group?: 'requested' | 'dependencies' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'configChanges' | 'configImpact' | 'preserved';
+  group?: 'requested' | 'dependencies' | 'runtime' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'configChanges' | 'configImpact' | 'preserved';
   pluginId?: string;
   relation?: 'requested' | 'direct' | 'transitive';
   title: string;
@@ -308,7 +313,10 @@ export interface OperationResultSummary {
     state: 'completed' | 'kept' | 'failed' | 'skipped';
     relation?: 'requested' | 'direct' | 'transitive';
     requiredBy?: string[];
-    errorCode?: 'dependencyStillRequired';
+    errorCode?: 'dependencyStillRequired'
+      | 'codexSystemCliUnsupported'
+      | 'managedCodexAuthorizationRequired'
+      | 'managedCodexUnavailable';
   }>;
 }
 
@@ -479,7 +487,10 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
-  return crypto.createHash('sha256').update(JSON.stringify(stableValue(evidence))).digest('hex');
+  const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(stableValue(staleEvidence)))
+    .digest('hex');
 }
 
 function sourceIdFromPluginId(pluginId: string): string {
@@ -650,6 +661,20 @@ function reviewChanges(
     ];
   }
   if (intent.kind === 'pluginWrite') {
+    const runtimeChanges: OperationReviewChange[] = evidence?.codexManager
+      ? [{
+          kind: evidence.codexManager.state === 'requires-install' ? 'add' : 'keep',
+          group: 'runtime',
+          title: evidence.codexManager.state === 'requires-install'
+            ? '获取 Codex runtime'
+            : 'Codex runtime',
+          description: evidence.codexManager.state === 'requires-install'
+            ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · AW-managed 缓存`
+            : evidence.codexManager.state === 'cached'
+              ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · 复用 AW-managed 缓存`
+              : `使用兼容的 system Codex ${evidence.codexManager.version}`,
+        }]
+      : [];
     const plan = evidence?.dependencyPlan;
     if (plan && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
       const changes = plan.targets.map((target): OperationReviewChange => {
@@ -674,7 +699,7 @@ function reviewChanges(
         title: '插件设置和已有依赖保持不变',
         description: '移除根插件时不会自动清理依赖。',
       });
-      return changes;
+      return [...changes, ...runtimeChanges];
     }
     const platforms: PlatformName[] = intent.platform === 'both'
       ? ['codex', 'claude']
@@ -709,7 +734,7 @@ function reviewChanges(
         { kind: 'warning', title: '执行前重新检查完整目标和来源证据' },
       );
     }
-    return changes;
+    return [...changes, ...runtimeChanges];
   }
   if (intent.kind === 'configReset') {
     const layerLabel = intent.scope === 'user'
@@ -2200,8 +2225,8 @@ export class TuiController {
         'pluginId' in intent ? this.getPluginDependencyOverview(intent.pluginId) : undefined,
       ),
       technicalDetails: technicalDetails(evidence),
-      ...(intent.kind === 'pluginWrite' && intent.action === 'cleanup'
-        ? { equivalentCommand: `aw cleanup ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.force === true ? ' --force' : ''}` }
+      ...(intent.kind === 'pluginWrite'
+        ? { equivalentCommand: `aw ${intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}` }
         : {}),
       primaryLabel: intent.kind === 'pluginWrite' && evidence.dependencyPlan
         ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
@@ -2394,6 +2419,18 @@ export class TuiController {
       if (pluginSummary?.code === 'operationFailed') {
         const unsuccessfulTargets = pluginSummary.targets?.filter((target) =>
           target.state === 'failed' || target.state === 'skipped') ?? [];
+        const managerFailureCode = unsuccessfulTargets.map((target) => target.errorCode).find((code) =>
+          code === 'codexSystemCliUnsupported'
+          || code === 'managedCodexAuthorizationRequired'
+          || code === 'managedCodexUnavailable');
+        if (managerFailureCode) {
+          return this.#setBlocked(operationId, managerFailureCode, {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            summary: pluginSummary,
+          });
+        }
         const dependencyStillRequired = unsuccessfulTargets.length > 0
           && unsuccessfulTargets.every((target) => target.errorCode === 'dependencyStillRequired');
         return this.#setBlocked(operationId, dependencyStillRequired ? 'dependencyStillRequired' : 'operationFailed', {
@@ -2633,7 +2670,13 @@ export class TuiController {
       summary?: OperationResultSummary;
     },
   ): OperationExecuteResult {
-    const message = code === 'portableSkillsCliInstallFailed'
+    const message = code === 'managedCodexAuthorizationRequired'
+      ? '操作在插件写入前停止。请在 Review 中确认获取 Codex runtime，或在命令行传入 --allow-managed-codex-install。'
+      : code === 'codexSystemCliUnsupported'
+        ? '操作在插件写入前停止。系统 Codex CLI 版本不受支持。请升级官方 Codex CLI 后重试。'
+        : code === 'managedCodexUnavailable'
+          ? '操作在插件写入前停止。Codex runtime 当前不可用。请重试、升级 AW，或安装官方 Codex CLI。'
+          : code === 'portableSkillsCliInstallFailed'
       ? 'Skills CLI 安装失败。请修改 Agent 或重试。'
       : options?.writeMayHaveCompleted
       ? '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。'
@@ -2832,7 +2875,10 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         requiredBy: planned.requiredBy,
       } : {}),
       ...(entry.errorCode === 'dependencyStillRequired'
-        ? { errorCode: 'dependencyStillRequired' as const }
+        || entry.errorCode === 'codexSystemCliUnsupported'
+        || entry.errorCode === 'managedCodexAuthorizationRequired'
+        || entry.errorCode === 'managedCodexUnavailable'
+        ? { errorCode: entry.errorCode as NonNullable<OperationResultSummary['targets']>[number]['errorCode'] }
         : {}),
     }];
   });

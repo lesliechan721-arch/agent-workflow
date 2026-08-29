@@ -3,13 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
-import {
-  calculatePluginBundleFingerprint,
-  calculatePluginBundleFingerprintV2,
-} from '../../src/utils/bundle-integrity.js';
-import {
-  calculatePluginBundleFingerprint as calculateThroughLegacyPluginScriptsApi,
-} from '../../src/utils/plugin-scripts.js';
+import { calculatePluginBundleFingerprint } from '../../src/utils/bundle-integrity.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('plugin bundle fingerprint', () => {
@@ -29,12 +23,12 @@ describe('plugin bundle fingerprint', () => {
       Buffer.from('c\0'), Buffer.alloc(0), Buffer.from('\0'),
     ]);
     expect(oldConstructionA.equals(oldConstructionB)).toBe(true);
-    await expect(calculatePluginBundleFingerprintV2(bundleA)).resolves.not.toBe(
-      await calculatePluginBundleFingerprintV2(bundleB),
+    await expect(calculatePluginBundleFingerprint(bundleA)).resolves.not.toBe(
+      await calculatePluginBundleFingerprint(bundleB),
     );
   });
 
-  it('binds entry type and symlink target bytes and keeps the legacy export compatible', async () => {
+  it('binds entry type and symlink target bytes', async () => {
     const root = getCurrentSourceTestIsolation().layout.fixtureCwd;
     const fileBundle = path.join(root, 'file-bundle');
     const directoryBundle = path.join(root, 'directory-bundle');
@@ -44,24 +38,13 @@ describe('plugin bundle fingerprint', () => {
     await fs.ensureDir(linkBundle);
     await fs.symlink('target-a', path.join(linkBundle, 'entry'));
 
-    const fileDigest = await calculatePluginBundleFingerprintV2(fileBundle);
-    expect(fileDigest).not.toBe(await calculatePluginBundleFingerprintV2(directoryBundle));
-    expect(fileDigest).not.toBe(await calculatePluginBundleFingerprintV2(linkBundle));
-    expect(await calculateThroughLegacyPluginScriptsApi(fileBundle)).toBe(
-      await calculatePluginBundleFingerprint(fileBundle),
-    );
+    const fileDigest = await calculatePluginBundleFingerprint(fileBundle);
+    expect(fileDigest).not.toBe(await calculatePluginBundleFingerprint(directoryBundle));
+    expect(fileDigest).not.toBe(await calculatePluginBundleFingerprint(linkBundle));
   });
 
   it('does not convert missing roots or readdir failures into an empty bundle', async () => {
     const missing = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'missing');
-    await expect(calculatePluginBundleFingerprintV2(missing)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('keeps the legacy fingerprint algorithm at its fixed golden value', async () => {
-    const bundle = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'legacy-golden');
-    await fs.outputFile(path.join(bundle, 'a'), 'hello');
-    await expect(calculatePluginBundleFingerprint(bundle)).resolves.toBe(
-      'sha256:b80f9504b9a9b84ac9bec1ad62892f7b49eaa4ef65c5b501d449a027a9a47e18',
-    );
+    await expect(calculatePluginBundleFingerprint(missing)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

@@ -191,10 +191,79 @@ export interface StatusV5PluginSummary {
   dependencyIssueCount?: number;
 }
 
+export interface LiveConsoleItem {
+  pluginName: string;
+  version?: string;
+  pluginSummary?: Omit<StatusV5PluginSummary, 'pluginName' | 'pluginId'>;
+  targets: StatusV5Target[];
+}
+
+export interface ConsoleItemsLoadResult {
+  items: LiveConsoleItem[];
+  catalogUnavailable: boolean;
+  status: StatusV5Payload;
+}
+
 let dependencyInspectionHookForTests: (() => void) | undefined;
 
 export function setStatusDependencyInspectionHookForTests(hook: (() => void) | undefined): void {
   dependencyInspectionHookForTests = hook;
+}
+
+export async function loadConsoleItemsResult(
+  options: {
+    cwd?: string;
+    platform?: string;
+    scope?: string;
+    verbose?: boolean;
+  } = {},
+  runtime: { env?: NodeJS.ProcessEnv } = {},
+): Promise<ConsoleItemsLoadResult> {
+  const result = await statusCommandV5({
+    cwd: options.cwd ?? process.cwd(),
+    env: runtime.env,
+    platform: options.platform,
+    scope: options.scope,
+    verbose: options.verbose,
+  });
+  const groups = new Map<string, LiveConsoleItem>();
+  const summaries = new Map(result.pluginSummaries.map((summary) => [summary.pluginId, summary]));
+  for (const target of result.payload.targets) {
+    const summary = summaries.get(target.pluginId);
+    let pluginSummary: LiveConsoleItem['pluginSummary'];
+    if (summary !== undefined) {
+      const { pluginName: _pluginName, pluginId: _pluginId, ...projected } = summary;
+      pluginSummary = projected;
+    }
+    const current = groups.get(target.pluginId) ?? {
+      pluginName: target.pluginId,
+      ...(target.version ? { version: target.version } : {}),
+      ...(pluginSummary ? { pluginSummary } : {}),
+      targets: [],
+    };
+    current.targets.push(target);
+    groups.set(target.pluginId, current);
+  }
+  const allSourcesFailed = result.payload.catalog.sources.length > 0
+    && result.payload.catalog.sources.every((source) => source.error !== undefined);
+  return {
+    items: [...groups.values()].sort((left, right) =>
+      left.pluginName.localeCompare(right.pluginName)),
+    catalogUnavailable: allSourcesFailed,
+    status: result.payload,
+  };
+}
+
+export async function loadConsoleItems(
+  options: {
+    cwd?: string;
+    platform?: string;
+    scope?: string;
+    verbose?: boolean;
+  } = {},
+  runtime: { env?: NodeJS.ProcessEnv } = {},
+): Promise<LiveConsoleItem[]> {
+  return (await loadConsoleItemsResult(options, runtime)).items;
 }
 
 interface PlannedStatusSelector {

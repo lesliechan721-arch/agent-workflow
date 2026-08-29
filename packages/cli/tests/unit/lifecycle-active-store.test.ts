@@ -8,25 +8,15 @@ import {
   LIFECYCLE_ACTIVE_METADATA_FILE,
   LifecycleActiveSnapshotError,
   discardLifecycleActiveSnapshot,
-  leaseLifecycleActiveSnapshot,
   prepareLifecycleActiveSnapshot as prepareLifecycleActiveSnapshotWithLoader,
   promoteLifecycleActiveSnapshot,
   readLifecycleActiveSnapshot,
-  releaseLifecycleActiveSnapshot,
   removeLifecycleActiveSnapshot,
   resolveLifecycleActiveTarget,
   restoreLifecycleActiveScriptInputs,
   setLifecycleActiveBeforePruneForTests,
-  setLifecycleActiveLockFileSystemForTests,
 } from '../../src/utils/lifecycle-active-store.js';
-import type { ProcessLockFileSystem } from '../../src/utils/process-lock.js';
-import {
-  setActiveMarketplaceCoordinationBeforeReleaseHookForTests,
-  setActiveMarketplaceLifecycleBeforeAcquireHookForTests,
-  withActiveMarketplaceLifecycleLease,
-} from '../../src/utils/active-marketplace-runtime-lock.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const loadPlugin = async (bundleRoot: string, manifestPath: string): Promise<PluginMeta> => {
@@ -43,25 +33,6 @@ function prepareLifecycleActiveSnapshot(
   },
 ) {
   return prepareLifecycleActiveSnapshotWithLoader({ ...options, loadPlugin: options.loadPlugin ?? loadPlugin });
-}
-
-function processLockFileSystem(
-  overrides: Partial<ProcessLockFileSystem> = {},
-): ProcessLockFileSystem {
-  return {
-    mkdir: (targetPath) => fs.mkdir(targetPath),
-    writeFile: (targetPath, contents, options) => fs.writeFile(targetPath, contents, options),
-    readFile: (targetPath, encoding) => fs.readFile(targetPath, encoding),
-    readdir: (targetPath) => fs.readdir(targetPath),
-    stat: (targetPath) => fs.stat(targetPath),
-    lstat: (targetPath) => fs.lstat(targetPath),
-    rename: (sourcePath, targetPath) => fs.rename(sourcePath, targetPath),
-    link: (existingPath, newPath) => fs.link(existingPath, newPath),
-    copyFile: (sourcePath, targetPath, flags) => fs.copyFile(sourcePath, targetPath, flags),
-    unlink: (targetPath) => fs.unlink(targetPath),
-    rmdir: (targetPath) => fs.rmdir(targetPath),
-    ...overrides,
-  };
 }
 
 function createManifest(options: {
@@ -189,12 +160,9 @@ describe('lifecycle active store', () => {
 
     expect(userA.locationKey).toBe('user');
     expect(userB.targetRoot).toBe(userA.targetRoot);
-    expect(userB.operationLockPath).toBe(userA.operationLockPath);
-    expect(userA.operationLockPath).not.toBe(userA.lockPath);
     expect(projectA.projectKey).toBe(await fs.realpath(repoA));
     expect(nestedProjectA.targetRoot).toBe(projectA.targetRoot);
     expect(projectB.targetRoot).not.toBe(projectA.targetRoot);
-    expect(projectB.operationLockPath).not.toBe(projectA.operationLockPath);
     expect(path.relative(projectA.awHome, projectA.targetRoot)).toMatch(
       /^lifecycle-active\/codex\/project\/project-[^/]+\/active-plugin$/,
     );
@@ -319,9 +287,6 @@ describe('lifecycle active store', () => {
 
     try {
       await expect(readLifecycleActiveSnapshot(targetOptions(repo))).resolves.not.toBeNull();
-      const leased = await leaseLifecycleActiveSnapshot(targetOptions(repo));
-      expect(leased).not.toBeNull();
-      await releaseLifecycleActiveSnapshot(leased!);
     } finally {
       pathExists.mockRestore();
     }
@@ -421,37 +386,6 @@ describe('lifecycle active store', () => {
     expect(await fs.pathExists(target.targetRoot)).toBe(false);
   });
 
-  it('keeps user config readable while a prepared snapshot owns the lifecycle lease', async () => {
-    const repo = await createRepo('repo');
-    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd: repo,
-      env: process.env,
-      values: { token: 'current' },
-    });
-    const prepared = await prepareLifecycleActiveSnapshot({
-      plugin,
-      platform: 'codex',
-      scope: 'user',
-      cwd: repo,
-      env: process.env,
-    });
-
-    try {
-      expect(prepared.status).toBe('staged');
-      await expect(readPluginConfigStore({
-        pluginName: plugin.manifest.name,
-        scope: 'user',
-        cwd: repo,
-        env: process.env,
-      })).resolves.toMatchObject({ values: { token: 'current' } });
-    } finally {
-      await discardLifecycleActiveSnapshot(prepared);
-    }
-  });
-
   it('keeps the same plugin isolated across multiple projects', async () => {
     const repoA = await createRepo('repo-a');
     const repoB = await createRepo('repo-b');
@@ -526,7 +460,7 @@ describe('lifecycle active store', () => {
     await promoteLifecycleActiveSnapshot(prepared);
   });
 
-  it('rejects bundle link cycles and releases the target lock after prepare failure', async () => {
+  it('rejects bundle link cycles and permits a later valid prepare', async () => {
     const repo = await createRepo('repo');
     const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
     const outside = path.join(repo, 'outside.js');
@@ -689,112 +623,6 @@ describe('lifecycle active store', () => {
     await expect(readLifecycleActiveSnapshot(targetOptions(repo))).resolves.not.toBeNull();
   });
 
-  it('serializes two concurrent successful prepare/promote workflows for one target', async () => {
-    const repo = await createRepo('repo');
-    const root = getCurrentSourceTestIsolation().layout.fixtureCwd;
-    const first = await writePlugin({ root, version: '1.0.0', marker: 'first' });
-    const second = await writePlugin({ root, version: '2.0.0', marker: 'second' });
-    const run = async (plugin: PluginMeta) => {
-      const prepared = await prepareLifecycleActiveSnapshot({
-        plugin,
-        platform: 'codex',
-        scope: 'user',
-        cwd: repo,
-        env: process.env,
-      });
-      return promoteLifecycleActiveSnapshot(prepared);
-    };
-    const results = await Promise.all([run(first), run(second)]);
-    const active = await readLifecycleActiveSnapshot(targetOptions(repo));
-
-    expect(results.every((result) => result !== null)).toBe(true);
-    expect(['1.0.0', '2.0.0']).toContain(active?.metadata.pluginVersion);
-    expect((await fs.readdir(active!.target.targetRoot)).sort()).toEqual(['active']);
-  });
-
-  it('keeps leased uninstall bytes stable while a newer promote waits', async () => {
-    const repo = await createRepo('leased-read-repo');
-    const root = getCurrentSourceTestIsolation().layout.fixtureCwd;
-    const first = await writePlugin({ root, version: '1.0.0', marker: 'leased-v1' });
-    await stageAndPromote({ plugin: first, cwd: repo });
-    const leased = await leaseLifecycleActiveSnapshot(targetOptions(repo));
-    expect(leased?.metadata.pluginVersion).toBe('1.0.0');
-
-    const second = await writePlugin({ root, version: '2.0.0', marker: 'promoted-v2' });
-    let contenderObservedLock = false;
-    let notifyContender!: () => void;
-    const contenderObserved = new Promise<void>((resolve) => { notifyContender = resolve; });
-    setActiveMarketplaceLifecycleBeforeAcquireHookForTests(async () => {
-      if (!contenderObservedLock) {
-        contenderObservedLock = true;
-        notifyContender();
-      }
-    });
-    const promoting = (async () => {
-      const prepared = await prepareLifecycleActiveSnapshot({
-        plugin: second,
-        platform: 'codex',
-        scope: 'user',
-        cwd: repo,
-        env: process.env,
-      });
-      return promoteLifecycleActiveSnapshot(prepared);
-    })();
-    try {
-      await contenderObserved;
-      await expect(fs.readFile(
-        path.join(leased!.bundleRoot, 'scripts', 'uninstall.mjs'),
-        'utf8',
-      )).resolves.toContain('leased-v1:uninstall');
-      await releaseLifecycleActiveSnapshot(leased!);
-      await expect(promoting).resolves.toMatchObject({
-        metadata: { pluginVersion: '2.0.0' },
-      });
-      await expect(releaseLifecycleActiveSnapshot(leased!)).resolves.toBeUndefined();
-    } finally {
-      setActiveMarketplaceLifecycleBeforeAcquireHookForTests(undefined);
-      await releaseLifecycleActiveSnapshot(leased!).catch(() => undefined);
-    }
-  });
-
-  it('preserves the valid active generation when a concurrent promote fails before replacement', async () => {
-    const repo = await createRepo('repo');
-    const root = getCurrentSourceTestIsolation().layout.fixtureCwd;
-    const oldPlugin = await writePlugin({ root, version: '1.0.0', marker: 'old' });
-    await stageAndPromote({ plugin: oldPlugin, cwd: repo });
-    const brokenPlugin = await writePlugin({ root, version: '2.0.0', marker: 'broken' });
-    const goodPlugin = await writePlugin({ root, version: '3.0.0', marker: 'good' });
-    const broken = await prepareLifecycleActiveSnapshot({
-      plugin: brokenPlugin,
-      platform: 'codex',
-      scope: 'user',
-      cwd: repo,
-      env: process.env,
-    });
-    if (broken.status !== 'staged') {
-      throw new Error('Expected lifecycle active staging.');
-    }
-    const waitingGood = (async () => {
-      const prepared = await prepareLifecycleActiveSnapshot({
-        plugin: goodPlugin,
-        platform: 'codex',
-        scope: 'user',
-        cwd: repo,
-        env: process.env,
-      });
-      return promoteLifecycleActiveSnapshot(prepared);
-    })();
-    await editMetadata(broken.stageRoot, (metadata) => {
-      metadata.pluginVersion = 'tampered';
-    });
-    await expect(promoteLifecycleActiveSnapshot(broken)).rejects.toThrow();
-    await expect(waitingGood).resolves.not.toBeNull();
-
-    const active = await readLifecycleActiveSnapshot(targetOptions(repo));
-    expect(active?.metadata.pluginVersion).toBe('3.0.0');
-    expect((await fs.readdir(active!.target.targetRoot)).sort()).toEqual(['active']);
-  });
-
   it('fails closed on target ancestor symlinks for remove and not-required promotion', async () => {
     const repo = await createRepo('repo');
     const outside = path.join(repo, 'outside-target');
@@ -906,128 +734,6 @@ describe('lifecycle active store', () => {
     });
   });
 
-  it.each(['EBUSY', 'EPERM'])('keeps committed promote successful when target lock release stays %s', async (code) => {
-    const repo = await createRepo('repo');
-    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
-    let remainingReleaseFailures = 3;
-    const fileSystem = processLockFileSystem({
-      async unlink(targetPath) {
-        if (remainingReleaseFailures > 0 && targetPath.includes('release-')) {
-          remainingReleaseFailures -= 1;
-          const error = new Error('simulated lifecycle lock release failure') as NodeJS.ErrnoException;
-          error.code = code;
-          throw error;
-        }
-        await fs.unlink(targetPath);
-      },
-    });
-    setLifecycleActiveLockFileSystemForTests(fileSystem);
-    const prepared = await prepareLifecycleActiveSnapshot({
-      plugin,
-      platform: 'codex',
-      scope: 'user',
-      cwd: repo,
-      env: process.env,
-    });
-    try {
-      await expect(promoteLifecycleActiveSnapshot(prepared)).resolves.not.toBeNull();
-      await expect(discardLifecycleActiveSnapshot(prepared)).resolves.toBeUndefined();
-      await expect(discardLifecycleActiveSnapshot(prepared)).resolves.toBeUndefined();
-      await expect(readLifecycleActiveSnapshot(targetOptions(repo))).resolves.not.toBeNull();
-    } finally {
-      setLifecycleActiveLockFileSystemForTests(undefined);
-    }
-  });
-
-  it.each(['EBUSY', 'EPERM'])('keeps committed promote successful when lifecycle lease release stays %s', async (code) => {
-    const repo = await createRepo(`outer-promote-release-${code}`);
-    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
-    setActiveMarketplaceCoordinationBeforeReleaseHookForTests(async () => {
-      throw Object.assign(new Error('simulated lifecycle lease release failure'), { code });
-    });
-    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
-    try {
-      await expect(withActiveMarketplaceLifecycleLease(process.env, async () => {
-        const prepared = await prepareLifecycleActiveSnapshot({
-          plugin,
-          platform: 'codex',
-          scope: 'user',
-          cwd: repo,
-          env: process.env,
-          lifecycleLeaseHeld: true,
-        });
-        return promoteLifecycleActiveSnapshot(prepared);
-      })).resolves.not.toBeNull();
-      setActiveMarketplaceCoordinationBeforeReleaseHookForTests(undefined);
-      await expect(readLifecycleActiveSnapshot(targetOptions(repo))).resolves.not.toBeNull();
-    } finally {
-      setActiveMarketplaceCoordinationBeforeReleaseHookForTests(undefined);
-    }
-  });
-
-  it.each(['EBUSY', 'EPERM'])('keeps committed remove successful when target lock release stays %s', async (code) => {
-    const repo = await createRepo(`remove-release-${code}`);
-    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
-    const active = await stageAndPromote({ plugin, cwd: repo });
-    const privateReleasePath = path.join(repo, 'private', 'operation.lock');
-    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
-    let remainingReleaseFailures = 3;
-    setLifecycleActiveLockFileSystemForTests(processLockFileSystem({
-      async unlink(targetPath) {
-        if (remainingReleaseFailures > 0 && targetPath.includes('release-')) {
-          remainingReleaseFailures -= 1;
-          throw Object.assign(new Error(`${privateReleasePath}: simulated remove release failure`), { code });
-        }
-        await fs.unlink(targetPath);
-      },
-    }));
-    try {
-      await expect(removeLifecycleActiveSnapshot(targetOptions(repo))).resolves.toBeUndefined();
-      await expect(fs.pathExists(active.activeRoot)).resolves.toBe(false);
-      expect(JSON.stringify(warning.mock.calls)).not.toContain(privateReleasePath);
-      expect(warning).toHaveBeenCalledWith(
-        expect.stringContaining('target lock could not be released'),
-        expect.objectContaining({ code: 'AW_LIFECYCLE_LOCK_RELEASE_FAILED' }),
-      );
-    } finally {
-      setLifecycleActiveLockFileSystemForTests(undefined);
-    }
-  });
-
-  it('keeps the prepare error primary when lock release also fails', async () => {
-    const repo = await createRepo('repo');
-    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
-    const outside = path.join(repo, 'outside-source.js');
-    await fs.writeFile(outside, 'outside\n');
-    await fs.symlink(outside, path.join(plugin.rootDir, 'escape.js'));
-    let remainingReleaseFailures = 3;
-    const fileSystem = processLockFileSystem({
-      async unlink(targetPath) {
-        if (remainingReleaseFailures > 0 && targetPath.includes('release-')) {
-          remainingReleaseFailures -= 1;
-          const error = new Error('simulated prepare release failure') as NodeJS.ErrnoException;
-          error.code = 'EBUSY';
-          throw error;
-        }
-        await fs.unlink(targetPath);
-      },
-    });
-    setLifecycleActiveLockFileSystemForTests(fileSystem);
-    try {
-      const error = await prepareLifecycleActiveSnapshot({
-        plugin,
-        platform: 'codex',
-        scope: 'user',
-        cwd: repo,
-        env: process.env,
-      }).catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(LifecycleActiveSnapshotError);
-      expect(String(error)).toContain('allowed closure roots');
-    } finally {
-      setLifecycleActiveLockFileSystemForTests(undefined);
-    }
-  });
-
   it('rejects project artifact paths whose existing ancestor symlink escapes the project', async () => {
     const repo = await createRepo('repo');
     const outside = path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, 'outside-artifacts');
@@ -1068,33 +774,4 @@ describe('lifecycle active store', () => {
     })).rejects.toThrow('dangling symbolic link');
   });
 
-  it('keeps the remove error primary when release also fails without deleting through a target symlink', async () => {
-    const repo = await createRepo('repo');
-    const target = await resolveLifecycleActiveTarget(targetOptions(repo));
-    const outside = path.join(repo, 'remove-outside');
-    await fs.ensureDir(outside);
-    await fs.ensureDir(path.dirname(target.targetRoot));
-    await fs.symlink(outside, target.targetRoot);
-    let remainingReleaseFailures = 3;
-    setLifecycleActiveLockFileSystemForTests(processLockFileSystem({
-      async unlink(targetPath) {
-        if (remainingReleaseFailures > 0 && targetPath.includes('release-')) {
-          remainingReleaseFailures -= 1;
-          const error = new Error('simulated remove release failure') as NodeJS.ErrnoException;
-          error.code = 'EBUSY';
-          throw error;
-        }
-        await fs.unlink(targetPath);
-      },
-    }));
-    try {
-      const error = await removeLifecycleActiveSnapshot(targetOptions(repo))
-        .catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(LifecycleActiveSnapshotError);
-      expect(String(error)).toContain('symbolic link');
-      expect(await fs.pathExists(outside)).toBe(true);
-    } finally {
-      setLifecycleActiveLockFileSystemForTests(undefined);
-    }
-  });
 });

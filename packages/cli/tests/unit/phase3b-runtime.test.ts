@@ -46,10 +46,6 @@ import {
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
-import {
-  resolveActiveMarketplaceRuntimeCoordinationRoot,
-  setActiveMarketplaceLifecycleBeforeAcquireHookForTests,
-} from '../../src/utils/active-marketplace-runtime-lock.js';
 
 const SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
@@ -654,7 +650,9 @@ describe('phase 3B namespaced runtime stores', () => {
     }, {
       env: isolation.env,
       nativeCliRunner: async (invocation) => {
-        calls.push([invocation.command, ...invocation.args].join(' '));
+        const command = invocation.agentKind
+          ?? path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '');
+        calls.push([command, ...invocation.args].join(' '));
         if (invocation.args[1] === 'remove') {
           await Promise.all([fs.remove(cacheRoot), fs.remove(installedRoot)]);
           await fs.outputFile(codexConfig, [
@@ -1537,10 +1535,13 @@ describe('phase 3B namespaced runtime stores', () => {
       }
 
       const nativeCliRunner = async (invocation: {
+        agentKind?: 'codex' | 'claude';
         command: string;
         args: string[];
       }) => {
-        if (invocation.command === 'codex'
+        const command = invocation.agentKind
+          ?? path.basename(invocation.command).replace(/\.(?:cmd|exe)$/iu, '');
+        if (command === 'codex'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'marketplace'
           && invocation.args[2] === 'add') {
@@ -1551,7 +1552,7 @@ describe('phase 3B namespaced runtime stores', () => {
             '',
           ].join('\n'));
         }
-        if (invocation.command === 'codex'
+        if (command === 'codex'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'add') {
           await fs.appendFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
@@ -1567,7 +1568,7 @@ describe('phase 3B namespaced runtime stores', () => {
             ),
           );
         }
-        if (invocation.command === 'claude'
+        if (command === 'claude'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'marketplace'
           && invocation.args[2] === 'add') {
@@ -1590,7 +1591,7 @@ describe('phase 3B namespaced runtime stores', () => {
             },
           });
         }
-        if (invocation.command === 'claude'
+        if (command === 'claude'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'install') {
           const settingsPath = path.join(isolation.env.AW_CLAUDE_HOME!, 'settings.json');
@@ -2340,53 +2341,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }
   });
 
-  it('acquires lifecycle before runtime for namespaced materialization', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'lock-order-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
-      manifest.extensions = {
-        instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
-      };
-      manifest.marketplace.policy.products = ['CODEX'];
-    });
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 1,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const runtimeLockPath = path.join(
-      resolveActiveMarketplaceRuntimeCoordinationRoot(isolation.env),
-      'runtime-state.lock',
-    );
-    const runtimeHeldAtLifecycleAcquire: boolean[] = [];
-    setActiveMarketplaceLifecycleBeforeAcquireHookForTests(async () => {
-      runtimeHeldAtLifecycleAcquire.push(await fs.pathExists(runtimeLockPath));
-    });
-    try {
-      const result = await installWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
-        scope: 'project',
-      }, {
-        env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
-      });
-      expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-      expect(runtimeHeldAtLifecycleAcquire.length).toBeGreaterThan(0);
-      expect(runtimeHeldAtLifecycleAcquire.every((held) => !held)).toBe(true);
-      const marketplaceParent = path.join(isolation.env.AW_HOME!, 'marketplaces');
-      expect((await fs.readdir(marketplaceParent).catch(() => [])).filter((entry) =>
-        entry.startsWith('team.backup-'))).toEqual([]);
-    } finally {
-      setActiveMarketplaceLifecycleBeforeAcquireHookForTests(undefined);
-    }
-  });
-
-  it('keeps an orphan schema 2 lifecycle snapshot during qualified cleanup', async () => {
+  it('keeps an orphan lifecycle snapshot after failed cleanup and clears it without probing Codex', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-lifecycle-source');
     await createCatalogSnapshotFixture(sourceRoot);
@@ -2471,8 +2426,8 @@ describe('phase 3B namespaced runtime stores', () => {
         throw new Error('orphan metadata cleanup must not call the native CLI');
       },
     });
-    expect(cleanup).toMatchObject({ overallState: 'failed' });
-    expect(await fs.pathExists(target.activeRoot)).toBe(true);
+    expect(cleanup).toMatchObject({ overallState: 'succeeded' });
+    expect(await fs.pathExists(target.activeRoot)).toBe(false);
   });
 
   it('does not consume a lost-source snapshot after its last live owner disappears', async () => {

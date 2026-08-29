@@ -206,7 +206,8 @@
           "SKILL.md#实施循环"
         ],
         "confidence": "high",
-        "allowed_variance": "措辞可以不同；必须保留当前行为和必要约束，不能回放被否决方案或修复历史。"
+        "allowed_variance": "措辞可以不同；必须保留当前行为和必要约束，不能回放被否决方案或修复历史。",
+        "minimal_counterexample": "如果被替代方案说明了仍有效的安全、兼容、迁移或回滚约束，则应把该必要约束作为当前合同或 Evidence 保留。"
       },
       "prompt": "读取 docs/session-expiry-decision.md，按最终决定完成 skills/session-expiry/SKILL.md。只更新目标 Skill，不保留中间方案或 Review 过程。",
       "scripted_replies": [],

@@ -47,10 +47,7 @@ export type RebuildActionName =
   | 'recovery.cleanup'
   | 'cleanup.owned'
   | 'active.read'
-  | 'active.remove'
-  | 'active.release'
-  | 'operation.lock'
-  | 'operation.release';
+  | 'active.remove';
 export type RebuildActionEventData =
   | {
       name: RebuildActionName;
@@ -459,6 +456,7 @@ export interface CommandOptions {
   platform: PlatformSelection;
   cwd: string;
   scriptTimeoutMs?: number;
+  allowManagedCodexInstall?: boolean;
 }
 
 export type InstallCommandOptions = CommandOptions;

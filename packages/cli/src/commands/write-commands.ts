@@ -180,7 +180,10 @@ async function runPublicWriteCommand(options: {
   runtime: RebuildCommandRuntime;
   all?: boolean;
 }): Promise<RebuildCommandResult> {
-  const runtime = options.runtime;
+  const runtime = options.commandOptions.allowManagedCodexInstall === true
+    && !options.runtime.managedCodexAuthorizer
+    ? { ...options.runtime, managedCodexAuthorizer: async () => true }
+    : options.runtime;
   const execution = runtime.previewDependencyPlanOnly === true
     ? runRebuildCommand({
         command: options.command,

@@ -176,6 +176,10 @@ aw reinstall git -p codex -s user
 
 普通写操作在锁内复用一次 ordinary live inventory，并只对依赖计划中的目标执行 ownership、native、config 和 generation 重验。删除保护需要历史 project consumer 时，会使用独立范围的 inventory。需要定位耗时时，使用 `--debug --log-file <path>`，查看 `review.prepare.*`、`native:success|error` 和 `rebuild:action` 的 `durationMs`。原生事件只包含 agent、稳定 operation、退出状态和固定 reason，不包含 args、cwd、stdout、stderr 或未知错误文本。原生 CLI 时间单独记录，不计入 Catalog 读取时间。
 
+`install`、`upgrade`、`reinstall`、`uninstall` 和 `cleanup` 都接受 `--allow-managed-codex-install`。只有用户级计划实际需要 Codex native 写入或移除，且 system Codex CLI 缺失、AW-managed cache 也不可用时，AW 才需要获取固定的 `@openai/codex@0.150.1` runtime。直接 TTY 会在首次获取或安全重建前询问一次，默认不允许；JSON 和非交互模式必须显式传该 flag。有效 cache 可直接复用，不再次询问。已安装但过旧、版本不可解析或探测失败的 system CLI 会停止操作，不能用 managed runtime 绕过。
+
+该 runtime 位于 `AW_HOME` 的可删除弱缓存中，固定版本随 AW 发布更新，不加入 `PATH`，也不检测 Codex App。Codex project scope 不需要它。cleanup 和 uninstall 在没有可证明的 AW-owned native residue 时不会探测、提示或下载；移除失败会保留 residue，用户可重试命令、升级 AW，或安装兼容的官方 Codex CLI 后恢复。AW 不直接删除 Codex 私有 plugin storage，也不删除 foreign 内容。
+
 Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使用 PATH 中 `skills >=1.5.23 <2.0.0`：project scope 使用当前项目根，user scope 使用 Skills CLI 的 global 模式。Agent 默认使用 Skills CLI 的自动选择；命令行可传 `--agent <id...>`，TUI 也可改为显式 Agent。`--skill` 只筛选最终安装项；验证仍覆盖完整 plugin dependency closure。外部安装允许部分成功，不做补偿回滚；失败后可重跑命令，或按 receipt 提示使用外部 `skills remove`。
 
 `aw skill materialize` 先在临时目录验证完整候选，再写 schema 1 `.aw-materialization.json` ownership marker。它只替换 marker 中 plugin ID、source identity 和 scope 都与本次输出相同的 AW 目标；foreign、符号链接或身份不匹配目标会停止操作。TUI 从插件详情进入 Portable 流程，依次选择 Skill、Agent 和 scope，再显示 Review。详情页的 P13 只表示插件声明了该能力，安装状态仍是未知；AW 不维护 Portable installed state 或 Agent registry。

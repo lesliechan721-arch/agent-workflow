@@ -95,7 +95,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 ## Build Reuse
 
-`scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
+`scripts/build/ensure-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
 Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Workspace Catalog attempt、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 

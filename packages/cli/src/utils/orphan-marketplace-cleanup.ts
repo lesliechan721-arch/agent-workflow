@@ -7,7 +7,6 @@ import {
   assertCatalogSourceInventoryComplete,
   inventoryCatalogSourceReferences,
 } from './catalog-source-references.js';
-import { markActiveMarketplaceDurableCommit } from './active-marketplace-runtime-lock.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import { resolveAwHome } from './state-paths.js';
 
@@ -97,7 +96,6 @@ export async function commitMarketplaceGenerationBackup(options: {
     throw error;
   });
   if (backup === null) {
-    markActiveMarketplaceDurableCommit();
     return;
   }
   const quarantineRoot = path.join(resolveAwHome(options.env), QUARANTINE_DIRECTORY);
@@ -113,7 +111,6 @@ export async function commitMarketplaceGenerationBackup(options: {
   const quarantinedRoot = path.join(quarantineContainer, options.sourceId);
   try {
     await fs.rename(options.backupRoot, quarantinedRoot);
-    markActiveMarketplaceDurableCommit();
   } catch (error) {
     await fs.remove(quarantineContainer).catch(() => undefined);
     throw error;

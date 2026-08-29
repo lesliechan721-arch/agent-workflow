@@ -16,21 +16,9 @@ import type {
 } from '../types.js';
 import {
   calculateFileDigest,
-  calculatePluginBundleFingerprintV2,
+  calculatePluginBundleFingerprint,
 } from './bundle-integrity.js';
-import {
-  acquireActiveMarketplaceLifecycleLeaseAtRoot,
-  markActiveMarketplaceDurableCommit,
-  releaseActiveMarketplaceCoordinationLease,
-  resolveActiveMarketplaceRuntimeCoordinationRoot,
-  withActiveMarketplaceLifecycleLease,
-} from './active-marketplace-runtime-lock.js';
 import { PLUGIN_LIFECYCLE_EVENTS } from './plugin-script-contract.js';
-import {
-  acquireProcessLock,
-  type ProcessLockFileSystem,
-  type ProcessLockLease,
-} from './process-lock.js';
 import {
   canonicalizePathThroughExistingAncestor,
   createProjectLocationKey,
@@ -127,13 +115,10 @@ export interface LifecycleActiveMetadata extends LifecycleActiveMetadataPayload 
 
 export interface LifecycleActiveTarget extends LifecycleActiveTargetIdentity {
   awHome: string;
-  coordinationRoot: string;
   storeRoot: string;
   targetRoot: string;
   activeRoot: string;
   stagingRoot: string;
-  lockPath: string;
-  operationLockPath: string;
   artifactOutputRoots: string[];
   pathAliases: Array<{ source: string; canonical: string }>;
 }
@@ -176,26 +161,14 @@ export type LifecycleActivePluginLoader = (
   manifestPath: string,
 ) => Promise<PluginMeta>;
 
-const preparedContexts = new WeakMap<PreparedLifecycleActiveSnapshot, {
-  lock: ProcessLockLease;
-  loadPlugin: LifecycleActivePluginLoader;
-}>();
-const readContexts = new WeakMap<ReadLifecycleActiveSnapshot, ProcessLockLease>();
-const releasedReads = new WeakSet<ReadLifecycleActiveSnapshot>();
+const preparedLoaders = new WeakMap<PreparedLifecycleActiveSnapshot, LifecycleActivePluginLoader>();
 const finalizedPrepared = new WeakSet<PreparedLifecycleActiveSnapshot>();
 let beforePruneStagingRootForTests: (() => Promise<void>) | undefined;
-let processLockFileSystemForTests: ProcessLockFileSystem | undefined;
 
 export function setLifecycleActiveBeforePruneForTests(
   hook: (() => Promise<void>) | undefined,
 ): void {
   beforePruneStagingRootForTests = hook;
-}
-
-export function setLifecycleActiveLockFileSystemForTests(
-  fileSystem: ProcessLockFileSystem | undefined,
-): void {
-  processLockFileSystemForTests = fileSystem;
 }
 
 export class LifecycleActiveSnapshotError extends Error {
@@ -312,7 +285,6 @@ export async function resolveLifecycleActiveTarget(options: {
   const rawPlatformHome = path.resolve(platform === 'codex' ? getCodexHome(env) : getClaudeHome(env));
   const platformHome = await canonicalizePathThroughExistingAncestor(rawPlatformHome);
   const locationKey = projectKey ? createLifecycleProjectLocationKey(projectKey) : 'user';
-  const coordinationRoot = resolveActiveMarketplaceRuntimeCoordinationRoot(env);
   const storeRoot = assertWritableStorePath(path.join(awHome, LIFECYCLE_ACTIVE_DIR));
   const targetRoot = assertWritableStorePath(path.join(
     storeRoot,
@@ -321,21 +293,6 @@ export async function resolveLifecycleActiveTarget(options: {
     scope,
     locationKey,
     options.pluginName,
-  ));
-  const lockParent = assertWritableStorePath(path.join(
-    coordinationRoot,
-    'lifecycle-locks',
-    platform,
-    scope,
-    locationKey,
-  ));
-  const lockPath = assertWritableStorePath(path.join(
-    lockParent,
-    `.${options.sourceId ? `${options.sourceId}.` : ''}${options.pluginName}.lock`,
-  ));
-  const operationLockPath = assertWritableStorePath(path.join(
-    lockParent,
-    `.${options.sourceId ? `${options.sourceId}.` : ''}${options.pluginName}.operation.lock`,
   ));
   return {
     ...(options.sourceId ? {
@@ -349,13 +306,10 @@ export async function resolveLifecycleActiveTarget(options: {
     projectKey,
     locationKey,
     awHome,
-    coordinationRoot,
     storeRoot,
     targetRoot,
     activeRoot: path.join(targetRoot, 'active'),
     stagingRoot: path.join(targetRoot, 'staging'),
-    lockPath,
-    operationLockPath,
     artifactOutputRoots: [awHome, platformHome, ...(projectKey ? [projectKey] : [])],
     pathAliases: [
       { source: rawAwHome, canonical: awHome },
@@ -430,73 +384,6 @@ async function assertExistingDirectoryBoundary(
   if (!isInsidePath(realCandidate, realStoreRoot) || realCandidate !== path.resolve(candidatePath)) {
     fail(`${fieldName} escapes the canonical lifecycle active store.`);
   }
-}
-
-async function acquireTargetLock(
-  target: LifecycleActiveTarget,
-  lifecycleLeaseHeld = false,
-): Promise<ProcessLockLease> {
-  const lifecycleLease = lifecycleLeaseHeld
-    ? undefined
-    : await acquireActiveMarketplaceLifecycleLeaseAtRoot(target.coordinationRoot);
-  const lockParent = path.dirname(target.lockPath);
-  let targetLease: ProcessLockLease;
-  try {
-    await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
-    await fs.ensureDir(lockParent);
-    await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
-    targetLease = await acquireProcessLock({
-      lockPath: target.lockPath,
-      fileSystem: processLockFileSystemForTests,
-    });
-  } catch (error) {
-    try {
-      if (lifecycleLease) await releaseActiveMarketplaceCoordinationLease(lifecycleLease);
-    } catch (releaseError) {
-      emitLifecycleReleaseWarning(
-        'Lifecycle target lock acquisition failed, and lifecycle lease release also failed',
-        releaseError,
-      );
-    }
-    throw error;
-  }
-
-  let targetReleased = false;
-  let lifecycleReleased = false;
-  return {
-    lockPath: targetLease.lockPath,
-    owner: targetLease.owner,
-    release: async () => {
-      if (!targetReleased) {
-        await targetLease.release();
-        targetReleased = true;
-      }
-      if (lifecycleLease && !lifecycleReleased) {
-        await lifecycleLease.release();
-        lifecycleReleased = true;
-      }
-    },
-  };
-}
-
-export async function acquireLifecycleOperationLock(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  pluginName: string;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<ProcessLockLease> {
-  const target = await resolveLifecycleActiveTarget(options);
-  const lockParent = path.dirname(target.operationLockPath);
-  await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
-  await fs.ensureDir(lockParent);
-  await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
-  return acquireProcessLock({
-    lockPath: target.operationLockPath,
-    fileSystem: processLockFileSystemForTests,
-  });
 }
 
 async function assertNoSymlinks(rootPath: string): Promise<void> {
@@ -968,7 +855,7 @@ async function validateSnapshotRoot(
   const metadata = parseMetadata(rawMetadata, target);
   const [manifestDigest, bundleFingerprint] = await Promise.all([
     calculateFileDigest(resolvedManifestPath),
-    calculatePluginBundleFingerprintV2(resolvedBundleRoot),
+    calculatePluginBundleFingerprint(resolvedBundleRoot),
   ]);
   if (manifestDigest !== metadata.sourceManifestDigest) {
     fail('Lifecycle active manifest digest does not match metadata.');
@@ -1130,61 +1017,22 @@ async function cleanupTransientState(
   await cleanupOrphanStages(target);
 }
 
-function attachPreparedLock<T extends PreparedLifecycleActiveSnapshot>(
+function attachPreparedLoader<T extends PreparedLifecycleActiveSnapshot>(
   prepared: T,
-  lock: ProcessLockLease,
   loadPlugin: LifecycleActivePluginLoader,
 ): T {
-  preparedContexts.set(prepared, { lock, loadPlugin });
+  preparedLoaders.set(prepared, loadPlugin);
   return prepared;
 }
 
-function requirePreparedContext(prepared: PreparedLifecycleActiveSnapshot): {
-  lock: ProcessLockLease;
-  loadPlugin: LifecycleActivePluginLoader;
-} {
-  const context = preparedContexts.get(prepared);
-  if (!context) {
-    fail('Lifecycle active prepared snapshot no longer owns its target lock.');
+function requirePreparedLoader(
+  prepared: PreparedLifecycleActiveSnapshot,
+): LifecycleActivePluginLoader {
+  const loadPlugin = preparedLoaders.get(prepared);
+  if (!loadPlugin) {
+    fail('Lifecycle active prepared snapshot is no longer valid.');
   }
-  return context;
-}
-
-function isRetryableReleaseError(error: unknown): boolean {
-  return new Set(['EACCES', 'EBUSY', 'EINTR', 'EIO', 'ENOTEMPTY', 'EPERM']).has(
-    (error as NodeJS.ErrnoException).code ?? '',
-  );
-}
-
-function isPostCommitReleaseWarning(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code ?? '';
-  return code === 'EBUSY' || code === 'EPERM';
-}
-
-async function releaseLeaseWithRetry(lock: ProcessLockLease): Promise<void> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      await lock.release();
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!isRetryableReleaseError(error)) throw error;
-    }
-  }
-  await lock.release().catch(() => undefined);
-  throw lastError;
-}
-
-function emitLifecycleReleaseWarning(message: string, _releaseError: unknown): void {
-  try {
-    process.emitWarning(
-      `${message}.`,
-      { code: 'AW_LIFECYCLE_LOCK_RELEASE_FAILED' },
-    );
-  } catch {
-    // Diagnostics cannot replace the primary lifecycle error.
-  }
+  return loadPlugin;
 }
 
 function emitLifecycleHousekeepingWarning(): void {
@@ -1208,7 +1056,6 @@ export async function prepareLifecycleActiveSnapshot(options: {
   artifacts?: readonly GeneratedArtifact[];
   loadPlugin: LifecycleActivePluginLoader;
   env?: NodeJS.ProcessEnv;
-  lifecycleLeaseHeld?: boolean;
 }): Promise<PreparedLifecycleActiveSnapshot> {
   const env = options.env ?? process.env;
   const target = await resolveLifecycleActiveTarget({
@@ -1222,7 +1069,6 @@ export async function prepareLifecycleActiveSnapshot(options: {
     cwd: options.cwd,
     env,
   });
-  const lock = await acquireTargetLock(target, options.lifecycleLeaseHeld);
   let stageRoot: string | null = null;
   try {
     await cleanupTransientState(target, options.loadPlugin);
@@ -1254,15 +1100,15 @@ export async function prepareLifecycleActiveSnapshot(options: {
       await fs.remove(stageRoot);
       stageRoot = null;
       await pruneEmptyStagingRoot(target.stagingRoot);
-      return attachPreparedLock({
+      return attachPreparedLoader({
         status: 'not-required',
         reason: 'no-uninstall-lifecycle',
         target,
-      }, lock, options.loadPlugin);
+      }, options.loadPlugin);
     }
     const [sourceManifestDigest, bundleFingerprint] = await Promise.all([
       calculateFileDigest(stagedPlugin.manifestPath),
-      calculatePluginBundleFingerprintV2(bundleRoot),
+      calculatePluginBundleFingerprint(bundleRoot),
     ]);
     const payload: LifecycleActiveMetadataPayload = {
       schemaVersion: target.sourceId ? LIFECYCLE_ACTIVE_SCHEMA_VERSION : 1,
@@ -1291,23 +1137,14 @@ export async function prepareLifecycleActiveSnapshot(options: {
     if (stableStringify(validated.metadata) !== stableStringify(metadata)) {
       fail('Lifecycle active staged metadata changed during validation.');
     }
-    return attachPreparedLock(
+    return attachPreparedLoader(
       { status: 'staged', target, stageId, stageRoot, metadata },
-      lock,
       options.loadPlugin,
     );
   } catch (error) {
     if (stageRoot) {
       await fs.remove(stageRoot).catch(() => undefined);
       await pruneEmptyStagingRoot(target.stagingRoot).catch(() => undefined);
-    }
-    try {
-      await releaseLeaseWithRetry(lock);
-    } catch (releaseError) {
-      emitLifecycleReleaseWarning(
-        'Lifecycle active prepare failed, and its target lock could not be released',
-        releaseError,
-      );
     }
     throw error;
   }
@@ -1348,7 +1185,7 @@ async function restoreBackupAfterFailedPromote(options: {
 export async function promoteLifecycleActiveSnapshot(
   prepared: PreparedLifecycleActiveSnapshot,
 ): Promise<ReadLifecycleActiveSnapshot | null> {
-  const { lock, loadPlugin } = requirePreparedContext(prepared);
+  const loadPlugin = requirePreparedLoader(prepared);
   let backupPath: string | null = null;
   let installedNewActive = false;
   let durableCommit = false;
@@ -1358,7 +1195,6 @@ export async function promoteLifecycleActiveSnapshot(
     if (prepared.status === 'not-required') {
       await removeLifecycleSnapshotDataLocked(prepared.target);
       durableCommit = true;
-      markActiveMarketplaceDurableCommit();
       return null;
     }
     const expectedStageRoot = path.join(prepared.target.stagingRoot, prepared.stageId);
@@ -1387,7 +1223,6 @@ export async function promoteLifecycleActiveSnapshot(
       fail('Lifecycle active promoted generation changed during promotion.');
     }
     durableCommit = true;
-    markActiveMarketplaceDurableCommit();
     if (backupPath) {
       try {
         await fs.remove(backupPath);
@@ -1421,41 +1256,21 @@ export async function promoteLifecycleActiveSnapshot(
     }
     throw error;
   } finally {
-    try {
-      await releaseLeaseWithRetry(lock);
-    } catch (releaseError) {
-      if (primaryError !== undefined) {
-        emitLifecycleReleaseWarning(
-          'Lifecycle active promote failed, and its target lock could not be released',
-          releaseError,
-        );
-      } else if (durableCommit && isPostCommitReleaseWarning(releaseError)) {
-        emitLifecycleReleaseWarning(
-          'Lifecycle active promote committed, but its target lock could not be released',
-          releaseError,
-        );
-      } else {
-        throw releaseError;
-      }
-    } finally {
-      finalizedPrepared.add(prepared);
-      preparedContexts.delete(prepared);
-    }
+    finalizedPrepared.add(prepared);
+    preparedLoaders.delete(prepared);
   }
 }
 
 export async function discardLifecycleActiveSnapshot(
   prepared: PreparedLifecycleActiveSnapshot,
 ): Promise<void> {
-  const context = preparedContexts.get(prepared);
-  if (!context && finalizedPrepared.has(prepared)) {
+  const loadPlugin = preparedLoaders.get(prepared);
+  if (!loadPlugin && finalizedPrepared.has(prepared)) {
     return;
   }
-  if (!context) {
-    fail('Lifecycle active prepared snapshot no longer owns its target lock.');
+  if (!loadPlugin) {
+    fail('Lifecycle active prepared snapshot is no longer valid.');
   }
-  const { lock } = context;
-  let primaryError: unknown;
   try {
     if (prepared.status === 'staged') {
       const expectedStageRoot = path.join(prepared.target.stagingRoot, prepared.stageId);
@@ -1466,24 +1281,9 @@ export async function discardLifecycleActiveSnapshot(
       await fs.remove(prepared.stageRoot);
       await pruneEmptyStagingRoot(prepared.target.stagingRoot);
     }
-  } catch (error) {
-    primaryError = error;
-    throw error;
   } finally {
-    try {
-      await releaseLeaseWithRetry(lock);
-    } catch (releaseError) {
-      if (primaryError !== undefined) {
-        emitLifecycleReleaseWarning(
-          'Lifecycle active discard failed, and its target lock could not be released',
-          releaseError,
-        );
-        throw primaryError;
-      }
-      throw releaseError;
-    }
     finalizedPrepared.add(prepared);
-    preparedContexts.delete(prepared);
+    preparedLoaders.delete(prepared);
   }
 }
 
@@ -1525,77 +1325,13 @@ async function readLifecycleActiveSnapshotUnlocked(
 export async function readLifecycleActiveSnapshot(
   options: ReadLifecycleActiveSnapshotOptions,
 ): Promise<ReadLifecycleActiveSnapshot | null> {
-  return withActiveMarketplaceLifecycleLease(
-    options.env,
-    () => readLifecycleActiveSnapshotUnlocked(options),
-  );
+  return readLifecycleActiveSnapshotUnlocked(options);
 }
 
-// Catalog reference inventory can run while the runtime coordination lease is held.
-// Active publication also needs that lease, so inventory must not acquire lifecycle after runtime.
 export async function inspectLifecycleActiveSnapshotForInventory(
   options: ReadLifecycleActiveSnapshotOptions,
 ): Promise<ReadLifecycleActiveSnapshot | null> {
   return readLifecycleActiveSnapshotUnlocked(options);
-}
-
-export async function leaseLifecycleActiveSnapshot(options: {
-  sourceId?: string;
-  sourceIdentity?: string;
-  pluginName: string;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-  loadPlugin: LifecycleActivePluginLoader;
-  env?: NodeJS.ProcessEnv;
-  lifecycleLeaseHeld?: boolean;
-}): Promise<ReadLifecycleActiveSnapshot | null> {
-  const target = await resolveLifecycleActiveTarget(options);
-  const lock = await acquireTargetLock(target, options.lifecycleLeaseHeld);
-  let snapshot: ReadLifecycleActiveSnapshot | null;
-  try {
-    await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
-    if (!await lstatIfExists(target.activeRoot)) {
-      snapshot = null;
-    } else {
-      snapshot = createReadSnapshot(
-        target,
-        await validateSnapshotRoot(target.activeRoot, target, options.loadPlugin),
-      );
-    }
-  } catch (error) {
-    const primaryError = error instanceof LifecycleActiveSnapshotError
-      ? error
-      : new LifecycleActiveSnapshotError('Lifecycle active snapshot is corrupt.', { cause: error });
-    try {
-      await releaseLeaseWithRetry(lock);
-    } catch (releaseError) {
-      emitLifecycleReleaseWarning(
-        'Lifecycle active read failed, and its target lock could not be released',
-        releaseError,
-      );
-    }
-    throw primaryError;
-  }
-  if (!snapshot) {
-    await releaseLeaseWithRetry(lock);
-    return null;
-  }
-  readContexts.set(snapshot, lock);
-  return snapshot;
-}
-
-export async function releaseLifecycleActiveSnapshot(
-  snapshot: ReadLifecycleActiveSnapshot,
-): Promise<void> {
-  const lock = readContexts.get(snapshot);
-  if (!lock && releasedReads.has(snapshot)) return;
-  if (!lock) {
-    fail('Lifecycle active read snapshot no longer owns its target lock.');
-  }
-  await releaseLeaseWithRetry(lock);
-  readContexts.delete(snapshot);
-  releasedReads.add(snapshot);
 }
 
 export function restoreLifecycleActiveScriptInputs(
@@ -1645,52 +1381,23 @@ export async function removeLifecycleActiveSnapshot(options: {
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  lifecycleLeaseHeld?: boolean;
   expectedMetadataIntegrityDigest?: string;
 }): Promise<void> {
   const target = await resolveLifecycleActiveTarget(options);
-  const lock = await acquireTargetLock(target, options.lifecycleLeaseHeld);
-  let durableCommit = false;
-  let primaryError: unknown;
-  try {
-    if (options.expectedMetadataIntegrityDigest !== undefined) {
-      await assertExistingDirectoryBoundary(target, target.activeRoot, 'activeRoot');
-      const metadata = await fs.readJson(
-        path.join(target.activeRoot, LIFECYCLE_ACTIVE_METADATA_FILE),
-      ) as unknown;
-      if (metadata === null
-        || typeof metadata !== 'object'
-        || Array.isArray(metadata)
-        || (metadata as Record<string, unknown>).metadataIntegrityDigest
-          !== options.expectedMetadataIntegrityDigest) {
-        fail('stateInventoryFailed: lifecycle active generation changed before removal.');
-      }
-    }
-    await cleanupOrphanStages(target);
-    await removeTransientBackupsLocked(target);
-    await removeLifecycleSnapshotDataLocked(target);
-    durableCommit = true;
-    markActiveMarketplaceDurableCommit();
-  } catch (error) {
-    primaryError = error;
-    throw error;
-  } finally {
-    try {
-      await releaseLeaseWithRetry(lock);
-    } catch (releaseError) {
-      if (primaryError !== undefined) {
-        emitLifecycleReleaseWarning(
-          'Lifecycle active remove failed, and its target lock could not be released',
-          releaseError,
-        );
-      } else if (durableCommit && isPostCommitReleaseWarning(releaseError)) {
-        emitLifecycleReleaseWarning(
-          'Lifecycle active remove committed, but its target lock could not be released',
-          releaseError,
-        );
-      } else {
-        throw releaseError;
-      }
+  if (options.expectedMetadataIntegrityDigest !== undefined) {
+    await assertExistingDirectoryBoundary(target, target.activeRoot, 'activeRoot');
+    const metadata = await fs.readJson(
+      path.join(target.activeRoot, LIFECYCLE_ACTIVE_METADATA_FILE),
+    ) as unknown;
+    if (metadata === null
+      || typeof metadata !== 'object'
+      || Array.isArray(metadata)
+      || (metadata as Record<string, unknown>).metadataIntegrityDigest
+        !== options.expectedMetadataIntegrityDigest) {
+      fail('stateInventoryFailed: lifecycle active generation changed before removal.');
     }
   }
+  await cleanupOrphanStages(target);
+  await removeTransientBackupsLocked(target);
+  await removeLifecycleSnapshotDataLocked(target);
 }

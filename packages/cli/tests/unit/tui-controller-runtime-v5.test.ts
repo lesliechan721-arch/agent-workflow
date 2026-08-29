@@ -737,6 +737,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       nativePlugins: {},
       repoManagedArtifacts: [],
       receiptTargets: [],
+      codexManagerPreview: { state: 'requires-install' },
     });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
@@ -768,6 +769,11 @@ describe('TUI controller runtime scope conflict validation', () => {
         pluginId: 'official/demo',
         targetFingerprint: expect.stringMatching(/^sha256:/u),
       },
+      codexManager: {
+        state: 'requires-install',
+        packageName: '@openai/codex',
+        version: '0.150.1',
+      },
       targetFingerprint: expect.stringMatching(/^sha256:/u),
     });
 
@@ -776,15 +782,21 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
     expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledWith(
       ['official/demo'],
-      expect.objectContaining({ platform: 'codex', scope: 'user', force: false }),
+      expect.objectContaining({
+        platform: 'codex', scope: 'user', force: false,
+        allowManagedCodexInstall: true,
+      }),
       expect.objectContaining({
         expectedOfflineCleanupEvidence: expect.objectContaining({
           reason: 'bundleUnavailable',
           pluginId: 'official/demo',
           targetFingerprint: expect.stringMatching(/^sha256:/u),
         }),
+        managedCodexAuthorizer: expect.any(Function),
       }),
     );
+    const runtime = runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[2];
+    await expect(runtime.managedCodexAuthorizer()).resolves.toBe(true);
     expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
   });

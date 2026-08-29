@@ -17,7 +17,7 @@ import { CatalogGenerationError } from './catalog-generation-error.js';
 import { createCatalogGenerationKey } from './catalog-generation-store.js';
 import { CATALOG_SOURCE_ID_PATTERN } from './catalog-sources.js';
 import { parseStrictSemVer } from './manifest.js';
-import { atomicReplaceConfigFile, withConfigFileLock } from './plugin-config.js';
+import { atomicReplaceConfigFile } from './plugin-config.js';
 import { resolveAwHome } from './state-paths.js';
 
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
@@ -243,22 +243,16 @@ export async function withCatalogGenerationStateTransaction<T>(options: {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
   const filePath = resolveCatalogGenerationStatePath(env);
-  return withConfigFileLock({
-    filePath,
-    allowedRoot: awHome,
-    action: async () => {
-      const current = await readStateAt(filePath);
-      const output = await options.action(current);
-      const next = validateCatalogGenerationState(output.state);
-      if (JSON.stringify(next) !== JSON.stringify(current)) {
-        await options.beforeReplace?.(next);
-        await atomicReplaceConfigFile({
-          filePath,
-          allowedRoot: awHome,
-          content: `${JSON.stringify(next, null, 2)}\n`,
-        });
-      }
-      return output.result;
-    },
-  });
+  const current = await readStateAt(filePath);
+  const output = await options.action(current);
+  const next = validateCatalogGenerationState(output.state);
+  if (JSON.stringify(next) !== JSON.stringify(current)) {
+    await options.beforeReplace?.(next);
+    await atomicReplaceConfigFile({
+      filePath,
+      allowedRoot: awHome,
+      content: `${JSON.stringify(next, null, 2)}\n`,
+    });
+  }
+  return output.result;
 }

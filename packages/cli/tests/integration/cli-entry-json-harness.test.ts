@@ -52,7 +52,6 @@ async function setEmbeddedRootOverride(rootDir: string | null): Promise<void> {
 
 afterEach(async () => {
   vi.resetModules();
-  vi.doUnmock('../../src/commands/status.js');
   vi.doUnmock('../../src/commands/status-v5.js');
   vi.doUnmock('../../src/commands/write-commands.js');
   vi.clearAllMocks();

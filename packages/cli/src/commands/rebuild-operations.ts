@@ -11,20 +11,16 @@ import type {
   Scope,
 } from '../types.js';
 import {
-  acquireLifecycleOperationLock,
   discardLifecycleActiveSnapshot,
-  leaseLifecycleActiveSnapshot,
   prepareLifecycleActiveSnapshot,
   promoteLifecycleActiveSnapshot,
   readLifecycleActiveSnapshot,
-  releaseLifecycleActiveSnapshot,
   removeLifecycleActiveSnapshot,
   restoreLifecycleActiveScriptInputs,
   type LifecycleActivePluginLoader,
   type PreparedLifecycleActiveSnapshot,
   type ReadLifecycleActiveSnapshot,
 } from '../utils/lifecycle-active-store.js';
-import type { ProcessLockLease } from '../utils/process-lock.js';
 import {
   cleanupOwnedComponents,
   inspectOwnedComponents,
@@ -108,27 +104,15 @@ export interface RebuildLifecycleInvocation {
 
 export interface RebuildTargetDriver {
   preflightMaterialize?(target: DesiredTarget): Promise<void>;
-  withMaterializeLease?<T>(target: DesiredTarget, action: () => Promise<T>): Promise<T>;
   commitMaterialize?(target: DesiredTarget): Promise<void>;
   rollbackMaterialize?(target: DesiredTarget): Promise<void>;
   finalizeCleanup?(target: DesiredTarget): Promise<void>;
   writeNative(target: DesiredTarget): Promise<void>;
   writeArtifacts(target: DesiredTarget): Promise<void | readonly GeneratedArtifact[]>;
-  withOwnershipLease?<T>(target: DesiredTarget, action: () => Promise<T>): Promise<T>;
   probeNative?: NativeOwnershipProbe;
   probeNativeHealth?: NativeOwnershipProbe;
   removeNative?: NativeOwnershipRemove;
   runLifecycle(invocation: RebuildLifecycleInvocation): Promise<void>;
-}
-
-async function withOwnershipLease<T>(
-  target: DesiredTarget,
-  driver: RebuildTargetDriver,
-  operation: () => Promise<T>,
-): Promise<T> {
-  return driver.withOwnershipLease
-    ? driver.withOwnershipLease(target, operation)
-    : operation();
 }
 
 function artifactIdentity(artifact: GeneratedArtifact): string {
@@ -161,16 +145,12 @@ export interface RebuildActiveStore {
   discard(prepared: PreparedLifecycleActiveSnapshot): Promise<void>;
   promote(prepared: PreparedLifecycleActiveSnapshot): Promise<ReadLifecycleActiveSnapshot | null>;
   read(target: DesiredTarget): Promise<ReadLifecycleActiveSnapshot | null>;
-  readStable?(target: DesiredTarget): Promise<ReadLifecycleActiveSnapshot | null>;
   remove(target: DesiredTarget): Promise<void>;
-  acquireOperation?(identity: RebuildTargetIdentity): Promise<ProcessLockLease>;
-  releaseRead?(snapshot: ReadLifecycleActiveSnapshot): Promise<void>;
 }
 
 export function createRebuildActiveStore(options: {
   env?: NodeJS.ProcessEnv;
   loadPlugin: LifecycleActivePluginLoader;
-  isLifecycleLeaseHeld?: () => boolean;
 }): RebuildActiveStore {
   return {
     prepare: (target) => prepareLifecycleActiveSnapshot({
@@ -185,7 +165,6 @@ export function createRebuildActiveStore(options: {
       artifacts: target.artifacts,
       loadPlugin: options.loadPlugin,
       env: options.env,
-      lifecycleLeaseHeld: options.isLifecycleLeaseHeld?.() === true,
     }),
     discard: discardLifecycleActiveSnapshot,
     promote: promoteLifecycleActiveSnapshot,
@@ -201,19 +180,6 @@ export function createRebuildActiveStore(options: {
       loadPlugin: options.loadPlugin,
       env: options.env,
     }),
-    readStable: (target) => leaseLifecycleActiveSnapshot({
-      ...(target.identity.sourceId ? {
-        sourceId: target.identity.sourceId,
-        sourceIdentity: target.identity.sourceIdentity,
-      } : {}),
-      pluginName: target.identity.pluginName,
-      platform: target.identity.platform,
-      scope: target.identity.scope,
-      cwd: target.identity.cwd,
-      loadPlugin: options.loadPlugin,
-      env: options.env,
-      lifecycleLeaseHeld: options.isLifecycleLeaseHeld?.() === true,
-    }),
     remove: (target) => removeLifecycleActiveSnapshot({
       ...(target.identity.sourceId ? {
         sourceId: target.identity.sourceId,
@@ -224,20 +190,7 @@ export function createRebuildActiveStore(options: {
       scope: target.identity.scope,
       cwd: target.identity.cwd,
       env: options.env,
-      lifecycleLeaseHeld: options.isLifecycleLeaseHeld?.() === true,
     }),
-    acquireOperation: (identity) => acquireLifecycleOperationLock({
-      ...(identity.sourceId ? {
-        sourceId: identity.sourceId,
-        sourceIdentity: identity.sourceIdentity,
-      } : {}),
-      pluginName: identity.pluginName,
-      platform: identity.platform,
-      scope: identity.scope,
-      cwd: identity.cwd,
-      env: options.env,
-    }),
-    releaseRead: releaseLifecycleActiveSnapshot,
   };
 }
 
@@ -275,7 +228,6 @@ function errorMessage(error: unknown): string {
 }
 
 const REBUILD_ACTION_FAILURE_MESSAGES: Record<RebuildActionName, string> = {
-  'operation.lock': '获取操作锁失败。',
   'preflight.inspect': '检查当前组件失败。',
   'stale.cleanup': '清理过期组件失败。',
   'native.write': '写入平台插件失败。',
@@ -293,8 +245,6 @@ const REBUILD_ACTION_FAILURE_MESSAGES: Record<RebuildActionName, string> = {
   'cleanup.owned': '清理 AW 组件失败。',
   'active.read': '读取生命周期快照失败。',
   'active.remove': '删除生命周期快照失败。',
-  'active.release': '释放生命周期快照失败。',
-  'operation.release': '释放操作锁失败。',
 };
 
 function rebuildActionFailureMessage(name: RebuildActionName): string {
@@ -310,24 +260,6 @@ async function emitRebuildAction(
   } catch {
     // Progress diagnostics must not change the rebuild result.
   }
-}
-
-export async function releaseRebuildOperationLease(lock: ProcessLockLease): Promise<void> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      await lock.release();
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!new Set(['EACCES', 'EBUSY', 'EINTR', 'EIO', 'ENOTEMPTY', 'EPERM']).has(
-        (error as NodeJS.ErrnoException).code ?? '',
-      )) {
-        throw error;
-      }
-    }
-  }
-  throw lastError;
 }
 
 function pushUnique(target: string[], values: readonly string[]): void {
@@ -606,11 +538,11 @@ async function cleanupOwned(
   driver: RebuildTargetDriver,
   components: readonly OwnedComponent[] = target.ownedComponents,
 ): Promise<CleanupResult> {
-  return withOwnershipLease(target, driver, () => cleanupOwnedComponents({
+  return cleanupOwnedComponents({
     components,
     nativeProbe: driver.probeNative,
     nativeRemove: driver.removeNative,
-  }));
+  });
 }
 
 async function cleanupTarget(
@@ -680,13 +612,13 @@ async function materializeTarget(options: {
     inspection = await action(
       accumulator,
       'preflight.inspect',
-      () => withOwnershipLease(target, driver, async () => {
+      async () => {
         await driver.preflightMaterialize?.(target);
         return inspectOwnedComponents({
           components: target.ownedComponents,
           nativeProbe: driver.probeNative,
         });
-      }),
+      },
       events,
       collisionMessage,
     );
@@ -760,12 +692,12 @@ async function materializeTarget(options: {
     failurePhase = 'postcheck.inspect';
     await action(accumulator, failurePhase, async () => {
       const optional = new Set(target.optionalOwnedComponents ?? []);
-      const postcheck = await withOwnershipLease(target, driver, () => inspectOwnedComponents({
+      const postcheck = await inspectOwnedComponents({
         components: (target.desiredOwnedComponents ?? target.ownedComponents)
           .filter((component) => !optional.has(component)),
         nativeProbe: driver.probeNativeHealth ?? driver.probeNative,
         verifyHealth: true,
-      }));
+      });
       const postcheckFailure = postcheckMessage(accumulator, postcheck);
       if (postcheckFailure) throw new Error(postcheckFailure);
     }, events);
@@ -863,10 +795,10 @@ async function executeUninstall(options: {
     inspection = await action(
       accumulator,
       'preflight.inspect',
-      () => withOwnershipLease(target, driver, () => inspectOwnedComponents({
+      () => inspectOwnedComponents({
         components: target.ownedComponents,
         nativeProbe: driver.probeNative,
-      })),
+      }),
       events,
       collisionMessage,
     );
@@ -879,12 +811,11 @@ async function executeUninstall(options: {
     return failed('uninstall', target, accumulator, 'preflight.inspect', preflightCollision);
   }
   let snapshot: ReadLifecycleActiveSnapshot | null;
-  const stableRead = store.readStable !== undefined;
   try {
     snapshot = await action(
       accumulator,
       'active.read',
-      () => (store.readStable ?? store.read)(target),
+      () => store.read(target),
       events,
     );
   } catch (error) {
@@ -927,13 +858,6 @@ async function executeUninstall(options: {
     component.state === 'present'
     && isUninstallLiveOwnershipComponent(component.component));
   if (live.length === 0) {
-    if (stableRead && store.releaseRead) {
-      try {
-        await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!), events);
-      } catch (error) {
-        return failed('uninstall', target, accumulator, 'active.release', errorMessage(error));
-      }
-    }
     return failed(
       'uninstall',
       target,
@@ -954,17 +878,6 @@ async function executeUninstall(options: {
     }), events);
   } catch (error) {
     lifecycleError = error;
-  }
-  if (stableRead && store.releaseRead) {
-    try {
-      await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!), events);
-    } catch (error) {
-      const message = errorMessage(error);
-      accumulator.failures.push({ phase: 'active.release', message });
-      if (lifecycleError === undefined) {
-        return failed('uninstall', target, accumulator, 'active.release', message);
-      }
-    }
   }
   if (lifecycleError !== undefined) {
     return failed(
@@ -1018,55 +931,14 @@ export async function executeRebuildOperation(options: {
     );
   }
 
-  let operationLock: ProcessLockLease | undefined;
-  if (store.acquireOperation) {
-    try {
-      operationLock = await action(
-        accumulator,
-        'operation.lock',
-        () => store.acquireOperation!(options.target.identity),
-        events,
-      );
-    } catch (error) {
-      return failed(
-        options.command,
-        options.target,
-        accumulator,
-        'operation.lock',
-        errorMessage(error),
-      );
-    }
-  }
-
-  let result: RebuildResult;
   try {
-    const execute = () => executeRebuildOperationLocked(options, accumulator, store, events);
-    result = options.target.identity.sourceId !== undefined
-      ? await (options.driver.withMaterializeLease?.(options.target, execute) ?? execute())
-      : await execute();
+    return await executeRebuildOperationCore(options, accumulator, store, events);
   } catch (error) {
-    result = failed(options.command, options.target, accumulator, 'preflight', errorMessage(error));
+    return failed(options.command, options.target, accumulator, 'preflight', errorMessage(error));
   }
-  if (operationLock) {
-    try {
-      await action(
-        accumulator,
-        'operation.release',
-        () => releaseRebuildOperationLease(operationLock!),
-        events,
-      );
-    } catch (error) {
-      const message = errorMessage(error);
-      accumulator.failures.push({ phase: 'operation.release', message });
-      if (result.status === 'succeeded') {
-        return failed(options.command, options.target, accumulator, 'operation.release', message);
-      }
-    }
-  }
-  return result;
 }
 
-async function executeRebuildOperationLocked(
+async function executeRebuildOperationCore(
   options: {
     command: RebuildCommand;
     target: DesiredTarget;
@@ -1116,13 +988,13 @@ async function executeRebuildOperationLocked(
     inspection = await action(
       accumulator,
       'preflight.inspect',
-      () => withOwnershipLease(options.target, options.driver, async () => {
+      async () => {
         await options.driver.preflightMaterialize?.(options.target);
         return inspectOwnedComponents({
           components: options.target.ownedComponents,
           nativeProbe: options.driver.probeNative,
         });
-      }),
+      },
       events,
       collisionMessage,
     );

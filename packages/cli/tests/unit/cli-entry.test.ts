@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { runCli } from '../../src/index.js';
+import { createManagedCodexAuthorizer, runCli } from '../../src/index.js';
 
 function capture() {
   let stdout = '';
@@ -33,7 +33,44 @@ describe('CLI entry v4', () => {
     ]) {
       expect(output.stdout()).toContain(command);
     }
-    expect(output.stdout()).not.toContain('diagnose');
+  });
+
+  it.each(['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'])(
+    'publishes managed Codex authorization on %s',
+    async (command) => {
+      const output = capture();
+      expect(await runCli([command, '--help'], { io: output.io })).toBe(0);
+      expect(output.stdout()).toContain('--allow-managed-codex-install');
+    },
+  );
+
+  it('asks once at the first interactive managed Codex acquisition', async () => {
+    const confirm = vi.fn().mockResolvedValue({ cancelled: false, value: true });
+    const authorizer = createManagedCodexAuthorizer(
+      {},
+      { interactive: true, isTty: true, isCi: false, prompt: { confirm } },
+    );
+
+    await expect(authorizer?.()).resolves.toBe(true);
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ defaultValue: false }));
+  });
+
+  it('requires the explicit managed Codex flag outside an interactive terminal', async () => {
+    const confirm = vi.fn();
+    expect(createManagedCodexAuthorizer(
+      { json: true },
+      { interactive: true, isTty: true, isCi: false, prompt: { confirm } },
+    )).toBeUndefined();
+    expect(createManagedCodexAuthorizer(
+      {},
+      { interactive: false, isTty: false, isCi: false, prompt: { confirm } },
+    )).toBeUndefined();
+    await expect(createManagedCodexAuthorizer(
+      { allowManagedCodexInstall: true, json: true },
+      { interactive: false, isTty: false, isCi: false, prompt: { confirm } },
+    )?.()).resolves.toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   it('publishes the standalone Skill validator options', async () => {
@@ -86,13 +123,6 @@ describe('CLI entry v4', () => {
     expect(output.stdout()).toContain('--json');
     expect(output.stdout()).not.toContain('--force');
     expect(output.stdout()).not.toContain('--plugin-root');
-  });
-
-  it('treats diagnose as an unknown command', async () => {
-    const output = capture();
-    expect(await runCli(['diagnose'], { io: output.io })).toBe(1);
-    expect(output.stderr()).toContain("unknown command 'diagnose'");
-    expect(output.stdout()).toBe('');
   });
 
   it('rejects legacy cleanup flags at Commander parsing', async () => {

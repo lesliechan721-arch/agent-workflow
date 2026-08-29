@@ -59,33 +59,6 @@ function updateLength(hash: crypto.Hash, value: number): void {
 }
 
 export async function calculatePluginBundleFingerprint(bundleRoot: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  const files: string[] = [];
-
-  async function listFiles(relativeDir = ''): Promise<void> {
-    const entries = await fs.readdir(path.join(bundleRoot, relativeDir), { withFileTypes: true })
-      .catch(() => []);
-    for (const entry of entries) {
-      const relativePath = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
-      if (entry.isDirectory()) {
-        await listFiles(relativePath);
-      } else {
-        files.push(relativePath.split(path.sep).join('/'));
-      }
-    }
-  }
-
-  await listFiles();
-  for (const relativePath of files.sort()) {
-    hash.update(relativePath);
-    hash.update('\0');
-    hash.update(await fs.readFile(path.join(bundleRoot, relativePath)));
-    hash.update('\0');
-  }
-  return `sha256:${hash.digest('hex')}`;
-}
-
-export async function calculatePluginBundleFingerprintV2(bundleRoot: string): Promise<string> {
   const rootStat = await fs.lstat(bundleRoot);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
     throw new Error(`Plugin bundle root must be a regular directory: ${bundleRoot}`);
