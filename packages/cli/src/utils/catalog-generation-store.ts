@@ -9,6 +9,7 @@ import {
 } from '../constants.js';
 import type {
   CatalogGenerationMetadataV1,
+  CatalogManifestV5,
   CatalogSourceResolution,
 } from '../types.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
@@ -21,7 +22,6 @@ import {
 } from './state-paths.js';
 
 const SHA256_DIGEST_PATTERN = /^sha256:([0-9a-f]{64})$/u;
-const HEX_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 
 export interface CatalogGenerationLocation {
   awHomeDir: string;
@@ -37,12 +37,14 @@ export interface PreparedCatalogGeneration {
   stagingDir: string;
   location: CatalogGenerationLocation;
   metadata: CatalogGenerationMetadataV1;
+  manifest: CatalogManifestV5;
 }
 
 export interface PublishedCatalogGeneration {
   generationDir: string;
   snapshotRoot: string;
   metadata: CatalogGenerationMetadataV1;
+  manifest: CatalogManifestV5;
 }
 
 function sha256Hex(value: string): string {
@@ -246,7 +248,12 @@ async function validateGenerationDirectory(options: {
       message: 'Catalog generation snapshot does not match its immutable metadata. Remove the damaged generation and refresh the source.',
     });
   }
-  return { generationDir: options.generationDir, snapshotRoot, metadata };
+  return {
+    generationDir: options.generationDir,
+    snapshotRoot,
+    metadata,
+    manifest: validation.manifest,
+  };
 }
 
 async function readGenerationMetadataAt(options: {
@@ -354,13 +361,13 @@ export async function prepareCatalogGeneration(options: {
       { flag: 'wx', mode: 0o600 },
     );
     options.signal?.throwIfAborted();
-    await validateGenerationDirectory({
+    const validated = await validateGenerationDirectory({
       generationDir: stagingDir,
       logicalIdentity,
       snapshotDigest: validation.snapshotDigest,
     });
     options.signal?.throwIfAborted();
-    return { stagingDir, location, metadata };
+    return { stagingDir, location, metadata, manifest: validated.manifest };
   } catch (error) {
     await fs.remove(stagingDir).catch(() => undefined);
     if (error instanceof CatalogGenerationError) throw error;
@@ -418,6 +425,7 @@ export async function publishPreparedCatalogGeneration(
     generationDir: prepared.location.generationDir,
     snapshotRoot: prepared.location.snapshotRoot,
     metadata: prepared.metadata,
+    manifest: prepared.manifest,
   };
 }
 
@@ -438,51 +446,4 @@ export async function readCatalogGeneration(options: {
     logicalIdentity: options.logicalIdentity,
     snapshotDigest: options.snapshotDigest,
   });
-}
-
-export async function listCatalogGenerationsForIdentity(options: {
-  logicalIdentity: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<PublishedCatalogGeneration[]> {
-  const placeholderDigest = `sha256:${'0'.repeat(64)}`;
-  const location = resolveCatalogGenerationLocation({
-    logicalIdentity: options.logicalIdentity,
-    snapshotDigest: placeholderDigest,
-    env: options.env,
-  });
-  const directoryStat = await fs.lstat(location.logicalIdentityDirectory).catch(
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    },
-  );
-  if (!directoryStat) return [];
-  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
-    throw new CatalogGenerationError({
-      code: 'catalogGenerationMetadataInvalid',
-      message: 'Catalog logical identity store is unsafe. Repair it before refreshing the source.',
-    });
-  }
-  const names = (await fs.readdir(location.logicalIdentityDirectory)).sort();
-  const generations: PublishedCatalogGeneration[] = [];
-  for (const name of names) {
-    if (!HEX_DIGEST_PATTERN.test(name)) {
-      throw new CatalogGenerationError({
-        code: 'catalogGenerationMetadataInvalid',
-        message: 'Catalog logical identity store contains an invalid entry. Remove the damaged entry before refreshing the source.',
-      });
-    }
-    const generationDir = path.join(location.logicalIdentityDirectory, name);
-    const metadata = await readGenerationMetadataAt({
-      generationDir,
-      logicalIdentity: options.logicalIdentity,
-      snapshotDigest: `sha256:${name}`,
-    });
-    generations.push({
-      generationDir,
-      snapshotRoot: path.join(generationDir, 'snapshot'),
-      metadata,
-    });
-  }
-  return generations;
 }

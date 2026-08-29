@@ -6,14 +6,16 @@ import type {
   CatalogGenerationSetSource,
   CatalogGenerationStateFileV1,
   CatalogSource,
+  SourceIdentity,
 } from '../types.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
 import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
-import { readCatalogGenerationState } from './catalog-generation-state.js';
+import {
+  readCatalogGenerationControlSnapshot,
+  type CatalogGenerationControlSnapshot,
+} from './catalog-generation-control-snapshot.js';
 import { readCatalogGeneration } from './catalog-generation-store.js';
-import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
-import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import { checkAwCapabilitySupport } from './manifest.js';
 
 export interface ResolvedActiveCatalogGeneration extends CatalogGenerationSetSource {
@@ -22,6 +24,7 @@ export interface ResolvedActiveCatalogGeneration extends CatalogGenerationSetSou
 
 async function resolveFromState(options: {
   source: CatalogSource;
+  sourceIdentity: SourceIdentity;
   state: CatalogGenerationStateFileV1;
   env: NodeJS.ProcessEnv;
 }): Promise<ResolvedActiveCatalogGeneration> {
@@ -33,18 +36,15 @@ async function resolveFromState(options: {
       message: `Catalog source "${options.source.id}" has no Active generation. Run aw catalog source refresh ${options.source.id}.`,
     });
   }
-  if (
-    selected.active.sourceConfigFingerprint
-    !== calculateCatalogSourceConfigFingerprint(options.source)
-  ) {
+  if (selected.active.sourceIdentity !== options.sourceIdentity) {
     throw new CatalogGenerationError({
       code: 'catalogGenerationIdentityMismatch',
       sourceId: options.source.id,
-      message: `Active Catalog generation for source "${options.source.id}" does not match the current source configuration. Run aw catalog source refresh ${options.source.id}, activate the Candidate with aw catalog source activate-candidate ${options.source.id}, then reload and retry.`,
+      message: `Active Catalog generation for source "${options.source.id}" does not match the current source identity. Confirm the configured location, run aw catalog source refresh ${options.source.id}, then reload and retry.`,
     });
   }
   const generation = await readCatalogGeneration({
-    logicalIdentity: selected.logicalIdentity,
+    logicalIdentity: selected.logicalIdentity!,
     snapshotDigest: selected.active.snapshotDigest,
     env: options.env,
   });
@@ -75,13 +75,15 @@ async function resolveFromState(options: {
   return {
     sourceId: options.source.id,
     sourceConfigFingerprint: selected.active.sourceConfigFingerprint,
-    logicalIdentity: selected.logicalIdentity,
+    sourceIdentity: selected.active.sourceIdentity,
+    logicalIdentity: selected.logicalIdentity!,
     catalogVersion: selected.active.catalogVersion,
     resolvedCommit: selected.active.resolvedCommit,
     manifestDigest: selected.active.manifestDigest,
     snapshotDigest: selected.active.snapshotDigest,
     generationKey: selected.active.generationKey,
     snapshotPath: generation.snapshotRoot,
+    manifest: generation.manifest,
     pointer: selected.active,
   };
 }
@@ -91,11 +93,9 @@ export async function resolveActiveCatalogGeneration(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedActiveCatalogGeneration> {
   const env = options.env ?? process.env;
-  const [config, state] = await Promise.all([
-    readCatalogSourcesConfigSnapshot(env),
-    readCatalogGenerationState(env),
-  ]);
-  const source = config.config.sources.find((entry) => entry.id === options.sourceId);
+  const controlSnapshot = await readCatalogGenerationControlSnapshot({ env });
+  const source = controlSnapshot.configSnapshot.config.sources
+    .find((entry) => entry.id === options.sourceId);
   if (!source) {
     throw new CatalogGenerationError({
       code: 'catalogGenerationSourceMissing',
@@ -103,18 +103,26 @@ export async function resolveActiveCatalogGeneration(options: {
       message: `Catalog source "${options.sourceId}" is not configured.`,
     });
   }
-  return resolveFromState({ source, state, env });
+  return resolveFromState({
+    source,
+    sourceIdentity: controlSnapshot.sourceIdentities[source.id]!,
+    state: controlSnapshot.generationState,
+    env,
+  });
 }
 
 export function calculateCatalogGenerationSetDigest(
+  configDigest: string,
   primarySourceId: string,
   sources: CatalogGenerationSetSource[],
 ): string {
   const input = {
+    configDigest,
     primarySourceId,
     sources: sources.map((source) => ({
       sourceId: source.sourceId,
       sourceConfigFingerprint: source.sourceConfigFingerprint,
+      sourceIdentity: source.sourceIdentity,
       logicalIdentity: source.logicalIdentity,
       catalogVersion: source.catalogVersion,
       resolvedCommit: source.resolvedCommit,
@@ -129,12 +137,13 @@ export function calculateCatalogGenerationSetDigest(
 export async function resolveCatalogGenerationSet(options: {
   sourceIds?: string[];
   env?: NodeJS.ProcessEnv;
+  controlSnapshot?: CatalogGenerationControlSnapshot;
 } = {}): Promise<CatalogGenerationSet> {
   const env = options.env ?? process.env;
-  const [config, state] = await Promise.all([
-    readCatalogSourcesConfigSnapshot(env),
-    readCatalogGenerationState(env),
-  ]);
+  const controlSnapshot = options.controlSnapshot
+    ?? await readCatalogGenerationControlSnapshot({ env });
+  const config = controlSnapshot.configSnapshot;
+  const state = controlSnapshot.generationState;
   const requested = options.sourceIds ? new Set(options.sourceIds) : null;
   if (requested) {
     const configured = new Set(config.config.sources.map((source) => source.id));
@@ -151,11 +160,21 @@ export async function resolveCatalogGenerationSet(options: {
     .filter((source) => !requested || requested.has(source.id))
     .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   const resolved = await Promise.all(configuredSources.map((source) =>
-    resolveFromState({ source, state, env })));
+    resolveFromState({
+      source,
+      sourceIdentity: controlSnapshot.sourceIdentities[source.id]!,
+      state,
+      env,
+    })));
   const sources: CatalogGenerationSetSource[] = resolved.map(({ pointer: _pointer, ...source }) => source);
   const primarySourceId = config.config.sources.find((source) => source.primary)!.id;
   return {
-    generationSetDigest: calculateCatalogGenerationSetDigest(primarySourceId, sources),
+    generationSetDigest: calculateCatalogGenerationSetDigest(
+      config.digest,
+      primarySourceId,
+      sources,
+    ),
+    configDigest: config.digest,
     primarySourceId,
     sources,
   };

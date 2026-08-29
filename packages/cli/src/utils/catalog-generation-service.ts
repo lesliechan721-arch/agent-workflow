@@ -22,13 +22,16 @@ import {
 } from './catalog-generation-state.js';
 import {
   discardPreparedCatalogGeneration,
-  listCatalogGenerationsForIdentity,
   prepareCatalogGeneration,
   publishPreparedCatalogGeneration,
   readCatalogGeneration,
   type PublishedCatalogGeneration,
 } from './catalog-generation-store.js';
-import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
+import { assertCatalogPublishedVersion } from './catalog-generation-published-version.js';
+import {
+  calculateCatalogSourceConfigFingerprint,
+  calculateCatalogSourceIdentity,
+} from './catalog-source-identity.js';
 import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import { catalogGitProviderInternal } from './git-catalog-provider.js';
 import { checkAwCapabilitySupport, compareStrictSemVer } from './manifest.js';
@@ -111,6 +114,7 @@ function pointerFromGeneration(options: {
 }): CatalogGenerationPointerV1 {
   return {
     sourceConfigFingerprint: options.sourceConfigFingerprint,
+    sourceIdentity: options.resolution.sourceIdentity,
     catalogVersion: options.generation.metadata.catalogVersion,
     channel: options.generation.metadata.channel,
     requestedRef: options.resolution.requestedRef,
@@ -153,6 +157,7 @@ function checked(options: {
 async function recordRefreshFailure(options: {
   sourceId: string;
   sourceConfigFingerprint: string;
+  sourceIdentity: string;
   env: NodeJS.ProcessEnv;
   checkedAt: string;
   errorCode: string;
@@ -171,8 +176,13 @@ async function recordRefreshFailure(options: {
       await withCatalogGenerationStateTransaction({
         env: options.env,
         action: async (current) => {
-          const source = current.sources[options.sourceId];
-          if (!source) return { state: current, result: undefined };
+          const source = retainMatchingCandidate(
+            current.sources[options.sourceId],
+            options.sourceConfigFingerprint,
+            options.sourceIdentity,
+          );
+          const refreshPolicy = source?.refreshPolicy
+            ?? (configured.type === 'path' ? 'manual' : 'startup');
           return {
             state: {
               ...current,
@@ -180,6 +190,7 @@ async function recordRefreshFailure(options: {
                 ...current.sources,
                 [options.sourceId]: {
                   ...source,
+                  refreshPolicy,
                   lastCheck: {
                     checkedAt: options.checkedAt,
                     state: 'failed',
@@ -196,12 +207,27 @@ async function recordRefreshFailure(options: {
   });
 }
 
+function retainMatchingCandidate(
+  source: CatalogSourceGenerationStateV1 | undefined,
+  sourceConfigFingerprint: string,
+  sourceIdentity: string,
+): CatalogSourceGenerationStateV1 | undefined {
+  if (!source?.candidate
+    || (source.candidate.sourceConfigFingerprint === sourceConfigFingerprint
+      && source.candidate.sourceIdentity === sourceIdentity)) return source;
+  const next = { ...source };
+  delete next.candidate;
+  return next;
+}
+
 function sameGeneration(
   pointer: CatalogGenerationPointerV1 | undefined,
   generation: PublishedCatalogGeneration,
   sourceConfigFingerprint: string,
+  sourceIdentity: string,
 ): boolean {
   return pointer?.sourceConfigFingerprint === sourceConfigFingerprint
+    && pointer.sourceIdentity === sourceIdentity
     && pointer.catalogVersion === generation.metadata.catalogVersion
     && pointer.snapshotDigest === generation.metadata.snapshotDigest;
 }
@@ -225,6 +251,7 @@ export async function refreshCatalogSourceGeneration(options: {
     });
   }
   const sourceConfigFingerprint = calculateCatalogSourceConfigFingerprint(source);
+  const sourceIdentity = await calculateCatalogSourceIdentity(source);
   const checkedAt = (options.runtime?.now?.() ?? new Date()).toISOString();
   let resolution: CatalogSourceResolution;
   try {
@@ -237,11 +264,19 @@ export async function refreshCatalogSourceGeneration(options: {
       signal: options.signal,
       providers: options.runtime?.providers,
     });
+    if (resolution.sourceIdentity !== sourceIdentity) {
+      throw new CatalogGenerationError({
+        code: 'catalogGenerationIdentityMismatch',
+        sourceId: source.id,
+        message: `Catalog source "${source.id}" returned evidence for a different source identity. The previous Active generation is unchanged.`,
+      });
+    }
   } catch (error) {
     options.signal?.throwIfAborted();
     await recordRefreshFailure({
       sourceId: source.id,
       sourceConfigFingerprint,
+      sourceIdentity,
       env,
       checkedAt,
       errorCode: error instanceof CatalogGenerationError
@@ -270,6 +305,7 @@ export async function refreshCatalogSourceGeneration(options: {
     await recordRefreshFailure({
       sourceId: source.id,
       sourceConfigFingerprint,
+      sourceIdentity,
       env,
       checkedAt,
       errorCode: error instanceof CatalogGenerationError
@@ -315,14 +351,29 @@ export async function refreshCatalogSourceGeneration(options: {
           beforeReplace: () => options.signal?.throwIfAborted(),
           action: async (current) => {
             options.signal?.throwIfAborted();
-            const previous = current.sources[source.id];
+            const storedPrevious = current.sources[source.id];
+            const previous = retainMatchingCandidate(
+              storedPrevious,
+              sourceConfigFingerprint,
+              sourceIdentity,
+            );
+            const currentWithMatchingCandidate = previous === storedPrevious
+              ? current
+              : {
+                  ...current,
+                  sources: { ...current.sources, [source.id]: previous! },
+                };
+            const previousPointer = previous?.active ?? previous?.candidate;
+            const previousMatchesSourceIdentity = !previousPointer
+              || previousPointer.sourceIdentity === sourceIdentity;
             if (
               source.type === 'git'
               && previous?.active
+              && previousMatchesSourceIdentity
               && previous.logicalIdentity !== prepared.metadata.logicalIdentity
             ) {
               return {
-                state: current,
+                state: currentWithMatchingCandidate,
                 result: {
                   error: new CatalogGenerationError({
                     code: 'catalogGenerationIdentityMismatch',
@@ -332,21 +383,26 @@ export async function refreshCatalogSourceGeneration(options: {
                 },
               };
             }
-            const currentSource = previous?.logicalIdentity === prepared.metadata.logicalIdentity
+            const currentSource = previousMatchesSourceIdentity
+              && previous?.logicalIdentity === prepared.metadata.logicalIdentity
               ? previous
               : undefined;
-            const refreshPolicy = currentSource?.refreshPolicy
+            const refreshPolicy = previous?.refreshPolicy
               ?? (source.type === 'path' ? 'manual' : 'startup');
 
             if (source.type === 'git') {
-              const generations = await listCatalogGenerationsForIdentity({
-                logicalIdentity: prepared.metadata.logicalIdentity,
-                env,
-              });
-              const violation = generations.find((generation) =>
-                generation.metadata.catalogVersion === prepared.metadata.catalogVersion
-                && generation.metadata.snapshotDigest !== prepared.metadata.snapshotDigest);
-              if (violation) {
+              try {
+                await assertCatalogPublishedVersion({
+                  logicalIdentity: prepared.metadata.logicalIdentity,
+                  catalogVersion: prepared.metadata.catalogVersion,
+                  snapshotDigest: prepared.metadata.snapshotDigest,
+                  firstObservedAt: checkedAt,
+                  sourceId: source.id,
+                  env,
+                });
+              } catch (error) {
+                if (!(error instanceof CatalogGenerationError)
+                  || error.code !== 'catalogImmutableVersionViolation') throw error;
                 const lastCheck = checked({
                   checkedAt,
                   state: 'immutableViolation',
@@ -356,7 +412,6 @@ export async function refreshCatalogSourceGeneration(options: {
                 const nextSource: CatalogSourceGenerationStateV1 = currentSource
                   ? { ...currentSource, lastCheck }
                   : {
-                      logicalIdentity: prepared.metadata.logicalIdentity,
                       refreshPolicy,
                       lastCheck,
                     };
@@ -366,11 +421,7 @@ export async function refreshCatalogSourceGeneration(options: {
                     sources: { ...current.sources, [source.id]: nextSource },
                   },
                   result: {
-                    error: new CatalogGenerationError({
-                      code: 'catalogImmutableVersionViolation',
-                      sourceId: source.id,
-                      message: `Catalog source "${source.id}" reused version ${prepared.metadata.catalogVersion} with different content. Active and Candidate are unchanged; publish a higher Catalog version and refresh again.`,
-                    }),
+                    error,
                   },
                 };
               }
@@ -412,38 +463,18 @@ export async function refreshCatalogSourceGeneration(options: {
               };
             }
 
-            if (sameGeneration(currentSource.active, published, sourceConfigFingerprint)) {
-              const lastCheck = checked({ checkedAt, state: 'upToDate', resolution });
-              return {
-                state: {
-                  ...current,
-                  sources: {
-                    ...current.sources,
-                    [source.id]: { ...currentSource, lastCheck },
-                  },
-                },
-                result: {
-                  value: {
-                    catalogGenerationSchemaVersion: 1 as const,
-                    sourceId: source.id,
-                    sourceIdentity: resolution.sourceIdentity,
-                    logicalIdentity: published.metadata.logicalIdentity,
-                    outcome: 'upToDate' as const,
-                    active: currentSource.active,
-                    ...(currentSource.candidate ? { candidate: currentSource.candidate } : {}),
-                    lastCheck,
-                  },
-                },
-              };
-            }
-
-            const comparison = compareStrictSemVer(
-              published.metadata.catalogVersion,
-              currentSource.active.catalogVersion,
-            );
             const explicitRefChange = source.refPolicy.type === 'explicit'
               && currentSource.active.requestedRef !== resolution.requestedRef;
-            if (comparison < 0 && !explicitRefChange) {
+            const baseline = [currentSource.active, currentSource.candidate]
+              .filter((pointer): pointer is CatalogGenerationPointerV1 => pointer !== undefined
+                && pointer.sourceConfigFingerprint === sourceConfigFingerprint
+                && pointer.sourceIdentity === sourceIdentity)
+              .reduce<CatalogGenerationPointerV1 | undefined>((highest, pointer) =>
+                !highest || compareStrictSemVer(pointer.catalogVersion, highest.catalogVersion) > 0
+                  ? pointer
+                  : highest, undefined);
+            if (!explicitRefChange && baseline
+              && compareStrictSemVer(published.metadata.catalogVersion, baseline.catalogVersion) < 0) {
               const lastCheck = checked({ checkedAt, state: 'channelRollback', resolution });
               return {
                 state: {
@@ -468,10 +499,45 @@ export async function refreshCatalogSourceGeneration(options: {
               };
             }
 
+            if (sameGeneration(
+              currentSource.active,
+              published,
+              sourceConfigFingerprint,
+              sourceIdentity,
+            )) {
+              const lastCheck = checked({ checkedAt, state: 'upToDate', resolution });
+              return {
+                state: {
+                  ...current,
+                  sources: {
+                    ...current.sources,
+                    [source.id]: { ...currentSource, lastCheck },
+                  },
+                },
+                result: {
+                  value: {
+                    catalogGenerationSchemaVersion: 1 as const,
+                    sourceId: source.id,
+                    sourceIdentity: resolution.sourceIdentity,
+                    logicalIdentity: published.metadata.logicalIdentity,
+                    outcome: 'upToDate' as const,
+                    active: currentSource.active,
+                    ...(currentSource.candidate ? { candidate: currentSource.candidate } : {}),
+                    lastCheck,
+                  },
+                },
+              };
+            }
+
             const candidateKind: CatalogGenerationCandidateKind = explicitRefChange
               ? 'refChange'
               : 'upgrade';
-            const candidate = sameGeneration(currentSource.candidate, published, sourceConfigFingerprint)
+            const candidate = sameGeneration(
+              currentSource.candidate,
+              published,
+              sourceConfigFingerprint,
+              sourceIdentity,
+            )
               ? currentSource.candidate!
               : candidateFromGeneration({
                   generation: published,
@@ -517,6 +583,7 @@ async function assertPointerMatchesGeneration(options: {
   logicalIdentity: string;
   pointer: CatalogGenerationPointerV1;
   sourceConfigFingerprint?: string;
+  sourceIdentity?: string;
   env: NodeJS.ProcessEnv;
 }): Promise<PublishedCatalogGeneration> {
   if (
@@ -526,6 +593,13 @@ async function assertPointerMatchesGeneration(options: {
     throw new CatalogGenerationError({
       code: 'catalogGenerationIdentityMismatch',
       message: 'Catalog generation pointer does not match the current source configuration. Refresh the configured source.',
+    });
+  }
+  if (options.sourceIdentity !== undefined
+    && options.pointer.sourceIdentity !== options.sourceIdentity) {
+    throw new CatalogGenerationError({
+      code: 'catalogGenerationIdentityMismatch',
+      message: 'Catalog generation pointer does not match the current source identity. Refresh the configured source.',
     });
   }
   const generation = await readCatalogGeneration({
@@ -589,9 +663,10 @@ export async function activateCatalogSourceCandidate(options: {
             });
           }
           const candidateGeneration = await assertPointerMatchesGeneration({
-            logicalIdentity: source.logicalIdentity,
+            logicalIdentity: source.logicalIdentity!,
             pointer: source.candidate,
             sourceConfigFingerprint: calculateCatalogSourceConfigFingerprint(configuredSource),
+            sourceIdentity: await calculateCatalogSourceIdentity(configuredSource),
             env,
           });
           const requiredCapabilities = candidateGeneration.metadata.requiredAwCapabilities;
@@ -609,6 +684,7 @@ export async function activateCatalogSourceCandidate(options: {
           }
           const active: CatalogGenerationPointerV1 = {
             sourceConfigFingerprint: source.candidate.sourceConfigFingerprint,
+            sourceIdentity: source.candidate.sourceIdentity,
             catalogVersion: source.candidate.catalogVersion,
             channel: source.candidate.channel,
             requestedRef: source.candidate.requestedRef,
@@ -618,9 +694,15 @@ export async function activateCatalogSourceCandidate(options: {
             generationKey: source.candidate.generationKey,
             activatedAt: (options.runtime?.now?.() ?? new Date()).toISOString(),
           };
+          const lastCheck: CatalogGenerationLastCheckV1 = {
+            checkedAt: active.activatedAt!,
+            state: 'activeReady',
+            remoteCommit: active.resolvedCommit,
+          };
           const nextSource: CatalogSourceGenerationStateV1 = {
             ...source,
             active,
+            lastCheck,
           };
           delete nextSource.candidate;
           return {
@@ -631,7 +713,7 @@ export async function activateCatalogSourceCandidate(options: {
             result: {
               catalogGenerationSchemaVersion: 1 as const,
               sourceId: options.sourceId,
-              logicalIdentity: source.logicalIdentity,
+              logicalIdentity: source.logicalIdentity!,
               outcome: 'activated' as const,
               active,
             },
@@ -671,19 +753,15 @@ export async function setCatalogSourceRefreshPolicy(options: {
         env,
         action: async (current) => {
           const source = current.sources[options.sourceId];
-          if (!source) {
-            throw new CatalogGenerationError({
-              code: 'catalogGenerationUnavailable',
-              sourceId: options.sourceId,
-              message: `Catalog source "${options.sourceId}" has no generation state. Refresh it before changing refresh policy.`,
-            });
-          }
           return {
             state: {
               ...current,
               sources: {
                 ...current.sources,
-                [options.sourceId]: { ...source, refreshPolicy: options.refreshPolicy },
+                [options.sourceId]: {
+                  ...source,
+                  refreshPolicy: options.refreshPolicy,
+                },
               },
             },
             result: undefined,
@@ -733,23 +811,25 @@ export async function readCatalogGenerationStatus(options: {
   for (const source of sources) {
     const selected = state.sources[source.id];
     const sourceConfigFingerprint = calculateCatalogSourceConfigFingerprint(source);
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
     if (selected?.active) await assertPointerMatchesGeneration({
-      logicalIdentity: selected.logicalIdentity,
+      logicalIdentity: selected.logicalIdentity!,
       pointer: selected.active,
-      ...(selected.candidate ? {} : { sourceConfigFingerprint }),
+      sourceIdentity,
       env,
     });
     if (selected?.candidate) await assertPointerMatchesGeneration({
-      logicalIdentity: selected.logicalIdentity,
+      logicalIdentity: selected.logicalIdentity!,
       pointer: selected.candidate,
       sourceConfigFingerprint,
+      sourceIdentity,
       env,
     });
     entries.push({
       sourceId: source.id,
       sourceType: source.type,
       refreshPolicy: selected?.refreshPolicy ?? (source.type === 'path' ? 'manual' : 'startup'),
-      ...(selected ? { logicalIdentity: selected.logicalIdentity } : {}),
+      ...(selected?.logicalIdentity ? { logicalIdentity: selected.logicalIdentity } : {}),
       ...(selected?.active ? { active: selected.active } : {}),
       ...(selected?.candidate ? { candidate: selected.candidate } : {}),
       ...(selected?.lastCheck ? { lastCheck: selected.lastCheck } : {}),
