@@ -52,7 +52,10 @@ async function authorizedDescriptorDigest(root: string, branch = 'catalog'): Pro
 
 async function createPublishWorkspace(root: string, pluginName: string): Promise<void> {
   await execFileAsync('git', ['init'], { cwd: root });
-  await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+  await runCli([
+    'catalog', 'init', '--workspace-root', root,
+    '--owner-url', `https://catalog.example.com/${pluginName}`,
+  ], { cwd: root, io: capture().io });
   await runCli([
     'plugin', 'init', pluginName, '--description', `${pluginName} publication fixture.`,
     '--no-skills', '--workspace-root', root,
@@ -501,7 +504,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     const remote = await createRoot();
     await execFileAsync('git', ['init', '--bare', remote]);
     await execFileAsync('git', ['init'], { cwd: root });
-    expect(await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root })).toBe(0);
+    expect(await runCli([
+      'catalog', 'init', '--workspace-root', root,
+      '--owner-url', 'https://catalog.example.com/published-demo',
+    ], { cwd: root })).toBe(0);
     expect(await runCli([
       'plugin', 'init', 'published-demo', '--description', 'Published demo.', '--no-skills',
       '--workspace-root', root,
@@ -679,7 +685,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     const remote = await createRoot();
     await execFileAsync('git', ['init', '--bare', remote]);
     await execFileAsync('git', ['init'], { cwd: root });
-    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'catalog', 'init', '--workspace-root', root,
+      '--owner-url', 'https://catalog.example.com/invalid-publish',
+    ], { cwd: root, io: capture().io });
     await runCli([
       'plugin', 'init', 'invalid-publish',
       '--description', 'Invalid publication fixture.',
@@ -741,7 +750,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     const remote = await createRoot();
     await execFileAsync('git', ['init', '--bare', remote]);
     await execFileAsync('git', ['init'], { cwd: root });
-    await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+    await runCli([
+      'catalog', 'init', '--workspace-root', root,
+      '--owner-url', 'https://catalog.example.com/failure-demo',
+    ], { cwd: root, io: capture().io });
     await runCli([
       'plugin', 'init', 'failure-demo', '--description', 'Failure demo.', '--no-skills',
       '--workspace-root', root,

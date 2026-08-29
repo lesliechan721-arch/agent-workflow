@@ -180,7 +180,10 @@
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.plugin-authoring.v1"
+        "aw.catalog-context.v1",
+        "aw.plugin-authoring.v1",
+        "aw.self-check.v1",
+        "aw.skill-validation.v1"
       ]
     }
   }

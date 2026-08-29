@@ -40,6 +40,7 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
   await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
   await runAw(cliEntry, workspaceRoot, [
     'catalog', 'init', '--workspace-root', workspaceRoot, '--catalog-version', '91.0.0',
+    '--owner-url', 'https://catalog.example.com/smoke-demo',
   ]);
   await runAw(cliEntry, workspaceRoot, [
     'plugin', 'init', 'smoke-demo', '--description', 'Smoke demo.', '--no-skills',

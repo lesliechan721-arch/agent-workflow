@@ -190,10 +190,18 @@ describe('AW capability contracts', () => {
       'aw.catalog-dev-source.v1',
       'aw.catalog-publication.v1',
       'aw.catalog-source.v2',
-      'aw.plugin-authoring.v1',
       'aw.self-check.v1',
       'aw.skill-validation.v1',
     ])
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'aw-command-detected',
+        command: 'aw plugin validate',
+        capability: 'aw.plugin-authoring.v1',
+        blocking: false,
+        provenance: 'inline-code',
+      }),
+    ]))
     expect(result.observations.map((entry) => entry.path)).not.toContain('skills/one/README.md')
     expect(result.observations.map((entry) => entry.path)).not.toContain('references/notes.md')
     expect(result.observations.map((entry) => entry.path)).not.toContain('skills/one/references/sample.mjs')
@@ -291,10 +299,10 @@ describe('AW capability contracts', () => {
     })])
   })
 
-  it('treats one-level literal commands as blocking unmapped commands on every scanner surface', async () => {
+  it('treats one-level executable literals as blocking unmapped commands on every scanner surface', async () => {
     const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-one-level-'))
     tempDirs.push(pluginRoot)
-    await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), '`aw status`\n')
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), 'aw status\n')
     await fs.outputFile(path.join(pluginRoot, 'scripts', 'run.sh'), 'aw tui\n')
     await fs.outputFile(path.join(pluginRoot, 'scripts', 'run.mjs'), 'spawnSync("aw", ["future"])\n')
 
@@ -309,6 +317,72 @@ describe('AW capability contracts', () => {
     ]))
     expect(result.observations).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'aw-command-dynamic' }),
+    ]))
+  })
+
+  it('keeps fenced and direct Markdown commands as hard evidence but inline code as advisory', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-markdown-provenance-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), [
+      '```bash',
+      'aw catalog publish',
+      'aw fenced future',
+      '```',
+      'aw plugin validate . --json',
+      'aw direct future',
+      'Use `aw catalog source list` for a source and `aw inline future` for a future command.',
+      '',
+    ].join('\n'))
+
+    const result = await resolvePluginRequirements({
+      pluginRoot,
+      manifest: manifest({ skills: './skills' }),
+      implementedCapabilities: [
+        'aw.plugin-skills.v1',
+        'aw.catalog-publication.v1',
+        'aw.plugin-authoring.v1',
+      ],
+    })
+
+    expect(result.detected).toEqual([
+      'aw.catalog-publication.v1',
+      'aw.plugin-authoring.v1',
+    ])
+    expect(result.effective).not.toContain('aw.catalog-source.v2')
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        command: 'aw catalog publish',
+        capability: 'aw.catalog-publication.v1',
+        blocking: false,
+        provenance: 'shell-fence',
+      }),
+      expect.objectContaining({
+        command: 'aw fenced future',
+        blocking: true,
+        provenance: 'shell-fence',
+      }),
+      expect.objectContaining({
+        command: 'aw plugin validate',
+        capability: 'aw.plugin-authoring.v1',
+        blocking: false,
+        provenance: 'direct-command-line',
+      }),
+      expect.objectContaining({
+        command: 'aw direct future',
+        blocking: true,
+        provenance: 'direct-command-line',
+      }),
+      expect.objectContaining({
+        command: 'aw catalog source',
+        capability: 'aw.catalog-source.v2',
+        blocking: false,
+        provenance: 'inline-code',
+      }),
+      expect.objectContaining({
+        command: 'aw inline future',
+        blocking: false,
+        provenance: 'inline-code',
+      }),
     ]))
   })
 

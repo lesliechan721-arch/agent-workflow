@@ -68,7 +68,9 @@ aw catalog status --workspace-root "$workspace" \
   --preflight --remote <remote> --branch <branch> --json
 ```
 
-Preflight 从 committed HEAD 的隔离 archive 准备与 publisher 相同的 plan，但不写 attempt、不 push，也不形成持久授权。向用户展示 CLI 返回的 Workspace identity、source HEAD、Catalog version、remote、fetch URL、push URL、branch、parent、tag、snapshot digest、plan ID 和 descriptor digest。只有用户明确授权这一组 exact identity 后，才能执行：
+Preflight 从 committed HEAD 的隔离 archive 准备与 publisher 相同的 plan，但不写 attempt、不 push，也不形成持久授权。授权前向用户展示 CLI 返回的最终绝对 Workspace root、Workspace identity、source HEAD、Catalog version、remote name、安全 fetch URL、安全 push URL、branch、parent、tag、snapshot digest、plan ID 和 descriptor digest。只有用户精确授权完整 descriptor digest 后，才能执行：
+
+`aw catalog init` 的默认 owner URL 使用 `example.invalid` 占位。静态 status 仍报告该 metadata；`status --preflight` 和 `publish` 会以 `catalogMetadataIncomplete` 阻止 publication。发布前必须在 `plugins/marketplace-source.json` 设置真实 `owner.url`，然后重新运行 preflight；CLI 不从 remote 推断该 URL。
 
 ```bash
 aw catalog publish --workspace-root "$workspace" \
@@ -104,13 +106,12 @@ aw catalog dev deactivate --workspace-root "$workspace" --json
 `activate` 会在 snapshot absent、stale、invalid 或显式要求时 build/complete validate，再原子提交 managed path source 并 refresh。config 提交后的 refresh 失败返回 partial receipt，不回滚 source；重跑 refresh 或 activate 可以恢复。Development status schema v2 的 `ok` 只表示诊断可靠完成；`ready` 只在 snapshot current、唯一 managed source、path 匹配、cache current 且 cache digest 匹配 snapshot 时为 `true`。`ok: true, ready: false` 仍以 exit 0 返回，并用 blocking issues 说明未就绪原因。`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。低层 `catalog source add/update` 不能声明 managed ownership。context schema v2 的 `developmentSource.configured` 只检查唯一 owned managed source 及其 path，不替代 readiness。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
 
 ```bash
-aw catalog source add local-example --path "$workspace/.aw/catalog" --primary --json
-aw catalog source refresh local-example --json
-aw catalog source generation-status local-example --json
-aw install local-example/example-plugin -p both --json
+activation_receipt="$(aw catalog dev activate --workspace-root "$workspace" --json)"
+source_id="$(node -e 'const receipt = JSON.parse(process.argv[1]); process.stdout.write(receipt.source.id)' "$activation_receipt")"
+aw install "$source_id/example-plugin" -p both --json
 ```
 
-Path source 的 add/refresh 会把完整验证后的本地 snapshot 发布为 immutable local generation，并直接切换 Active；同一 Catalog version 的本地内容可以再次 refresh。Git source 首次 refresh 建立 Active，后续新版本只建立 Candidate；先用 `generation-status` 检查，再显式运行 `aw catalog source activate-candidate <id> --json`。Git 同一 Workspace identity 和 Catalog version 的不同 snapshot digest 会返回 `catalogImmutableVersionViolation`，必须发布更高版本，不能覆盖或绕过。
+手工添加任意外部 Path snapshot 时，低层 source add/refresh 会把完整验证后的 snapshot 发布为 immutable local generation，并直接切换 Active；同一 Catalog version 的本地内容可以再次 refresh。Git source 首次 refresh 建立 Active，后续新版本只建立 Candidate；先用 `generation-status` 检查，再显式运行 `aw catalog source activate-candidate <id> --json`。Git 同一 Workspace identity 和 Catalog version 的不同 snapshot digest 会返回 `catalogImmutableVersionViolation`，必须发布更高版本，不能覆盖或绕过。
 
 Catalog 可以包含 executable plugin software。添加 source 或安装前检查 source、transport、插件代码和授权边界。Source config 原子提交，但 refresh 和平台安装允许部分失败；原 Active 在 refresh 或 activation 失败时保留。使用 receipt、source refresh、`reinstall` 或安全 cleanup 恢复。
 

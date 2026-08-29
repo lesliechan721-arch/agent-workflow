@@ -274,7 +274,8 @@
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.review-publication.v1"
+        "aw.review-publication.v1",
+        "aw.skill-validation.v1"
       ]
     }
   }

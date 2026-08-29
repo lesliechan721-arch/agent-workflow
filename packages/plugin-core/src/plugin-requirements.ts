@@ -19,6 +19,7 @@ export interface PluginRequirementObservation {
   code: 'aw-command-detected' | 'aw-command-unmapped' | 'aw-command-dynamic'
   blocking: boolean
   path: string
+  provenance?: 'shell-fence' | 'direct-command-line' | 'inline-code'
   command?: string
   capability?: AwCapabilityId
   message: string
@@ -114,14 +115,38 @@ function parseAwCommandAtStart(value: string): AwCommandLiteral | null {
   }
 }
 
-function markdownCommandLiterals(content: string): AwCommandLiteral[] {
-  const literals: AwCommandLiteral[] = []
+interface MarkdownAwCommandLiteral {
+  literal: AwCommandLiteral
+  provenance: 'shell-fence' | 'direct-command-line' | 'inline-code'
+}
+
+function markdownCommandLiterals(content: string): MarkdownAwCommandLiteral[] {
+  const literals: MarkdownAwCommandLiteral[] = []
+  let fence: { marker: '`' | '~'; length: number } | null = null
   for (const line of content.split(/\r?\n/u)) {
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)
+    if (fenceMatch) {
+      const delimiter = fenceMatch[1]!
+      if (fence === null) {
+        fence = { marker: delimiter[0] as '`' | '~', length: delimiter.length }
+        continue
+      }
+      if (delimiter[0] === fence.marker && delimiter.length >= fence.length) {
+        fence = null
+        continue
+      }
+    }
     const direct = parseAwCommandAtStart(line)
-    if (direct) literals.push(direct)
+    if (direct) {
+      literals.push({
+        literal: direct,
+        provenance: fence === null ? 'direct-command-line' : 'shell-fence',
+      })
+    }
+    if (fence !== null) continue
     for (const match of line.matchAll(/`([^`\r\n]+)`/gu)) {
       const inline = parseAwCommandAtStart(match[1] ?? '')
-      if (inline) literals.push(inline)
+      if (inline) literals.push({ literal: inline, provenance: 'inline-code' })
     }
   }
   return literals
@@ -360,30 +385,41 @@ export async function scanPluginAwCliRequirements(options: {
   const detected: string[] = []
   const observe = (observation: PluginRequirementObservation): void => {
     const key = JSON.stringify([
-      observation.code, observation.path, observation.command, observation.capability,
+      observation.code, observation.path, observation.provenance,
+      observation.command, observation.capability,
     ])
     if (observationKeys.has(key)) return
     observationKeys.add(key)
     observations.push(observation)
   }
-  const recordLiteral = (relativePath: string, literal: AwCommandLiteral): void => {
+  const recordLiteral = (
+    relativePath: string,
+    literal: AwCommandLiteral,
+    provenance?: PluginRequirementObservation['provenance'],
+  ): void => {
     const command = [literal.group, literal.command].filter(Boolean).join(' ')
     const capabilities = commandCapabilities(literal.group, literal.command, literal.tail)
     if (capabilities.length > 0) {
       for (const capability of capabilities) {
-        detected.push(capability)
+        if (provenance !== 'inline-code') detected.push(capability)
         observe({
           code: 'aw-command-detected', blocking: false, path: relativePath,
+          ...(provenance === undefined ? {} : { provenance }),
           command: `aw ${command}`, capability,
-          message: `Detected AW CLI command literal: aw ${command}.`,
+          message: provenance === 'inline-code'
+            ? `Inline AW CLI command reference is advisory: aw ${command}.`
+            : `Detected AW CLI command literal: aw ${command}.`,
         })
       }
       return
     }
     observe({
-      code: 'aw-command-unmapped', blocking: true, path: relativePath,
+      code: 'aw-command-unmapped', blocking: provenance !== 'inline-code', path: relativePath,
+      ...(provenance === undefined ? {} : { provenance }),
       command: `aw ${command}`,
-      message: `AW CLI command literal has no capability mapping: aw ${command}.`,
+      message: provenance === 'inline-code'
+        ? `Inline AW CLI command reference has no capability mapping and is advisory: aw ${command}.`
+        : `AW CLI command literal has no capability mapping: aw ${command}.`,
     })
   }
   for (const file of [...new Set(files)].sort()) {
@@ -396,7 +432,9 @@ export async function scanPluginAwCliRequirements(options: {
       extension !== '.md' && !['.js', '.mjs', '.cjs'].includes(extension)
     )
     if (extension === '.md' && declaredModes === undefined) {
-      for (const literal of markdownCommandLiterals(content)) recordLiteral(relativePath, literal)
+      for (const entry of markdownCommandLiterals(content)) {
+        recordLiteral(relativePath, entry.literal, entry.provenance)
+      }
     }
     if (nodeMode) {
       for (const call of nodeProcessCalls(content)) {

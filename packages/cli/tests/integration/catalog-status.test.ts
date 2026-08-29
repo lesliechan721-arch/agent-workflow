@@ -31,9 +31,16 @@ function capture() {
   };
 }
 
-async function createCommittedWorkspace(root: string, pluginName: string): Promise<void> {
+async function createCommittedWorkspace(
+  root: string,
+  pluginName: string,
+  ownerUrl: string | null = `https://catalog.example.com/${pluginName}`,
+): Promise<void> {
   await execFileAsync('git', ['init'], { cwd: root });
-  await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
+  await runCli([
+    'catalog', 'init', '--workspace-root', root,
+    ...(ownerUrl === null ? [] : ['--owner-url', ownerUrl]),
+  ], { cwd: root, io: capture().io });
   await runCli([
     'plugin', 'init', pluginName, '--description', `${pluginName} status fixture.`,
     '--no-skills', '--workspace-root', root,
@@ -235,6 +242,7 @@ describe('Catalog publication status CLI', () => {
     expect(JSON.parse(output.stdout())).toMatchObject({
       command: 'catalog:status',
       ok: true,
+      catalog: { ownerUrl: 'https://catalog.example.com/preflight-demo' },
       publication: {
         checked: true,
         remote: 'origin',
@@ -262,6 +270,56 @@ describe('Catalog publication status CLI', () => {
     await expect(fs.pathExists(path.join(root, '.aw'))).resolves.toBe(false);
     expect((await execFileAsync('git', ['ls-remote', fetchRemote])).stdout).toBe('');
     expect((await execFileAsync('git', ['ls-remote', pushRemote])).stdout).toBe('');
+  });
+
+  it('blocks the default owner URL only for publication preflight and publish', async () => {
+    const root = await createRoot();
+    const remote = await createRoot();
+    await execFileAsync('git', ['init', '--bare', remote]);
+    await createCommittedWorkspace(root, 'placeholder-owner-demo', null);
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root });
+
+    const staticOutput = capture();
+    expect(await runCli([
+      'catalog', 'status', '--workspace-root', root, '--json',
+    ], { cwd: root, io: staticOutput.io })).toBe(0);
+    expect(JSON.parse(staticOutput.stdout())).toMatchObject({
+      ok: true,
+      catalog: {
+        ownerUrl: expect.stringMatching(/^https:\/\/example\.invalid\/aw-workspaces\//u),
+      },
+      publication: { checked: false, publishable: null },
+      issues: [],
+    });
+
+    const preflightOutput = capture();
+    expect(await runCli([
+      'catalog', 'status', '--workspace-root', root, '--preflight', '--json',
+    ], { cwd: root, io: preflightOutput.io })).toBe(1);
+    expect(JSON.parse(preflightOutput.stdout())).toMatchObject({
+      ok: false,
+      publication: { checked: true, publishable: false },
+      issues: [{
+        code: 'catalogMetadataIncomplete',
+        message: expect.stringContaining('owner URL'),
+        blocking: true,
+      }],
+    });
+
+    const publishOutput = capture();
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', root,
+      '--expected-descriptor-digest', placeholderDescriptorDigest,
+      '--yes', '--json',
+    ], { cwd: root, interactive: false, io: publishOutput.io })).toBe(1);
+    expect(JSON.parse(publishOutput.stdout())).toMatchObject({
+      command: 'catalog:publish',
+      ok: false,
+      errors: [{ message: expect.stringContaining('owner URL') }],
+    });
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '0.1.0.json')))
+      .resolves.toBe(false);
+    expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
   });
 
   it('reports committed-HEAD inventory when ignored live plugins are present', async () => {

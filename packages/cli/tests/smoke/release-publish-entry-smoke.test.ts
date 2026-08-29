@@ -46,6 +46,7 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
   await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
   await runCli([
     'catalog', 'init', '--workspace-root', workspaceRoot, '--catalog-version', '2.0.0',
+    '--owner-url', 'https://catalog.example.com/release-smoke',
   ], { cwd: workspaceRoot, io: quietIo() });
   await runCli([
     'plugin', 'init', 'release-smoke', '--description', 'Release smoke.', '--no-skills',

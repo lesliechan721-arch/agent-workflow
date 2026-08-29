@@ -557,7 +557,10 @@ describe('pack smoke', () => {
     await fs.ensureDir(standaloneWorkspace);
     await expect(fs.pathExists(path.join(standaloneWorkspace, 'node_modules'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(standaloneWorkspace, 'packages', 'cli'))).resolves.toBe(false);
-    await execFileAsync(awBin, ['catalog', 'init', '--workspace-root', standaloneWorkspace], {
+    await execFileAsync(awBin, [
+      'catalog', 'init', '--workspace-root', standaloneWorkspace,
+      '--owner-url', 'https://catalog.example.com/packed-build',
+    ], {
       cwd: standaloneWorkspace,
       env: externalAuthoringEnv,
     });

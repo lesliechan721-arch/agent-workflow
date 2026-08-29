@@ -30,7 +30,7 @@ aw self check --from <skill-root> --json
 4. 删除请求由本 Skill 接收和编排。以用户明确请求中的 canonical plugin path 推断目标；只给出名称时，以当前 inventory 中唯一的名称推断。名称不唯一时才询问。先检查反向依赖；把实际删除交给 `author-aw-plugin` 的公开删除分支，并要求其返回结构化 receipt。不得直接删除目录，也不新增 tombstone、retirement metadata 或 release ledger。
 5. Plugin Author 返回后重新读取 status 和 dependency graph。只对受影响插件及其反向依赖闭包运行 `aw plugin validate` 和 `aw plugin test`；删除目标不在闭包中。inventory 为空时记录 empty inventory，不运行 plugin 命令。Catalog build 仍覆盖完整 inventory。
 6. 运行 `aw catalog build --workspace-root <workspace.root> --json`，再运行 `aw catalog validate <workspace.root>/.aw/catalog --json`。不得手改 snapshot、digest、platform marketplace、ledger、attempt 或 cache。
-7. 用户要求“把当前 Catalog 作为 CLI source”时，运行 `aw catalog dev activate --workspace-root <workspace.root> --json`，再运行 `aw catalog dev status --workspace-root <workspace.root> --json`。只有 status receipt 的 `ok` 和 `ready` 都为 `true` 时才把 source 报告为可消费；`ok: false` 是诊断失败，`ok: true, ready: false` 时按 `issues` 修复并重跑 activate。只用 `aw catalog dev status` 和 `aw catalog dev deactivate` 查看或停用这个 source；绝不调用低层 source add/update。
+7. 用户要求“把当前 Catalog 作为 CLI source”时，运行 `aw catalog dev activate --workspace-root <workspace.root> --json`，再运行 `aw catalog dev status --workspace-root <workspace.root> --json`。只有 status receipt 的 `ok` 和 `ready` 都为 `true` 时才把 source 报告为可消费；`ok: false` 是诊断失败，`ok: true, ready: false` 时按 `issues` 修复并重跑 activate。需要安装测试时，必须使用 activate receipt 的 `source.id` 组成 `<source.id>/<plugin>`。只用 `aw catalog dev status` 和 `aw catalog dev deactivate` 查看或停用这个 source；绝不调用低层 source add/update。
 8. 返回 CLI 解析的 Workspace identity、metadata/inventory/依赖变化、委托摘要和 receipt、闭包验证、Catalog build/validate、development source receipt 与未完成项。绝不运行 `aw catalog publish`。
 
 ## 完成条件

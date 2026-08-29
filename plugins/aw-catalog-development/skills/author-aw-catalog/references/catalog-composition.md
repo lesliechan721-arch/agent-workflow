@@ -12,4 +12,4 @@ Catalog Author 拥有 Workspace identity、`plugins/marketplace-source.json`、�
 
 Catalog build 是全体已声明插件代码的聚合执行边界。先完成并验证插件内部修改，再执行聚合 build/validate。成功条件是当前 CLI 返回成功，并且输出来自生成命令，不是手工修补。
 
-用户要求当前 Catalog 成为 CLI source 时，只使用 `aw catalog dev activate`；查看和停用只使用对应的 `catalog dev` 命令。不要改用低层 source add/update，也不要把 development source 变成发布步骤。
+用户要求当前 Catalog 成为 CLI source 时，只使用 `aw catalog dev activate`；查看和停用只使用对应的 `catalog dev` 命令。安装测试必须消费 activate receipt 的 `source.id` 组成 `<source.id>/<plugin>`，不能为当前 Workspace 改用低层 source add/update。不要把 development source 变成发布步骤。
