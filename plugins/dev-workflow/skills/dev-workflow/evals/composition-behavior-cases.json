@@ -180,7 +180,7 @@
       "eval_type": "behavior",
       "case_role": "regression",
       "provenance": "derived",
-      "scenario_family": "output-contract",
+      "scenario_family": "route-visibility",
       "unit_under_test": "instructions",
       "preconditions": {
         "workflow_explicitly_requested": true,

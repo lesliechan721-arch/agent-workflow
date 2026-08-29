@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { createReadStream } from 'node:fs';
-import { readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { normalizeAndValidate, readJsonSchema } from './review-contract.mjs';
+import { normalizeAndValidate, readJsonSchema, validateFeedbackAgainstPrototype } from './review-contract.mjs';
 
 function parseArgs(argv) {
   const result = { port: 4173 };
@@ -29,6 +29,21 @@ if (args.help || !args.root) {
 if (!Number.isInteger(args.port) || args.port < 0 || args.port > 65535) throw new Error('Invalid port');
 const root = await realpath(path.resolve(args.root));
 if (!(await stat(root)).isDirectory()) throw new Error('Root must be a directory');
+function isInside(candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+async function resolveRegularInside(relative, label) {
+  const target = path.resolve(root, relative);
+  if (!isInside(target)) throw new Error(`${label} escapes the Prototype root`);
+  const targetInfo = await lstat(target);
+  if (!targetInfo.isFile() || targetInfo.isSymbolicLink()) throw new Error(`${label} must be a regular file`);
+  const physicalTarget = await realpath(target);
+  if (!isInside(physicalTarget)) throw new Error(`${label} escapes the Prototype root through a symbolic link`);
+  return physicalTarget;
+}
+
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml' };
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const [prototypeSchema, feedbackSchema] = await Promise.all([
@@ -36,7 +51,7 @@ const [prototypeSchema, feedbackSchema] = await Promise.all([
   readJsonSchema(path.resolve(scriptDir, '..', 'assets', 'feedback.schema.json')),
 ]);
 const config = normalizeAndValidate(
-  JSON.parse(await readFile(path.join(root, 'review', 'config.json'), 'utf8')),
+  JSON.parse(await readFile(await resolveRegularInside('review/config.json', 'Review config'), 'utf8')),
   prototypeSchema,
   'prototype',
 );
@@ -47,10 +62,6 @@ class HttpError extends Error {
     super(message);
     this.status = status;
   }
-}
-
-function isInside(candidate) {
-  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 
 async function resolveInside(urlPath) {
@@ -98,6 +109,7 @@ const server = http.createServer(async (request, response) => {
         response.end(JSON.stringify({ ok: false, error: 'prototype revision mismatch' }));
         return;
       }
+      validateFeedbackAgainstPrototype(feedback, config, 'feedback');
       const target = path.join(root, 'feedback.json');
       const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
       await writeFile(temporary, `${JSON.stringify(feedback, null, 2)}\n`, 'utf8');

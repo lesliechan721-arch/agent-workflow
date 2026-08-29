@@ -14,6 +14,7 @@ const localPluginRoot = path.resolve(scriptDir, '..');
 const requiredSkills = ['decision-grill', 'decision-prototype', 'decision-shape'];
 const leafSkills = ['decision-grill', 'decision-prototype'];
 const execFileAsync = promisify(execFile);
+const prototypeReviewOwnerMarker = '.prototype-review-owner.json';
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -234,7 +235,8 @@ test('prototype review scripts create a bundle and enforce feedback identity and
   const skillRoot = path.join(skillsRoot, 'decision-prototype');
   const createScript = path.join(skillRoot, 'scripts', 'create-review-bundle.mjs');
   const serveScript = path.join(skillRoot, 'scripts', 'serve-review-bundle.mjs');
-  async function createBundle(root, config) {
+  const servers = [];
+  async function writePrototype(root, config) {
     await mkdir(root, { recursive: true });
     for (const option of config.options || []) {
       const artifact = path.resolve(root, option.artifact);
@@ -247,13 +249,33 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       }
     }
     await writeFile(path.join(root, 'prototype.json'), `${JSON.stringify(config, null, 2)}\n`);
+  }
+  async function createBundle(root, config) {
+    await writePrototype(root, config);
     return execFileAsync(process.execPath, [createScript, '--prototype', path.join(root, 'prototype.json')]);
+  }
+  async function startReviewServer(root) {
+    const server = spawn(process.execPath, [serveScript, '--root', root, '--port', '0'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    servers.push(server);
+    const started = await waitForJsonLine(server);
+    const session = await (await fetch(new URL('/api/session', started.url))).json();
+    return {
+      started,
+      feedbackUrl: new URL('/api/feedback', started.url),
+      feedbackHeaders: {
+        'content-type': 'application/json',
+        'origin': new URL(started.url).origin,
+        'x-prototype-review-token': session.token,
+      },
+      session,
+    };
   }
   async function assertInvalidBundle(name, config, pattern) {
     const root = path.join(prototypeRoot, name);
     await assert.rejects(createBundle(root, config), pattern);
   }
-  let server;
   try {
     await mkdir(path.join(prototypeRoot, 'artifact'), { recursive: true });
     await writeFile(
@@ -282,6 +304,23 @@ test('prototype review scripts create a bundle and enforce feedback identity and
     assert.equal(normalizedConfig.allowOther, true);
     assert.equal(normalizedConfig.allowAnnotations, false);
     assert.equal(normalizedConfig.htmlExecution, 'static');
+    assert.deepEqual(
+      await readJson(path.join(prototypeRoot, 'review', prototypeReviewOwnerMarker)),
+      { schemaVersion: 1, kind: 'decision-prototype-review-bundle' },
+    );
+
+    await writeFile(path.join(prototypeRoot, 'review', 'index.html'), 'stale shell\n');
+    await writeFile(path.join(prototypeRoot, 'review', 'stale.js'), 'stale shell\n');
+    await createBundle(prototypeRoot, {
+      ...normalizedConfig,
+      allowAnnotations: true,
+      guidedQuestions: [{ id: 'risk', label: 'Is the risk visible?', choices: ['yes', 'no'] }],
+      editableCssVariables: { '--space': ['8px', '16px'] },
+    });
+    assert.match(await readFile(path.join(prototypeRoot, 'review', 'index.html'), 'utf8'), /Prototype Review/);
+    await assert.rejects(access(path.join(prototypeRoot, 'review', 'stale.js')), /ENOENT/);
+    const activeConfig = await readJson(path.join(prototypeRoot, 'review', 'config.json'));
+    assert.equal(activeConfig.allowAnnotations, true);
 
     const capabilitiesRoot = path.join(prototypeRoot, 'capabilities');
     await createBundle(capabilitiesRoot, {
@@ -350,10 +389,66 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       htmlExecution: 'sandboxed',
       options: [{ id: 'image', label: 'Image', kind: 'image', artifact: 'artifact/option.png' }],
     }, /prototype\.htmlExecution "sandboxed" requires at least one html option/);
+    await assertInvalidBundle('duplicate-option-ids', {
+      ...normalizedConfig,
+      options: [
+        ...normalizedConfig.options,
+        { ...normalizedConfig.options[0], label: 'Duplicate option' },
+      ],
+    }, /prototype\.options contains duplicate id "a"/);
+    await assertInvalidBundle('duplicate-guided-question-ids', {
+      ...normalizedConfig,
+      guidedQuestions: [
+        { id: 'risk', label: 'First question' },
+        { id: 'risk', label: 'Second question' },
+      ],
+    }, /prototype\.guidedQuestions contains duplicate id "risk"/);
+    await assertInvalidBundle('guided-css-question-id-conflict', {
+      ...normalizedConfig,
+      guidedQuestions: [{ id: 'css-variable:--space', label: 'Conflicting question' }],
+      editableCssVariables: { '--space': ['8px'] },
+    }, /prototype\.guidedQuestions id "css-variable:--space" conflicts with an editable CSS variable/);
     await assert.rejects(
       execFileAsync(process.execPath, [createScript, '--prototype', path.join(prototypeRoot, 'prototype.json'), '--output', 'elsewhere']),
       /Unknown argument: --output/,
     );
+
+    const unownedRoot = path.join(prototypeRoot, 'unowned-review');
+    await writePrototype(unownedRoot, { ...normalizedConfig, id: 'unowned-review' });
+    await mkdir(path.join(unownedRoot, 'review'));
+    await writeFile(path.join(unownedRoot, 'review', 'keep.txt'), 'keep\n');
+    await assert.rejects(
+      execFileAsync(process.execPath, [createScript, '--prototype', path.join(unownedRoot, 'prototype.json')]),
+      /without a valid ownership marker/,
+    );
+    assert.equal(await readFile(path.join(unownedRoot, 'review', 'keep.txt'), 'utf8'), 'keep\n');
+
+    const linkedReviewRoot = path.join(prototypeRoot, 'linked-review');
+    const outsideReview = path.join(outsideRoot, 'linked-review-target');
+    await writePrototype(linkedReviewRoot, { ...normalizedConfig, id: 'linked-review' });
+    await mkdir(outsideReview);
+    await writeFile(path.join(outsideReview, 'keep.txt'), 'outside stays unchanged\n');
+    await symlink(outsideReview, path.join(linkedReviewRoot, 'review'));
+    await assert.rejects(
+      execFileAsync(process.execPath, [createScript, '--prototype', path.join(linkedReviewRoot, 'prototype.json')]),
+      /not an owned directory/,
+    );
+    assert.deepEqual(await readdir(outsideReview), ['keep.txt']);
+    assert.equal(await readFile(path.join(outsideReview, 'keep.txt'), 'utf8'), 'outside stays unchanged\n');
+
+    const linkedConfigRoot = path.join(prototypeRoot, 'linked-config');
+    await createBundle(linkedConfigRoot, { ...normalizedConfig, id: 'linked-config' });
+    const outsideConfig = path.join(outsideRoot, 'outside-config.json');
+    const outsideConfigContents = `${JSON.stringify({ ...normalizedConfig, id: 'outside-config' }, null, 2)}\n`;
+    await writeFile(outsideConfig, outsideConfigContents);
+    await rm(path.join(linkedConfigRoot, 'review', 'config.json'));
+    await symlink(outsideConfig, path.join(linkedConfigRoot, 'review', 'config.json'));
+    const linkedConfigServer = spawn(process.execPath, [serveScript, '--root', linkedConfigRoot, '--port', '0'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    servers.push(linkedConfigServer);
+    await assert.rejects(waitForJsonLine(linkedConfigServer), /Review config must be a regular file/);
+    assert.equal(await readFile(outsideConfig, 'utf8'), outsideConfigContents);
 
     const policyUrl = pathToFileURL(path.join(prototypeRoot, 'review', 'review-policy.mjs')).href;
     const policyInputs = [
@@ -386,21 +481,16 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       ],
     });
 
-    server = spawn(process.execPath, [serveScript, '--root', prototypeRoot, '--port', '0'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const started = await waitForJsonLine(server);
+    const {
+      started,
+      session,
+      feedbackUrl,
+      feedbackHeaders,
+    } = await startReviewServer(prototypeRoot);
     assert.equal(started.ok, true);
     assert.match(await (await fetch(started.url)).text(), /Prototype Review/);
-    const session = await (await fetch(new URL('/api/session', started.url))).json();
     assert.equal(typeof session.token, 'string');
     assert.equal(session.token.length > 20, true);
-    const feedbackUrl = new URL('/api/feedback', started.url);
-    const feedbackHeaders = {
-      'content-type': 'application/json',
-      'origin': new URL(started.url).origin,
-      'x-prototype-review-token': session.token,
-    };
 
     const feedback = {
       schemaVersion: 1,
@@ -408,7 +498,10 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       prototypeRevision: 2,
       verdict: 'accepted',
       selectedOptions: ['a'],
-      answers: [],
+      answers: [
+        { questionId: 'risk', selected: ['yes'], comment: '' },
+        { questionId: 'css-variable:--space', selected: ['16px'], comment: '' },
+      ],
       annotations: [
         {
           id: 'annotation-text',
@@ -447,7 +540,7 @@ test('prototype review scripts create a bundle and enforce feedback identity and
     const stale = await fetch(feedbackUrl, {
       method: 'POST',
       headers: feedbackHeaders,
-      body: JSON.stringify({ ...feedback, prototypeRevision: 1 }),
+      body: JSON.stringify({ ...feedback, prototypeRevision: 1, selectedOptions: ['missing'] }),
     });
     assert.equal(stale.status, 409);
 
@@ -457,6 +550,15 @@ test('prototype review scripts create a bundle and enforce feedback identity and
       body: JSON.stringify({ ...feedback, schemaVersion: 2 }),
     });
     assert.equal(invalid.status, 400);
+
+    const partialFeedback = { ...feedback, answers: [], annotations: [] };
+    const partial = await fetch(feedbackUrl, {
+      method: 'POST',
+      headers: feedbackHeaders,
+      body: JSON.stringify(partialFeedback),
+    });
+    assert.equal(partial.status, 200);
+    assert.deepEqual(await readJson(path.join(prototypeRoot, 'feedback.json')), partialFeedback);
 
     const invalidNested = await fetch(feedbackUrl, {
       method: 'POST',
@@ -493,12 +595,61 @@ test('prototype review scripts create a bundle and enforce feedback identity and
     });
     assert.equal(invalidPointTarget.status, 400);
 
+    const invalidReferences = [
+      ['unknown selected option', { ...feedback, selectedOptions: ['missing'] }],
+      ['duplicate selected option', { ...feedback, selectedOptions: ['a', 'a'] }],
+      ['unknown answer', {
+        ...feedback,
+        answers: [{ questionId: 'missing-question', selected: [], comment: '' }],
+      }],
+      ['duplicate answer', {
+        ...feedback,
+        answers: [
+          { questionId: 'risk', selected: ['yes'], comment: '' },
+          { questionId: 'risk', selected: ['no'], comment: '' },
+        ],
+      }],
+      ['undeclared answer value', {
+        ...feedback,
+        answers: [{ questionId: 'risk', selected: ['maybe'], comment: '' }],
+      }],
+      ['multiple CSS values', {
+        ...feedback,
+        answers: [{ questionId: 'css-variable:--space', selected: ['8px', '16px'], comment: '' }],
+      }],
+      ['unknown annotation option', {
+        ...feedback,
+        annotations: [{
+          id: 'unknown-option',
+          target: { kind: 'dom', value: { optionId: 'missing', elementId: 'summary' } },
+          comment: 'Invalid target.',
+        }],
+      }],
+      ['incompatible annotation kind', {
+        ...feedback,
+        annotations: [{
+          id: 'wrong-kind',
+          target: { kind: 'point', value: { optionId: 'a', x: 0.5, y: 0.5 } },
+          comment: 'Invalid target.',
+        }],
+      }],
+    ];
+    for (const [name, invalidFeedback] of invalidReferences) {
+      const response = await fetch(feedbackUrl, {
+        method: 'POST',
+        headers: feedbackHeaders,
+        body: JSON.stringify(invalidFeedback),
+      });
+      assert.equal(response.status, 400, name);
+    }
+
     const invalidExtra = await fetch(feedbackUrl, {
       method: 'POST',
       headers: feedbackHeaders,
       body: JSON.stringify({ ...feedback, unexpected: true }),
     });
     assert.equal(invalidExtra.status, 400);
+    assert.deepEqual(await readJson(path.join(prototypeRoot, 'feedback.json')), partialFeedback);
 
     const accepted = await fetch(feedbackUrl, {
       method: 'POST',
@@ -508,10 +659,89 @@ test('prototype review scripts create a bundle and enforce feedback identity and
     assert.equal(accepted.status, 200);
     assert.deepEqual(await readJson(path.join(prototypeRoot, 'feedback.json')), feedback);
 
+    const capabilitiesReview = await startReviewServer(capabilitiesRoot);
+    const rejectedWhenDisabled = await fetch(capabilitiesReview.feedbackUrl, {
+      method: 'POST',
+      headers: capabilitiesReview.feedbackHeaders,
+      body: JSON.stringify({
+        ...feedback,
+        prototypeId: 'combined-capabilities',
+        verdict: 'rejected',
+        answers: [],
+        annotations: [],
+      }),
+    });
+    assert.equal(rejectedWhenDisabled.status, 400);
+    await assert.rejects(access(path.join(capabilitiesRoot, 'feedback.json')), /ENOENT/);
+
+    const annotationsDisabledRoot = path.join(prototypeRoot, 'annotations-disabled');
+    await createBundle(annotationsDisabledRoot, { ...normalizedConfig, id: 'annotations-disabled' });
+    const disabledReview = await startReviewServer(annotationsDisabledRoot);
+    const disabledFeedback = {
+      ...feedback,
+      prototypeId: 'annotations-disabled',
+      answers: [],
+      annotations: [{
+        id: 'disabled-annotation',
+        target: { kind: 'dom', value: { optionId: 'a', elementId: 'summary' } },
+        comment: 'Invalid target.',
+      }],
+    };
+    const disabledAnnotation = await fetch(disabledReview.feedbackUrl, {
+      method: 'POST',
+      headers: disabledReview.feedbackHeaders,
+      body: JSON.stringify(disabledFeedback),
+    });
+    assert.equal(disabledAnnotation.status, 400);
+
+    const sandboxFeedbackRoot = path.join(prototypeRoot, 'sandbox-feedback');
+    await createBundle(sandboxFeedbackRoot, {
+      ...normalizedConfig,
+      id: 'sandbox-feedback',
+      htmlExecution: 'sandboxed',
+      allowAnnotations: true,
+      options: [
+        ...normalizedConfig.options,
+        { id: 'image', label: 'Image', kind: 'image', artifact: 'artifact/option.png' },
+      ],
+    });
+    const sandboxReview = await startReviewServer(sandboxFeedbackRoot);
+    const sandboxFeedback = {
+      ...feedback,
+      prototypeId: 'sandbox-feedback',
+      answers: [],
+      annotations: [{
+        id: 'sandbox-dom',
+        target: { kind: 'dom', value: { optionId: 'a', elementId: 'summary' } },
+        comment: 'Invalid target.',
+      }],
+    };
+    const sandboxDomAnnotation = await fetch(sandboxReview.feedbackUrl, {
+      method: 'POST',
+      headers: sandboxReview.feedbackHeaders,
+      body: JSON.stringify(sandboxFeedback),
+    });
+    assert.equal(sandboxDomAnnotation.status, 400);
+    const sandboxImageAnnotation = await fetch(sandboxReview.feedbackUrl, {
+      method: 'POST',
+      headers: sandboxReview.feedbackHeaders,
+      body: JSON.stringify({
+        ...sandboxFeedback,
+        annotations: [{
+          id: 'sandbox-image',
+          target: { kind: 'point', value: { optionId: 'image', x: 0.5, y: 0.5 } },
+          comment: 'Valid target.',
+        }],
+      }),
+    });
+    assert.equal(sandboxImageAnnotation.status, 200);
+
     const escaped = await fetch(new URL('/artifact/escape.txt', started.url));
     assert.equal(escaped.status, 400);
   } finally {
-    if (server && server.exitCode === null) server.kill('SIGTERM');
+    for (const server of servers) {
+      if (server.exitCode === null) server.kill('SIGTERM');
+    }
     await Promise.all([
       rm(prototypeRoot, { recursive: true, force: true }),
       rm(outsideRoot, { recursive: true, force: true }),
