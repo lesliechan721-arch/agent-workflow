@@ -8,7 +8,6 @@ import {
   mutateCatalogWorkspaceVersion,
   readCatalogWorkspace,
   validateCatalogSnapshotComplete,
-  type CatalogWorkspaceResolvedFrom,
   type CatalogVersionBump,
   type CatalogWorkspaceBuildAdapter,
   type CatalogWorkspacePluginBuildAdapter,
@@ -20,6 +19,7 @@ import {
 } from '../../scripts/plugin-staging.js';
 import { runPluginScriptTests } from '../../scripts/test-plugin-scripts.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
+import type { CatalogWorkspaceResolvedFrom } from '../commands/catalog-workspace-resolution.js';
 
 export interface AuthoringCommandIo {
   stdout(text: string): void;

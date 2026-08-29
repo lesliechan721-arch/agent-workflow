@@ -4,7 +4,6 @@ import path from 'node:path';
 import {
   DEFAULT_CATALOG_OUTPUT_PATH,
   readCatalogWorkspace,
-  resolveCatalogWorkspaceRoot,
   validateCatalogSnapshotComplete,
 } from '@lesliechan721/aw-plugin-core';
 
@@ -28,6 +27,7 @@ import {
   type CatalogSourceCommandRuntime,
 } from './catalog-source.js';
 import { getCatalogStatus } from './catalog-status.js';
+import { resolveCatalogWorkspaceRoot } from './catalog-workspace-resolution.js';
 
 type Issue = { code: string; message: string; blocking: boolean };
 

@@ -6,9 +6,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, Option } from 'commander';
-import { resolveCatalogWorkspaceRoot } from '@lesliechan721/aw-plugin-core';
 
 import { initCommand } from './commands/init.js';
+import { resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
   addCatalogSourceCommand,
   explicitRefPolicy,
@@ -1676,6 +1676,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd,
           ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
           mode: 'initialize',
+          env,
         });
         await runCatalogInitCommand({
           ...rawOptions,

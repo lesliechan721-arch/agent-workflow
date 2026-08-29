@@ -240,13 +240,18 @@ function validateCatalogWorkspaceMarker(
   return { workspaceIdentity: marker.workspaceIdentity };
 }
 
-async function readCatalogWorkspaceMarker(
+export async function readCatalogWorkspaceMarker(
   workspaceRoot: string,
 ): Promise<{ markerPath: string; workspaceIdentity: string }> {
   const markerPath = path.join(workspaceRoot, CATALOG_WORKSPACE_MARKER_FILENAME);
-  const marker = validateCatalogWorkspaceMarker(
-    await readRegularJson(markerPath, 'Catalog Workspace marker'),
-  );
+  let value: unknown;
+  try {
+    value = await readRegularJson(markerPath, 'Catalog Workspace marker');
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('Invalid Catalog Workspace marker.');
+    throw error;
+  }
+  const marker = validateCatalogWorkspaceMarker(value);
   return { markerPath, workspaceIdentity: marker.workspaceIdentity };
 }
 

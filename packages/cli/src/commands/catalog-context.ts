@@ -6,12 +6,12 @@ import { promisify } from 'node:util'
 import {
   getPluginCoreVersion,
   readCatalogWorkspace,
-  resolveCatalogWorkspaceRoot,
 } from '@lesliechan721/aw-plugin-core'
 
 import { resolveCatalogPublicationTarget } from './catalog-publication-target.js'
 import { suggestedCatalogDevSourceId } from './catalog-dev-source.js'
 import { sanitizedGitEnvironment } from './catalog-publication-inspection.js'
+import { resolveCatalogWorkspaceRoot } from './catalog-workspace-resolution.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js'
 
@@ -51,6 +51,7 @@ export async function getCatalogContext(options: {
       cwd: options.cwd,
       ...(options.workspaceRoot === undefined ? {} : { explicitRoot: options.workspaceRoot }),
       mode: 'existing',
+      env: options.env,
     })
     workspaceIdentity = (await readCatalogWorkspace(existing.workspaceRoot, {
       reservedImports: CLI_RESERVED_IMPORTS,
@@ -69,6 +70,7 @@ export async function getCatalogContext(options: {
       cwd: options.cwd,
       ...(options.workspaceRoot === undefined ? {} : { explicitRoot: options.workspaceRoot }),
       mode: 'initialize',
+      env: options.env,
     })
   } catch (error) {
     if (!issues.some((issue) => issue.blocking)) {
