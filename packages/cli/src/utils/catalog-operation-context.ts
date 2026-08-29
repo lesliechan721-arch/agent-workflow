@@ -9,16 +9,14 @@ import {
   resolveCatalogGenerationSet,
 } from './catalog-generation-resolver.js';
 import {
+  readCatalogGenerationControlSnapshot,
+  type CatalogGenerationControlSnapshot,
+} from './catalog-generation-control-snapshot.js';
+import {
   refreshCatalogSourceGeneration,
   type CatalogGenerationServiceRuntime,
 } from './catalog-generation-service.js';
-import { readCatalogGenerationState } from './catalog-generation-state.js';
-import { calculateCatalogSourceIdentity } from './catalog-source-identity.js';
-import {
-  readCatalogSourcesConfigSnapshot,
-  type CatalogSourcesConfigSnapshot,
-} from './catalog-sources.js';
-import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
+import type { CatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import type { MultiSourceCatalogResolution } from './multi-source-catalog.js';
 
 export interface CatalogOperationContext {
@@ -53,6 +51,7 @@ export function selectCatalogOperationContext(
   }
   const sources = context.generationSet.sources.filter((source) => requested.has(source.sourceId));
   const generationSetDigest = calculateCatalogGenerationSetDigest(
+    context.generationSet.configDigest,
     context.generationSet.primarySourceId,
     sources,
   );
@@ -85,7 +84,10 @@ function selectedSourceIds(
       message: `Catalog source "${unknown}" is not configured.`,
     });
   }
-  return [...new Set(sourceIds)];
+  const requested = new Set(sourceIds);
+  return snapshot.config.sources
+    .filter((source) => requested.has(source.id))
+    .map((source) => source.id);
 }
 
 async function bootstrapMissingActiveGenerations(options: {
@@ -95,28 +97,37 @@ async function bootstrapMissingActiveGenerations(options: {
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
 }): Promise<void> {
-  const [snapshot, state] = await Promise.all([
-    readCatalogSourcesConfigSnapshot(options.env),
-    readCatalogGenerationState(options.env),
-  ]);
-  const missing = selectedSourceIds(snapshot, options.sourceIds)
-    .filter((sourceId) => !state.sources[sourceId]?.active);
+  const controlSnapshot = await readCatalogGenerationControlSnapshot({ env: options.env });
+  const missing = selectedSourceIds(controlSnapshot.configSnapshot, options.sourceIds)
+    .filter((sourceId) => !controlSnapshot.generationState.sources[sourceId]?.active);
   if (missing.length === 0) return;
-  let firstFailure: { sourceId: CatalogSourceId; cause: unknown } | undefined;
-  for (const sourceId of missing) {
-    try {
-      await refreshCatalogSourceGeneration({
-        sourceId,
-        cliVersion: options.cliVersion,
-        env: options.env,
-        ...(options.signal ? { signal: options.signal } : {}),
-        ...(options.runtime ? { runtime: options.runtime } : {}),
-      });
-    } catch (cause) {
-      if (options.signal?.aborted) throw cause;
-      firstFailure ??= { sourceId, cause };
+  const failures: Array<{ sourceId: CatalogSourceId; cause: unknown } | undefined>
+    = new Array(missing.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < missing.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const sourceId = missing[index]!;
+      try {
+        await refreshCatalogSourceGeneration({
+          sourceId,
+          cliVersion: options.cliVersion,
+          env: options.env,
+          ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.runtime ? { runtime: options.runtime } : {}),
+        });
+      } catch (cause) {
+        if (options.signal?.aborted) throw cause;
+        failures[index] = { sourceId, cause };
+      }
     }
-  }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(2, missing.length) },
+    () => worker(),
+  ));
+  const firstFailure = failures.find((failure) => failure !== undefined);
   if (!firstFailure) return;
   throw new CatalogGenerationError({
     code: 'catalogGenerationUnavailable',
@@ -149,101 +160,133 @@ async function resolveGenerationSetWithBootstrap(options: {
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
   bootstrapMissingActive?: boolean;
-}): Promise<CatalogGenerationSet> {
+  configSnapshot?: CatalogSourcesConfigSnapshot;
+}): Promise<{
+  generationSet: CatalogGenerationSet;
+  controlSnapshot: CatalogGenerationControlSnapshot;
+}> {
+  let controlSnapshot = await readCatalogGenerationControlSnapshot({
+    env: options.env,
+    ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
+  });
   try {
-    return await resolveCatalogGenerationSet({
+    const generationSet = await resolveCatalogGenerationSet({
       ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
       env: options.env,
+      controlSnapshot,
+      validatedGenerations: options.runtime?.validatedGenerations,
+      validatingGenerations: options.runtime?.validatingGenerations,
     });
+    return { generationSet, controlSnapshot };
   } catch (error) {
     if (!(error instanceof CatalogGenerationError)
       || error.code !== 'catalogGenerationUnavailable'
       || options.bootstrapMissingActive === false) throw error;
     await bootstrapMissingActiveGenerations(options);
-    return resolveCatalogGenerationSet({
+    controlSnapshot = await readCatalogGenerationControlSnapshot({
+      env: options.env,
+      ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
+    });
+    const generationSet = await resolveCatalogGenerationSet({
       ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
       env: options.env,
+      controlSnapshot,
+      validatedGenerations: options.runtime?.validatedGenerations,
+      validatingGenerations: options.runtime?.validatingGenerations,
     });
+    return { generationSet, controlSnapshot };
   }
 }
 
-export async function resolveCatalogOperationContext(
-  options: ResolveCatalogOperationContextOptions,
-): Promise<CatalogOperationContext> {
-  const env = options.env ?? process.env;
-  options.signal?.throwIfAborted();
-  const generationSet = await resolveGenerationSetWithBootstrap({
-    cliVersion: options.cliVersion,
-    ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
-    env,
-    ...(options.signal ? { signal: options.signal } : {}),
-    ...(options.runtime ? { runtime: options.runtime } : {}),
-    ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
-  });
-  options.signal?.throwIfAborted();
-  const [configSnapshot, state] = await Promise.all([
-    options.configSnapshot
-      ? Promise.resolve(options.configSnapshot)
-      : readCatalogSourcesConfigSnapshot(env),
-    readCatalogGenerationState(env),
-  ]);
-  const configured = new Map(configSnapshot.config.sources.map((source) => [source.id, source]));
-  const sources = await Promise.all(generationSet.sources.map(async (generation) => {
+async function createCatalogOperationContext(options: {
+  generationSet: CatalogGenerationSet;
+  controlSnapshot: CatalogGenerationControlSnapshot;
+  signal?: AbortSignal;
+}): Promise<CatalogOperationContext> {
+  const configured = new Map(options.controlSnapshot.configSnapshot.config.sources
+    .map((source) => [source.id, source]));
+  const sources = options.generationSet.sources.map((generation) => {
     options.signal?.throwIfAborted();
     const source = configured.get(generation.sourceId);
-    const active = state.sources[generation.sourceId]?.active;
+    const active = options.controlSnapshot.generationState.sources[generation.sourceId]?.active;
     if (!source || !active
       || active.generationKey !== generation.generationKey
-      || active.sourceConfigFingerprint !== generation.sourceConfigFingerprint) {
+      || active.sourceIdentity !== generation.sourceIdentity) {
       throw new CatalogGenerationError({
         code: 'catalogGenerationIdentityMismatch',
         sourceId: generation.sourceId,
         message: `Active Catalog generation for source "${generation.sourceId}" changed while the operation context was being resolved. Retry the operation.`,
       });
     }
-    const validation = await validateCatalogSnapshotTransport(generation.snapshotPath);
-    if (validation.manifestDigest !== generation.manifestDigest
-      || validation.snapshotDigest !== generation.snapshotDigest) {
-      throw new CatalogGenerationError({
-        code: 'catalogGenerationIdentityMismatch',
-        sourceId: generation.sourceId,
-        message: `Active Catalog generation for source "${generation.sourceId}" is damaged. Run aw catalog source refresh ${generation.sourceId}, then retry.`,
-      });
-    }
     const resolution: CatalogSourceResolution = {
       sourceId: generation.sourceId,
-      sourceIdentity: await calculateCatalogSourceIdentity(source),
+      sourceIdentity: generation.sourceIdentity,
       requestedRef: active.requestedRef,
       resolvedCommit: generation.resolvedCommit,
       rootDir: generation.snapshotPath,
-      manifest: validation.manifest,
+      manifest: generation.manifest,
       manifestDigest: generation.manifestDigest,
       snapshotDigest: generation.snapshotDigest,
       cacheEntryKey: generation.generationKey,
-      source: source.type === 'path' ? 'path' : 'cache',
+      source: 'active',
       cacheFallback: false,
     };
     return { sourceId: generation.sourceId, resolution };
-  }));
+  });
   options.signal?.throwIfAborted();
   return {
-    generationSet,
-    generationSetDigest: generationSet.generationSetDigest,
+    generationSet: options.generationSet,
+    generationSetDigest: options.generationSet.generationSetDigest,
     catalog: {
       sources,
-      primarySourceId: generationSet.primarySourceId,
-      configDigest: configSnapshot.digest,
-      compositeDigest: generationSet.generationSetDigest,
+      primarySourceId: options.generationSet.primarySourceId,
+      configDigest: options.generationSet.configDigest,
+      compositeDigest: options.generationSet.generationSetDigest,
     },
   };
+}
+
+export async function resolveCatalogOperationContext(
+  options: ResolveCatalogOperationContextOptions,
+): Promise<CatalogOperationContext> {
+  const env = options.env ?? process.env;
+  const runtime: CatalogGenerationServiceRuntime = {
+    ...options.runtime,
+    validatedGenerations: options.runtime?.validatedGenerations ?? new Map(),
+    validatingGenerations: options.runtime?.validatingGenerations ?? new Map(),
+  };
+  options.signal?.throwIfAborted();
+  const resolved = await resolveGenerationSetWithBootstrap({
+    cliVersion: options.cliVersion,
+    ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
+    env,
+    ...(options.signal ? { signal: options.signal } : {}),
+    runtime,
+    ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
+    ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
+  });
+  options.signal?.throwIfAborted();
+  return createCatalogOperationContext({
+    ...resolved,
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
 }
 
 export async function resolvePartialCatalogOperationContext(
   options: ResolveCatalogOperationContextOptions,
 ): Promise<CatalogOperationContext> {
   const env = options.env ?? process.env;
+  const runtime: CatalogGenerationServiceRuntime = {
+    ...options.runtime,
+    validatedGenerations: options.runtime?.validatedGenerations ?? new Map(),
+    validatingGenerations: options.runtime?.validatingGenerations ?? new Map(),
+  };
   options.signal?.throwIfAborted();
-  const configSnapshot = options.configSnapshot ?? await readCatalogSourcesConfigSnapshot(env);
+  let controlSnapshot = await readCatalogGenerationControlSnapshot({
+    env,
+    ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
+  });
+  const configSnapshot = controlSnapshot.configSnapshot;
   const sourceIds = selectedSourceIds(configSnapshot, options.sourceIds);
   let bootstrapFailure: unknown;
   if (options.bootstrapMissingActive !== false) {
@@ -253,21 +296,30 @@ export async function resolvePartialCatalogOperationContext(
         sourceIds,
         env,
         ...(options.signal ? { signal: options.signal } : {}),
-        ...(options.runtime ? { runtime: options.runtime } : {}),
+        runtime,
       });
     } catch (error) {
       if (options.signal?.aborted) throw error;
       bootstrapFailure = error;
     }
+    controlSnapshot = await readCatalogGenerationControlSnapshot({
+      env,
+      configSnapshot,
+    });
   }
   const resolved = await Promise.all(sourceIds.map(async (sourceId) => {
     try {
-      const context = await resolveCatalogOperationContext({
-        ...options,
+      const generationSet = await resolveCatalogGenerationSet({
         sourceIds: [sourceId],
-        configSnapshot,
         env,
-        bootstrapMissingActive: false,
+        controlSnapshot,
+        validatedGenerations: runtime.validatedGenerations,
+        validatingGenerations: runtime.validatingGenerations,
+      });
+      const context = await createCatalogOperationContext({
+        generationSet,
+        controlSnapshot,
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       return { sourceId, context };
     } catch (error) {
@@ -284,9 +336,18 @@ export async function resolvePartialCatalogOperationContext(
   const sources = contexts.flatMap((context) => context.generationSet.sources)
     .sort((left, right) => left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0);
   const primarySourceId = configSnapshot.config.sources.find((source) => source.primary)!.id;
-  const generationSetDigest = calculateCatalogGenerationSetDigest(primarySourceId, sources);
+  const generationSetDigest = calculateCatalogGenerationSetDigest(
+    configSnapshot.digest,
+    primarySourceId,
+    sources,
+  );
   return {
-    generationSet: { generationSetDigest, primarySourceId, sources },
+    generationSet: {
+      generationSetDigest,
+      configDigest: configSnapshot.digest,
+      primarySourceId,
+      sources,
+    },
     generationSetDigest,
     catalog: {
       sources: resolved.map((entry) => entry.context

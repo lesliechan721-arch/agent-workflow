@@ -64,8 +64,10 @@ function target(options: {
     state: options.state,
     components: [],
     errors: options.state === 'partial'
-      ? [{ code: 'missingContent', message: '安全说明' }]
-      : options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: '安全说明' }] : [],
+      ? [{ code: 'missingContent', message: '安全说明', severity: 'warning' }]
+      : options.state === 'error'
+        ? [{ code: options.errorCode ?? 'targetError', message: '安全说明', severity: 'blocking' }]
+        : [],
   };
 }
 
@@ -892,6 +894,7 @@ describe('ConsoleAppV4', () => {
       dependencyPluginId: 'team-tools/toolkit',
       rootIssueId: 'artifactCollision:team-tools/toolkit:codex:user:agent:toolkit',
       rootIssueCode: 'artifactCollision',
+      severity: 'warning',
     }];
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
@@ -1528,7 +1531,11 @@ describe('ConsoleAppV4', () => {
       && entry.platform === 'codex' && entry.scope === 'user');
     if (failed) {
       failed.state = 'error';
-      failed.errors = [{ code: 'sourceChanged', message: '/private/source changed' }];
+      failed.errors = [{
+        code: 'sourceChanged',
+        message: '/private/source changed',
+        severity: 'blocking',
+      }];
     }
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
@@ -2223,6 +2230,7 @@ describe('ConsoleAppV4', () => {
           errors: [{
             code: 'nativeTargetUnreadable',
             message: 'native stderr Bearer platform-route-secret /Users/private/platform-route',
+            severity: 'blocking',
           }],
         }
       : entry);
@@ -2458,7 +2466,7 @@ describe('ConsoleAppV4', () => {
 
     expect(value.snapshot.router.current.route).toEqual({
       name: 'issueDetail',
-      issueId: 'target:official/agent-lab:claude:user:partial',
+      issueId: 'incompleteInstallation:official/agent-lab:claude:user',
     });
   });
 
@@ -2790,7 +2798,7 @@ describe('ConsoleAppV4', () => {
     await input(issues, '\r');
     expect(value.snapshot.router.current.route).toEqual({
       name: 'issueDetail',
-      issueId: 'target:official/plugin-10:codex:user:partial',
+      issueId: 'incompleteInstallation:official/plugin-10:codex:user',
     });
   });
 
@@ -4534,7 +4542,7 @@ describe('ConsoleAppV4', () => {
         && entry.platform === 'codex'
         && entry.scope === 'project')!;
       originTarget.state = 'partial';
-      originTarget.errors = [{ code: 'missingContent', message: '安全说明' }];
+      originTarget.errors = [{ code: 'missingContent', message: '安全说明', severity: 'warning' }];
       const refreshed = structuredClone(loaded);
       const refreshedOrigin = refreshed.payload.targets.find((entry) =>
         entry.pluginId === 'official/agent-lab'
@@ -4804,7 +4812,11 @@ describe('ConsoleAppV4', () => {
     const unsupported = loaded.payload.targets.find((entry) =>
       entry.pluginId === 'official/agent-lab' && entry.platform === 'claude' && entry.scope === 'user')!;
     unsupported.state = 'error';
-    unsupported.errors = [{ code: 'dependencyTargetUnsupported', message: 'official/skill-toolkit 不支持 Claude Code' }];
+    unsupported.errors = [{
+      code: 'dependencyTargetUnsupported',
+      message: 'official/skill-toolkit 不支持 Claude Code',
+      severity: 'blocking',
+    }];
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     const issue = value.listUserIssues().find((entry) => entry.category === 'dependencyTargetUnsupported')!;
@@ -4882,6 +4894,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(screens).toContain('D13');
     expect(list.lastFrame()).toContain('4 项');
+    expect(list.lastFrame()).toMatch(/依赖\s+\d+ 项/u);
+    expect(list.lastFrame()).not.toContain('依赖 ·');
     expect(list.lastFrame()?.match(/›/gu)).toHaveLength(1);
     expect(list.lastFrame()).toContain('↑↓ 移动');
     list.unmount();

@@ -450,7 +450,7 @@ describe('five namespaced write commands', () => {
     expect(controller.getPluginOverview('good/demo')).toMatchObject({ version: '1.0.0' });
     await vi.waitFor(() => {
       expect(controller.snapshot.sourceHealth).toEqual(expect.arrayContaining([
-        expect.objectContaining({ sourceId: 'good', state: 'path' }),
+        expect.objectContaining({ sourceId: 'good', state: 'ready' }),
         expect.objectContaining({ sourceId: 'missing', state: 'unavailable' }),
       ]));
     });
@@ -890,7 +890,7 @@ describe('five namespaced write commands', () => {
     })).resolves.toMatchObject({
       payload: { targets: [expect.objectContaining({
         pluginId: 'team/root',
-        state: 'partial',
+        state: 'present',
         dependency: { directCount: 1, issueCount: 1 },
         dependencyReadiness: [{
           dependencyPluginId: 'team/leaf',
@@ -1677,7 +1677,7 @@ describe('five namespaced write commands', () => {
       plugins: ['team/root'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
       cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
     })).resolves.toMatchObject({
-      payload: { targets: [expect.objectContaining({ state: 'partial' })] },
+      payload: { targets: [expect.objectContaining({ state: 'present' })] },
     });
   });
 
@@ -1905,7 +1905,7 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, platform: 'codex', scope: 'project',
     });
     expect(partial.payload.targets.find((target) => target.pluginId === 'team/root')).toMatchObject({
-      state: 'partial',
+      state: 'present',
       dependency: { issueCount: 1 },
     });
 
@@ -3429,7 +3429,7 @@ describe('five namespaced write commands', () => {
     },
   );
 
-  it('marks a consumer partial when its live dependency is missing', async () => {
+  it('keeps a healthy consumer present when its live dependency is missing', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-status-source');
     const agentPlugin = (name: string) => ({
@@ -3468,8 +3468,9 @@ describe('five namespaced write commands', () => {
     );
     await fs.remove(leafAgent);
     await expect(status()).resolves.toMatchObject({
+      hasErrors: false,
       payload: { targets: [expect.objectContaining({
-        state: 'partial',
+        state: 'present',
         dependencyReadiness: [{
           dependencyPluginId: 'team/leaf',
           state: 'absent',
@@ -3495,10 +3496,14 @@ describe('five namespaced write commands', () => {
     const missingController = createController();
     await missingController.load();
     const missingIssue = missingController.listUserIssues().find((issue) =>
-      issue.category === 'dependencyMissing'
-      && issue.pluginId === 'team/root'
-      && issue.platform === 'codex'
-      && issue.scope === 'project');
+      issue.issueId === 'dependencyMissing:team/leaf:codex:project');
+    expect(missingIssue).toMatchObject({
+      relationship: 'consumer',
+      rootEntity: { pluginId: 'team/leaf', platform: 'codex', scope: 'project' },
+      affectedTargets: [expect.objectContaining({
+        pluginId: 'team/root', relationship: 'consumer',
+      })],
+    });
     expect(missingIssue?.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'installDependency', pluginId: 'team/leaf', platform: 'codex',
@@ -3516,17 +3521,26 @@ describe('five namespaced write commands', () => {
     await notReadyController.load();
     const collisionIssue = notReadyController.listUserIssues().find((issue) =>
       issue.category === 'artifactCollision'
-      && issue.pluginId === 'team/root'
+      && issue.pluginId === 'team/leaf'
       && issue.platform === 'codex'
       && issue.scope === 'project');
     expect(collisionIssue).toMatchObject({
       group: 'artifactCollision',
-      dependencyPluginId: 'team/leaf',
+      relationship: 'direct',
+      rootEntity: { pluginId: 'team/leaf', platform: 'codex', scope: 'project' },
+      affectedTargets: expect.arrayContaining([expect.objectContaining({
+        pluginId: 'team/root',
+        platform: 'codex',
+        scope: 'project',
+        relationship: 'consumer',
+      })]),
       technicalDetails: expect.arrayContaining([expect.objectContaining({ code: 'dependencyNotReady' })]),
     });
     const collisionStatus = await status();
-    expect(collisionStatus.payload.targets[0]).toMatchObject({
-      state: 'partial',
+    expect(collisionStatus).toMatchObject({
+      hasErrors: false,
+      payload: { targets: [expect.objectContaining({
+        state: 'present',
       dependencyReadiness: [expect.objectContaining({
         dependencyPluginId: 'team/leaf',
         state: 'blockedByCollision',
@@ -3538,6 +3552,7 @@ describe('five namespaced write commands', () => {
         dependencyPluginId: 'team/leaf',
         rootIssueCode: 'artifactCollision',
       })]),
+      })] },
     });
     notReadyController.dispose();
   });
@@ -3690,6 +3705,16 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ errorCode: 'artifactCollision' }),
     ]));
     await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'))).resolves.toBe(true);
+    await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('foreign');
+
+    for (const pluginId of ['team/first', 'team/second']) {
+      await expect(cleanupWriteCommand([pluginId], {
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      }, {
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      })).resolves.toMatchObject({ overallState: 'succeeded' });
+    }
     await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('foreign');
   });
 

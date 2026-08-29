@@ -131,7 +131,7 @@ export interface CatalogSourceResolution {
   manifestDigest: string;
   snapshotDigest: string;
   cacheEntryKey: string;
-  source: 'remote' | 'cache' | 'path';
+  source: 'remote' | 'cache' | 'path' | 'active';
   cacheFallback: boolean;
   remoteFailure?: string;
 }
@@ -148,6 +148,7 @@ export type CatalogGenerationCheckState =
 
 export interface CatalogGenerationPointerV1 {
   sourceConfigFingerprint: string;
+  sourceIdentity: SourceIdentity;
   catalogVersion: string;
   channel: CatalogChannel;
   requestedRef: string;
@@ -171,7 +172,7 @@ export interface CatalogGenerationLastCheckV1 {
 }
 
 export interface CatalogSourceGenerationStateV1 {
-  logicalIdentity: string;
+  logicalIdentity?: string;
   refreshPolicy: CatalogGenerationRefreshPolicy;
   active?: CatalogGenerationPointerV1;
   candidate?: CatalogGenerationCandidateV1;
@@ -207,6 +208,8 @@ export interface CatalogGenerationRefreshResult {
   sourceIdentity: SourceIdentity;
   logicalIdentity: string;
   outcome: CatalogGenerationRefreshOutcome;
+  activeChanged: boolean;
+  activeGenerationKey?: string;
   active?: CatalogGenerationPointerV1;
   candidate?: CatalogGenerationCandidateV1;
   lastCheck: CatalogGenerationLastCheckV1;
@@ -223,6 +226,7 @@ export interface CatalogGenerationActivationResult {
 export interface CatalogGenerationSetSource {
   sourceId: CatalogSourceId;
   sourceConfigFingerprint: string;
+  sourceIdentity: SourceIdentity;
   logicalIdentity: string;
   catalogVersion: string;
   resolvedCommit: string;
@@ -230,10 +234,12 @@ export interface CatalogGenerationSetSource {
   snapshotDigest: string;
   generationKey: string;
   snapshotPath: string;
+  manifest: CatalogManifestV5;
 }
 
 export interface CatalogGenerationSet {
   generationSetDigest: string;
+  configDigest: string;
   primarySourceId: CatalogSourceId;
   sources: CatalogGenerationSetSource[];
 }

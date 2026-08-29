@@ -238,7 +238,11 @@ function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
     const label = platformLabel(platform);
     const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
     if (!placement || placement.state === 'notInstalled') return `${label} · 未添加`;
+    if (placement.state === 'blocked') return `${label} · 无法添加 · 输出冲突`;
     if (placement.state === 'scopeConflict') return `${label} · 位置冲突`;
+    if (placement.blockingReason === 'artifactCollision') {
+      return `${label} · ${scopeLabel(placement.scope)} · 输出冲突`;
+    }
     const health = placement.health === 'ready' ? '可用'
       : placement.health === 'incomplete' ? '需要处理' : '不可用';
     return `${label} · ${scopeLabel(placement.scope)} · ${health}`;
@@ -692,8 +696,14 @@ function placementStatus(placement: PlatformPlacementSummary): {
   if (placement.state === 'notInstalled') {
     return { value: '未添加', status: 'muted', description: '选择使用位置后添加' };
   }
+  if (placement.state === 'blocked') {
+    return { value: '无法添加', status: 'error', description: '输出冲突；不会覆盖或删除占用内容' };
+  }
   if (placement.state === 'scopeConflict') {
     return { value: '位置冲突', status: 'warning', description: '需要先处理两个安装位置' };
+  }
+  if (placement.blockingReason === 'artifactCollision') {
+    return { value: '输出冲突', status: 'error', description: '只允许查看或安全移除受管内容' };
   }
   return {
     value: `${scopeLabel(placement.scope)} · ${placement.health === 'ready' ? '可用' : placement.health === 'incomplete' ? '需要处理' : '不可用'}`,
@@ -1882,6 +1892,19 @@ export function ConsoleAppV4(props: {
       };
       if (action.id === 'settings') return { label: '查看插件设置', description: `${plugin.configFieldCount} 个配置字段及当前来源`, run: () => beginConfigFlow(plugin.pluginId) };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
+      if (action.id === 'outputCollision') {
+        const collision = props.controller.listUserIssues().find((issue) =>
+          issue.pluginId === plugin.pluginId && issue.category === 'artifactCollision');
+        return {
+          label: '查看输出冲突',
+          description: '目标位置已有不属于当前插件的内容',
+          status: 'error',
+          run: () => collision
+            ? go({ name: 'issueDetail', issueId: collision.issueId })
+            : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+        };
+      }
+      if (action.id === 'about') return { label: '关于', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
       return { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
     };
     const previewMenu = dynamicMenu!;
@@ -2458,6 +2481,13 @@ export function ConsoleAppV4(props: {
           && candidate.platform === route.platform
           && candidate.scope === placement.scope)
       : undefined;
+    const collisionIssue = placement?.state === 'blocked'
+      || placement?.state === 'installed' && placement.blockingReason === 'artifactCollision'
+      ? props.controller.listUserIssues().find((candidate) =>
+          candidate.pluginId === plugin.pluginId
+          && candidate.platform === route.platform
+          && candidate.category === 'artifactCollision')
+      : undefined;
     const sourceIssue = plugin.aggregateStatus === 'unavailable'
       ? props.controller.listUserIssues().find((candidate) =>
           candidate.entity.kind === 'source' && candidate.sourceId === plugin.sourceId)
@@ -2476,6 +2506,15 @@ export function ConsoleAppV4(props: {
         go({ name: 'installPlacement', pluginId: plugin.pluginId });
       } };
       if (action.id === 'about') return { label: '查看支持信息', description: 'manifest 与平台能力', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
+      if (action.id === 'source') return { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
+      if (action.id === 'outputCollision') return {
+        label: '查看输出冲突',
+        description: '不会覆盖或删除占用内容',
+        status: 'error',
+        run: () => collisionIssue
+          ? go({ name: 'issueDetail', issueId: collisionIssue.issueId })
+          : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+      };
       if (action.id === 'scopeConflict') return { label: '查看位置冲突问题', run: () => go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${route.platform}` }) };
       if (action.id === 'upgrade') return { label: `升级到 ${action.availableVersion}…`, description: '使用当前来源中的版本重建', run: () => beginReview({ kind: 'pluginWrite', action: 'upgrade', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'reinstall') return { label: placement?.state === 'installed' && placement.health === 'incomplete' ? '重新连接缺失内容…' : '重新安装…', description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
@@ -2504,6 +2543,14 @@ export function ConsoleAppV4(props: {
       description = '此插件支持所列使用位置。';
       actions = platformMenu.map(platformAction);
       content = <Box flexDirection="column"><StatusCard status="muted" title="未添加" description="插件设置保持不变" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    } else if (placement.state === 'blocked'
+      || placement.state === 'installed' && placement.blockingReason === 'artifactCollision') {
+      title = `${platformLabel(route.platform)} 无法添加`;
+      description = placement.state === 'installed'
+        ? '受管内容仍可安全移除；输出位置同时存在冲突内容。'
+        : '输出位置已有不属于当前插件的内容。';
+      actions = platformMenu.map(platformAction);
+      content = <Box flexDirection="column"><StatusCard status="error" title="输出冲突" description="AW 不会覆盖或删除占用内容" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (placement.state === 'scopeConflict') {
       title = '安装位置冲突';
       description = '正常状态只能保留一个位置。';
@@ -2788,7 +2835,7 @@ export function ConsoleAppV4(props: {
           || generation?.refreshState === 'validating' ? '正在检查'
           : generation?.refreshState === 'immutableViolation' ? '发布异常'
             : generation?.candidate ? `可用更新 ${generation.candidate.catalogVersion}`
-        : health === 'ready' ? '已从远端加载'
+        : health === 'ready' ? '当前使用'
           : health === 'path' ? '本地目录'
             : health === 'checking' ? '正在检查'
               : health === 'cache' || health === 'degraded' ? '使用缓存' : '无法读取';
@@ -2814,11 +2861,12 @@ export function ConsoleAppV4(props: {
     const state = overview.health?.state ?? overview.source?.state;
     const diagnostic = sourceDiagnostic(route.sourceId, state, detail);
     const generation = props.controller.getCatalogGeneration(route.sourceId);
-    const sessionCatalogVersion = props.controller.getSessionCatalogVersion(route.sourceId)
-      ?? generation?.active?.catalogVersion;
+    const sessionCatalogVersion = props.controller.getSessionCatalogVersion(route.sourceId);
+    const reloadRequired = props.controller.isCatalogReloadRequired(route.sourceId);
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录'
-      : detail?.freshness === 'remote' ? 'Git · 已连接'
+      : detail?.freshness === 'active' ? 'Git · 当前使用'
+        : detail?.freshness === 'remote' ? 'Git · 已连接'
         : detail?.freshness === 'cache' ? 'Git · 使用缓存' : 'Git';
     title = route.sourceId;
     description = diagnostic || generation ? '' : '来源状态可用。';
@@ -2828,6 +2876,16 @@ export function ConsoleAppV4(props: {
       void props.controller.refreshSource(route.sourceId);
     };
     const generationActions: ActionItem[] = [
+      ...(reloadRequired ? [{
+        label: '重新加载Catalog',
+        description: `新 Active ${generation?.active?.catalogVersion ?? '已准备'}；本次会话 ${sessionCatalogVersion ?? '未加载'}`,
+        status: 'warning' as const,
+        run: () => { void props.controller.reloadCatalog({
+          sourceId: route.sourceId,
+          ...(dirty ? { dirtyDraft: { kind: 'config' as const, label: '当前设置草稿' } }
+            : sourceDraft ? { dirtyDraft: { kind: 'source' as const, label: '当前来源草稿' } } : {}),
+        }); },
+      }] : []),
       ...(generation?.candidate ? [{
         label: `使用 ${generation.candidate.catalogVersion}…`,
         description: '先查看影响；不会自动升级已安装插件',
@@ -2869,9 +2927,9 @@ export function ConsoleAppV4(props: {
           { label: '技术详情', description: '只读身份与解析证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
         ];
     const sourceActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 5));
-    content = <Box flexDirection="column">{diagnostic
+    content = <Box flexDirection="column">{reloadRequired ? <SectionCard title="Catalog 会话" status="warning" compact={policy.mode === 'compact'}><StaticRow title={`新 Active Catalog ${generation?.active?.catalogVersion ?? '已准备'}`} status="warning" compact /><StaticRow title={`本次会话 Catalog ${sessionCatalogVersion ?? '未加载'}`} meta="插件、状态和依赖仍固定使用此版本" compact /></SectionCard> : null}{diagnostic && !reloadRequired
       ? <DiagnosticSummary diagnostic={diagnostic} compact={policy.mode === 'compact'} />
-      : <>{sessionCatalogVersion ? <SectionCard title="当前使用" compact={policy.mode === 'compact'}><StaticRow title={`Catalog ${sessionCatalogVersion}`} meta={`${generation?.active?.channel === 'beta' ? 'Beta' : 'Release'} · 本次会话固定使用`} compact /></SectionCard> : null}{generation?.candidate ? <SectionCard title="可用更新" status="warning" compact={policy.mode === 'compact'}><StaticRow title={`Catalog ${generation.candidate.catalogVersion}`} meta={`已下载并验证 · +${generation.candidate.pluginChanges.added} ~${generation.candidate.pluginChanges.updated} −${generation.candidate.pluginChanges.removed}`} compact /></SectionCard> : null}{policy.mode === 'compact' ? <><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /><StaticRow title="检查" meta={`${generation?.sourceType === 'git' && generation.refreshPolicy === 'startup' ? '启动时' : '仅手动'} · ${generation?.lastCheckedAt ? '已有记录' : '尚未检查'}`} compact /></> : <SectionCard title="来源与检查"><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} /><StaticRow title="自动刷新" meta={generation?.sourceType === 'git' ? generation.refreshPolicy === 'startup' ? '启动时检查' : '仅手动' : '仅手动'} /><StaticRow title="上次检查" meta={generation?.lastCheckedAt ?? '尚未检查'} /></SectionCard>}</>}
+      : diagnostic ? null : <>{!reloadRequired && sessionCatalogVersion ? <SectionCard title="当前使用" compact={policy.mode === 'compact'}><StaticRow title={`Catalog ${sessionCatalogVersion}`} meta={`${generation?.active?.channel === 'beta' ? 'Beta' : 'Release'} · 本次会话固定使用`} compact /></SectionCard> : null}{generation?.candidate ? <SectionCard title="可用更新" status="warning" compact={policy.mode === 'compact'}><StaticRow title={`Catalog ${generation.candidate.catalogVersion}`} meta={`已下载并验证 · +${generation.candidate.pluginChanges.added} ~${generation.candidate.pluginChanges.updated} −${generation.candidate.pluginChanges.removed}`} compact /></SectionCard> : null}{policy.mode === 'compact' ? <><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /><StaticRow title="检查" meta={`${generation?.sourceType === 'git' && generation.refreshPolicy === 'startup' ? '启动时' : '仅手动'} · ${generation?.lastCheckedAt ? '已有记录' : '尚未检查'}`} compact /></> : <SectionCard title="来源与检查"><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} /><StaticRow title="自动刷新" meta={generation?.sourceType === 'git' ? generation.refreshPolicy === 'startup' ? '启动时检查' : '仅手动' : '仅手动'} /><StaticRow title="上次检查" meta={generation?.lastCheckedAt ?? '尚未检查'} /></SectionCard>}</>}
       <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
   } else if (route.name === 'catalogCandidate') {
     const generation = props.controller.getCatalogGeneration(route.sourceId);
@@ -2907,7 +2965,8 @@ export function ConsoleAppV4(props: {
     const generation = props.controller.getCatalogGeneration(route.sourceId);
     const state = generation?.refreshState ?? 'idle';
     const activeVersion = props.controller.getSessionCatalogVersion(route.sourceId)
-      ?? generation?.active?.catalogVersion ?? '已加载版本';
+      ?? '未加载';
+    const reloadRequired = props.controller.isCatalogReloadRequired(route.sourceId);
     const stage = state === 'checking' || state === 'downloading' ? 1
       : state === 'validating' ? 2 : 3;
     const stageState = (index: number): 'pending' | 'active' | 'complete' | 'error' => state === 'failed' || state === 'immutableViolation'
@@ -2919,13 +2978,25 @@ export function ConsoleAppV4(props: {
       : state === 'upToDate' ? 'Catalog 已是最新'
         : state === 'immutableViolation' ? 'Catalog 发布异常'
           : state === 'failed' ? 'Catalog 检查失败' : '正在检查 Catalog 更新';
-    description = `当前操作继续使用 Catalog ${activeVersion}。`;
+    description = reloadRequired
+      ? `新 Active Catalog ${generation?.active?.catalogVersion ?? '已准备'}；本次会话仍使用 Catalog ${activeVersion}。`
+      : `当前操作继续使用 Catalog ${activeVersion}。`;
     help = state === 'checking' || state === 'downloading' || state === 'validating'
       ? 'Esc 取消检查' : 'Enter 返回 · Esc 返回';
+    const reloadAction: ActionItem[] = reloadRequired ? [{
+      label: '重新加载Catalog',
+      description: '重新读取插件列表、状态和依赖关系',
+      status: 'warning',
+      run: () => { void props.controller.reloadCatalog({
+        sourceId: route.sourceId,
+        ...(dirty ? { dirtyDraft: { kind: 'config' as const, label: '当前设置草稿' } }
+          : sourceDraft ? { dirtyDraft: { kind: 'source' as const, label: '当前来源草稿' } } : {}),
+      }); },
+    }] : [];
     actions = state === 'immutableViolation'
       ? [{ label: '查看发布异常', run: () => props.controller.replace({ name: 'catalogImmutableViolation', sourceId: route.sourceId }) }, { label: '返回来源', run: back }]
       : state === 'checking' || state === 'downloading' || state === 'validating'
-        ? [] : [{ label: '返回来源', run: back }];
+        ? [] : [...reloadAction, { label: '返回来源', run: back }];
     content = <Box flexDirection="column"><SectionCard title="检查步骤"><ProgressRow title="读取当前 Active generation" state="complete" compact /><ProgressRow title="检查并获取远端 generation" state={stageState(1)} compact /><ProgressRow title="验证 Catalog" state={stageState(2)} compact /><ProgressRow title="准备 Candidate" state={stageState(3)} compact /></SectionCard>{actions.length > 0 ? <SemanticRows actions={actions} focus={focus} kind="action" compact /> : null}</Box>;
   } else if (route.name === 'catalogImmutableViolation') {
     const generation = props.controller.getCatalogGeneration(route.sourceId);
@@ -2944,12 +3015,13 @@ export function ConsoleAppV4(props: {
     const reason = {
       configDraft: '当前有未完成的设置修改。', sourceDraft: '当前有未完成的来源修改。', portableDraft: '当前有未完成的 Portable Skills 选择。', activeReview: '当前有待确认的 Review。', reviewPreparation: '当前正在准备 Review。', writeProgress: '当前写操作尚未完成。', sourceMutationProgress: '当前来源修改尚未完成。', refreshProgress: '当前 Catalog 来源刷新尚未完成。',
     }[route.reason];
-    breadcrumb = `插件来源 / ${route.sourceId} / 使用更新`;
+    const reloading = route.operation === 'reload';
+    breadcrumb = `插件来源 / ${route.sourceId} / ${reloading ? '重新加载' : '使用更新'}`;
     context = '暂不可用';
-    title = '暂时不能切换 Catalog';
+    title = reloading ? '暂时不能重新加载 Catalog' : '暂时不能切换 Catalog';
     description = reason;
     actions = [{ label: '返回完成或取消当前操作', run: back }, { label: `继续使用 ${props.controller.getSessionCatalogVersion(route.sourceId) ?? generation?.active?.catalogVersion ?? '当前版本'}`, run: back }];
-    content = <Box flexDirection="column"><SectionCard title="保留的工作"><StaticRow title={route.preservedLabel ?? reason} status="success" /><StaticRow title={`Candidate ${generation?.candidate?.catalogVersion ?? '更新'} 保持已下载状态`} status="success" /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><SectionCard title="保留的工作"><StaticRow title={route.preservedLabel ?? reason} status="success" /><StaticRow title={reloading ? `新 Active ${generation?.active?.catalogVersion ?? 'Catalog'} 保持可用` : `Candidate ${generation?.candidate?.catalogVersion ?? '更新'} 保持已下载状态`} status="success" /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceTechnical') {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
@@ -3084,9 +3156,9 @@ export function ConsoleAppV4(props: {
         label: entry.category.startsWith('dependency')
           ? `${props.controller.getPluginOverview(entry.pluginId ?? '')?.displayName ?? entry.pluginId ?? entry.title}${entry.platform ? ` · ${platformLabel(entry.platform)}` : ''}`
           : entry.title,
-        description: `${issueGroupLabel(entry.group)} · ${entry.category.startsWith('dependency')
+        description: entry.category.startsWith('dependency')
           ? `${props.controller.getPluginOverview(entry.dependencyPluginId ?? '')?.displayName ?? entry.dependencyPluginId ?? entry.explanation} · ${entry.impact[0] ?? ''}`
-          : `${entry.explanation} · ${entry.impact[0] ?? ''}`}`,
+          : `${entry.explanation} · ${entry.impact[0] ?? ''}`,
         status: entry.category === 'sourceDegraded' ? 'warning' as const : 'error' as const,
         run: () => entry.category === 'dependencyStillRequired' && entry.pluginId
           ? go({ name: 'pluginDependencies', pluginId: entry.pluginId, view: 'removeBlocked',
@@ -3096,7 +3168,40 @@ export function ConsoleAppV4(props: {
       }));
     }
     const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(8, 12));
-    content = <SemanticRows actions={actions} focus={focus} kind={issues.length > 0 ? 'task' : 'action'} compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
+    if (issues.length === 0) {
+      content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
+    } else {
+      const groupCounts = new Map<UserIssueViewModel['group'], number>();
+      for (const issueEntry of issues) {
+        groupCounts.set(issueEntry.group, (groupCounts.get(issueEntry.group) ?? 0) + 1);
+      }
+      const visibleGroups: Array<{
+        group: UserIssueViewModel['group'];
+        startIndex: number;
+        actions: ActionItem[];
+      }> = [];
+      const visibleEnd = Math.min(actions.length, viewport.offset + viewport.limit);
+      for (let index = viewport.offset; index < visibleEnd; index += 1) {
+        const group = issues[index]!.group;
+        const currentGroup = visibleGroups.at(-1);
+        if (!currentGroup || currentGroup.group !== group) {
+          visibleGroups.push({ group, startIndex: index, actions: [actions[index]!] });
+        } else currentGroup.actions.push(actions[index]!);
+      }
+      content = <Box flexDirection="column">{visibleGroups.map((group) => <SectionCard
+        key={`${group.group}:${group.startIndex}`}
+        title={issueGroupLabel(group.group)}
+        meta={`${groupCounts.get(group.group) ?? group.actions.length} 项`}
+        compact={policy.mode === 'compact'}
+      >
+        <SemanticRows
+          actions={group.actions}
+          focus={focus - group.startIndex}
+          kind="task"
+          compact={policy.mode === 'compact'}
+        />
+      </SectionCard>)}</Box>;
+    }
   } else if (route.name === 'issueDetail' && issue) {
     breadcrumb = `需要处理 / ${issue.pluginId ?? issue.sourceId ?? issue.entity.id}`;
     context = issue.platform ? `${platformLabel(issue.platform)}${issue.scope ? ` · ${scopeLabel(issue.scope)}` : ''}` : issue.sourceId;

@@ -125,7 +125,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
-性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖 `current`/`last-good` 读取、多个 Git/path source fanout、remote deadline 失败和进程清理确认；不依赖公网。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
+性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖 `current`/`last-good` 读取、至少两个 Git source 与一个 Path source、large Catalog、Active/Candidate、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 control snapshot、unique generation validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
 
 ## Test Isolation
 

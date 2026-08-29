@@ -6,14 +6,12 @@ import type {
   CatalogManifestV5,
 } from '../types.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
-import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import { readCatalogGenerationControlSnapshot } from '../utils/catalog-generation-control-snapshot.js';
 import {
-  readCatalogGenerationStatus,
+  readValidatedCatalogGenerationStatusEntry,
   type CatalogGenerationServiceRuntime,
 } from '../utils/catalog-generation-service.js';
-import { readCatalogGeneration } from '../utils/catalog-generation-store.js';
-import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
-import { validateCatalogSnapshotTransport } from '../utils/catalog-snapshot.js';
+import type { PublishedCatalogGeneration } from '../utils/catalog-generation-store.js';
 
 export type CatalogRefreshState =
   | 'idle'
@@ -61,7 +59,23 @@ export interface CatalogSourceGenerationViewModel {
 
 export interface CatalogRefreshExecutionResult {
   source: CatalogSourceGenerationViewModel;
+  activeChanged: boolean;
+  activeGenerationKey?: string;
 }
+
+export type CatalogGenerationLoadStageEvent =
+  | {
+      name: 'catalog.context';
+      durationMs: number;
+      sourceCount: number;
+    }
+  | {
+      name: 'catalog.validation';
+      durationMs: number;
+      pointerCount: number;
+      fullValidationCount: number;
+      reusedValidationCount: number;
+    };
 
 export interface CatalogRefreshCoordinatorOptions {
   execute: (
@@ -70,7 +84,7 @@ export interface CatalogRefreshCoordinatorOptions {
     onState: (state: Extract<CatalogRefreshState, 'checking' | 'downloading' | 'validating'>) => void,
   ) => Promise<CatalogRefreshExecutionResult>;
   onUpdate: (sourceId: string, state: CatalogRefreshState, errorCode?: string) => void;
-  onResult?: (source: CatalogSourceGenerationViewModel) => void;
+  onResult?: (result: CatalogRefreshExecutionResult) => void;
   maxConcurrency?: number;
 }
 
@@ -137,34 +151,53 @@ export function countCatalogPluginChanges(
   return { added, updated, removed };
 }
 
-async function readGenerationManifest(options: {
-  logicalIdentity: string;
-  pointer: CatalogGenerationPointerV1;
-  env: NodeJS.ProcessEnv;
-}): Promise<CatalogManifestV5> {
-  const generation = await readCatalogGeneration({
-    logicalIdentity: options.logicalIdentity,
-    snapshotDigest: options.pointer.snapshotDigest,
-    env: options.env,
-  });
-  return (await validateCatalogSnapshotTransport(generation.snapshotRoot)).manifest;
-}
-
 export async function loadCatalogGenerationViewModels(options: {
   env?: NodeJS.ProcessEnv;
+  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
+  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
+  onStage?: (event: CatalogGenerationLoadStageEvent) => void | Promise<void>;
+  now?: () => number;
 } = {}): Promise<CatalogSourceGenerationViewModel[]> {
   const env = options.env ?? process.env;
-  const [config, state] = await Promise.all([
-    readCatalogSourcesConfigSnapshot(env),
-    readCatalogGenerationState(env),
-  ]);
-  const sources = [...config.config.sources]
+  const now = options.now ?? Date.now;
+  const reportStage = async (event: CatalogGenerationLoadStageEvent): Promise<void> => {
+    await Promise.resolve().then(() => options.onStage?.(event)).catch(() => undefined);
+  };
+  const contextStartedAt = now();
+  const controlSnapshot = await readCatalogGenerationControlSnapshot({ env });
+  const sources = [...controlSnapshot.configSnapshot.config.sources]
     .sort((left, right) => left.id.localeCompare(right.id, 'en'));
-  return Promise.all(sources.map(async (configured): Promise<CatalogSourceGenerationViewModel> => {
-    const persisted = state.sources[configured.id];
-    let source: Awaited<ReturnType<typeof readCatalogGenerationStatus>>['sources'][number];
+  await reportStage({
+    name: 'catalog.context',
+    durationMs: Math.max(0, now() - contextStartedAt),
+    sourceCount: sources.length,
+  });
+  const validatedGenerations = options.validatedGenerations ?? new Map();
+  const validatingGenerations = options.validatingGenerations ?? new Map();
+  const pointerCount = sources.reduce((count, configured) => {
+    const selected = controlSnapshot.generationState.sources[configured.id];
+    return count + (selected?.active ? 1 : 0) + (selected?.candidate ? 1 : 0);
+  }, 0);
+  let fullValidationCount = 0;
+  let reusedValidationCount = 0;
+  const validationStartedAt = now();
+  const viewModels = await Promise.all(sources.map(async (
+    configured,
+  ): Promise<CatalogSourceGenerationViewModel> => {
+    const persisted = controlSnapshot.generationState.sources[configured.id];
+    let validated: Awaited<ReturnType<typeof readValidatedCatalogGenerationStatusEntry>>;
     try {
-      source = (await readCatalogGenerationStatus({ sourceId: configured.id, env })).sources[0]!;
+      validated = await readValidatedCatalogGenerationStatusEntry({
+        sourceId: configured.id,
+        controlSnapshot,
+        env,
+        validatedGenerations,
+        validatingGenerations,
+        onValidation(kind) {
+          if (kind === 'full') fullValidationCount += 1;
+          else reusedValidationCount += 1;
+        },
+      });
     } catch (error) {
       const code = error instanceof CatalogGenerationError
         ? error.code : 'catalogGenerationUnavailable';
@@ -177,21 +210,13 @@ export async function loadCatalogGenerationViewModels(options: {
         ...(persisted?.lastCheck ? { lastCheckedAt: persisted.lastCheck.checkedAt } : {}),
       };
     }
+    const source = validated.status;
     let pluginChanges: CatalogPluginChangesViewModel = { added: 0, updated: 0, removed: 0 };
-    if (source.logicalIdentity && source.active && source.candidate) {
-      const [activeManifest, candidateManifest] = await Promise.all([
-        readGenerationManifest({
-          logicalIdentity: source.logicalIdentity,
-          pointer: source.active,
-          env,
-        }),
-        readGenerationManifest({
-          logicalIdentity: source.logicalIdentity,
-          pointer: source.candidate,
-          env,
-        }),
-      ]);
-      pluginChanges = countCatalogPluginChanges(activeManifest, candidateManifest);
+    if (validated.activeGeneration && validated.candidateGeneration) {
+      pluginChanges = countCatalogPluginChanges(
+        validated.activeGeneration.manifest,
+        validated.candidateGeneration.manifest,
+      );
     }
     return {
       sourceId: source.sourceId,
@@ -212,6 +237,14 @@ export async function loadCatalogGenerationViewModels(options: {
       ...(source.lastCheck?.remoteCommit ? { remoteCommit: source.lastCheck.remoteCommit } : {}),
     };
   }));
+  await reportStage({
+    name: 'catalog.validation',
+    durationMs: Math.max(0, now() - validationStartedAt),
+    pointerCount,
+    fullValidationCount,
+    reusedValidationCount,
+  });
+  return viewModels;
 }
 
 function refreshFailure(error: unknown): { state: CatalogRefreshState; code: string } {
@@ -298,9 +331,10 @@ export class CatalogRefreshCoordinator {
       this.options.onUpdate(task.sourceId, 'checking');
       void this.options.execute(task.sourceId, task.abort.signal, (state) => {
         if (!task.abort.signal.aborted) this.options.onUpdate(task.sourceId, state);
-      }).then(({ source }) => {
+      }).then((result) => {
+        const { source } = result;
         if (!task.abort.signal.aborted) {
-          this.options.onResult?.(source);
+          this.options.onResult?.(result);
           this.#finish(task, source.refreshState, source.lastCheckCode);
         }
         else this.#finish(task, task.restoreState);
