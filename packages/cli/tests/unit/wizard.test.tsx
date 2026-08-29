@@ -43,6 +43,27 @@ function expectTuiTextProjected(frame: string): void {
 }
 
 describe('command wizard', () => {
+  it('does not offer absent collision targets for install and keeps ordinary absent selectable', () => {
+    const candidate = (errors: Array<{ code: string; message: string }>) => ({
+      pluginName: 'official/demo',
+      targets: [{
+        pluginName: 'demo', sourceId: 'official', sourceIdentity: 'identity:official',
+        pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const, cwd: '/fixture',
+        state: 'absent' as const,
+        components: [],
+        errors,
+      }],
+    });
+    const selection = { plugins: [], platform: 'codex' as const, scope: 'user' as const };
+
+    expect(writeCandidateEligibility('install', candidate([]), selection)).toEqual({ selectable: true });
+    expect(writeCandidateEligibility(
+      'install',
+      candidate([{ code: 'artifactCollision', message: 'arbitrary text' }]),
+      selection,
+    )).toEqual({ selectable: false, reason: 'live status 不允许 install' });
+  });
+
   it.each([
     ['partial', true],
     ['error', false],

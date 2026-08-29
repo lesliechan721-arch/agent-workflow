@@ -12,6 +12,7 @@ export const SHARED_OWNER_TOKEN_PREFIX = 'aw-owner-v2:';
 
 export type OwnershipState = 'present' | 'absent' | 'partial';
 export type OwnershipInspectionState = OwnershipState | 'error';
+export type OwnershipComponentState = OwnershipInspectionState | 'foreign';
 
 export interface TargetIdentity {
   platform: PlatformName;
@@ -81,8 +82,17 @@ export type OwnedComponent =
 
 export interface OwnedComponentInspection {
   component: OwnedComponent;
-  state: OwnershipInspectionState;
+  state: OwnershipComponentState;
   diagnostic?: string;
+  collision?: ArtifactCollisionEvidence;
+}
+
+export interface ArtifactCollisionEvidence {
+  reason: 'ownerMismatch' | 'unownedContent' | 'typeMismatch';
+  artifactKind: OwnedComponent['kind'];
+  artifactKey: string;
+  expectedOwner: string;
+  actualOwner?: string;
 }
 
 export interface OwnershipError {
@@ -530,25 +540,25 @@ async function inspectPathAt(
   component: Extract<OwnedComponent, OwnedPathComponent>,
   actualPath: string,
   canonicalPath: boolean,
-): Promise<OwnedProbeResult> {
+): Promise<ComponentProbe> {
   try {
     await assertNoSymlinkInPath(component.allowedRoot, actualPath);
   } catch (error) {
-    if (error instanceof OwnershipSymlinkError) return 'foreign';
+    if (error instanceof OwnershipSymlinkError) return foreignProbe(component, 'typeMismatch');
     throw error;
   }
   const stats = await fs.lstat(actualPath).catch((error: unknown) => {
     if (isMissing(error)) return null;
     throw error;
   });
-  if (!stats) return 'absent';
+  if (!stats) return { state: 'absent' };
   if (component.kind === 'skill-directory') {
-    if (!stats.isDirectory()) return 'foreign';
+    if (!stats.isDirectory()) return foreignProbe(component, 'typeMismatch');
     const markerPath = path.join(actualPath, SKILL_OWNER_MARKER);
     try {
       await assertNoSymlinkInPath(component.allowedRoot, markerPath);
     } catch (error) {
-      if (error instanceof OwnershipSymlinkError) return 'foreign';
+      if (error instanceof OwnershipSymlinkError) return foreignProbe(component, 'typeMismatch');
       throw error;
     }
     let marker: SkillOwnerMarker | null;
@@ -556,28 +566,64 @@ async function inspectPathAt(
       marker = await readMarkerAt(markerPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code) throw error;
-      return 'foreign';
+      return foreignProbe(component, 'unownedContent');
     }
     if (!marker) {
-      return await component.unownedIsPristine?.(actualPath) ? 'absent' : 'foreign';
+      return await component.unownedIsPristine?.(actualPath)
+        ? { state: 'absent' }
+        : foreignProbe(component, 'unownedContent');
     }
-    if (!identitiesEqual(marker, component.identity)) return 'foreign';
-    if (canonicalPath && path.basename(actualPath) !== component.identity.artifactKey) return 'foreign';
-    return 'present';
+    if (!identitiesEqual(marker, component.identity)) {
+      return foreignProbe(component, 'ownerMismatch', publicOwner(marker));
+    }
+    if (canonicalPath && path.basename(actualPath) !== component.identity.artifactKey) {
+      return foreignProbe(component, 'ownerMismatch', publicOwner(marker));
+    }
+    return { state: 'present' };
   }
-  if (!stats.isFile()) return 'foreign';
+  if (!stats.isFile()) return foreignProbe(component, 'typeMismatch');
   let raw: string;
   try {
     raw = await fs.readFile(actualPath, 'utf8');
   } catch (error) {
-    if (isMissing(error)) return 'absent';
+    if (isMissing(error)) return { state: 'absent' };
     throw error;
   }
   try {
-    return parseOwnedTextHeader(raw, component.identity) ? 'present' : 'foreign';
+    const parsed = parseOwnedTextHeader(raw);
+    if (!parsed) return foreignProbe(component, 'unownedContent');
+    return identitiesEqual(parsed.identity, component.identity)
+      ? { state: 'present' }
+      : foreignProbe(component, 'ownerMismatch', publicOwner(parsed.identity));
   } catch {
-    return 'foreign';
+    return foreignProbe(component, 'unownedContent');
   }
+}
+
+interface ComponentProbe {
+  state: OwnedProbeResult;
+  collision?: ArtifactCollisionEvidence;
+}
+
+function publicOwner(identity: OwnerIdentity): string {
+  return identity.pluginId ?? identity.plugin;
+}
+
+function foreignProbe(
+  component: OwnedComponent,
+  reason: ArtifactCollisionEvidence['reason'],
+  actualOwner?: string,
+): ComponentProbe {
+  return {
+    state: 'foreign',
+    collision: {
+      reason,
+      artifactKind: component.kind,
+      artifactKey: component.identity.artifactKey,
+      expectedOwner: publicOwner(component.identity),
+      ...(actualOwner ? { actualOwner } : {}),
+    },
+  };
 }
 
 function componentLabel(component: OwnedComponent): string {
@@ -601,15 +647,17 @@ function validateNativePlugin(component: Extract<OwnedComponent, { kind: 'native
 async function inspectComponent(
   component: OwnedComponent,
   nativeProbe?: NativeOwnershipProbe,
-): Promise<OwnedProbeResult> {
+): Promise<ComponentProbe> {
   validateOwnerIdentity(component.identity);
   if ('path' in component) return inspectPathAt(component, component.path, true);
   if (component.kind === 'native-plugin') {
     validateNativePlugin(component);
     if (!nativeProbe) throw new Error('Native ownership inspection 缺少 nativeProbe。');
-    return nativeProbe(component);
+    const state = await nativeProbe(component);
+    return state === 'foreign' ? foreignProbe(component, 'ownerMismatch') : { state };
   }
-  return component.inspect();
+  const state = await component.inspect();
+  return state === 'foreign' ? foreignProbe(component, 'ownerMismatch') : { state };
 }
 
 export async function inspectOwnedComponents(options: {
@@ -622,7 +670,8 @@ export async function inspectOwnedComponents(options: {
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      let probe = await inspectComponent(component, options.nativeProbe);
+      const result = await inspectComponent(component, options.nativeProbe);
+      let probe = result.state;
       let healthDiagnostic: string | undefined;
       if (
         options.verifyHealth
@@ -639,7 +688,8 @@ export async function inspectOwnedComponents(options: {
       }
       components.push({
         component,
-        state: probe === 'foreign' ? 'partial' : probe,
+        state: probe,
+        ...(result.collision ? { collision: result.collision } : {}),
         ...(probe === 'foreign'
           ? { diagnostic: `存在 foreign collision：${label}` }
           : healthDiagnostic
@@ -656,7 +706,9 @@ export async function inspectOwnedComponents(options: {
   }
   const state: OwnershipInspectionState = errors.length > 0
     ? 'error'
-    : components.length === 0 || components.every((entry) => entry.state === 'absent')
+    : components.length === 0 || components.every((entry) => (
+        entry.state === 'absent' || entry.state === 'foreign'
+      ))
       ? 'absent'
       : components.every((entry) => entry.state === 'present')
         ? 'present'
@@ -705,7 +757,7 @@ async function cleanupPathComponent(options: {
 
   let verified: OwnedProbeResult;
   try {
-    verified = await inspectPathAt(component, quarantinePath, false);
+    verified = (await inspectPathAt(component, quarantinePath, false)).state;
   } catch (error) {
     result.failures.push({
       label,
@@ -748,7 +800,7 @@ async function cleanupPathComponent(options: {
 
   try {
     const after = await inspectComponent(component);
-    if (after === 'absent') pushUnique(result.removed, label);
+    if (after.state === 'absent') pushUnique(result.removed, label);
     else pushUnique(result.residual, label);
   } catch (error) {
     result.failures.push({ label, phase: 'post-probe', message: errorMessage(error) });
@@ -775,7 +827,7 @@ export async function cleanupOwnedComponents(options: {
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const probe = await inspectComponent(component, options.nativeProbe);
+      const probe = (await inspectComponent(component, options.nativeProbe)).state;
       probes.set(component, probe);
       if (probe === 'absent') pushUnique(result.absent, label);
       if (probe === 'foreign' || probe === 'partial') pushUnique(result.residual, label);
@@ -822,7 +874,7 @@ export async function cleanupOwnedComponents(options: {
 
     try {
       const after = await inspectComponent(component, options.nativeProbe);
-      if (after === 'absent') pushUnique(result.removed, label);
+      if (after.state === 'absent') pushUnique(result.removed, label);
       else pushUnique(result.residual, label);
     } catch (error) {
       result.failures.push({ label, phase: 'post-probe', message: errorMessage(error) });

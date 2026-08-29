@@ -24,10 +24,15 @@ export function getClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.AW_CODEX_HOME || path.join(os.homedir(), '.codex');
+  const home = env.AW_CODEX_HOME || env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  const source = env.AW_CODEX_HOME
+    ? 'AW_CODEX_HOME'
+    : env.CODEX_HOME
+      ? 'CODEX_HOME'
+      : 'CODEX_HOME fallback (os.homedir())';
   return assertWritableHomePathForTests(
     home,
-    env.AW_CODEX_HOME ? 'AW_CODEX_HOME' : 'AW_CODEX_HOME fallback (os.homedir())',
+    source,
     '用 createIsolatedTestEnv() 生成默认 AW_CODEX_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Codex home。',
   );
 }

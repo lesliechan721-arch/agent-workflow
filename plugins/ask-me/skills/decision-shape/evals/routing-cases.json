@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "skill": "decision-shape",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏选叶子会阻止当前材料问题取得答案；误选或同时加载叶子会增加无关流程并破坏叶子独立性。"
+  },
+  "cases": [
+    {
+      "id": "macro_routes_discussion_to_grill",
+      "split": "validation",
+      "query": "用 decision-shape 继续当前产品方向。现在最上游问题是安全和兼容的取舍，可以通过讨论决定。",
+      "expected_loaded_skills": [
+        "decision-shape",
+        "decision-grill"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "shape-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true
+      },
+      "oracle": {
+        "rationale": "可以靠讨论解决的当前问题进入 decision-grill。",
+        "rule_refs": [
+          "SKILL.md#工作方式"
+        ],
+        "confidence": "high",
+        "allowed_variance": "一次只加载一个叶子。"
+      }
+    },
+    {
+      "id": "macro_routes_evidence_to_prototype",
+      "split": "validation",
+      "query": "用 decision-shape 继续。现在的问题是审批页信息层级，必须让用户实际操作候选方案才能决定。",
+      "expected_loaded_skills": [
+        "decision-shape",
+        "decision-prototype"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "shape-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true
+      },
+      "oracle": {
+        "rationale": "需要体验证据的当前问题进入 Prototype。",
+        "rule_refs": [
+          "SKILL.md#工作方式"
+        ],
+        "confidence": "high",
+        "allowed_variance": "一次只加载一个叶子。"
+      }
+    },
+    {
+      "id": "direct_grill_bypasses_macro",
+      "split": "sanity",
+      "query": "使用 decision-grill 围绕当前迁移计划逐轮访谈我。",
+      "expected_loaded_skills": [
+        "decision-grill"
+      ],
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "direct-leaf",
+      "unit_under_test": "description",
+      "preconditions": {
+        "participant_skills_available": true
+      },
+      "oracle": {
+        "rationale": "直接叶子请求不加载宏。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "只加载 decision-grill。",
+        "minimal_counterexample": "如果用户要求完成跨多个问题的整体塑形，并由宏能力决定何时访谈或制作 Prototype，则应先加载 decision-shape。"
+      }
+    },
+    {
+      "id": "direct_prototype_bypasses_macro",
+      "split": "sanity",
+      "query": "使用 decision-prototype 做一个 API consumer 示例让我决定接口。",
+      "expected_loaded_skills": [
+        "decision-prototype"
+      ],
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "direct-leaf",
+      "unit_under_test": "description",
+      "preconditions": {
+        "participant_skills_available": true
+      },
+      "oracle": {
+        "rationale": "直接叶子请求不加载宏。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "只加载 decision-prototype。",
+        "minimal_counterexample": "如果 Prototype 只是整体决策塑形中的一个证据分支，并且还要归一其它开放决定，则应先加载 decision-shape。"
+      }
+    }
+  ]
+}

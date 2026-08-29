@@ -52,7 +52,7 @@ async function setEmbeddedRootOverride(rootDir: string | null): Promise<void> {
 
 afterEach(async () => {
   vi.resetModules();
-  vi.doUnmock('../../src/commands/status-v4.js');
+  vi.doUnmock('../../src/commands/status-v5.js');
   vi.doUnmock('../../src/commands/write-commands.js');
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -79,14 +79,14 @@ describe('CLI JSON v4 harness', () => {
     });
   });
 
-  it('keeps status v4 JSON on stdout', async () => {
+  it('keeps status v5 JSON on stdout', async () => {
     vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v4.js', () => ({
-      statusCommandV4: vi.fn(async () => {
+    vi.doMock('../../src/commands/status-v5.js', () => ({
+      statusCommandV5: vi.fn(async () => {
         const payload = {
-          schemaVersion: 4,
+          schemaVersion: 5,
           catalog: {
             primarySourceId: 'official',
             configDigest: 'sha256:config',
@@ -130,7 +130,7 @@ describe('CLI JSON v4 harness', () => {
 
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       targets: [{ state: 'partial' }],
     });
     expect(result.stdout).not.toContain('调试：');
@@ -140,8 +140,8 @@ describe('CLI JSON v4 harness', () => {
   it('returns empty stdout, stderr error text, and exit 1 for a status execution error', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-error-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v4.js', () => ({
-      statusCommandV4: vi.fn(async () => {
+    vi.doMock('../../src/commands/status-v5.js', () => ({
+      statusCommandV5: vi.fn(async () => {
         throw new Error('status inspection failed');
       }),
     }));

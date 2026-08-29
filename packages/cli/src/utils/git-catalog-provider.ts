@@ -478,16 +478,6 @@ function fromCacheEntry(
   };
 }
 
-function canUseRemoteFallback(
-  failure: unknown,
-  policy: CatalogProviderRuntimeOptions['freshnessPolicy'],
-  callerSignal?: AbortSignal,
-): boolean {
-  if (policy !== 'requireRemote' || callerSignal?.aborted) return false;
-  return failure instanceof CatalogGitRemoteUnavailableError
-    || failure instanceof CatalogGitDeadlineError;
-}
-
 async function resolveGitCatalogSource(
   source: GitCatalogSource,
   options: CatalogProviderRuntimeOptions,
@@ -608,18 +598,6 @@ async function resolveGitCatalogSourceDirect(
       source.url,
       ...(failure instanceof CatalogGitPolicyError ? failure.sensitiveTransports : []),
     ];
-    const publicFailure = sanitizeErrorTree(failure, sensitiveTransports);
-    if (canUseRemoteFallback(failure, options.freshnessPolicy, options.signal)) {
-      const cached = await readCatalogSourceCache({
-        location,
-        sourceId: source.id,
-        sourceIdentity,
-        requestedRef,
-        cliVersion: options.cliVersion,
-        signal: options.signal,
-      });
-      if (cached) return fromCacheEntry(cached, 'cache', true, publicFailure.message);
-    }
     throw createPublicGitError(source.id, failure, sensitiveTransports);
   } finally {
     deadline.dispose();

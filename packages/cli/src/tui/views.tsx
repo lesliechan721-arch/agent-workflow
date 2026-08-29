@@ -1,4 +1,4 @@
-import { ConfirmInput, PasswordInput, TextInput } from '@inkjs/ui';
+import { ConfirmInput } from '@inkjs/ui';
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { useState, type ReactNode } from 'react';
 
@@ -11,6 +11,7 @@ import { ScreenFrame } from './components.js';
 import { resolveTuiKeyAction, type TuiInputMode } from './keys.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import { tuiTheme } from './theme.js';
+import { InputDisplay, removeLastGrapheme } from './input-display.js';
 
 type Complete<T> = (result: CliPromptResult<T>) => void;
 
@@ -301,15 +302,24 @@ export function TextInputView(props: {
   size?: { columns: number; rows: number };
   onComplete: Complete<string>;
 }): React.JSX.Element {
+  const windowSize = useWindowSize();
+  const size = props.size ?? windowSize;
+  const [value, setValue] = useState(props.defaultValue ?? '');
   useGlobalPromptKeys({ mode: 'text', onComplete: props.onComplete });
+  useInput((input, key) => {
+    if (key.return) {
+      props.onComplete(selected(value === '' && props.defaultValue !== undefined
+        ? props.defaultValue
+        : value));
+    } else if (key.backspace || key.delete) {
+      setValue(removeLastGrapheme);
+    } else if (input && !key.ctrl && !key.meta && input >= ' ') {
+      setValue((current) => current + input);
+    }
+  });
   return (
     <PromptFrame title={props.message} help="Enter 完成 · Esc 取消 · Ctrl-C 退出" size={props.size}>
-      <TextInput
-        defaultValue={props.defaultValue}
-        onSubmit={(value) => props.onComplete(selected(
-          value === '' && props.defaultValue !== undefined ? props.defaultValue : value,
-        ))}
-      />
+      <InputDisplay value={value} columns={Math.max(8, size.columns - 4)} />
     </PromptFrame>
   );
 }
@@ -319,14 +329,22 @@ export function PasswordInputView(props: {
   size?: { columns: number; rows: number };
   onComplete: Complete<string>;
 }): React.JSX.Element {
+  const windowSize = useWindowSize();
+  const size = props.size ?? windowSize;
+  const [value, setValue] = useState('');
   useGlobalPromptKeys({ mode: 'text', onComplete: props.onComplete });
+  useInput((input, key) => {
+    if (key.return) props.onComplete(selected(value));
+    else if (key.backspace || key.delete) setValue(removeLastGrapheme);
+    else if (input && !key.ctrl && !key.meta && input >= ' ') setValue((current) => current + input);
+  });
   return (
     <PromptFrame
       title={props.message}
       help="输入已隐藏 · Enter 完成 · Esc 取消 · Ctrl-C 退出"
       size={props.size}
     >
-      <PasswordInput onSubmit={(value) => props.onComplete(selected(value))} />
+      <InputDisplay value={value} sensitive columns={Math.max(8, size.columns - 4)} />
     </PromptFrame>
   );
 }

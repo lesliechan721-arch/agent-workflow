@@ -179,8 +179,59 @@ describe('ownership inspection and cleanup', () => {
     });
     await expect(inspectOwnedComponents({ components: [owned, absent, foreign] })).resolves.toMatchObject({
       state: 'partial',
-      components: [{ state: 'present' }, { state: 'absent' }, { state: 'partial' }],
+      components: [{ state: 'present' }, { state: 'absent' }, {
+        state: 'foreign',
+        collision: {
+          reason: 'unownedContent',
+          artifactKind: 'owned-text-file',
+          artifactKey: 'foreign',
+          expectedOwner: 'ownership-test',
+        },
+      }],
     });
+  });
+
+  it('classifies owner, unowned-content, and type collisions without exposing paths', async () => {
+    const root = await makeTempRoot();
+    const allowedRoot = path.join(root, 'rules');
+    const ownerMismatchPath = path.join(allowedRoot, 'owner-mismatch.rules');
+    const unownedPath = path.join(allowedRoot, 'unowned.rules');
+    const typeMismatchPath = path.join(allowedRoot, 'type-mismatch.rules');
+    await writeOwnedTextFile({
+      path: ownerMismatchPath,
+      allowedRoot,
+      identity: { ...userIdentity('owner-mismatch'), plugin: 'other-owner' },
+      content: 'allow\n',
+    });
+    await fs.outputFile(unownedPath, 'foreign\n');
+    await fs.ensureDir(typeMismatchPath);
+    const result = await inspectOwnedComponents({
+      components: [
+        { kind: 'owned-text-file', path: ownerMismatchPath, allowedRoot,
+          identity: userIdentity('owner-mismatch') },
+        { kind: 'owned-text-file', path: unownedPath, allowedRoot,
+          identity: userIdentity('unowned') },
+        { kind: 'owned-text-file', path: typeMismatchPath, allowedRoot,
+          identity: userIdentity('type-mismatch') },
+      ],
+    });
+
+    expect(result.state).toBe('absent');
+    expect(result.components.map((entry) => entry.collision)).toEqual([
+      {
+        reason: 'ownerMismatch', artifactKind: 'owned-text-file', artifactKey: 'owner-mismatch',
+        expectedOwner: 'ownership-test', actualOwner: 'other-owner',
+      },
+      {
+        reason: 'unownedContent', artifactKind: 'owned-text-file', artifactKey: 'unowned',
+        expectedOwner: 'ownership-test',
+      },
+      {
+        reason: 'typeMismatch', artifactKind: 'owned-text-file', artifactKey: 'type-mismatch',
+        expectedOwner: 'ownership-test',
+      },
+    ]);
+    expect(JSON.stringify(result.components.map((entry) => entry.collision))).not.toContain(root);
   });
 
   it('is idempotent and preserves a foreign aw-* collision without a matching header', async () => {

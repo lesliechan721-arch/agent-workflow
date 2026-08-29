@@ -3,13 +3,15 @@ import crypto from 'node:crypto';
 import type { CatalogSource, PlatformName, Scope } from '../types.js';
 import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
+import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import type {
-  StatusV4Payload,
-  StatusV4PluginSummary,
+  StatusV5Payload,
+  StatusV5PluginSummary,
   StatusTargetRevision,
-} from '../commands/status-v4.js';
+} from '../commands/status-v5.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
+import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type {
   RebuildProgressFeed,
   RebuildProgressSnapshot,
@@ -30,14 +32,22 @@ import {
   type UserIssueViewModel,
 } from './model.js';
 import { safeDiagnosticCode } from './diagnostics.js';
+import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
   type PluginInstallFilter,
+  type CatalogActivationBlockReason,
   type PortableBlockerCode,
   type TuiPageContext,
   type TuiRoute,
   type TuiRouterSnapshot,
 } from './router.js';
+import {
+  CatalogRefreshCoordinator,
+  type CatalogRefreshExecutionResult,
+  type CatalogRefreshState,
+  type CatalogSourceGenerationViewModel,
+} from './catalog-generation.js';
 
 export type PluginWriteOperation = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
 export type OperationKind = OperationIntent['kind'];
@@ -95,6 +105,7 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       projectLayer: ProjectConfigStoreLayer;
+      changes?: Array<{ key: string; title: string; before: string; after: string }>;
     }
   | {
       kind: 'sourceMutation';
@@ -103,12 +114,18 @@ export type OperationIntent =
       source?: CatalogSource;
       update?: CatalogSourceUpdate;
       changes?: Array<{ title: string; before?: string; after?: string; private?: boolean }>;
+    }
+  | {
+      kind: 'catalogActivate';
+      sourceId: string;
+      candidateGenerationKey: string;
     };
 
 export interface OperationEvidence {
   catalog: {
     configDigest: string;
     compositeDigest: string;
+    generationSetDigest?: string;
   };
   source?: {
     sourceId: string;
@@ -118,14 +135,23 @@ export interface OperationEvidence {
     manifestDigest?: string;
     snapshotDigest?: string;
     contentDigest?: string;
+    catalogVersion?: string;
+    channel?: 'latest' | 'beta';
   };
   targetFingerprint?: string;
+  offlineCleanup?: OfflineCleanupTargetEvidence;
   dependencyPlan?: DependencyOperationPlan;
+  codexManager?: {
+    state: 'system' | 'cached' | 'requires-install';
+    packageName: '@openai/codex';
+    version: string;
+  };
   config?: {
     scope: Scope;
     projectLayer: ProjectConfigStoreLayer;
     schemaIdentity?: string;
     storeDigest: string;
+    affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
   };
   sourceWrite?: {
     configDigest: string;
@@ -136,11 +162,21 @@ export interface OperationEvidence {
     inventoryComplete: boolean;
   };
   portable?: PortableReview;
+  catalogCandidate?: {
+    sourceId: string;
+    activeVersion: string;
+    candidateVersion: string;
+    channel: 'latest' | 'beta';
+    requestedRef: string;
+    candidateGenerationKey: string;
+    digestShort: string;
+    pluginChanges: { added: number; updated: number; removed: number };
+  };
 }
 
 export interface OperationReviewChange {
   kind: 'add' | 'change' | 'remove' | 'keep' | 'warning';
-  group?: 'requested' | 'dependencies' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'preserved';
+  group?: 'requested' | 'dependencies' | 'runtime' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'configChanges' | 'configImpact' | 'preserved';
   pluginId?: string;
   relation?: 'requested' | 'direct' | 'transitive';
   title: string;
@@ -168,6 +204,11 @@ export interface OperationReviewModel {
   equivalentCommand?: string;
   primaryLabel: string;
   destructive?: boolean;
+  catalogBinding?: {
+    sourceId: string;
+    catalogVersion: string;
+    generationDigestShort: string;
+  };
 }
 
 export type ReviewPreparationStageId = 'validate' | 'status' | 'catalog' | 'inventory'
@@ -272,7 +313,10 @@ export interface OperationResultSummary {
     state: 'completed' | 'kept' | 'failed' | 'skipped';
     relation?: 'requested' | 'direct' | 'transitive';
     requiredBy?: string[];
-    errorCode?: 'dependencyStillRequired';
+    errorCode?: 'dependencyStillRequired'
+      | 'codexSystemCliUnsupported'
+      | 'managedCodexAuthorizationRequired'
+      | 'managedCodexUnavailable';
   }>;
 }
 
@@ -286,12 +330,14 @@ export interface PluginOperationProgressLine {
 }
 
 export interface TuiStatusLoadResult {
-  payload: StatusV4Payload;
-  pluginSummaries: StatusV4PluginSummary[];
+  cliChannel?: 'latest' | 'beta';
+  payload: StatusV5Payload;
+  pluginSummaries: StatusV5PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
+  catalogGenerations?: CatalogSourceGenerationViewModel[];
 }
 
 export interface InstallTargetOption {
@@ -317,11 +363,21 @@ export interface SourceReferenceSummaryViewModel {
 }
 
 export interface TuiControllerDependencies {
+  beginCatalogSession?: (options?: { bootstrapMissingActive?: boolean }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
   checkSource: (sourceId: string, signal: AbortSignal) => Promise<{
     sourceIdentity: string;
     requestedRef: string;
   }>;
+  refreshCatalogSource?: (
+    sourceId: string,
+    signal: AbortSignal,
+    onState: (state: Extract<CatalogRefreshState, 'checking' | 'downloading' | 'validating'>) => void,
+  ) => Promise<CatalogRefreshExecutionResult>;
+  setCatalogRefreshPolicy?: (
+    sourceId: string,
+    refreshPolicy: 'startup' | 'manual',
+  ) => Promise<CatalogSourceGenerationViewModel>;
   inspectSourceRemoval?: (sourceId: string, signal: AbortSignal) => Promise<SourceReferenceSummaryViewModel>;
   captureEvidence: (intent: OperationIntent, signal?: AbortSignal) => Promise<OperationEvidence>;
   validateIntent?: (intent: OperationIntent, signal: AbortSignal) => Promise<void>;
@@ -369,9 +425,11 @@ export interface ConfigResetAvailability {
 
 export interface TuiControllerSnapshot {
   phase: 'idle' | 'loading' | 'ready' | 'error' | 'disposed';
+  cliChannel?: 'latest' | 'beta';
   router: TuiRouterSnapshot;
   viewModel?: TuiViewModel;
   sourceHealth: SourceHealthViewModel[];
+  catalogGenerations: CatalogSourceGenerationViewModel[];
   progress: RebuildProgressSnapshot;
   progressTargets: PluginOperationProgressLine[];
   activeReview?: OperationReviewModel;
@@ -429,7 +487,10 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
-  return crypto.createHash('sha256').update(JSON.stringify(stableValue(evidence))).digest('hex');
+  const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(stableValue(staleEvidence)))
+    .digest('hex');
 }
 
 function sourceIdFromPluginId(pluginId: string): string {
@@ -463,6 +524,14 @@ function operationLabels(intent: OperationIntent): {
       title: '确认安装通用 Skills',
       description: '只安装已选择的 Skills；不会修改原生插件安装。',
       primaryLabel: `开始安装 ${intent.selectedSkills.length} 个 Skills`,
+      destructive: false,
+    };
+  }
+  if (intent.kind === 'catalogActivate') {
+    return {
+      title: '使用 Catalog 更新',
+      description: '切换当前 Catalog generation；不会自动升级已安装插件，也不会修改设置。',
+      primaryLabel: '使用已下载的更新',
       destructive: false,
     };
   }
@@ -571,7 +640,41 @@ function reviewChanges(
         description: review.collisions.map((collision) => collision.name).join('、') }] : []),
     ];
   }
+  if (intent.kind === 'catalogActivate') {
+    const candidate = evidence?.catalogCandidate;
+    if (!candidate) {
+      throw new TuiOperationBlockedError('catalogGenerationCandidateUnavailable', '缺少 Catalog Candidate Review 证据。');
+    }
+    return [
+      {
+        kind: 'change',
+        title: `Catalog ${candidate.activeVersion} → ${candidate.candidateVersion}`,
+        description: `${candidate.channel === 'beta' ? 'Beta' : 'Release'} · ${candidate.requestedRef}`,
+      },
+      {
+        kind: 'change',
+        title: `插件变化 +${candidate.pluginChanges.added}  ~${candidate.pluginChanges.updated}  −${candidate.pluginChanges.removed}`,
+      },
+      { kind: 'keep', title: '已安装插件不会自动升级' },
+      { kind: 'keep', title: '当前设置不会改变' },
+      { kind: 'change', title: '激活后重新加载插件列表和依赖关系' },
+    ];
+  }
   if (intent.kind === 'pluginWrite') {
+    const runtimeChanges: OperationReviewChange[] = evidence?.codexManager
+      ? [{
+          kind: evidence.codexManager.state === 'requires-install' ? 'add' : 'keep',
+          group: 'runtime',
+          title: evidence.codexManager.state === 'requires-install'
+            ? '获取 Codex runtime'
+            : 'Codex runtime',
+          description: evidence.codexManager.state === 'requires-install'
+            ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · AW-managed 缓存`
+            : evidence.codexManager.state === 'cached'
+              ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · 复用 AW-managed 缓存`
+              : `使用兼容的 system Codex ${evidence.codexManager.version}`,
+        }]
+      : [];
     const plan = evidence?.dependencyPlan;
     if (plan && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
       const changes = plan.targets.map((target): OperationReviewChange => {
@@ -596,7 +699,7 @@ function reviewChanges(
         title: '插件设置和已有依赖保持不变',
         description: '移除根插件时不会自动清理依赖。',
       });
-      return changes;
+      return [...changes, ...runtimeChanges];
     }
     const platforms: PlatformName[] = intent.platform === 'both'
       ? ['codex', 'claude']
@@ -631,17 +734,23 @@ function reviewChanges(
         { kind: 'warning', title: '执行前重新检查完整目标和来源证据' },
       );
     }
-    return changes;
+    return [...changes, ...runtimeChanges];
   }
   if (intent.kind === 'configReset') {
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
       : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
     return [
-      { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' },
-      { kind: 'change', title: '重新计算有效设置' },
-      { kind: 'change', title: '重新应用当前可见安装位置' },
-      { kind: 'keep', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
+      ...(intent.changes?.map((change): OperationReviewChange => ({
+        kind: 'remove', group: 'configChanges', title: `${layerLabel} · ${change.title}`,
+        description: `${change.before} → ${change.after}`,
+      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' }]),
+      ...((evidence?.config?.affectedTargets.length ?? 0) > 0
+        ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
+            kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+          }))
+        : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
+      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
     ];
   }
   if (intent.kind === 'sourceMutation') {
@@ -666,17 +775,24 @@ function reviewChanges(
     throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
   }
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
+  const removeKeys = new Set(intent.removeKeys ?? []);
   if (intent.changes) {
     return [
       ...intent.changes.map((change): OperationReviewChange => ({
-        kind: 'change',
-        title: change.title,
-        description: privateKeys.has(change.key)
-          ? change.after === '未设置' ? '已设置 → 未设置' : '已设置 → 将更新'
+        kind: removeKeys.has(change.key) ? 'remove' : 'change',
+        group: 'configChanges',
+        title: removeKeys.has(change.key) ? `删除 ${change.title} 中的值` : change.title,
+        description: removeKeys.has(change.key)
+          ? privateKeys.has(change.key) ? `已设置 → ${change.after}` : `${change.before} → ${change.after}`
+          : privateKeys.has(change.key) ? '已设置 → 将更新'
           : `${change.before} → ${change.after}`,
       })),
-      { kind: 'change', title: '重新应用插件内容', description: '只处理当前可见安装位置。' },
-      { kind: 'keep', title: '其他项目不会被自动扫描' },
+      ...((evidence?.config?.affectedTargets.length ?? 0) > 0
+        ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
+            kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+          }))
+        : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
+      { kind: 'keep', group: 'preserved', title: '其他项目不会被自动扫描' },
     ];
   }
   const updateKeys = Object.keys(intent.updates ?? {});
@@ -695,27 +811,38 @@ function reviewChanges(
 }
 
 function technicalDetails(evidence: OperationEvidence): string[] {
+  const short = (value: string): string => {
+    const normalized = value.startsWith('sha256:') ? value.slice(7) : value;
+    return normalized.slice(0, 8);
+  };
   const details = [
-    `Catalog 配置：${evidence.catalog.configDigest}`,
-    `Catalog 组合：${evidence.catalog.compositeDigest}`,
+    `Catalog 配置：${short(evidence.catalog.configDigest)}`,
+    `Catalog 组合：${short(evidence.catalog.compositeDigest)}`,
   ];
+  if (evidence.catalog.generationSetDigest) {
+    details.push(`Catalog generation：${short(evidence.catalog.generationSetDigest)}`);
+  }
   if (evidence.source) {
     details.push(`来源：${evidence.source.sourceId}`);
-    details.push(`来源身份：${evidence.source.sourceIdentity}`);
-    if (evidence.source.resolvedCommit) details.push(`Snapshot commit：${evidence.source.resolvedCommit}`);
-    if (evidence.source.snapshotDigest) details.push(`Snapshot digest：${evidence.source.snapshotDigest}`);
-    if (evidence.source.contentDigest) details.push(`Content digest：${evidence.source.contentDigest}`);
+    if (evidence.source.sourceIdentity) details.push(`来源身份：${short(evidence.source.sourceIdentity)}`);
+    if (evidence.source.resolvedCommit) details.push(`Snapshot commit：${short(evidence.source.resolvedCommit)}`);
+    if (evidence.source.snapshotDigest) details.push(`Snapshot digest：${short(evidence.source.snapshotDigest)}`);
+    if (evidence.source.contentDigest) details.push(`Content digest：${short(evidence.source.contentDigest)}`);
   }
-  if (evidence.targetFingerprint) details.push(`目标状态：${evidence.targetFingerprint}`);
+  if (evidence.targetFingerprint) details.push(`目标状态：${short(evidence.targetFingerprint)}`);
+  if (evidence.offlineCleanup) {
+    details.push(`离线清理原因：${evidence.offlineCleanup.reason}`);
+    details.push(`离线清理目标：${short(evidence.offlineCleanup.targetFingerprint)}`);
+  }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
-  if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${evidence.config.storeDigest}`);
+  if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${short(evidence.config.storeDigest)}`);
   if (evidence.sourceWrite) {
-    details.push(`候选配置：${evidence.sourceWrite.candidateDigest}`);
-    details.push(`引用清单：${evidence.sourceWrite.inventoryDigest} · ${evidence.sourceWrite.referenceCount} 项`);
+    details.push(`候选配置：${short(evidence.sourceWrite.candidateDigest)}`);
+    details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
   }
   if (evidence.portable) {
     details.push(`Portable 候选：${evidence.portable.selected.length} 个`);
-    details.push(`Materialization：${evidence.portable.materializationDigest}`);
+    details.push(`Materialization：${short(evidence.portable.materializationDigest)}`);
     details.push(`Skills CLI：${evidence.portable.skillsCliVersion}`);
   }
   return details;
@@ -723,6 +850,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
 
 function issueCode(error: unknown): string {
   if (error instanceof TuiOperationBlockedError) return error.code;
+  if (error instanceof CatalogGenerationError) return error.code;
   if (error instanceof Error && error.name === 'CatalogSourcesConfigConflictError') {
     return 'operationReviewStale';
   }
@@ -769,10 +897,12 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #abort = new AbortController();
+  readonly #catalogRefreshCoordinator?: CatalogRefreshCoordinator;
   readonly #progressUnsubscribe?: () => void;
   readonly #progressFeed?: RebuildProgressFeed;
   #phase: TuiControllerSnapshot['phase'] = 'idle';
   #status?: TuiStatusLoadResult;
+  readonly #catalogGenerations = new Map<string, CatalogSourceGenerationViewModel>();
   #viewModel?: TuiViewModel;
   #progress: RebuildProgressSnapshot = { messages: [] };
   #progressTargets: PluginOperationProgressLine[] = [];
@@ -795,6 +925,26 @@ export class TuiController {
     readonly dependencies: TuiControllerDependencies,
     progressFeed?: RebuildProgressFeed,
   ) {
+    if (dependencies.refreshCatalogSource) {
+      this.#catalogRefreshCoordinator = new CatalogRefreshCoordinator({
+        maxConcurrency: 2,
+        execute: dependencies.refreshCatalogSource,
+        onUpdate: (sourceId, state, errorCode) => {
+          const current = this.#catalogGenerations.get(sourceId);
+          if (current) {
+            this.#catalogGenerations.set(sourceId, {
+              ...current,
+              refreshState: state,
+              ...(errorCode ? { lastCheckCode: errorCode } : {}),
+            });
+          }
+          this.#publish();
+        },
+        onResult: (source) => {
+          this.#catalogGenerations.set(source.sourceId, structuredClone(source));
+        },
+      });
+    }
     this.#progressFeed = progressFeed;
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
@@ -828,9 +978,12 @@ export class TuiController {
   get snapshot(): TuiControllerSnapshot {
     return cloneFrozen({
       phase: this.#phase,
+      ...(this.#status?.cliChannel ? { cliChannel: this.#status.cliChannel } : {}),
       router: this.#router.snapshot,
       ...(this.#viewModel ? { viewModel: this.#viewModel } : {}),
       sourceHealth: [...this.#health.values()],
+      catalogGenerations: [...this.#catalogGenerations.values()]
+        .sort((left, right) => left.sourceId.localeCompare(right.sourceId, 'en')),
       progress: this.#progress,
       progressTargets: this.#progressTargets,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
@@ -921,6 +1074,14 @@ export class TuiController {
       && !this.#viewModel?.sourceTabs.some((source) => source.id === route.sourceId)) {
       return { name: 'sourceList' };
     }
+    if ((route.name === 'catalogCandidate'
+      || route.name === 'catalogRefreshPolicy'
+      || route.name === 'catalogRefresh'
+      || route.name === 'catalogImmutableViolation'
+      || route.name === 'catalogActivationBlocked')
+      && !this.#catalogGenerations.has(route.sourceId)) {
+      return { name: 'sourceList' };
+    }
     return route;
   }
 
@@ -932,6 +1093,12 @@ export class TuiController {
 
   #applyStatus(status: TuiStatusLoadResult): void {
     this.#status = structuredClone(status);
+    if (status.catalogGenerations) {
+      this.#catalogGenerations.clear();
+      for (const source of status.catalogGenerations) {
+        this.#catalogGenerations.set(source.sourceId, structuredClone(source));
+      }
+    }
     this.#health.clear();
     for (const source of status.payload.catalog.sources) {
       this.#health.set(source.id, {
@@ -1001,6 +1168,10 @@ export class TuiController {
   }
 
   #startGitSourceRefreshes(): void {
+    if (this.#catalogRefreshCoordinator) {
+      this.#catalogRefreshCoordinator.start([...this.#catalogGenerations.values()]);
+      return;
+    }
     for (const source of this.#status?.payload.catalog.sources ?? []) {
       if (source.type === 'git') void this.refreshSource(source.id).catch(() => undefined);
     }
@@ -1008,6 +1179,7 @@ export class TuiController {
 
   async load(): Promise<void> {
     this.#cancelSourceRefreshes();
+    this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
     this.#phase = 'loading';
     this.#publish();
@@ -1033,6 +1205,13 @@ export class TuiController {
 
   async refreshSource(sourceId: string): Promise<void> {
     if (this.#disposed || !this.#status) return;
+    if (this.#catalogRefreshCoordinator) {
+      await this.#catalogRefreshCoordinator.refresh(
+        sourceId,
+        this.#catalogGenerations.get(sourceId)?.refreshState ?? 'idle',
+      );
+      return;
+    }
     this.#sourceAborts.get(sourceId)?.abort();
     const sourceAbort = new AbortController();
     this.#sourceAborts.set(sourceId, sourceAbort);
@@ -1364,9 +1543,11 @@ export class TuiController {
   }
 
   back(): void {
-    this.#cancelReviewPreparation();
-    this.#cancelPortableRequest();
     const route = this.#router.snapshot.current.route;
+    if (route.name !== 'catalogActivationBlocked' || route.reason !== 'reviewPreparation') {
+      this.#cancelReviewPreparation();
+    }
+    this.#cancelPortableRequest();
     if (route.name === 'review' && this.#activeReview?.operationId === route.operationId) {
       this.#tickets.delete(this.#activeReview.reviewToken);
       this.#activeReview = undefined;
@@ -1555,6 +1736,12 @@ export class TuiController {
       }));
     }
     return plugin.supportedPlatforms.map((platform): InstallTargetOption => {
+      const statusTarget = this.#status?.payload.targets.find((target) => (
+        target.pluginId === pluginId && target.platform === platform && target.scope === scope
+      ));
+      if (statusTarget && targetHasArtifactCollision(statusTarget)) {
+        return { platform, compatible: false, disabled: '存在输出冲突；请先移除或迁移占用内容' };
+      }
       const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
       if (!placement) return { platform, compatible: false, disabled: '当前没有可信的平台能力信息' };
       if (placement.state === 'scopeConflict') {
@@ -1572,6 +1759,18 @@ export class TuiController {
       }
       const overview = this.#viewModel?.dependencyOverviews.find((entry) => entry.pluginId === pluginId);
       for (const dependency of overview?.dependencies ?? []) {
+        const dependencyTarget = this.#status?.payload.targets.find((target) => (
+          target.pluginId === dependency.pluginId
+          && target.platform === platform
+          && target.scope === scope
+        ));
+        if (dependencyTarget && targetHasArtifactCollision(dependencyTarget)) {
+          return {
+            platform,
+            compatible: false,
+            disabled: `${dependency.displayName} 存在输出冲突`,
+          };
+        }
         const dependentPlugin = this.#viewModel?.plugins.find((entry) =>
           entry.pluginId === dependency.pluginId);
         if (!dependentPlugin || !dependentPlugin.supportedPlatforms.includes(platform)) {
@@ -1607,7 +1806,7 @@ export class TuiController {
     pluginId: string,
     platform: PlatformName,
     scope: Scope,
-  ): StatusV4Payload['targets'][number]['state'] | undefined {
+  ): StatusV5Payload['targets'][number]['state'] | undefined {
     return this.#status?.payload.targets.find((target) =>
       target.pluginId === pluginId
       && target.platform === platform
@@ -1628,6 +1827,101 @@ export class TuiController {
       detail: this.#viewModel?.sourceDetails.find((source) => source.id === sourceId),
       health: this.#health.get(sourceId),
     });
+  }
+
+  listCatalogCandidates(): CatalogSourceGenerationViewModel[] {
+    return cloneFrozen([...this.#catalogGenerations.values()]
+      .filter((source) => source.candidate)
+      .sort((left, right) => left.sourceId.localeCompare(right.sourceId, 'en')));
+  }
+
+  getCatalogGeneration(sourceId: string): CatalogSourceGenerationViewModel | undefined {
+    const source = this.#catalogGenerations.get(sourceId);
+    return source ? cloneFrozen(source) : undefined;
+  }
+
+  getSessionCatalogVersion(sourceId: string): string | undefined {
+    return this.#status?.payload.catalog.sources.find((source) => source.id === sourceId)?.catalogVersion;
+  }
+
+  beginCatalogActivation(options: {
+    sourceId: string;
+    dirtyDraft?: { kind: 'config' | 'source'; label: string };
+  }): ReviewPreparationSnapshot | undefined {
+    const source = this.#catalogGenerations.get(options.sourceId);
+    if (!source?.candidate) {
+      throw new TuiOperationBlockedError(
+        'catalogGenerationCandidateUnavailable',
+        'Catalog Candidate 不再可用。请重新检查来源。',
+      );
+    }
+    let reason: CatalogActivationBlockReason | undefined;
+    let preservedLabel: string | undefined;
+    const refreshingSourceId = this.#catalogRefreshCoordinator?.refreshingSourceIds()[0];
+    if (refreshingSourceId) {
+      reason = 'refreshProgress';
+      preservedLabel = options.dirtyDraft
+        ? `${options.dirtyDraft.label}已保留；${refreshingSourceId} Catalog 来源正在刷新`
+        : `${refreshingSourceId} Catalog 来源刷新`;
+    } else if (options.dirtyDraft) {
+      reason = options.dirtyDraft.kind === 'config' ? 'configDraft' : 'sourceDraft';
+      preservedLabel = options.dirtyDraft.label;
+    } else if (this.#portableDraft) {
+      reason = 'portableDraft';
+      preservedLabel = 'Portable Skills 当前选择';
+    } else if (this.#reviewPreparation) reason = 'reviewPreparation';
+    else if (this.#router.snapshot.current.route.name === 'progress') {
+      reason = this.#activeReview?.operationKind === 'sourceMutation'
+        ? 'sourceMutationProgress' : 'writeProgress';
+    } else if (this.#activeReview) reason = 'activeReview';
+    else {
+      const refreshing = [...this.#catalogGenerations.values()].find((candidate) =>
+        candidate.refreshState === 'checking'
+        || candidate.refreshState === 'downloading'
+        || candidate.refreshState === 'validating');
+      if (refreshing) {
+        reason = 'refreshProgress';
+        preservedLabel = `${refreshing.sourceId} Catalog 来源刷新`;
+      }
+    }
+    if (reason) {
+      this.#router.push({
+        name: 'catalogActivationBlocked',
+        sourceId: options.sourceId,
+        reason,
+        ...(preservedLabel ? { preservedLabel } : {}),
+      });
+      this.#publish();
+      return undefined;
+    }
+    return this.startReviewPreparation({
+      kind: 'catalogActivate',
+      sourceId: options.sourceId,
+      candidateGenerationKey: source.candidate.generationKey,
+    }, { name: 'catalogCandidate', sourceId: options.sourceId });
+  }
+
+  cancelCatalogRefresh(sourceId: string): void {
+    this.#catalogRefreshCoordinator?.cancel(sourceId);
+  }
+
+  async setCatalogRefreshPolicy(
+    sourceId: string,
+    refreshPolicy: 'startup' | 'manual',
+  ): Promise<void> {
+    if (!this.dependencies.setCatalogRefreshPolicy) {
+      throw new TuiOperationBlockedError(
+        'catalogGenerationRefreshPolicyUnavailable',
+        'Catalog 自动刷新设置不可用。',
+      );
+    }
+    const source = await this.dependencies.setCatalogRefreshPolicy(sourceId, refreshPolicy);
+    if (this.#disposed) return;
+    const current = this.#catalogGenerations.get(sourceId);
+    this.#catalogGenerations.set(sourceId, current
+      ? { ...current, refreshPolicy: source.refreshPolicy }
+      : structuredClone(source));
+    this.#publish();
   }
 
   async inspectSourceRemoval(sourceId: string): Promise<SourceReferenceSummaryViewModel> {
@@ -1698,7 +1992,12 @@ export class TuiController {
     } catch (error) {
       const code = issueCode(error);
       await this.#logOperationError(error, code, intent);
-      throw new TuiOperationBlockedError(code, '操作未建立。请检查当前设置后重试。');
+      throw new TuiOperationBlockedError(
+        code,
+        code === 'catalogGenerationUnavailable'
+          ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
+          : '操作未建立。请检查当前设置后重试。',
+      );
     }
   }
 
@@ -1777,11 +2076,12 @@ export class TuiController {
 
   #reviewPreparationIsCurrent(token: number): boolean {
     const preparation = this.#reviewPreparation;
+    const route = this.#router.snapshot.current.route;
     return Boolean(preparation && preparation.token === token
       && !preparation.abort.signal.aborted
       && !this.#disposed
-      && this.#router.snapshot.current.route.name === 'reviewPreparing'
-      && this.#router.snapshot.current.route.preparationId === preparation.snapshot.id);
+      && (route.name === 'reviewPreparing' && route.preparationId === preparation.snapshot.id
+        || route.name === 'catalogActivationBlocked' && route.reason === 'reviewPreparation'));
   }
 
   async #runReviewPreparation(token: number): Promise<void> {
@@ -1817,14 +2117,17 @@ export class TuiController {
       this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
     } catch (error) {
       if (!this.#reviewPreparationIsCurrent(token)) return;
+      const code = issueCode(error);
       const active = this.#reviewPreparation!;
       active.snapshot.state = 'failed';
       active.snapshot.stages = active.snapshot.stages.map((stage) =>
         stage.state === 'running' ? { ...stage, state: 'failed' } : stage);
       active.snapshot.code = 'reviewPreparationFailed';
-      active.snapshot.message = '无法准备确认信息。请返回检查选择，或重试。';
+      active.snapshot.message = code === 'catalogGenerationUnavailable'
+        ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
+        : '无法准备确认信息。请返回检查选择，或重试。';
       this.#publish();
-      await this.#logOperationError(error, issueCode(error), intent);
+      await this.#logOperationError(error, code, intent);
     }
   }
 
@@ -1907,14 +2210,23 @@ export class TuiController {
           ? { version: this.#viewModel.plugins.find((plugin) => plugin.pluginId === intent.pluginId)!.version }
           : {}),
       },
+      ...(evidence.source && 'catalogVersion' in evidence.source
+        && typeof evidence.source.catalogVersion === 'string'
+        && evidence.source.snapshotDigest
+        ? { catalogBinding: {
+            sourceId: evidence.source.sourceId,
+            catalogVersion: evidence.source.catalogVersion,
+            generationDigestShort: evidence.source.snapshotDigest.replace(/^sha256:/u, '').slice(0, 8),
+          } }
+        : {}),
       changes: reviewChanges(
         intent,
         evidence,
         'pluginId' in intent ? this.getPluginDependencyOverview(intent.pluginId) : undefined,
       ),
       technicalDetails: technicalDetails(evidence),
-      ...(intent.kind === 'pluginWrite' && intent.action === 'cleanup'
-        ? { equivalentCommand: `aw cleanup ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.force === true ? ' --force' : ''}` }
+      ...(intent.kind === 'pluginWrite'
+        ? { equivalentCommand: `aw ${intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}` }
         : {}),
       primaryLabel: intent.kind === 'pluginWrite' && evidence.dependencyPlan
         ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
@@ -1989,12 +2301,17 @@ export class TuiController {
     this.#publish();
     try {
       this.#assertIssueOrigin(ticket.intent);
-      await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+      if (ticket.intent.kind !== 'pluginWrite') {
+        await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+      }
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      if (code === 'operationReviewStale' && ticket.intent.kind === 'catalogActivate') {
+        return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
+      }
       this.#cancelSourceRefreshes();
       generation = ++this.#generation;
       try {
@@ -2012,19 +2329,24 @@ export class TuiController {
       });
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    let current: OperationEvidence;
-    try {
-      current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
-    } catch (error) {
+    if (ticket.intent.kind !== 'pluginWrite') {
+      let current: OperationEvidence;
+      try {
+        current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
+      } catch (error) {
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        const code = issueCode(error);
+        await this.#logOperationError(error, code, ticket.intent);
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        if (code === 'operationReviewStale' && ticket.intent.kind === 'catalogActivate') {
+          return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
+        }
+        return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
+      }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      const code = issueCode(error);
-      await this.#logOperationError(error, code, ticket.intent);
-      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
-    }
-    if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
-      return this.#rebuildStaleReview(ticket, operationId, current, generation);
+      if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
+        return this.#rebuildStaleReview(ticket, operationId, current, generation);
+      }
     }
     if (ticket.intent.kind === 'sourceMutation') {
       this.#cancelSourceRefreshes();
@@ -2045,11 +2367,16 @@ export class TuiController {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#cancelSourceRefreshes();
       generation = ++this.#generation;
-      if (ticket.intent.kind === 'sourceMutation') {
+      if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogActivate') {
+        this.dependencies.beginCatalogSession?.(ticket.intent.kind === 'catalogActivate'
+          ? { bootstrapMissingActive: false }
+          : undefined);
         try {
           this.#progressFeed?.setCurrent(
-            { target: 'Catalog 来源配置', phase: '读取最终状态' },
-            '来源操作：读取最终状态',
+            { target: ticket.intent.kind === 'catalogActivate' ? 'Catalog generation' : 'Catalog 来源配置', phase: '读取最终状态' },
+            ticket.intent.kind === 'catalogActivate'
+              ? 'Catalog 激活：重新加载当前会话'
+              : '来源操作：读取最终状态',
           );
         } catch {
           // Progress diagnostics must not replace the completed source write.
@@ -2092,6 +2419,18 @@ export class TuiController {
       if (pluginSummary?.code === 'operationFailed') {
         const unsuccessfulTargets = pluginSummary.targets?.filter((target) =>
           target.state === 'failed' || target.state === 'skipped') ?? [];
+        const managerFailureCode = unsuccessfulTargets.map((target) => target.errorCode).find((code) =>
+          code === 'codexSystemCliUnsupported'
+          || code === 'managedCodexAuthorizationRequired'
+          || code === 'managedCodexUnavailable');
+        if (managerFailureCode) {
+          return this.#setBlocked(operationId, managerFailureCode, {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            summary: pluginSummary,
+          });
+        }
         const dependencyStillRequired = unsuccessfulTargets.length > 0
           && unsuccessfulTargets.every((target) => target.errorCode === 'dependencyStillRequired');
         return this.#setBlocked(operationId, dependencyStillRequired ? 'dependencyStillRequired' : 'operationFailed', {
@@ -2186,7 +2525,7 @@ export class TuiController {
       this.#activeReview = undefined;
       this.#router.replace({ name: 'result', operationId });
       this.#publish();
-      this.#startGitSourceRefreshes();
+      if (ticket.intent.kind !== 'catalogActivate') this.#startGitSourceRefreshes();
       return cloneFrozen(result);
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
@@ -2239,6 +2578,7 @@ export class TuiController {
     generation = this.#generation,
   ): Promise<OperationExecuteResult> {
     this.#cancelSourceRefreshes();
+    this.dependencies.beginCatalogSession?.({ bootstrapMissingActive: false });
     generation = ++this.#generation;
     try {
       const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
@@ -2253,20 +2593,28 @@ export class TuiController {
         returnRoute: ticket.returnRoute,
       });
     }
+    const intent: OperationIntent = ticket.intent.kind === 'catalogActivate'
+      ? (() => {
+          const candidate = this.#catalogGenerations.get(ticket.intent.sourceId)?.candidate;
+          return candidate
+            ? { ...ticket.intent, candidateGenerationKey: candidate.generationKey }
+            : ticket.intent;
+        })()
+      : ticket.intent;
     try {
-      this.#assertIssueOrigin(ticket.intent);
-      await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+      this.#assertIssueOrigin(intent);
+      await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
-      await this.#logOperationError(error, code, ticket.intent);
+      await this.#logOperationError(error, code, intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const result: OperationExecuteResult = {
         state: 'blocked',
         operationId,
         code,
         message: '状态已变化，原操作不再安全。请修改选择后重试。',
-        ...this.#operationIdentity(ticket.intent),
+        ...this.#operationIdentity(intent),
         returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
       };
       this.#result = structuredClone(result);
@@ -2280,31 +2628,31 @@ export class TuiController {
     if (!evidence) {
       try {
         evidence = await this.dependencies.captureEvidence(
-          structuredClone(ticket.intent),
+          structuredClone(intent),
           this.#abort.signal,
         );
       } catch (error) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const code = issueCode(error);
-        await this.#logOperationError(error, code, ticket.intent);
+        await this.#logOperationError(error, code, intent);
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-        return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
+        return this.#setBlocked(operationId, code, { intent, returnRoute: ticket.returnRoute });
       }
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (ticket.intent.kind === 'portableInstall') {
+    if (intent.kind === 'portableInstall') {
       try {
-        await this.refreshPortableInstallDraft(ticket.intent.pluginId);
+        await this.refreshPortableInstallDraft(intent.pluginId);
       } catch (error) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const code = issueCode(error);
-        await this.#logOperationError(error, code, ticket.intent);
-        return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
+        await this.#logOperationError(error, code, intent);
+        return this.#setBlocked(operationId, code, { intent, returnRoute: ticket.returnRoute });
       }
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    const review = this.#storeOperationReview(ticket.intent, evidence, 'replace', ticket.returnRoute);
-    const result: OperationExecuteResult = { state: 'stale', operationId, review, ...this.#operationIdentity(ticket.intent) };
+    const review = this.#storeOperationReview(intent, evidence, 'replace', ticket.returnRoute);
+    const result: OperationExecuteResult = { state: 'stale', operationId, review, ...this.#operationIdentity(intent) };
     this.#result = result;
     this.#publish();
     return cloneFrozen(result);
@@ -2322,7 +2670,13 @@ export class TuiController {
       summary?: OperationResultSummary;
     },
   ): OperationExecuteResult {
-    const message = code === 'portableSkillsCliInstallFailed'
+    const message = code === 'managedCodexAuthorizationRequired'
+      ? '操作在插件写入前停止。请在 Review 中确认获取 Codex runtime，或在命令行传入 --allow-managed-codex-install。'
+      : code === 'codexSystemCliUnsupported'
+        ? '操作在插件写入前停止。系统 Codex CLI 版本不受支持。请升级官方 Codex CLI 后重试。'
+        : code === 'managedCodexUnavailable'
+          ? '操作在插件写入前停止。Codex runtime 当前不可用。请重试、升级 AW，或安装官方 Codex CLI。'
+          : code === 'portableSkillsCliInstallFailed'
       ? 'Skills CLI 安装失败。请修改 Agent 或重试。'
       : options?.writeMayHaveCompleted
       ? '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。'
@@ -2399,6 +2753,10 @@ export class TuiController {
         ? origin.actionId === 'cleanup' && action.writeAction === 'cleanup'
           ? { action: 'cleanup' as const, scope: issue.scope }
           : undefined
+      : issue.category === 'sourceMissing'
+        ? origin.actionId === 'cleanup' && action.writeAction === 'cleanup'
+          ? { action: 'cleanup' as const, scope: issue.scope }
+          : undefined
       : issue.category === 'scopeConflict'
         ? origin.actionId === 'keepUserScope'
           ? { action: 'uninstall' as const, scope: 'project' as const }
@@ -2427,6 +2785,7 @@ export class TuiController {
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#abort.abort();
+    this.#catalogRefreshCoordinator?.dispose();
     this.#cancelSourceRefreshes();
     this.#progressUnsubscribe?.();
     this.#tickets.clear();
@@ -2436,6 +2795,13 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogActivate') {
+    return {
+      code: 'operationSucceeded',
+      message: 'Catalog 更新已启用；插件列表和依赖关系已重新加载。',
+      messages: ['已安装插件没有自动升级。', '插件设置没有改变。'],
+    };
+  }
   if (intent.kind === 'portableInstall') {
     const receipt = execution as PortableInstallReceipt;
     const verificationUnknown = receipt.failures.some((failure) =>
@@ -2509,7 +2875,10 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         requiredBy: planned.requiredBy,
       } : {}),
       ...(entry.errorCode === 'dependencyStillRequired'
-        ? { errorCode: 'dependencyStillRequired' as const }
+        || entry.errorCode === 'codexSystemCliUnsupported'
+        || entry.errorCode === 'managedCodexAuthorizationRequired'
+        || entry.errorCode === 'managedCodexUnavailable'
+        ? { errorCode: entry.errorCode as NonNullable<OperationResultSummary['targets']>[number]['errorCode'] }
         : {}),
     }];
   });

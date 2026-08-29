@@ -410,7 +410,8 @@ describe('TUI foundation', () => {
       value: 'hunter2',
     });
     expect(password.frames.join('\n')).not.toContain('hunter2');
-    expect(password.frames.join('\n')).toContain('*');
+    expect(password.frames.join('\n')).toContain('•');
+    expect(password.frames.join('\n')).toContain('▌');
   });
 
   it('supports multi-select and filters disabled choices', async () => {

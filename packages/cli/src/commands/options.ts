@@ -22,6 +22,7 @@ export type RawCommandOptions = {
   platform?: string;
   scriptTimeout?: string | number;
   scriptTimeoutMs?: string | number;
+  allowManagedCodexInstall?: boolean;
 };
 
 export type RawInstallCommandOptions = RawCommandOptions & {
@@ -164,6 +165,7 @@ export function normalizeCommandOptions(
     scope: parseScopeValue(raw.scope ?? defaults.defaultScope ?? 'user'),
     platform: parsePlatformValue(platformInput ?? 'both'),
     ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
+    ...(raw.allowManagedCodexInstall === true ? { allowManagedCodexInstall: true } : {}),
   };
 }
 

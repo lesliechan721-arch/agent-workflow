@@ -22,16 +22,17 @@
         "production_implementation_forbidden": true
       },
       "oracle": {
-        "rationale": "Standard 任务需要先取得可操作原型反馈，再把稳定结论投影到默认任务目录中的 Spec；完整原型仍是 Evidence，生产页面保持不变。",
+        "rationale": "Standard 任务先由 decision-shape 组织 Prototype 反馈并归一当前 Shape，再把稳定结论投影到默认任务目录中的 Spec；Prototype 的内部路径不属于 Router 合同。",
         "rule_refs": [
-          "dev-workflow/SKILL.md#1-选择最低足够保障",
-          "dev-workflow/SKILL.md#2-确定任务目录",
-          "dev-workflow/SKILL.md#3-选择当前能力",
+          "dev-workflow/SKILL.md#3-得出必需-gate",
+          "dev-workflow/SKILL.md#4-进入最早未满足-gate",
+          "dev-workflow/SKILL.md#5-任务目录",
+          "decision-shape/SKILL.md#工作方式",
           "decision-prototype/SKILL.md#工作流",
           "dev-spec/SKILL.md#工作流"
         ],
         "confidence": "high",
-        "allowed_variance": "原型结构和 Spec 措辞可以不同；必须使用 docs/dev/approval-layout/，先等待反馈，只把稳定结论写入规范性章节，并保持生产文件不变。"
+        "allowed_variance": "Prototype 路径和结构可以不同；Shape 与 Spec 必须使用 docs/dev/approval-layout/，先等待反馈，只把稳定结论写入规范性章节，并保持生产文件不变。"
       },
       "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。",
       "scripted_replies": [
@@ -43,7 +44,7 @@
           "unexpected_question_answer": "只需要我选择单栏或双栏；其它事项保留为未解决。"
         }
       ],
-      "expected_output": "选择 Standard 保障，使用默认任务目录，先创建可操作原型并等待反馈，再把双栏决定投影到 spec.md；生产页面保持不变。",
+      "expected_output": "选择 Standard 保障，先由 decision-shape 取得原型反馈并归一默认任务目录中的 decisions.md，再把双栏决定投影到 spec.md；生产页面保持不变。",
       "sandbox": "workspace-write",
       "workspace_files": {
         "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
@@ -52,15 +53,14 @@
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["docs/dev/approval-layout/**"],
+        "allowed_workspace_changes": ["docs/dev/approval-layout/**", "prototypes/**"],
         "artifacts": [
-          {"path": "docs/dev/approval-layout/prototypes/layout-choice/index.html", "exists": true, "contains": ["单栏", "双栏"]},
-          {"path": "docs/dev/approval-layout/prototypes/layout-choice/brief.md", "exists": true, "contains": ["双栏", "审批历史", "移动端"]},
+          {"path": "docs/dev/approval-layout/decisions.md", "exists": true, "contains": ["Decision frame", "双栏"]},
           {"path": "docs/dev/approval-layout/spec.md", "exists": true, "contains": ["双栏", "审批历史", "移动端", "Agent discretion", "Evidence"]}
         ],
         "checks": [
-          "trace 先使用 decision-prototype，用户反馈后才进入 dev-spec",
-          "任务目录固定为 docs/dev/approval-layout/，没有另建 prototypes/ 或 docs/specs/ 平行目录",
+          "trace 先由 dev-workflow 进入 decision-shape，再由 Shape 内部使用 decision-prototype；用户反馈并归一 Shape 后才进入 dev-spec",
+          "Shape 和 Spec 使用 docs/dev/approval-layout/；不要求 Router 决定 Prototype 的内部路径",
           "Spec 只投影用户确认的稳定决定，并链接完整原型作为 Evidence",
           "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现"
         ]
@@ -81,16 +81,16 @@
         "implementation_not_authorized": true
       },
       "oracle": {
-        "rationale": "持久数据迁移应升级为 Assured，生成包含回滚和验证的 Spec 与审查记录，并在明确批准前停止。",
+        "rationale": "本案例只验证 Assured 生命周期在批准前的前缀：生成包含回滚和验证的 Spec 与审查记录，并在明确批准前停止；项目隔离、实现证据和最终独立 Review 由批准后的案例验证。",
         "rule_refs": [
-          "dev-workflow/SKILL.md#1-选择最低足够保障",
-          "dev-workflow/SKILL.md#3-选择当前能力",
-          "dev-workflow/SKILL.md#5-人类检查点",
+          "dev-workflow/SKILL.md#2-选择最低足够保障",
+          "dev-workflow/SKILL.md#3-得出必需-gate",
+          "dev-workflow/SKILL.md#4-进入最早未满足-gate",
           "dev-spec/SKILL.md#工作流",
           "dev-review-spec/SKILL.md#审查"
         ],
         "confidence": "high",
-        "allowed_variance": "Spec 和 Review 措辞可不同；必须标为 Assured，保存到默认任务目录，请求批准并保持生产文件不变。"
+        "allowed_variance": "Spec 和 Review 措辞可不同；此案例只判定批准前行为，必须标为 Assured，保存到默认任务目录，请求批准并保持生产文件不变。"
       },
       "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在默认任务目录生成 Spec 和审查记录。审查 clean 后向我请求批准，但不要在批准前修改 src/token-store.js。",
       "scripted_replies": [
@@ -140,14 +140,13 @@
       "oracle": {
         "rationale": "一次自动修复和完整复审后仍 blocked；宏入口应停止继续实现，并把最新 finding 交给用户决定。",
         "rule_refs": [
-          "dev-workflow/SKILL.md#4-消费-review-结果",
-          "dev-workflow/references/review-repair.md"
+          "dev-workflow/SKILL.md#6-Review-结果"
         ],
         "confidence": "high",
         "allowed_variance": "可以用不同措辞呈现选项；不得继续加载实现或复审能力，也不得修改工作区。",
         "minimal_counterexample": "若第一次复审为 clean，则可以进入交付。"
       },
-      "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。能自动继续就继续；需要我决定时再问。",
+      "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。请先判断当前是否需要我决定，不要自动修改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
@@ -169,10 +168,45 @@
           {"path": "src/invitations/accept.js", "exists": true, "contains": ["now > invitation.expiresAt"]}
         ],
         "checks": [
-          "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code",
-          "读取 review-repair 条件规则后识别一次自动循环已经完成，进入用户检查点",
+          "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code；本次请求没有新的自动修复授权",
+          "不读取 review-repair.md；根据当前 blocked Review 和无新授权进入用户检查点",
           "向用户说明最新 blocker 和可选动作，不维护轮次预算或进展枚举",
           "用户选择停止后不修改 Spec、Review 或产品代码"
+        ]
+      }
+    },
+    {
+      "id": "route-summary-is-user-navigation",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "output-contract",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "workflow_explicitly_requested": true,
+        "shape_complete": true,
+        "spec_missing": true
+      },
+      "oracle": {
+        "rationale": "宏路由摘要服务用户导航，不应模拟 Skill 函数返回对象。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以使用短段落或列表，但不能机械输出固定 status、next-skill 或 return object。",
+        "minimal_counterexample": "如果结果要由工具读取、跨独立上下文交接或保存为持久 Review artifact，则应使用相应的真实结构化合同。"
+      },
+      "prompt": "使用 dev-workflow 判断这个任务的下一阶段。Shape 已完整，没有 Spec。只说明路由结果和理由；不要修改工作区。",
+      "scripted_replies": [],
+      "expected_output": "自然说明当前进入 Spec、使用 dev-spec 及其依据，不输出固定函数式返回对象。",
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "说明当前阶段、下一能力和主要依据",
+          "不机械输出固定 status、next-skill 或 return object",
+          "不修改工作区"
         ]
       }
     }

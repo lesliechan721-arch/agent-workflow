@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -126,6 +127,12 @@ export async function createCatalogSnapshotFixture(
     release: { state: 'development' },
     entries: [entry],
   }), { spaces: 2 });
+  await fs.writeJson(path.join(rootDir, '.aw-generated.json'), {
+    schemaVersion: 1,
+    kind: 'catalog',
+    workspaceIdentity: `fixture:${crypto.createHash('sha256').update(path.resolve(rootDir)).digest('hex')}`,
+    sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${path.resolve(rootDir)}`).digest('hex')}`,
+  }, { spaces: 2 });
 }
 
 export async function createDependencyCatalogSnapshotFixture(

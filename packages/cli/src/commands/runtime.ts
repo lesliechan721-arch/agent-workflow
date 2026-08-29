@@ -14,7 +14,7 @@ import {
   createIoReporter,
   createNoopReporter,
 } from '../output/reporter.js';
-import type { NativeCliInvocation, NativeCliResult, NativeCliRunner } from '../utils/native-cli.js';
+import type { NativeCliInvocation, NativeCliRunner } from '../utils/native-cli.js';
 import { NativeCliError, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
@@ -899,42 +899,35 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
   };
 }
 
-function serializeInvocation(invocation: NativeCliInvocation): Record<string, unknown> {
-  return {
-    command: invocation.command,
-    args: invocation.args,
-    cwd: invocation.cwd,
-    timeoutMs: invocation.timeoutMs,
-  };
+function nativeEventIdentity(invocation: NativeCliInvocation): {
+  agent: 'codex' | 'claude' | 'skills' | 'unknown';
+  operation: 'version' | 'marketplace' | 'plugin' | 'skill' | 'other';
+} {
+  const executable = path.basename(invocation.command).toLowerCase().replace(/\.exe$/u, '');
+  const agent = executable === 'codex' || executable === 'claude' || executable === 'skills'
+    ? executable
+    : 'unknown';
+  const args = new Set(invocation.args.map((arg) => arg.toLowerCase()));
+  const operation = args.has('--version') || args.has('version')
+    ? 'version'
+    : args.has('marketplace') ? 'marketplace'
+    : args.has('plugin') || args.has('plugins') ? 'plugin'
+    : agent === 'skills' ? 'skill'
+    : 'other';
+  return { agent, operation };
 }
 
-function serializeResult(result: NativeCliResult): Record<string, unknown> {
-  return {
-    exitCode: result.exitCode,
-    stdout: result.stdout,
-    stderr: result.stderr,
-  };
-}
-
-function serializeNativeError(error: unknown): Record<string, unknown> {
+function serializeNativeError(error: unknown): {
+  exitCode?: number;
+  reason: 'aborted' | 'exit' | 'timeout' | 'runnerFailure';
+} {
   if (error instanceof NativeCliError) {
-    const cause = error.cause as { code?: string | number; name?: string; message?: string } | undefined;
     return {
-      name: error.name,
-      message: error.message,
       exitCode: error.exitCode,
-      stdout: error.stdout,
-      stderr: error.stderr,
-      causeType: cause?.name ?? (cause ? cause.constructor?.name : undefined),
-      causeCode: cause?.code,
-      causeMessage: cause?.message,
+      reason: error.reason,
     };
   }
-
-  return {
-    name: error instanceof Error ? error.name : typeof error,
-    message: error instanceof Error ? error.message : String(error),
-  };
+  return { reason: 'runnerFailure' };
 }
 
 function createInstrumentedNativeCliRunner(options: {
@@ -945,12 +938,11 @@ function createInstrumentedNativeCliRunner(options: {
 }): NativeCliRunner {
   return async (invocation) => {
     const startedAt = Date.now();
+    const identity = nativeEventIdentity(invocation);
     await emitRuntimeEvent(options, {
       type: 'native:start',
       commandName: options.diagnostics.commandName,
-      data: {
-        invocation: serializeInvocation(invocation),
-      },
+      data: identity,
     });
 
     try {
@@ -959,8 +951,8 @@ function createInstrumentedNativeCliRunner(options: {
         type: 'native:success',
         commandName: options.diagnostics.commandName,
         data: {
-          invocation: serializeInvocation(invocation),
-          result: serializeResult(result),
+          ...identity,
+          exitCode: result.exitCode,
           durationMs: Date.now() - startedAt,
         },
       });
@@ -969,10 +961,9 @@ function createInstrumentedNativeCliRunner(options: {
       await emitRuntimeEvent(options, {
         type: 'native:error',
         commandName: options.diagnostics.commandName,
-        message: error instanceof Error ? error.message : String(error),
         data: {
-          invocation: serializeInvocation(invocation),
-          error: serializeNativeError(error),
+          ...identity,
+          ...serializeNativeError(error),
           durationMs: Date.now() - startedAt,
         },
       });

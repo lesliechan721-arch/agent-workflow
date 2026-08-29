@@ -17,7 +17,7 @@
 - `commands/rebuild-command.ts` 解析当前 Catalog、依赖和现场状态，并交给统一 rebuild 流程。
 - `commands/rebuild-operations.ts` 编排 ownership 检查、清理、平台写入、lifecycle 和完成后检查。
 - `commands/rebuild-integration.ts` 把插件能力转换成平台原生写入和 AW-owned 组件。
-- `commands/status-v4.ts` 读取多来源 Catalog、live ownership 和平台组件，生成 status v4 和控制台输入。
+- `commands/status-v5.ts` 读取多来源 Catalog、live ownership 和平台组件，生成 status v5 和控制台输入。
 - `commands/dependency-operation-plan.ts` 只生成一次命令内的依赖执行顺序；它不是持久安装记录。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存下一次 uninstall lifecycle 所需的弱状态。
@@ -56,10 +56,13 @@ installed plugin
           ↓ AW 写入
 <AW_HOME>/
   catalog-sources.json                 [强配置]
+  catalog-generations.json             [强选择状态]
+  catalog-generations/<identity>/<digest>/{generation.json,snapshot/**}
   plugin-config/**                     [强配置]
   catalog-cache/sources/<sourceId>/{current,last-good}/
   marketplaces/**
   lifecycle-active/**
+  runtimes/codex/0.150.1/<platform-arch>/**
 ```
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
@@ -76,6 +79,7 @@ installed plugin
 - Catalog manifest 保存规范化 marketplace owner/interface，验证器以它为唯一根 metadata 真值核对 Codex 和 Claude projection。`release.state=published` 的 snapshot 必须包含并完整验证 `plugin-release-ledger.json`；development snapshot 不包含 ledger。公开 Catalog 作者合同见[Catalog 作者指南](catalog-authoring.md)。
 - `<AW_HOME>/catalog-sources.json` 缺失时读取内置 `official` source；第一次来源修改才物化该文件。稳定版 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。
 - `catalog-sources.json` 只接受 schema 2。Path source 可带 `managedBy: { kind: "catalog-workspace", workspaceIdentity }`；Git source 和普通 `catalog source` CLI 不能声明或接管该 ownership。`aw catalog dev activate|status|deactivate --json` 按稳定 Workspace marker identity 管理当前 `.aw/catalog` path source。Workspace 移动时 activate 更新同一 owned source 的 path。status 严格只读；deactivate 不删除 snapshot。
+- `runtimes/codex/**` 是可删除、可重建的弱状态。AW 只在用户级操作实际需要 Codex native 写入或移除时使用它。runtime 固定安装随 AW 发布更新的 `@openai/codex` 版本，不写入 `PATH`，也不读取或检测 Codex App。
 
 ### Portable Agent Skills Distribution
 
@@ -93,24 +97,39 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 
 ## Catalog Sources and Cache
 
-每个 source 在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 有独立身份、当前快照和最近一次可用快照。resolver 先使用有效的 `current`，需要时可回退同一 source 的 `last-good`。cache 只是可删除的性能和离线状态；它不决定安装、配置或删除权限。
+Catalog snapshot 的 logical identity 只来自其 `.aw-generated.json.workspaceIdentity`。source ID、Git URL、SSH/HTTPS 文本和本地路径不是 logical identity；同一 Workspace 的 official HTTPS/SSH alias 和不同 source ID 因此共享同一不可变版本检查。
+
+`<AW_HOME>/catalog-generations.json` 是 schema 1 强选择状态。每个 source 只记录 `logicalIdentity`、`refreshPolicy`、`active`、可选 `candidate` 和 `lastCheck`；每个 pointer 还绑定不含凭据的 canonical source-config fingerprint，防止相同 source ID 复用其它 location、ref 或 subdir 的 generation。它不记录安装状态或删除授权。内容寻址 store 位于 `<AW_HOME>/catalog-generations/<logical-identity-hex>/<snapshot-digest-hex>/`，每个已发布 generation 只包含 `generation.json` 和完整、独立的 `snapshot/`，不引用可变 Git cache 或 Path source。首版不做 generation GC、reader lease 或 observation database。
+
+刷新先在调用自己的 staging 中复制 snapshot，并完成 snapshot、兼容性、digest 和 generated marker 验证。Git source 还通过扫描保留的 `generation.json` 强制 `(logicalIdentity, catalogVersion) -> snapshotDigest` 唯一；同版本不同 digest 返回稳定 `catalogImmutableVersionViolation`，且不改 Active 或 Candidate。验证完成后 generation 以目录 rename 原子发布，最后通过强状态原子替换更新 pointer；失败只清理本次 staging，原 Active 保留。
+
+Git 首次手动 refresh 直接建立 Active；已有 Active 时，高版本建立 Candidate，同版本同 digest 为 no-op，未显式改变 ref 的低版本报告 `channelRollback`，显式 ref 变化可建立 `refChange` Candidate。同一未变化 Git config 返回其它 Workspace identity 时，refresh 返回 `catalogGenerationIdentityMismatch`，且不改 Active、Candidate 或 state。Path source 默认 `manual`，每次 add 或手动 refresh 都建立 immutable local generation 并直接切换 Active；它允许同一 Catalog version 对应不同 digest，不监听文件系统。`aw catalog source activate-candidate <id>` 只在现有 `AW_HOME` mutation lock 下原子切 pointer，不下载或复制 snapshot。refresh 的远端解析、snapshot staging 和验证不持有该 mutation lock；最终 pointer 提交只短暂持锁并重读 source config fingerprint。这样，已更新或删除 source 的旧 refresh 只能丢弃自己的 staging，不能写回旧 pointer。source config mutation 和 activation 继续与普通 AW 写操作互斥。
+
+最小公开入口是 `aw catalog source refresh <id>`、`aw catalog source activate-candidate <id>`、`aw catalog source generation-status [id]` 和 `aw catalog source refresh-policy <id> <startup|manual>`，均支持 `--json`。policy 更新只原子写 generation state，不访问远端；Path 只允许 `manual`。Active generation resolver 校验 state pointer、generation metadata、content-addressed 目录和 snapshot 后返回固定本地路径；`CatalogGenerationSet` 绑定当前 source 集合及稳定 `generationSetDigest`。generation state 不是 installed ledger，source 删除不得删除插件内容。
+
+普通 install、upgrade、reinstall、uninstall、非离线 cleanup、plugin config、status、TUI 和 Portable 操作只读取 Active generation。每次操作建立一个 typed `CatalogOperationContext`，直接绑定 immutable snapshot 路径、已解析的本地 Catalog 证据和 `generationSetDigest`；依赖 closure、目标计划、Review 和执行都复用该 context。它不复制 generation，也不建立 reader lease。已有 Active 时，普通操作不调用 provider、不检查 Git branch，也不访问远端。Candidate 只有显式 activate 后才对新操作可见；Path 工作区变化也只有显式 refresh 后才建立新的 Active。
+
+唯一的自动获取例外是：本次需要的已配置 source 完全没有 Active。操作开始时，每个缺失 source 最多尝试一次 bootstrap；Git source 可以访问远端，Path source 读取本地路径。bootstrap 成功后重新解析完整 Active set。失败返回可恢复的 source unavailable 诊断和显式 `aw catalog source refresh <id>` 指引。已有但损坏、metadata 不匹配或 fingerprint 不匹配的 Active 必须 fail closed，不自动联网修复。多来源中已有 Active 的 source 不因其它 source bootstrap 失败而调用 provider。
+
+每个 source 仍在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 保留 transport cache。它只用于显式远端获取和 generation staging 输入，是可删除弱状态；它不决定 Active、普通读取、安装、配置或删除权限。
 
 Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读取私有仓库。解析保持非交互，默认远端解析超时为 180 秒，并可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整；它禁止 URL 内嵌凭据、SSH local command 和 proxy command，且 AW 不保存 Catalog 授权信息。
 
-`aw catalog source add` 和 `update` 先原子提交 source config，再尽力刷新该 source。刷新成功时 receipt 附带来源证据；刷新失败时 config 仍已提交，receipt 报告该 source 的诊断。其它来源不会因此失败。`list`、`set-primary` 和 `remove` 只修改 source config。
+`aw catalog source add` 和 `update` 先在 mutation lock 内原子提交 source config；只有 logical source identity 变化才失效该 source ID 的旧 generation pointer。transport 或其它 source-config fingerprint 变化保留旧 Active 和 Candidate selection，再释放 mutation lock 并尽力刷新；新 fingerprint 的 refresh 结果建立 Candidate，用户显式激活后才切换 Active。刷新失败时 config 仍已提交，receipt 报告该 source 的诊断；普通操作在激活前因 fingerprint 不匹配而 fail closed，并指向 refresh、Candidate activation 和 reload 恢复路径。其它来源不会因此失败。`set-primary` 只改 source config；`remove` 同时移除该 source ID 的 generation selection state，但不删除 immutable generation、插件内容或任何 live ownership 现场。
 
-`aw catalog dev activate` 复用 current development snapshot；snapshot stale、invalid、absent 或显式 `--force-build` 时执行 Catalog build 和 complete validation。随后它只通过统一 source service 新增或更新 managed path source，并刷新 cache。snapshot build 与 source config、cache 不组成跨系统事务：config 失败保留 snapshot，refresh 失败保留已提交 source，并返回 partial receipt。`deactivate` 对 primary source 先选择真实 `official`，否则只接受唯一其它 source；没有候选或候选不唯一时不修改配置。
+`aw catalog dev activate` 复用 current development snapshot；snapshot stale、invalid、absent 或显式 `--force-build` 时执行 Catalog build 和 complete validation。随后它通过统一 source service 新增或更新 managed path source，并刷新该 Path source 的 Active generation。snapshot build 与 source config、generation 不组成跨系统事务：config 失败保留 snapshot，refresh 失败保留已提交 source，并返回 partial receipt。`deactivate` 对 primary source 先选择真实 `official`，否则只接受唯一其它 source；没有候选或候选不唯一时不修改配置。
 
-多来源 resolver 在稳定的 cache generation 内调用消费者回调。回调只能返回普通数据，不能保留 bundle root、manifest path 或其它缓存路径。generation 结束后，调用方必须重新解析，不得保存内部路径。
+多来源 resolver 用操作已绑定的 immutable Active snapshots 调用普通消费者。回调只能返回普通数据，不能向公开结果泄漏 bundle root、manifest path 或其它内部路径。首版没有 generation GC，因此操作 context 可在本次操作或 TUI load session 内固定引用这些目录。
 
 ## Write Pipeline
 
 五个公开写命令使用同一条 rebuild 流程：
 
 ```text
-解析当前 Catalog 和目标
+固定 Active `CatalogOperationContext` 和目标
   → 生成临时依赖顺序与期望组件
   → 检查 live ownership
+  → 仅为实际 Codex native 操作解析执行 manager
   → 必要时清理 AW-owned 旧组件
   → 写入原生和 AW-managed 组件
   → 按命令运行 lifecycle
@@ -118,9 +137,21 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
   → 输出 receipt v4
 ```
 
-TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。准备读取统一使用 cache-first Catalog：有效 cache 立即可用，cache miss 仍可按 resolver 合同访问远端。依赖 preview 也使用这个策略；`requireRemote` 仍允许匹配 cache fallback，不表示无回退的严格远端读取。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
+一次写操作在 `AW_HOME` mutation lock 内只采集一个当前现场 inventory。来源身份检查、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为 plan 或 preflight 再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 generation evidence。删除操作为检查历史 project consumer 读取的 inventory 范围不同，不与普通 target inventory 合并。
 
-Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。执行前仍重新验证 intent，并在 `AW_HOME` mutation lock 内使用新鲜 Catalog 和现场重新采集 evidence。若 cache-first Review 证据与执行证据不同，必须在任何写入前返回 typed `operationReviewStale` 或新 Review；准备页证据不能替代 stale/TOCTOU 防护。
+性能观察复用现有 debug event。`review.prepare.*` 记录 Review 准备阶段耗时；`native:start|success|error` 只记录白名单 `agent`、稳定 operation、`exitCode`、固定 reason 和 `durationMs`，不记录 args、cwd、stdout、stderr 或未知 error/cause 文本；`rebuild:action` 分别记录 `preflight.inspect`、`native.write` 和 `postcheck.inspect` 等写阶段耗时。测试用调用次数、检查范围和阶段事件验证 write 性能边界。Warm install 的两秒目标只有在真实环境采样稳定后才可以形成预算；当前不增加机器相关硬门槛。
+
+首版不增加 authoritative installed-state DB、Observation Index、generation GC/read lease、新锁层级、全局事务或补偿状态机。Active generation 已是不可变内容寻址目录，操作 context 直接引用它；当前可观察的重复 inventory 可以用操作内 snapshot 消除。这些事实不足以证明新增持久状态和协调协议的成本合理。
+
+TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个阶段只执行当前 intent 的验证和证据采集，不执行写入。一次成功的 TUI load 固定可用来源的 Active generation 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 从该固定子集选择所需 source context。load 时失败的来源不可操作，直到用户刷新来源并重新加载；后续页面不会再次 bootstrap。后台 refresh 产生 Candidate 或显式 refresh 尚未改变该子集。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
+
+TUI 只在首屏使用已绑定 Active 和 live status 发布后，对 `refreshPolicy=startup` 的 Git source 启动内存后台刷新，最大并发数为 2。单个 source 失败不阻止其它 source；Controller dispose 取消未完成的 provider 和 staging。后台结果只更新 Candidate、lastCheck 和页面进度，不改变当前 session generation。激活只在用户确认 Review 后复用本地 Candidate；成功后重建 session，Candidate 在 Review 后漂移时必须返回 stale 并建立新 Review。
+
+Review 仍是用户确认边界。Review evidence 包含 `generationSetDigest` 和所需 source generation 证据。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。Execute 在同一个 `AW_HOME` mutation lock 内重新解析当前 Active set，验证绑定的 generation 目录和 metadata 仍存在，并比较 Review digest。source config 改变或 Candidate 被 activate 后，Execute 必须在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或新 Review。该检查不访问远端 branch。
+
+Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。Codex project scope 不使用 native manager。用户级正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt/status v5，也不成为 `operationReviewStale` 证据。
+
+TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 
 依赖执行顺序只在本次命令内存在。receipt 可摘要公开 requested/resolved plugin ID、dependency edge、relation、requiredBy 和 dependency state；它不公开持久计划、摘要、锁或来源内部证据。
 
@@ -130,6 +161,8 @@ Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始�
 - `uninstall`：删除 AW-owned 组件；可用时从 lifecycle active snapshot 重放历史 uninstall lifecycle。source 不可用且无法安全重放时，命令失败并提示 `cleanup`。
 - `cleanup`：不运行 uninstall lifecycle。它可在 source 或 Catalog 不可用时，根据 live AW owner 现场清理。它保留 plugin config。
 - `cleanup --force`：用于跳过依赖保护，或恢复专属且已损坏的 AW-owned 输出。它可能让 dependent 变为 partial；它不得删除 foreign 或 shared 内容，且保留配置。
+
+TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为 offline cleanup。Review 不解析缺失的 bundle，而是绑定包含来源身份、目标位置和 live ownership fingerprint 的 typed evidence。Execute 在同一个 `AW_HOME` mutation lock 内重新读取 owner marker/header、shared owner 和 native registration；evidence 漂移时在写入前返回 stale Review。synthetic cleanup target 只使用这些 live evidence 发现的 matching-owner 组件，且普通 TUI 不启用 force。
 
 每条失败链必须可用 `cleanup`、`cleanup --force`、`reinstall`、来源刷新或新版本发布恢复。无法证明 ownership 时宁可保留内容，也不能删除用户或共享内容。
 
@@ -141,7 +174,7 @@ Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始�
 
 ## Live Status and Config
 
-`aw status` 是只读操作。它组合多来源 Catalog、live owner、原生平台组件和有效配置，并对每个来源独立报告错误。它不运行 lifecycle，也不创建 config 目录。`cacheFirst` 先读有效 cache；cache miss 时 Git source 可以访问远端并更新弱 cache，path source 每次物化路径内容并更新弱 cache。
+`aw status` 是只读操作。它组合多来源 Active Catalog、live owner、原生平台组件和有效配置，并对每个来源独立报告错误。它不运行 lifecycle，也不创建 config 目录。已有 Active 时，status 只读取 immutable local snapshot，远端调用数为零；无 Active 时只允许前述单次 bootstrap。普通 config read/write 和 TUI settings 使用相同规则。
 
 每个 target 的状态为：
 
@@ -152,19 +185,31 @@ Review 仍是用户确认边界。用户确认后才进入 `Progress` 并开始�
 | `partial` | 只有部分组件或组件不完整 | `aw reinstall` |
 | `error` | Catalog、发现或组件检查失败 | 修复来源或现场后重试 |
 
-`status --json` 保持 schema 4。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。
+组件状态为 `present | absent | partial | foreign | error`。`foreign` 表示 exclusive artifact slot 已被当前插件不拥有的内容占用；它不能作为已安装证据。公开 collision evidence 只包含 `reason`（`ownerMismatch | unownedContent | typeMismatch`）、`artifactKind`、`artifactKey`、`expectedOwner` 和可选 `actualOwner`，不得包含组件绝对路径、credential、未知 stderr 或临时内部信息。
+
+target 聚合只使用 AW-owned live 证据。所有 own 组件健康时为 `present`；存在 own 组件但必要组件缺失或损坏时为 `partial`；没有 own 组件时为 `absent`。foreign-only target 为 `absent` 并带结构化 `artifactCollision`；own 不完整且存在 collision 时为 `partial` 并带相同错误。当前插件的普通 cleanup 和 uninstall 不删除 foreign component。
+
+Status v5 对已检查的直接依赖公开 `ready | absent | blockedByCollision | incomplete | error` readiness。依赖问题携带 `dependencyPluginId`；有可识别根因时还携带稳定的 `rootIssueId` 和 `rootIssueCode`。依赖 artifact collision 必须投影为 `blockedByCollision` 和 `artifactCollision` 根因；consumer 的 `dependencyNotReady` 与 `partial` 只保留为症状，不能覆盖根因。
+
+`status --json` 只输出 schema 5，不提供 schema 4 参数或双轨输出。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。人类 CLI 和 TUI 把 `artifactCollision` 显示为需要移除或迁移占用内容的输出冲突，不把它显示为安装不完整。
 
 TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理 AW-owned live 内容、保留 plugin config 且不运行 uninstall lifecycle，并显示不含 `--force` 的等价命令。普通 cleanup 继续执行 dependent 保护；成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
 
-target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v4 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
+TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序；共享 `rootIssueId` 的下游症状折叠到同一个根问题详情。
+
+target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v5 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
 
 配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user、project shared 或 project local 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
 
+控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 generation、目标 fingerprint 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；Review 分别显示设置变更、应用影响和保持不变。个人默认变更重新应用当前目录中已安装的 user 与 project 目标；项目 shared/local 变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
+
+Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。official HTTPS/SSH 切换只改变 transport location，并通过 source mutation Review 提交；Catalog logical identity 继续只来自 generation 中的 Workspace identity，不修改 live owner identity。
+
 ### TUI 诊断投影与脱敏边界
 
-TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v4 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；来源使用匹配缓存和来源完全不可用必须使用不同影响与动作。
+TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v5 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；Active generation 正常、缺失和损坏必须使用不同影响与恢复动作。
 
 技术层只接受白名单结构字段：安全错误 code、可选 stage、sourceId、requestedRef、resolvedCommit、last-good 证据，以及有限的 platform、scope、plugin、dependency、field、freshness 或 compatibility context。技术层在显示前再次执行通用凭据脱敏、URL userinfo 和敏感 query 清理、已知 home、cwd、临时目录和来源路径替换，并截断文本。任意 native stderr、未知 `Error.cause`、内部绝对路径、digest、credential 或未证明安全的 status message 不进入诊断 ViewModel；不能证明 cause 安全时省略 cause，只保留 code、stage 和白名单 context。
 
@@ -173,6 +218,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - 只删除可证明属于 AW 的 marker、managed block、artifact 或 namespaced 组件。
 - primary source 默认继续使用 `aw` marketplace。若用户级 Codex 或 Claude 的 `aw` 已由 legacy 或 foreign source 占用，首次安装改用 source-bound `aw-<sourceId>`；两个平台使用同一名称。已有 canonical 注册继续决定名称，候选名称被 foreign source 占用时 fail closed。
 - 外部 Codex/Claude 命令、用户手改目录和共享 marketplace 都是不受 AW 完全控制的边界。Claude 合法的未绑定默认安装记录不属于任何 marketplace；来源 inventory 必须保留并忽略它，不能把它归为 canonical 或 foreign。执行 native install 前，若任意 scope 存在与目标原生插件名称相同的未绑定 bare-key 记录，写命令必须在清理、mirror 和 native CLI 调用前 fail closed；不同名记录继续保留并忽略。cleanup 和 uninstall 不删除、迁移或重命名未绑定记录。命令允许部分成功，并报告残留和失败。
+- Codex cleanup 和 uninstall 先直接检查 config、cache、manifest 和 ownership。没有可证明的 AW-owned native residue 或待移除的 canonical marketplace 时，不解析或获取 manager。发现 residue 且 system CLI 缺失时，可在本次授权下使用 AW-managed 官方 CLI 执行 remove。AW 不直接删除 Codex 私有 plugin storage；foreign 内容始终保留。remove 或完成后检查失败时保留 residue，并提示重试 cleanup/uninstall、升级 AW 或安装兼容的官方 Codex CLI。
 - Codex project config 的规范路径与 Codex user home 相同时，未发现 project owner 的默认 status 不生成 project placement；显式 project status 报告路径别名。`install`、`upgrade` 和 `reinstall` 不向这个 project placement 写入，用户必须进入独立项目目录；`cleanup` 和 `uninstall` 仍可处理已有 project owner。
 - active marketplace、backup、quarantine 和 lifecycle snapshot 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。

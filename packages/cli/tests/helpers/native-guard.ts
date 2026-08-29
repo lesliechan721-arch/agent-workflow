@@ -26,6 +26,7 @@ function renderEnvSummary(env: NodeJS.ProcessEnv | undefined): string {
   const entries = [
     ['AW_HOME', env.AW_HOME],
     ['AW_CODEX_HOME', env.AW_CODEX_HOME],
+    ['CODEX_HOME', env.CODEX_HOME],
     ['AW_CLAUDE_HOME', env.AW_CLAUDE_HOME],
     ['HOME', env.HOME],
     ['USERPROFILE', env.USERPROFILE],
@@ -49,6 +50,9 @@ function isGuardedNativeCliInvocation(
   invocation: NativeCliInvocation,
   guardedCommands: readonly string[],
 ): boolean {
+  if (invocation.agentKind !== undefined) {
+    return true;
+  }
   const commandName = normalizeCommandName(invocation.command);
   return guardedCommands.some((guardedCommand) => guardedCommand === commandName);
 }

@@ -270,7 +270,7 @@ describe('catalog source current and last-good cache', () => {
       }),
     };
     const consuming = withResolvedMultiSourceCatalog({
-      cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', providers,
+      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', providers,
       configSnapshot: { config, digest: calculateCatalogSourcesConfigDigest(config), materialized: true },
       consume: async (catalog) => {
         const source = catalog.sources[0]!.resolution!;
@@ -467,11 +467,18 @@ describe('multi-source resolver public behavior', () => {
       },
     };
     const result = await withResolvedMultiSourceCatalog({
-      cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', providers,
+      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', providers,
       configSnapshot: { config, digest: calculateCatalogSourcesConfigDigest(config), materialized: true },
-      consume: (catalog) => catalog.sources.map((item) => ({ id: item.sourceId, error: Boolean(item.error) })),
+      consume: (catalog) => catalog.sources.map((item) => ({
+        id: item.sourceId,
+        error: Boolean(item.error),
+        message: item.error?.message,
+      })),
     });
-    expect(result).toEqual([{ id: 'bad', error: true }, { id: 'good', error: false }]);
+    expect(result).toEqual([
+      { id: 'bad', error: true, message: expect.any(String) },
+      { id: 'good', error: false, message: undefined },
+    ]);
   });
 
   it('keeps qualified IDs, bare selector parsing, and artifact collision preflight', () => {

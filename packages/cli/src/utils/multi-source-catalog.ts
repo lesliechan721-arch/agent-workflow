@@ -28,6 +28,10 @@ import {
   AwCapabilityUnsupportedError,
   IMPLEMENTED_AW_CAPABILITIES,
 } from '../commands/aw-capabilities.js';
+import {
+  resolveCatalogOperationContext,
+  type CatalogOperationContext,
+} from './catalog-operation-context.js';
 
 export interface ParsedPluginId {
   sourceId?: CatalogSourceId;
@@ -60,6 +64,8 @@ export interface ResolveMultiSourceCatalogOptions {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   providers?: CatalogSourceProviderSet;
+  operationContext?: CatalogOperationContext;
+  bootstrapMissingActive?: boolean;
 }
 
 export type ResolveCatalogPluginOptions = Omit<ResolveMultiSourceCatalogOptions, 'sourceIds'> & {
@@ -438,11 +444,106 @@ async function resolveMultiSourceCatalog(
   };
 }
 
+function selectOperationCatalog(options: {
+  operationContext: CatalogOperationContext;
+  sourceIds?: CatalogSourceId[];
+}): MultiSourceCatalogResolution {
+  if (!options.sourceIds) return options.operationContext.catalog;
+  const requested = new Set(options.sourceIds);
+  const available = new Set(options.operationContext.catalog.sources.map((source) => source.sourceId));
+  const unknown = options.sourceIds.find((sourceId) => !available.has(sourceId));
+  if (unknown) throw new Error(`Catalog source "${unknown}" does not exist in the operation context.`);
+  return {
+    ...options.operationContext.catalog,
+    sources: options.operationContext.catalog.sources.filter((source) => requested.has(source.sourceId)),
+  };
+}
+
+async function resolveCatalogForConsumer(
+  options: ResolveMultiSourceCatalogOptions,
+): Promise<{ resolution: MultiSourceCatalogResolution; immutable: boolean }> {
+  if (options.operationContext) {
+    return {
+      resolution: selectOperationCatalog({
+        operationContext: options.operationContext,
+        ...(options.sourceIds ? { sourceIds: options.sourceIds } : {}),
+      }),
+      immutable: true,
+    };
+  }
+  if (options.freshnessPolicy === 'forceRemote') {
+    return { resolution: await resolveMultiSourceCatalog(options), immutable: false };
+  }
+  const env = options.env ?? process.env;
+  const snapshot = options.configSnapshot ?? await readCatalogSourcesConfigSnapshot(env);
+  const configured = new Set(snapshot.config.sources.map((source) => source.id));
+  const requestedIds = options.sourceIds
+    ? [...new Set(options.sourceIds)]
+    : snapshot.config.sources.map((source) => source.id);
+  const unknown = requestedIds.find((sourceId) => !configured.has(sourceId));
+  if (unknown) throw new Error(`Catalog source "${unknown}" does not exist.`);
+  let resolutionFailure: unknown;
+  try {
+    const context = await resolveCatalogOperationContext({
+      cliVersion: options.cliVersion,
+      sourceIds: requestedIds,
+      configSnapshot: snapshot,
+      env,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.providers ? { runtime: { providers: options.providers } } : {}),
+      ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
+    });
+    return { resolution: context.catalog, immutable: true };
+  } catch (error) {
+    if (options.signal?.aborted || isAbortFailure(error, options.signal)) throw error;
+    resolutionFailure = error;
+  }
+  const sources = await mapWithFourWorkers(requestedIds, async (sourceId) => {
+    if (resolutionFailure instanceof Error
+      && (resolutionFailure as Error & { sourceId?: string }).sourceId === sourceId) {
+      return { sourceId, error: resolutionFailure };
+    }
+    try {
+      const context = await resolveCatalogOperationContext({
+        cliVersion: options.cliVersion,
+        sourceIds: [sourceId],
+        configSnapshot: snapshot,
+        env,
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.providers ? { runtime: { providers: options.providers } } : {}),
+        bootstrapMissingActive: false,
+      });
+      return context.catalog.sources[0]!;
+    } catch (error) {
+      if (options.signal?.aborted || isAbortFailure(error, options.signal)) throw error;
+      return { sourceId, error: error as Error };
+    }
+  }, options.signal);
+  return {
+    resolution: {
+      sources: sources.sort((left, right) => compareText(left.sourceId, right.sourceId)),
+      primarySourceId: snapshot.config.sources.find((source) => source.primary)!.id,
+      configDigest: snapshot.digest,
+      compositeDigest: createDigest(sources.map((item) => item.resolution
+        ? {
+            sourceId: item.sourceId,
+            resolvedCommit: item.resolution.resolvedCommit,
+            manifestDigest: item.resolution.manifestDigest,
+            snapshotDigest: item.resolution.snapshotDigest,
+          }
+        : { sourceId: item.sourceId, error: true })),
+    },
+    immutable: true,
+  };
+}
+
 export async function withResolvedMultiSourceCatalog<T>(
   options: WithResolvedMultiSourceCatalogOptions<T>,
 ): Promise<LeaseSafeResult<T>> {
-  const resolved = await resolveMultiSourceCatalog(options);
-  const generation = await materializeCallbackGeneration(resolved, options.signal);
+  const resolved = await resolveCatalogForConsumer(options);
+  const generation = resolved.immutable
+    ? { resolution: resolved.resolution, generationRoot: undefined }
+    : await materializeCallbackGeneration(resolved.resolution, options.signal);
   try {
     const protectedPaths = await catalogResolutionProtectedPaths(generation.resolution);
     throwIfAborted(options.signal);
@@ -452,7 +553,9 @@ export async function withResolvedMultiSourceCatalog<T>(
     throwIfAborted(options.signal);
     return projected;
   } finally {
-    await fs.remove(generation.generationRoot).catch(() => undefined);
+    if (generation.generationRoot) {
+      await fs.remove(generation.generationRoot).catch(() => undefined);
+    }
   }
 }
 
@@ -478,13 +581,17 @@ export async function withResolvedCatalogPlugin<T>(
     ...(options.env ? { env: options.env } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.providers ? { providers: options.providers } : {}),
+    ...(options.operationContext ? { operationContext: options.operationContext } : {}),
+    ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
   };
-  const resolvedCatalog = await resolveMultiSourceCatalog({
+  const resolvedCatalog = await resolveCatalogForConsumer({
     ...resolutionOptions,
     ...(sourceIds ? { sourceIds } : {}),
   });
-  throwSourceErrors(resolvedCatalog);
-  const generation = await materializeCallbackGeneration(resolvedCatalog, options.signal);
+  throwSourceErrors(resolvedCatalog.resolution);
+  const generation = resolvedCatalog.immutable
+    ? { resolution: resolvedCatalog.resolution, generationRoot: undefined }
+    : await materializeCallbackGeneration(resolvedCatalog.resolution, options.signal);
   try {
     const catalog = generation.resolution;
     const matches = catalog.sources.flatMap((item) => {
@@ -534,7 +641,9 @@ export async function withResolvedCatalogPlugin<T>(
     throwIfAborted(options.signal);
     return projected;
   } finally {
-    await fs.remove(generation.generationRoot).catch(() => undefined);
+    if (generation.generationRoot) {
+      await fs.remove(generation.generationRoot).catch(() => undefined);
+    }
   }
 }
 
