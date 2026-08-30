@@ -159,38 +159,22 @@ test('source excludes standard views rendered during staging', async () => {
   }
 });
 
-test('materialized audit validator runs with its projected dependency closure', async () => {
+test('materialized EvalAudit template validates against the canonical v1 schema', async () => {
   if (!context) return;
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
-  const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
-  const templatePath = path.join(auditRoot, 'assets/eval-audit-result-template.json');
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-runtime-contract-'));
-  try {
-    const { stdout } = await execFileAsync(process.execPath, [validator, '--help'], {
-      cwd: auditRoot,
-      encoding: 'utf8',
-    });
-    assert.match(stdout, /--plan <plan\.json>/u);
-
-    const sourceOnly = await execFileAsync(process.execPath, [
-      validator, templatePath, '--format', 'json',
-    ], {
-      cwd: auditRoot,
-      encoding: 'utf8',
-    });
-    assert.equal(JSON.parse(sourceOnly.stdout).valid, true);
-
-    const invalid = JSON.parse(await readFile(templatePath, 'utf8'));
-    invalid.runBundleDigest = 'sha256:' + '1'.repeat(64);
-    const invalidPath = path.join(temporary, 'invalid-preflight.json');
-    await writeFile(invalidPath, JSON.stringify(invalid));
-    await assert.rejects(execFileAsync(process.execPath, [validator, invalidPath], {
-      cwd: auditRoot,
-      encoding: 'utf8',
-    }));
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+  const validator = path.join(auditRoot, 'scripts/validate-json-contract.mjs');
+  const templatePath = path.join(auditRoot, 'assets/eval-audit-template.json');
+  const schemaPath = path.resolve(
+    sourceRoot,
+    '../../packages/agent-skill-eval/schemas/eval-audit.schema.json',
+  );
+  const { stdout } = await execFileAsync(process.execPath, [
+    validator, schemaPath, templatePath, '--format', 'json',
+  ], {
+    cwd: auditRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(JSON.parse(stdout).valid, true);
 });
 
 test('Eval case validator admits exact trigger routes only at the trigger layer', async () => {
@@ -202,28 +186,31 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
   const routeCase = {
     id: 'catalog_review_route',
     split: 'validation',
-    eval_type: 'trigger',
-    test_layer: 'trigger',
-    case_role: 'regression',
-    provenance: 'derived',
-    scenario_family: 'catalog-routing',
-    unit_under_test: 'Catalog trigger description',
-    preconditions: { target_available: true },
-    expected_loaded_skills: ['review-aw-catalog'],
-    oracle: {
+    tags: ['regression', 'catalog-routing'],
+    input: {
+      query: 'Review this Catalog composition without changing it.',
+      expected: { loadedSkills: ['review-aw-catalog'] },
+    },
+    audit: {
       rationale: 'A Catalog composition review has one exact owner.',
-      rule_refs: ['SKILL.md description'],
-      confidence: 'high',
-      allowed_variance: 'The route may explain the boundary but must load only the owner.',
-      minimal_counterexample: 'A Catalog write request routes to the Catalog Author.',
+      allowedVariance: 'The route may explain the boundary but must load only the owner.',
+      minimalCounterexample: 'A Catalog write request routes to the Catalog Author.',
     },
   };
   const document = {
-    policy: {
-      optimization: 'precision-first',
-      false_negative_cost: 'high',
-      false_positive_cost: 'critical',
-      rationale: 'Sibling co-load crosses a critical ownership boundary.',
+    version: 1,
+    suite: {
+      kind: 'trigger',
+      unitUnderTest: 'audit-agent-skill-evals',
+      participants: ['review-aw-catalog'],
+      defaultGrader: 'mechanical',
+      policy: {
+        optimization: 'precision-first',
+        falseNegativeCost: 'high',
+        falsePositiveCost: 'critical',
+        rationale: 'Sibling co-load crosses a critical ownership boundary.',
+      },
+      runtime: { isolation: 'strict' },
     },
     cases: [routeCase],
   };
@@ -241,7 +228,8 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
     const behaviorPath = path.join(temporary, 'behavior.json');
     await writeFile(behaviorPath, JSON.stringify({
       ...document,
-      cases: [{ ...routeCase, eval_type: 'behavior', test_layer: 'conversation' }],
+      suite: { ...document.suite, kind: 'conversation', defaultGrader: 'independent-llm' },
+      cases: [routeCase],
     }));
     await assert.rejects(
       execFileAsync(process.execPath, [
@@ -250,7 +238,9 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
       (error) => {
         const result = JSON.parse(error.stdout);
         return result.diagnostics.some((entry) =>
-          entry.code === 'case.route-expectation-type' && entry.level === 'error');
+          entry.code === 'case.conversation-prompt' && entry.level === 'error') &&
+          result.diagnostics.some((entry) =>
+            entry.code === 'case.conversation-assertions' && entry.level === 'error');
       },
     );
   } finally {
@@ -419,120 +409,32 @@ test('materialized Bundle validator matches the canonical package validator', as
   }
 });
 
-test('audit triage rejects conclusions from an unmet bundle evidence requirement', async () => {
+test('EvalAudit v1 rejects removed v3 result fields', async () => {
   if (!context) return;
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
-  const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-evidence-requirement-'));
-  const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex');
-  const targetSkillDigest = 'sha256:' + '1'.repeat(64);
-  const caseCorpusDigest = 'sha256:' + '2'.repeat(64);
+  const validator = path.join(auditRoot, 'scripts/validate-json-contract.mjs');
+  const templatePath = path.join(auditRoot, 'assets/eval-audit-template.json');
+  const schemaPath = path.resolve(
+    sourceRoot,
+    '../../packages/agent-skill-eval/schemas/eval-audit.schema.json',
+  );
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-audit-v1-contract-'));
   try {
-    const stdout = JSON.stringify({
-      schemaVersion: 1,
-      provider: { id: 'fixture', version: '1' },
-      usage: null,
-      grading: null,
-      artifacts: [],
-    });
-    await writeFile(path.join(temporary, 'stdout.txt'), stdout);
-    await writeFile(path.join(temporary, 'stderr.txt'), '');
-    const bundle = {
-      schemaVersion: 4,
-      runner: { id: 'fixture', version: '1' },
-      independentContext: true,
-      provider: { id: 'fixture', version: '1' },
-      providerCapabilitiesDigest: 'sha256:' + '4'.repeat(64),
-      planDigest: 'sha256:' + '3'.repeat(64),
-      targetSkillDigest,
-      caseCorpusDigest,
-      runtimeInputs: [],
-      comparisonPlanned: false,
-      evidenceLevel: 'executed',
-      evidenceRequirement: {
-        minimumEvidenceLevel: 'executed',
-        plannedComparisons: 0,
-        comparableComparisons: 0,
-        satisfied: false,
-      },
-      processManagement: {
-        mode: 'observed',
-        descendantCleanupGuaranteed: false,
-        limitation: 'Provider process cleanup could not be verified.',
-      },
-      runs: [{
-        caseId: 'case-1',
-        configuration: 'current',
-        comparisonId: null,
-        skillMode: 'with-skill',
-        skillDigest: targetSkillDigest,
-        runIndex: 1,
-        status: 'error',
-        exitCode: 0,
-        durationMs: 1,
-        stdoutPath: 'stdout.txt',
-        stdoutDigest: digest(stdout),
-        stderrPath: 'stderr.txt',
-        stderrDigest: digest(''),
-        usage: null,
-        grading: null,
-        artifacts: [],
-      }],
-      aggregate: {
-        cases: 1,
-        configurations: 1,
-        runs: 1,
-        completed: 0,
-        processFailed: 1,
-        timedOut: 0,
-        comparisons: [],
-      },
-      limitations: ['Provider process cleanup could not be verified.'],
-    };
-    const bundlePath = path.join(temporary, 'bundle.json');
-    const bundleBytes = JSON.stringify(bundle);
-    await writeFile(bundlePath, bundleBytes);
-    const audit = {
-      schemaVersion: 3,
-      producer: 'audit-agent-skill-evals',
-      independentContext: true,
-      auditId: 'unmet-evidence-fixture',
-      mode: 'result-triage',
-      targetSkillDigest,
-      caseCorpusDigest,
-      runBundleDigest: digest(bundleBytes),
-      validity: 'pass',
-      optimizationPolicy: 'balanced',
-      cases: [{
-        caseId: 'case-1',
-        releaseRelevant: true,
-        admission: 'pass',
-        oracleConfidence: 'high',
-        findings: [],
-      }],
-      blockedCases: [],
-      releaseEligible: true,
-      failureTriage: [{
-        caseId: 'case-1',
-        attribution: 'skill-defect',
-        action: 'candidate-skill-fix',
-        evidence: ['fixture'],
-      }],
-      recommendedAction: 'candidate-skill-fix',
-    };
-    const auditPath = path.join(temporary, 'audit.json');
+    const audit = JSON.parse(await readFile(templatePath, 'utf8'));
+    audit.schemaVersion = 3;
+    audit.runBundleDigest = 'sha256:' + '1'.repeat(64);
+    const auditPath = path.join(temporary, 'legacy-audit.json');
     await writeFile(auditPath, JSON.stringify(audit));
 
     await assert.rejects(
-      execFileAsync(process.execPath, [validator, auditPath, '--run-bundle', bundlePath, '--format', 'json'], {
+      execFileAsync(process.execPath, [validator, schemaPath, auditPath, '--format', 'json'], {
         cwd: auditRoot,
         encoding: 'utf8',
       }),
       (error) => {
         const errors = JSON.parse(error.stdout).errors;
-        assert.ok(errors.some((entry) => entry.startsWith('releaseEligible=true')));
-        assert.ok(errors.some((entry) => entry.includes('recommendedAction=collect-more-data or runtime-issue')));
-        assert.ok(errors.some((entry) => entry.includes('forbids candidate-skill-fix triage actions')));
+        assert.ok(errors.some((entry) => entry === '$: unknown property schemaVersion'));
+        assert.ok(errors.some((entry) => entry === '$: unknown property runBundleDigest'));
         return true;
       },
     );
@@ -561,14 +463,15 @@ test('starter author and Eval contracts remain valid', async () => {
       'skills/author-agent-skill/assets/skill-design-brief.schema.json',
       'skills/author-agent-skill/assets/skill-design-brief.template.json',
     ],
-    [
-      'skills/audit-agent-skill-evals/assets/eval-audit-result.schema.json',
-      'skills/audit-agent-skill-evals/assets/eval-audit-result-template.json',
-    ],
   ]) {
     await execFileAsync(process.execPath, [validator, path.join(runtimeRoot, schema), path.join(runtimeRoot, value)], {
       cwd: runtimeRoot,
       encoding: 'utf8',
     });
   }
+  await execFileAsync(process.execPath, [
+    validator,
+    path.resolve(sourceRoot, '../../packages/agent-skill-eval/schemas/eval-audit.schema.json'),
+    path.join(runtimeRoot, 'skills/audit-agent-skill-evals/assets/eval-audit-template.json'),
+  ], { cwd: runtimeRoot, encoding: 'utf8' });
 });

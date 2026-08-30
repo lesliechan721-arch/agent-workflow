@@ -85,8 +85,10 @@ function relativePath(value: unknown, label: string): string {
   return value
 }
 
-function strings(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.length === 0) throw new Error(`${label} must be a non-empty array.`)
+function safeIdArray(value: unknown, label: string, allowEmpty = false): string[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    throw new Error(`${label} must be ${allowEmpty ? 'an array' : 'a non-empty array'}.`)
+  }
   const result = value.map((entry, index) => safeId(entry, `${label}[${index}]`))
   if (new Set(result).size !== result.length) throw new Error(`${label} must contain unique values.`)
   return result
@@ -244,7 +246,7 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
     if (row.kind !== 'trigger' && row.kind !== 'conversation' && row.kind !== 'custom-process') {
       throw new Error(`${label}.kind must be trigger, conversation, or custom-process.`)
     }
-    const profiles = row.profiles === undefined ? undefined : strings(row.profiles, `${label}.profiles`)
+    const profiles = row.profiles === undefined ? undefined : safeIdArray(row.profiles, `${label}.profiles`)
     const unknownProfile = profiles?.find((profile) => !profileIds.has(profile))
     if (unknownProfile) throw new Error(`${label} references unknown profile ${JSON.stringify(unknownProfile)}.`)
     if (row.requiredForRelease !== undefined && typeof row.requiredForRelease !== 'boolean') {
@@ -252,7 +254,7 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
     }
     const releaseSplits = row.releaseSplits === undefined
       ? undefined
-      : strings(row.releaseSplits, `${label}.releaseSplits`)
+      : safeIdArray(row.releaseSplits, `${label}.releaseSplits`, true)
     const provider = row.provider === undefined ? undefined : parseProvider(row.provider, `${label}.provider`)
     if (row.kind === 'custom-process' && !provider) throw new Error(`${label} custom-process requires provider.`)
     if (row.kind !== 'custom-process' && provider) throw new Error(`${label} built-in kind must not declare provider.`)
@@ -300,6 +302,14 @@ export async function readAwSkillEvalManifestV1(options: {
     throw new Error('eval manifest.defaults.profile references an unknown profile.')
   }
   const suites = parseSuites(raw.suites, new Set(profiles.map((profile) => profile.id)))
+  const ownsDynamicSkill = (options.plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    (target.target === 'codex.skill' || target.target === 'claude.skill')
+    && target.skillKey === skill)
+  if (ownsDynamicSkill && !suites.some((suite) => suite.requiredForRelease)) {
+    throw new Error(
+      `eval manifest.suites must include at least one release-required suite for dynamic Skill "${skill}".`,
+    )
+  }
   const casesBySuite = new Map<string, SelectedCasesDocument>()
   for (const suite of suites) {
     if (suite.provider) await resolveAwSkillEvalCustomCommand(evalRoot, suite.provider)

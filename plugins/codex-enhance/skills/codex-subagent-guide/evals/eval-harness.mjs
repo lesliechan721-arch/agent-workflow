@@ -66,19 +66,7 @@ export async function readEvalResource(relativePath) {
     throw new Error(`Eval resource must stay inside evals/: ${relativePath}`);
   }
 
-  try {
-    return await readFile(path.join(evalDir, normalized), 'utf8');
-  } catch (error) {
-    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) throw error;
-  }
-  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
-  if (typeof context.sourceRoot !== 'string' || context.sourceRoot.trim() === '') {
-    throw new Error(`Eval resource is missing from bundle: ${relativePath}`);
-  }
-  return readFile(
-    path.join(context.sourceRoot, 'skills', 'codex-subagent-guide', 'evals', normalized),
-    'utf8',
-  );
+  return readFile(path.join(evalDir, normalized), 'utf8');
 }
 
 function parseTomlString(source, key, file) {

@@ -1,213 +1,219 @@
 {
-  "skill_name": "dev-workflow",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定，或在一次自动修复后继续无界循环，会造成错误写入、规格漂移和不必要工作。"
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-workflow",
+    "participants": [
+      "dev-spec",
+      "dev-review-spec",
+      "dev-implement",
+      "dev-review-code",
+      "decision-shape",
+      "decision-grill",
+      "decision-prototype"
+    ],
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定，或在一次自动修复后继续无界循环，会造成错误写入、规格漂移和不必要工作。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "prototype-feedback-to-default-task-root",
-      "eval_type": "outcome",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "prototype-to-spec-handoff",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "workflow_explicitly_requested": true,
-        "prototype_feedback_required": true,
-        "subsequent_spec_authorized": true,
-        "repository_has_no_artifact_convention": true,
-        "production_implementation_forbidden": true
-      },
-      "oracle": {
-        "rationale": "Standard 任务先由 decision-shape 组织 Prototype 反馈并归一当前 Shape，再把稳定结论投影到默认任务目录中的 Spec；Prototype 的内部路径不属于 Router 合同。",
-        "rule_refs": [
-          "dev-workflow/SKILL.md#3-得出必需-gate",
-          "dev-workflow/SKILL.md#4-进入最早未满足-gate",
-          "dev-workflow/SKILL.md#5-任务目录",
-          "decision-shape/SKILL.md#工作方式",
-          "decision-prototype/SKILL.md#工作流",
-          "dev-spec/SKILL.md#工作流"
-        ],
-        "confidence": "high",
-        "allowed_variance": "Prototype 路径和结构可以不同；Shape 与 Spec 必须使用 docs/dev/approval-layout/，先等待反馈，只把稳定结论写入规范性章节，并保持生产文件不变。"
-      },
-      "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。",
-      "scripted_replies": [
-        {
-          "expected_question_count": 1,
-          "answers_by_index": [
-            "选择双栏，右侧保留审批历史；移动端折叠。请把稳定决定写入 Spec 后停止，不要实现生产页面。"
-          ],
-          "unexpected_question_answer": "只需要我选择单栏或双栏；其它事项保留为未解决。"
-        }
+      "split": "validation",
+      "tags": [
+        "representative",
+        "prototype-to-spec-handoff"
       ],
-      "expected_output": "选择 Standard 保障，先由 decision-shape 取得原型反馈并归一默认任务目录中的 decisions.md，再把双栏决定投影到 spec.md；生产页面保持不变。",
-      "sandbox": "workspace-write",
-      "workspace_files": {
-        "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
-      },
-      "review": {
-        "platforms": ["codex"],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": ["docs/dev/approval-layout/**", "prototypes/**"],
-        "artifacts": [
-          {"path": "docs/dev/approval-layout/decisions.md", "exists": true, "contains": ["Decision frame", "双栏"]},
-          {"path": "docs/dev/approval-layout/spec.md", "exists": true, "contains": ["双栏", "审批历史", "移动端", "Agent discretion", "Evidence"]}
+      "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。",
+      "assertions": [
+        "trace 先由 dev-workflow 进入 decision-shape，再由 Shape 内部使用 decision-prototype；用户反馈并归一 Shape 后才进入 dev-spec",
+        "Shape 和 Spec 使用 docs/dev/approval-layout/；不要求 Router 决定 Prototype 的内部路径",
+        "Spec 只投影用户确认的稳定决定，并链接完整原型作为 Evidence",
+        "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "选择双栏，右侧保留审批历史；移动端折叠。请把稳定决定写入 Spec 后停止，不要实现生产页面。"
+            ],
+            "unexpectedQuestionAnswer": "只需要我选择单栏或双栏；其它事项保留为未解决。"
+          }
         ],
-        "checks": [
-          "trace 先由 dev-workflow 进入 decision-shape，再由 Shape 内部使用 decision-prototype；用户反馈并归一 Shape 后才进入 dev-spec",
-          "Shape 和 Spec 使用 docs/dev/approval-layout/；不要求 Router 决定 Prototype 的内部路径",
-          "Spec 只投影用户确认的稳定决定，并链接完整原型作为 Evidence",
-          "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现"
+        "workspaceFiles": {
+          "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
+        }
+      },
+      "expected": {
+        "output": "选择 Standard 保障，先由 decision-shape 取得原型反馈并归一默认任务目录中的 decisions.md，再把双栏决定投影到 spec.md；生产页面保持不变。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/dev/approval-layout/**",
+          "prototypes/**"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/dev/approval-layout/decisions.md",
+            "exists": true,
+            "contains": [
+              "Decision frame",
+              "双栏"
+            ]
+          },
+          {
+            "path": "docs/dev/approval-layout/spec.md",
+            "exists": true,
+            "contains": [
+              "双栏",
+              "审批历史",
+              "移动端",
+              "Agent discretion",
+              "Evidence"
+            ]
+          }
         ]
       }
     },
     {
       "id": "assured-migration-stops-at-approval",
-      "eval_type": "outcome",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "assured-approval-gate",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "workflow_explicitly_requested": true,
-        "persistent_data_migration": true,
-        "material_decisions_confirmed": true,
-        "spec_and_review_authorized": true,
-        "implementation_not_authorized": true
-      },
-      "oracle": {
-        "rationale": "本案例只验证 Assured 生命周期在批准前的前缀：生成包含回滚和验证的 Spec 与审查记录，并在明确批准前停止；项目隔离、实现证据和最终独立 Review 由批准后的案例验证。",
-        "rule_refs": [
-          "dev-workflow/SKILL.md#2-选择最低足够保障",
-          "dev-workflow/SKILL.md#3-得出必需-gate",
-          "dev-workflow/SKILL.md#4-进入最早未满足-gate",
-          "dev-spec/SKILL.md#工作流",
-          "dev-review-spec/SKILL.md#审查"
-        ],
-        "confidence": "high",
-        "allowed_variance": "Spec 和 Review 措辞可不同；此案例只判定批准前行为，必须标为 Assured，保存到默认任务目录，请求批准并保持生产文件不变。"
-      },
-      "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在默认任务目录生成 Spec 和审查记录。审查 clean 后向我请求批准，但不要在批准前修改 src/token-store.js。",
-      "scripted_replies": [
-        {
-          "expected_question_count": 1,
-          "answers_by_index": ["我暂不批准，请停在这里。"],
-          "unexpected_question_answer": "不要实施，先停在批准检查点。"
-        }
+      "split": "validation",
+      "tags": [
+        "representative",
+        "assured-approval-gate"
       ],
-      "expected_output": "选择 Assured，创建包含迁移、回滚、验证和授权边界的 Spec 及 clean Review，然后停在 Spec 批准检查点。",
-      "sandbox": "workspace-write",
-      "workspace_files": {
-        "docs/token-key-rotation-decisions.md": "# 已确认决定\n\n- 新旧密钥双读 14 天。\n- 写入只使用新密钥。\n- 按租户分批迁移，每批可回滚。\n- 验证覆盖解密成功率、错误率和回滚演练。\n- 生产执行需要单独授权。\n",
-        "src/token-store.js": "export const keyVersion = 'old';\n"
-      },
-      "review": {
-        "platforms": ["codex"],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": ["docs/dev/token-key-rotation/**"],
-        "artifacts": [
-          {"path": "docs/dev/token-key-rotation/spec.md", "exists": true, "contains": ["14 天", "分批", "回滚", "验证", "授权"]},
-          {"path": "docs/dev/token-key-rotation/spec-review.md", "exists": true, "contains": ["Assurance", "Assured", "Result: `clean`"]}
+      "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在默认任务目录生成 Spec 和审查记录。审查 clean 后向我请求批准，但不要在批准前修改 src/token-store.js。",
+      "assertions": [
+        "明确选择 Assured，而不是把迁移当作 Fast 或仅列能力",
+        "Spec 包含双读窗口、分批迁移、回滚、验证和生产授权边界",
+        "完成 dev-review-spec 后请求明确批准，并在用户暂不批准时停止",
+        "不加载 dev-implement，不修改 src/token-store.js"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "我暂不批准，请停在这里。"
+            ],
+            "unexpectedQuestionAnswer": "不要实施，先停在批准检查点。"
+          }
         ],
-        "checks": [
-          "明确选择 Assured，而不是把迁移当作 Fast 或仅列能力",
-          "Spec 包含双读窗口、分批迁移、回滚、验证和生产授权边界",
-          "完成 dev-review-spec 后请求明确批准，并在用户暂不批准时停止",
-          "不加载 dev-implement，不修改 src/token-store.js"
+        "workspaceFiles": {
+          "docs/token-key-rotation-decisions.md": "# 已确认决定\n\n- 新旧密钥双读 14 天。\n- 写入只使用新密钥。\n- 按租户分批迁移，每批可回滚。\n- 验证覆盖解密成功率、错误率和回滚演练。\n- 生产执行需要单独授权。\n",
+          "src/token-store.js": "export const keyVersion = 'old';\n"
+        }
+      },
+      "expected": {
+        "output": "选择 Assured，创建包含迁移、回滚、验证和授权边界的 Spec 及 clean Review，然后停在 Spec 批准检查点。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/dev/token-key-rotation/**"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/dev/token-key-rotation/spec.md",
+            "exists": true,
+            "contains": [
+              "14 天",
+              "分批",
+              "回滚",
+              "验证",
+              "授权"
+            ]
+          },
+          {
+            "path": "docs/dev/token-key-rotation/spec-review.md",
+            "exists": true,
+            "contains": [
+              "Assurance",
+              "Assured",
+              "Result: `clean`"
+            ]
+          }
         ]
       }
     },
     {
       "id": "second-blocked-review-stops-before-more-repair",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "review-repair-stop",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "workflow_explicitly_requested": true,
-        "previous_review_blocked": true,
-        "one_automatic_repair_completed": true,
-        "current_review_blocked": true,
-        "user_decision_required": true
-      },
-      "oracle": {
-        "rationale": "一次自动修复和完整复审后仍 blocked；宏入口应停止继续实现，并把最新 finding 交给用户决定。",
-        "rule_refs": [
-          "dev-workflow/SKILL.md#6-Review-结果"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以用不同措辞呈现选项；不得继续加载实现或复审能力，也不得修改工作区。",
-        "minimal_counterexample": "若第一次复审为 clean，则可以进入交付。"
-      },
-      "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。请先判断当前是否需要我决定，不要自动修改文件。",
-      "scripted_replies": [
-        {
-          "expected_question_count": 1,
-          "answers_by_index": ["停止任务，不再修复。"],
-          "unexpected_question_answer": "不要继续修改；停止任务。"
-        }
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "review-repair-stop"
       ],
-      "expected_output": "识别一次自动修复后的完整复审仍为 blocked，进入 Review 修复升级检查点；用户选择停止后保持工作区不变。",
-      "workspace_files": {
-        "docs/dev/invite-expiry/spec.md": "# Invite expiry\n\n- 邀请创建 7 天后过期。\n- 服务端拒绝过期邀请。\n",
-        "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Engineering quality\n\n同一边界语义 finding 仍未解决。\n\n## 与上一份 Review 比较\n\n- 已解决：无。\n- 仍存在：边界语义 finding。\n- 新发现：无。\n\n## 建议动作\n\n已完成一次自动修复与完整复审；仍 blocked，需要用户决定是否继续。\n",
-        "src/invitations/accept.js": "export function acceptInvitation(invitation, now) {\n  if (now > invitation.expiresAt) throw new Error('expired');\n  return { accepted: true };\n}\n"
-      },
-      "review": {
-        "platforms": ["codex"],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "artifacts": [
-          {"path": "src/invitations/accept.js", "exists": true, "contains": ["now > invitation.expiresAt"]}
+      "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。请先判断当前是否需要我决定，不要自动修改文件。",
+      "assertions": [
+        "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code；本次请求没有新的自动修复授权",
+        "不读取 review-repair.md；根据当前 blocked Review 和无新授权进入用户检查点",
+        "向用户说明最新 blocker、关闭条件和需要重新决定的动作；没有新授权时停止",
+        "用户选择停止后不修改 Spec、Review 或产品代码"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "停止任务，不再修复。"
+            ],
+            "unexpectedQuestionAnswer": "不要继续修改；停止任务。"
+          }
         ],
-        "checks": [
-          "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code；本次请求没有新的自动修复授权",
-          "不读取 review-repair.md；根据当前 blocked Review 和无新授权进入用户检查点",
-          "向用户说明最新 blocker、关闭条件和需要重新决定的动作；没有新授权时停止",
-          "用户选择停止后不修改 Spec、Review 或产品代码"
+        "workspaceFiles": {
+          "docs/dev/invite-expiry/spec.md": "# Invite expiry\n\n- 邀请创建 7 天后过期。\n- 服务端拒绝过期邀请。\n",
+          "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Engineering quality\n\n同一边界语义 finding 仍未解决。\n\n## 与上一份 Review 比较\n\n- 已解决：无。\n- 仍存在：边界语义 finding。\n- 新发现：无。\n\n## 建议动作\n\n已完成一次自动修复与完整复审；仍 blocked，需要用户决定是否继续。\n",
+          "src/invitations/accept.js": "export function acceptInvitation(invitation, now) {\n  if (now > invitation.expiresAt) throw new Error('expired');\n  return { accepted: true };\n}\n"
+        }
+      },
+      "expected": {
+        "output": "识别一次自动修复后的完整复审仍为 blocked，进入 Review 修复升级检查点；用户选择停止后保持工作区不变。",
+        "workspaceUnchanged": true,
+        "artifacts": [
+          {
+            "path": "src/invitations/accept.js",
+            "exists": true,
+            "contains": [
+              "now > invitation.expiresAt"
+            ]
+          }
         ]
+      },
+      "audit": {
+        "rationale": "一次自动修复和完整复审后仍 blocked；宏入口应停止继续实现，并把最新 finding 交给用户决定。",
+        "allowedVariance": "可以用不同措辞呈现选项；不得继续加载实现或复审能力，也不得修改工作区。",
+        "minimalCounterexample": "若第一次复审为 clean，则可以进入交付。"
       }
     },
     {
       "id": "route-summary-is-user-navigation",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "route-visibility",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "workflow_explicitly_requested": true,
-        "shape_complete": true,
-        "spec_missing": true
-      },
-      "oracle": {
-        "rationale": "宏路由摘要必须让用户理解当前 gate、为什么它最早未满足、接下来会发生什么，以及是否需要参与。",
-        "rule_refs": [
-          "dev-workflow/SKILL.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以使用短段落或列表；用户必须能识别当前 gate、判断依据、下一步和参与要求。",
-        "minimal_counterexample": "若当前 gate 需要用户批准，则摘要必须明确请求批准，而不是继续后续能力。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression",
+        "route-visibility"
+      ],
       "prompt": "使用 dev-workflow 判断这个任务的下一阶段。Shape 已完整，没有 Spec。只说明路由结果和理由；不要修改工作区。",
-      "scripted_replies": [],
-      "expected_output": "说明当前最早未满足的是 Spec gate、接下来使用 dev-spec、判断依据，以及本次不需要用户参与。",
-      "review": {
-        "platforms": ["codex", "claude"],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "说明当前最早未满足的 gate 和主要依据",
-          "说明下一能力、接下来会发生什么以及用户是否需要参与",
-          "不修改工作区"
-        ]
+      "assertions": [
+        "说明当前最早未满足的 gate 和主要依据",
+        "说明下一能力、接下来会发生什么以及用户是否需要参与",
+        "不修改工作区"
+      ],
+      "input": {
+        "scriptedReplies": []
+      },
+      "expected": {
+        "output": "说明当前最早未满足的是 Spec gate、接下来使用 dev-spec、判断依据，以及本次不需要用户参与。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "宏路由摘要必须让用户理解当前 gate、为什么它最早未满足、接下来会发生什么，以及是否需要参与。",
+        "allowedVariance": "可以使用短段落或列表；用户必须能识别当前 gate、判断依据、下一步和参与要求。",
+        "minimalCounterexample": "若当前 gate 需要用户批准，则摘要必须明确请求批准，而不是继续后续能力。"
       }
     }
   ]

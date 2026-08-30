@@ -310,14 +310,18 @@ describe('aw skill eval commands', () => {
         id: 'validation_case',
         split: 'validation',
         tags: ['release'],
-        query: 'Use the owner Skill.',
-        expectedLoad: true,
+        input: {
+          query: 'Use the owner Skill.',
+          expectedLoad: true,
+        },
       }, {
         id: 'train_case',
         split: 'train',
         tags: ['development'],
-        query: 'Do not use the owner Skill.',
-        expectedLoad: false,
+        input: {
+          query: 'Do not use the owner Skill.',
+          expectedLoad: false,
+        },
       }],
     }
     await fs.writeJson(selectedCasesPath, v1Cases, { spaces: 2 })
@@ -328,8 +332,10 @@ describe('aw skill eval commands', () => {
         id: 'held_out_case',
         split: 'sanity',
         tags: ['held-out'],
-        query: 'Held-out query must not enter another suite workspace.',
-        expectedLoad: false,
+        input: {
+          query: 'Held-out query must not enter another suite workspace.',
+          expectedLoad: false,
+        },
       }],
     }, { spaces: 2 })
     const manifestPath = path.join(fixture.evalRoot, 'manifest.json')

@@ -82,6 +82,71 @@ afterEach(async () => {
 })
 
 describe('canonical AwSkillEvalManifest reader', () => {
+  it('accepts empty unique releaseSplits only for manifest v1 release selection', async () => {
+    const fixture = await createFixture()
+    await fs.writeJson(path.join(fixture.evalRoot, 'selected-cases.json'), {
+      version: 1,
+      suite: { kind: 'trigger', unitUnderTest: 'owner-skill' },
+      cases: [{
+        id: 'loads_skill',
+        split: 'validation',
+        tags: [],
+        input: {
+          query: 'Use the owner Skill.',
+          expectedLoad: true,
+        },
+      }],
+    }, { spaces: 2 })
+    const manifest = {
+      version: 1,
+      defaults: { profile: 'selected' },
+      profiles: {
+        selected: { scope: 'project', plugins: { 'fixture-plugin': {} } },
+      },
+      suites: [{
+        id: 'trigger',
+        kind: 'trigger',
+        cases: 'selected-cases.json',
+        profiles: ['selected'],
+        releaseSplits: [],
+      }],
+    }
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), manifest, { spaces: 2 })
+
+    const emptyReleaseSplits = await validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })
+    expect(emptyReleaseSplits, emptyReleaseSplits.errors.join('; ')).toMatchObject({
+      valid: true,
+      manifest: { version: 1, suites: [{ releaseSplits: [] }] },
+    })
+
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
+      ...manifest,
+      suites: [{ ...manifest.suites[0], releaseSplits: ['validation', 'validation'] }],
+    }, { spaces: 2 })
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: [expect.stringContaining('releaseSplits must contain unique values')],
+    })
+
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
+      ...manifest,
+      suites: [{ ...manifest.suites[0], profiles: [] }],
+    }, { spaces: 2 })
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: [expect.stringContaining('profiles must be a non-empty array')],
+    })
+  })
+
   it('requires the owner plugin in every manifest v1 profile', async () => {
     const fixture = await createFixture()
     await fs.writeJson(path.join(fixture.evalRoot, 'selected-cases.json'), {

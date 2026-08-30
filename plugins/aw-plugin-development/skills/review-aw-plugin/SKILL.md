@@ -2,7 +2,7 @@
 name: review-aw-plugin
 description: >-
   当用户要只读审核一个 AW 插件源码、其内部组件或 materialized Skill 时使用。负责单个插件的 manifest、组件组合、共享脚本、build/materialization、profile 差异和按 digest 去重的 leaf Skill Review；不修改插件，不评审跨多个插件的完整工作流，不输出发布资格。
-compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit 和 agent-skill-toolkit。
+compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit 和 agent-skill-toolkit；Release Check 还需要 PATH 上兼容的 `aw-skill-eval`。
 user-invocable: true
 metadata:
   short-description: 只读评审一个 AW 插件及其 materialized profiles
@@ -40,9 +40,9 @@ leaf inventory 为空的条件是：合法 manifest 未声明 `skills`，且 `ar
 
 ## 独立 Release Check
 
-用户明确要求 Release Check 时，先准备 checker 的完整输入。对 leaf inventory 的每个唯一 production digest，使用 `review-agent-skill` 的 `full` 模式生成 `QualityReviewResult v1`；机器检查和 Quality Review validator 必须通过，validator 的 `effectiveDecision` 必须为 `pass`，coverage 必须为 100%，总体 confidence 必须为 medium 或 high。Review 必须精确覆盖这些 digest；重复、未匹配或未消费的 Review 都是输入错误。
+用户明确要求 Release Check 时，先准备 checker 的完整输入。对 leaf inventory 的每个唯一 production digest，使用 `review-agent-skill` 的 `full` 模式生成 `QualityReviewResult v1`；机器检查和 Quality Review validator 必须通过，validator 的 `effectiveDecision` 必须为 `pass`，coverage 必须为 100%，总体 confidence 必须为 medium 或 high。Review 必须精确覆盖这些 digest；重复、未匹配或未消费的 Review 都是输入错误。Quality Review 不声明 Eval 执行事实，也不拥有 Eval machine gate。
 
-动态 Skill 还必须提供对应 platform×scope 的 materialized final，并为 Eval manifest 中每个 required profile×required suite 分别准备 Plan v4、preflight Audit v3、EvalRunBundle v4 和 result-triage Audit v3。每条 Plan 必须带同目录的 canonical `preparation.json`，并独立绑定该 suite 的 corpus、case IDs 和 minimum runs；不得合并多个 suite corpus。静态 Skill 只在 Eval manifest 声明 required 时需要这些证据链。缺少任一 required input 时停止并列出具体 profile/suite 缺口；不要先运行 checker，也不要把 Quality Review 内的 Eval 描述当作发布证据。需要新运行时，只有静态证据不足且结果会实质改变结论才调用 `run-aw-skill-evals`；Audit fail 停止 Eval 分支，不阻止普通静态 Review。
+动态 Skill 还必须提供对应 platform×scope 的 materialized final。对每个 materialized target 和 Eval manifest 中适用的 release-required profile×suite，分别准备 exact 绑定的 `EvalSpec v1`、passing `EvalAudit v1` 和 `EvalResult v1`；不得合并多个 suite corpus。静态 Skill 只在其 Eval manifest 声明 release-required suite 时需要三件套。Reviewer 检查三件套、当前 manifest corpus、required case 的 minimum runs、完成状态、grade 通过率和 baseline 回归。缺少任一 required input 时停止并列出具体 profile/suite 缺口；不要先运行 checker，也不要把 Quality Review 内的 Eval 描述当作发布证据。需要新运行或失败诊断时读取 `references/aw-eval-runtime.md`。失败结果的 triage 不是 Release Check 输入或 machine gate；clean success 不需要 triage。
 
 输入完整后运行确定性 checker：
 
@@ -51,13 +51,12 @@ node scripts/check-aw-plugin-release.mjs <plugin-root> \
   --workspace-root <workspace-root> \
   [--review <review.json>]... \
   --final <profile=path> \
-  [--eval-plan <plan.json>]... \
-  [--preflight-audit <audit.json>]... \
-  [--run-bundle <bundle.json>]... \
-  [--triage-audit <audit.json>]...
+  [--eval-spec <spec.json>]... \
+  [--eval-audit <audit.json>]... \
+  [--eval-result <result.json>]...
 ```
 
-输出为独立 `release-check.json`。它拥有机器 readiness，不能写回 Quality Review；QualityReviewResult 不声明 Eval 证据等级。相同 production digest 的不同 required profile/suite 仍必须各有一条完整链。Release Check 不进入普通 Review common path，也不是 Review mode。
+输出为独立 `release-check.json`。它拥有机器 readiness，不能写回 Quality Review。相同 production digest 的不同 required profile/suite 仍必须各有一条完整链。Release Check 不进入普通 Review common path，也不是 Review mode。
 
 release checker 只调用 `PATH` 上已安装的 `aw`，并只执行自身 bundle 内固定的普通文件脚本；不得使用环境变量替换 checker/validator，也不得从被评审项目发现或执行 CLI JavaScript。
 

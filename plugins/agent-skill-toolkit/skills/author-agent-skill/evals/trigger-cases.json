@@ -1,236 +1,175 @@
 {
-  "schemaVersion": 1,
-  "skill": "author-agent-skill",
-  "policy": {
-    "optimization": "balanced",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏触发或误触发会改变权限、上下文或交付 owner。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "author-agent-skill",
+    "participants": [
+      "write-agent-content",
+      "review-agent-content",
+      "review-agent-skill",
+      "design-agent-skill-evals",
+      "audit-agent-skill-evals",
+      "run-aw-skill-evals"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏触发或误触发会改变权限、上下文或交付 owner。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
   },
   "cases": [
     {
       "id": "create",
       "split": "train",
-      "query": "从零创建 Agent Skill，包含 description、references 和脚本。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "从零创建 Agent Skill，包含 description、references 和脚本。",
+        "expectedLoad": true
       }
     },
     {
       "id": "change",
       "split": "train",
-      "query": "重构现有 Skill，拆掉作者和 reviewer 混合职责。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "重构现有 Skill，拆掉作者和 reviewer 混合职责。",
+        "expectedLoad": true
       }
     },
     {
       "id": "workflow",
       "split": "train",
-      "query": "修改 SKILL.md 的触发和工作流，并补作者期 eval strategy。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "修改 SKILL.md 的触发和工作流，并补作者期 eval strategy。",
+        "expectedLoad": true
       }
     },
     {
       "id": "skill_with_eval",
       "split": "validation",
-      "query": "创建 Skill 并设计必要的 trigger/behavior eval，由独立阶段审核 Oracle。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "representative",
+        "release-critical"
+      ],
+      "input": {
+        "query": "创建 Skill 并设计必要的 trigger/behavior eval，由独立阶段审核 Oracle。",
+        "expectedLoad": true
       },
-      "oracle": {
-        "rationale": "请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      "audit": {
+        "errorCost": "high"
       }
     },
     {
       "id": "package_script",
       "split": "validation",
-      "query": "为 Skill 新增非交互 validator 和 asset。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "representative",
+        "release-critical"
+      ],
+      "input": {
+        "query": "为 Skill 新增非交互 validator 和 asset。",
+        "expectedLoad": true
       },
-      "oracle": {
-        "rationale": "请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      "audit": {
+        "errorCost": "high"
       }
     },
     {
       "id": "review",
       "split": "train",
-      "query": "只读评审 Skill，给 finding 和发布结论。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "author-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只读评审 Skill，给 finding 和发布结论。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
+        "minimalCounterexample": "改变主要交付后标签翻转。"
       }
     },
     {
       "id": "eval_only",
       "split": "train",
-      "query": "只创建十条 trigger eval，不改 Skill。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-design",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只创建十条 trigger eval，不改 Skill。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
+        "minimalCounterexample": "改变主要交付后标签翻转。"
       }
     },
     {
       "id": "content_only",
       "split": "validation",
-      "query": "只改独立 AGENTS.md，不是 Skill 包。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "content-author",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "只改独立 AGENTS.md，不是 Skill 包。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
+        "minimalCounterexample": "改变主要交付后标签翻转。",
+        "errorCost": "high"
       }
     },
     {
       "id": "aw_project",
       "split": "validation",
-      "query": "在产品插件工作区新增 Skill，并同步 manifest、构建和物化。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "project-adapter",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "在产品插件工作区新增 Skill，并同步 manifest、构建和物化。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
+        "minimalCounterexample": "改变主要交付后标签翻转。",
+        "errorCost": "high"
       }
     },
     {
       "id": "run_eval",
       "split": "validation",
-      "query": "运行已有 Eval plan，不修改 Skill。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-runner",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "运行已有 Eval plan，不修改 Skill。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
+        "minimalCounterexample": "改变主要交付后标签翻转。",
+        "errorCost": "high"
       }
     }
   ]

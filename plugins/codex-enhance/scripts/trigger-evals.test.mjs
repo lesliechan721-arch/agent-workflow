@@ -15,34 +15,37 @@ import path from 'node:path';
 import {
   copyCodexRuntimeFiles,
   createEvalWorkspace,
-  readEvalResource,
   shouldStopEarly,
 } from '../skills/codex-explore/evals/eval-harness.mjs';
 import { setupTriggerWorkspace } from '../skills/codex-explore/evals/trigger-fixture.mjs';
+import manifestDocument from '../skills/codex-explore/evals/manifest.json' with { type: 'json' };
+import triggerCorpusDocument from '../skills/codex-explore/evals/trigger-cases.json' with { type: 'json' };
 
 async function testEvalCorpus() {
-  const manifest = JSON.parse(await readEvalResource('manifest.json'));
+  const manifest = manifestDocument;
   const triggerSuite = manifest.suites.find((entry) => entry.id === 'trigger');
-  assert.deepEqual(triggerSuite?.strictNegativeSplits, ['validation', 'sanity']);
+  assert.equal(manifest.version, 1);
 
-  const document = JSON.parse(await readEvalResource('trigger-cases.json'));
+  const document = triggerCorpusDocument;
   const { cases } = document;
-  assert.equal(document.schemaVersion, 1);
-  assert.equal(document.skill, 'codex-explore');
+  assert.equal(document.version, 1);
+  assert.equal(document.suite.kind, 'trigger');
+  assert.equal(document.suite.unitUnderTest, 'codex-explore');
+  assert.deepEqual(document.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
+  assert.equal(triggerSuite?.kind, 'trigger');
+  assert.equal(triggerSuite?.cases, 'trigger-cases.json');
   assert.equal(cases.length > 0, true);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
   assert.equal(cases.every((entry) => (
-    typeof entry.query === 'string' &&
-    typeof entry.should_load_skill === 'boolean' &&
-    typeof entry.should_spawn_agent === 'boolean'
+    typeof entry.input?.query === 'string' &&
+    typeof entry.input.expectedLoad === 'boolean' &&
+    typeof entry.input.shouldSpawnAgent === 'boolean'
   )), true);
 
   const largePrReview = cases.find((entry) => entry.id === 'large_pr_review');
   assert.ok(largePrReview, 'missing large_pr_review case');
-  assert.match(largePrReview.query, /只作为入口/);
-  assert.match(largePrReview.query, /定义、全部调用点和数据流/);
-  assert.match(largePrReview.oracle?.rationale ?? '', /diff 只是入口/);
-  assert.match(largePrReview.oracle?.minimal_counterexample ?? '', /已知短 diff/);
+  assert.match(largePrReview.input.query, /只作为入口/);
+  assert.match(largePrReview.input.query, /定义、全部调用点和数据流/);
 }
 
 function testPositiveEarlyStopRequiresRawSpawnArguments() {

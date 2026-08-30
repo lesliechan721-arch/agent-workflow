@@ -81,7 +81,7 @@ describe('Eval runtime owner gate', () => {
     ['prepare help', 'aw skill eval prepare --help'],
     [
       'complete prepare selection',
-      'aw skill eval prepare <plugin> --skill <skill> --suite <suite> --profile <profile> --output <new-plan-directory> --json',
+      'aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json',
     ],
   ])('accepts the documented AW %s command', async (_label, command) => {
     const root = await writeRunnerSkill(command)

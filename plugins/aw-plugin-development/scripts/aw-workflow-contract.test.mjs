@@ -643,12 +643,14 @@ test('release-required workflow archive fixture delegates component digests to t
     path.join(sourceRoot, 'skills/review-aw-workflow/evals/behavior-cases.json'),
     'utf8',
   ));
-  const fixture = fixtureDocument.evals.find((entry) =>
+  assert.equal(fixtureDocument.version, 1);
+  assert.equal(fixtureDocument.suite.unitUnderTest, 'review-aw-workflow');
+  const fixture = fixtureDocument.cases.find((entry) =>
     entry.id === 'delta-archive-writes-aw-workflow-scope-and-supersedes');
   assert.ok(fixture);
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-release-fixture-'));
   temps.push(temp);
-  for (const [relativePath, content] of Object.entries(fixture.workspace_files)) {
+  for (const [relativePath, content] of Object.entries(fixture.input.workspaceFiles)) {
     const target = path.join(temp, relativePath);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content);

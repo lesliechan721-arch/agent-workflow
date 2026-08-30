@@ -154,7 +154,7 @@ function triggerProviderCase(
   }
 }
 
-function conversationProviderCase(
+export function adaptConversationProviderCase(
   document: SelectedCasesDocument,
   evalCase: SelectedEvalCase,
 ): Record<string, unknown> {
@@ -163,24 +163,72 @@ function conversationProviderCase(
     ...(document.suite.participants ?? []),
   ])]
   const assertions = evalCase.assertions as unknown[]
+  const input = evalCase.input && typeof evalCase.input === 'object' && !Array.isArray(evalCase.input)
+    ? evalCase.input as Record<string, unknown>
+    : {}
+  const expected = evalCase.expected && typeof evalCase.expected === 'object' && !Array.isArray(evalCase.expected)
+    ? evalCase.expected as Record<string, unknown>
+    : {}
   const audit = evalCase.audit && typeof evalCase.audit === 'object' && !Array.isArray(evalCase.audit)
     ? evalCase.audit as Record<string, unknown>
     : null
+  const workspaceUnchanged = expected.workspaceUnchanged === undefined
+    ? true
+    : expected.workspaceUnchanged
+  const scriptedReplies = Array.isArray(input.scriptedReplies)
+    ? input.scriptedReplies.map((reply) => {
+        if (typeof reply === 'string') return reply
+        const row = reply as Record<string, unknown>
+        return {
+          answers_by_index: row.answersByIndex,
+          ...(row.expectedQuestionCount === undefined
+            ? {}
+            : { expected_question_count: row.expectedQuestionCount }),
+          unexpected_question_answer: row.unexpectedQuestionAnswer,
+        }
+      })
+    : []
+  const workspaceFiles = input.workspaceFiles && typeof input.workspaceFiles === 'object'
+    && !Array.isArray(input.workspaceFiles)
+    ? input.workspaceFiles as Record<string, unknown>
+    : {}
+  const allowedWorkspaceChanges = Array.isArray(expected.allowedWorkspaceChanges)
+    ? expected.allowedWorkspaceChanges
+    : []
+  const artifacts = Array.isArray(expected.artifacts)
+    ? expected.artifacts.map((artifact) => {
+        const row = artifact as Record<string, unknown>
+        const { notContains, ...providerArtifact } = row
+        return {
+          ...providerArtifact,
+          ...(Object.hasOwn(row, 'notContains') ? { not_contains: notContains } : {}),
+        }
+      })
+    : []
   return {
     value: {
       id: evalCase.id,
       prompt: evalCase.prompt,
-      scripted_replies: [],
-      expected_output: 'Evaluate the response against the approved assertions.',
-      sandbox: 'read-only',
+      scripted_replies: scriptedReplies,
+      expected_output: expected.output ?? 'Evaluate the response against the approved assertions.',
+      ...(Object.keys(workspaceFiles).length > 0 ? { workspace_files: workspaceFiles } : {}),
+      ...(Array.isArray(input.pathPrepend) && input.pathPrepend.length > 0
+        ? { environment: { pathPrepend: input.pathPrepend } }
+        : {}),
+      sandbox: workspaceUnchanged === false ? 'workspace-write' : 'read-only',
       review: {
-        checks: assertions.map((entry) => typeof entry === 'string' ? entry : JSON.stringify(entry)),
-        workspace_unchanged: true,
+        checks: assertions,
+        workspace_unchanged: workspaceUnchanged,
+        ...(allowedWorkspaceChanges.length > 0
+          ? { allowed_workspace_changes: allowedWorkspaceChanges }
+          : {}),
+        ...(artifacts.length > 0 ? { artifacts } : {}),
       },
     },
     skillName: document.suite.unitUnderTest,
     skillNames: participants,
     isolation: document.suite.runtime?.isolation === 'strict' ? 'strict' : 'standard',
+    suitePathPrepend: document.suite.runtime?.pathPrepend ?? [],
     assertions,
     ...(audit && Object.hasOwn(audit, 'allowedVariance')
       ? { allowedVariance: audit.allowedVariance }
@@ -190,7 +238,7 @@ function conversationProviderCase(
 
 function providerCase(document: SelectedCasesDocument, evalCase: SelectedEvalCase): Record<string, unknown> {
   if (document.suite.kind === 'trigger') return triggerProviderCase(document, evalCase)
-  if (document.suite.kind === 'conversation') return conversationProviderCase(document, evalCase)
+  if (document.suite.kind === 'conversation') return adaptConversationProviderCase(document, evalCase)
   return evalCase
 }
 

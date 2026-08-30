@@ -7,6 +7,7 @@ import {
   PROVIDER_CREDENTIAL_ENVIRONMENT,
   runCodexOnce,
 } from './eval-harness.mjs';
+import { runCustomProcessMain } from './custom-process-protocol.mjs';
 
 const TOOL_ROUTER_ERROR = /codex_core::tools::router: error=([^\n]+)/u;
 const BLOCK_REASON_MARKER = /^ROUTING_BLOCK_REASON=([a-z_]+)$/gmu;
@@ -144,7 +145,7 @@ export function evaluateRoutingRun(run, expected, variant) {
 }
 
 export function routingRunCase(entry, profile, variant) {
-  const expected = entry.expectations[profile];
+  const expected = (entry.expected ?? entry.expectations)[profile];
   const blockReasonInstruction = expected.block_reason
     ? [
       '若不调用 spawn_agent，请先用自然语言说明阻断，再在末尾另起一行输出结构化原因。',
@@ -194,11 +195,11 @@ function validateProviderRoutingCase(entry) {
     throw new Error(`${entry.id}.runtimeProfile must be v1 or v2.`);
   }
   if (
-    !entry.expectations ||
-    Object.keys(entry.expectations).length !== 1 ||
-    !Object.hasOwn(entry.expectations, entry.runtimeProfile)
+    !entry.expected ||
+    Object.keys(entry.expected).length !== 1 ||
+    !Object.hasOwn(entry.expected, entry.runtimeProfile)
   ) {
-    throw new Error(`${entry.id}.expectations must contain only its runtime profile.`);
+    throw new Error(`${entry.id}.expected must contain only its runtime profile.`);
   }
   if (typeof entry.prompt !== 'string' || entry.prompt.trim() === '') {
     throw new Error(`${entry.id}.prompt must be a non-empty string.`);
@@ -206,7 +207,7 @@ function validateProviderRoutingCase(entry) {
   if (!Array.isArray(entry.files)) {
     throw new Error(`${entry.id}.files must be an array.`);
   }
-  validateExpected(entry.expectations[entry.runtimeProfile], `${entry.id}.expectations`);
+  validateExpected(entry.expected[entry.runtimeProfile], `${entry.id}.expected`);
   return entry;
 }
 
@@ -240,7 +241,7 @@ export async function runEvalProvider(input) {
     }
     const evaluation = evaluateRoutingRun(
       run,
-      entry.expectations[profile],
+      entry.expected[profile],
       variant,
     );
     return createProviderOutput({
@@ -262,3 +263,5 @@ export async function runEvalProvider(input) {
     await rm(workspace.root, { recursive: true, force: true });
   }
 }
+
+await runCustomProcessMain(import.meta.url, runEvalProvider);

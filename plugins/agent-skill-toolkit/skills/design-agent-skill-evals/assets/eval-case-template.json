@@ -1,26 +1,30 @@
 {
-  "id": "case-id",
-  "eval_type": "trigger",
-  "split": "validation",
-  "case_role": "representative",
-  "provenance": "representative-synthetic",
-  "scenario_family": "",
-  "unit_under_test": "description",
-  "query": "",
-  "preconditions": {},
-  "expected": {},
-  "oracle": {
-    "rationale": "",
-    "rule_refs": [],
-    "confidence": "high",
-    "allowed_variance": "",
-    "minimal_counterexample": ""
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "skill-name",
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "medium",
+      "falsePositiveCost": "medium",
+      "rationale": "Explain why these errors have this cost."
+    },
+    "runtime": {
+      "isolation": "standard"
+    }
   },
-  "decision_context": {
-    "frequency": "unknown",
-    "impact": "medium",
-    "false_negative_cost": "medium",
-    "false_positive_cost": "medium",
-    "rationale": ""
-  }
+  "cases": [
+    {
+      "id": "representative-trigger",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "A realistic user request.",
+        "expectedLoad": true
+      }
+    }
+  ]
 }

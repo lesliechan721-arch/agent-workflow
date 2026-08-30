@@ -1,60 +1,52 @@
 {
-  "skill_name": "codex-explore",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "high",
-    "false_positive_cost": "critical",
-    "rationale": "漏选或错选 role 会降低探索质量；忽略显式字段，或在字段不可表达时仍启动，会违反用户参数和失败关闭边界。"
+  "version": 1,
+  "suite": {
+    "kind": "custom-process",
+    "unitUnderTest": "codex-explore",
+    "participants": [
+      "codex-subagent-guide"
+    ],
+    "defaultGrader": "provider",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "漏选或错选 role 会降低探索质量；忽略显式字段，或在字段不可表达时仍启动，会违反用户参数和失败关闭边界。"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "auto_quick",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "preset-role-selection",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "required_roles": [
-          "codex-explore-quick",
-          "codex-explore-standard",
-          "codex-explore-deep",
-          "codex-explore-custom"
-        ]
-      },
-      "oracle": {
-        "rationale": "问题窄、歧义低，但候选日志很多，符合 quick；预设 role 不应携带动态模型覆盖字段。",
-        "rule_refs": [
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
-      },
-      "prompt": "$codex-explore reports/audit/ 有很多候选日志，但问题很窄且没有冲突：只定位 request=req-9 首次和最后一次出现的组件，给出原始记录位置；不要做原因分析。",
-      "expected_output": "自动选择 quick role，只传 agent_type，不传 model 或 reasoning_effort。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "$codex-explore reports/audit/ 有很多候选日志，但问题很窄且没有冲突：只定位 request=req-9 首次和最后一次出现的组件，给出原始记录位置；不要做原因分析。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-explore-quick",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ]
         },
-        "arguments": {
-          "agent_type": "codex-explore-quick",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ]
+        "outcome": "自动选择 quick role，只传 agent_type，不传 model 或 reasoning_effort。"
       },
       "assertions": [
         {
@@ -73,52 +65,36 @@
     },
     {
       "id": "auto_standard",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "preset-role-selection",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "required_roles": [
-          "codex-explore-quick",
-          "codex-explore-standard",
-          "codex-explore-deep",
-          "codex-explore-custom"
-        ]
-      },
-      "oracle": {
-        "rationale": "常规跨模块追踪包含适度归纳，且没有 deep 信号，默认应选择 standard。",
-        "rule_refs": [
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
-      },
-      "prompt": "请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
-      "expected_output": "自动选择默认 standard role，只传 agent_type。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-explore-standard",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ]
         },
-        "arguments": {
-          "agent_type": "codex-explore-standard",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ]
+        "outcome": "自动选择默认 standard role，只传 agent_type。"
       },
       "assertions": [
         {
@@ -137,47 +113,37 @@
     },
     {
       "id": "v1_auto_standard",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "context-schema-routing",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V1 公开 agent_type 和 fork_context，但不公开 fork_turns",
-        "parent_model": "gpt-5.6-luna"
-      },
-      "oracle": {
-        "rationale": "相同 standard 任务在 V1 必须用 fork_context=false 精确表达干净上下文，不得发送 V2 字段。",
-        "rule_refs": [
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "message 可变化；agent_type、fork_context 和 fork_turns 缺省状态不得变化。",
-        "minimal_counterexample": "切换到 V2 schema 后，干净上下文参数应翻转为 fork_turns=none，并省略 fork_context。"
-      },
-      "prompt": "请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
-      "expected_output": "V1 自动选择默认 standard role，使用 fork_context: false 启动干净上下文。",
-      "files": [],
-      "parent_model": "gpt-5.6-luna",
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": false
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
+        "files": [],
+        "parent_model": "gpt-5.6-luna",
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": false
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-explore-standard",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
         },
-        "arguments": {
-          "agent_type": "codex-explore-standard",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_context": false,
-          "fork_turns": null
-        },
-        "present_arguments": [
-          "message"
-        ]
+        "outcome": "V1 自动选择默认 standard role，使用 fork_context: false 启动干净上下文。"
       },
       "assertions": [
         {
@@ -192,56 +158,44 @@
           "criticality": "major",
           "allowed_variance": "fork_context 必须为 false，fork_turns 必须缺省。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "相同 standard 任务在 V1 必须用 fork_context=false 精确表达干净上下文，不得发送 V2 字段。",
+        "minimalCounterexample": "切换到 V2 schema 后，干净上下文参数应翻转为 fork_turns=none，并省略 fork_context。"
+      }
     },
     {
       "id": "auto_deep",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "preset-role-selection",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "required_roles": [
-          "codex-explore-quick",
-          "codex-explore-standard",
-          "codex-explore-deep",
-          "codex-explore-custom"
-        ]
-      },
-      "oracle": {
-        "rationale": "材料边界未知、证据冲突、因果复杂且完整性优先，符合 deep 的全部核心信号。",
-        "rule_refs": [
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
-      },
-      "prompt": "$codex-explore materials/、docs/vendor/ 和 reports/audit/ 中材料很多、说法冲突且边界未知。请深入重建续费失败的复杂因果链，穷尽相互矛盾的证据并说明无法确认之处，完整性优先。",
-      "expected_output": "自动选择 deep role，只传 agent_type。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "$codex-explore materials/、docs/vendor/ 和 reports/audit/ 中材料很多、说法冲突且边界未知。请深入重建续费失败的复杂因果链，穷尽相互矛盾的证据并说明无法确认之处，完整性优先。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-explore-deep",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ]
         },
-        "arguments": {
-          "agent_type": "codex-explore-deep",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ]
+        "outcome": "自动选择 deep role，只传 agent_type。"
       },
       "assertions": [
         {
@@ -260,48 +214,36 @@
     },
     {
       "id": "custom_both_fields",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "explicit-routing-overrides",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "custom_role": "codex-explore-custom 不锁定模型参数"
-      },
-      "oracle": {
-        "rationale": "用户同时显式指定 model 和 reasoning_effort 时，custom role 必须完整原样透传两个字段。",
-        "rule_refs": [
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "message 和 task_name 可变化；custom role 与两个显式字段必须精确匹配。"
-      },
-      "prompt": "$codex-explore 使用 model=gpt-5.6-sol、reasoning_effort=xhigh，从 materials/ 的访谈、会议记录和汇总表中筛选续费失败原因，标出冲突和材料位置。",
-      "expected_output": "显式 model 和 reasoning_effort 使用 custom role，并原样透传两个字段。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "$codex-explore 使用 model=gpt-5.6-sol、reasoning_effort=xhigh，从 materials/ 的访谈、会议记录和汇总表中筛选续费失败原因，标出冲突和材料位置。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-explore-custom",
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "xhigh",
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ]
         },
-        "arguments": {
-          "agent_type": "codex-explore-custom",
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": "xhigh",
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ]
+        "outcome": "显式 model 和 reasoning_effort 使用 custom role，并原样透传两个字段。"
       },
       "assertions": [
         {
@@ -320,48 +262,36 @@
     },
     {
       "id": "custom_model_only",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "explicit-routing-overrides",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "custom_role": "codex-explore-custom 不锁定模型参数"
-      },
-      "oracle": {
-        "rationale": "只显式指定 model 时，应使用 custom role，只透传 model，不能补默认 reasoning_effort。",
-        "rule_refs": [
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "message 和 task_name 可变化；custom role、model 值和 reasoning_effort 缺省状态不得变化。"
-      },
-      "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
-      "expected_output": "显式 model 使用 custom role，只传 model。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-explore-custom",
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ]
         },
-        "arguments": {
-          "agent_type": "codex-explore-custom",
-          "model": "gpt-5.6-sol",
-          "reasoning_effort": null,
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ]
+        "outcome": "显式 model 使用 custom role，只传 model。"
       },
       "assertions": [
         {
@@ -380,48 +310,36 @@
     },
     {
       "id": "custom_reasoning_only",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "explicit-routing-overrides",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "custom_role": "codex-explore-custom 不锁定模型参数"
-      },
-      "oracle": {
-        "rationale": "只显式指定 reasoning_effort 时，应使用 custom role，只透传该字段，不能补默认 model。",
-        "rule_refs": [
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "message 和 task_name 可变化；custom role、reasoning_effort 值和 model 缺省状态不得变化。"
-      },
-      "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
-      "expected_output": "显式 reasoning_effort 使用 custom role，只传 reasoning_effort。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-explore-custom",
+            "model": null,
+            "reasoning_effort": "xhigh",
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ]
         },
-        "arguments": {
-          "agent_type": "codex-explore-custom",
-          "model": null,
-          "reasoning_effort": "xhigh",
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ]
+        "outcome": "显式 reasoning_effort 使用 custom role，只传 reasoning_effort。"
       },
       "assertions": [
         {
@@ -440,52 +358,41 @@
     },
     {
       "id": "hidden_fields_preset",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "hidden-override-fields",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type 和 fork_turns，但隐藏 model 与 reasoning_effort",
-        "request_overrides": "用户没有显式指定 model 或 reasoning_effort"
-      },
-      "oracle": {
-        "rationale": "预设 role 的模型配置由 role 持有；schema 隐藏动态覆盖字段不应阻止仅用 agent_type 的 preset。",
-        "rule_refs": [
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许环境报告已声明的 schema 错误；成功调用时只能包含 preset agent_type 和干净上下文参数。",
-        "minimal_counterexample": "在相同 schema 下显式增加 model 或 reasoning_effort 后，行为应翻转为零次 spawn 并说明能力限制。"
-      },
-      "prompt": "$codex-explore 用 standard 深度从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线，并为每个跳转给出来源。",
-      "expected_output": "schema 隐藏覆盖字段时，预设 role 仍可只凭 agent_type 启动。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "$codex-explore 用 standard 深度从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线，并为每个跳转给出来源。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
+        }
       },
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "allowed_environment_errors": [
+            "must match the configured schema"
+          ],
+          "arguments": {
+            "agent_type": "codex-explore-standard",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ]
         },
-        "allowed_environment_errors": [
-          "must match the configured schema"
-        ],
-        "arguments": {
-          "agent_type": "codex-explore-standard",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ]
+        "outcome": "schema 隐藏覆盖字段时，预设 role 仍可只凭 agent_type 启动。"
       },
       "assertions": [
         {
@@ -500,52 +407,45 @@
           "criticality": "critical",
           "allowed_variance": "发生调用时两个隐藏字段都必须缺省。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "预设 role 的模型配置由 role 持有；schema 隐藏动态覆盖字段不应阻止仅用 agent_type 的 preset。",
+        "minimalCounterexample": "在相同 schema 下显式增加 model 或 reasoning_effort 后，行为应翻转为零次 spawn 并说明能力限制。"
+      }
     },
     {
       "id": "hidden_explicit_field",
-      "eval_type": "routing",
-      "case_role": "regression",
-      "provenance": "observed",
-      "scenario_family": "hidden-override-fields",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type 和 fork_turns，但隐藏 model 与 reasoning_effort",
-        "request_overrides": "用户显式指定 model"
-      },
-      "oracle": {
-        "rationale": "显式 model 无法由当前 schema 原样传递时必须失败关闭；旧版本曾丢弃字段后错误启动。",
-        "rule_refs": [
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "能力限制说明可换词；spawn 次数必须为零，并应指出字段不可表达。",
-        "minimal_counterexample": "移除显式 model 后，相同任务应使用 preset role；公开 model 字段后应使用 custom role 并原样透传。"
-      },
-      "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
-      "expected_output": "schema 未公开用户显式指定字段时不启动子代理，并说明能力限制。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
-      },
-      "wait_for_completion": true,
-      "expected": {
-        "spawn_calls": {
-          "min": 0,
-          "max": 0
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
         },
-        "allowed_environment_errors": [
-          "must match the configured schema"
-        ],
-        "final_message_includes_any": [
-          "未公开",
-          "不支持",
-          "无法"
-        ]
+        "wait_for_completion": true
+      },
+      "expected": {
+        "criteria": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "allowed_environment_errors": [
+            "must match the configured schema"
+          ],
+          "final_message_includes_any": [
+            "未公开",
+            "不支持",
+            "无法"
+          ]
+        },
+        "outcome": "schema 未公开用户显式指定字段时不启动子代理，并说明能力限制。"
       },
       "assertions": [
         {
@@ -560,51 +460,44 @@
           "criticality": "major",
           "allowed_variance": "允许未公开、不支持或无法等同表述。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "显式 model 无法由当前 schema 原样传递时必须失败关闭；旧版本曾丢弃字段后错误启动。",
+        "minimalCounterexample": "移除显式 model 后，相同任务应使用 preset role；公开 model 字段后应使用 custom role 并原样透传。"
+      }
     },
     {
       "id": "hidden_explicit_reasoning",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "derived",
-      "scenario_family": "hidden-override-fields",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type 和 fork_turns，但隐藏 model 与 reasoning_effort",
-        "request_overrides": "用户显式指定 reasoning_effort"
-      },
-      "oracle": {
-        "rationale": "显式 reasoning_effort 与显式 model 适用同一个预检和失败关闭合同，不能被删除或替换。",
-        "rule_refs": [
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "能力限制说明可换词；spawn 次数必须为零，并应点名 reasoning_effort 或推理强度。",
-        "minimal_counterexample": "移除显式 reasoning_effort 后，相同任务应使用 preset role；公开该字段后应使用 custom role 并原样透传。"
-      },
-      "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
-      "expected_output": "schema 未公开用户显式指定的 reasoning_effort 时不启动子代理，并说明能力限制。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
-      },
-      "wait_for_completion": true,
-      "expected": {
-        "spawn_calls": {
-          "min": 0,
-          "max": 0
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
         },
-        "allowed_environment_errors": [
-          "must match the configured schema"
-        ],
-        "final_message_includes_any": [
-          "reasoning_effort",
-          "推理强度"
-        ]
+        "wait_for_completion": true
+      },
+      "expected": {
+        "criteria": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "allowed_environment_errors": [
+            "must match the configured schema"
+          ],
+          "final_message_includes_any": [
+            "reasoning_effort",
+            "推理强度"
+          ]
+        },
+        "outcome": "schema 未公开用户显式指定的 reasoning_effort 时不启动子代理，并说明能力限制。"
       },
       "assertions": [
         {
@@ -619,78 +512,62 @@
           "criticality": "major",
           "allowed_variance": "允许 reasoning_effort 或推理强度等同表述。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "显式 reasoning_effort 与显式 model 适用同一个预检和失败关闭合同，不能被删除或替换。",
+        "minimalCounterexample": "移除显式 reasoning_effort 后，相同任务应使用 preset role；公开该字段后应使用 custom role 并原样透传。"
+      }
     },
     {
       "id": "nested_skill_authorization_v1",
-      "eval_type": "gate",
-      "case_role": "regression",
-      "provenance": "observed",
-      "scenario_family": "nested-delegation-authorization",
-      "unit_under_test": "composed-workflow",
-      "preconditions": {
-        "multi_agent_profile": "V1",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
         "parent_model": "gpt-5.6-luna",
-        "v1_max_depth": 2,
-        "participants": [
-          "codex-subagent-guide",
-          "codex-explore"
-        ],
-        "authorization_scope": "用户授权根代理启动计划子代理，未在计划子代理 message 中声明第二层授权",
-        "skill_authorization": "Gate 通过时，codex-explore 明确授权当前工作流启动 Codex Explore 子代理",
-        "plugin_developer_authorization": false
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": false,
+          "agents.max_depth": 2
+        },
+        "wait_for_completion": false
       },
-      "oracle": {
-        "rationale": "V1 干净上下文的计划子代理不会继承根 turn 的用户授权，且其初始 message 未声明第二层授权。显式把 V1 最大深度设为 2 后，它可获得 V1 spawn_agent；它按任务加载 codex-explore 后，Skill 本身提供当前工作流授权，因此应通过工具描述中的授权门禁并启动 deep 孙代理。",
-        "rule_refs": [
-          "../../codex-subagent-guide/SKILL.md#上下文",
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "计划和证据文案可以变化；根代理必须通过 V1 启动一个 advanced 计划子代理，子代理必须读取 codex-explore，并可把互不重叠的探索拆成 1 到 4 个 deep 孙代理。",
-        "minimal_counterexample": "切换到 V2 后，根代理的干净上下文字段应从 fork_context=false 改为 fork_turns=none；两种工具版本都必须依赖 Skill 授权启动孙代理。"
-      },
-      "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
-      "parent_model": "gpt-5.6-luna",
-      "expected_output": "根代理通过 V1 启动 advanced 计划子代理；计划子代理加载 codex-explore，并只依据 Skill 授权启动 deep 孙代理。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": false,
-        "agents.max_depth": 2
-      },
-      "wait_for_completion": false,
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
-        },
-        "arguments": {
-          "agent_type": "codex-subagent-advanced",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_context": false,
-          "fork_turns": null
-        },
-        "present_arguments": [
-          "message"
-        ],
-        "nested_delegation": {
-          "root_skill": "codex-subagent-guide",
-          "root_skill_explicitly_invoked": true,
-          "child_skill": "codex-explore",
-          "child_agent_type": "codex-explore-deep",
-          "child_initial_message": "为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。",
-          "expect_early_termination": true,
-          "forbid_root_child_followup": true,
-          "grandchild_spawn_calls": {
+        "criteria": {
+          "spawn_calls": {
             "min": 1,
-            "max": 4
+            "max": 1
           },
-          "expect_child_multi_agent_gate": false,
-          "expect_child_developer_authorization": false
-        }
+          "arguments": {
+            "agent_type": "codex-subagent-advanced",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ],
+          "nested_delegation": {
+            "root_skill": "codex-subagent-guide",
+            "root_skill_explicitly_invoked": true,
+            "child_skill": "codex-explore",
+            "child_agent_type": "codex-explore-deep",
+            "child_initial_message": "为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。",
+            "expect_early_termination": true,
+            "forbid_root_child_followup": true,
+            "grandchild_spawn_calls": {
+              "min": 1,
+              "max": 4
+            },
+            "expect_child_multi_agent_gate": false,
+            "expect_child_developer_authorization": false
+          }
+        },
+        "outcome": "根代理通过 V1 启动 advanced 计划子代理；计划子代理加载 codex-explore，并只依据 Skill 授权启动 deep 孙代理。"
       },
       "assertions": [
         {
@@ -705,78 +582,63 @@
           "criticality": "critical",
           "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "V1 干净上下文的计划子代理不会继承根 turn 的用户授权，且其初始 message 未声明第二层授权。显式把 V1 最大深度设为 2 后，它可获得 V1 spawn_agent；它按任务加载 codex-explore 后，Skill 本身提供当前工作流授权，因此应通过工具描述中的授权门禁并启动 deep 孙代理。",
+        "minimalCounterexample": "切换到 V2 后，根代理的干净上下文字段应从 fork_context=false 改为 fork_turns=none；两种工具版本都必须依赖 Skill 授权启动孙代理。"
+      }
     },
     {
       "id": "nested_skill_authorization",
-      "eval_type": "gate",
-      "case_role": "regression",
-      "provenance": "observed",
-      "scenario_family": "nested-delegation-authorization",
-      "unit_under_test": "composed-workflow",
-      "preconditions": {
-        "multi_agent_profile": "V2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
         "parent_model": "gpt-5.6-sol",
-        "participants": [
-          "codex-subagent-guide",
-          "codex-explore"
-        ],
-        "authorization_scope": "用户授权根代理启动计划子代理，未在计划子代理 message 中声明第二层授权",
-        "skill_authorization": "Gate 通过时，codex-explore 明确授权当前工作流启动 Codex Explore 子代理",
-        "plugin_developer_authorization": false
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        },
+        "wait_for_completion": false
       },
-      "oracle": {
-        "rationale": "V2 会加密 spawn_agent.message，本地只能确认根调用与计划子代理 NEW_TASK 使用同一密文，不能审计初始明文语义。根提示要求固定的无第二层授权 message，且 grader 排除后续消息授权；计划子代理加载 codex-explore 后若满足 multi_agent_mode 门禁并启动 deep 孙代理，可确认该工作流在无插件 developer 授权时可运行。Skill-only 授权的完整因果隔离由同场景 V1 case 提供。",
-        "rule_refs": [
-          "../../codex-subagent-guide/SKILL.md#上下文",
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "medium",
-        "allowed_variance": "计划和证据文案可以变化；根代理必须启动一个 advanced 计划子代理，根 spawn 密文必须与计划子代理 NEW_TASK 密文一致，不得追加消息；子代理必须读取 codex-explore，并可把互不重叠的探索拆成 1 到 4 个 deep 孙代理。V2 本地证据不声明已审计初始 message 的明文语义。",
-        "minimal_counterexample": "根 spawn 密文与计划子代理 NEW_TASK 密文不一致，或子代理上下文重新出现插件 developer 授权时，本 V2 case 不得通过；Skill-only 授权的反事实由 V1 case 验证。"
-      },
-      "prompt": "$codex-subagent-guide 我授权你启动一个高难计划子代理。请使用干净上下文，且计划子代理的初始 message 必须逐字等于：\"为 regional_checkout 的系统级、高歧义跨模块改造制定实施计划。先从 repo/ 的网关、结算、任务和共享模块大范围追踪传递事实，再形成计划。不要修改文件。请自行按适用 Skill 决定调查方式。\" 你只负责派发、等待和整合，不要自己调查或修改文件。",
-      "parent_model": "gpt-5.6-sol",
-      "expected_output": "根代理启动 advanced 计划子代理；在根任务密文链路一致、无后续消息和无插件 developer 授权时，计划子代理加载 codex-explore 并启动 deep 孙代理。V2 不归因不可见的初始明文授权来源。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
-      },
-      "wait_for_completion": false,
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
-        },
-        "arguments": {
-          "agent_type": "codex-subagent-advanced",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ],
-        "nested_delegation": {
-          "root_skill": "codex-subagent-guide",
-          "root_skill_explicitly_invoked": true,
-          "child_skill": "codex-explore",
-          "child_agent_type": "codex-explore-deep",
-          "child_initial_encrypted_link": true,
-          "expect_early_termination": true,
-          "forbid_root_child_followup": true,
-          "grandchild_spawn_calls": {
+        "criteria": {
+          "spawn_calls": {
             "min": 1,
-            "max": 4
+            "max": 1
           },
-          "expect_child_multi_agent_gate": true,
-          "expect_child_developer_authorization": false
-        }
+          "arguments": {
+            "agent_type": "codex-subagent-advanced",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ],
+          "nested_delegation": {
+            "root_skill": "codex-subagent-guide",
+            "root_skill_explicitly_invoked": true,
+            "child_skill": "codex-explore",
+            "child_agent_type": "codex-explore-deep",
+            "child_initial_encrypted_link": true,
+            "expect_early_termination": true,
+            "forbid_root_child_followup": true,
+            "grandchild_spawn_calls": {
+              "min": 1,
+              "max": 4
+            },
+            "expect_child_multi_agent_gate": true,
+            "expect_child_developer_authorization": false
+          }
+        },
+        "outcome": "根代理启动 advanced 计划子代理；在根任务密文链路一致、无后续消息和无插件 developer 授权时，计划子代理加载 codex-explore 并启动 deep 孙代理。V2 不归因不可见的初始明文授权来源。"
       },
       "assertions": [
         {
@@ -791,74 +653,60 @@
           "criticality": "critical",
           "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "V2 会加密 spawn_agent.message，本地只能确认根调用与计划子代理 NEW_TASK 使用同一密文，不能审计初始明文语义。根提示要求固定的无第二层授权 message，且 grader 排除后续消息授权；计划子代理加载 codex-explore 后若满足 multi_agent_mode 门禁并启动 deep 孙代理，可确认该工作流在无插件 developer 授权时可运行。Skill-only 授权的完整因果隔离由同场景 V1 case 提供。",
+        "minimalCounterexample": "根 spawn 密文与计划子代理 NEW_TASK 密文不一致，或子代理上下文重新出现插件 developer 授权时，本 V2 case 不得通过；Skill-only 授权的反事实由 V1 case 验证。"
+      }
     },
     {
       "id": "nested_explicit_child_authorization",
-      "eval_type": "gate",
-      "case_role": "regression",
-      "provenance": "observed",
-      "scenario_family": "nested-delegation-authorization",
-      "unit_under_test": "composed-workflow",
-      "preconditions": {
-        "multi_agent_profile": "V2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-subagent-guide 我明确授权两层委派：你可以启动一个高难计划子代理；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
         "parent_model": "gpt-5.6-sol",
-        "participants": [
-          "codex-subagent-guide",
-          "codex-explore"
-        ],
-        "authorization_scope": "用户明确授权两层委派，并要求根代理把第二层授权写入计划子代理初始 message",
-        "plugin_developer_authorization": false
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        },
+        "wait_for_completion": true
       },
-      "oracle": {
-        "rationale": "计划子代理的初始 message 已自包含用户对第二层委派的明确授权。即使没有插件 developer authorization，它也满足 multi_agent_mode 门禁；任务明确为系统级、高歧义，因此应由 codex-explore 启动 deep 孙代理。",
-        "rule_refs": [
-          "../../codex-subagent-guide/SKILL.md#上下文",
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "计划和证据文案可以变化；两层 role、两次 Skill 读取、第二层 spawn 和子代理 developer 上下文中的门禁/无插件授权状态必须可机械确认。",
-        "minimal_counterexample": "去掉写入计划子代理初始 message 的第二层授权后，计划子代理仍应加载 codex-explore，但不得启动孙代理。"
-      },
-      "prompt": "$codex-subagent-guide 我明确授权两层委派：你可以启动一个高难计划子代理；该计划子代理也可以为可分离的大范围只读事实探索继续启动 Codex Explore 子代理。你必须把第二层授权明确写入计划子代理的初始 message。请使用干净上下文，并要求它先从 repo/ 的网关、结算、任务和共享模块追踪 regional_checkout 的完整传递事实，再由它自己形成系统级、高歧义跨模块改造计划。你只负责派发、等待和整合，不要自己调查或修改文件。",
-      "parent_model": "gpt-5.6-sol",
-      "expected_output": "根代理启动 advanced 计划子代理；计划子代理加载 codex-explore，并在没有插件 developer authorization 的情况下依据自包含用户授权启动 deep 孙代理。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
-      },
-      "wait_for_completion": true,
       "expected": {
-        "spawn_calls": {
-          "min": 1,
-          "max": 1
-        },
-        "arguments": {
-          "agent_type": "codex-subagent-advanced",
-          "model": null,
-          "reasoning_effort": null,
-          "fork_turns": "none"
-        },
-        "present_arguments": [
-          "message",
-          "task_name"
-        ],
-        "nested_delegation": {
-          "root_skill": "codex-subagent-guide",
-          "root_skill_explicitly_invoked": true,
-          "child_skill": "codex-explore",
-          "child_agent_type": "codex-explore-deep",
-          "grandchild_spawn_calls": {
+        "criteria": {
+          "spawn_calls": {
             "min": 1,
-            "max": 4
+            "max": 1
           },
-          "expect_child_multi_agent_gate": true,
-          "expect_child_developer_authorization": false
-        }
+          "arguments": {
+            "agent_type": "codex-subagent-advanced",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message",
+            "task_name"
+          ],
+          "nested_delegation": {
+            "root_skill": "codex-subagent-guide",
+            "root_skill_explicitly_invoked": true,
+            "child_skill": "codex-explore",
+            "child_agent_type": "codex-explore-deep",
+            "grandchild_spawn_calls": {
+              "min": 1,
+              "max": 4
+            },
+            "expect_child_multi_agent_gate": true,
+            "expect_child_developer_authorization": false
+          }
+        },
+        "outcome": "根代理启动 advanced 计划子代理；计划子代理加载 codex-explore，并在没有插件 developer authorization 的情况下依据自包含用户授权启动 deep 孙代理。"
       },
       "assertions": [
         {
@@ -873,54 +721,47 @@
           "criticality": "critical",
           "allowed_variance": "允许把互不重叠的探索拆成 1 到 4 个孙代理；成功启动的 role 必须是 codex-explore-deep，超出并发上限的拒绝尝试不计为成功启动。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "计划子代理的初始 message 已自包含用户对第二层委派的明确授权。即使没有插件 developer authorization，它也满足 multi_agent_mode 门禁；任务明确为系统级、高歧义，因此应由 codex-explore 启动 deep 孙代理。",
+        "minimalCounterexample": "去掉写入计划子代理初始 message 的第二层授权后，计划子代理仍应加载 codex-explore，但不得启动孙代理。"
+      }
     },
     {
       "id": "invalid_explicit_values",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "invalid-explicit-overrides",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "request_overrides": "用户显式值不可用或非法"
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "$codex-explore 使用 model=definitely-unavailable-model、reasoning_effort=turbo，从 docs/vendor/ 和 logs/ 中核验升级后的 401 原因。若调度参数不可用，不要删除字段或切换预设重试。",
+        "files": [],
+        "config_values": {},
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        },
+        "wait_for_completion": true
       },
-      "oracle": {
-        "rationale": "schema 公开字段不等于运行时接受任意值；拒绝后必须保留原值并停止，不能切换 preset 重试。",
-        "rule_refs": [
-          "SKILL.md#Gate",
-          "SKILL.md#委派"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以在调用前拒绝，或按原值调用一次后由 runtime 拒绝；零调用时必须原样说明两个字段值，且不得发生第二次或降级调用。",
-        "minimal_counterexample": "把两个显式值改为受支持值后，应使用 custom role 成功启动并原样透传。"
-      },
-      "prompt": "$codex-explore 使用 model=definitely-unavailable-model、reasoning_effort=turbo，从 docs/vendor/ 和 logs/ 中核验升级后的 401 原因。若调度参数不可用，不要删除字段或切换预设重试。",
-      "expected_output": "无效显式值最多尝试一次；custom role 不降级到预设。",
-      "files": [],
-      "config_values": {},
-      "codex_config": {
-        "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
-        "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
-      },
-      "wait_for_completion": true,
       "expected": {
-        "spawn_calls": {
-          "min": 0,
-          "max": 1
+        "criteria": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 1
+          },
+          "arguments_if_called": {
+            "agent_type": "codex-explore-custom",
+            "model": "definitely-unavailable-model",
+            "reasoning_effort": "turbo"
+          },
+          "spawn_rejected": true,
+          "preflight_rejection_evidence": [
+            "definitely-unavailable-model",
+            "turbo"
+          ]
         },
-        "arguments_if_called": {
-          "agent_type": "codex-explore-custom",
-          "model": "definitely-unavailable-model",
-          "reasoning_effort": "turbo"
-        },
-        "spawn_rejected": true,
-        "preflight_rejection_evidence": [
-          "definitely-unavailable-model",
-          "turbo"
-        ]
+        "outcome": "无效显式值最多尝试一次；custom role 不降级到预设。"
       },
       "assertions": [
         {
@@ -941,7 +782,11 @@
           "criticality": "critical",
           "allowed_variance": "不得出现任何 preset role 的后续调用。"
         }
-      ]
+      ],
+      "audit": {
+        "rationale": "schema 公开字段不等于运行时接受任意值；拒绝后必须保留原值并停止，不能切换 preset 重试。",
+        "minimalCounterexample": "把两个显式值改为受支持值后，应使用 custom role 成功启动并原样透传。"
+      }
     }
   ]
 }

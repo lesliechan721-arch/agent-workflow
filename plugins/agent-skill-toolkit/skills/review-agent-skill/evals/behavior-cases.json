@@ -1,457 +1,361 @@
 {
-  "skill_name": "review-agent-skill",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "必须发现单 Skill 的真实问题，同时拒绝跨组件无限范围和基于推演的重型修复。"
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "review-agent-skill",
+    "participants": [
+      "review-agent-content",
+      "review-agent-workflow",
+      "audit-agent-skill-evals"
+    ],
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "必须发现单 Skill 的真实问题，同时拒绝跨组件无限范围和基于推演的重型修复。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "machine-error-directly-blocks",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "machine-check-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "missing_runtime_resource": true
-      },
-      "oracle": {
-        "rationale": "确定性缺失资源直接阻断单 Skill 结论。",
-        "rule_refs": [
-          "SKILL.md#评审流程"
-        ],
-        "confidence": "high",
-        "allowed_variance": "报告格式可不同；必须定位缺失文件并阻断。",
-        "minimal_counterexample": "若脚本文件存在且机器检查通过，则不能仅凭脚本引用阻断结论。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "只读评审 skills/broken。运行机器检查，不要修改文件。",
-      "scripted_replies": [],
-      "expected_output": "定位 scripts/missing.mjs，给出 fail/blocked，不生成多重 gate。",
-      "workspace_files": {
-        "skills/broken/SKILL.md": "---\nname: broken\ndescription: Run a local helper.\n---\n\nRun `node scripts/missing.mjs`.\n"
+      "assertions": [
+        "使用 machine error",
+        "不把机器错误复制成状态机"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/broken/SKILL.md": "---\nname: broken\ndescription: Run a local helper.\n---\n\nRun `node scripts/missing.mjs`.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "使用 machine error",
-          "不把机器错误复制成状态机"
-        ]
+      "expected": {
+        "output": "定位 scripts/missing.mjs，给出 fail/blocked，不生成多重 gate。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "确定性缺失资源直接阻断单 Skill 结论。",
+        "minimalCounterexample": "若脚本文件存在且机器检查通过，则不能仅凭脚本引用阻断结论。"
       }
     },
     {
       "id": "guidance-does-not-become-major",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "evidence-calibration",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "guidance_only": true,
-        "runtime_failure": false
-      },
-      "oracle": {
-        "rationale": "没有可达失败证据时，guidance 或 inference 不能单独形成 major。",
-        "rule_refs": [
-          "SKILL.md#Finding-纪律"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可给 minor/advisory/unknown；不得要求立即改生产 Skill。",
-        "minimal_counterexample": "若已有运行证据证明长文导致关键步骤不可达，则可升级为阻断性 finding。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "quick 评审 skills/sample。参考材料建议长文拆分，但没有运行失败。",
-      "scripted_replies": [],
-      "expected_output": "把拆分保留为建议或待验证项。",
-      "workspace_files": {
-        "skills/sample/SKILL.md": "---\nname: sample\ndescription: Summarize one incident.\n---\n\nRead the incident and return cause, impact and next action.\n"
+      "assertions": [
+        "不输出 major/critical"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/sample/SKILL.md": "---\nname: sample\ndescription: Summarize one incident.\n---\n\nRead the incident and return cause, impact and next action.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "不输出 major/critical"
-        ]
+      "expected": {
+        "output": "把拆分保留为建议或待验证项。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "没有可达失败证据时，guidance 或 inference 不能单独形成 major。",
+        "minimalCounterexample": "若已有运行证据证明长文导致关键步骤不可达，则可升级为阻断性 finding。"
       }
     },
     {
       "id": "single-skill-composition-overload",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "single-skill-composition",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "independent_responsibilities": 4
-      },
-      "oracle": {
-        "rationale": "一个 Skill 内部混合多个独立意图仍属于单 Skill Composition。",
-        "rule_refs": [
-          "references/composition-fitness.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可判 needs-fixes 或 redesign；必须给最小拆分。"
-      },
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
       "prompt": "full 只读评审 skills/release-desk，判断它是否承担太多独立职责。",
-      "scripted_replies": [],
-      "expected_output": "识别支持、定价、安全、部署的独立职责并建议拆分。",
-      "workspace_files": {
-        "skills/release-desk/SKILL.md": "---\nname: release-desk\ndescription: Handle a release request end to end.\n---\n\nClassify support tickets. Approve pricing exceptions. Accept security risk. Execute production deployment.\n"
+      "assertions": [
+        "只评价这个 Skill 内部 composition"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/release-desk/SKILL.md": "---\nname: release-desk\ndescription: Handle a release request end to end.\n---\n\nClassify support tickets. Approve pricing exceptions. Accept security risk. Execute production deployment.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "只评价这个 Skill 内部 composition"
-        ]
+      "expected": {
+        "output": "识别支持、定价、安全、部署的独立职责并建议拆分。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
       }
     },
     {
       "id": "quick-composition-loads-only-reached-standards",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "quick-conditional-reference-routing",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "mode": "quick",
-        "independent_responsibilities": 2,
-        "architecture_branch_reached": false,
-        "publication_branch_reached": false
-      },
-      "oracle": {
-        "rationale": "quick 只加载用户问题到达的专业标准，不加载 full 基础标准或未到达的其它 branch。",
-        "rule_refs": [
-          "SKILL.md#Reference-路由",
-          "references/composition-fitness.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以建议保留或拆分；必须读取 composition-fitness，且不得读取 full-only、architecture 或 publication reference。",
-        "minimal_counterexample": "若用户请求 full，则必须读取 review-rubric、review-dimensions 和 scoring-model。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "quick 只读评审 skills/content-helper，只判断它是否应同时承担两项职责；不要执行 full 评审。",
-      "scripted_replies": [],
-      "expected_output": "只回答职责组合问题，不生成维度或评分。",
-      "workspace_files": {
-        "skills/content-helper/SKILL.md": "---\nname: content-helper\ndescription: Summarize supplied incidents and write marketing slogans.\n---\n\nSummarize a supplied incident. Write marketing slogans for a supplied product.\n"
+      "assertions": [
+        "读取 composition-fitness.md",
+        "不读取 review-rubric.md、review-dimensions.md 或 scoring-model.md",
+        "不读取 architecture-boundaries.md 或 review-publication.md",
+        "不输出维度或评分"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/content-helper/SKILL.md": "---\nname: content-helper\ndescription: Summarize supplied incidents and write marketing slogans.\n---\n\nSummarize a supplied incident. Write marketing slogans for a supplied product.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "读取 composition-fitness.md",
-          "不读取 review-rubric.md、review-dimensions.md 或 scoring-model.md",
-          "不读取 architecture-boundaries.md 或 review-publication.md",
-          "不输出维度或评分"
-        ]
+      "expected": {
+        "output": "只回答职责组合问题，不生成维度或评分。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "quick 只加载用户问题到达的专业标准，不加载 full 基础标准或未到达的其它 branch。",
+        "minimalCounterexample": "若用户请求 full，则必须读取 review-rubric、review-dimensions 和 scoring-model。"
       }
     },
     {
       "id": "complete-steps-do-not-rescue-over-specification",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "minimum-control",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "procedure_complete": true,
-        "control_disproportionate": true
-      },
-      "oracle": {
-        "rationale": "完整步骤不等于最小有效控制。",
-        "rule_refs": [
-          "SKILL.md#评审流程"
-        ],
-        "confidence": "high",
-        "allowed_variance": "complexity 必须 over-specified。",
-        "minimal_counterexample": "若每个状态、轮次和临时文件都对应独立可观察风险，则完整步骤可以是 proportionate。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "full 只读评审 skills/status-writer。步骤很完整，请判断是否足以通过。",
-      "scripted_replies": [],
-      "expected_output": "建议删除多余状态、轮次和临时文件。",
-      "workspace_files": {
-        "skills/status-writer/SKILL.md": "---\nname: status-writer\ndescription: Write a short status update.\n---\n\nCreate two scratch files. Emit four states for every line. Always run exactly three rounds.\n"
+      "assertions": [
+        "明确 over-specified"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/status-writer/SKILL.md": "---\nname: status-writer\ndescription: Write a short status update.\n---\n\nCreate two scratch files. Emit four states for every line. Always run exactly three rounds.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "明确 over-specified"
-        ]
+      "expected": {
+        "output": "建议删除多余状态、轮次和临时文件。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "完整步骤不等于最小有效控制。",
+        "minimalCounterexample": "若每个状态、轮次和临时文件都对应独立可观察风险，则完整步骤可以是 proportionate。"
       }
     },
     {
       "id": "large-reference-size-alone-is-not-a-defect",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "reference-proportionality",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "reference_large": true,
-        "responsibilities": 1
-      },
-      "oracle": {
-        "rationale": "大型单一用途资料可保留；大小只触发审计。",
-        "rule_refs": [
-          "SKILL.md#评审流程"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以建议索引；不得只因大小给 major。",
-        "minimal_counterexample": "若大型 reference 混入多个独立职责并导致错误路由，则可按可达失败报告缺陷。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
       "prompt": "只读评审 skills/code-lookup，重点判断大型查表 reference。",
-      "scripted_replies": [],
-      "expected_output": "根据单一用途判 proportionate。",
-      "workspace_files": {
-        "skills/code-lookup/SKILL.md": "---\nname: code-lookup\ndescription: Look up a supplied service code.\n---\n\nRead references/codes.md after a code is supplied.\n",
-        "skills/code-lookup/references/codes.md": "# Codes\n\n| Code | Meaning |\n|---|---|\n| A01 | Accepted |\n"
+      "assertions": [
+        "不按字节数判缺陷"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/code-lookup/SKILL.md": "---\nname: code-lookup\ndescription: Look up a supplied service code.\n---\n\nRead references/codes.md after a code is supplied.\n",
+          "skills/code-lookup/references/codes.md": "# Codes\n\n| Code | Meaning |\n|---|---|\n| A01 | Accepted |\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "不按字节数判缺陷"
-        ]
+      "expected": {
+        "output": "根据单一用途判 proportionate。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "大型单一用途资料可保留；大小只触发审计。",
+        "minimalCounterexample": "若大型 reference 混入多个独立职责并导致错误路由，则可按可达失败报告缺陷。"
       }
     },
     {
       "id": "optional-eval-branch-requires-static-gap",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "derived",
-      "scenario_family": "eval-execution-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "static_evidence_sufficient": true
-      },
-      "oracle": {
-        "rationale": "静态证据足够时不应为了完整流程启动 Audit 或昂贵 Eval。",
-        "rule_refs": [
-          "SKILL.md#可选-Eval-分支"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可报告既有证据缺口，但不得启动运行分支。",
-        "minimal_counterexample": "若静态材料不能区分两个候选结论且运行结果会改变 verdict，则可准入 Eval 分支。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
       "prompt": "评审这个 Skill 的 scope 是否过宽；现有文件已经直接证明它包含两个独立职责。",
-      "scripted_replies": [],
-      "expected_output": "基于静态材料给结论，不启动 Eval Audit 或 runner。",
-      "workspace_files": {
-        "skills/mixed/SKILL.md": "---\nname: mixed\ndescription: Create and independently approve deployments.\n---\n\nCreate deployments and issue the independent approval verdict.\n"
+      "assertions": [
+        "不启动 Eval 分支"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/mixed/SKILL.md": "---\nname: mixed\ndescription: Create and independently approve deployments.\n---\n\nCreate deployments and issue the independent approval verdict.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "不启动 Eval 分支"
-        ]
+      "expected": {
+        "output": "基于静态材料给结论，不启动 Eval Audit 或 runner。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "静态证据足够时不应为了完整流程启动 Audit 或昂贵 Eval。",
+        "minimalCounterexample": "若静态材料不能区分两个候选结论且运行结果会改变 verdict，则可准入 Eval 分支。"
       }
     },
     {
       "id": "cross-workflow-request-is-out-of-scope",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "scope-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "multiple_skills": true
-      },
-      "oracle": {
-        "rationale": "跨多个 Skill 的完整工作流不属于单 Skill Reviewer。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以做 leaf facts；不得声称完成整个 workflow Review。",
-        "minimal_counterexample": "若请求只收窄到其中一个 Skill package，则单 Skill Reviewer 应给完整 leaf 结论。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "审核 author-agent-skill、audit-agent-skill-evals 和 runner 联合完成的整个 Eval 流程。",
-      "scripted_replies": [],
-      "expected_output": "拒绝给完整工作流结论，并路由到有界 workflow Reviewer。",
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "不输出整个 workflow pass"
-        ]
+      "assertions": [
+        "不输出整个 workflow pass"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {},
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "拒绝给完整工作流结论，并路由到有界 workflow Reviewer。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "跨多个 Skill 的完整工作流不属于单 Skill Reviewer。",
+        "minimalCounterexample": "若请求只收窄到其中一个 Skill package，则单 Skill Reviewer 应给完整 leaf 结论。"
       }
     },
     {
       "id": "incomplete-full-review-is-not-assessed",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "derived",
-      "scenario_family": "full-review-confidence",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "required_runtime_evidence_missing": true
-      },
-      "oracle": {
-        "rationale": "缺少必要证据时不得猜分；full coverage 不完整或总体 confidence 低时必须 not-assessed。",
-        "rule_refs": [
-          "references/scoring-model.md#Design-边界"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以继续报告已证实 finding 和 unknown；不得用其余高分补齐结论。",
-        "minimal_counterexample": "若全部 12 维度均有充分静态或行为证据，则可形成完整评分。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
       "prompt": "full 评审 skills/runtime-router，但运行依赖和行为证据没有提供。请估计剩余维度以给出总分。",
-      "scripted_replies": [],
-      "expected_output": "拒绝猜分，把缺证据维度设为 null/unknown，并输出 Score: not-assessed 与 design not-assessed。",
-      "workspace_files": {
-        "skills/runtime-router/SKILL.md": "---\nname: runtime-router\ndescription: Route requests through a separately supplied runtime service.\n---\n\nUse the required runtime service to route the request.\n"
+      "assertions": [
+        "读取 review-rubric.md、review-dimensions.md 和 scoring-model.md",
+        "不猜分",
+        "输出 not-assessed",
+        "准备 major 时先读取 evidence-and-severity.md",
+        "不读取 review-publication.md"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/runtime-router/SKILL.md": "---\nname: runtime-router\ndescription: Route requests through a separately supplied runtime service.\n---\n\nUse the required runtime service to route the request.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "读取 review-rubric.md、review-dimensions.md 和 scoring-model.md",
-          "不猜分",
-          "输出 not-assessed",
-          "准备 major 时先读取 evidence-and-severity.md",
-          "不读取 review-publication.md"
-        ]
+      "expected": {
+        "output": "拒绝猜分，把缺证据维度设为 null/unknown，并输出 Score: not-assessed 与 design not-assessed。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "缺少必要证据时不得猜分；full coverage 不完整或总体 confidence 低时必须 not-assessed。",
+        "minimalCounterexample": "若全部 12 维度均有充分静态或行为证据，则可形成完整评分。"
       }
     },
     {
       "id": "score-does-not-create-finding",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "score-decision-separation",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "low_dimension_score": true,
-        "admissible_finding_evidence": false
-      },
-      "oracle": {
-        "rationale": "评分是 finding-first 后的诊断摘要，不能反向生成 finding 或提高严重度。",
-        "rule_refs": [
-          "references/scoring-model.md#置信度"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以保留 unknown 或建议收集证据；不得只因低分创建 major。",
-        "minimal_counterexample": "若另有 observed、normative 或 structural 证据证明可达失败，可以独立形成 major。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "某维度只有 2 分，但没有运行、规范或结构证据。请据此创建 major finding。",
-      "scripted_replies": [],
-      "expected_output": "拒绝由分数反推 major；保留低置信诊断或 unknown。",
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "finding-first",
-          "评分不驱动严重度"
-        ]
+      "assertions": [
+        "finding-first",
+        "评分不驱动严重度"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {},
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "拒绝由分数反推 major；保留低置信诊断或 unknown。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "评分是 finding-first 后的诊断摘要，不能反向生成 finding 或提高严重度。",
+        "minimalCounterexample": "若另有 observed、normative 或 structural 证据证明可达失败，可以独立形成 major。"
       }
     },
     {
       "id": "default-chat-review-does-not-publish",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "derived",
-      "scenario_family": "review-publication-consent",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "archive_requested": false,
-        "default_mode": "quick"
-      },
-      "oracle": {
-        "rationale": "Quality Review 默认只在聊天中交付；没有明确归档授权时不得写入工作区或创建 archive record。",
-        "rule_refs": [
-          "SKILL.md#可选报告归档"
-        ],
-        "confidence": "high",
-        "allowed_variance": "报告内容可以不同；不得调用发布命令、写 report 文件或创建 reports/reviews 记录。",
-        "minimal_counterexample": "用户明确要求归档已有报告时，Reviewer 应进入可选归档路径。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
       "prompt": "只读 quick 评审 plugins/incident-tools/skills/incident-summary。把 Quality Review 直接交付在聊天中；我没有要求归档、写报告文件或做 Release Check。",
-      "scripted_replies": [],
-      "expected_output": "在聊天中给出 Quality Review，不写工作区，也不发布 archive record。",
-      "workspace_files": {
-        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      "assertions": [
+        "最终消息是 Quality Review，而不是归档或 release 结论",
+        "trace 不调用 aw review publish 或其它写入命令",
+        "workspace diff 为空，特别是不创建 reports/reviews"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "最终消息是 Quality Review，而不是归档或 release 结论",
-          "trace 不调用 aw review publish 或其它写入命令",
-          "workspace diff 为空，特别是不创建 reports/reviews"
-        ]
+      "expected": {
+        "output": "在聊天中给出 Quality Review，不写工作区，也不发布 archive record。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "Quality Review 默认只在聊天中交付；没有明确归档授权时不得写入工作区或创建 archive record。",
+        "minimalCounterexample": "用户明确要求归档已有报告时，Reviewer 应进入可选归档路径。"
       }
     },
     {
       "id": "full-review-explicitly-publishes-with-aw-cli",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "review-publication-explicit-archive",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "archive_requested": true,
-        "mode": "full",
-        "installed_aw_review_publish": true
-      },
-      "oracle": {
-        "rationale": "用户明确要求 full Review 归档时，Reviewer 必须用当前 aw review publish 归档已有报告，而不是退回旧入口。",
-        "rule_refs": [
-          "SKILL.md#可选报告归档"
-        ],
-        "confidence": "high",
-        "allowed_variance": "finding 和报告措辞可以不同；必须实际运行公开 AW 发布和归档验证命令。",
-        "minimal_counterexample": "没有明确归档授权的默认聊天 Review 不得写入 archive。"
-      },
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
       "prompt": "对 plugins/incident-tools/skills/incident-summary 做 full 只读评审，并把人读报告写到 review-output/full-report.md。现在我明确要求归档这份完整报告。先运行 aw review publish --help，然后实际使用 aw review publish 归档该报告。发布后用 aw review verify、aw review list 和 aw review show 验证新记录。不要修改被审 Skill，也不要生成 Release Check。",
-      "scripted_replies": [],
-      "expected_output": "生成完整 Quality Review，实际以 aw review publish 归档，并报告已验证的新 immutable record。",
-      "sandbox": "workspace-write",
-      "workspace_files": {
-        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      "assertions": [
+        "trace 先读取 aw review publish --help，再实际执行 aw review publish --kind skill --target plugins/incident-tools/skills/incident-summary --report review-output/full-report.md",
+        "trace 中的归档命令全部使用 aw review publish",
+        "动态 archive record 由 aw review verify、aw review list 和 aw review show 成功确认，且 manifest target.kind=skill",
+        "不生成或宣称 Quality Review 的 release readiness"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": [
+      "expected": {
+        "output": "生成完整 Quality Review，实际以 aw review publish 归档，并报告已验证的新 immutable record。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
           "review-output/**",
           "reports/reviews/**"
         ],
@@ -460,50 +364,33 @@
             "path": "review-output/full-report.md",
             "exists": true
           }
-        ],
-        "checks": [
-          "trace 先读取 aw review publish --help，再实际执行 aw review publish --kind skill --target plugins/incident-tools/skills/incident-summary --report review-output/full-report.md",
-          "trace 中的归档命令全部使用 aw review publish",
-          "动态 archive record 由 aw review verify、aw review list 和 aw review show 成功确认，且 manifest target.kind=skill",
-          "不生成或宣称 Quality Review 的 release readiness"
         ]
       }
     },
     {
       "id": "delta-publication-creates-new-record-with-supersedes",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "review-publication-delta-history",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "archive_requested": true,
-        "mode": "delta",
-        "previous_record_may_be_created_in_fixture": true
-      },
-      "oracle": {
-        "rationale": "delta 归档必须新增不可变记录，并用 --supersedes 绑定同一 target 的已验证旧记录。",
-        "rule_refs": [
-          "SKILL.md#可选报告归档"
-        ],
-        "confidence": "high",
-        "allowed_variance": "两份报告的具体 finding 可以不同；必须保留旧记录并发布一个不同的 delta record。",
-        "minimal_counterexample": "quick/full 的首次归档没有要替代的旧记录时，不应无依据传入 --supersedes。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "对 plugins/incident-tools/skills/incident-summary 完成 delta 只读评审并归档。这个隔离 fixture 没有预置旧记录：先把 review-output/previous-report.md 作为同一 target 的旧完整报告实际用 aw review publish 归档，并从命令结果取得旧 review ID；再把本次 delta 报告写到 review-output/delta-report.md。两份报告必须是不同内容，delta 报告必须明确其 delta 结论；实际发布一个新的 record，命令必须传 --supersedes <旧 review ID>。先检查 aw review publish --help，只使用 aw review publish。最后使用 aw review verify、aw review list 和 aw review show 确认两个不同 record、旧记录未被覆盖，且新 manifest 的 supersedes 是旧 ID。不要修改被审 Skill。",
-      "scripted_replies": [],
-      "expected_output": "创建两个不同的 immutable record；delta record 用 --supersedes 指向已验证的旧 record。",
-      "sandbox": "workspace-write",
-      "workspace_files": {
-        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      "assertions": [
+        "trace 先读取 aw review publish --help，并两次实际使用 aw review publish",
+        "第二次发布命令含 --supersedes 和从第一次发布结果取得的 review ID",
+        "aw review verify、aw review list 和 aw review show 确认两个不同 immutable record；新 manifest.supersedes 指向旧 ID，旧 record 未被覆盖",
+        "trace 中的归档命令全部使用 aw review publish"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": [
+      "expected": {
+        "output": "创建两个不同的 immutable record；delta record 用 --supersedes 指向已验证的旧 record。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
           "review-output/**",
           "reports/reviews/**"
         ],
@@ -516,145 +403,108 @@
             "path": "review-output/delta-report.md",
             "exists": true
           }
-        ],
-        "checks": [
-          "trace 先读取 aw review publish --help，并两次实际使用 aw review publish",
-          "第二次发布命令含 --supersedes 和从第一次发布结果取得的 review ID",
-          "aw review verify、aw review list 和 aw review show 确认两个不同 immutable record；新 manifest.supersedes 指向旧 ID，旧 record 未被覆盖",
-          "trace 中的归档命令全部使用 aw review publish"
         ]
+      },
+      "audit": {
+        "rationale": "delta 归档必须新增不可变记录，并用 --supersedes 绑定同一 target 的已验证旧记录。",
+        "minimalCounterexample": "quick/full 的首次归档没有要替代的旧记录时，不应无依据传入 --supersedes。"
       }
     },
     {
       "id": "release-is-not-a-review-mode",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "derived",
-      "scenario_family": "review-release-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "request_is_release_readiness": true,
-        "quality_review_requested": false
-      },
-      "oracle": {
-        "rationale": "Release Check 是独立机器检查，不是 Reviewer mode；Quality Review 不拥有 readiness 结论。",
-        "rule_refs": [
-          "SKILL.md#模式"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以引用用户使用的 release-ready 或 blocked 词；不得根据静态 Quality Review 判断目标已具备或不具备发布资格，也不得把 release 请求伪装成 quick、full 或 delta Review。",
-        "minimal_counterexample": "用户请求明确的 quick/full/delta Quality Review 时，Reviewer 应执行对应 Review，而不是改写成 Release Check。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
       "prompt": "把 plugins/incident-tools/skills/incident-summary 做成 release Review，给我一个 release-ready 或 blocked 结论。不要做普通 Quality Review。",
-      "scripted_replies": [],
-      "expected_output": "不根据静态 Review 给出发布资格结论，也不写文件；说明本 Skill 不拥有 Release Check，将请求交给对应发布工作流，并在没有可验证检查时报告 readiness 未评估和缺失输入。",
-      "workspace_files": {
-        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+      "assertions": [
+        "不把 release 请求转换为 quick、full 或 delta Quality Review",
+        "不根据目标 Skill 的静态观察判断它已具备或不具备发布资格",
+        "将请求指向拥有机器 Release Check 的发布工作流；当前没有可验证检查时报告 readiness 未评估并列出缺失输入",
+        "不创建 release-check.json、report 或 archive record"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "不把 release 请求转换为 quick、full 或 delta Quality Review",
-          "不根据目标 Skill 的静态观察判断它已具备或不具备发布资格",
-          "将请求指向拥有机器 Release Check 的发布工作流；当前没有可验证检查时报告 readiness 未评估并列出缺失输入",
-          "不创建 release-check.json、report 或 archive record"
-        ]
+      "expected": {
+        "output": "不根据静态 Review 给出发布资格结论，也不写文件；说明本 Skill 不拥有 Release Check，将请求交给对应发布工作流，并在没有可验证检查时报告 readiness 未评估和缺失输入。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "Release Check 是独立机器检查，不是 Reviewer mode；Quality Review 不拥有 readiness 结论。",
+        "minimalCounterexample": "用户请求明确的 quick/full/delta Quality Review 时，Reviewer 应执行对应 Review，而不是改写成 Release Check。"
       }
     },
     {
       "id": "same-context-fixed-json-has-no-consumer",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "output-consumer-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "mode": "quick",
-        "same_agent_context": true,
-        "parser_or_file_consumer": false,
-        "independent_actor": false
-      },
-      "oracle": {
-        "rationale": "固定字段没有独立 consumer 时只是同一上下文中的伪函数返回，不应因格式完整而获得正面评价。",
-        "rule_refs": [
-          "SKILL.md#Reference-路由",
-          "references/composition-fitness.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "finding 严重性和报告格式可以不同；必须逐字段确认无 consumer，并给 relax/delete，而不是建议补 schema。",
-        "minimal_counterexample": "若固定字段由 parser、持久 artifact、独立 actor 或明确的人类决策者消费，则应检查合同最小性，而不是删除整个合同。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "quick 只读评审 skills/decision-result，重点检查固定 JSON 输出。事实：同一 Agent 会在同一上下文继续执行下一个 Skill；没有 parser、文件、子代理或独立人类决策者消费这些字段。不要修改文件。",
-      "scripted_replies": [],
-      "expected_output": "读取 composition-fitness；枚举 status、nextSkill、decisionDelta 的 consumer 并确认不存在；把固定合同分类为 relax/delete；不建议新增 schema 或 validator；不执行 full 评分。",
-      "workspace_files": {
-        "skills/decision-result/SKILL.md": "---\nname: decision-result\ndescription: Confirm one decision and continue the current conversation.\n---\n\nConfirm the decision.\n\n## Output\n\n```json\n{\n  \"status\": \"confirmed\",\n  \"nextSkill\": \"dev-spec\",\n  \"decisionDelta\": {}\n}\n```\n"
+      "assertions": [
+        "读取 composition-fitness.md，并保持 quick 范围",
+        "逐项说明 status、nextSkill 和 decisionDelta 没有真实 consumer",
+        "将固定机器输出分类为 relax/delete，不把格式完整性当成优点",
+        "不建议补 schema、validator、持久 artifact 或跨 Skill 状态机",
+        "不输出维度、分数或发布资格"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/decision-result/SKILL.md": "---\nname: decision-result\ndescription: Confirm one decision and continue the current conversation.\n---\n\nConfirm the decision.\n\n## Output\n\n```json\n{\n  \"status\": \"confirmed\",\n  \"nextSkill\": \"dev-spec\",\n  \"decisionDelta\": {}\n}\n```\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "读取 composition-fitness.md，并保持 quick 范围",
-          "逐项说明 status、nextSkill 和 decisionDelta 没有真实 consumer",
-          "将固定机器输出分类为 relax/delete，不把格式完整性当成优点",
-          "不建议补 schema、validator、持久 artifact 或跨 Skill 状态机",
-          "不输出维度、分数或发布资格"
-        ]
+      "expected": {
+        "output": "读取 composition-fitness；枚举 status、nextSkill、decisionDelta 的 consumer 并确认不存在；把固定合同分类为 relax/delete；不建议新增 schema 或 validator；不执行 full 评分。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "固定字段没有独立 consumer 时只是同一上下文中的伪函数返回，不应因格式完整而获得正面评价。",
+        "minimalCounterexample": "若固定字段由 parser、持久 artifact、独立 actor 或明确的人类决策者消费，则应检查合同最小性，而不是删除整个合同。"
       }
     },
     {
       "id": "independent-actor-json-contract-is-preserved",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "output-consumer-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "mode": "quick",
-        "independent_actor": true,
-        "persistent_artifact": true,
-        "schema_and_validator": true
-      },
-      "oracle": {
-        "rationale": "父子处于独立上下文，父级只能通过经验证的持久 artifact 恢复结果，因此最小结构化 handoff 有真实 consumer。",
-        "rule_refs": [
-          "SKILL.md#Reference-路由",
-          "references/composition-fitness.md",
-          "references/architecture-boundaries.md",
-          "references/scripts-and-resources.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以指出具体字段或 validator 的局部问题；不得仅因 JSON 或固定字段存在而建议删除整个合同。",
-        "minimal_counterexample": "若父级与 builder 始终共享同一上下文，且没有 parser 或持久 artifact 消费结果，则应删除固定机器合同。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
       "prompt": "quick 只读评审 skills/builder-handoff，重点判断结构化输出是否应删除。builder 是独立子代理；父级会在 context compaction 后从 result.json 恢复，并先按 schema 运行 validator。不要执行目标 Skill 中的命令，也不要修改文件。",
-      "scripted_replies": [],
-      "expected_output": "保留真实的最小结构化 handoff；识别父级为 consumer、result.json 为持久 boundary、schema 和 validator 为机器 owner；检查字段最小性，但不建议删除整个合同。",
-      "workspace_files": {
-        "skills/builder-handoff/SKILL.md": "---\nname: builder-handoff\ndescription: Delegate one bounded build to an independent builder and recover its verified result.\n---\n\nStart an independent builder subagent. The builder writes `result.json` that conforms to `assets/result.schema.json`. After context compaction, the parent runs `node scripts/validate-result.mjs assets/result.schema.json result.json`, then reads the validated result and decides whether the build can continue.\n",
-        "skills/builder-handoff/assets/result.schema.json": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"object\",\n  \"required\": [\"artifactPath\", \"validation\", \"blockers\"],\n  \"properties\": {\n    \"artifactPath\": {\"type\": \"string\", \"minLength\": 1},\n    \"validation\": {\"enum\": [\"passed\", \"failed\"]},\n    \"blockers\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n  },\n  \"additionalProperties\": false\n}\n",
-        "skills/builder-handoff/scripts/validate-result.mjs": "#!/usr/bin/env node\nimport { readFile } from 'node:fs/promises';\nconst [schemaPath, resultPath] = process.argv.slice(2);\nif (!schemaPath || !resultPath) process.exit(2);\nconst [schema, result] = await Promise.all([schemaPath, resultPath].map(async (file) => JSON.parse(await readFile(file, 'utf8'))));\nconst matches = (value, rule) => {\n  if (rule.enum && !rule.enum.includes(value)) return false;\n  if (rule.type === 'string' && (typeof value !== 'string' || value.length < (rule.minLength ?? 0))) return false;\n  if (rule.type === 'array' && (!Array.isArray(value) || value.some((item) => !matches(item, rule.items)))) return false;\n  return true;\n};\nfor (const key of schema.required) if (!(key in result)) process.exit(1);\nfor (const [key, value] of Object.entries(result)) {\n  const rule = schema.properties[key];\n  if (!rule || !matches(value, rule)) process.exit(1);\n}\n"
+      "assertions": [
+        "读取 composition-fitness.md、architecture-boundaries.md 和 scripts-and-resources.md",
+        "识别独立 builder、context compaction、持久 result.json 和父级 parser 构成真实 consumer boundary",
+        "保留最小结构化合同，并检查三个字段是否为父级判断所需",
+        "确认 schema 和 validator 拥有机器字段合同，不要求在 SKILL.md 复制字段细节",
+        "不因固定 JSON 存在而把整个合同分类为 over-specified"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "skills/builder-handoff/SKILL.md": "---\nname: builder-handoff\ndescription: Delegate one bounded build to an independent builder and recover its verified result.\n---\n\nStart an independent builder subagent. The builder writes `result.json` that conforms to `assets/result.schema.json`. After context compaction, the parent runs `node scripts/validate-result.mjs assets/result.schema.json result.json`, then reads the validated result and decides whether the build can continue.\n",
+          "skills/builder-handoff/assets/result.schema.json": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"type\": \"object\",\n  \"required\": [\"artifactPath\", \"validation\", \"blockers\"],\n  \"properties\": {\n    \"artifactPath\": {\"type\": \"string\", \"minLength\": 1},\n    \"validation\": {\"enum\": [\"passed\", \"failed\"]},\n    \"blockers\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n  },\n  \"additionalProperties\": false\n}\n",
+          "skills/builder-handoff/scripts/validate-result.mjs": "#!/usr/bin/env node\nimport { readFile } from 'node:fs/promises';\nconst [schemaPath, resultPath] = process.argv.slice(2);\nif (!schemaPath || !resultPath) process.exit(2);\nconst [schema, result] = await Promise.all([schemaPath, resultPath].map(async (file) => JSON.parse(await readFile(file, 'utf8'))));\nconst matches = (value, rule) => {\n  if (rule.enum && !rule.enum.includes(value)) return false;\n  if (rule.type === 'string' && (typeof value !== 'string' || value.length < (rule.minLength ?? 0))) return false;\n  if (rule.type === 'array' && (!Array.isArray(value) || value.some((item) => !matches(item, rule.items)))) return false;\n  return true;\n};\nfor (const key of schema.required) if (!(key in result)) process.exit(1);\nfor (const [key, value] of Object.entries(result)) {\n  const rule = schema.properties[key];\n  if (!rule || !matches(value, rule)) process.exit(1);\n}\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "读取 composition-fitness.md、architecture-boundaries.md 和 scripts-and-resources.md",
-          "识别独立 builder、context compaction、持久 result.json 和父级 parser 构成真实 consumer boundary",
-          "保留最小结构化合同，并检查三个字段是否为父级判断所需",
-          "确认 schema 和 validator 拥有机器字段合同，不要求在 SKILL.md 复制字段细节",
-          "不因固定 JSON 存在而把整个合同分类为 over-specified"
-        ]
+      "expected": {
+        "output": "保留真实的最小结构化 handoff；识别父级为 consumer、result.json 为持久 boundary、schema 和 validator 为机器 owner；检查字段最小性，但不建议删除整个合同。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "父子处于独立上下文，父级只能通过经验证的持久 artifact 恢复结果，因此最小结构化 handoff 有真实 consumer。",
+        "minimalCounterexample": "若父级与 builder 始终共享同一上下文，且没有 parser 或持久 artifact 消费结果，则应删除固定机器合同。"
       }
     }
   ]

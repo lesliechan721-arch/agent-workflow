@@ -493,7 +493,13 @@ function main() {
 
     const evalManifestPath = path.join(pluginRoot, 'skills', skillName, 'evals', 'manifest.json');
     const triggerCasesPath = path.join(pluginRoot, 'skills', skillName, 'evals', 'trigger-cases.json');
-    const behaviorCasesPath = path.join(pluginRoot, 'skills', skillName, 'evals', 'evals.json');
+    const behaviorCasesPath = path.join(
+      pluginRoot,
+      'skills',
+      skillName,
+      'evals',
+      'behavior-cases.json',
+    );
 
     writeText(
       skillMdPath,
@@ -511,7 +517,7 @@ function main() {
         args.skillInvocation,
       ),
     );
-    writeJson(evalManifestPath, renderEvalManifest(pluginName, skillName));
+    writeJson(evalManifestPath, renderEvalManifest(pluginName));
     writeJson(
       triggerCasesPath,
       renderTriggerCases(skillName, skillDescription, args.skillInvocation),

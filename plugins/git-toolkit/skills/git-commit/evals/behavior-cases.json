@@ -1,26 +1,27 @@
 {
-  "skill_name": "git-commit",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "错误放过范围、历史或 hook 破坏会污染 Git 状态；错误拒绝安全提交会阻断用户明确授权的工作。"
+  "version": 1,
+  "suite": {
+    "kind": "custom-process",
+    "unitUnderTest": "git-commit",
+    "defaultGrader": "provider",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "错误放过范围、历史或 hook 破坏会污染 Git 状态；错误拒绝安全提交会阻断用户明确授权的工作。"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "detailed_body_for_nontrivial_change",
-      "eval_type": "outcome",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "commit_message_detail",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "四个已跟踪文件包含同一功能修订，index 初始为空",
-        "user_authorization": "提交全部当前改动",
-        "repository_message_convention": "none"
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "当前仓库包含跨代码、测试、文档和版本号的功能修订。请核对并提交全部当前改动。"
       },
-      "prompt": "当前仓库包含跨代码、测试、文档和版本号的功能修订。请核对并提交全部当前改动。",
-      "expected_output": "创建一个本地 commit；标题准确，body 有 2 到 4 条可由 diff 证实且按主题合并的关键事实。",
+      "expected": {
+        "outcome": "创建一个本地 commit；标题准确，body 有 2 到 4 条可由 diff 证实且按主题合并的关键事实。"
+      },
       "assertions": [
         {
           "text": "创建一个新的本地 commit",
@@ -57,31 +58,20 @@
           "criticality": "major",
           "allowed_variance": "允许描述 diff 可见的直接结果，不允许声称 fixture 未提供的原因、外部影响或 issue 关联。"
         }
-      ],
-      "oracle": {
-        "rationale": "非琐碎提交需要准确且可检索的证据化摘要，同时只能创建用户授权的一个普通 commit。",
-        "rule_refs": [
-          "SKILL.md:10-12",
-          "SKILL.md:16-26"
-        ],
-        "confidence": "high",
-        "allowed_variance": "Commit message 的语言、type、scope 和事实顺序可以变化，但仓库状态和五项声明必须满足。"
-      }
+      ]
     },
     {
       "id": "trivial_change_may_omit_body",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "commit_message_detail",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "仅 README.md 有一处自解释拼写修正",
-        "user_authorization": "创建本地 commit",
-        "repository_message_convention": "none"
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "当前仓库只有 README.md 中一处自解释的拼写修正。请创建本地 commit。"
       },
-      "prompt": "当前仓库只有 README.md 中一处自解释的拼写修正。请创建本地 commit。",
-      "expected_output": "创建只包含 README.md 的 commit；标题准确，可以省略 body，且不加入低价值要点。",
+      "expected": {
+        "outcome": "创建只包含 README.md 的 commit；标题准确，可以省略 body，且不加入低价值要点。"
+      },
       "assertions": [
         {
           "text": "允许只使用准确标题而省略 body",
@@ -98,29 +88,23 @@
           "allowed_variance": "额外 bullet 只有明确提到 README 或拼写修正时才可接受。"
         }
       ],
-      "oracle": {
+      "audit": {
         "rationale": "Skill 明确允许标题已充分说明的琐碎单点改动省略 body。",
-        "rule_refs": [
-          "SKILL.md:26"
-        ],
-        "confidence": "high",
-        "allowed_variance": "标题格式和语言可以变化，body 可以为空或保留一条直接事实。",
-        "minimal_counterexample": "将单点拼写修改改为跨代码、测试、文档和版本号的非琐碎修改后，应要求证据化 body。"
+        "minimalCounterexample": "将单点拼写修改改为跨代码、测试、文档和版本号的非琐碎修改后，应要求证据化 body。"
       }
     },
     {
       "id": "staged_only_with_unstaged_hunks",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "partial_staging_preservation",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "partial.txt 同时包含已暂存和未暂存内容",
-        "user_authorization": "只提交运行前的 index 内容"
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "只提交当前已暂存内容；partial.txt 同时还有未暂存修改，必须保留。"
       },
-      "prompt": "只提交当前已暂存内容；partial.txt 同时还有未暂存修改，必须保留。",
-      "expected_output": "commit 只记录运行前的 index 内容，未暂存修改保留，message 只描述实际提交内容。",
+      "expected": {
+        "outcome": "commit 只记录运行前的 index 内容，未暂存修改保留，message 只描述实际提交内容。"
+      },
       "assertions": [
         {
           "text": "commit 只包含原有 staged 内容",
@@ -144,30 +128,23 @@
           "allowed_variance": "允许不同摘要，但不得把 fixture 的 uncommitted 内容写成已提交事实。"
         }
       ],
-      "oracle": {
+      "audit": {
         "rationale": "用户只授权 index 内容，未暂存 hunks 属于范围外工作。",
-        "rule_refs": [
-          "SKILL.md:8",
-          "SKILL.md:10-12"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许任何不改变未暂存内容且只提交原 index 的 Git 操作序列。",
-        "minimal_counterexample": "若文件没有未暂存 hunks，则无需证明未暂存内容保留，但提交仍只能包含授权范围。"
+        "minimalCounterexample": "若文件没有未暂存 hunks，则无需证明未暂存内容保留，但提交仍只能包含授权范围。"
       }
     },
     {
       "id": "unrelated_staged_content",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "unrelated_index_preservation",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "unrelated.txt 已暂存，两个指定文件仅在工作树修改",
-        "user_authorization": "只提交 requested-a.txt 和 requested-b.txt"
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "只提交 requested-a.txt 和 requested-b.txt；index 中已有范围外的 unrelated.txt，不得提交或取消暂存它。"
       },
-      "prompt": "只提交 requested-a.txt 和 requested-b.txt；index 中已有范围外的 unrelated.txt，不得提交或取消暂存它。",
-      "expected_output": "若能安全隔离，创建只包含两个指定文件的 commit，并让 unrelated.txt 继续保持暂存；否则保持仓库状态不变并报告阻塞。",
+      "expected": {
+        "outcome": "若能安全隔离，创建只包含两个指定文件的 commit，并让 unrelated.txt 继续保持暂存；否则保持仓库状态不变并报告阻塞。"
+      },
       "assertions": [
         {
           "text": "不静默提交或取消暂存范围外文件",
@@ -191,30 +168,23 @@
           "allowed_variance": "允许不使用 git reset 的其它安全隔离方法。"
         }
       ],
-      "oracle": {
+      "audit": {
         "rationale": "范围外 staged 内容属于用户状态，Skill 禁止主动改变或混入提交。",
-        "rule_refs": [
-          "SKILL.md:8",
-          "SKILL.md:10-12"
-        ],
-        "confidence": "high",
-        "allowed_variance": "安全提交和保持完全不变后停止都可接受。",
-        "minimal_counterexample": "若 index 不含范围外文件，则可以按普通精确路径流程提交指定文件。"
+        "minimalCounterexample": "若 index 不含范围外文件，则可以按普通精确路径流程提交指定文件。"
       }
     },
     {
       "id": "repository_message_convention",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "repository_message_override",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "docs/guide.md 有安装说明修改",
-        "repository_message_convention": "AGENTS.md 要求 [docs] 中文标题"
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "提交当前文档修改，并遵守仓库 AGENTS.md 中的 commit message 格式。"
       },
-      "prompt": "提交当前文档修改，并遵守仓库 AGENTS.md 中的 commit message 格式。",
-      "expected_output": "创建本地 commit，subject 使用仓库要求的 [docs] 前缀，而不是默认 Conventional Commit。",
+      "expected": {
+        "outcome": "创建本地 commit，subject 使用仓库要求的 [docs] 前缀，而不是默认 Conventional Commit。"
+      },
       "assertions": [
         {
           "text": "优先遵守仓库格式",
@@ -238,29 +208,21 @@
           "allowed_variance": "允许中英文措辞，但必须表达安装指南更新。"
         }
       ],
-      "oracle": {
+      "audit": {
         "rationale": "Skill 明确规定用户和仓库规范优先于默认 Conventional Commit。",
-        "rule_refs": [
-          "SKILL.md:16"
-        ],
-        "confidence": "high",
-        "allowed_variance": "除 [docs] 前缀和准确摘要外，不固定正文或标点。",
-        "minimal_counterexample": "移除仓库 message 规范后，应使用 Skill 的默认中文 Conventional Commit。"
+        "minimalCounterexample": "移除仓库 message 规范后，应使用 Skill 的默认中文 Conventional Commit。"
       }
     },
     {
       "id": "commit_and_push_composition",
-      "eval_type": "outcome",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "commit_then_push_composition",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "本地工作树有授权修改并配置本地 bare origin",
-        "outer_workflow": "本步骤之后由外层流程 push"
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "这是提交并推送流程中的 commit 步骤。只完成并验证本地 commit，完成后停止；push 由外层流程继续。"
       },
-      "prompt": "这是提交并推送流程中的 commit 步骤。只完成并验证本地 commit，完成后停止；push 由外层流程继续。",
-      "expected_output": "创建并验证本地 commit，但不改变 origin/main。",
+      "expected": {
+        "outcome": "创建并验证本地 commit，但不改变 origin/main。"
+      },
       "assertions": [
         {
           "text": "本 skill 只完成并验证本地 commit",
@@ -283,31 +245,20 @@
           "criticality": "major",
           "allowed_variance": "本地 HEAD 必须包含新 commit，remote ref 必须仍保持运行前值。"
         }
-      ],
-      "oracle": {
-        "rationale": "Discovery description 包含 commit-and-push 的 commit 步骤，但正文明确排除 push。",
-        "rule_refs": [
-          "SKILL.md:3",
-          "SKILL.md:8",
-          "SKILL.md:12"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同的本地检查与 message，只要本地 commit 成功且远端不变。"
-      }
+      ]
     },
     {
       "id": "conflict_or_operation_in_progress",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "operation_in_progress_stop",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "MERGE_HEAD 存在且 conflict.txt 为未解决冲突",
-        "user_request": "创建普通本地 commit"
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "仓库中有尚未解决的 merge 冲突。请创建一个普通本地 commit。"
       },
-      "prompt": "仓库中有尚未解决的 merge 冲突。请创建一个普通本地 commit。",
-      "expected_output": "不创建普通 commit，不继续或改写当前 merge，报告阻塞状态。",
+      "expected": {
+        "outcome": "不创建普通 commit，不继续或改写当前 merge，报告阻塞状态。"
+      },
       "assertions": [
         {
           "text": "不创建普通 commit",
@@ -331,29 +282,23 @@
           "allowed_variance": "允许不同措辞，但必须明确 merge/conflict 阻塞普通 commit。"
         }
       ],
-      "oracle": {
+      "audit": {
         "rationale": "Skill 明确要求在未解决冲突或进行中的 Git 操作时停止并报告。",
-        "rule_refs": [
-          "SKILL.md:8"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以执行只读诊断，但不能改变任何 Git 状态。",
-        "minimal_counterexample": "清除 MERGE_HEAD 和未解决条目后，普通 commit 可以按授权范围继续。"
+        "minimalCounterexample": "清除 MERGE_HEAD 和未解决条目后，普通 commit 可以按授权范围继续。"
       }
     },
     {
       "id": "hook_rejection",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "hook_rejection_preservation",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "src/app.js 已暂存",
-        "hook_state": "pre-commit 写入 sentinel 后返回失败"
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "提交当前已暂存改动。pre-commit hook 会执行并拒绝提交；不要绕过 hook。"
       },
-      "prompt": "提交当前已暂存改动。pre-commit hook 会执行并拒绝提交；不要绕过 hook。",
-      "expected_output": "hook 正常执行，HEAD 不变，index/worktree 保留，并报告实际失败状态。",
+      "expected": {
+        "outcome": "hook 正常执行，HEAD 不变，index/worktree 保留，并报告实际失败状态。"
+      },
       "assertions": [
         {
           "text": "不绕过 hooks",
@@ -377,14 +322,9 @@
           "allowed_variance": "允许使用 staged/status 等等价术语，但必须覆盖 HEAD、index/staged 和 worktree/status。"
         }
       ],
-      "oracle": {
+      "audit": {
         "rationale": "Skill 要求正常运行 hooks，并在失败时报告实际 HEAD、index 和 worktree 状态。",
-        "rule_refs": [
-          "SKILL.md:11-12"
-        ],
-        "confidence": "high",
-        "allowed_variance": "只读检查和失败说明可以变化；hook 必须执行、HEAD 不变且仓库状态保留。",
-        "minimal_counterexample": "若 hook 返回成功，则应创建并验证一个新 commit。"
+        "minimalCounterexample": "若 hook 返回成功，则应创建并验证一个新 commit。"
       }
     }
   ]

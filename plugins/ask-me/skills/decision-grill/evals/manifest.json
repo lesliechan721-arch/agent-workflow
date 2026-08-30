@@ -1,114 +1,78 @@
 {
-  "schemaVersion": 1,
-  "plugin": "ask-me",
-  "skill": "decision-grill",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "ask-me",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "ask-me": {}
+      }
     },
-    {
-      "id": "user-default",
+    "user-default": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "ask-me",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "ask-me": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "decision-grill"
-      ],
-      "cases": "./decision-grill-trigger-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation",
-        "sanity"
-      ],
-      "forbidMultipleSkillLoads": false,
+      "cases": "decision-grill-trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "router",
       "kind": "trigger",
-      "skills": [
-        "decision-grill",
-        "decision-prototype"
-      ],
-      "cases": "./ask-me-routing-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [],
-      "minimumPassRate": 0.9,
-      "forbidMultipleSkillLoads": true,
+      "cases": "ask-me-routing-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 10,
+      "runs": 10,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "behavior",
       "kind": "conversation",
-      "skills": [
-        "decision-grill"
-      ],
-      "cases": "./decision-grill-release-evals.json",
-      "isolation": "strict",
+      "cases": "decision-grill-release-evals.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 300000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "releaseSplits": [
+        "validation"
+      ]
     },
     {
       "id": "decision-frame",
       "kind": "conversation",
-      "skills": [
-        "decision-grill"
-      ],
-      "cases": "./decision-frame-cases.json",
-      "isolation": "strict",
+      "cases": "decision-frame-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 300000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

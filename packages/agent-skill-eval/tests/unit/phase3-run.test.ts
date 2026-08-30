@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -7,15 +7,32 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   computeEvalFileDigest,
   computeSkillDigest,
+  normalizeConversationProviderCase,
   parseSelectedCases,
   runEvalSpec,
   validateEvalAudit,
   type EvalAudit,
   type EvalSpec,
 } from '../../dist/index.js'
+import { adaptConversationProviderCase } from '../../dist/eval-run.js'
 
 const execFileAsync = promisify(execFile)
 const roots: string[] = []
+
+async function evalManifestPaths(root: string): Promise<string[]> {
+  const result: string[] = []
+  async function walk(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name)
+      if (entry.isDirectory()) await walk(entryPath)
+      else if (entry.name === 'manifest.json' && path.basename(directory) === 'evals') {
+        result.push(entryPath)
+      }
+    }
+  }
+  await walk(root)
+  return result.sort()
+}
 
 interface Fixture {
   root: string
@@ -119,9 +136,11 @@ describe('EvalSpec v1 execution', () => {
         id: 'loads_skill',
         split: 'validation',
         tags: ['positive'],
-        query: 'Use the fixture Skill.',
-        expectedLoad: true,
-        shouldSpawnAgent: false,
+        input: {
+          query: 'Use the fixture Skill.',
+          expectedLoad: true,
+          shouldSpawnAgent: false,
+        },
       }],
     })
     expect(canonical.cases[0]?.providerCase).toEqual({
@@ -134,15 +153,15 @@ describe('EvalSpec v1 execution', () => {
     })
     expect(JSON.stringify(canonical)).not.toContain('providerCase')
     for (const invalidCase of [{
-      id: 'loads_skill', split: 'validation', tags: [], query: 'query',
-      expectedLoad: true, expected: { loadedSkills: [] },
+      id: 'loads_skill', split: 'validation', tags: [], input: { query: 'query',
+        expectedLoad: true, expected: { loadedSkills: [] } },
     }, {
-      id: 'loads_skill', split: 'validation', tags: [], query: 'query',
-      expected: { unknown: true },
+      id: 'loads_skill', split: 'validation', tags: [], input: { query: 'query',
+        expected: { unknown: true } },
     }, {
-      id: 'bad-id', split: 'validation', tags: [], query: 'query', expectedLoad: true,
+      id: 'bad-id', split: 'validation', tags: [], input: { query: 'query', expectedLoad: true },
     }, {
-      id: 'loads_skill', split: 'release', tags: [], query: 'query', expectedLoad: true,
+      id: 'loads_skill', split: 'release', tags: [], input: { query: 'query', expectedLoad: true },
     }]) {
       expect(() => parseSelectedCases({
         version: 1,
@@ -158,7 +177,8 @@ describe('EvalSpec v1 execution', () => {
         runtime: { observeSpawnAgent: true },
       },
       cases: [{
-        id: 'loads_skill', split: 'validation', tags: [], query: 'query', expectedLoad: true,
+        id: 'loads_skill', split: 'validation', tags: [],
+        input: { query: 'query', expectedLoad: true },
       }],
     })).toThrow('should_spawn_agent is required')
     expect(() => parseSelectedCases({
@@ -171,6 +191,137 @@ describe('EvalSpec v1 execution', () => {
       suite: { kind: 'custom-process', unitUnderTest: 'fixture-skill' },
       cases: [{ id: 'case-1', split: 'validation', tags: ['duplicate', 'duplicate'] }],
     })).toThrow('unique values')
+  })
+
+  it('requires only the audit fields selected by case tags', () => {
+    const base = {
+      version: 1 as const,
+      suite: { kind: 'custom-process' as const, unitUnderTest: 'fixture-skill' },
+    }
+    expect(parseSelectedCases({
+      ...base,
+      cases: [{ id: 'ordinary', split: 'validation', tags: [], input: {} }],
+    }).cases[0]?.audit).toBeUndefined()
+    expect(parseSelectedCases({
+      ...base,
+      cases: [{
+        id: 'guarded',
+        split: 'validation',
+        tags: ['boundary', 'release-critical', 'high-variance'],
+        audit: {
+          rationale: 'This case protects the routing boundary.',
+          minimalCounterexample: 'Remove the explicit request.',
+          errorCost: 'high',
+          allowedVariance: 'Wording can differ.',
+        },
+      }],
+    }).cases[0]?.audit).toEqual({
+      rationale: 'This case protects the routing boundary.',
+      minimalCounterexample: 'Remove the explicit request.',
+      errorCost: 'high',
+      allowedVariance: 'Wording can differ.',
+    })
+    for (const invalidCase of [{
+      id: 'boundary', split: 'validation', tags: ['boundary'],
+      audit: { rationale: 'reason' },
+    }, {
+      id: 'cost', split: 'validation', tags: ['high-cost'], audit: { errorCost: 'severe' },
+    }, {
+      id: 'variance', split: 'validation', tags: ['high-variance'],
+      audit: { allowedVariance: { prose: true } },
+    }, {
+      id: 'legacy', split: 'validation', tags: [], audit: { decision_context: 'legacy' },
+    }]) {
+      expect(() => parseSelectedCases({ ...base, cases: [invalidCase] })).toThrow()
+    }
+  })
+
+  it('accepts only finite minimum pass rates from zero through one', () => {
+    for (const minimumPassRate of [0, 1]) {
+      expect(parseSelectedCases({
+        version: 1,
+        suite: {
+          kind: 'custom-process',
+          unitUnderTest: 'fixture-skill',
+          runtime: { minimumPassRate },
+        },
+        cases: [{ id: 'case-1', split: 'validation', tags: [] }],
+      }).suite.runtime).toEqual({ minimumPassRate })
+    }
+    for (const minimumPassRate of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => parseSelectedCases({
+        version: 1,
+        suite: {
+          kind: 'conversation',
+          unitUnderTest: 'fixture-skill',
+          runtime: { minimumPassRate },
+        },
+        cases: [{
+          id: 'case-1', split: 'validation', tags: [], prompt: 'Do work.',
+          assertions: ['Returns the result.'],
+        }],
+      })).toThrow('finite number from 0 to 1')
+    }
+  })
+
+  it('rejects non-normalized paths in selected case contracts', () => {
+    const trigger = (fixture: string, workspaceFixture = 'workspaces/basic') => ({
+      version: 1,
+      suite: {
+        kind: 'trigger', unitUnderTest: 'fixture-skill', runtime: { fixture },
+      },
+      cases: [{
+        id: 'loads_skill', split: 'validation', tags: [],
+        input: { query: 'query', expectedLoad: true, workspaceFixture },
+      }],
+    })
+    for (const value of [
+      trigger('../fixture.mjs'),
+      trigger('fixture.mjs', './workspace'),
+      {
+        version: 1,
+        suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+        cases: [{
+          id: 'conversation', split: 'validation', tags: [], prompt: 'Do work.',
+          assertions: ['Creates the result.'],
+          input: { workspaceFiles: { '../outside.txt': 'unsafe' } },
+        }],
+      },
+      {
+        version: 1,
+        suite: {
+          kind: 'conversation', unitUnderTest: 'fixture-skill',
+          runtime: { pathPrepend: ['/host/bin'] },
+        },
+        cases: [{
+          id: 'conversation', split: 'validation', tags: [], prompt: 'Do work.',
+          assertions: ['Creates the result.'],
+        }],
+      },
+      {
+        version: 1,
+        suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+        cases: [{
+          id: 'conversation', split: 'validation', tags: [], prompt: 'Do work.',
+          assertions: ['Creates the result.'],
+          expected: { artifacts: [{ path: 'output\\result.json' }] },
+        }],
+      },
+    ]) expect(() => parseSelectedCases(value)).toThrow('normalized relative POSIX path')
+  })
+
+  it('rejects symbolic links in the prepared fixture tree before provider execution', async () => {
+    const data = await fixture()
+    await symlink(
+      path.join(data.root, 'cases.json'),
+      path.join(data.root, 'workspace', 'eval', 'linked-fixture'),
+    )
+    const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
+    await expect(runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      executeCustomProvider: execute,
+    })).rejects.toThrow('symlink')
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('never invokes a provider when Audit admission is absent or mismatched', async () => {
@@ -213,7 +364,7 @@ describe('EvalSpec v1 execution', () => {
       suite: {
         kind: 'trigger',
         unitUnderTest: 'fixture-skill',
-        runtime: { observeSpawnAgent: true },
+        runtime: { observeSpawnAgent: true, fixture: 'fixtures/setup.mjs' },
       },
       cases: [{
         id: 'loads_skill',
@@ -223,6 +374,8 @@ describe('EvalSpec v1 execution', () => {
           query: 'Use the fixture Skill.',
           expected: { loadedSkills: ['fixture-skill'] },
           shouldSpawnAgent: true,
+          workspaceFixture: 'workspaces/project',
+          useProjectRules: true,
         },
       }],
     }
@@ -251,9 +404,234 @@ describe('EvalSpec v1 execution', () => {
           query: 'Use the fixture Skill.',
           expected_loaded_skills: ['fixture-skill'],
           should_spawn_agent: true,
+          workspace_fixture: 'workspaces/project',
+          use_project_rules: true,
         },
+        suite: expect.objectContaining({ fixtureModule: 'fixtures/setup.mjs' }),
       }),
     }), undefined)
+  })
+
+  it('maps conversation input, expected values, PATH fixtures, and artifacts to the provider', async () => {
+    const data = await fixture()
+    const evalRoot = path.join(data.root, 'workspace', 'eval')
+    await mkdir(path.join(evalRoot, 'fixtures', 'suite-bin'), { recursive: true })
+    await mkdir(path.join(evalRoot, 'fixtures', 'case-bin'), { recursive: true })
+    await writeFile(path.join(evalRoot, 'fixtures', 'suite-bin', 'suite-tool'), '#!/bin/sh\n')
+    await writeFile(path.join(evalRoot, 'fixtures', 'case-bin', 'case-tool'), '#!/bin/sh\n')
+    const casesPath = path.join(data.root, 'cases.json')
+    const cases = {
+      version: 1,
+      suite: {
+        kind: 'conversation',
+        unitUnderTest: 'fixture-skill',
+        participants: ['helper-skill'],
+        runtime: { isolation: 'strict', pathPrepend: ['fixtures/suite-bin'] },
+      },
+      cases: [{
+        id: 'writes_result',
+        split: 'validation',
+        tags: ['high-variance'],
+        prompt: 'Create the result.',
+        assertions: ['The result is valid.'],
+        input: {
+          scriptedReplies: [{
+            answersByIndex: ['yes'],
+            expectedQuestionCount: 1,
+            unexpectedQuestionAnswer: 'Stop asking questions.',
+          }],
+          workspaceFiles: { 'input/request.txt': 'request\n', 'input/.keep': '' },
+          pathPrepend: ['fixtures/case-bin'],
+        },
+        expected: {
+          output: 'A concise completion message.',
+          workspaceUnchanged: false,
+          allowedWorkspaceChanges: ['output/**'],
+          artifacts: [{
+            path: 'output/result.json',
+            exists: true,
+            contains: ['ok'],
+            notContains: ['secret'],
+          }],
+        },
+        audit: { allowedVariance: 'Equivalent wording is accepted.' },
+      }],
+    }
+    await writeFile(casesPath, `${JSON.stringify(cases, null, 2)}\n`)
+    data.spec.cases.digest = await computeEvalFileDigest(casesPath)
+    data.spec.provider = 'codex-conversation'
+    await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+    data.audit.caseDigest = data.spec.cases.digest
+    data.audit.approvedCaseIds = ['writes_result']
+    await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
+    let mappedCase: Record<string, unknown> | undefined
+    let mappedFixturesPath = ''
+    await runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      runBuiltinProvider: (async (_id, input: { case: Record<string, unknown>; fixturesPath: string }) => {
+        mappedCase = input.case
+        mappedFixturesPath = input.fixturesPath
+        return { usage: null, grade: { passed: true, score: 1 } }
+      }) as never,
+    })
+    expect(mappedCase).toEqual({
+      value: {
+        id: 'writes_result',
+        prompt: 'Create the result.',
+        scripted_replies: [{
+          answers_by_index: ['yes'],
+          expected_question_count: 1,
+          unexpected_question_answer: 'Stop asking questions.',
+        }],
+        expected_output: 'A concise completion message.',
+        workspace_files: { 'input/request.txt': 'request\n', 'input/.keep': '' },
+        environment: { pathPrepend: ['fixtures/case-bin'] },
+        sandbox: 'workspace-write',
+        review: {
+          checks: ['The result is valid.'],
+          workspace_unchanged: false,
+          allowed_workspace_changes: ['output/**'],
+          artifacts: [{
+            path: 'output/result.json',
+            exists: true,
+            contains: ['ok'],
+            not_contains: ['secret'],
+          }],
+        },
+      },
+      skillName: 'fixture-skill',
+      skillNames: ['fixture-skill', 'helper-skill'],
+      isolation: 'strict',
+      suitePathPrepend: ['fixtures/suite-bin'],
+      assertions: ['The result is valid.'],
+      allowedVariance: 'Equivalent wording is accepted.',
+    })
+    const normalized = normalizeConversationProviderCase({
+      value: mappedCase!.value as Record<string, unknown>,
+      expectedSkill: 'fixture-skill',
+      fixtureRoot: mappedFixturesPath,
+      suitePathPrepend: mappedCase!.suitePathPrepend as string[],
+    })
+    expect(normalized).toMatchObject({
+      scriptedReplies: [{
+        answersByIndex: ['yes'],
+        expectedQuestionCount: 1,
+        unexpectedQuestionAnswer: 'Stop asking questions.',
+      }],
+      workspaceFiles: { 'input/request.txt': 'request\n', 'input/.keep': '' },
+      workspaceUnchanged: false,
+      allowedWorkspaceChanges: ['output/**'],
+      environmentPathPrepend: ['fixtures/case-bin'],
+      artifacts: [{ path: 'output/result.json', notContains: ['secret'] }],
+    })
+  })
+
+  it('rejects legacy or mixed casing in structured conversation replies', () => {
+    const conversation = (reply: unknown) => ({
+      version: 1,
+      suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+      cases: [{
+        id: 'case-1', split: 'validation', tags: [], prompt: 'Do work.',
+        assertions: ['Returns the result.'],
+        input: { scriptedReplies: [reply] },
+      }],
+    })
+    for (const reply of [{
+      answers_by_index: ['yes'],
+      unexpected_question_answer: 'Stop.',
+    }, {
+      answersByIndex: ['yes'],
+      answers_by_index: ['yes'],
+      unexpectedQuestionAnswer: 'Stop.',
+    }, {
+      answersByIndex: ['yes'],
+    }, {
+      answersByIndex: 'yes',
+      unexpectedQuestionAnswer: 'Stop.',
+    }]) expect(() => parseSelectedCases(conversation(reply))).toThrow()
+    expect(() => normalizeConversationProviderCase({
+      value: {
+        id: 'case-1',
+        prompt: 'Do work.',
+        scripted_replies: [{
+          answers_by_index: ['yes'],
+          answersByIndex: ['yes'],
+          unexpected_question_answer: 'Stop.',
+        }],
+        expected_output: 'Done.',
+        sandbox: 'read-only',
+        review: { checks: ['Returns the result.'], workspace_unchanged: true },
+      },
+      expectedSkill: 'fixture-skill',
+      fixtureRoot: process.cwd(),
+    })).toThrow('unknown field')
+  })
+
+  it('omits empty optional conversation provider fields', () => {
+    const document = parseSelectedCases({
+      version: 1,
+      suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+      cases: [{
+        id: 'case-1', split: 'validation', tags: [], prompt: 'Inspect the workspace.',
+        assertions: ['Reports the result.'],
+        input: { scriptedReplies: [], workspaceFiles: {}, pathPrepend: [] },
+        expected: { allowedWorkspaceChanges: [], artifacts: [] },
+      }],
+    })
+    expect(adaptConversationProviderCase(document, document.cases[0]!)).toEqual({
+      value: {
+        id: 'case-1',
+        prompt: 'Inspect the workspace.',
+        scripted_replies: [],
+        expected_output: 'Evaluate the response against the approved assertions.',
+        sandbox: 'read-only',
+        review: {
+          checks: ['Reports the result.'],
+          workspace_unchanged: true,
+        },
+      },
+      skillName: 'fixture-skill',
+      skillNames: ['fixture-skill'],
+      isolation: 'standard',
+      suitePathPrepend: [],
+      assertions: ['Reports the result.'],
+    })
+  })
+
+  it('normalizes every registered conversation corpus through the actual adapter', async () => {
+    const repositoryRoot = path.resolve('../..')
+    const manifests = await evalManifestPaths(path.join(repositoryRoot, 'plugins'))
+    let suiteCount = 0
+    let conversationCount = 0
+    let caseCount = 0
+    for (const manifestPath of manifests) {
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+        suites: Array<{ kind: string; cases?: string }>
+      }
+      suiteCount += manifest.suites.length
+      for (const suite of manifest.suites) {
+        if (suite.kind !== 'conversation') continue
+        conversationCount += 1
+        const fixtureRoot = path.dirname(manifestPath)
+        const document = parseSelectedCases(JSON.parse(await readFile(
+          path.join(fixtureRoot, suite.cases!),
+          'utf8',
+        )))
+        for (const evalCase of document.cases) {
+          const adapted = adaptConversationProviderCase(document, evalCase)
+          normalizeConversationProviderCase({
+            value: adapted.value as Record<string, unknown>,
+            expectedSkill: document.suite.unitUnderTest,
+            fixtureRoot,
+            suitePathPrepend: adapted.suitePathPrepend as string[],
+          })
+          caseCount += 1
+        }
+      }
+    }
+    expect({ manifests: manifests.length, suites: suiteCount }).toEqual({ manifests: 27, suites: 65 })
+    expect(conversationCount).toBeGreaterThan(0)
+    expect(caseCount).toBeGreaterThan(0)
   })
 
   it('exclusively claims outputRoot before provider execution and preserves existing content', async () => {

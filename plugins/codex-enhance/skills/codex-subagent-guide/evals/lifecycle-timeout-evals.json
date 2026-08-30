@@ -1,41 +1,39 @@
 {
-  "skill_name": "codex-subagent-guide",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "critical",
-    "false_positive_cost": "high",
-    "rationale": "把 timeout 当作失败或 timeout 后停止等待会丢失真实结果，因此该分支使用关键失败门禁。"
+  "version": 1,
+  "suite": {
+    "kind": "custom-process",
+    "unitUnderTest": "codex-subagent-guide",
+    "defaultGrader": "provider",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "critical",
+      "falsePositiveCost": "high",
+      "rationale": "把 timeout 当作失败或 timeout 后停止等待会丢失真实结果，因此该分支使用关键失败门禁。"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "timeout_then_terminal_result",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "timeout-continuation-lifecycle",
-      "unit_under_test": "full-skill",
-      "profiles": [
-        "project-timeout"
+      "split": "validation",
+      "tags": [
+        "regression"
       ],
-      "preconditions": {
-        "runtime_profile": "V2，subagentMinimumInitialWaitMinutes=1",
-        "child_task": "simple 子代理必须运行只读 helper；helper 等待 75 秒后读取 src/simple.ts",
-        "timeout_coverage": "helper 时长超过 60 秒首次等待窗口，必须观察 timeout 后再次等待"
-      },
-      "oracle": {
-        "rationale": "首次 60 秒 wait 必须真实超时；父代理不得把 timeout 当作失败，必须再次 wait 到真实终态，清理只能位于结果之后。",
-        "rule_refs": [
-          "../SKILL.md#等待与清理"
+      "input": {
+        "profiles": [
+          "project-timeout"
         ],
-        "confidence": "high",
-        "allowed_variance": "允许 timeout 后等待次数和清理工具可用性变化；必须至少观察一个 timeout、其后的 wait 和最终终态结果。",
-        "minimal_counterexample": "如果 helper 在 60 秒内完成，则该 case 只能验证正常终态路径，不得要求或声称观察到 timeout。"
+        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，让它运行 node scripts/delayed-simple.mjs，并原样报告该命令的 stdout；不要直接读取 src/simple.ts 来替代该命令。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；首次等待超时不等于失败，必须继续等待。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。"
       },
-      "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，让它运行 node scripts/delayed-simple.mjs，并原样报告该命令的 stdout；不要直接读取 src/simple.ts 来替代该命令。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；首次等待超时不等于失败，必须继续等待。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。",
       "expected": {
-        "minimum_initial_wait_timeout_ms": 60000,
-        "spawn_count": 1,
-        "require_timeout": true
+        "criteria": {
+          "minimum_initial_wait_timeout_ms": 60000,
+          "spawn_count": 1,
+          "require_timeout": true
+        }
+      },
+      "audit": {
+        "rationale": "首次 60 秒 wait 必须真实超时；父代理不得把 timeout 当作失败，必须再次 wait 到真实终态，清理只能位于结果之后。",
+        "minimalCounterexample": "如果 helper 在 60 秒内完成，则该 case 只能验证正常终态路径，不得要求或声称观察到 timeout。"
       }
     }
   ]

@@ -159,6 +159,11 @@ function assertFixtureTreeSafe(fixtureRoot: string, target: string, label: strin
 function validateConversationReply(value: unknown, label: string): void {
   if (typeof value === 'string') return
   const reply = record(value, label)
+  onlyKeys(
+    reply,
+    ['answers_by_index', 'expected_question_count', 'unexpected_question_answer'],
+    label,
+  )
   if (!Array.isArray(reply.answers_by_index) || reply.answers_by_index.some(
     (entry) => typeof entry !== 'string',
   )) throw new Error(`${label}.answers_by_index must be an array of strings.`)
@@ -177,7 +182,7 @@ function validateConversationWorkspaceFiles(value: unknown, label: string): void
   if (entries.length === 0) throw new Error(`${label} must contain at least one file.`)
   for (const [relativePath, content] of entries) {
     parseWorkspacePath(relativePath, `${label}.${relativePath}`, { allowTreePattern: false })
-    string(content, `${label}.${relativePath}`)
+    if (typeof content !== 'string') throw new Error(`${label}.${relativePath} must be a string.`)
   }
 }
 

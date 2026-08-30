@@ -13,4 +13,4 @@
 
 作者完成条件是“请求的内容已修改并通过修改范围内的确定性验证”，不是“独立 Review 或 Eval 已通过”。
 
-用户另外要求执行已有 Eval 时，交给兼容 Runner；不先创建 Reviewer gate。默认 AW Runner 必须从 validated Plan v4 取得独立 passing preflight Audit，获得本次副作用授权，验证 EvalRunBundle v4，并在全新上下文完成 result-triage Audit v3。Audit fail 只停止 Eval 分支，不触发 Author 修改生产 Skill。
+Eval 和独立 Review 不属于默认完成条件。用户另外明确要求执行已有 Eval 时，交给兼容 Runner；不先创建 Reviewer gate。Runner 从 suite/profile/case 选择准备并验证 `EvalSpec v1`，复用已精确绑定的单份 `EvalAudit v1` 或在全新上下文取得一份 Audit，获得本次副作用授权，执行 `aw-skill-eval run <spec> --audit <audit>`，再验证生成的 `EvalResult v1`。Audit fail 只停止 Eval 分支，不触发 Author 修改生产 Skill。clean success 不要求 triage；只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才在全新上下文做 result-triage。triage 默认在聊天中返回，用户指定时可写 `triage.md`，且不是 Release Check 的机器输入。

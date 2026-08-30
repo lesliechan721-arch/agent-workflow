@@ -1,192 +1,157 @@
 {
-  "skill_name": "review-agent-workflow",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "必须发现局部正确但整体失控，同时拒绝无边界系统结论。"
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "review-agent-workflow",
+    "participants": [
+      "review-agent-content",
+      "review-agent-skill"
+    ],
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "必须发现局部正确但整体失控，同时拒绝无边界系统结论。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "locally-correct-globally-overengineered",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "workflow-minimum-architecture",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "components": 4,
-        "persistent_handoffs": 6,
-        "same_agent_context": true,
-        "intermediate_consumers": 0
-      },
-      "oracle": {
-        "rationale": "多个 leaf 局部有效不能抵消同一上下文中没有独立 consumer 的重复 goal/status/path 和 target/digest/readiness handoff。",
-        "rule_refs": [
-          "references/workflow-review.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "必须判 over-engineered/redesign，并给同样安全的更短路径。",
-        "minimal_counterexample": "若每个中间状态都有独立消费者和不可合并的证据生命周期，则较长路径可以是 proportionate。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "审核这套有入口和参与组件清单的 Skill Review 工作流，先看完整 common path。",
-      "scripted_replies": [],
-      "expected_output": "scope admitted；识别同一上下文中没有 consumer 的重复状态，给 machine check → quality review → optional release check 的最小架构。",
-      "workspace_files": {
-        "workflow/README.md": "Outcome: publish one review. Entry: inspect. Components: inspect, review, eval, publish. Representative path: inspect.json -> stage.json -> bundle.json -> review.json -> summary.json. The same Agent uses every step in one context. Each intermediate JSON repeats goal, status, path, target, digest, and readiness. No parser, independent actor, or human consumes stage.json or bundle.json; the local deterministic validator reads only the final review.json. External dependencies: local deterministic validator. Explicit exclusions: report publication and real model execution. User decision: whether to remove the duplicated stage and bundle handoffs.\n"
+      "assertions": [
+        "先评 common path",
+        "明确同一上下文不自动构成 handoff boundary",
+        "逐项确认 stage.json 和 bundle.json 没有真实 consumer",
+        "给最小架构"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "workflow/README.md": "Outcome: publish one review. Entry: inspect. Components: inspect, review, eval, publish. Representative path: inspect.json -> stage.json -> bundle.json -> review.json -> summary.json. The same Agent uses every step in one context. Each intermediate JSON repeats goal, status, path, target, digest, and readiness. No parser, independent actor, or human consumes stage.json or bundle.json; the local deterministic validator reads only the final review.json. External dependencies: local deterministic validator. Explicit exclusions: report publication and real model execution. User decision: whether to remove the duplicated stage and bundle handoffs.\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "先评 common path",
-          "明确同一上下文不自动构成 handoff boundary",
-          "逐项确认 stage.json 和 bundle.json 没有真实 consumer",
-          "给最小架构"
-        ]
+      "expected": {
+        "output": "scope admitted；识别同一上下文中没有 consumer 的重复状态，给 machine check → quality review → optional release check 的最小架构。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "多个 leaf 局部有效不能抵消同一上下文中没有独立 consumer 的重复 goal/status/path 和 target/digest/readiness handoff。",
+        "minimalCounterexample": "若每个中间状态都有独立消费者和不可合并的证据生命周期，则较长路径可以是 proportionate。"
       }
     },
     {
       "id": "unbounded-system-is-rejected",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "scope-admission",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "workflow_boundary_missing": true
-      },
-      "oracle": {
-        "rationale": "仓库根和文件数量不是 workflow 边界。",
-        "rule_refs": [
-          "SKILL.md#Scope-Admission"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以列出候选 workflow；不得给整个仓库 pass。",
-        "minimal_counterexample": "若用户给出一个明确结果、入口、组件、代表路径和排除项，则可准入该有界 workflow。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
       "prompt": "评审整个大型仓库的所有 Agent 系统并给一个统一结论。",
-      "scripted_replies": [],
-      "expected_output": "Scope status 只能是 partial/rejected；列出可独立评审的 workflow partitions；明确不提供整个仓库的 global pass。",
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "输出 workflow partitions",
-          "Scope status 为 partial 或 rejected",
-          "不输出全局 pass"
-        ]
+      "assertions": [
+        "输出 workflow partitions",
+        "Scope status 为 partial 或 rejected",
+        "不输出全局 pass"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {},
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "Scope status 只能是 partial/rejected；列出可独立评审的 workflow partitions；明确不提供整个仓库的 global pass。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "仓库根和文件数量不是 workflow 边界。",
+        "minimalCounterexample": "若用户给出一个明确结果、入口、组件、代表路径和排除项，则可准入该有界 workflow。"
       }
     },
     {
       "id": "leaf-fix-admission-prevents-wrong-owner",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "leaf-fix-admission",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "leaf_has_multiple_consumers": true,
-        "root_cause_in_router": true
-      },
-      "oracle": {
-        "rationale": "组合路由问题不应通过给 leaf Skill 增加全局规则修复。",
-        "rule_refs": [
-          "references/workflow-review.md#Leaf-Fix-Admission"
-        ],
-        "confidence": "high",
-        "allowed_variance": "owner 可为 workflow/router/adapter；不得归给 leaf。",
-        "minimal_counterexample": "若两个工作流都以相同输入错误使用该 leaf，且错误由 leaf 自身合同导致，则可准入 leaf 修复。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
       "prompt": "工作流 A 错误调用 shared-leaf，但工作流 B 正常使用同一 leaf。请提出修复。",
-      "scripted_replies": [],
-      "expected_output": "识别 root cause 在 router，并说明 leaf 修改的 blast radius。",
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "执行 Leaf Fix Admission"
-        ]
+      "assertions": [
+        "执行 Leaf Fix Admission"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {},
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "识别 root cause 在 router，并说明 leaf 修改的 blast radius。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "组合路由问题不应通过给 leaf Skill 增加全局规则修复。",
+        "minimalCounterexample": "若两个工作流都以相同输入错误使用该 leaf，且错误由 leaf 自身合同导致，则可准入 leaf 修复。"
       }
     },
     {
       "id": "subagents-only-partition-evidence",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "subagent-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "many_components": true
-      },
-      "oracle": {
-        "rationale": "子代理用于分区取证，父级负责组合 verdict。",
-        "rule_refs": [
-          "SKILL.md#工作流"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以不使用子代理；若使用，不能拼接 leaf pass 作为 workflow pass。"
-      },
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
       "prompt": "审核一个包含六个独立组件的有界工作流；可按组件并行取证。",
-      "scripted_replies": [],
-      "expected_output": "父级重建 common path、owner 和 blast radius。",
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "父级给最终 verdict"
-        ]
+      "assertions": [
+        "父级给最终 verdict"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {},
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "父级重建 common path、owner 和 blast radius。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
       }
     },
     {
       "id": "workflow-explicit-archive-writes-scope-and-publishes",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "workflow-review-publication",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "scope_admitted": true,
-        "archive_requested": true,
-        "installed_aw_review_publish": true
-      },
-      "oracle": {
-        "rationale": "有界 workflow Review 只有在用户明确要求归档时才写 scope.json 和 archive；component binding 必须来自 production CLI 的 canonical digest。",
-        "rule_refs": [
-          "SKILL.md#可选报告归档"
-        ],
-        "confidence": "high",
-        "allowed_variance": "必须先运行 aw review digest <component-path> --json，并把返回的 path 和 digest 原样写入 scope；不得自行计算或猜测 digest。workflow finding 和动态 archive record 可不同，但发布必须使用该有效 scope。",
-        "minimal_counterexample": "未准入或没有明确归档授权的 workflow Review 只能在聊天中交付，不能写 scope 或 archive。"
-      },
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
       "prompt": "评审 workflow/entry.md 定义的有界 incident review workflow。用户结果是“对一个 incident Skill 生成可读 Quality Review”，入口是 workflow/entry.md，参与组件只有 plugins/incident-tools/skills/incident-summary，代表路径固定为 workflow/entry.md -> plugins/incident-tools/skills/incident-summary/SKILL.md -> review-output/workflow-report.md，外部依赖是 aw review CLI，排除 real model execution。该 scope 已准入。把 workflow 报告写到 review-output/workflow-report.md；我现在明确要求归档。先运行 chmod +x fixtures/bin/aw。然后使用 fixtures/bin/aw；每个 aw 命令均以 PATH=\"$PWD/fixtures/bin:$PATH\" 开头。对 plugins/incident-tools/skills/incident-summary 运行 aw review digest <component-path> --json；只使用返回 JSON 中原样的 path 和 digest。完成 digest 后，才创建 review-output/scope.json，使用 schemaVersion 1、kind workflow、id incident-review-flow 和上述 scope。先运行 aw review publish --help，然后实际运行 aw review publish --kind workflow --target incident-review-flow --scope review-output/scope.json --report review-output/workflow-report.md。动态 record 路径不可固定：从发布输出取得它后，按顺序运行 aw review verify、aw review list 和 aw review show 验证 archive。不要修改被审 Skill，不做 Release Check。",
-      "scripted_replies": [],
-      "expected_output": "写入 admitted workflow 的 scope.json 和报告，并实际用 aw review publish 归档 kind=workflow 的 immutable record。",
-      "sandbox": "workspace-write",
-      "workspace_files": {
-        "workflow/entry.md": "# Incident review workflow\n\nEntry: inspect one incident Skill, then publish a readable Quality Review only if the user explicitly asks for archive.\n",
-        "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n",
-        "fixtures/bin/aw": "#!/bin/sh\nset -eu\nmkdir -p review-output\nprintf '%s\\n' \"$*\" >> review-output/aw-command-log.txt\nreal_aw() {\n  \"$AW_PLUGIN_EVAL_CLI_NODE\" \"$AW_PLUGIN_EVAL_CLI_ENTRY\" \"$@\"\n}\ncase \"${1:-}\" in\n  review)\n    case \"${2:-}\" in\n      digest)\n        if [ \"${4:-}\" != \"--json\" ] || [ -n \"${5:-}\" ]; then\n          printf 'review digest requires one path and --json\\n' >&2\n          exit 9\n        fi\n        real_aw \"$@\"\n        ;;\n      publish)\n        if [ \"${3:-}\" = \"--help\" ]; then\n          real_aw \"$@\"\n          exit 0\n        fi\n        arguments=\" $* \"\n        for required in \" --kind workflow \" \" --target incident-review-flow \" \" --scope review-output/scope.json \" \" --report review-output/workflow-report.md \"; do\n          case \"$arguments\" in\n            *\"$required\"*) : ;;\n            *) printf 'missing workflow publication arguments\\n' >&2; exit 9 ;;\n          esac\n        done\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review digest plugins/incident-tools/skills/incident-summary --json\"*) : ;;\n          *) printf 'missing required component digest before publication\\n' >&2; exit 9 ;;\n        esac\n        component_digest=\"$(real_aw review digest plugins/incident-tools/skills/incident-summary --json)\"\n        \"$AW_PLUGIN_EVAL_CLI_NODE\" -e '\nconst fs = require(\"node:fs\");\nconst [expected] = process.argv.slice(1).map(JSON.parse);\nconst scope = JSON.parse(fs.readFileSync(\"review-output/scope.json\", \"utf8\"));\nif (scope.schemaVersion !== 1 || scope.kind !== \"workflow\" || scope.id !== \"incident-review-flow\" || !Array.isArray(scope.components) || scope.components.length !== 1) throw new Error(\"scope must contain the incident workflow component\");\nconst component = scope.components[0];\nif (component.kind !== \"skill\" || component.id !== \"incident-summary\" || component.path !== expected.path || component.digest !== expected.digest) throw new Error(\"scope component must use the real review digest result\");\n' \"$component_digest\"\n        publish_output=\"$(real_aw \"$@\")\"\n        review_id=\"$(printf '%s\\n' \"$publish_output\" | sed -n 's/^[^ ]* review \\([^:]*\\): .*/\\1/p' | head -n 1)\"\n        [ -n \"$review_id\" ] || { printf 'production publisher did not return a review id\\n' >&2; exit 9; }\n        printf '%s\\n' \"$review_id\" > review-output/review-id.txt\n        printf '%s\\n' \"$publish_output\"\n        ;;\n      verify)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review publish --kind workflow --target incident-review-flow\"*) : ;;\n          *) printf 'verify must follow publication\\n' >&2; exit 9 ;;\n        esac\n        real_aw \"$@\"\n        ;;\n      list)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review verify\"*) : ;;\n          *) printf 'list must follow verification\\n' >&2; exit 9 ;;\n        esac\n        real_aw \"$@\"\n        ;;\n      show)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review list\"*) : ;;\n          *) printf 'show must follow listing\\n' >&2; exit 9 ;;\n        esac\n        real_aw \"$@\"\n        ;;\n      *) exit 9 ;;\n    esac\n    ;;\n  *) exit 9 ;;\nesac\n"
+      "assertions": [
+        "scope.json 的唯一 component 保持 kind=skill、id=incident-summary；path 和 digest 必须原样来自 aw review digest --json 返回值",
+        "trace 先执行该 component 的 aw review digest --json，再读取 aw review publish --help，接着以 aw review publish --kind workflow、--scope 和 --report 归档，最后按顺序执行 verify、list 和 show",
+        "trace 中的归档命令全部使用 aw review publish",
+        "动态 archive record 由 aw review verify、aw review list 和 aw review show 成功确认，manifest target.kind=workflow 且归档副本包含 scope.json"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "workflow/entry.md": "# Incident review workflow\n\nEntry: inspect one incident Skill, then publish a readable Quality Review only if the user explicitly asks for archive.\n",
+          "plugins/incident-tools/skills/incident-summary/SKILL.md": "---\nname: incident-summary\ndescription: Summarize one supplied incident into cause, impact, and next action.\n---\n\nRead the supplied incident. Return cause, impact, and next action.\n",
+          "fixtures/bin/aw": "#!/bin/sh\nset -eu\nmkdir -p review-output\nprintf '%s\\n' \"$*\" >> review-output/aw-command-log.txt\nreal_aw() {\n  \"$AW_PLUGIN_EVAL_CLI_NODE\" \"$AW_PLUGIN_EVAL_CLI_ENTRY\" \"$@\"\n}\ncase \"${1:-}\" in\n  review)\n    case \"${2:-}\" in\n      digest)\n        if [ \"${4:-}\" != \"--json\" ] || [ -n \"${5:-}\" ]; then\n          printf 'review digest requires one path and --json\\n' >&2\n          exit 9\n        fi\n        real_aw \"$@\"\n        ;;\n      publish)\n        if [ \"${3:-}\" = \"--help\" ]; then\n          real_aw \"$@\"\n          exit 0\n        fi\n        arguments=\" $* \"\n        for required in \" --kind workflow \" \" --target incident-review-flow \" \" --scope review-output/scope.json \" \" --report review-output/workflow-report.md \"; do\n          case \"$arguments\" in\n            *\"$required\"*) : ;;\n            *) printf 'missing workflow publication arguments\\n' >&2; exit 9 ;;\n          esac\n        done\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review digest plugins/incident-tools/skills/incident-summary --json\"*) : ;;\n          *) printf 'missing required component digest before publication\\n' >&2; exit 9 ;;\n        esac\n        component_digest=\"$(real_aw review digest plugins/incident-tools/skills/incident-summary --json)\"\n        \"$AW_PLUGIN_EVAL_CLI_NODE\" -e '\nconst fs = require(\"node:fs\");\nconst [expected] = process.argv.slice(1).map(JSON.parse);\nconst scope = JSON.parse(fs.readFileSync(\"review-output/scope.json\", \"utf8\"));\nif (scope.schemaVersion !== 1 || scope.kind !== \"workflow\" || scope.id !== \"incident-review-flow\" || !Array.isArray(scope.components) || scope.components.length !== 1) throw new Error(\"scope must contain the incident workflow component\");\nconst component = scope.components[0];\nif (component.kind !== \"skill\" || component.id !== \"incident-summary\" || component.path !== expected.path || component.digest !== expected.digest) throw new Error(\"scope component must use the real review digest result\");\n' \"$component_digest\"\n        publish_output=\"$(real_aw \"$@\")\"\n        review_id=\"$(printf '%s\\n' \"$publish_output\" | sed -n 's/^[^ ]* review \\([^:]*\\): .*/\\1/p' | head -n 1)\"\n        [ -n \"$review_id\" ] || { printf 'production publisher did not return a review id\\n' >&2; exit 9; }\n        printf '%s\\n' \"$review_id\" > review-output/review-id.txt\n        printf '%s\\n' \"$publish_output\"\n        ;;\n      verify)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review publish --kind workflow --target incident-review-flow\"*) : ;;\n          *) printf 'verify must follow publication\\n' >&2; exit 9 ;;\n        esac\n        real_aw \"$@\"\n        ;;\n      list)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review verify\"*) : ;;\n          *) printf 'list must follow verification\\n' >&2; exit 9 ;;\n        esac\n        real_aw \"$@\"\n        ;;\n      show)\n        prior_calls=\"$(cat review-output/aw-command-log.txt)\"\n        case \"$prior_calls\" in\n          *\"review list\"*) : ;;\n          *) printf 'show must follow listing\\n' >&2; exit 9 ;;\n        esac\n        real_aw \"$@\"\n        ;;\n      *) exit 9 ;;\n    esac\n    ;;\n  *) exit 9 ;;\nesac\n"
+        },
+        "pathPrepend": []
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": [
+      "expected": {
+        "output": "写入 admitted workflow 的 scope.json 和报告，并实际用 aw review publish 归档 kind=workflow 的 immutable record。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
           "review-output/workflow-report.md",
           "review-output/scope.json",
           "review-output/aw-command-log.txt",
@@ -242,12 +207,6 @@
             "path": "review-output/review-id.txt",
             "exists": true
           }
-        ],
-        "checks": [
-          "scope.json 的唯一 component 保持 kind=skill、id=incident-summary；path 和 digest 必须原样来自 aw review digest --json 返回值",
-          "trace 先执行该 component 的 aw review digest --json，再读取 aw review publish --help，接着以 aw review publish --kind workflow、--scope 和 --report 归档，最后按顺序执行 verify、list 和 show",
-          "trace 中的归档命令全部使用 aw review publish",
-          "动态 archive record 由 aw review verify、aw review list 和 aw review show 成功确认，manifest target.kind=workflow 且归档副本包含 scope.json"
         ]
       }
     }

@@ -94,6 +94,42 @@ function optionalJson(value: unknown, label: string): unknown {
   return value
 }
 
+function relativePath(
+  value: unknown,
+  label: string,
+  options: { allowTreePattern?: boolean } = {},
+): string {
+  const raw = nonEmptyString(value, label)
+  const treePattern = options.allowTreePattern === true && raw.endsWith('/**')
+  const candidate = treePattern ? raw.slice(0, -3) : raw
+  if (
+    candidate === ''
+    || candidate.includes('\0')
+    || candidate.includes('\\')
+    || candidate.includes('*')
+    || candidate.includes('?')
+    || candidate.includes('[')
+    || candidate.includes(']')
+    || candidate.startsWith('/')
+    || /^[A-Za-z]:/u.test(candidate)
+    || candidate.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+  ) throw new Error(`${label} must be a normalized relative POSIX path.`)
+  return raw
+}
+
+function pathArray(
+  value: unknown,
+  label: string,
+  options: { allowEmpty?: boolean; allowTreePattern?: boolean } = {},
+): string[] {
+  const values = uniqueStrings(value, label, options.allowEmpty === true)
+  return values.map((entry, index) => relativePath(
+    entry,
+    `${label}[${index}]`,
+    { allowTreePattern: options.allowTreePattern },
+  ))
+}
+
 function triggerSuiteContract(suite: SelectedCaseSuite): AwSkillEvalTriggerSuiteCaseContract {
   const runtime = suite.runtime ?? {}
   return {
@@ -106,6 +142,7 @@ function triggerSuiteContract(suite: SelectedCaseSuite): AwSkillEvalTriggerSuite
     isolation: runtime.isolation === 'strict' ? 'strict' : 'standard',
     strictNegativeSplits: (runtime.strictNegativeSplits ?? []) as Array<'train' | 'validation' | 'sanity'>,
     forbidMultipleSkillLoads: runtime.forbidMultipleSkillLoads === true,
+    ...(typeof runtime.fixture === 'string' ? { fixtureModule: runtime.fixture } : {}),
     profiles: ['selected'],
     defaultRuns: 1,
     releaseSplits: ['all'],
@@ -122,7 +159,14 @@ function parseRuntime(
   if (kind === 'trigger') {
     onlyKeys(
       runtime,
-      ['observeSpawnAgent', 'isolation', 'strictNegativeSplits', 'forbidMultipleSkillLoads'],
+      [
+        'observeSpawnAgent',
+        'isolation',
+        'strictNegativeSplits',
+        'forbidMultipleSkillLoads',
+        'fixture',
+        'minimumPassRate',
+      ],
       'selected cases.suite.runtime',
     )
     if (runtime.observeSpawnAgent !== undefined && typeof runtime.observeSpawnAgent !== 'boolean') {
@@ -145,13 +189,30 @@ function parseRuntime(
         throw new Error('selected cases.suite.runtime.strictNegativeSplits has an invalid split.')
       }
     }
+    if (runtime.fixture !== undefined) {
+      runtime.fixture = relativePath(runtime.fixture, 'selected cases.suite.runtime.fixture')
+    }
   } else if (kind === 'conversation') {
-    onlyKeys(runtime, ['isolation'], 'selected cases.suite.runtime')
+    onlyKeys(runtime, ['isolation', 'pathPrepend', 'minimumPassRate'], 'selected cases.suite.runtime')
     if (runtime.isolation !== undefined && runtime.isolation !== 'standard' && runtime.isolation !== 'strict') {
       throw new Error('selected cases.suite.runtime.isolation must be standard or strict.')
     }
+    runtime.pathPrepend = runtime.pathPrepend === undefined
+      ? []
+      : pathArray(runtime.pathPrepend, 'selected cases.suite.runtime.pathPrepend', { allowEmpty: true })
   } else {
-    onlyKeys(runtime, [], 'selected cases.suite.runtime')
+    onlyKeys(runtime, ['minimumPassRate'], 'selected cases.suite.runtime')
+  }
+  if (
+    runtime.minimumPassRate !== undefined
+    && (
+      typeof runtime.minimumPassRate !== 'number'
+      || !Number.isFinite(runtime.minimumPassRate)
+      || runtime.minimumPassRate < 0
+      || runtime.minimumPassRate > 1
+    )
+  ) {
+    throw new Error('selected cases.suite.runtime.minimumPassRate must be a finite number from 0 to 1.')
   }
   return runtime
 }
@@ -226,71 +287,187 @@ function parseTriggerCase(
   const label = `selected cases.cases[${index}]`
   onlyKeys(
     row,
-    ['id', 'split', 'tags', 'query', 'expectedLoad', 'expected', 'shouldSpawnAgent', 'input'],
+    ['id', 'split', 'tags', 'input', 'audit'],
     label,
   )
-  const usesInput = row.input !== undefined
-  const usesQuery = row.query !== undefined
-  if (usesInput === usesQuery) {
-    throw new Error(`${label} must contain either input or query with an expectation.`)
-  }
-  const input = usesInput ? record(row.input, `${label}.input`) : row
-  if (usesInput) {
-    onlyKeys(input, ['query', 'expectedLoad', 'expected', 'shouldSpawnAgent'], `${label}.input`)
-    if (row.expectedLoad !== undefined || row.expected !== undefined || row.shouldSpawnAgent !== undefined) {
-      throw new Error(`${label} must keep all trigger input fields inside input.`)
-    }
-  }
+  const input = record(row.input, `${label}.input`)
+  onlyKeys(
+    input,
+    ['query', 'expectedLoad', 'expected', 'shouldSpawnAgent', 'workspaceFixture', 'useProjectRules'],
+    `${label}.input`,
+  )
   const id = safeId(row.id, `${label}.id`)
   const split = safeId(row.split, `${label}.split`)
   const tags = uniqueStrings(row.tags, `${label}.tags`, true)
   const canonical = normalizeAwSkillEvalTriggerCase({
     id,
     split,
-    query: nonEmptyString(input.query, `${usesInput ? `${label}.input` : label}.query`),
-    ...triggerExpectation(input, usesInput ? `${label}.input` : label),
+    query: nonEmptyString(input.query, `${label}.input.query`),
+    ...triggerExpectation(input, `${label}.input`),
     ...(input.shouldSpawnAgent === undefined
       ? {}
       : { should_spawn_agent: input.shouldSpawnAgent }),
+    ...(input.workspaceFixture === undefined
+      ? {}
+      : { workspace_fixture: relativePath(input.workspaceFixture, `${label}.input.workspaceFixture`) }),
+    ...(input.useProjectRules === undefined
+      ? {}
+      : { use_project_rules: input.useProjectRules }),
     ...(tags.length === 0 ? {} : { tags }),
   }, index, suite.providerSuite!)
+  if (canonical.workspace_fixture && !suite.providerSuite?.fixtureModule) {
+    throw new Error(`${label}.input.workspaceFixture requires selected cases.suite.runtime.fixture.`)
+  }
   const result = { ...row, id, split, tags } as SelectedEvalCase
   Object.defineProperty(result, 'providerCase', { value: canonical, enumerable: false })
   return result
+}
+
+function parseCommonAudit(row: Record<string, unknown>, label: string, tags: string[]): void {
+  const audit = row.audit === undefined ? undefined : record(row.audit, `${label}.audit`)
+  if (audit) {
+    onlyKeys(
+      audit,
+      ['rationale', 'errorCost', 'allowedVariance', 'minimalCounterexample'],
+      `${label}.audit`,
+    )
+    for (const key of ['rationale', 'allowedVariance', 'minimalCounterexample'] as const) {
+      if (Object.hasOwn(audit, key)) nonEmptyString(audit[key], `${label}.audit.${key}`)
+    }
+    if (
+      audit.errorCost !== undefined
+      && audit.errorCost !== 'high'
+      && audit.errorCost !== 'medium'
+      && audit.errorCost !== 'low'
+    ) throw new Error(`${label}.audit.errorCost must be high, medium, or low.`)
+  }
+  const required = [
+    ...tags.some((tag) => tag === 'boundary' || tag === 'regression')
+      ? ['rationale', 'minimalCounterexample']
+      : [],
+    ...tags.some((tag) => tag === 'release-critical' || tag === 'high-cost') ? ['errorCost'] : [],
+    ...tags.includes('high-variance') ? ['allowedVariance'] : [],
+  ]
+  const missing = required.find((key) => !audit || !Object.hasOwn(audit, key))
+  if (missing) throw new Error(`${label}.audit.${missing} is required by case tags.`)
+}
+
+function parseConversationCase(
+  row: Record<string, unknown>,
+  index: number,
+): SelectedEvalCase {
+  const label = `selected cases.cases[${index}]`
+  onlyKeys(row, ['id', 'split', 'tags', 'prompt', 'assertions', 'input', 'expected', 'audit'], label)
+  const id = safeId(row.id, `${label}.id`)
+  const split = safeId(row.split, `${label}.split`)
+  const tags = uniqueStrings(row.tags, `${label}.tags`, true)
+  nonEmptyString(row.prompt, `${label}.prompt`)
+  if (!Array.isArray(row.assertions) || row.assertions.length === 0) {
+    throw new Error(`${label}.assertions must be a non-empty array.`)
+  }
+  const assertions = row.assertions.map((entry, assertionIndex) => nonEmptyString(
+    entry,
+    `${label}.assertions[${assertionIndex}]`,
+  ))
+  const input = row.input === undefined ? {} : record(row.input, `${label}.input`)
+  onlyKeys(input, ['scriptedReplies', 'workspaceFiles', 'pathPrepend'], `${label}.input`)
+  if (input.scriptedReplies !== undefined) {
+    if (!Array.isArray(input.scriptedReplies)) {
+      throw new Error(`${label}.input.scriptedReplies must be an array.`)
+    }
+    input.scriptedReplies.forEach((reply, replyIndex) => {
+      const replyLabel = `${label}.input.scriptedReplies[${replyIndex}]`
+      if (typeof reply === 'string') return
+      const replyRow = record(reply, replyLabel)
+      onlyKeys(
+        replyRow,
+        ['answersByIndex', 'expectedQuestionCount', 'unexpectedQuestionAnswer'],
+        replyLabel,
+      )
+      if (
+        !Array.isArray(replyRow.answersByIndex)
+        || replyRow.answersByIndex.some((answer) => typeof answer !== 'string')
+      ) throw new Error(`${replyLabel}.answersByIndex must be an array of strings.`)
+      if (
+        replyRow.expectedQuestionCount !== undefined
+        && (
+          !Number.isInteger(replyRow.expectedQuestionCount)
+          || (replyRow.expectedQuestionCount as number) < 0
+        )
+      ) throw new Error(`${replyLabel}.expectedQuestionCount must be a non-negative integer.`)
+      nonEmptyString(replyRow.unexpectedQuestionAnswer, `${replyLabel}.unexpectedQuestionAnswer`)
+    })
+  }
+  if (input.workspaceFiles !== undefined) {
+    const workspaceFiles = record(input.workspaceFiles, `${label}.input.workspaceFiles`)
+    for (const [workspacePath, content] of Object.entries(workspaceFiles)) {
+      relativePath(workspacePath, `${label}.input.workspaceFiles.${workspacePath}`)
+      if (typeof content !== 'string') {
+        throw new Error(`${label}.input.workspaceFiles.${workspacePath} must be a string.`)
+      }
+    }
+  }
+  if (input.pathPrepend !== undefined) {
+    pathArray(input.pathPrepend, `${label}.input.pathPrepend`, { allowEmpty: true })
+  }
+  const expected = row.expected === undefined ? {} : record(row.expected, `${label}.expected`)
+  onlyKeys(
+    expected,
+    ['output', 'workspaceUnchanged', 'allowedWorkspaceChanges', 'artifacts'],
+    `${label}.expected`,
+  )
+  if (expected.output !== undefined) nonEmptyString(expected.output, `${label}.expected.output`)
+  if (expected.workspaceUnchanged !== undefined && typeof expected.workspaceUnchanged !== 'boolean') {
+    throw new Error(`${label}.expected.workspaceUnchanged must be boolean.`)
+  }
+  if (expected.allowedWorkspaceChanges !== undefined) {
+    pathArray(
+      expected.allowedWorkspaceChanges,
+      `${label}.expected.allowedWorkspaceChanges`,
+      { allowEmpty: true, allowTreePattern: true },
+    )
+  }
+  if (expected.artifacts !== undefined) {
+    if (!Array.isArray(expected.artifacts)) throw new Error(`${label}.expected.artifacts must be an array.`)
+    optionalJson(expected.artifacts, `${label}.expected.artifacts`)
+    for (const [artifactIndex, artifact] of expected.artifacts.entries()) {
+      const artifactRow = record(artifact, `${label}.expected.artifacts[${artifactIndex}]`)
+      onlyKeys(
+        artifactRow,
+        ['path', 'exists', 'contains', 'notContains', 'json'],
+        `${label}.expected.artifacts[${artifactIndex}]`,
+      )
+      relativePath(artifactRow.path, `${label}.expected.artifacts[${artifactIndex}].path`)
+    }
+  }
+  parseCommonAudit(row, label, tags)
+  return { ...row, id, split, tags, assertions } as SelectedEvalCase
 }
 
 function parseCase(value: unknown, index: number, suite: SelectedCaseSuite): SelectedEvalCase {
   const label = `selected cases.cases[${index}]`
   const row = record(value, label)
   const common = ['id', 'split', 'tags']
-  if (suite.kind === 'trigger') return parseTriggerCase(row, index, suite)
-  if (suite.kind === 'conversation') {
-    onlyKeys(row, [...common, 'prompt', 'assertions', 'audit'], label)
-    nonEmptyString(row.prompt, `${label}.prompt`)
-    if (!Array.isArray(row.assertions) || row.assertions.length === 0) {
-      throw new Error(`${label}.assertions must be a non-empty array.`)
-    }
-    optionalJson(row.assertions, `${label}.assertions`)
-    if (row.audit !== undefined) {
-      const audit = record(row.audit, `${label}.audit`)
-      onlyKeys(audit, ['allowedVariance'], `${label}.audit`)
-      if (!Object.hasOwn(audit, 'allowedVariance')) {
-        throw new Error(`${label}.audit.allowedVariance is required.`)
-      }
-      optionalJson(audit.allowedVariance, `${label}.audit.allowedVariance`)
-    }
-  } else {
-    onlyKeys(row, [...common, 'input', 'expected', 'assertions'], label)
+  if (suite.kind === 'trigger') {
+    const result = parseTriggerCase(row, index, suite)
+    parseCommonAudit(row, label, result.tags)
+    return result
+  }
+  if (suite.kind === 'conversation') return parseConversationCase(row, index)
+  onlyKeys(row, [...common, 'input', 'expected', 'assertions', 'audit'], label)
+  {
     optionalJson(row.input, `${label}.input`)
     optionalJson(row.expected, `${label}.expected`)
     optionalJson(row.assertions, `${label}.assertions`)
   }
-  return {
+  const result = {
     ...row,
     id: safeId(row.id, `${label}.id`),
     split: safeId(row.split, `${label}.split`),
     tags: uniqueStrings(row.tags, `${label}.tags`, true),
   } as SelectedEvalCase
+  parseCommonAudit(row, label, result.tags)
+  return result
 }
 
 export function parseSelectedCases(value: unknown): SelectedCasesDocument {

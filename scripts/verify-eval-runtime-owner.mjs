@@ -35,9 +35,14 @@ const runnerSkillFiles = new Set([
 const runnerSkillDirectories = new Set(['agents'])
 const allowedAwCommands = [
   /^aw skill eval prepare --help$/u,
-  /^aw skill eval prepare <plugin> --skill <skill> --suite <suite> --profile <profile> --output <new-plan-directory> --json$/u,
+  /^aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json$/u,
+  /^aw skill eval doctor --json$/u,
 ]
 const allowedEvalCommands = [
+  /^aw-skill-eval spec validate <spec\.json>$/u,
+  /^aw-skill-eval audit validate <audit\.json> --spec <spec\.json>$/u,
+  /^aw-skill-eval run <spec\.json> --audit <audit\.json>$/u,
+  /^aw-skill-eval result validate <result\.json> --spec <spec\.json> --audit <audit\.json>$/u,
   /^aw-skill-eval capabilities --json$/u,
   /^aw-skill-eval schema print (?:aw-skill-eval-execution-plan|eval-run-bundle|eval-audit-result|eval-provider-capabilities|eval-provider-output)$/u,
   /^aw-skill-eval digest skill <skill-dir>$/u,

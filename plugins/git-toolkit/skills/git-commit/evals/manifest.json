@@ -1,100 +1,53 @@
 {
-  "schemaVersion": 1,
-  "plugin": "git-toolkit",
-  "skill": "git-commit",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {
+    "profile": "project-default"
+  },
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "git-toolkit",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "git-toolkit": {}
+      }
     },
-    {
-      "id": "user-default",
+    "user-default": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "git-toolkit",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "git-toolkit": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "git-commit"
-      ],
-      "cases": "./trigger-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation"
-      ],
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "behavior",
-      "kind": "provider",
-      "skills": [
-        "git-commit"
-      ],
-      "cases": "./behavior-cases.json",
+      "kind": "custom-process",
+      "cases": "behavior-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
-      "releaseSplits": [],
+      "runs": 3,
+      "timeoutMs": 300000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000,
       "provider": {
-        "id": "git-commit-provider",
-        "entry": "./run-commit-evals.mjs",
-        "credentialEnvironment": [
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "OPENAI_API_KEY",
-          "ALL_PROXY",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NO_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-commit-evals.mjs"
+        ]
       }
     }
   ]

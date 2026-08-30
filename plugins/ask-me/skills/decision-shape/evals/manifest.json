@@ -1,99 +1,64 @@
 {
-  "schemaVersion": 1,
-  "plugin": "ask-me",
-  "skill": "decision-shape",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "ask-me",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "ask-me": {}
+      }
     },
-    {
-      "id": "user-default",
+    "user-default": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "ask-me",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "ask-me": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "decision-shape"
-      ],
-      "cases": "./trigger-cases.json",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation",
-        "sanity"
-      ],
-      "forbidMultipleSkillLoads": false,
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "router",
       "kind": "trigger",
-      "skills": [
-        "decision-shape",
-        "decision-grill",
-        "decision-prototype"
-      ],
-      "cases": "./routing-cases.json",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [],
-      "minimumPassRate": 0.9,
-      "forbidMultipleSkillLoads": false,
+      "cases": "routing-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 5,
+      "runs": 5,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "behavior",
       "kind": "conversation",
-      "skills": [
-        "decision-shape",
-        "decision-grill",
-        "decision-prototype"
-      ],
-      "cases": "./behavior-cases.json",
-      "isolation": "strict",
+      "cases": "behavior-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 300000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }
