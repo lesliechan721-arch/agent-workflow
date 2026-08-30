@@ -77,7 +77,15 @@
         },
         "capabilitiesPath": { "type": "string", "minLength": 1 },
         "capabilitiesDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-        "inheritEnvironment": { "type": "boolean" }
+        "inheritEnvironment": { "type": "boolean" },
+        "environmentAllowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        }
       },
       "additionalProperties": false
     },

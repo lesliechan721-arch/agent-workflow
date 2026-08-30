@@ -9,9 +9,9 @@
 
 ## 行为评测
 
-`behavior-cases.json` 和 `run-commit-evals.mjs` 定义 8 条可写 command 用例，覆盖非琐碎 body、琐碎提交、部分暂存、范围外已暂存内容、仓库 message 规范、提交后继续 push、进行中的 Git 操作和 hook 拒绝。每条声明用 `grader_check` 绑定 runner 产生的机械检查；声明缺少对应 grader 时，该 case 失败。Release 默认对 current 和 no-Skill baseline 各运行 3 次。
+`behavior-cases.json` 和 `run-commit-evals.mjs` 定义 8 条可写 provider 用例，覆盖非琐碎 body、琐碎提交、部分暂存、范围外已暂存内容、仓库 message 规范、提交后继续 push、进行中的 Git 操作和 hook 拒绝。每条声明用 `grader_check` 绑定 provider 产生的机械检查；声明缺少对应 grader 时，该 case 失败。Eval engine 默认对每个 case 和 configuration 运行 3 次。
 
-runner 在独立临时仓库中运行 current 与 no-Skill baseline，并机械检查 HEAD、refs、index、worktree、commit 内容、remote ref 和 hook 状态。只有需要创建 commit 的内层 Codex 进程能写该临时仓库的 Git metadata。
+provider 每次只处理 engine 给出的一个 case 和 configuration。它在独立临时仓库中运行一次 Codex，并机械检查 HEAD、refs、index、worktree、commit 内容、remote ref 和 hook 状态。Engine 负责 configuration/runs 循环、timeout、进程树和最终 EvalRunBundle。
 
 ## 运行真实触发评测
 

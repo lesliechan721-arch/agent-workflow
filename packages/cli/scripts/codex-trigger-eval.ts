@@ -561,6 +561,8 @@ async function runTriggerOnce(options: {
   sourceEnv: NodeJS.ProcessEnv;
   processManagement: PluginEvalProcessManagementEvidence;
   workRoot?: string;
+  allowMissingSkills?: boolean;
+  manageTimeout?: boolean;
 }): Promise<TriggerRunEvidence> {
   assertCodexEvalCanStartWork();
   const temporaryRoot = await createTriggerTemporaryRoot(
@@ -588,12 +590,15 @@ async function runTriggerOnce(options: {
     if (options.suite.isolation === 'strict') {
       await isolateTriggerWorkspaceSkills(workspaceRoot, options.suite.skills);
     }
-    const skillPaths = new Map(options.suite.skills.map((skillName) => [
+    const declaredSkillPaths = new Map(options.suite.skills.map((skillName) => [
       skillName,
       path.join(workspaceRoot, '.agents', 'skills', skillName, 'SKILL.md'),
     ]));
-    for (const [skillName, skillPath] of skillPaths) {
-      if (!(await fs.pathExists(skillPath))) {
+    const skillPaths = new Map<string, string>();
+    for (const [skillName, skillPath] of declaredSkillPaths) {
+      if (await fs.pathExists(skillPath)) {
+        skillPaths.set(skillName, skillPath);
+      } else if (!options.allowMissingSkills) {
         throw new Error(`Materialized trigger Skill is missing: ${skillName} (${skillPath})`);
       }
     }
@@ -603,7 +608,7 @@ async function runTriggerOnce(options: {
         await computeSkillDigest(path.dirname(skillPath)),
       ] as const,
     )));
-    const ownerSkillPath = skillPaths.get(options.suite.skill)!;
+    const ownerSkillPath = declaredSkillPaths.get(options.suite.skill)!;
     let env = buildIsolatedEnv(
       options.sourceEnv,
       runRoot,
@@ -781,8 +786,10 @@ async function runTriggerOnce(options: {
       );
       if (reason) finishRun(reason);
     });
-    turnTimer = setTimeout(() => finishRun('timeout'), options.timeoutMs);
-    turnTimer.unref();
+    if (options.manageTimeout !== false) {
+      turnTimer = setTimeout(() => finishRun('timeout'), options.timeoutMs);
+      turnTimer.unref();
+    }
     await session.initialize();
     const threadResult = await session.sendRequest('thread/start', {
       cwd: workspaceRoot,
@@ -912,6 +919,39 @@ async function runTriggerOnce(options: {
       await temporaryRoot.cleanup();
     }
   }
+}
+
+export async function runCodexTriggerProviderCase(options: {
+  suite: PluginEvalTriggerSuite;
+  evalCase: PluginEvalTriggerCase;
+  subjectRoot: string;
+  fixtureRoot: string;
+  codexBin: string;
+  model?: string;
+  codexRuntime: CodexEvalRuntimeConfig;
+  sourceEnv?: NodeJS.ProcessEnv;
+}): Promise<TriggerRunEvidence> {
+  const fixture = await loadFixtureModule(options.fixtureRoot, options.suite);
+  return runTriggerOnce({
+    suite: options.suite,
+    evalCase: options.evalCase,
+    subjectRoot: options.subjectRoot,
+    fixture,
+    codexBin: options.codexBin,
+    ...(options.model ? { model: options.model } : {}),
+    codexRuntime: options.codexRuntime,
+    timeoutMs: options.suite.perRunTimeoutMs,
+    sourceEnv: options.sourceEnv ?? process.env,
+    processManagement: {
+      mode: 'unmanaged-confirmed',
+      inspectionAvailable: false,
+      userAcknowledged: true,
+      descendantCleanupGuaranteed: false,
+      limitation: 'The AwSkillEval engine owns the provider process tree and timeout.',
+    },
+    allowMissingSkills: true,
+    manageTimeout: false,
+  });
 }
 
 function ratePasses(

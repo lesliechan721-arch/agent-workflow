@@ -1,29 +1,13 @@
 import { rm } from 'node:fs/promises';
-import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
 import {
+  createProviderOutput,
   createEvalWorkspace,
-  executionErrorEvidence,
-  readEvalResource,
+  PROVIDER_CREDENTIAL_ENVIRONMENT,
   runCodexOnce,
-  writeJsonReport,
 } from './eval-harness.mjs';
 
-const DEFAULT_OPTIONS = {
-  runs: 3,
-  threshold: 0.5,
-  timeoutMs: 180_000,
-  codexBin: 'codex',
-  v1Model: 'gpt-5.6-luna',
-  v2Model: 'gpt-5.6-luna',
-  profile: 'all',
-  variant: 'all',
-  caseId: undefined,
-  output: undefined,
-};
-const MAX_TRANSIENT_TRANSPORT_RETRIES = 2;
 const TOOL_ROUTER_ERROR = /codex_core::tools::router: error=([^\n]+)/u;
 const BLOCK_REASON_MARKER = /^ROUTING_BLOCK_REASON=([a-z_]+)$/gmu;
 const BLOCK_REASONS = new Set([
@@ -35,95 +19,6 @@ const ROUTING_ONLY_INSTRUCTION = [
   '本用例只评估委派选择和 spawn_agent 参数，不需要子代理结果。',
   '若发起委派，在 spawn_agent 返回后立即结束当前回复；不要等待或清理子代理。',
 ].join('');
-
-function usage() {
-  return `Usage: node plugins/codex-enhance/skills/codex-subagent-guide/evals/run-routing-evals.mjs [OPTIONS]
-
-Runs real V1/V2 spawn routing evaluations and a without-skill baseline, grading raw
-spawn_agent arguments from isolated Codex rollout files.
-
-Options:
-  --runs <count>                              Repetitions per case (default: 3)
-  --threshold <rate>                          Pass boundary (default: 0.5)
-  --timeout-ms <milliseconds>                 Per-run timeout (default: 180000)
-  --codex-bin <path>                          Codex executable (default: codex)
-  --model <model>                             V1/V2 parent model override
-  --v1-model <model>                          V1 parent model (default: gpt-5.6-luna)
-  --v2-model <model>                          V2 parent model (default: gpt-5.6-luna)
-  --profile <v1|v2|all>                       Profiles to run (default: all)
-  --variant <with_skill|without_skill|all>    Variants to run (default: all)
-  --case <id>                                 Run one case only
-  --output <path>                             Also write the JSON report
-  -h, --help                                  Show this help`;
-}
-
-function readOptionValue(argv, index, flag) {
-  const value = argv[index + 1];
-  if (!value || value.startsWith('--')) {
-    throw new Error(`${flag} requires a value.`);
-  }
-  return value;
-}
-
-function parsePositiveInteger(value, flag) {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${flag} must be a positive integer.`);
-  }
-  return parsed;
-}
-
-export function parseRoutingArgs(argv) {
-  const options = { ...DEFAULT_OPTIONS, help: false };
-  for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (flag === '-h' || flag === '--help') {
-      options.help = true;
-      continue;
-    }
-    const value = readOptionValue(argv, index, flag);
-    index += 1;
-    if (flag === '--runs') {
-      options.runs = parsePositiveInteger(value, flag);
-    } else if (flag === '--threshold') {
-      options.threshold = Number(value);
-      if (!(options.threshold > 0 && options.threshold < 1)) {
-        throw new Error('--threshold must be greater than 0 and less than 1.');
-      }
-    } else if (flag === '--timeout-ms') {
-      options.timeoutMs = parsePositiveInteger(value, flag);
-      if (options.timeoutMs < 10_000) {
-        throw new Error('--timeout-ms must be at least 10000.');
-      }
-    } else if (flag === '--codex-bin') {
-      options.codexBin = value;
-    } else if (flag === '--model') {
-      options.v1Model = value;
-      options.v2Model = value;
-    } else if (flag === '--v1-model') {
-      options.v1Model = value;
-    } else if (flag === '--v2-model') {
-      options.v2Model = value;
-    } else if (flag === '--profile') {
-      if (!['v1', 'v2', 'all'].includes(value)) {
-        throw new Error('--profile must be v1, v2, or all.');
-      }
-      options.profile = value;
-    } else if (flag === '--variant') {
-      if (!['with_skill', 'without_skill', 'all'].includes(value)) {
-        throw new Error('--variant must be with_skill, without_skill, or all.');
-      }
-      options.variant = value;
-    } else if (flag === '--case') {
-      options.caseId = value;
-    } else if (flag === '--output') {
-      options.output = path.resolve(value);
-    } else {
-      throw new Error(`Unknown option: ${flag}`);
-    }
-  }
-  return options;
-}
 
 function validateExpected(expected, label) {
   if (!expected || typeof expected !== 'object' || Array.isArray(expected)) {
@@ -153,48 +48,6 @@ function validateExpected(expected, label) {
   if (expected.block_reason !== undefined && expected.spawn_calls.max !== 0) {
     throw new Error(`${label}.block_reason requires spawn_calls.max to be 0.`);
   }
-}
-
-function validateRoutingCase(entry, index) {
-  const label = `evals[${index}]`;
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-    throw new Error(`${label} must be an object.`);
-  }
-  if (typeof entry.id !== 'string' || !/^[a-z0-9_]+$/.test(entry.id)) {
-    throw new Error(`${label}.id must use lowercase letters, digits, and underscores.`);
-  }
-  if (typeof entry.prompt !== 'string' || entry.prompt.trim() === '') {
-    throw new Error(`${entry.id}.prompt must be a non-empty string.`);
-  }
-  if (typeof entry.expected_output !== 'string' || entry.expected_output.trim() === '') {
-    throw new Error(`${entry.id}.expected_output must be a non-empty string.`);
-  }
-  if (!Array.isArray(entry.files)) {
-    throw new Error(`${entry.id}.files must be an array.`);
-  }
-  for (const profile of ['v1', 'v2']) {
-    validateExpected(entry.expectations?.[profile], `${entry.id}.expectations.${profile}`);
-  }
-  if (
-    entry.omit_roles !== undefined &&
-    (!Array.isArray(entry.omit_roles) ||
-      entry.omit_roles.some((value) => typeof value !== 'string'))
-  ) {
-    throw new Error(`${entry.id}.omit_roles must be a string array.`);
-  }
-  return entry;
-}
-
-export async function loadRoutingSpec() {
-  const spec = JSON.parse(await readEvalResource('evals.json'));
-  if (spec?.skill_name !== 'codex-subagent-guide' || !Array.isArray(spec.evals)) {
-    throw new Error('evals.json must describe codex-subagent-guide and contain evals.');
-  }
-  const evals = spec.evals.map(validateRoutingCase);
-  if (new Set(evals.map((entry) => entry.id)).size !== evals.length) {
-    throw new Error('evals.json contains duplicate ids.');
-  }
-  return { ...spec, evals };
 }
 
 function valueEvidence(args, key) {
@@ -290,38 +143,6 @@ export function evaluateRoutingRun(run, expected, variant) {
   };
 }
 
-export function summarizeRoutingVariant(entry, profile, variant, runs, threshold) {
-  const expected = entry.expectations[profile];
-  const gradedRuns = runs.map((run) => ({
-    ...run,
-    evaluation: evaluateRoutingRun(run, expected, variant),
-  }));
-  const passRate = gradedRuns.filter((run) => run.evaluation.passed).length / gradedRuns.length;
-  const rawEvidenceMissing = gradedRuns.filter(
-    (run) => run.spawned && (run.spawn_calls ?? []).length === 0,
-  ).length;
-  const loadEvidenceMissing = variant === 'with_skill'
-    ? gradedRuns.filter((run) => !run.execution_error && !hasLoadEvidence(run)).length
-    : 0;
-  const complete =
-    rawEvidenceMissing === 0 &&
-    loadEvidenceMissing === 0 &&
-    gradedRuns.every((run) => !run.execution_error);
-  return {
-    id: entry.id,
-    profile,
-    variant,
-    expected_output: entry.expected_output,
-    expected,
-    pass_rate: passRate,
-    complete,
-    raw_evidence_missing: rawEvidenceMissing,
-    load_evidence_missing: loadEvidenceMissing,
-    passed: complete && passRate > threshold,
-    runs: gradedRuns,
-  };
-}
-
 export function routingRunCase(entry, profile, variant) {
   const expected = entry.expectations[profile];
   const blockReasonInstruction = expected.block_reason
@@ -342,35 +163,6 @@ export function routingRunCase(entry, profile, variant) {
   };
 }
 
-export function routingReportStatus(results, expectedResultCount) {
-  const complete =
-    results.length === expectedResultCount &&
-    results.every((result) => result.complete);
-  const current = results.filter((result) => result.variant === 'with_skill');
-  return {
-    complete,
-    passed: complete && current.every((result) => result.passed),
-  };
-}
-
-export function routingCaseResults(entries, results, profiles, variants) {
-  const expectedResultCount = profiles.length * variants.length;
-  return entries.map((entry) => {
-    const caseResults = results.filter((result) => result.id === entry.id);
-    const status = routingReportStatus(caseResults, expectedResultCount);
-    return {
-      id: entry.id,
-      outcome: status.complete ? (status.passed ? 'passed' : 'failed') : 'incomplete',
-      complete: status.complete,
-      mechanical_passed: status.passed,
-      summary: {
-        expected_results: expectedResultCount,
-        completed_results: caseResults.length,
-      },
-    };
-  });
-}
-
 function thrownExecutionError(error) {
   return {
     requested_explicitly: false,
@@ -388,172 +180,85 @@ function thrownExecutionError(error) {
   };
 }
 
-export function shouldRetryTransportFailure(run, retriesUsed) {
-  if (!run.execution_error || retriesUsed >= MAX_TRANSIENT_TRANSPORT_RETRIES) return false;
-  const evidence = executionErrorEvidence(run);
-  return evidence.includes('stream disconnected before completion') &&
-    (
-      evidence.includes('WebSocket protocol error') ||
-      evidence.includes('Connection reset without closing handshake')
-    );
+function validateProviderRoutingCase(entry) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new Error('Provider routing case must be an object.');
+  }
+  if (typeof entry.id !== 'string' || !/^[a-z0-9_-]+$/u.test(entry.id)) {
+    throw new Error('Provider routing case id is invalid.');
+  }
+  if (typeof entry.sourceCaseId !== 'string' || !/^[a-z0-9_]+$/u.test(entry.sourceCaseId)) {
+    throw new Error(`${entry.id}.sourceCaseId is invalid.`);
+  }
+  if (!['v1', 'v2'].includes(entry.runtimeProfile)) {
+    throw new Error(`${entry.id}.runtimeProfile must be v1 or v2.`);
+  }
+  if (
+    !entry.expectations ||
+    Object.keys(entry.expectations).length !== 1 ||
+    !Object.hasOwn(entry.expectations, entry.runtimeProfile)
+  ) {
+    throw new Error(`${entry.id}.expectations must contain only its runtime profile.`);
+  }
+  if (typeof entry.prompt !== 'string' || entry.prompt.trim() === '') {
+    throw new Error(`${entry.id}.prompt must be a non-empty string.`);
+  }
+  if (!Array.isArray(entry.files)) {
+    throw new Error(`${entry.id}.files must be an array.`);
+  }
+  validateExpected(entry.expectations[entry.runtimeProfile], `${entry.id}.expectations`);
+  return entry;
 }
 
-async function run(options) {
-  const spec = await loadRoutingSpec();
-  const selected = options.caseId
-    ? spec.evals.filter((entry) => entry.id === options.caseId)
-    : spec.evals;
-  if (selected.length === 0) {
-    throw new Error(`Unknown routing eval case: ${options.caseId}`);
+export async function runEvalProvider(input) {
+  const entry = validateProviderRoutingCase(input.case);
+  if (entry.id !== input.caseId) {
+    throw new Error('Provider case id does not match input.caseId.');
   }
-  const profiles = options.profile === 'all' ? ['v1', 'v2'] : [options.profile];
-  const variants = options.variant === 'all'
-    ? ['with_skill', 'without_skill']
-    : [options.variant];
-  const workspaces = new Map();
-  for (const variant of variants) {
-    workspaces.set(
-      variant,
-      await createEvalWorkspace({ withSkill: variant === 'with_skill' }),
-    );
-  }
-
-  const results = [];
-  let environmentError = null;
-  try {
-    outer:
-    for (const entry of selected) {
-      for (const profile of profiles) {
-        for (const variant of variants) {
-          const runs = [];
-          for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
-            let result;
-            const retryEvidence = [];
-            do {
-              const retryLabel = retryEvidence.length > 0
-                ? ` retry ${retryEvidence.length}/${MAX_TRANSIENT_TRANSPORT_RETRIES}`
-                : '';
-              process.stderr.write(
-                `[${profile}/${variant}] ${entry.id} run ${runIndex + 1}/${options.runs}${retryLabel}\n`,
-              );
-              try {
-                result = await runCodexOnce(
-                  workspaces.get(variant),
-                  routingRunCase(entry, profile, variant),
-                  {
-                    ...options,
-                    profile,
-                    model: profile === 'v1' ? options.v1Model : options.v2Model,
-                    captureTrace: true,
-                  },
-                );
-              } catch (error) {
-                result = thrownExecutionError(error);
-              }
-              if (!shouldRetryTransportFailure(result, retryEvidence.length)) break;
-              retryEvidence.push(executionErrorEvidence(result));
-            } while (true);
-            if (retryEvidence.length > 0) {
-              result = {
-                ...result,
-                transient_transport_retries: retryEvidence.length,
-                transient_transport_retry_evidence: retryEvidence,
-              };
-            }
-            runs.push(result);
-            if (result.execution_error) {
-              environmentError = executionErrorEvidence(result);
-              break;
-            }
-          }
-          results.push(
-            summarizeRoutingVariant(entry, profile, variant, runs, options.threshold),
-          );
-          if (environmentError) {
-            break outer;
-          }
-        }
-      }
-    }
-  } finally {
-    await Promise.all(
-      [...workspaces.values()].map((workspace) =>
-        rm(workspace.root, { recursive: true, force: true })),
-    );
-  }
-
-  const expectedResultCount = selected.length * profiles.length * variants.length;
-  const status = routingReportStatus(results, expectedResultCount);
-  const rawEvidenceMissing = results.reduce(
-    (total, result) => total + result.raw_evidence_missing,
-    0,
-  );
-  const loadEvidenceMissing = results.reduce(
-    (total, result) => total + result.load_evidence_missing,
-    0,
-  );
-  const currentResults = results.filter((result) => result.variant === 'with_skill');
-  const baselineResults = results.filter((result) => result.variant === 'without_skill');
-  const report = {
-    schema_version: 1,
-    generated_at: new Date().toISOString(),
-    runs_per_case: options.runs,
-    threshold: options.threshold,
-    profiles,
-    variants,
-    models: { v1: options.v1Model, v2: options.v2Model },
-    complete: status.complete,
-    passed: status.passed,
-    environment_error: environmentError ?? (
-      rawEvidenceMissing > 0
-        ? 'Raw spawn_agent arguments were unavailable for one or more observed calls.'
-        : loadEvidenceMissing > 0
-          ? 'Skill load evidence was unavailable for one or more with-skill runs.'
-          : null
-    ),
-    summary: {
-      expected_results: expectedResultCount,
-      completed_results: results.length,
-      current_passed: currentResults.filter((result) => result.passed).length,
-      current_total: currentResults.length,
-      baseline_passed: baselineResults.filter((result) => result.passed).length,
-      baseline_total: baselineResults.length,
-      raw_evidence_missing: rawEvidenceMissing,
-      load_evidence_missing: loadEvidenceMissing,
-    },
-    case_results: routingCaseResults(selected, results, profiles, variants),
-    results,
-  };
-  await writeJsonReport(report, options.output);
-  if (!report.passed) {
-    process.exitCode = 1;
-  }
-}
-
-async function main() {
-  let options;
-  try {
-    options = parseRoutingArgs(process.argv.slice(2));
-  } catch (error) {
-    process.stderr.write(
-      `${error instanceof Error ? error.message : String(error)}\n\n${usage()}\n`,
-    );
-    process.exitCode = 2;
-    return;
-  }
-  if (options.help) {
-    process.stdout.write(`${usage()}\n`);
-    return;
-  }
-  await run(options);
-}
-
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
-  main().catch((error) => {
-    process.stderr.write(
-      `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`,
-    );
-    process.exitCode = 1;
+  const profile = entry.runtimeProfile;
+  const variant = input.skillMode === 'without-skill' ? 'without_skill' : 'with_skill';
+  const workspace = await createEvalWorkspace({
+    sourceRoot: input.workspacePath,
+    withSkill: variant === 'with_skill',
   });
+  try {
+    let run;
+    try {
+      run = await runCodexOnce(
+        workspace,
+        routingRunCase(entry, profile, variant),
+        {
+          profile,
+          codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
+          model: process.env.AW_SKILL_EVAL_CODEX_MODEL ?? 'gpt-5.6-luna',
+          captureTrace: true,
+          sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
+        },
+      );
+    } catch (error) {
+      run = thrownExecutionError(error);
+    }
+    const evaluation = evaluateRoutingRun(
+      run,
+      entry.expectations[profile],
+      variant,
+    );
+    return createProviderOutput({
+      providerId: 'codex-subagent-routing',
+      graderId: 'codex-subagent-routing-mechanical',
+      run,
+      result: {
+        caseId: input.caseId,
+        sourceCaseId: entry.sourceCaseId,
+        runtimeProfile: profile,
+        configuration: input.configuration,
+        skillMode: input.skillMode,
+        complete: !run.execution_error,
+        ...evaluation,
+      },
+      outputDir: input.outputDir,
+    });
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
+  }
 }

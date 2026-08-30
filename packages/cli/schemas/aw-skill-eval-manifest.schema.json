@@ -169,11 +169,25 @@
         "perRunTimeoutMs": { "$ref": "#/$defs/commonProperties/perRunTimeoutMs" },
         "provider": {
           "type": "object",
-          "required": ["id", "command", "describeCommand", "capabilities"],
+          "required": ["id", "entry", "capabilities"],
           "properties": {
             "id": { "$ref": "#/$defs/id" },
-            "command": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
-            "describeCommand": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+            "entry": { "type": "string", "minLength": 1, "pattern": "\\.mjs$" },
+            "assets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "credentialEnvironment": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            },
             "capabilities": { "$ref": "#/$defs/capabilities" }
           },
           "additionalProperties": false

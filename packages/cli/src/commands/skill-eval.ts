@@ -34,6 +34,12 @@ import {
   validateAwSkillEvalCheckResult,
   type AwSkillEvalCheckResult,
 } from '../eval/check-result.js'
+import {
+  builtInEvalProviderCapabilities,
+  CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST,
+  CUSTOM_EVAL_PROVIDER_VERSION,
+  encodeCustomProviderCapabilities,
+} from '../eval/provider.js'
 import type { PluginMeta } from '../types.js'
 import { validateSkillDirectory } from '../utils/dynamic-skill-tree.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
@@ -86,6 +92,7 @@ interface ResolvedSelection {
   plugins: PluginMeta[]
   manifest: AwSkillEvalManifest
   evalRoot: string
+  cases: EvalCase[]
   suite: AwSkillEvalSuite
   profile: AwSkillEvalProfile
 }
@@ -218,6 +225,7 @@ async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSe
     plugins: workspace.plugins,
     manifest: loaded.manifest,
     evalRoot: loaded.evalRoot,
+    cases: loaded.casesBySuite.get(suite.id) ?? [],
     suite,
     profile,
   }
@@ -306,6 +314,7 @@ async function materializeInputs(options: {
 async function materializeSuiteInput(options: {
   selection: ResolvedSelection
   destinationRoot: string
+  selectedCases: EvalCase[]
 }): Promise<MaterializedSuiteInput> {
   if (options.selection.suite.kind === 'check') throw new Error('Check suites do not have provider suite inputs.')
   const root = path.join(options.destinationRoot, 'runtime', 'eval-suite')
@@ -317,8 +326,37 @@ async function materializeSuiteInput(options: {
   }
   if (options.selection.suite.kind === 'conversation') {
     assets.push(...(options.selection.suite.environment?.pathPrepend ?? []))
+    for (const [index, evalCase] of options.selectedCases.entries()) {
+      const environment = evalCase.environment
+      if (!environment || typeof environment !== 'object' || Array.isArray(environment)) continue
+      const pathPrepend = (environment as { pathPrepend?: unknown }).pathPrepend
+      if (!Array.isArray(pathPrepend) || pathPrepend.some((entry) => typeof entry !== 'string')) {
+        throw new Error(`Selected conversation case ${index + 1} has invalid environment.pathPrepend.`)
+      }
+      assets.push(...pathPrepend as string[])
+    }
   }
-  for (const relative of assets) {
+  if (options.selection.suite.kind === 'provider') {
+    assets.push(
+      options.selection.suite.provider.entry,
+      ...options.selection.suite.provider.assets,
+    )
+  }
+  const normalizedAssets = [...new Set(assets.map((relative) => {
+    const normalized = relative.replace(/^\.\//u, '')
+    if (
+      normalized === ''
+      || normalized.includes('\0')
+      || normalized.includes('\\')
+      || path.posix.isAbsolute(normalized)
+      || path.win32.isAbsolute(normalized)
+      || path.posix.normalize(normalized) !== normalized
+      || normalized.split('/').includes('..')
+    ) throw new Error(`Eval runtime asset must stay inside the Eval root: ${relative}`)
+    return normalized
+  }))].filter((relative, _index, all) =>
+    !all.some((other) => relative !== other && relative.startsWith(`${other}/`)))
+  for (const relative of normalizedAssets) {
     await fs.copy(
       path.join(options.selection.evalRoot, ...relative.split('/')),
       path.join(evalAssetsRoot, ...relative.split('/')),
@@ -327,6 +365,7 @@ async function materializeSuiteInput(options: {
   }
   const suite = {
     ...options.selection.suite,
+    skill: options.selection.manifest.skill,
     cases: 'AGENT_EVAL_CASE_PATH',
     ...(options.selection.suite.kind === 'trigger' && options.selection.suite.fixtureModule
       ? { fixtureModule: `eval-root/${options.selection.suite.fixtureModule}` }
@@ -336,6 +375,15 @@ async function materializeSuiteInput(options: {
           environment: {
             pathPrepend: options.selection.suite.environment.pathPrepend
               .map((entry) => `eval-root/${entry}`),
+          },
+        }
+      : {}),
+    ...(options.selection.suite.kind === 'provider'
+      ? {
+          provider: {
+            ...options.selection.suite.provider,
+            entry: `eval-root/${options.selection.suite.provider.entry}`,
+            assets: options.selection.suite.provider.assets.map((entry) => `eval-root/${entry}`),
           },
         }
       : {}),
@@ -383,8 +431,8 @@ function builtInProvider(kind: 'trigger' | 'conversation'): {
   id: string
   command: string[]
   describeCommand: string[]
-  capabilities: RuntimeCapabilities['capabilities']
-  version: string
+  runtimeCapabilities: RuntimeCapabilities
+  environmentAllowlist: string[]
 } {
   const name = kind === 'trigger' ? 'codex-trigger' : 'codex-conversation'
   const base = ['aw', 'skill', 'eval', 'provider', name]
@@ -392,21 +440,8 @@ function builtInProvider(kind: 'trigger' | 'conversation'): {
     id: name,
     command: base,
     describeCommand: [...base, '--describe'],
-    capabilities: {
-      triggerDiscovery: kind === 'trigger',
-      conversation: kind === 'conversation',
-      skillPathExecution: true,
-      previousVersionBaseline: true,
-      withoutSkillBaseline: true,
-      cleanContext: true,
-      parallelRuns: false,
-      toolTrace: false,
-      tokenUsage: false,
-      duration: true,
-      sandbox: false,
-      materialization: true,
-    },
-    version: 'builtin-v1',
+    runtimeCapabilities: builtInEvalProviderCapabilities(name),
+    environmentAllowlist: [...CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST],
   }
 }
 
@@ -414,11 +449,30 @@ function suiteProvider(suite: Exclude<AwSkillEvalSuite, AwSkillEvalCheckSuite>):
   id: string
   command: string[]
   describeCommand: string[]
-  capabilities: RuntimeCapabilities['capabilities']
-  version: string
+  runtimeCapabilities: RuntimeCapabilities
+  environmentAllowlist: string[]
 } {
   if (suite.kind === 'provider') {
-    return { ...suite.provider, version: 'manifest-v1' }
+    const runtimeCapabilities: RuntimeCapabilities = {
+      schemaVersion: 2,
+      provider: suite.provider.id,
+      providerVersion: CUSTOM_EVAL_PROVIDER_VERSION,
+      capabilities: suite.provider.capabilities,
+      limitations: [],
+    }
+    const base = ['aw', 'skill', 'eval', 'provider', 'custom']
+    return {
+      id: suite.provider.id,
+      command: base,
+      describeCommand: [
+        ...base,
+        '--describe',
+        '--capabilities',
+        encodeCustomProviderCapabilities(runtimeCapabilities),
+      ],
+      runtimeCapabilities,
+      environmentAllowlist: suite.provider.credentialEnvironment,
+    }
   }
   return builtInProvider(suite.kind)
 }
@@ -486,11 +540,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
   let committed = false
   let operationCleaned = false
   try {
-    const selectedCases = selectCases(
-      await fs.readJson(path.join(selection.evalRoot, selection.suite.cases)),
-      options.split,
-      options.caseId,
-    )
+    const selectedCases = selectCases(selection.cases, options.split, options.caseId)
     await fs.ensureDir(path.join(staging, 'cases'))
     const selectedCasesPath = path.join(staging, 'cases', 'selected-cases.json')
     await fs.writeFile(selectedCasesPath, prettyJson(selectedCases), { flag: 'wx' })
@@ -501,15 +551,13 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
       destinationRoot: staging,
       env: options.env,
     })
-    const suiteInput = await materializeSuiteInput({ selection, destinationRoot: staging })
+    const suiteInput = await materializeSuiteInput({
+      selection,
+      destinationRoot: staging,
+      selectedCases,
+    })
     const provider = suiteProvider(selection.suite)
-    const capabilities: RuntimeCapabilities = {
-      schemaVersion: 2,
-      provider: provider.id,
-      providerVersion: provider.version,
-      capabilities: provider.capabilities,
-      limitations: [],
-    }
+    const capabilities = provider.runtimeCapabilities
     await fs.ensureDir(path.join(staging, 'provider', 'work'))
     const capabilitiesPath = path.join(staging, 'provider', 'capabilities.json')
     await fs.writeFile(capabilitiesPath, prettyJson(capabilities), { flag: 'wx' })
@@ -560,6 +608,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
         capabilitiesPath: 'provider/capabilities.json',
         capabilitiesDigest,
         inheritEnvironment: false,
+        environmentAllowlist: provider.environmentAllowlist,
       },
       runtimeInputs: [{
         id: 'aw-subject-base',
@@ -576,7 +625,12 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
       runsPerCase: options.runs ?? selection.suite.defaultRuns,
       timeoutMs: selection.suite.perRunTimeoutMs,
       outputRoot: 'output',
-      capture: { outputs: true, trace: false, timing: true, usage: false },
+      capture: {
+        outputs: true,
+        trace: capabilities.capabilities.toolTrace,
+        timing: true,
+        usage: capabilities.capabilities.tokenUsage,
+      },
     }
     const planPath = path.join(staging, 'plan.json')
     await fs.writeFile(planPath, prettyJson(plan), { flag: 'wx' })

@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
-import {
-  evaluateLivenessRun,
-  loadLivenessEvalSpec,
-  parseLivenessEvalArgs,
-  summarizeLivenessRuns,
-} from '../skills/codex-explore/evals/run-liveness-evals.mjs';
+import { evaluateLivenessRun } from '../skills/codex-explore/evals/run-liveness-evals.mjs';
+import livenessCorpusDocument from '../skills/codex-explore/evals/liveness-evals.json' with { type: 'json' };
 
 const syntheticExpected = {
   agent_type: 'synthetic-agent',
@@ -82,23 +78,8 @@ function runResult(finalMessage, timeline) {
   };
 }
 
-function testArguments() {
-  assert.deepEqual(
-    parseLivenessEvalArgs(['--runs', '2', '--case', 'synthetic_case']),
-    {
-      runs: 2,
-      timeoutMs: 300_000,
-      codexBin: 'codex',
-      model: undefined,
-      caseId: 'synthetic_case',
-      output: undefined,
-      help: false,
-    },
-  );
-}
-
-async function testSpecShape() {
-  const spec = await loadLivenessEvalSpec();
+function testCorpusShape() {
+  const spec = livenessCorpusDocument;
   assert.equal(spec.skill_name, 'codex-explore');
   assert.equal(spec.authority, 'diagnostic-only');
   assert.deepEqual(
@@ -260,23 +241,10 @@ function testEvaluation() {
   assert.equal(probeEvaluation.metrics.wait_count, 2);
   assert.equal(evaluateLivenessRun(noProbeRun, syntheticExpected, true).passed, false);
 
-  const summary = summarizeLivenessRuns([
-    { ...probeRun, evaluation: probeEvaluation },
-    {
-      ...noProbeRun,
-      duration_ms: 60_000,
-      evaluation: evaluateLivenessRun(noProbeRun, syntheticExpected, false),
-    },
-  ]);
-  assert.equal(summary.accepted_runs, 1);
-  assert.equal(summary.probe_runs, 1);
-  assert.equal(summary.status_runs, 1);
-  assert.equal(summary.median_duration_ms, 75_000);
 }
 
 async function main() {
-  testArguments();
-  await testSpecShape();
+  testCorpusShape();
   testEvaluation();
   console.log('liveness eval tests passed');
 }

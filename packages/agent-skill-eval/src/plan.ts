@@ -43,6 +43,7 @@ export interface AwSkillEvalExecutionPlan {
     capabilitiesPath: string
     capabilitiesDigest: Digest
     inheritEnvironment: boolean
+    environmentAllowlist?: string[]
   }
   runtimeInputs: RuntimeInput[]
   configurations: EvalConfiguration[]
@@ -373,6 +374,12 @@ export async function captureAndValidateExecutionPlan(
     errors.push('provider command contains invalid argv')
   if (plan.provider.describeCommand.some((value) => value.includes('\0')))
     errors.push('provider describeCommand contains invalid argv')
+  if (plan.provider.environmentAllowlist !== undefined) {
+    if (new Set(plan.provider.environmentAllowlist).size !== plan.provider.environmentAllowlist.length)
+      errors.push('provider environmentAllowlist entries must be unique')
+    if (plan.provider.environmentAllowlist.some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)))
+      errors.push('provider environmentAllowlist contains an invalid environment variable name')
+  }
   let providerCwd: string | null = null
   if (plan.provider.cwd !== null && plan.provider.cwd !== undefined) {
     try {

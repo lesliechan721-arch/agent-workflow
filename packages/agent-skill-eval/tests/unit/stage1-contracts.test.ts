@@ -260,6 +260,107 @@ describe('stage 1 execution contracts', () => {
     }
   })
 
+  it('resolves only allowlisted provider credentials at execution time', async () => {
+    const fixture = await createFixture()
+    try {
+      const secret = 'provider-secret-"slash\\line\nnext-must-not-be-evidence'
+      let secretReads = 0
+      const sourceEnv = new Proxy({
+        PATH: process.env.PATH,
+        CUSTOM_PROVIDER_TOKEN: secret,
+        UNRELATED_PROVIDER_TOKEN: 'unrelated-secret',
+      }, {
+        get(target, property, receiver) {
+          if (property === 'CUSTOM_PROVIDER_TOKEN') secretReads += 1
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      fixture.plan.provider.environmentAllowlist = ['CUSTOM_PROVIDER_TOKEN']
+      fixture.plan.provider.describeCommand = [
+        process.execPath,
+        '-e',
+        [
+          `if (process.env.CUSTOM_PROVIDER_TOKEN) process.exit(8)`,
+          `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(path.join(fixture.root, 'capabilities.json'))}, 'utf8'))`,
+        ].join(';'),
+      ]
+      fixture.plan.provider.command = [
+        process.execPath,
+        '-e',
+        [
+          `const fs = require('node:fs')`,
+          `const path = require('node:path')`,
+          `const secret = process.env.CUSTOM_PROVIDER_TOKEN`,
+          `if (!process.env.CUSTOM_PROVIDER_TOKEN) process.exit(9)`,
+          `if (process.env.UNRELATED_PROVIDER_TOKEN) process.exit(10)`,
+          `fs.writeFileSync(path.join(process.env.AGENT_EVAL_OUTPUT_DIR, 'provider-artifact.txt'), 'artifact=' + secret)`,
+          `process.stderr.write('stderr=' + secret)`,
+          `process.stdout.write(JSON.stringify({schemaVersion:1,provider:{id:'fixture-provider',version:'1.0.0'},usage:{credentialAvailable:true,echo:secret},grading:{grader:{id:'fixture',version:'1'},result:{echo:secret}},artifacts:[{path:'provider-artifact.txt',role:'report'}]}))`,
+        ].join(';'),
+      ]
+      await writeFile(fixture.planPath, JSON.stringify(fixture.plan))
+      expect(await readFile(fixture.planPath, 'utf8')).not.toContain(secret)
+
+      await expect(runExecutionPlan(fixture.planPath, {
+        auditPaths: [],
+        processHooks,
+        sourceEnv,
+      })).rejects.toThrow('at least one preflight Audit')
+      expect(secretReads).toBe(0)
+
+      const result = await runExecutionPlan(fixture.planPath, {
+        auditPaths: [fixture.auditPath],
+        processHooks,
+        sourceEnv,
+      })
+      const bundle = await readFile(result.bundlePath, 'utf8')
+      expect(bundle).not.toContain(secret)
+      expect(bundle).not.toContain('unrelated-secret')
+      expect(JSON.parse(bundle)).toMatchObject({
+        runs: [{
+          usage: { credentialAvailable: true, echo: '[REDACTED]' },
+          grading: {
+            grader: { id: 'fixture', version: '1' },
+            result: { echo: '[REDACTED]' },
+          },
+        }],
+      })
+      const outputRoot = path.join(fixture.root, 'output')
+      const evidenceFiles: string[] = []
+      const visit = async (directory: string): Promise<void> => {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          const target = path.join(directory, entry.name)
+          if (entry.isDirectory()) await visit(target)
+          if (entry.isFile()) evidenceFiles.push(target)
+        }
+      }
+      await visit(outputRoot)
+      for (const evidencePath of evidenceFiles) {
+        const bytes = await readFile(evidencePath)
+        expect(bytes.includes(Buffer.from(secret)), evidencePath).toBe(false)
+        expect(bytes.includes(Buffer.from(JSON.stringify(secret).slice(1, -1))), evidencePath).toBe(false)
+      }
+      const runRoot = path.join(outputRoot, 'case-1', 'current', '1')
+      await expect(readFile(path.join(runRoot, 'provider-artifact.txt'), 'utf8'))
+        .resolves.toBe('artifact=[REDACTED]')
+      await expect(readFile(path.join(runRoot, 'stderr.txt'), 'utf8'))
+        .resolves.toBe('stderr=[REDACTED]')
+      await expect(readFile(path.join(runRoot, 'stdout.txt'), 'utf8').then(JSON.parse))
+        .resolves.toMatchObject({ usage: { echo: '[REDACTED]' } })
+
+      fixture.plan.provider.environmentAllowlist = ['INVALID-NAME']
+      await writeFile(fixture.planPath, JSON.stringify(fixture.plan))
+      await expect(validateExecutionPlan(fixture.planPath)).resolves.toMatchObject({
+        valid: false,
+        errors: expect.arrayContaining([
+          expect.stringContaining('environmentAllowlist'),
+        ]),
+      })
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true })
+    }
+  })
+
   it('requires one non-duplicate Audit for each distinct current and previous Skill digest', async () => {
     const fixture = await createFixture()
     try {

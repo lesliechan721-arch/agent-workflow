@@ -167,7 +167,7 @@ policy:
 
 export function renderEvalManifest(pluginName, skillName) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     plugin: pluginName,
     skill: skillName,
     profiles: [
@@ -175,14 +175,12 @@ export function renderEvalManifest(pluginName, skillName) {
         id: 'project-default',
         scope: 'project',
         plugins: [{ name: pluginName, config: {} }],
-        runModel: true,
         requiredForRelease: true,
       },
       {
         id: 'user-default',
         scope: 'user',
         plugins: [{ name: pluginName, config: {} }],
-        runModel: false,
         requiredForRelease: true,
       },
     ],

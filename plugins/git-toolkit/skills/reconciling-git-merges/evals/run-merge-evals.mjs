@@ -1,97 +1,20 @@
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { waitForEvalChild } from '../../../scripts/eval-child-process.mjs';
-import { gitMetadataWritableArgs } from '../../../scripts/eval-git-permissions.mjs';
-import { isolateMaterializedSkills } from '../../../scripts/eval-participant-skills.mjs';
-
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
-const skillKey = 'reconciling-git-merges';
-const defaults = {
-  runs: 1,
-  timeoutMs: 300_000,
-  codexBin: 'codex',
-  model: 'gpt-5.6-luna',
-  caseId: undefined,
-  output: undefined,
-};
-
-function usage() {
-  return [
-    'Usage: run-merge-evals.mjs [options]',
-    '  --runs N          Runs per current/baseline variant (default: 1)',
-    '  --case ID         Run one case from evals.json',
-    '  --model MODEL     Codex model (default: gpt-5.6-luna)',
-    '  --codex-bin PATH  Codex executable (default: codex)',
-    '  --timeout-ms MS   Timeout per model run (default: 300000)',
-    '  --output PATH     Write the JSON report to PATH',
-    'Exit 0 means every current run passed its mechanical checks.',
-  ].join('\n');
-}
-
-function valueAfter(argv, index, flag) {
-  const value = argv[index + 1];
-  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value.`);
-  return value;
-}
-
-export function parseArgs(argv) {
-  const options = { ...defaults, help: false };
-  for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (flag === '-h' || flag === '--help') {
-      options.help = true;
-      continue;
-    }
-    const value = valueAfter(argv, index, flag);
-    index += 1;
-    if (flag === '--runs' || flag === '--timeout-ms') {
-      const parsed = Number(value);
-      if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`${flag} must be a positive integer.`);
-      }
-      if (flag === '--runs') options.runs = parsed;
-      else options.timeoutMs = parsed;
-    } else if (flag === '--case') options.caseId = value;
-    else if (flag === '--model') options.model = value;
-    else if (flag === '--codex-bin') options.codexBin = value;
-    else if (flag === '--output') options.output = path.resolve(value);
-    else throw new Error(`Unknown option: ${flag}`);
-  }
-  return options;
-}
+const providerId = 'git-merge-provider';
+const providerVersion = 'manifest-v1';
 
 async function readEvalResource(relativePath, encoding = 'utf8') {
   const normalized = path.normalize(relativePath);
   if (normalized === '..' || normalized.startsWith(`..${path.sep}`) || path.isAbsolute(normalized)) {
     throw new Error(`Eval resource must stay inside evals/: ${relativePath}`);
   }
-  try {
-    return await readFile(path.join(evalDir, normalized), encoding);
-  } catch (error) {
-    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) throw error;
-  }
-  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
-  return readFile(
-    path.join(context.sourceRoot, 'skills', skillKey, 'evals', normalized),
-    encoding,
-  );
-}
-
-export async function loadCases(caseId) {
-  const document = JSON.parse(await readEvalResource('evals.json'));
-  if (document?.skill_name !== skillKey || !Array.isArray(document.evals)) {
-    throw new Error(`evals.json must describe ${skillKey}.`);
-  }
-  const cases = caseId
-    ? document.evals.filter((entry) => entry.id === caseId)
-    : document.evals;
-  if (cases.length === 0) throw new Error(`Unknown merge eval case: ${caseId}`);
-  return cases;
+  return readFile(path.join(evalDir, normalized), encoding);
 }
 
 function execFile(command, args, options = {}) {
@@ -135,6 +58,29 @@ async function git(root, args, { allowFailure = false } = {}) {
   return result;
 }
 
+async function gitMetadataWritableArgs(repo, fixtureRoot) {
+  const [root, absoluteGitDir, commonDir] = await Promise.all([
+    realpath(fixtureRoot),
+    git(repo, ['rev-parse', '--absolute-git-dir']),
+    git(repo, ['rev-parse', '--git-common-dir']),
+  ]);
+  const roots = [];
+  for (const candidate of [
+    absoluteGitDir.stdout.trim(),
+    path.isAbsolute(commonDir.stdout.trim())
+      ? commonDir.stdout.trim()
+      : path.resolve(repo, commonDir.stdout.trim()),
+  ]) {
+    const resolved = await realpath(candidate);
+    const relative = path.relative(root, resolved);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`Git metadata path escapes the eval fixture: ${resolved}`);
+    }
+    if (!roots.includes(resolved)) roots.push(resolved);
+  }
+  return roots.flatMap((rootPath) => ['--add-dir', rootPath]);
+}
+
 async function snapshot(root) {
   const [head, refs, index, status, diff, retentionContent] = await Promise.all([
     git(root, ['rev-parse', 'HEAD']),
@@ -172,11 +118,7 @@ function finalMessage(stdout) {
   return typeof message === 'string' ? message : JSON.stringify(message);
 }
 
-async function prepareWorkspace(evalCase, withSkill) {
-  const materializedRoot = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-  if (!materializedRoot) {
-    throw new Error('AW_PLUGIN_EVAL_PROJECT_ROOT is required; run through pnpm plugin:eval.');
-  }
+async function prepareWorkspace(evalCase, workspacePath) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'reconciling-git-merges-eval-'));
   const fixtureName = evalCase.files[0].replace('evals/files/', '');
   try {
@@ -189,8 +131,7 @@ async function prepareWorkspace(evalCase, withSkill) {
       });
       if (cloned.code !== 0) throw new Error(`git clone failed: ${cloned.stderr}`);
       await rm(bundle, { force: true });
-      await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), { recursive: true });
-      await isolateMaterializedSkills(path.join(repo, '.agents'), skillKey, withSkill);
+      await cp(path.join(workspacePath, '.agents'), path.join(repo, '.agents'), { recursive: true });
       await git(repo, ['config', 'user.name', 'Merge Skill Eval']);
       await git(repo, ['config', 'user.email', 'merge-skill-eval@example.invalid']);
       return { root, repo };
@@ -201,8 +142,7 @@ async function prepareWorkspace(evalCase, withSkill) {
     if (extracted.code !== 0) throw new Error(`tar extraction failed: ${extracted.stderr}`);
     await rm(archive, { force: true });
     const repo = path.join(root, 'analysis-only-dirty-worktree');
-    await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), { recursive: true });
-    await isolateMaterializedSkills(path.join(repo, '.agents'), skillKey, withSkill);
+    await cp(path.join(workspacePath, '.agents'), path.join(repo, '.agents'), { recursive: true });
     return { root, repo };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
@@ -223,21 +163,21 @@ function runtimePrompt(evalCase) {
   return '只分析将 origin/feature 合并到 main 的文本和语义风险；不要执行 merge，也不要改变 refs、暂存区或工作树内容。报告契约交互、建议的最小修复和验证方案。';
 }
 
-async function runCodex(repo, prompt, options, { allowGitWrites, evalRoot }) {
+async function runCodex(repo, prompt, { allowGitWrites, evalRoot }) {
   const metadataArgs = allowGitWrites
     ? await gitMetadataWritableArgs(repo, evalRoot)
     : [];
   const args = [
     'exec', '--json', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'workspace-write',
     ...metadataArgs,
-    '--cd', repo, '--model', options.model,
+    '--cd', repo,
+    '--model', process.env.AW_SKILL_EVAL_CODEX_MODEL ?? 'gpt-5.6-luna',
     '--config', 'approval_policy="never"',
     '--config', 'skills.include_instructions=true', prompt,
   ];
-  const child = spawn(options.codexBin, args, {
+  const child = spawn(process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex', args, {
     cwd: repo,
     env: process.env,
-    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -246,8 +186,17 @@ async function runCodex(repo, prompt, options, { allowGitWrites, evalRoot }) {
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
-  const result = await waitForEvalChild(child, options.timeoutMs);
-  return { ...result, stdout, stderr, final_message: finalMessage(stdout) };
+  const result = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  return {
+    ...result,
+    timedOut: false,
+    stdout,
+    stderr,
+    final_message: finalMessage(stdout),
+  };
 }
 
 export async function mergeCommitState(repo, beforeHead) {
@@ -444,89 +393,123 @@ export async function evaluateCase(evalCase, repo, before, run) {
   return { passed: checks.every((check) => check.passed), checks, before, after };
 }
 
-async function runVariant(evalCase, variant, options) {
-  const runs = [];
-  for (let index = 0; index < options.runs; index += 1) {
-    const workspace = await prepareWorkspace(evalCase, variant === 'current');
+function usageFromEvents(stdout) {
+  let usage = null;
+  for (const line of stdout.split('\n')) {
     try {
-      const before = await snapshot(workspace.repo);
-      const model = await runCodex(workspace.repo, runtimePrompt(evalCase), options, {
-        allowGitWrites: evalCase.id !== 'analysis_only_dirty_worktree',
-        evalRoot: workspace.root,
-      });
-      const evaluation = await evaluateCase(evalCase, workspace.repo, before, model);
-      runs.push({ run: index + 1, model, evaluation });
-    } finally {
-      await rm(workspace.root, { recursive: true, force: true });
+      const event = JSON.parse(line);
+      if (event?.usage && typeof event.usage === 'object' && !Array.isArray(event.usage)) {
+        usage = event.usage;
+      }
+    } catch {
+      // Codex JSONL can contain non-event diagnostics.
     }
   }
-  return {
-    variant,
-    complete: runs.every((entry) => !entry.model.timedOut && entry.model.code === 0),
-    passed: runs.every((entry) => entry.evaluation.passed),
-    runs,
-  };
+  return usage;
 }
 
-async function writeReport(report, output) {
-  const text = `${JSON.stringify(report, null, 2)}\n`;
-  if (output) {
-    await mkdir(path.dirname(output), { recursive: true });
-    await writeFile(output, text, 'utf8');
+async function credentialValues(input) {
+  const suiteRoot = input.runtimeInputs['eval-suite'];
+  if (!suiteRoot) throw new Error('Merge provider requires the eval-suite runtime input.');
+  const suite = JSON.parse(await readFile(path.join(suiteRoot, 'suite.json'), 'utf8'));
+  const names = suite?.provider?.credentialEnvironment ?? [];
+  if (!Array.isArray(names) || names.some((name) => typeof name !== 'string')) {
+    throw new Error('Merge provider credentialEnvironment is invalid.');
   }
-  process.stdout.write(text);
+  return [...new Set(names.flatMap((name) => {
+    const value = process.env[name];
+    return value ? [value] : [];
+  }))].sort((left, right) => right.length - left.length);
 }
 
-async function main() {
-  let options;
+function redactText(value, secrets) {
+  return secrets.reduce((text, secret) => {
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    return text
+      .split(secret).join('[REDACTED]')
+      .split(escaped).join('[REDACTED]');
+  }, value);
+}
+
+function redactCredentialValues(value, secrets) {
+  if (typeof value === 'string') return redactText(value, secrets);
+  if (Array.isArray(value)) return value.map((entry) => redactCredentialValues(entry, secrets));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value)
+      .map(([key, entry]) => [
+        redactText(key, secrets),
+        redactCredentialValues(entry, secrets),
+      ]));
+  }
+  return value;
+}
+
+async function writeArtifacts(input, model, evaluation, secrets) {
+  const reportPath = path.join(input.outputDir, 'provider-evidence.json');
+  const tracePath = path.join(input.outputDir, 'codex-events.jsonl');
+  const outputPath = path.join(input.outputDir, 'model-output.txt');
+  const safeModel = redactCredentialValues(model, secrets);
+  const safeEvaluation = redactCredentialValues(evaluation, secrets);
+  await Promise.all([
+    writeFile(reportPath, `${JSON.stringify({
+      caseId: input.caseId,
+      configuration: input.configuration,
+      skillMode: input.skillMode,
+      model: {
+        exitCode: safeModel.code,
+        signal: safeModel.signal,
+        stderr: safeModel.stderr,
+      },
+      evaluation: safeEvaluation,
+    }, null, 2)}\n`, 'utf8'),
+    writeFile(tracePath, redactText(model.stdout, secrets), 'utf8'),
+    writeFile(outputPath, `${redactText(model.final_message, secrets)}\n`, 'utf8'),
+  ]);
+  return [
+    { path: path.basename(reportPath), role: 'report' },
+    { path: path.basename(tracePath), role: 'trace' },
+    { path: path.basename(outputPath), role: 'output' },
+  ];
+}
+
+function validateCase(evalCase, caseId) {
+  if (
+    evalCase?.id !== caseId
+    || typeof evalCase.prompt !== 'string'
+    || typeof evalCase.expected_output !== 'string'
+    || !Array.isArray(evalCase.files)
+    || evalCase.files.length !== 1
+  ) throw new Error(`Merge provider received invalid case ${caseId}.`);
+}
+
+export async function runEvalProvider(input) {
+  validateCase(input.case, input.caseId);
+  const secrets = await credentialValues(input);
+  const workspace = await prepareWorkspace(input.case, input.workspacePath);
   try {
-    options = parseArgs(process.argv.slice(2));
-  } catch (error) {
-    process.stderr.write(`${error.message}\n\n${usage()}\n`);
-    process.exitCode = 2;
-    return;
+    const before = await snapshot(workspace.repo);
+    const model = await runCodex(workspace.repo, runtimePrompt(input.case), {
+      allowGitWrites: input.caseId !== 'analysis_only_dirty_worktree',
+      evalRoot: workspace.root,
+    });
+    const evaluation = await evaluateCase(input.case, workspace.repo, before, model);
+    return redactCredentialValues({
+      schemaVersion: 1,
+      provider: { id: providerId, version: providerVersion },
+      usage: usageFromEvents(model.stdout),
+      grading: {
+        grader: { id: 'git-merge-mechanical', version: '1' },
+        result: {
+          caseId: input.caseId,
+          configuration: input.configuration,
+          passed: evaluation.passed,
+          complete: model.code === 0,
+          checks: evaluation.checks,
+        },
+      },
+      artifacts: await writeArtifacts(input, model, evaluation, secrets),
+    }, secrets);
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
   }
-  if (options.help) {
-    process.stdout.write(`${usage()}\n`);
-    return;
-  }
-  const cases = await loadCases(options.caseId);
-  const results = [];
-  let environmentError = null;
-  try {
-    for (const evalCase of cases) {
-      process.stderr.write(`${evalCase.id}: current and baseline\n`);
-      results.push({
-        id: evalCase.id,
-        current: await runVariant(evalCase, 'current', options),
-        baseline: await runVariant(evalCase, 'baseline', options),
-      });
-    }
-  } catch (error) {
-    environmentError = error instanceof Error ? error.stack ?? error.message : String(error);
-  }
-  const complete = !environmentError && results.length === cases.length && results.every((entry) => entry.current.complete && entry.baseline.complete);
-  const passed = complete && results.every((entry) => entry.current.passed);
-  const report = {
-    schema_version: 2,
-    generated_at: new Date().toISOString(),
-    complete,
-    passed,
-    ...(environmentError ? { environment_error: environmentError } : {}),
-    case_results: cases.map((evalCase) => {
-      const result = results.find((entry) => entry.id === evalCase.id);
-      const caseComplete = result?.current.complete === true && result?.baseline.complete === true;
-      const casePassed = caseComplete && result.current.passed === true;
-      return { id: evalCase.id, outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete', complete: caseComplete, mechanical_passed: casePassed };
-    }),
-    results,
-  };
-  await writeReport(report, options.output);
-  if (!passed) process.exitCode = 1;
 }
-
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});

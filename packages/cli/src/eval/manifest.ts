@@ -1,9 +1,14 @@
 import path from 'node:path'
 
-import type { RuntimeCapabilities } from '@lesliechan721/agent-skill-eval'
+import type { EvalCase, RuntimeCapabilities } from '@lesliechan721/agent-skill-eval'
 import fs from 'fs-extra'
 
 import manifestSchema from '../../schemas/aw-skill-eval-manifest.schema.json' with { type: 'json' }
+import {
+  validatePluginEvalConversationCaseDocument,
+  validatePluginEvalTriggerCaseDocument,
+  type PluginEvalTriggerSuite,
+} from '../../scripts/plugin-eval-contract.js'
 import type { PluginMeta, Scope } from '../types.js'
 
 export const AW_SKILL_EVAL_MANIFEST_SCHEMA_VERSION = 1 as const
@@ -53,8 +58,9 @@ export interface AwSkillEvalProviderSuite extends AwSkillEvalSuiteBase {
   cases: string
   provider: {
     id: string
-    command: string[]
-    describeCommand: string[]
+    entry: string
+    assets: string[]
+    credentialEnvironment: string[]
     capabilities: RuntimeCapabilities['capabilities']
   }
 }
@@ -142,6 +148,17 @@ function ids(value: unknown, label: string): string[] {
   return strings(value, label).map((entry, index) => safeId(entry, `${label}[${index}]`))
 }
 
+function environmentNames(value: unknown, label: string): string[] {
+  if (value === undefined) return []
+  const names = strings(value, label)
+  for (const [index, name] of names.entries()) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+      throw new Error(`${label}[${index}] must be an environment variable name.`)
+    }
+  }
+  return names
+}
+
 function isolation(value: unknown, label: string): AwSkillEvalIsolation {
   if (value !== 'standard' && value !== 'strict') throw new Error(`${label} must be standard or strict.`)
   return value
@@ -168,12 +185,13 @@ async function assertSafeEvalNode(
   label: string,
   expected: 'file' | 'file-or-directory',
 ): Promise<void> {
-  const target = path.resolve(evalRoot, ...relative.split('/'))
-  const boundary = await fs.realpath(evalRoot)
-  const relation = path.relative(boundary, target)
+  const requestedBoundary = path.resolve(evalRoot)
+  const target = path.resolve(requestedBoundary, ...relative.split('/'))
+  const relation = path.relative(requestedBoundary, target)
   if (relation === '..' || relation.startsWith(`..${path.sep}`) || path.isAbsolute(relation)) {
     throw new Error(`${label} must stay inside the Skill eval directory.`)
   }
+  const boundary = await fs.realpath(requestedBoundary)
   let current = boundary
   for (const segment of relation.split(path.sep).filter(Boolean)) {
     current = path.join(current, segment)
@@ -381,15 +399,37 @@ async function parseSuites(
       const cases = relativePath(row.cases, `${label}.cases`)
       await assertSafeEvalNode(evalRoot, cases, `${label}.cases`, 'file')
       const provider = record(row.provider, `${label}.provider`)
-      onlyKeys(provider, ['id', 'command', 'describeCommand', 'capabilities'], `${label}.provider`)
+      onlyKeys(provider, [
+        'id', 'entry', 'assets', 'credentialEnvironment', 'capabilities',
+      ], `${label}.provider`)
+      const entry = relativePath(provider.entry, `${label}.provider.entry`)
+      if (!entry.endsWith('.mjs')) throw new Error(`${label}.provider.entry must be an .mjs file.`)
+      await assertSafeEvalNode(evalRoot, entry, `${label}.provider.entry`, 'file')
+      const assets = provider.assets === undefined
+        ? []
+        : strings(provider.assets, `${label}.provider.assets`)
+          .map((asset, assetIndex) => relativePath(asset, `${label}.provider.assets[${assetIndex}]`))
+      for (const [assetIndex, asset] of assets.entries()) {
+        if (asset === entry || asset.startsWith(`${entry}/`) || entry.startsWith(`${asset}/`)) {
+          throw new Error(`${label}.provider.assets[${assetIndex}] must not overlap provider.entry.`)
+        }
+        if (assets.some((other, otherIndex) => otherIndex !== assetIndex && (
+          asset.startsWith(`${other}/`) || other.startsWith(`${asset}/`)
+        ))) throw new Error(`${label}.provider.assets entries must not overlap.`)
+        await assertSafeEvalNode(evalRoot, asset, `${label}.provider.assets[${assetIndex}]`, 'file-or-directory')
+      }
       suites.push({
         ...common,
         kind: 'provider',
         cases,
         provider: {
           id: safeId(provider.id, `${label}.provider.id`),
-          command: strings(provider.command, `${label}.provider.command`),
-          describeCommand: strings(provider.describeCommand, `${label}.provider.describeCommand`),
+          entry,
+          assets,
+          credentialEnvironment: environmentNames(
+            provider.credentialEnvironment,
+            `${label}.provider.credentialEnvironment`,
+          ),
           capabilities: parseCapabilities(provider.capabilities, `${label}.provider.capabilities`),
         },
       })
@@ -416,10 +456,70 @@ async function parseSuites(
   return suites
 }
 
+function genericCases(value: unknown, label: string): EvalCase[] {
+  const rows = Array.isArray(value)
+    ? value
+    : (() => {
+        const document = record(value, label)
+        if (Array.isArray(document.cases)) return document.cases
+        if (Array.isArray(document.evals)) return document.evals
+        throw new Error(`${label} must be an array or contain cases/evals.`)
+      })()
+  if (rows.length === 0) throw new Error(`${label} must contain at least one case.`)
+  const cases = rows.map((entry, index) => ({ ...record(entry, `${label}[${index}]`) })) as EvalCase[]
+  const ids = cases.map((entry, index) => {
+    const id = string(entry.id, `${label}[${index}].id`)
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(id)) {
+      throw new Error(`${label}[${index}].id must be a safe path segment.`)
+    }
+    return id
+  })
+  if (new Set(ids).size !== ids.length) throw new Error(`${label} contains duplicate ids.`)
+  return cases
+}
+
+async function readNormalizedCaseCorpora(
+  suites: AwSkillEvalSuite[],
+  evalRoot: string,
+  ownerSkill: string,
+): Promise<ReadonlyMap<string, EvalCase[]>> {
+  const corpora = new Map<string, EvalCase[]>()
+  for (const suite of suites) {
+    if (suite.kind === 'check') continue
+    const value = await fs.readJson(path.join(evalRoot, suite.cases))
+    if (suite.kind === 'trigger') {
+      const normalized = validatePluginEvalTriggerCaseDocument(value, {
+        ...suite,
+        skill: ownerSkill,
+      } as PluginEvalTriggerSuite)
+      corpora.set(suite.id, normalized.cases as unknown as EvalCase[])
+      continue
+    }
+    if (suite.kind === 'conversation') {
+      corpora.set(suite.id, validatePluginEvalConversationCaseDocument(
+        value,
+        ownerSkill,
+        `conversation cases for suite "${suite.id}"`,
+        evalRoot,
+        suite.environment?.pathPrepend,
+      ) as EvalCase[])
+      continue
+    }
+    corpora.set(suite.id, genericCases(value, `provider cases for suite "${suite.id}"`))
+  }
+  return corpora
+}
+
 export async function readAwSkillEvalManifest(options: {
   plugin: PluginMeta
   skill: string
-}): Promise<{ manifest: AwSkillEvalManifest; skillRoot: string; evalRoot: string; manifestPath: string }> {
+}): Promise<{
+  manifest: AwSkillEvalManifest
+  skillRoot: string
+  evalRoot: string
+  manifestPath: string
+  casesBySuite: ReadonlyMap<string, EvalCase[]>
+}> {
   const skill = safeId(options.skill, 'selected Skill')
   const skillRoot = path.join(options.plugin.rootDir, 'skills', skill)
   const evalRoot = path.join(skillRoot, 'evals')
@@ -438,6 +538,15 @@ export async function readAwSkillEvalManifest(options: {
   if (manifestSkill !== skill) throw new Error(`eval manifest.skill must match selected Skill "${skill}".`)
   const profiles = parseProfiles(raw.profiles, plugin)
   const suites = await parseSuites(raw.suites, evalRoot, new Set(profiles.map((profile) => profile.id)), skill)
+  const ownsDynamicSkill = (options.plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    (target.target === 'codex.skill' || target.target === 'claude.skill')
+    && target.skillKey === skill)
+  if (ownsDynamicSkill && !suites.some((suite) => suite.requiredForRelease)) {
+    throw new Error(
+      `eval manifest.suites must include at least one release-required suite for dynamic Skill "${skill}".`,
+    )
+  }
+  const casesBySuite = await readNormalizedCaseCorpora(suites, evalRoot, skill)
   return {
     manifest: {
       schemaVersion: AW_SKILL_EVAL_MANIFEST_SCHEMA_VERSION,
@@ -449,6 +558,7 @@ export async function readAwSkillEvalManifest(options: {
     skillRoot,
     evalRoot,
     manifestPath,
+    casesBySuite,
   }
 }
 

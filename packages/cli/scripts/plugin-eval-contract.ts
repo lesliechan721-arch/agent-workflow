@@ -596,7 +596,7 @@ export function validatePluginEvalConversationCaseDocument(
         throw new Error(`${label}.evals[${index}] artifact path ${JSON.stringify(unmatchedArtifact)} is outside review.allowed_workspace_changes.`);
       }
     }
-    return row;
+    return { ...row, id, sandbox };
   });
 }
 
@@ -915,7 +915,7 @@ function validatePluginEvalCommandCaseDocument(
   }
 }
 
-function parseTriggerCase(
+export function normalizePluginEvalTriggerCase(
   value: unknown,
   index: number,
   suite: PluginEvalTriggerSuite,
@@ -1000,27 +1000,24 @@ function parseTriggerCase(
   };
 }
 
-export async function readPluginEvalTriggerCases(
-  pluginRoot: string,
+export function validatePluginEvalTriggerCaseDocument(
+  value: unknown,
   suite: PluginEvalTriggerSuite,
-): Promise<PluginEvalTriggerCaseDocument> {
-  const casesPath = path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, ''));
-  const raw = expectRecord(await fs.readJson(casesPath), `trigger cases for suite "${suite.id}"`);
+  label = `trigger cases for suite "${suite.id}"`,
+): PluginEvalTriggerCaseDocument {
+  const raw = expectRecord(value, label);
   if (raw.schemaVersion !== PLUGIN_EVAL_CASE_SCHEMA_VERSION) {
-    throw new Error(
-      `trigger cases for suite "${suite.id}" must use schemaVersion ${PLUGIN_EVAL_CASE_SCHEMA_VERSION}.`,
-    );
+    throw new Error(`${label} must use schemaVersion ${PLUGIN_EVAL_CASE_SCHEMA_VERSION}.`);
   }
-  const skill = expectString(raw.skill, `trigger cases for suite "${suite.id}".skill`);
+  const skill = expectString(raw.skill, `${label}.skill`);
   if (skill !== suite.skill) {
-    throw new Error(
-      `trigger cases skill "${skill}" does not match suite skill "${suite.skill}".`,
-    );
+    throw new Error(`trigger cases skill "${skill}" does not match suite skill "${suite.skill}".`);
   }
   if (!Array.isArray(raw.cases) || raw.cases.length === 0) {
-    throw new Error(`trigger cases for suite "${suite.id}" must contain a non-empty cases array.`);
+    throw new Error(`${label} must contain a non-empty cases array.`);
   }
-  const cases = raw.cases.map((entry, index) => parseTriggerCase(entry, index, suite));
+  const cases = raw.cases.map((entry, index) =>
+    normalizePluginEvalTriggerCase(entry, index, suite));
   assertUniqueIds(cases, 'trigger case');
   if (!suite.fixtureModule && cases.some((entry) => entry.workspace_fixture)) {
     throw new Error(
@@ -1037,6 +1034,14 @@ export async function readPluginEvalTriggerCases(
     skill,
     cases,
   };
+}
+
+export async function readPluginEvalTriggerCases(
+  pluginRoot: string,
+  suite: PluginEvalTriggerSuite,
+): Promise<PluginEvalTriggerCaseDocument> {
+  const casesPath = path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, ''));
+  return validatePluginEvalTriggerCaseDocument(await fs.readJson(casesPath), suite);
 }
 
 function resolveDeclaredPluginPath(

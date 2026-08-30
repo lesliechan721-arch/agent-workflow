@@ -6,11 +6,11 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
 import {
+  createProviderOutput,
   createEvalWorkspace,
-  readEvalResource,
+  PROVIDER_CREDENTIAL_ENVIRONMENT,
   runCodexOnce,
 } from './eval-harness.mjs';
 import {
@@ -19,79 +19,6 @@ import {
   evaluateLifecycleTrace,
   evaluateParentScopeIsolation,
 } from './run-workflow-evals.mjs';
-
-const DEFAULT_OPTIONS = {
-  runs: 3,
-  timeoutMs: 300_000,
-  codexBin: 'codex',
-  model: undefined,
-  caseId: undefined,
-  output: undefined,
-};
-
-function usage() {
-  return `Usage: node plugins/codex-enhance/skills/codex-explore/evals/run-liveness-evals.mjs [OPTIONS]
-
-Runs long and blocked exploration cases against a materialized one-minute wait
-profile. The report is comparative ablation evidence, not release evidence.
-
-Options:
-  --runs <count>                Repetitions per case (default: 3)
-  --case <id>                   Run one case
-  --timeout-ms <milliseconds>   Per-run safety timeout (default: 300000)
-  --codex-bin <path>            Codex executable (default: codex)
-  --model <model>               Optional parent model override
-  --output <path>               Also write the JSON report to this path
-  -h, --help                    Show this help`;
-}
-
-function optionValue(argv, index, flag) {
-  const value = argv[index + 1];
-  if (!value || value.startsWith('--')) {
-    throw new Error(`${flag} requires a value.`);
-  }
-  return value;
-}
-
-function positiveInteger(value, flag) {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`${flag} must be a positive integer.`);
-  }
-  return parsed;
-}
-
-export function parseLivenessEvalArgs(argv) {
-  const options = { ...DEFAULT_OPTIONS, help: false };
-  for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (flag === '-h' || flag === '--help') {
-      options.help = true;
-      continue;
-    }
-    const value = optionValue(argv, index, flag);
-    index += 1;
-    if (flag === '--runs') {
-      options.runs = positiveInteger(value, flag);
-    } else if (flag === '--case') {
-      options.caseId = value;
-    } else if (flag === '--timeout-ms') {
-      options.timeoutMs = positiveInteger(value, flag);
-      if (options.timeoutMs < 10_000) {
-        throw new Error('--timeout-ms must be at least 10000.');
-      }
-    } else if (flag === '--codex-bin') {
-      options.codexBin = value;
-    } else if (flag === '--model') {
-      options.model = value;
-    } else if (flag === '--output') {
-      options.output = path.resolve(value);
-    } else {
-      throw new Error(`Unknown option: ${flag}`);
-    }
-  }
-  return options;
-}
 
 function nonEmptyStrings(value) {
   return (
@@ -133,18 +60,6 @@ function validateCase(entry, index) {
     throw new Error(`${entry.id}.expected does not define the liveness contract.`);
   }
   return entry;
-}
-
-export async function loadLivenessEvalSpec() {
-  const spec = JSON.parse(await readEvalResource('liveness-evals.json'));
-  if (spec?.skill_name !== 'codex-explore' || !Array.isArray(spec.evals)) {
-    throw new Error('liveness-evals.json must describe codex-explore and contain evals.');
-  }
-  const evals = spec.evals.map(validateCase);
-  if (new Set(evals.map((entry) => entry.id)).size !== evals.length) {
-    throw new Error('liveness-evals.json contains duplicate ids.');
-  }
-  return { ...spec, evals };
 }
 
 export async function setupLivenessWorkspace(workspaceRoot) {
@@ -325,168 +240,53 @@ export function evaluateLivenessRun(run, expected, probeEnabled) {
   };
 }
 
-function median(values) {
-  if (values.length === 0) {
-    return null;
+export async function runEvalProvider(input) {
+  const entry = validateCase(input.case, 0);
+  if (entry.id !== input.caseId) {
+    throw new Error('Provider case id does not match input.caseId.');
   }
-  const sorted = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? Math.round((sorted[middle - 1] + sorted[middle]) / 2)
-    : sorted[middle];
-}
-
-export function summarizeLivenessRuns(runs) {
-  return {
-    accepted_runs: runs.filter((run) => run.evaluation.passed).length,
-    probe_runs: runs.filter((run) => run.evaluation.metrics.probes > 0).length,
-    status_runs: runs.filter(
-      (run) => run.evaluation.metrics.status_messages.length > 0,
-    ).length,
-    median_duration_ms: median(
-      runs.map((run) => run.duration_ms).filter(Number.isFinite),
-    ),
-    terminations: Object.fromEntries(
-      [...new Set(runs.map((run) => run.termination))]
-        .sort()
-        .map((termination) => [
-          termination,
-          runs.filter((run) => run.termination === termination).length,
-        ]),
-    ),
-  };
-}
-
-async function run(options) {
-  const spec = await loadLivenessEvalSpec();
-  const selected = options.caseId
-    ? spec.evals.filter((entry) => entry.id === options.caseId)
-    : spec.evals;
-  if (selected.length === 0) {
-    throw new Error(`Unknown liveness case: ${options.caseId}`);
-  }
-  const results = [];
-  for (const entry of selected) {
-    const runs = [];
-    for (let index = 0; index < options.runs; index += 1) {
-      process.stderr.write(`${entry.id} run ${index + 1}/${options.runs}\n`);
-      const workspace = await createEvalWorkspace();
-      try {
-        await setupLivenessWorkspace(workspace.root);
-        const probeEnabled = (await readFile(workspace.skillPath, 'utf8'))
-          .includes('status=progress');
-        const before = await captureWorkspaceSnapshot(workspace.root);
-        const result = await runCodexOnce(
-          workspace,
-          {
-            query: entry.prompt,
-            parent_model: entry.parent_model,
-            explicit_skill: true,
-            should_load_skill: true,
-            should_spawn_agent: true,
-            wait_for_completion: true,
-            codex_config: entry.codex_config,
-          },
-          {
-            codexBin: options.codexBin,
-            model: options.model,
-            timeoutMs: options.timeoutMs,
-            sandboxMode: 'workspace-write',
-            captureTrace: true,
-          },
-        );
-        const after = await captureWorkspaceSnapshot(workspace.root);
-        const completeRun = {
-          ...result,
-          probe_enabled: probeEnabled,
-          workspace_changes: diffWorkspaceSnapshots(before, after),
-        };
-        runs.push({
-          ...completeRun,
-          evaluation: evaluateLivenessRun(
-            completeRun,
-            entry.expected,
-            probeEnabled,
-          ),
-        });
-      } finally {
-        await rm(workspace.root, { recursive: true, force: true });
-      }
-    }
-    results.push({
-      id: entry.id,
-      complete: runs.every(
-        (result) => !result.execution_error && result.evaluation.complete,
-      ),
-      passed: runs.every((result) => result.evaluation.passed),
-      summary: summarizeLivenessRuns(runs),
-      runs,
-    });
-  }
-
-  const report = {
-    schema_version: 1,
-    generated_at: new Date().toISOString(),
-    skill_name: spec.skill_name,
-    scope: 'liveness-ablation',
-    profile: process.env.AW_PLUGIN_EVAL_PROFILE ?? null,
-    runs_per_case: options.runs,
-    requested_model_override: options.model ?? null,
-    sandbox: 'workspace-write',
-    read_only_enforcement: 'instruction-only',
-    complete: results.length === selected.length && results.every((result) =>
-      result.runs.length === options.runs && result.complete),
-    passed: results.every((result) => result.complete && result.passed),
-    case_results: selected.map((entry) => {
-      const result = results.find((candidate) => candidate.id === entry.id);
-      const caseComplete = result?.runs.length === options.runs && result.complete === true;
-      const casePassed = caseComplete && result.passed === true;
-      return {
-        id: entry.id,
-        outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete',
-        complete: caseComplete,
-        mechanical_passed: casePassed,
-      };
-    }),
-    results,
-  };
-  const output = `${JSON.stringify(report, null, 2)}\n`;
-  if (options.output) {
-    await mkdir(path.dirname(options.output), { recursive: true });
-    await writeFile(options.output, output, 'utf8');
-  }
-  process.stdout.write(output);
-  if (!report.passed) {
-    process.exitCode = 1;
-  }
-}
-
-async function main() {
-  let options;
+  const workspace = await createEvalWorkspace({ sourceRoot: input.workspacePath });
   try {
-    options = parseLivenessEvalArgs(process.argv.slice(2));
-  } catch (error) {
-    process.stderr.write(
-      `${error instanceof Error ? error.message : String(error)}\n\n${usage()}\n`,
-    );
-    process.exitCode = 2;
-    return;
+    await setupLivenessWorkspace(workspace.root);
+    const probeEnabled = input.skillMode !== 'without-skill' &&
+      (await readFile(workspace.skillPath, 'utf8')).includes('status=progress');
+    const before = await captureWorkspaceSnapshot(workspace.root);
+    const evidence = await runCodexOnce(workspace, {
+      query: entry.prompt,
+      parent_model: entry.parent_model,
+      explicit_skill: true,
+      should_load_skill: true,
+      should_spawn_agent: true,
+      wait_for_completion: true,
+      codex_config: entry.codex_config,
+    }, {
+      codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
+      model: process.env.AW_SKILL_EVAL_CODEX_MODEL,
+      sandboxMode: 'workspace-write',
+      captureTrace: true,
+      sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
+    });
+    const after = await captureWorkspaceSnapshot(workspace.root);
+    const run = {
+      ...evidence,
+      probe_enabled: probeEnabled,
+      workspace_changes: diffWorkspaceSnapshots(before, after),
+    };
+    const evaluation = evaluateLivenessRun(run, entry.expected, probeEnabled);
+    return createProviderOutput({
+      providerId: 'codex-explore-liveness',
+      graderId: 'codex-explore-liveness-mechanical',
+      run,
+      result: {
+        caseId: input.caseId,
+        configuration: input.configuration,
+        skillMode: input.skillMode,
+        complete: !run.execution_error && evaluation.complete,
+        ...evaluation,
+      },
+      outputDir: input.outputDir,
+    });
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
   }
-  if (options.help) {
-    process.stdout.write(`${usage()}\n`);
-    return;
-  }
-  await run(options);
-}
-
-const isMain =
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
-  main().catch((error) => {
-    process.stderr.write(
-      `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`,
-    );
-    process.exitCode = 1;
-  });
 }

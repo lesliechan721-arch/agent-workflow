@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "plugin": "aw-plugin-development",
   "skill": "review-aw-workflow",
   "profiles": [
@@ -24,7 +24,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     }
   ],

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { constants as fsConstants } from 'node:fs'
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
@@ -151,6 +152,7 @@ interface SkillSource {
 }
 
 const artifactRoles = new Set(['trace', 'report', 'output', 'grading', 'other'])
+const SECRET_REDACTION = '[REDACTED]'
 
 class RunnerOwnedOutputError extends Error {}
 
@@ -249,10 +251,65 @@ function gradingOf(value: unknown): Record<string, unknown> | null {
   return record
 }
 
+function allowlistedSecretValues(
+  allowlist: readonly string[] | undefined,
+  source: NodeJS.ProcessEnv,
+): string[] {
+  return [...new Set((allowlist ?? []).flatMap((name) => {
+    const value = source[name]
+    return value ? [value] : []
+  }))].sort((left, right) => right.length - left.length)
+}
+
+function secretVariants(secrets: readonly string[]): string[] {
+  return [...new Set(secrets.flatMap((secret) => {
+    const jsonEncoded = JSON.stringify(secret).slice(1, -1)
+    return jsonEncoded === secret ? [secret] : [secret, jsonEncoded]
+  }))].sort((left, right) => right.length - left.length)
+}
+
+function redactText(value: string, secrets: readonly string[]): string {
+  return secretVariants(secrets).reduce(
+    (current, secret) => current.split(secret).join(SECRET_REDACTION),
+    value,
+  )
+}
+
+function redactJsonValue(value: unknown, secrets: readonly string[]): unknown {
+  if (typeof value === 'string') return redactText(value, secrets)
+  if (Array.isArray(value)) return value.map((entry) => redactJsonValue(entry, secrets))
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+    redactText(key, secrets),
+    redactJsonValue(entry, secrets),
+  ]))
+}
+
+function redactBuffer(value: Buffer, secrets: readonly string[]): Buffer {
+  let result = value
+  for (const variant of secretVariants(secrets)) {
+    const secret = Buffer.from(variant)
+    if (secret.length === 0) continue
+    const chunks: Buffer[] = []
+    let offset = 0
+    let match = result.indexOf(secret, offset)
+    if (match < 0) continue
+    while (match >= 0) {
+      chunks.push(result.subarray(offset, match), Buffer.from(SECRET_REDACTION))
+      offset = match + secret.length
+      match = result.indexOf(secret, offset)
+    }
+    chunks.push(result.subarray(offset))
+    result = Buffer.concat(chunks)
+  }
+  return result
+}
+
 async function providerArtifacts(
   parsed: EvalProviderOutput,
   runDirectory: string,
   outputRoot: string,
+  secrets: readonly string[],
 ): Promise<Array<{ role: 'trace' | 'report' | 'output' | 'grading' | 'other'; path: string; digest: Digest }>> {
   const artifacts = []
   for (const entry of parsed.artifacts) {
@@ -262,14 +319,37 @@ async function providerArtifacts(
     if (!artifactRoles.has(role)) throw new Error(`unsupported provider artifact role: ${role}`)
     const candidate = path.resolve(runDirectory, entry.path)
     if (!isPathInside(runDirectory, candidate)) throw new Error('provider artifact leaves the run directory')
-    if ((await lstat(candidate)).isSymbolicLink()) throw new Error('provider artifact cannot be a symlink')
+    const candidateInfo = await lstat(candidate)
+    if (candidateInfo.isSymbolicLink() || !candidateInfo.isFile()) {
+      throw new Error('provider artifact must be a regular run file')
+    }
     const actual = await realpath(candidate)
     if (!isPathInside(runDirectory, actual) || !(await stat(actual)).isFile())
       throw new Error('provider artifact is not a regular run file')
+    const handle = await open(actual, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW)
+    let artifactBytes: Buffer
+    try {
+      const info = await handle.stat()
+      if (!info.isFile() || info.nlink !== 1) {
+        throw new Error('provider artifact must be one canonical regular run file')
+      }
+      const original = await handle.readFile()
+      artifactBytes = redactBuffer(original, secrets)
+      if (!artifactBytes.equals(original)) {
+        if (artifactBytes.length > 0) {
+          await handle.write(artifactBytes, 0, artifactBytes.length, 0)
+        }
+        await handle.truncate(artifactBytes.length)
+        await handle.sync()
+      }
+    } finally {
+      await handle.close()
+    }
+    if (await realpath(candidate) !== actual) throw new Error('provider artifact identity changed')
     artifacts.push({
       role: role as 'trace' | 'report' | 'output' | 'grading' | 'other',
       path: toPosixRelative(outputRoot, actual),
-      digest: sha256(await readFile(actual)),
+      digest: sha256(artifactBytes),
     })
   }
   return artifacts
@@ -278,9 +358,17 @@ async function providerArtifacts(
 function inheritedEnvironment(
   inherit: boolean,
   source: NodeJS.ProcessEnv = process.env,
+  allowlist: string[] = [],
 ): NodeJS.ProcessEnv {
   if (inherit) return source
-  return Object.fromEntries(['PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT', 'WINDIR'].flatMap((name) =>
+  return Object.fromEntries([...new Set([
+    'PATH',
+    'LANG',
+    'LC_ALL',
+    'SYSTEMROOT',
+    'WINDIR',
+    ...allowlist,
+  ])].flatMap((name) =>
     source[name] === undefined ? [] : [[name, source[name]]]))
 }
 
@@ -443,6 +531,7 @@ async function runOne(input: {
   executionLimitations: string[]
   providerCapabilities: EvalProviderCapabilities
   runtimeInputs: Map<string, CapturedRuntimeSkill>
+  sourceEnv: NodeJS.ProcessEnv
   beforeRunDirectoryReset: () => Promise<void>
 }): Promise<{ run: import('./bundle.js').EvalRun; cleanupFailed: boolean }> {
   const { plan, base, skillSource, evalCase, configuration, runIndex, executionLimitations } = input
@@ -489,8 +578,16 @@ async function runOne(input: {
   const argv = plan.provider.command.map((value) => replacePlaceholders(value, replacements))
   const executable = argv.shift()
   if (!executable) throw new Error('provider command has no executable')
+  const secrets = allowlistedSecretValues(
+    plan.provider.environmentAllowlist,
+    input.sourceEnv,
+  )
   const env = {
-    ...inheritedEnvironment(plan.provider.inheritEnvironment),
+    ...inheritedEnvironment(
+      plan.provider.inheritEnvironment,
+      input.sourceEnv,
+      plan.provider.environmentAllowlist,
+    ),
     ...plan.provider.env,
     ...configuration.env,
     AGENT_EVAL_CASE_ID: caseId,
@@ -521,7 +618,9 @@ async function runOne(input: {
     if (error instanceof ProviderProcessCleanupError && error.result) {
       result = error.result
       cleanupFailed = true
-    } else throw error
+    } else {
+      throw new Error(redactText(error instanceof Error ? error.message : String(error), secrets))
+    }
   }
   if (skillSnapshot !== null && await computeSkillDigest(skillSnapshot) !== snapshotDigestBefore) {
     throw new Error('Provider modified the captured Runtime Skill snapshot')
@@ -545,7 +644,8 @@ async function runOne(input: {
       : result.exitCode === 0
         ? 'completed'
         : 'process-failed'
-  let stderr = result.stderr
+  let stdoutEvidence = redactText(result.stdout, secrets)
+  let stderr = redactText(result.stderr, secrets)
   if (result.maxBufferExceeded) {
     const streams = [
       ...(result.stdoutTruncated ? ['stdout'] : []),
@@ -559,7 +659,8 @@ async function runOne(input: {
   let grading: Record<string, unknown> | null = null
   let artifacts: Awaited<ReturnType<typeof providerArtifacts>> = []
   try {
-    const value = JSON.parse(result.stdout.trim()) as unknown
+    const value = redactJsonValue(JSON.parse(result.stdout.trim()) as unknown, secrets)
+    stdoutEvidence = `${JSON.stringify(value, null, 2)}\n`
     const validation = await validateProviderOutput(value)
     if (!validation.valid || !validation.calculated)
       throw new Error(`provider stdout does not match EvalProviderOutput v1: ${validation.errors.join('; ')}`)
@@ -575,7 +676,7 @@ async function runOne(input: {
         `Run ${caseId}/${configuration.id}/${runIndex}: provider grading was not accepted because descendant cleanup is not guaranteed.`,
       )
     }
-    artifacts = await providerArtifacts(parsed, runDirectory, outputRoot)
+    artifacts = await providerArtifacts(parsed, runDirectory, outputRoot, secrets)
     if (artifacts.some((entry) => entry.role === 'grading'))
       throw new Error('provider artifacts must not declare the runner-owned grading role')
     if (grading) {
@@ -601,13 +702,15 @@ async function runOne(input: {
       })
     }
   } catch (error) {
-    if (error instanceof RunnerOwnedOutputError) throw error
+    if (error instanceof RunnerOwnedOutputError) {
+      throw new RunnerOwnedOutputError(redactText(error.message, secrets))
+    }
     usage = null
     grading = null
     artifacts = []
     if (status === 'completed') {
       status = 'error'
-      stderr += `${stderr ? '\n' : ''}Provider JSON/artifact error: ${(error as Error).message}`
+      stderr += `${stderr ? '\n' : ''}Provider JSON/artifact error: ${redactText((error as Error).message, secrets)}`
     }
   }
   const stdoutPath = path.join(runDirectory, 'stdout.txt')
@@ -621,7 +724,7 @@ async function runOne(input: {
       runDirectory,
       stdoutPath,
       'stdout evidence',
-      Buffer.from(result.stdout),
+      Buffer.from(stdoutEvidence),
     )
     stderrDigest = await writeRunnerOwnedEvidence(
       base,
@@ -726,6 +829,7 @@ export async function runExecutionPlan(
           executionLimitations,
           providerCapabilities: capabilities,
           runtimeInputs: captured.runtimeInputs,
+          sourceEnv: options.sourceEnv ?? process.env,
           beforeRunDirectoryReset: async () => {
             assertBoundInputsOutsideOutputRoot(outputRoot, boundFiles, boundSkills, captured.runtimeInputs)
             await assertBoundInputsUnchanged(boundFiles, boundSkills, captured.runtimeInputs)

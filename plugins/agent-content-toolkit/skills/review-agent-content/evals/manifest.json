@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "plugin": "agent-content-toolkit",
   "skill": "review-agent-content",
   "profiles": [
@@ -20,7 +20,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     }
   ],
@@ -43,6 +42,7 @@
       "strictNegativeSplits": [
         "validation"
       ],
+      "forbidMultipleSkillLoads": false,
       "profiles": [
         "project-default"
       ],

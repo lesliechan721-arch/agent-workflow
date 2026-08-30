@@ -1,12 +1,7 @@
 import assert from 'node:assert/strict';
-import path from 'node:path';
 import test from 'node:test';
 
-import {
-  evaluateLifecycleTimeline,
-  parseLifecycleArgs,
-  selectLifecycleCases,
-} from '../skills/codex-subagent-guide/evals/run-lifecycle-evals.mjs';
+import { evaluateLifecycleTimeline } from '../skills/codex-subagent-guide/evals/run-lifecycle-evals.mjs';
 
 const expected = {
   spawn_count: 1,
@@ -96,52 +91,4 @@ test('accepts a normal terminal path when timeout coverage is not required', () 
   ], { ...expected, require_timeout: false });
 
   assert.equal(result.passed, true);
-});
-
-test('selects lifecycle cases for the active materialization profile', () => {
-  const document = {
-    skill_name: 'codex-subagent-guide',
-    evals: [
-      { id: 'normal', profiles: ['project-default'] },
-      { id: 'timeout', profiles: ['project-timeout'] },
-    ],
-  };
-
-  assert.deepEqual(
-    selectLifecycleCases(document, { profile: 'project-default' }).map((entry) => entry.id),
-    ['normal'],
-  );
-  assert.deepEqual(
-    selectLifecycleCases(document, { profile: 'project-timeout' }).map((entry) => entry.id),
-    ['timeout'],
-  );
-  assert.throws(
-    () => selectLifecycleCases(document, {
-      caseId: 'normal',
-      profile: 'project-timeout',
-    }),
-    /Unknown lifecycle case for profile project-timeout: normal/,
-  );
-});
-
-test('parses central command-suite arguments', () => {
-  assert.deepEqual(
-    parseLifecycleArgs([
-      '--runs', '2',
-      '--case', 'wait_for_terminal_result',
-      '--model', 'gpt-test',
-      '--codex-bin', '/tmp/codex',
-      '--timeout-ms', '120000',
-      '--output', './result.json',
-    ]),
-    {
-      runs: 2,
-      timeoutMs: 120_000,
-      codexBin: '/tmp/codex',
-      model: 'gpt-test',
-      caseId: 'wait_for_terminal_result',
-      output: path.resolve('./result.json'),
-      help: false,
-    },
-  );
 });

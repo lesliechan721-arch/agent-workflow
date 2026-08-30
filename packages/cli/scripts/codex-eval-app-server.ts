@@ -103,7 +103,7 @@ interface WorkspaceArtifactEvidence {
   text?: string;
 }
 
-interface ConversationEvalCase {
+export interface ConversationEvalCase {
   id: string;
   prompt: string;
   scriptedReplies: ScriptedReply[];
@@ -117,7 +117,7 @@ interface ConversationEvalCase {
   environmentPathPrepend: string[];
 }
 
-interface AppServerRunEvidence {
+export interface AppServerRunEvidence {
   variant: 'with_skill' | 'without_skill';
   complete: boolean;
   mechanicalPassed: boolean;
@@ -882,7 +882,13 @@ async function readConversationCases(
     'conversation cases',
     path.dirname(casesPath),
   );
-  return evals.map((value, index) => {
+  return evals.map(normalizeConversationCase);
+}
+
+function normalizeConversationCase(
+  value: Record<string, unknown>,
+  index: number,
+): ConversationEvalCase {
     const review = isRecord(value.review) ? value.review : {};
     if (
       typeof value.id !== 'string' ||
@@ -929,7 +935,22 @@ async function readConversationCases(
         ? value.environment.pathPrepend as string[]
         : [],
     };
-  });
+}
+
+export function normalizeConversationProviderCase(options: {
+  value: Record<string, unknown>;
+  expectedSkill: string;
+  fixtureRoot: string;
+  suitePathPrepend?: string[];
+}): ConversationEvalCase {
+  const [value] = validatePluginEvalConversationCaseDocument(
+    { skill_name: options.expectedSkill, evals: [options.value] },
+    options.expectedSkill,
+    'conversation provider case',
+    options.fixtureRoot,
+    options.suitePathPrepend,
+  );
+  return normalizeConversationCase(value!, 0);
 }
 
 async function assertFixtureTreeSafe(root: string, target: string, label: string): Promise<void> {
@@ -1057,6 +1078,7 @@ async function runConversationOnce(options: {
   forbiddenHostRoots: string[];
   workRoot?: string;
   environmentFixtures: Array<{ fixtureRoot: string; relativePath: string }>;
+  manageTimeout?: boolean;
 }): Promise<AppServerRunEvidence> {
   assertCodexEvalCanStartWork();
   const temporaryRoot = await createEvalTemporaryRoot(
@@ -1137,9 +1159,11 @@ async function runConversationOnce(options: {
     });
     void turnDone.catch(() => undefined);
     removeFailureHandler = session.onFailure((error) => turnReject?.(error));
-    turnTimer = setTimeout(() => {
-      turnReject?.(new Error(`conversation turn timed out after ${options.timeoutMs}ms.`));
-    }, options.timeoutMs);
+    if (options.manageTimeout !== false) {
+      turnTimer = setTimeout(() => {
+        turnReject?.(new Error(`conversation turn timed out after ${options.timeoutMs}ms.`));
+      }, options.timeoutMs);
+    }
 
     removeHandler = session.onFrame(async (frame) => {
       const method = typeof frame.method === 'string' ? frame.method : '';
@@ -1350,6 +1374,48 @@ async function runConversationOnce(options: {
       await temporaryRoot.cleanup();
     }
   }
+}
+
+export async function runCodexConversationProviderCase(options: {
+  evalCase: ConversationEvalCase;
+  sourceProjectRoot: string;
+  skillMode: 'with-skill' | 'without-skill' | 'previous-version';
+  skillName: string;
+  skillNames: string[];
+  codexBin: string;
+  model?: string;
+  codexRuntime: CodexEvalRuntimeConfig;
+  timeoutMs: number;
+  sourceEnv?: NodeJS.ProcessEnv;
+  isolation: PluginEvalIsolation;
+  forbiddenHostRoots?: string[];
+  environmentFixtures: Array<{ fixtureRoot: string; relativePath: string }>;
+}): Promise<AppServerRunEvidence> {
+  return runConversationOnce({
+    sourceProjectRoot: options.sourceProjectRoot,
+    evalCase: options.evalCase,
+    variant: options.skillMode === 'without-skill' ? 'without_skill' : 'with_skill',
+    skillName: options.skillName,
+    skillNames: options.skillNames,
+    codexBin: options.codexBin,
+    ...(options.model ? { model: options.model } : {}),
+    codexRuntime: options.codexRuntime,
+    timeoutMs: options.timeoutMs,
+    sourceEnv: options.sourceEnv ?? process.env,
+    isolation: options.isolation,
+    processManagement: {
+      mode: 'unmanaged-confirmed',
+      inspectionAvailable: false,
+      userAcknowledged: true,
+      descendantCleanupGuaranteed: false,
+      limitation: 'The AwSkillEval engine owns the provider process tree and timeout.',
+    },
+    forbiddenHostRoots: await canonicalForbiddenHostRoots(
+      [options.sourceProjectRoot, ...(options.forbiddenHostRoots ?? [])],
+    ),
+    environmentFixtures: options.environmentFixtures,
+    manageTimeout: false,
+  });
 }
 
 export async function runCodexEvalIsolationProbe(options: {

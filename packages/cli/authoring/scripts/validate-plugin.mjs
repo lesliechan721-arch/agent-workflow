@@ -195,6 +195,7 @@ const PLUGIN_EVAL_COMMAND_SUPPORTS = new Set([
 ]);
 let yamlParser = null;
 let pluginVersionCheckResult = null;
+let skillEvalManifestTools = null;
 
 function error(msg) {
   errors.push(msg);
@@ -1923,7 +1924,18 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
   }
 }
 
-function validatePluginEvalManifest(pluginDir, pluginManifest) {
+async function loadSkillEvalManifestTools() {
+  if (skillEvalManifestTools) return skillEvalManifestTools;
+  const modulePath = path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'eval', 'manifest.js');
+  try {
+    skillEvalManifestTools = await import(pathToFileURL(modulePath).href);
+    return skillEvalManifestTools;
+  } catch {
+    return null;
+  }
+}
+
+async function validatePluginEvalManifest(pluginDir, pluginManifest) {
   const legacyRoot = path.join(pluginDir, 'evals');
   if (fs.existsSync(legacyRoot)) {
     error(
@@ -1934,21 +1946,31 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
     .sort()
     .map((skill) => ({ skill, root: path.join(pluginDir, 'skills', skill) }));
   const seenSkills = new Set();
+  let manifestTools = null;
   for (const owner of skillRoots) {
     const evalDir = path.join(owner.root, 'evals');
     const manifestPath = path.join(evalDir, 'manifest.json');
     if (!fs.existsSync(manifestPath)) continue;
+    const manifestField = path.relative(pluginDir, manifestPath).split(path.sep).join('/');
     if (seenSkills.has(owner.skill)) {
       error(`Skill ${JSON.stringify(owner.skill)} has more than one evals/manifest.json owner`);
       continue;
     }
     seenSkills.add(owner.skill);
-    validateOnePluginEvalManifest(
-      pluginDir,
-      pluginManifest,
-      evalDir,
-      owner.skill,
-    );
+    manifestTools ??= await loadSkillEvalManifestTools();
+    if (typeof manifestTools?.validateAwSkillEvalManifest !== 'function') {
+      error('Canonical AwSkillEvalManifest v1 validator is unavailable; run the current built aw CLI.');
+      continue;
+    }
+    const validation = await manifestTools.validateAwSkillEvalManifest({
+      plugin: {
+        rootDir: pluginDir,
+        manifestPath: path.join(pluginDir, '.agents-plugin', 'plugin.json'),
+        manifest: pluginManifest,
+      },
+      skill: owner.skill,
+    });
+    for (const message of validation.errors) error(`${manifestField}: ${message}`);
   }
 }
 
@@ -4838,7 +4860,7 @@ async function validatePluginDir(pluginDir, options) {
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
   validateCanonicalSkillLayout(pluginDir, manifest);
-  validatePluginEvalManifest(pluginDir, manifest);
+  await validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
   const runtimeImports = await resolveAuthorRuntimeImports({
     pluginDir,

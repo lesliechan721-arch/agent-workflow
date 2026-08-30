@@ -97,11 +97,32 @@ async function createWorkspace(): Promise<{
   }
   await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })
   await fs.ensureDir(evalRoot)
-  await fs.writeJson(path.join(evalRoot, 'cases.json'), {
+  await fs.writeJson(path.join(evalRoot, 'trigger-cases.json'), {
+    schemaVersion: 1,
+    skill: 'owner-skill',
     cases: [
-      { id: 'train-case', split: 'train', query: 'Train query.' },
-      { id: 'validation-case', split: 'validation', query: 'Validation query.' },
+      { id: 'train_case', split: 'train', query: 'Train query.', should_load_skill: true },
+      {
+        id: 'validation_case',
+        split: 'validation',
+        query: 'Validation query.',
+        should_load_skill: false,
+        oracle: { note: 'author-only metadata is removed by normalization' },
+      },
     ],
+  }, { spaces: 2 })
+  await fs.writeJson(path.join(evalRoot, 'conversation-cases.json'), {
+    skill_name: 'owner-skill',
+    evals: [{
+      id: 'conversation_case',
+      prompt: 'Conversation query.',
+      scripted_replies: [],
+      expected_output: 'Return the result.',
+      review: { checks: ['Returns the result.'], workspace_unchanged: true },
+    }],
+  }, { spaces: 2 })
+  await fs.writeJson(path.join(evalRoot, 'provider-cases.json'), {
+    evals: [{ id: 'provider_case', prompt: 'Provider query.' }],
   }, { spaces: 2 })
   await fs.writeJson(path.join(evalRoot, 'document.json'), { kind: 'answer', answer: 42 }, { spaces: 2 })
   await fs.writeJson(path.join(evalRoot, 'document.schema.json'), {
@@ -127,6 +148,16 @@ async function createWorkspace(): Promise<{
   }, { spaces: 2 })
   await fs.writeFile(path.join(evalRoot, 'fixture.mjs'), 'export default async () => undefined\n')
   await fs.outputFile(path.join(evalRoot, 'fixtures', 'bin', 'fixture-tool'), '#!/bin/sh\nexit 0\n')
+  await fs.writeFile(path.join(evalRoot, 'provider-helper.mjs'), 'export const helper = true\n')
+  await fs.writeFile(path.join(evalRoot, 'provider.mjs'), [
+    "import { helper } from './provider-helper.mjs'",
+    'export async function runEvalProvider(input) {',
+    '  return {',
+    "    schemaVersion: 1, provider: { id: 'fixture-provider', version: 'manifest-v1' },",
+    '    usage: null, grading: null, artifacts: helper && input.caseId ? [] : [],',
+    '  }',
+    '}',
+  ].join('\n'))
   await writeManifest(evalRoot)
   return { root, ownerRoot, skillRoot, evalRoot, env }
 }
@@ -173,7 +204,7 @@ async function writeManifest(
         id: 'trigger-suite',
         kind: 'trigger',
         skills: ['owner-skill', 'participant-skill'],
-        cases: 'cases.json',
+        cases: 'trigger-cases.json',
         profiles: ['project-default', 'owner-only', 'user-default'],
         defaultRuns: 2,
         releaseSplits: ['validation'],
@@ -188,7 +219,7 @@ async function writeManifest(
         id: 'conversation-suite',
         kind: 'conversation',
         skills: ['owner-skill', 'participant-skill'],
-        cases: 'cases.json',
+        cases: 'conversation-cases.json',
         profiles: ['project-default'],
         defaultRuns: 1,
         releaseSplits: [],
@@ -201,7 +232,7 @@ async function writeManifest(
         id: 'provider-suite',
         kind: 'provider',
         skills: ['owner-skill', 'participant-skill'],
-        cases: 'cases.json',
+        cases: 'provider-cases.json',
         profiles: ['project-default'],
         defaultRuns: 1,
         releaseSplits: [],
@@ -209,8 +240,9 @@ async function writeManifest(
         perRunTimeoutMs: 10_000,
         provider: {
           id: 'fixture-provider',
-          command: ['fixture-provider', 'run'],
-          describeCommand: ['fixture-provider', 'describe'],
+          entry: 'provider.mjs',
+          assets: ['provider-helper.mjs'],
+          credentialEnvironment: ['FIXTURE_PROVIDER_TOKEN'],
           capabilities: {
             triggerDiscovery: false,
             conversation: false,
@@ -250,6 +282,76 @@ afterEach(async () => {
 })
 
 describe('aw skill eval commands', () => {
+  it('validates canonical v1 Eval manifests through the public plugin validator', async () => {
+    const fixture = await createWorkspace()
+    const skillPath = path.join(fixture.skillRoot, 'SKILL.md')
+    await fs.writeFile(
+      skillPath,
+      (await fs.readFile(skillPath, 'utf8')).replaceAll('TODO', 'Fixture instruction'),
+    )
+    const valid = capture()
+    expect(await runCli([
+      'plugin', 'validate', fixture.ownerRoot,
+      '--workspace-root', fixture.root,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: valid.io }), valid.stdout()).toBe(0)
+    expect(JSON.parse(valid.stdout())).toMatchObject({ ok: true, errors: [] })
+
+    const triggerCasesPath = path.join(fixture.evalRoot, 'trigger-cases.json')
+    const triggerCases = await fs.readJson(triggerCasesPath)
+    triggerCases.cases[0].should_load_skill = 'true'
+    await fs.writeJson(triggerCasesPath, triggerCases, { spaces: 2 })
+    const invalidTrigger = capture()
+    expect(await runCli([
+      'plugin', 'validate', fixture.ownerRoot,
+      '--workspace-root', fixture.root,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: invalidTrigger.io })).toBe(1)
+    expect(JSON.parse(invalidTrigger.stdout())).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringContaining('should_load_skill must be boolean'),
+      ]),
+    })
+    triggerCases.cases[0].should_load_skill = true
+    await fs.writeJson(triggerCasesPath, triggerCases, { spaces: 2 })
+
+    const conversationCasesPath = path.join(fixture.evalRoot, 'conversation-cases.json')
+    const conversationCases = await fs.readJson(conversationCasesPath)
+    conversationCases.evals[0].scripted_replies = 'invalid'
+    await fs.writeJson(conversationCasesPath, conversationCases, { spaces: 2 })
+    const invalidConversation = capture()
+    expect(await runCli([
+      'plugin', 'validate', fixture.ownerRoot,
+      '--workspace-root', fixture.root,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: invalidConversation.io })).toBe(1)
+    expect(JSON.parse(invalidConversation.stdout())).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringContaining('scripted_replies must be an array'),
+      ]),
+    })
+    conversationCases.evals[0].scripted_replies = []
+    await fs.writeJson(conversationCasesPath, conversationCases, { spaces: 2 })
+
+    const manifestPath = path.join(fixture.evalRoot, 'manifest.json')
+    const manifest = await fs.readJson(manifestPath)
+    await fs.writeJson(manifestPath, { ...manifest, schemaVersion: 2 }, { spaces: 2 })
+    const legacy = capture()
+    expect(await runCli([
+      'plugin', 'validate', fixture.ownerRoot,
+      '--workspace-root', fixture.root,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: legacy.io })).toBe(1)
+    expect(JSON.parse(legacy.stdout())).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringContaining('eval manifest schemaVersion must be 1'),
+      ]),
+    })
+  }, 20_000)
+
   it('prepares one input-complete Plan from real profile materialization and comparisons', async () => {
     const fixture = await createWorkspace()
     const output = path.join(fixture.root, 'prepared-plan')
@@ -261,7 +363,7 @@ describe('aw skill eval commands', () => {
       '--profile', 'project-default',
       '--workspace-root', fixture.root,
       '--split', 'validation',
-      '--case', 'validation-case',
+      '--case', 'validation_case',
       '--runs', '3',
       '--baseline', 'without-skill',
       '--previous-version', fixture.skillRoot,
@@ -304,9 +406,12 @@ describe('aw skill eval commands', () => {
       ],
       outputRoot: 'output',
     })
-    expect(await fs.readJson(path.join(output, 'cases', 'selected-cases.json'))).toEqual([
-      expect.objectContaining({ id: 'validation-case' }),
-    ])
+    expect(await fs.readJson(path.join(output, 'cases', 'selected-cases.json'))).toEqual([{
+      id: 'validation_case',
+      split: 'validation',
+      query: 'Validation query.',
+      should_load_skill: false,
+    }])
     await expect(fs.pathExists(path.join(output, 'targets', 'current', 'SKILL.md'))).resolves.toBe(true)
     await expect(fs.pathExists(path.join(output, 'targets', 'previous', 'previous-version', 'SKILL.md'))).resolves.toBe(true)
     await expect(fs.pathExists(path.join(
@@ -340,7 +445,7 @@ describe('aw skill eval commands', () => {
       'skill', 'eval', 'prepare', 'eval-owner',
       '--skill', 'owner-skill', '--suite', 'trigger-suite', '--profile', 'project-default',
       '--workspace-root', fixture.root,
-      '--split', 'validation', '--case', 'validation-case', '--runs', '3',
+      '--split', 'validation', '--case', 'validation_case', '--runs', '3',
       '--baseline', 'without-skill', '--previous-version', fixture.skillRoot,
       '--output', repeatedOutput, '--json',
     ], { cwd: fixture.root, env: fixture.env, io: repeated.io }), repeated.stdout()).toBe(0)
@@ -376,6 +481,7 @@ describe('aw skill eval commands', () => {
 
     const providerOutput = path.join(fixture.root, 'provider-plan')
     const provider = capture()
+    fixture.env.FIXTURE_PROVIDER_TOKEN = 'fixture-provider-secret-must-not-be-planned'
     expect(await runCli([
       'skill', 'eval', 'prepare', 'eval-owner',
       '--skill', 'owner-skill', '--suite', 'provider-suite', '--profile', 'project-default',
@@ -384,12 +490,35 @@ describe('aw skill eval commands', () => {
     await expect(fs.readJson(path.join(providerOutput, 'plan.json'))).resolves.toMatchObject({
       provider: {
         id: 'fixture-provider',
-        command: ['fixture-provider', 'run'],
-        describeCommand: ['fixture-provider', 'describe'],
+        command: ['aw', 'skill', 'eval', 'provider', 'custom'],
+        describeCommand: [
+          'aw', 'skill', 'eval', 'provider', 'custom', '--describe', '--capabilities', expect.any(String),
+        ],
+        inheritEnvironment: false,
+        environmentAllowlist: ['FIXTURE_PROVIDER_TOKEN'],
       },
     })
     await expect(fs.readJson(path.join(providerOutput, 'runtime', 'eval-suite', 'suite.json')))
-      .resolves.toMatchObject({ kind: 'provider', cases: 'AGENT_EVAL_CASE_PATH' })
+      .resolves.toMatchObject({
+        kind: 'provider',
+        cases: 'AGENT_EVAL_CASE_PATH',
+        provider: {
+          id: 'fixture-provider',
+          entry: 'eval-root/provider.mjs',
+          assets: ['eval-root/provider-helper.mjs'],
+        },
+      })
+    await expect(fs.pathExists(path.join(
+      providerOutput, 'runtime', 'eval-suite', 'eval-root', 'provider.mjs',
+    ))).resolves.toBe(true)
+    await expect(fs.pathExists(path.join(
+      providerOutput, 'runtime', 'eval-suite', 'eval-root', 'provider-helper.mjs',
+    ))).resolves.toBe(true)
+    expect(provider.stdout()).not.toContain('fixture-provider-secret-must-not-be-planned')
+    expect(JSON.stringify(await fs.readJson(path.join(providerOutput, 'plan.json'))))
+      .not.toContain('fixture-provider-secret-must-not-be-planned')
+    expect(JSON.stringify(await fs.readJson(path.join(providerOutput, 'preparation.json'))))
+      .not.toContain('fixture-provider-secret-must-not-be-planned')
 
     const dependencyOutput = path.join(fixture.root, 'dependency-plan')
     const dependency = capture()
