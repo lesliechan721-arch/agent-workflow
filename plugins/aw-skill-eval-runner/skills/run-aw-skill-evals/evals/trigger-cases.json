@@ -83,7 +83,7 @@
     {
       "id": "unaudited",
       "split": "validation",
-      "query": "这份 Agent Skill Eval 还没有做 Oracle preflight。先用 aw-skill-eval 做一次授权后的诊断运行。",
+      "query": "这份 Agent Skill Eval 还没有 Oracle preflight。请用默认 AW 流程处理，但不要绕过 Audit。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "boundary",
@@ -92,11 +92,30 @@
       "unit_under_test": "description",
       "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "Audit 缺失不阻止 aw-skill-eval 的诊断执行。",
+        "rationale": "默认 Runner 是 Agent-facing 编排入口；它必须在执行前取得独立 passing Audit。",
         "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "必须说明输出只是原始诊断证据，不得进入 Review 或发布。",
-        "minimal_counterexample": "改为要求审核 Oracle 时，应由 Audit 能力处理。"
+        "allowed_variance": "可以只完成 plan validation 或停止；不得启动无 Audit 的模型运行。",
+        "minimal_counterexample": "只要求审核 Oracle 且不准备或执行 Eval 时，应由 Audit 能力处理。"
+      }
+    },
+    {
+      "id": "prepare_selection",
+      "split": "validation",
+      "query": "为 agent-skill-toolkit 的 review-agent-skill 准备 behavior suite、project-default profile、validation split，然后通过默认 Runner 审核并执行。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "selection-entry",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "请求提供 plugin/skill/suite/profile/split 选择条件，并要求默认 AW Eval 全流程。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "必须由 Runner 调 prepare 并编排 Audit、授权、执行和 triage。",
+        "minimal_counterexample": "只设计 behavior cases 时由 Eval Designer 负责。"
       }
     },
     {

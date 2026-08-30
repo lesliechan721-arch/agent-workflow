@@ -111,10 +111,10 @@ test('AW reviewer production and materialized closures use registered current de
       .sort(),
     [
       '@aw/agent-skill-eval:case-corpus-digest',
+      '@aw/agent-skill-eval:eval-audit-result-schema',
+      '@aw/agent-skill-eval:eval-run-bundle-schema',
       '@aw/agent-skill-eval:eval-run-bundle-validator',
       'agent-skill-toolkit:check-agent-skill',
-      'agent-skill-toolkit:eval-audit-result-schema',
-      'agent-skill-toolkit:eval-run-bundle-schema',
       'agent-skill-toolkit:quality-review-result-schema',
       'agent-skill-toolkit:review-dimensions',
       'agent-skill-toolkit:review-publication-reference',

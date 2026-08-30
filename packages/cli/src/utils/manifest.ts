@@ -17,7 +17,12 @@ export * from '@lesliechan721/aw-plugin-core/manifest';
 export type * from '@lesliechan721/aw-plugin-core/manifest';
 
 export const CLI_RESERVED_IMPORTS = {
-  '@aw/agent-skill-eval': ['case-corpus-digest', 'eval-run-bundle-validator'],
+  '@aw/agent-skill-eval': [
+    'case-corpus-digest',
+    'eval-audit-result-schema',
+    'eval-run-bundle-schema',
+    'eval-run-bundle-validator',
+  ],
 } as const satisfies ReservedImportRegistry;
 
 function withCliReservedImports<T extends { reservedImports?: ReservedImportRegistry }>(

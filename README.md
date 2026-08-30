@@ -224,6 +224,8 @@ aw install aw-catalog-development -p both
 
 当前作者合同固定为 Plugin Manifest v2、Catalog snapshot schema 5 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。`aw catalog context --json` 提供 Workspace 和 publication 默认推断，静态 `aw catalog status --json` 使用 schema v2。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；transport、complete validation 和安装 dependency closure 各自保持独立验证边界。
 
+Skill-local Eval 作者合同使用 Manifest v1，并由 `aw skill eval prepare|check|provider` 提供确定性 Plan adapter 和 provider 入口。`prepare` 与 `check` 不运行模型。当前机器合同是 Plan v4、Bundle v4、Audit v3、provider capabilities v2 和 provider output v1；任何模型执行都必须有覆盖当前 Plan 的 passing Audit，并直接运行 `aw-skill-eval run <plan.json> --audit <audit.json>`。执行中断后重新 prepare、Audit 和 run，不使用 checkpoint ledger。
+
 ### 本仓库维护与官方发版
 
 本官方仓库本身也是普通 Catalog Workspace，使用与第三方相同的 marker、metadata、inventory、Core validator、preflight、publisher 和 attempt 合同。以下 `pnpm` 命令只面向本 monorepo 维护者，用于编排 CLI/Core/npm/Product Release；它们不是第二套 Catalog contract：

@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 
-import type { PluginEvalIsolation } from './plugin-eval-contract.js';
+import type { AwSkillEvalIsolation } from '../src/eval/manifest.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,7 +60,7 @@ export interface CodexEvalRpcIsolationEvidence {
 }
 
 export interface CodexEvalIsolationEvidence {
-  mode: PluginEvalIsolation;
+  mode: AwSkillEvalIsolation;
   isolated_home: true;
   source_user_config_filtered: true;
   credential_stores: {
@@ -179,13 +179,13 @@ export async function assertCodexEvalKeychainWrapperAbsent(options: {
     throw new Error(
       'Cannot start a Codex model eval from a macOS wrapper that injects ' +
       'accountsKeychainExport into the user keychain search list. Run ' +
-      'pnpm plugin:eval from an ordinary Terminal session.',
+      'aw-skill-eval run with its required --audit input from an ordinary Terminal session.',
     );
   }
 }
 
 export function codexEvalConfigOverrides(
-  isolation: PluginEvalIsolation,
+  isolation: AwSkillEvalIsolation,
 ): string[] {
   return [
     ...CODEX_EVAL_CREDENTIAL_OVERRIDES,
@@ -194,7 +194,7 @@ export function codexEvalConfigOverrides(
 }
 
 export function codexEvalIsolationEvidence(options: {
-  mode: PluginEvalIsolation;
+  mode: AwSkillEvalIsolation;
   host?: CodexEvalHostIsolationEvidence | null;
   runtimeProbe?: CodexEvalRpcIsolationEvidence | null;
 }): CodexEvalIsolationEvidence {

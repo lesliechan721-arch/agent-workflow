@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  buildCodexArgs,
   createEvalWorkspace,
   readEvalResource,
 } from '../skills/codex-subagent-guide/evals/eval-harness.mjs';
@@ -164,7 +163,7 @@ async function testFixtureVariants() {
   }
 }
 
-async function writeFinalSubject(root, { omitRole, duplicateRole } = {}) {
+async function writeRuntimeSnapshot(root, { omitRole, duplicateRole } = {}) {
   const skillRoot = path.join(root, '.agents', 'skills', 'codex-subagent-guide');
   const roleRoot = path.join(root, '.codex', 'agents');
   await Promise.all([
@@ -197,58 +196,58 @@ async function writeFinalSubject(root, { omitRole, duplicateRole } = {}) {
   }
 }
 
-async function testSpecializedWorkspaceUsesFinalArtifact() {
-  const subject = await mkdtemp(path.join(os.tmpdir(), 'subagent-final-subject-'));
-  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+async function testCustomProviderWorkspaceUsesRuntimeSnapshot() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'subagent-provider-workspace-'));
+  const authorSource = path.join(root, 'author-source');
+  const runtimeSnapshot = path.join(root, 'runtime-snapshot');
+  const contextPath = path.join(root, 'author-context.json');
+  const previousContext = process.env.AW_PLUGIN_CONTEXT;
   try {
-    await writeFinalSubject(subject);
-    process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = subject;
-    const current = await createEvalWorkspace({ withSkill: true, fixture: 'project_authorization' });
-    const baseline = await createEvalWorkspace({ withSkill: false, fixture: 'default' });
+    await mkdir(authorSource, { recursive: true });
+    await writeFile(path.join(authorSource, 'origin.txt'), 'author source\n', 'utf8');
+    await writeRuntimeSnapshot(runtimeSnapshot);
+    await writeFile(path.join(runtimeSnapshot, 'origin.txt'), 'runtime snapshot\n', 'utf8');
+    await writeFile(contextPath, `${JSON.stringify({ sourceRoot: authorSource })}\n`, 'utf8');
+    process.env.AW_PLUGIN_CONTEXT = contextPath;
+
+    const customProviderInput = Object.freeze({ workspacePath: runtimeSnapshot });
+    const current = await createEvalWorkspace({
+      sourceRoot: customProviderInput.workspacePath,
+      withSkill: true,
+      fixture: 'project_authorization',
+    });
+    const baseline = await createEvalWorkspace({
+      sourceRoot: customProviderInput.workspacePath,
+      withSkill: false,
+      fixture: 'default',
+    });
     try {
       assert.equal(await readFile(current.skillPath, 'utf8'), '# Materialized Guide\n');
+      assert.equal(
+        await readFile(path.join(current.root, 'origin.txt'), 'utf8'),
+        'runtime snapshot\n',
+      );
       assert.deepEqual(
         current.roles.map((role) => role.roleFile.name).sort(),
         [...GUIDE_ROLE_NAMES].sort(),
       );
       await assert.rejects(readFile(baseline.skillPath, 'utf8'), /ENOENT/);
       await assert.rejects(readFile(path.join(current.root, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
-      const args = buildCodexArgs(
-        current,
-        { query: 'delegate', codex_config: {}, omit_roles: ['codex-subagent-simple'] },
-        {
-          profile: 'v2',
-          model: 'gpt-test',
-          modelProvider: 'fixture-provider',
-          sensitiveEnvironmentNames: ['CUSTOM_TOKEN'],
-        },
-      );
-      assert.ok(args.includes('multi_agent'));
-      assert.ok(args.includes('executed_tool_call_metadata'));
-      assert.ok(args.includes('features.multi_agent_v2.hide_spawn_agent_metadata=true'));
-      assert.ok(args.includes('gpt-test'));
-      assert.ok(args.includes('model_provider="fixture-provider"'));
-      assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME","CUSTOM_TOKEN"]'));
-      assert.equal(args.includes('--ignore-user-config'), false);
-      assert.equal(
-        args.some((arg) => arg.includes('agents.codex-subagent-simple.config_file=')),
-        false,
-      );
-      assert.equal(
-        args.some((arg) => arg.includes('agents.codex-subagent-general.config_file=')),
-        true,
-      );
-      assert.equal(args.includes('--ignore-rules'), false);
     } finally {
       await Promise.all([
         rm(current.root, { recursive: true, force: true }),
         rm(baseline.root, { recursive: true, force: true }),
       ]);
     }
+
+    await assert.rejects(
+      createEvalWorkspace(),
+      /custom provider input\.workspacePath is required/,
+    );
   } finally {
-    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
-    await rm(subject, { recursive: true, force: true });
+    if (previousContext === undefined) delete process.env.AW_PLUGIN_CONTEXT;
+    else process.env.AW_PLUGIN_CONTEXT = previousContext;
+    await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -264,38 +263,22 @@ async function testGuideRoleValidation() {
     },
   ];
   for (const entry of cases) {
-    const subject = await mkdtemp(path.join(os.tmpdir(), 'subagent-invalid-subject-'));
-    const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+    const runtimeSnapshot = await mkdtemp(path.join(os.tmpdir(), 'subagent-invalid-snapshot-'));
     try {
-      await writeFinalSubject(subject, entry.options);
-      process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = subject;
-      await assert.rejects(createEvalWorkspace(), entry.expected);
+      await writeRuntimeSnapshot(runtimeSnapshot, entry.options);
+      await assert.rejects(createEvalWorkspace({ sourceRoot: runtimeSnapshot }), entry.expected);
     } finally {
-      if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-      else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
-      await rm(subject, { recursive: true, force: true });
+      await rm(runtimeSnapshot, { recursive: true, force: true });
     }
-  }
-}
-
-async function testMissingFinalArtifactFails() {
-  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-  delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-  try {
-    await assert.rejects(createEvalWorkspace(), /AW_PLUGIN_EVAL_PROJECT_ROOT is required/);
-  } finally {
-    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
   }
 }
 
 async function main() {
   await testEvalCorpus();
   await testFixtureVariants();
-  await testSpecializedWorkspaceUsesFinalArtifact();
+  await testCustomProviderWorkspaceUsesRuntimeSnapshot();
   await testGuideRoleValidation();
-  await testMissingFinalArtifactFails();
-  console.log('codex-subagent-guide trigger assets and specialized harness tests passed');
+  console.log('codex-subagent-guide trigger assets and provider workspace tests passed');
 }
 
 main().catch((error) => {

@@ -87,6 +87,8 @@ async function resolveEvalVirtualExport(
   }
   const sources = {
     'case-corpus-digest': './dist/corpus-digest.js',
+    'eval-audit-result-schema': './dist/schemas/eval-audit-result.schema.json',
+    'eval-run-bundle-schema': './dist/schemas/eval-run-bundle.schema.json',
     'eval-run-bundle-validator': './dist/bundle-validation-runtime.js',
   } as const;
   const source = sources[reference.export as keyof typeof sources];

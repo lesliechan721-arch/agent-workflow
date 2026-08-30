@@ -5,10 +5,10 @@ import fs from 'fs-extra'
 
 import manifestSchema from '../../schemas/aw-skill-eval-manifest.schema.json' with { type: 'json' }
 import {
-  validatePluginEvalConversationCaseDocument,
-  validatePluginEvalTriggerCaseDocument,
-  type PluginEvalTriggerSuite,
-} from '../../scripts/plugin-eval-contract.js'
+  validateAwSkillEvalConversationCaseDocument,
+  validateAwSkillEvalTriggerCaseDocument,
+  type AwSkillEvalTriggerSuiteCaseContract,
+} from '../../scripts/aw-skill-eval-cases.js'
 import type { PluginMeta, Scope } from '../types.js'
 
 export const AW_SKILL_EVAL_MANIFEST_SCHEMA_VERSION = 1 as const
@@ -488,15 +488,15 @@ async function readNormalizedCaseCorpora(
     if (suite.kind === 'check') continue
     const value = await fs.readJson(path.join(evalRoot, suite.cases))
     if (suite.kind === 'trigger') {
-      const normalized = validatePluginEvalTriggerCaseDocument(value, {
+      const normalized = validateAwSkillEvalTriggerCaseDocument(value, {
         ...suite,
         skill: ownerSkill,
-      } as PluginEvalTriggerSuite)
+      } as AwSkillEvalTriggerSuiteCaseContract)
       corpora.set(suite.id, normalized.cases as unknown as EvalCase[])
       continue
     }
     if (suite.kind === 'conversation') {
-      corpora.set(suite.id, validatePluginEvalConversationCaseDocument(
+      corpora.set(suite.id, validateAwSkillEvalConversationCaseDocument(
         value,
         ownerSkill,
         `conversation cases for suite "${suite.id}"`,

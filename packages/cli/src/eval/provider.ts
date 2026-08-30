@@ -23,10 +23,12 @@ import {
 import { cleanCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js'
 import { inspectCodexEvalHostIsolation } from '../../scripts/codex-eval-isolation.js'
 import type {
-  PluginEvalConversationSuite,
-  PluginEvalTriggerSuite,
-} from '../../scripts/plugin-eval-contract.js'
-import { normalizePluginEvalTriggerCase } from '../../scripts/plugin-eval-contract.js'
+  AwSkillEvalConversationSuite,
+} from './manifest.js'
+import {
+  normalizeAwSkillEvalTriggerCase,
+  type AwSkillEvalTriggerSuiteCaseContract,
+} from '../../scripts/aw-skill-eval-cases.js'
 
 export const BUILTIN_EVAL_PROVIDER_VERSION = 'builtin-v1'
 export const CUSTOM_EVAL_PROVIDER_VERSION = 'manifest-v1'
@@ -297,8 +299,8 @@ async function runCodexTriggerProvider(
   env: NodeJS.ProcessEnv,
 ): Promise<EvalProviderOutput> {
   if (suiteRoot.suite.kind !== 'trigger') throw new Error('codex-trigger requires a trigger suite.')
-  const suite = suiteRoot.suite as unknown as PluginEvalTriggerSuite
-  const evalCase = normalizePluginEvalTriggerCase(invocation.caseValue, 0, suite)
+  const suite = suiteRoot.suite as unknown as AwSkillEvalTriggerSuiteCaseContract
+  const evalCase = normalizeAwSkillEvalTriggerCase(invocation.caseValue, 0, suite)
   const subjectRoot = await materializeSubject({ invocation, skillName: suite.skill })
   try {
     const runtime = cleanCodexEvalRuntimeConfig(env, env.AW_SKILL_EVAL_CODEX_MODEL)
@@ -359,7 +361,7 @@ async function runCodexConversationProvider(
   if (suiteRoot.suite.kind !== 'conversation') {
     throw new Error('codex-conversation requires a conversation suite.')
   }
-  const suite = suiteRoot.suite as unknown as PluginEvalConversationSuite
+  const suite = suiteRoot.suite as unknown as AwSkillEvalConversationSuite & { skill: string }
   const subjectRoot = await materializeSubject({ invocation, skillName: suite.skill })
   try {
     const suitePathPrepend = suite.environment?.pathPrepend ?? []

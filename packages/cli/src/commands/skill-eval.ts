@@ -17,10 +17,10 @@ import { Ajv2020, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.
 import fs from 'fs-extra'
 
 import {
-  materializePluginEvalSubjects,
+  materializeAwSkillEvalSubject,
   resolveMaterializedSubjectRoot,
-  type PluginEvalMaterializationManifest,
-} from '../../scripts/plugin-eval-materializer.js'
+  type AwSkillEvalMaterializationProfile,
+} from '../../scripts/aw-skill-eval-materializer.js'
 import type { CatalogWorkspaceResolvedFrom } from './catalog-workspace-resolution.js'
 import {
   assertNoSensitiveProfileConfig,
@@ -231,7 +231,7 @@ async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSe
   }
 }
 
-function materializationManifest(selection: ResolvedSelection): PluginEvalMaterializationManifest {
+function materializationProfile(selection: ResolvedSelection): AwSkillEvalMaterializationProfile {
   const explicitConfig = new Map(selection.profile.plugins.map((plugin) => [plugin.name, plugin.config]))
   const closure = resolvePluginMetaDependencyClosure(
     selection.plugins,
@@ -252,16 +252,7 @@ function materializationManifest(selection: ResolvedSelection): PluginEvalMateri
       }
     }
   }
-  return {
-    plugin: selection.manifest.plugin,
-    skill: selection.manifest.skill,
-    profiles: [{ ...selection.profile, plugins, runModel: true }],
-    suites: [{
-      kind: selection.suite.kind,
-      skills: selection.suite.skills,
-      profiles: [selection.profile.id],
-    }],
-  }
+  return { ...selection.profile, plugins }
 }
 
 async function materializeInputs(options: {
@@ -274,16 +265,16 @@ async function materializeInputs(options: {
   const workRoot = path.join(options.operationRoot, 'work')
   await fs.ensureDir(materializedRoot)
   await fs.ensureDir(workRoot)
-  const [subject] = await materializePluginEvalSubjects({
+  const subject = await materializeAwSkillEvalSubject({
     plugin: options.selection.plugin,
     plugins: options.selection.plugins,
-    manifest: materializationManifest(options.selection),
+    profile: materializationProfile(options.selection),
+    requiredSkills: new Set(options.selection.suite.skills),
+    initializeGitRepository: options.selection.suite.kind === 'conversation',
     outputRoot: materializedRoot,
     workRoot,
     env: options.env,
-    selectedProfiles: new Set([options.selection.profile.id]),
   })
-  if (!subject) throw new Error('Eval profile did not produce a materialized subject.')
   const subjectRoot = resolveMaterializedSubjectRoot(materializedRoot, subject)
   const runtimeTarget = path.join(subjectRoot, '.agents', 'skills', options.selection.manifest.skill)
   await validateSkillDirectory(runtimeTarget, 'codex.skill', {

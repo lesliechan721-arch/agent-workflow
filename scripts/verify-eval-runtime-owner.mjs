@@ -31,10 +31,13 @@ const runnerSkillFiles = new Set([
   'SKILL.md',
   'aw-plugin-requirements.json',
   'agents/openai.yaml',
-  'assets/aw-skill-eval-execution-plan.template.json',
 ])
-const runnerSkillDirectories = new Set(['agents', 'assets'])
-const allowedRunnerCommands = [
+const runnerSkillDirectories = new Set(['agents'])
+const allowedAwCommands = [
+  /^aw skill eval prepare --help$/u,
+  /^aw skill eval prepare <plugin> --skill <skill> --suite <suite> --profile <profile> --output <new-plan-directory> --json$/u,
+]
+const allowedEvalCommands = [
   /^aw-skill-eval capabilities --json$/u,
   /^aw-skill-eval schema print (?:aw-skill-eval-execution-plan|eval-run-bundle|eval-audit-result|eval-provider-capabilities|eval-provider-output)$/u,
   /^aw-skill-eval digest skill <skill-dir>$/u,
@@ -123,10 +126,15 @@ function looksLikeInlineShellCommand(candidate) {
   const normalized = candidate.trim()
   if (normalized === '' || /^[{[]/u.test(normalized)) return false
   if (normalized === 'assets/aw-skill-eval-execution-plan.template.json') return false
+  if (/^(?:aw|aw-skill-eval)\s/u.test(normalized)) return true
+  if (/^(?:bash|bun|deno|node|npm|npx|pnpm|pwsh|sh|zsh)\s/u.test(normalized)) return true
   if (/^(?:\.\/)?(?:assets|providers|schemas|scripts)\/[A-Za-z0-9._/-]+$/u.test(normalized)) {
     return true
   }
-  return /\s/u.test(normalized)
+  if (/^(?:\.\/)?(?:assets|providers|schemas|scripts)\/[A-Za-z0-9._/-]+\s/u.test(normalized)) {
+    return true
+  }
+  return false
 }
 
 function markdownCommandCandidates(markdown) {
@@ -179,17 +187,23 @@ function shellCommandSegments(candidate) {
     .filter(Boolean)
 }
 
-function assertRunnerCommands(skill) {
+export function assertRunnerCommands(skill) {
   for (const candidate of markdownCommandCandidates(skill)) {
     for (const command of shellCommandSegments(candidate)) {
       const executable = command.split(/\s+/u, 1)[0]
+      if (executable === 'aw') {
+        if (!allowedAwCommands.some((pattern) => pattern.test(command))) {
+          fail(`Runner final SKILL.md contains an undocumented aw command: ${command}`)
+        }
+        continue
+      }
       if (executable === 'aw-skill-eval') {
-        if (!allowedRunnerCommands.some((pattern) => pattern.test(command))) {
+        if (!allowedEvalCommands.some((pattern) => pattern.test(command))) {
           fail(`Runner final SKILL.md contains an undocumented aw-skill-eval command: ${command}`)
         }
         continue
       }
-      fail(`Runner final SKILL.md shell commands must directly execute aw-skill-eval: ${candidate}`)
+      fail(`Runner final SKILL.md shell commands must directly execute aw or aw-skill-eval: ${candidate}`)
     }
   }
 }
@@ -216,10 +230,6 @@ export async function assertRunnerSkillBundle(skillRoot) {
     path.join(canonicalRoot, 'agents', 'openai.yaml'),
     'Runner final agents/openai.yaml',
   )
-  await assertRegularFile(
-    path.join(canonicalRoot, 'assets', 'aw-skill-eval-execution-plan.template.json'),
-    'Runner final assets/aw-skill-eval-execution-plan.template.json',
-  )
   const entries = await collectBundleFiles(canonicalRoot)
 
   for (const entry of entries) {
@@ -243,7 +253,6 @@ export function assertCompatibleRuntimeIdentity({
   capabilities,
   packageVersion,
   minimumPackageVersion,
-  bridgeOwner,
 }) {
   const runtime = assertRecord(capabilities, 'aw-skill-eval capabilities')
   if (runtime.schemaVersion !== 2) fail('aw-skill-eval capabilities schemaVersion must be 2.')
@@ -258,10 +267,6 @@ export function assertCompatibleRuntimeIdentity({
   }
   if (compareStrictSemVer(packageVersion, minimumPackageVersion) < 0) {
     fail(`agent-skill-eval ${packageVersion} does not satisfy Runner >= ${minimumPackageVersion}.`)
-  }
-  const bridge = assertRecord(bridgeOwner, 'CLI aw-skill-eval bridge owner')
-  if (bridge.provider !== runtime.provider || bridge.version !== runtime.providerVersion) {
-    fail('CLI aw-skill-eval bridge owner does not match the shared runtime provider and version.')
   }
 }
 
@@ -283,14 +288,6 @@ export async function verifyEvalRuntimeOwner() {
   const evalRoot = path.join(repositoryRoot, 'packages', 'agent-skill-eval')
   const evalBin = path.join(evalRoot, 'dist', 'bin.js')
   const evalApiPath = path.join(evalRoot, 'dist', 'index.js')
-  const bridgePath = path.join(
-    repositoryRoot,
-    'packages',
-    'cli',
-    'dist',
-    'scripts',
-    'aw-skill-eval-engine.js',
-  )
   const closureValidatorPath = path.join(
     repositoryRoot,
     'packages',
@@ -361,13 +358,10 @@ export async function verifyEvalRuntimeOwner() {
     fail('Claude and Codex Runner bundles declare different agent-skill-eval dependency ranges.')
   }
 
-  const bridge = await import(pathToFileURL(bridgePath).href)
-  const bridgeOwner = bridge.getAwSkillEvalExecutionOwner()
   assertCompatibleRuntimeIdentity({
     capabilities,
     packageVersion: packageJson.version,
     minimumPackageVersion: runnerBundles[0].minimumPackageVersion,
-    bridgeOwner,
   })
 
   return {

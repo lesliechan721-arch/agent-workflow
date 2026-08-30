@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -21,6 +21,7 @@ const skillChecker = context
   ? path.join(scriptRoot, 'check-agent-skill.mjs')
   : path.resolve(localRoot, '..', '..', 'agent-skill-toolkit', 'scripts', 'check-agent-skill.mjs');
 const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
+const evalBin = path.resolve(sourceRoot, '..', '..', 'packages', 'agent-skill-eval', 'dist', 'bin.js');
 const dimensions = [
   'specification', 'problem_value', 'triggering', 'scope_composition',
   'instruction_design', 'minimum_control', 'context_disclosure', 'architecture',
@@ -58,6 +59,7 @@ const temp = await mkdtemp(path.join(os.tmpdir(), 'aw-release-eval-chain-'));
 try {
   const publicBin = path.join(temp, 'public-bin');
   const publicAw = path.join(publicBin, 'aw');
+  const publicEval = path.join(publicBin, 'aw-skill-eval');
   await mkdir(publicBin, { recursive: true });
   await writeFile(publicAw, `#!/bin/sh
 if [ "$1" = "plugin" ]; then
@@ -67,6 +69,10 @@ fi
 exec "${process.execPath}" "${skillValidatorBin}" "$@"
 `);
   await chmod(publicAw, 0o755);
+  await writeFile(publicEval, `#!/bin/sh
+exec "${process.execPath}" "${evalBin}" "$@"
+`);
+  await chmod(publicEval, 0o755);
   const plugin = path.join(temp, 'demo-plugin');
   const sourceSkill = path.join(plugin, 'skills', 'demo');
   const finalRoot = path.join(temp, 'final');
@@ -115,16 +121,27 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
   };
   const casesPath = path.join(sourceSkill, 'evals', 'cases.json');
   await writeFile(casesPath, JSON.stringify(evalCases));
+  const evalCasesTwo = {
+    schemaVersion: 1,
+    skill: 'demo',
+    cases: [{
+      id: 'case_2',
+      split: 'validation',
+      query: 'Run the second demo.',
+      should_load_skill: true,
+    }],
+  };
+  const casesPathTwo = path.join(sourceSkill, 'evals', 'cases-two.json');
+  await writeFile(casesPathTwo, JSON.stringify(evalCasesTwo));
   const evalManifestPath = path.join(sourceSkill, 'evals', 'manifest.json');
   const evalManifest = {
-    schemaVersion: 2,
+    schemaVersion: 1,
     plugin: 'demo-plugin',
     skill: 'demo',
     profiles: [{
       id: 'project-default',
       scope: 'project',
       plugins: [{ name: 'demo-plugin', config: {} }],
-      runModel: true,
       requiredForRelease: true,
     }],
     suites: [{
@@ -137,6 +154,19 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
       strictNegativeSplits: [],
       profiles: ['project-default'],
       defaultRuns: 3,
+      releaseSplits: ['validation'],
+      requiredForRelease: true,
+      perRunTimeoutMs: 180000,
+    }, {
+      id: 'release-two',
+      kind: 'trigger',
+      skills: ['demo'],
+      cases: './cases-two.json',
+      observeSpawnAgent: false,
+      isolation: 'strict',
+      strictNegativeSplits: [],
+      profiles: ['project-default'],
+      defaultRuns: 2,
       releaseSplits: ['validation'],
       requiredForRelease: true,
       perRunTimeoutMs: 180000,
@@ -173,34 +203,27 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
     })),
   }));
 
-  const corpusDigest = sha256(stableJson(evalCases));
-  const preflightPath = path.join(temp, 'preflight.json');
-  const preflight = {
-    schemaVersion: 3,
-    producer: 'audit-agent-skill-evals',
-    independentContext: true,
-    auditId: 'preflight-1',
-    mode: 'preflight',
-    targetSkillDigest: check.target.digest,
-    caseCorpusDigest: corpusDigest,
-    runBundleDigest: null,
-    validity: 'pass',
-    optimizationPolicy: 'balanced',
-    cases: [{
-      caseId: 'case_1',
-      releaseRelevant: true,
-      admission: 'pass',
-      oracleConfidence: 'high',
-      findings: [],
-    }],
-    blockedCases: [],
-    releaseEligible: true,
-    failureTriage: [],
-    recommendedAction: 'accepted-risk',
+  const capabilities = {
+    schemaVersion: 2,
+    provider: 'fixture',
+    providerVersion: '1',
+    capabilities: {
+      triggerDiscovery: true,
+      conversation: true,
+      skillPathExecution: true,
+      previousVersionBaseline: true,
+      withoutSkillBaseline: true,
+      cleanContext: true,
+      parallelRuns: false,
+      toolTrace: false,
+      tokenUsage: false,
+      duration: true,
+      sandbox: false,
+      materialization: true,
+    },
+    limitations: ['fixture evidence'],
   };
-  const preflightRaw = JSON.stringify(preflight);
-  await writeFile(preflightPath, preflightRaw);
-
+  const capabilitiesRaw = JSON.stringify(capabilities);
   const stdout = JSON.stringify({
     schemaVersion: 1,
     provider: { id: 'fixture', version: '1' },
@@ -209,62 +232,136 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
     artifacts: [],
   });
   const stderr = '';
-  await mkdir(path.join(temp, 'runs'), { recursive: true });
-  await writeFile(path.join(temp, 'runs', 'stdout.txt'), stdout);
-  await writeFile(path.join(temp, 'runs', 'stderr.txt'), stderr);
-  const bundlePath = path.join(temp, 'bundle.json');
-  const bundle = {
-    schemaVersion: 4,
-    runner: { id: 'aw-skill-eval', version: '0.1.0' },
-    independentContext: false,
-    provider: { id: 'fixture', version: '1' },
-    providerCapabilitiesDigest: `sha256:${'4'.repeat(64)}`,
-    planDigest: `sha256:${'3'.repeat(64)}`,
-    targetSkillDigest: check.target.digest,
-    caseCorpusDigest: corpusDigest,
-    runtimeInputs: [],
-    comparisonPlanned: false,
-    evidenceLevel: 'executed',
-    runs: [1, 2, 3].map((runIndex) => ({
-      caseId: 'case_1',
-      configuration: 'with',
-      comparisonId: null,
-      skillMode: 'with-skill',
-      skillDigest: check.target.digest,
-      runIndex,
-      status: 'completed',
-      exitCode: 0,
-      durationMs: 1,
-      stdoutPath: 'runs/stdout.txt',
-      stdoutDigest: sha256(stdout),
-      stderrPath: 'runs/stderr.txt',
-      stderrDigest: sha256(stderr),
-      usage: null,
-      grading: null,
-      artifacts: [],
-    })),
-    aggregate: {
-      cases: 1,
-      configurations: 1,
-      runs: 3,
-      completed: 3,
-      processFailed: 0,
-      timedOut: 0,
-      comparisons: [],
-    },
-    limitations: ['fixture evidence'],
-  };
-  const bundleRaw = JSON.stringify(bundle);
-  await writeFile(bundlePath, bundleRaw);
+  async function writeChain({ suite, caseId, caseDocument, runs }) {
+    const chainRoot = path.join(temp, `chain-${suite}`);
+    const planPath = path.join(chainRoot, 'plan.json');
+    const preflightPath = path.join(chainRoot, 'preflight.json');
+    const bundlePath = path.join(chainRoot, 'bundle.json');
+    const triagePath = path.join(chainRoot, 'triage.json');
+    const corpusDigest = sha256(stableJson(caseDocument));
+    await mkdir(path.join(chainRoot, 'runs'), { recursive: true });
+    await cp(finalSkill, path.join(chainRoot, 'target'), { recursive: true });
+    await writeFile(path.join(chainRoot, 'cases.json'), JSON.stringify(caseDocument));
+    await writeFile(path.join(chainRoot, 'capabilities.json'), capabilitiesRaw);
+    await writeFile(path.join(chainRoot, 'runs', 'stdout.txt'), stdout);
+    await writeFile(path.join(chainRoot, 'runs', 'stderr.txt'), stderr);
+    const plan = {
+      schemaVersion: 4,
+      planId: `release-eval-${suite}`,
+      target: {
+        name: 'demo',
+        path: 'target',
+        digest: check.target.digest,
+      },
+      cases: { paths: ['cases.json'], corpusDigest },
+      provider: {
+        id: 'fixture',
+        command: ['fixture-provider'],
+        describeCommand: ['fixture-provider', '--describe'],
+        cwd: null,
+        env: {},
+        capabilitiesPath: 'capabilities.json',
+        capabilitiesDigest: sha256(capabilitiesRaw),
+        inheritEnvironment: false,
+      },
+      runtimeInputs: [],
+      configurations: [{ id: 'with', skillMode: 'with-skill', comparisonId: null, env: {} }],
+      runsPerCase: runs,
+      timeoutMs: 180000,
+      outputRoot: 'eval-output',
+      capture: { outputs: true, trace: false, timing: true, usage: false },
+    };
+    const planRaw = JSON.stringify(plan);
+    await writeFile(planPath, planRaw);
+    await writeFile(path.join(chainRoot, 'preparation.json'), JSON.stringify({
+      schemaVersion: 1,
+      command: 'skill:eval:prepare',
+      plugin: 'demo-plugin',
+      skill: 'demo',
+      suite,
+      profile: 'project-default',
+      planPath: 'plan.json',
+      targetDigest: check.target.digest,
+      corpusDigest,
+    }));
+    const preflight = {
+      schemaVersion: 3,
+      producer: 'audit-agent-skill-evals',
+      independentContext: true,
+      auditId: `preflight-${suite}`,
+      mode: 'preflight',
+      targetSkillDigest: check.target.digest,
+      caseCorpusDigest: corpusDigest,
+      runBundleDigest: null,
+      validity: 'pass',
+      optimizationPolicy: 'balanced',
+      cases: [{ caseId, releaseRelevant: true, admission: 'pass', oracleConfidence: 'high', findings: [] }],
+      blockedCases: [],
+      releaseEligible: true,
+      failureTriage: [],
+      recommendedAction: 'accepted-risk',
+    };
+    await writeFile(preflightPath, JSON.stringify(preflight));
+    const bundle = {
+      schemaVersion: 4,
+      runner: { id: 'aw-skill-eval', version: '0.1.0' },
+      independentContext: false,
+      provider: { id: 'fixture', version: '1' },
+      providerCapabilitiesDigest: `sha256:${'4'.repeat(64)}`,
+      planDigest: sha256(planRaw),
+      targetSkillDigest: check.target.digest,
+      caseCorpusDigest: corpusDigest,
+      runtimeInputs: [],
+      comparisonPlanned: false,
+      evidenceLevel: 'executed',
+      runs: Array.from({ length: runs }, (_, index) => ({
+        caseId,
+        configuration: 'with',
+        comparisonId: null,
+        skillMode: 'with-skill',
+        skillDigest: check.target.digest,
+        runIndex: index + 1,
+        status: 'completed',
+        exitCode: 0,
+        durationMs: 1,
+        stdoutPath: 'runs/stdout.txt',
+        stdoutDigest: sha256(stdout),
+        stderrPath: 'runs/stderr.txt',
+        stderrDigest: sha256(stderr),
+        usage: null,
+        grading: null,
+        artifacts: [],
+      })),
+      aggregate: {
+        cases: 1,
+        configurations: 1,
+        runs,
+        completed: runs,
+        processFailed: 0,
+        timedOut: 0,
+        comparisons: [],
+      },
+      limitations: ['fixture evidence'],
+    };
+    const bundleRaw = JSON.stringify(bundle);
+    await writeFile(bundlePath, bundleRaw);
+    const triage = {
+      ...preflight,
+      auditId: `triage-${suite}`,
+      mode: 'result-triage',
+      runBundleDigest: sha256(bundleRaw),
+    };
+    await writeFile(triagePath, JSON.stringify(triage));
+    return { planPath, preflightPath, bundlePath, triagePath, plan, planRaw, preflight, bundle, bundleRaw, triage };
+  }
 
-  const triagePath = path.join(temp, 'triage.json');
-  const triage = {
-    ...preflight,
-    auditId: 'triage-1',
-    mode: 'result-triage',
-    runBundleDigest: sha256(bundleRaw),
-  };
-  await writeFile(triagePath, JSON.stringify(triage));
+  const chainOne = await writeChain({
+    suite: 'release', caseId: 'case_1', caseDocument: evalCases, runs: 3,
+  });
+  const chainTwo = await writeChain({
+    suite: 'release-two', caseId: 'case_2', caseDocument: evalCasesTwo, runs: 2,
+  });
+  const { planPath, preflightPath, bundlePath, triagePath, preflight, bundle, bundleRaw, triage } = chainOne;
 
   const args = [
     plugin,
@@ -272,16 +369,64 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
     '--review', reviewPath,
     '--profile', 'codex-project',
     '--final', `codex-project=${finalRoot}`,
+    '--eval-plan', planPath,
+    '--eval-plan', chainTwo.planPath,
     '--preflight-audit', preflightPath,
+    '--preflight-audit', chainTwo.preflightPath,
     '--run-bundle', bundlePath,
+    '--run-bundle', chainTwo.bundlePath,
     '--triage-audit', triagePath,
+    '--triage-audit', chainTwo.triagePath,
     '--format', 'json',
   ];
   const ready = await runJson(releaseChecker, args, env);
   assert.equal(ready.ready, true, JSON.stringify(ready.reasons));
   assert.equal(ready.schemaVersion, 2);
   assert.equal(ready.targets[0].evalEvidence.evidenceLevel, 'executed');
+  assert.equal(ready.targets[0].evalEvidence.chains.length, 2);
   assert.equal(ready.targets[0].dynamicTargetId, 'demo-codex');
+
+  const missingSecondChain = await runJson(releaseChecker, [
+    plugin,
+    '--workspace-root', temp,
+    '--review', reviewPath,
+    '--profile', 'codex-project',
+    '--final', `codex-project=${finalRoot}`,
+    '--eval-plan', planPath,
+    '--preflight-audit', preflightPath,
+    '--run-bundle', bundlePath,
+    '--triage-audit', triagePath,
+    '--format', 'json',
+  ], env);
+  assert.equal(missingSecondChain.ready, false);
+  assert.ok(missingSecondChain.reasons.some((reason) =>
+    reason.includes('missing complete Eval chain project-default/release-two')));
+
+  const crossBundleCannotSubstitute = await runJson(releaseChecker, [
+    plugin,
+    '--workspace-root', temp,
+    '--review', reviewPath,
+    '--profile', 'codex-project',
+    '--final', `codex-project=${finalRoot}`,
+    '--eval-plan', planPath,
+    '--eval-plan', chainTwo.planPath,
+    '--preflight-audit', preflightPath,
+    '--preflight-audit', chainTwo.preflightPath,
+    '--run-bundle', bundlePath,
+    '--triage-audit', triagePath,
+    '--format', 'json',
+  ], env);
+  assert.equal(crossBundleCannotSubstitute.ready, false);
+  assert.ok(crossBundleCannotSubstitute.reasons.some((reason) =>
+    reason.includes('missing complete Eval chain project-default/release-two')));
+
+  const duplicateChain = await runJson(releaseChecker, [
+    ...args.slice(0, -2),
+    '--eval-plan', planPath,
+    '--format', 'json',
+  ], env);
+  assert.equal(duplicateChain.ready, false);
+  assert.ok(duplicateChain.reasons.some((reason) => reason.includes('duplicate Eval plan for Eval chain')));
 
   const claudeReady = await runJson(releaseChecker, [
     ...args.map((entry) => entry === 'codex-project'
@@ -300,7 +445,7 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
     '--format', 'json',
   ], env);
   assert.equal(missingEvidence.ready, false);
-  assert.ok(missingEvidence.reasons.some((reason) => reason.includes('complete preflight/run/triage')));
+  assert.ok(missingEvidence.reasons.some((reason) => reason.includes('missing complete Eval chain')));
 
   await rm(evalManifestPath);
   const missingManifest = await runJson(releaseChecker, args, env);
@@ -331,7 +476,7 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
   }));
   const staleCorpus = await runJson(releaseChecker, args, env);
   assert.equal(staleCorpus.ready, false);
-  assert.ok(staleCorpus.reasons.some((reason) => reason.includes('current required suite corpus')));
+  assert.ok(staleCorpus.reasons.some((reason) => reason.includes('case corpus does not match')));
   await writeFile(casesPath, JSON.stringify(evalCases));
 
   const partialBundle = {
@@ -399,7 +544,7 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
   }));
   const blocked = await runJson(releaseChecker, args, env);
   assert.equal(blocked.ready, false);
-  assert.ok(blocked.reasons.some((reason) => reason.includes('runBundleDigest')));
+  assert.ok(blocked.reasons.some((reason) => reason.includes('missing complete Eval chain project-default/release')));
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

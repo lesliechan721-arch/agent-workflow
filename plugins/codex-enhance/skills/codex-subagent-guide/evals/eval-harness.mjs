@@ -123,13 +123,12 @@ export async function createEvalWorkspace({
   }
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-guide-eval-'));
   try {
-    const materializedProjectRoot = sourceRoot ?? process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    if (!materializedProjectRoot) {
+    if (!sourceRoot) {
       throw new Error(
-        'AW_PLUGIN_EVAL_PROJECT_ROOT is required; run this suite through pnpm plugin:eval.',
+        'custom provider input.workspacePath is required; use the workspace snapshot from the prepared Eval Plan.',
       );
     }
-    await cp(materializedProjectRoot, root, { recursive: true, force: true });
+    await cp(sourceRoot, root, { recursive: true, force: true });
     const skillRoot = path.join(root, '.agents', 'skills', SKILL_KEY);
     const skillPath = path.join(skillRoot, 'SKILL.md');
     const roles = await readMaterializedRoles(root);

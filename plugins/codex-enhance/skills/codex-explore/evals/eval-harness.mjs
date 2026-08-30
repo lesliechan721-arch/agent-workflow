@@ -62,16 +62,15 @@ export async function readEvalResource(relativePath) {
 export async function createEvalWorkspace({ configValues = {}, sourceRoot } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-eval-'));
   try {
-    const materializedProjectRoot = sourceRoot ?? process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    if (!materializedProjectRoot) {
+    if (!sourceRoot) {
       throw new Error(
-        'AW_PLUGIN_EVAL_PROJECT_ROOT is required; run this suite through pnpm plugin:eval.',
+        'custom provider input.workspacePath is required; use the workspace snapshot from the prepared Eval Plan.',
       );
     }
     if (Object.keys(configValues).length > 0) {
       throw new Error('Specialized eval config must be represented by a materialized profile.');
     }
-    await cp(materializedProjectRoot, root, { recursive: true, force: true });
+    await cp(sourceRoot, root, { recursive: true, force: true });
     await setupTriggerWorkspace({ workspaceRoot: root });
     return {
       root,

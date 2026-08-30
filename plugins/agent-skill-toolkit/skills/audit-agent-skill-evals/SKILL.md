@@ -20,13 +20,15 @@ metadata:
 
 ## Preflight
 
-1. 读取目标 Skill 的当前目标、scope 和规则，并计算 `targetSkillDigest`。
-2. 对关键 case 检查 test layer、unit、preconditions、rationale、rule refs、observable assertion、allowed variance、minimal counterexample、provenance、case role 和 scenario family。
-3. 检查 optimization policy 与 FN/FP 代价；正负数量相等不等于代价相等。
-4. 检查 challenge/diagnostic 是否错误进入发布指标。
-5. 运行 `node scripts/validate-eval-cases.mjs <cases.json> --format json`。
-6. 计算 `caseCorpusDigest`：`node scripts/validate-eval-audit-result.mjs --digest-only --case <cases.json>`。
-7. 按 `assets/eval-audit-result-template.json` 输出 schema v3 `EvalAuditResult`，并设置 `runBundleDigest=null`。只有无 blocked case、待运行 case admission 通过，且 Skill/corpus digest 均匹配时，才能使用 `validity=pass`。
+1. 输入必须是 `plan.json`。先运行 `aw-skill-eval plan validate <plan.json>`；非零退出、`valid=false` 或 calculated digest 不完整时停止，不读取其它目标或 case。
+2. 只读取已验证 plan 的 `target.path`、`cases.paths`，以及 `with-skill`/`previous-version` 配置绑定的 Skill。不得从调用方说明、suite source 或目录扫描扩大 corpus。
+3. 对选中 case 检查 test layer、unit、preconditions、rationale、rule refs、observable assertion、allowed variance、minimal counterexample、provenance、case role 和 scenario family。
+4. 检查 optimization policy 与 FN/FP 代价，以及 challenge/diagnostic 是否错误进入发布指标。正负数量相等不等于代价相等。
+5. 对 plan 中每个 case 文件运行 `node scripts/validate-eval-cases.mjs <cases.json> --format json`。
+6. 按 `assets/eval-audit-result-template.json` 输出 schema v3 `EvalAuditResult`，并设置 `runBundleDigest=null`。每个 distinct current/previous Skill digest 使用一份独立 Audit；每份 Audit 的 cases 必须精确覆盖 plan 选中的 case ID。
+7. 运行 `node scripts/validate-eval-audit-result.mjs <audit.json> --plan <plan.json> --format json`。只有 target/corpus digest 同时等于 plan 声明值和 canonical 重算值、全部选中 case admission 通过且 `blockedCases=[]`，才能使用 `validity=pass`。
+
+没有 validated plan 的 source-only 材料可以做设计审核，但 `validity` 必须是 `unknown` 或 `fail`，不得准许运行。
 
 ## Result triage
 
@@ -34,7 +36,7 @@ metadata:
 
 `skill-defect | oracle-defect | fixture-defect | grader-defect | runtime-or-tool-defect | model-variance | stale-case | insufficient-runs | expected-tradeoff | unknown`
 
-运行 `node scripts/validate-eval-audit-result.mjs <audit.json> --run-bundle <bundle.json> --format json`。输出 schema v3，并把实际 bundle bytes 的 digest 写入 `runBundleDigest`。`evidenceRequirement.satisfied=false` 时，不得输出发布资格或 `candidate-skill-fix`；只输出 `collect-more-data` 或 `runtime-issue`。只有 preflight 与 `EvalRunBundle` 的 Skill/corpus digest 匹配、triage 精确绑定 bundle bytes、场景现实可达、结果可复现并归因为 `skill-defect` 时，才输出 `candidate-skill-fix`。混合低样本结果默认是证据不足。
+先运行 `node scripts/validate-eval-run-bundle.mjs <bundle.json> --format json`，要求 `EvalRunBundle v4` 有效且返回 calculated `bundleDigest`。再运行 `node scripts/validate-eval-audit-result.mjs <audit.json> --run-bundle <bundle.json> --format json`。输出 schema v3，并把实际 bundle bytes 的 digest 写入 `runBundleDigest`。`evidenceRequirement.satisfied=false` 时，不得输出发布资格或 `candidate-skill-fix`；只输出 `collect-more-data` 或 `runtime-issue`。只有 preflight 与 bundle 的 Skill/corpus digest 匹配、triage 精确绑定 `runBundleDigest`、场景现实可达、结果可复现并归因为 `skill-defect` 时，才输出 `candidate-skill-fix`。混合低样本结果默认是证据不足。
 
 详细标准见 `references/eval-audit-standard.md`。
 

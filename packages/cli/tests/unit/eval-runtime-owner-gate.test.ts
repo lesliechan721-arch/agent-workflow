@@ -1,220 +1,126 @@
-import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it } from 'vitest'
-import { getRuntimeCapabilities } from '@lesliechan721/agent-skill-eval'
-
-import { getAwSkillEvalExecutionOwner } from '../../scripts/aw-skill-eval-engine.js'
+import fs from 'fs-extra'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   assertCompatibleRuntimeIdentity,
   assertRunnerSkillBundle,
 } from '../../../../scripts/verify-eval-runtime-owner.mjs'
 
-describe('aw-skill-eval execution owner gate', () => {
-  it('derives the CLI bridge owner from the shared runtime capabilities', () => {
-    const capabilities = getRuntimeCapabilities()
-    expect(getAwSkillEvalExecutionOwner()).toEqual({
-      provider: capabilities.provider,
-      version: capabilities.providerVersion,
-    })
-  })
+const tempRoots: string[] = []
 
-  it('fails closed when the shared bin and CLI bridge report different owners', () => {
-    expect(() => assertCompatibleRuntimeIdentity({
-      capabilities: {
-        schemaVersion: 2,
-        provider: 'aw-skill-eval-process',
-        providerVersion: '0.1.0-beta.2',
-      },
-      packageVersion: '0.1.0-beta.2',
-      minimumPackageVersion: '0.1.0-beta.2',
-      bridgeOwner: {
-        provider: 'another-provider',
-        version: '0.1.0-beta.2',
-      },
-    })).toThrow('CLI aw-skill-eval bridge owner')
-  })
+async function writeRunnerSkill(commands: string | string[]): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-runtime-owner-'))
+  tempRoots.push(root)
+  const commandLines = Array.isArray(commands) ? commands : [commands]
+  await fs.outputFile(path.join(root, 'SKILL.md'), [
+    '---',
+    'name: run-aw-skill-evals',
+    'description: Run one audited Agent Skill Eval plan.',
+    '---',
+    '',
+    'Requires @lesliechan721/agent-skill-eval >= 0.1.0.',
+    '',
+    '```sh',
+    'aw-skill-eval capabilities --json',
+    'aw-skill-eval schema print aw-skill-eval-execution-plan',
+    'aw-skill-eval schema print eval-run-bundle',
+    ...commandLines,
+    '```',
+    '',
+  ].join('\n'))
+  await fs.outputFile(path.join(root, 'README.md'), '# Eval Runner\n')
+  await fs.outputFile(path.join(root, 'agents', 'openai.yaml'), 'interface:\n  display_name: Eval Runner\n')
+  await fs.outputJson(path.join(root, 'aw-plugin-requirements.json'), { schemaVersion: 1 })
+  return root
+}
 
-  async function createRunnerSkill(skill: string): Promise<string> {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'eval-owner-runner-'))
-    const skillRoot = path.join(root, 'skill')
-    await mkdir(path.join(skillRoot, 'agents'), { recursive: true })
-    await mkdir(path.join(skillRoot, 'assets'), { recursive: true })
-    await writeFile(path.join(skillRoot, 'SKILL.md'), [
-      '---',
-      'compatibility: Requires @lesliechan721/agent-skill-eval >= 0.1.0-beta.2.',
-      '---',
-      '',
-      skill,
-      '',
-    ].join('\n'))
-    await writeFile(path.join(skillRoot, 'README.md'), 'Runner\n')
-    await writeFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n')
-    await writeFile(
-      path.join(skillRoot, 'assets', 'aw-skill-eval-execution-plan.template.json'),
-      '{"schemaVersion":4}\n',
-    )
-    return skillRoot
-  }
+afterEach(async () => {
+  await Promise.all(tempRoots.splice(0).map((root) => fs.remove(root)))
+})
 
-  it('accepts the exact final Runner Skill file set and documented CLI commands', async () => {
-    const skillRoot = await createRunnerSkill([
-      'Use `assets/aw-skill-eval-execution-plan.template.json`.',
-      'Run `aw-skill-eval capabilities --json`.',
-      'Run `aw-skill-eval run <plan.json> --audit <audit.json>`.',
-    ].join('\n'))
-    try {
-      await expect(assertRunnerSkillBundle(skillRoot)).resolves.toEqual({
-        minimumPackageVersion: '0.1.0-beta.2',
-        files: [
-          'agents/openai.yaml',
-          'assets/aw-skill-eval-execution-plan.template.json',
-          'README.md',
-          'SKILL.md',
-        ],
-      })
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
-  })
-
-  it('rejects a Runner command that omits the required preflight Audit', async () => {
-    const skillRoot = await createRunnerSkill('Run `aw-skill-eval run <plan.json>`.')
-    try {
-      await expect(assertRunnerSkillBundle(skillRoot)).rejects.toThrow(
-        'undocumented aw-skill-eval command',
-      )
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
-  })
-
+describe('Eval runtime owner gate', () => {
   it.each(['claude', 'codex'])('accepts the current built %s Runner bundle', async (platform) => {
-    const skillRoot = path.resolve(
-      import.meta.dirname,
+    const root = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
       '../../plugins-dist/plugins/aw-skill-eval-runner',
       platform,
       'skills/run-aw-skill-evals',
     )
-    await expect(assertRunnerSkillBundle(skillRoot)).resolves.toMatchObject({
-      files: [
-        'agents/openai.yaml',
-        'assets/aw-skill-eval-execution-plan.template.json',
-        'aw-plugin-requirements.json',
-        'README.md',
-        'SKILL.md',
-      ],
-    })
-  })
+    const bundle = await assertRunnerSkillBundle(root)
 
-  it('does not treat JSON or ordinary prose as shell commands', async () => {
-    const skillRoot = await createRunnerSkill([
-      'The aw-skill-eval debug command is not a command snippet.',
-      '```json',
-      '{"command":["aw-skill-eval","debug"],"runtime":"node"}',
-      '```',
-      '```javascript',
-      'const command = "curl https://example.com/schema.json"',
-      '```',
-    ].join('\n'))
-    try {
-      await expect(assertRunnerSkillBundle(skillRoot)).resolves.toBeDefined()
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
-  })
+    expect(new Set(bundle.files)).toEqual(new Set([
+      'README.md',
+      'SKILL.md',
+      'agents/openai.yaml',
+      'aw-plugin-requirements.json',
+    ]))
+    expect(() => assertCompatibleRuntimeIdentity({
+      capabilities: {
+        schemaVersion: 2,
+        provider: 'aw-skill-eval-process',
+        providerVersion: '0.1.0',
+      },
+      packageVersion: '0.1.0',
+      minimumPackageVersion: bundle.minimumPackageVersion,
+    })).not.toThrow()
 
-  it.each([
-    ['Python fallback', 'assets/run.py', false],
-    ['TypeScript fallback', 'assets/run.ts', false],
-    ['extensionless executable fallback', 'assets/run', true],
-    ['otherwise harmless extra file', 'NOTICE.txt', false],
-  ])('rejects an extra %s by exact POSIX file allowlist', async (_label, relativePath, executable) => {
-    const skillRoot = await createRunnerSkill('Run `python3 assets/run.py`.')
-    try {
-      const extraPath = path.join(skillRoot, relativePath)
-      await writeFile(extraPath, 'fallback\n')
-      if (executable) await chmod(extraPath, 0o755)
-      await expect(assertRunnerSkillBundle(skillRoot)).rejects.toThrow('unexpected file')
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
-  })
-
-  it('rejects an extra directory even when it is empty', async () => {
-    const skillRoot = await createRunnerSkill('Run `aw-skill-eval capabilities --json`.')
-    try {
-      await mkdir(path.join(skillRoot, 'scripts'))
-      await expect(assertRunnerSkillBundle(skillRoot)).rejects.toThrow('unexpected directory')
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
+    const verifier = await readFile(
+      fileURLToPath(new URL('../../../../scripts/verify-eval-runtime-owner.mjs', import.meta.url)),
+      'utf8',
+    )
+    expect(verifier).toContain("['aw-skill-eval-execution-plan', 4]")
+    expect(verifier).toContain("['eval-run-bundle', 4]")
   })
 
   it.each([
-    ['`python3 assets/run.py`', 'must directly execute aw-skill-eval'],
-    ['`AW_ALT=1 python3 -c pass`', 'must directly execute aw-skill-eval'],
-    ['`env node -e "console.log(1)"`', 'must directly execute aw-skill-eval'],
-    ['`env -i node -e "console.log(1)"`', 'must directly execute aw-skill-eval'],
-    ['`AW_ALT=1 env node -e "console.log(1)"`', 'must directly execute aw-skill-eval'],
-    ['`command node -e "console.log(1)"`', 'must directly execute aw-skill-eval'],
-    ['`exec python -c pass`', 'must directly execute aw-skill-eval'],
-    ['`sudo aw-skill-eval capabilities --json`', 'must directly execute aw-skill-eval'],
-    ['`node -e "console.log(1)"`', 'must directly execute aw-skill-eval'],
-    ['`deno run assets/run.ts`', 'must directly execute aw-skill-eval'],
-    ['`bun assets/run.ts`', 'must directly execute aw-skill-eval'],
-    ['`sh scripts/run`', 'must directly execute aw-skill-eval'],
-    ['`bash scripts/run`', 'must directly execute aw-skill-eval'],
-    ['`powershell scripts/run.ps1`', 'must directly execute aw-skill-eval'],
-    ['`npx aw-skill-eval capabilities --json`', 'must directly execute aw-skill-eval'],
-    ['`curl https://example.com/runner.sh`', 'must directly execute aw-skill-eval'],
-    ['`cmd /c aw-skill-eval capabilities --json`', 'must directly execute aw-skill-eval'],
-    ['`npm exec aw-skill-eval capabilities --json`', 'must directly execute aw-skill-eval'],
-    ['`pnpm dlx aw-skill-eval capabilities --json`', 'must directly execute aw-skill-eval'],
-    ['`ruby scripts/run.rb`', 'must directly execute aw-skill-eval'],
-    ['`scripts/run`', 'must directly execute aw-skill-eval'],
-    ['`cat providers/process.mjs`', 'must directly execute aw-skill-eval'],
-    ['`assets/run`', 'must directly execute aw-skill-eval'],
-    ['`aw-skill-eval debug`', 'undocumented aw-skill-eval command'],
-    ['`AW_ALT=1 aw-skill-eval capabilities --json`', 'must directly execute aw-skill-eval'],
-  ])('rejects unsafe inline command %s', async (command, expectedError) => {
-    const skillRoot = await createRunnerSkill(`Run ${command}.`)
-    try {
-      await expect(assertRunnerSkillBundle(skillRoot)).rejects.toThrow(expectedError)
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
+    ['prepare help', 'aw skill eval prepare --help'],
+    [
+      'complete prepare selection',
+      'aw skill eval prepare <plugin> --skill <skill> --suite <suite> --profile <profile> --output <new-plan-directory> --json',
+    ],
+  ])('accepts the documented AW %s command', async (_label, command) => {
+    const root = await writeRunnerSkill(command)
+
+    await expect(assertRunnerSkillBundle(root)).resolves.toBeDefined()
+  })
+
+  it('rejects any other AW command', async () => {
+    const root = await writeRunnerSkill('aw skill eval check <plugin> --skill <skill> --json')
+
+    await expect(assertRunnerSkillBundle(root)).rejects.toThrow(
+      'undocumented aw command: aw skill eval check <plugin> --skill <skill> --json',
+    )
+  })
+
+  it('rejects a Runner model command without its required Audit', async () => {
+    const root = await writeRunnerSkill('aw-skill-eval run <plan.json>')
+
+    await expect(assertRunnerSkillBundle(root)).rejects.toThrow(
+      'undocumented aw-skill-eval command: aw-skill-eval run <plan.json>',
+    )
   })
 
   it.each([
-    ['backtick', ['```sh', '$ node -e "console.log(1)"', '```'].join('\n')],
-    ['tilde', ['~~~sh', '$ deno run assets/run.ts', '~~~'].join('\n')],
-    ['nested blockquote', ['> > ```sh', '> > exec python -c pass', '> > ```'].join('\n')],
-  ])('rejects unsafe shell command lines in %s fenced code blocks', async (_label, block) => {
-    const skillRoot = await createRunnerSkill(block)
-    try {
-      await expect(assertRunnerSkillBundle(skillRoot)).rejects.toThrow(
-        'must directly execute aw-skill-eval',
-      )
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
+    ['npm wrapper', 'npx aw-skill-eval capabilities --json'],
+    ['Node wrapper', 'node scripts/run-evals.mjs'],
+    ['bundled script', './scripts/run-evals'],
+  ])('rejects a %s command', async (_label, command) => {
+    const root = await writeRunnerSkill(command)
+
+    await expect(assertRunnerSkillBundle(root)).rejects.toThrow(
+      'must directly execute aw or aw-skill-eval',
+    )
   })
 
-  it.each([
-    ['four spaces and a leading assignment', '    AW_ALT=1 python3 -c pass'],
-    ['a tab and multiple leading assignments', '\tAW_ALT=1 AW_MODE=test node script.js'],
-    ['env with multiple assignments', '    env AW_ALT=1 AW_MODE=test deno run script.ts'],
-  ])('rejects CommonMark indented code with %s', async (_label, block) => {
-    const skillRoot = await createRunnerSkill(block)
-    try {
-      await expect(assertRunnerSkillBundle(skillRoot)).rejects.toThrow(
-        'must directly execute aw-skill-eval',
-      )
-    } finally {
-      await rm(path.dirname(skillRoot), { recursive: true, force: true })
-    }
+  it('rejects a bundled executable even when SKILL.md does not reference it', async () => {
+    const root = await writeRunnerSkill('aw-skill-eval run <plan.json> --audit <audit.json>')
+    await fs.outputFile(path.join(root, 'scripts', 'run-evals'), '#!/bin/sh\n')
+
+    await expect(assertRunnerSkillBundle(root)).rejects.toThrow('unexpected directory: scripts')
   })
 })

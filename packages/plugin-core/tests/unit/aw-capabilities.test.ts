@@ -50,6 +50,7 @@ describe('AW capability contracts', () => {
       'aw.portable-skills.v1',
       'aw.runtime-imports.v1',
       'aw.skill-validation.v1',
+      'aw.skill-eval.v1',
       'aw.plugin-authoring.v1',
       'aw.catalog-context.v1',
       'aw.catalog-authoring.v1',
@@ -224,6 +225,56 @@ describe('AW capability contracts', () => {
     expect(result.observations.map((entry) => entry.path)).toContain('portable/portable-one/scripts/run.bash')
     expect(result.observations).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ command: 'aw rejected fixture' }),
+    ]))
+  })
+
+  it('maps Markdown and shell skill eval commands without matching the npm executable', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-skill-eval-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'one', 'SKILL.md'), [
+      'aw skill eval prepare --plugin example --json',
+      'aw skill validate ./skill --json',
+      'aw-skill-eval capabilities --json',
+      '',
+    ].join('\n'))
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'run.sh'), [
+      'aw skill eval prepare --plugin example --json',
+      'aw skill validate ./skill --json',
+      'aw-skill-eval run plan.json --audit audit.json',
+      '',
+    ].join('\n'))
+
+    const result = await scanPluginAwCliRequirements({
+      pluginRoot,
+      manifest: manifest({ skills: './skills' }),
+    })
+
+    expect(result.detected).toEqual([
+      'aw.skill-eval.v1',
+      'aw.skill-validation.v1',
+    ])
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'aw-command-detected',
+        command: 'aw skill eval',
+        capability: 'aw.skill-eval.v1',
+        provenance: 'direct-command-line',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected',
+        command: 'aw skill eval',
+        capability: 'aw.skill-eval.v1',
+        path: 'scripts/run.sh',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected',
+        command: 'aw skill validate',
+        capability: 'aw.skill-validation.v1',
+      }),
+    ]))
+    expect(result.observations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'aw-command-unmapped', command: 'aw skill eval' }),
+      expect.objectContaining({ command: 'aw-skill-eval' }),
     ]))
   })
 

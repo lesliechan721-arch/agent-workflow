@@ -321,6 +321,20 @@ describe('catalog runtime projection', () => {
       source: './dist/bundle-validation-runtime.js',
       virtual: true,
     });
+    for (const [exportName, source] of [
+      ['eval-audit-result-schema', './dist/schemas/eval-audit-result.schema.json'],
+      ['eval-run-bundle-schema', './dist/schemas/eval-run-bundle.schema.json'],
+    ] as const) {
+      const schemaResolution = await resolver.resolve({
+        consumer,
+        reference: { plugin: '@aw/agent-skill-eval', export: exportName },
+        purpose: 'skill-runtime-file',
+      });
+      expect(schemaResolution).toMatchObject({ source, virtual: true });
+      await expect(fs.readJson(schemaResolution.sourcePath)).resolves.toMatchObject({
+        properties: { schemaVersion: { const: expect.any(Number) } },
+      });
+    }
     await expect(resolver.resolve({
       consumer,
       reference: { plugin: '@aw/agent-skill-eval', export: 'unknown' },

@@ -57,7 +57,7 @@ Quality Review 只评估设计、复杂度和 findings，不判断发布资格�
 
 只有静态证据不足以完成用户要求的判断、新运行证据会实质改变结论、用户允许成本、兼容 Runner 可用且 Skill/corpus 已固定时，才进入本分支。
 
-启动独立上下文子代理，使用 `audit-agent-skill-evals` 的 `preflight` 模式审核。Audit 未通过时停止 Eval 分支，静态 Review 可以继续。通过后，使用支持当前 Runner-specific plan、并输出 `EvalRunBundle` 的 Runner；运行结果经过 `result-triage` 后才能影响 finding。
+直接调用兼容 Runner，传入已固定的 Skill/corpus 或已有 plan。Runner 负责 prepare、全新上下文 preflight、成本与副作用授权、带 Audit 的执行、Bundle v4 validation 和全新上下文 result triage。任一 Audit 未通过时停止 Eval 分支；这不阻止静态 Review，也不把 Review 变成 Eval gate。只有验证后的 result-triage 证据才能影响 finding。
 
 ## Finding 纪律
 

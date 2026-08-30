@@ -44,7 +44,6 @@ async function firstReadable(candidates) {
 
 async function schemaErrors(bundlePath) {
   const schemaPath = await firstReadable([
-    path.join(scriptRoot, '..', 'schemas', 'eval-run-bundle.schema.json'),
     path.join(scriptRoot, '..', 'assets', 'eval-run-bundle.schema.json'),
   ]);
   try {

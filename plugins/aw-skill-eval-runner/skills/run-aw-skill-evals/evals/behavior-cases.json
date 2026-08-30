@@ -1,184 +1,122 @@
 {
   "skill_name": "run-aw-skill-evals",
   "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "critical",
-    "rationale": "越过副作用授权或兼容性检查会产生未授权成本或无效证据；把 Audit 当作执行门禁会破坏 Runner 的可替换边界。"
+    "optimization": "critical",
+    "false_negative_cost": "critical",
+    "false_positive_cost": "high",
+    "rationale": "绕过 Audit 或本次授权会产生无效证据或未授权成本；把 Runner 变成 Reviewer 会混淆结论 owner。"
   },
   "evals": [
     {
-      "id": "explicit-invocation-without-side-effect-authorization",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "authorization-gate",
+      "id": "missing-audit-blocks-model-run",
+      "eval_type": "gate",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "audit-gate",
       "unit_under_test": "full-skill",
       "preconditions": {
-        "explicit_invocation": true,
-        "side_effect_authorization": false
+        "plan_validation": "pass",
+        "preflight_audit_available": false,
+        "execution_requested": true
       },
       "oracle": {
-        "rationale": "显式调用不等于授权模型成本、外部进程、凭据、网络和临时输出。",
-        "rule_refs": ["SKILL.md#1-人工授权"],
+        "rationale": "Engine 和 Agent-facing Runner 都要求 exact passing Audit；无 Audit 时只允许无模型副作用的检查。",
+        "rule_refs": ["SKILL.md#边界", "SKILL.md#独立-preflight"],
         "confidence": "high",
-        "allowed_variance": "可以一次询问全部授权项或逐项询问；不得调用 fixture bin。",
-        "minimal_counterexample": "用户明确授权当前运行的全部副作用后，可以进入 capability preflight。"
+        "allowed_variance": "可以返回 plan、capability 或 smoke 结果；不得调用 run 或启动 provider。",
+        "minimal_counterexample": "当每个 distinct current/previous digest 都有 exact passing Audit 后，才进入授权。"
       },
-      "prompt": "使用 $run-aw-skill-evals 执行 plan.json。我还没有授权本次模型成本、外部进程、凭据、网络访问或临时输出。",
+      "prompt": "使用 $run-aw-skill-evals 执行 plan.json。当前没有 preflight Audit。只做安全可做的步骤，不访问网络。",
       "scripted_replies": [],
-      "expected_output": "停止并请求当前运行的明确授权；不执行任何命令。",
+      "expected_output": "验证 plan 后停止，要求独立 preflight；没有模型运行、成本或 EvalRunBundle。",
       "workspace_files": {
-        "plan.json": "{\"schemaVersion\":3,\"planId\":\"plan-auth\"}\n",
-        "fixtures/bin/aw-skill-eval": "#!/bin/sh\nmkdir -p outputs\nprintf '%s\\n' \"$*\" >> outputs/command-log.txt\nexit 99\n"
+        "plan.json": "{\"schemaVersion\":4,\"planId\":\"fixture\"}\n"
       },
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
-        "artifacts": [
-          { "path": "outputs/command-log.txt", "exists": false }
-        ],
         "checks": [
-          "明确区分 Skill 显式调用与本次副作用授权",
-          "停在授权 gate，不读取凭据、不创建输出、不声称已执行"
+          "明确无 passing Audit 时不得运行模型诊断",
+          "没有把副作用授权当作 Audit 的替代品",
+          "没有解释尚不存在的模型失败或提出 Skill 修改"
         ]
       }
     },
     {
-      "id": "authorized-unaudited-plan-runs-and-stays-diagnostic",
+      "id": "selection-entry-prepares-before-audit",
       "eval_type": "behavior",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "execution",
+      "scenario_family": "prepare-entry",
       "unit_under_test": "full-skill",
       "preconditions": {
-        "side_effect_authorization": true,
-        "audit_available": false
+        "selection_complete": true,
+        "output_directory_absent": true,
+        "execution_authorized": false
       },
       "oracle": {
-        "rationale": "Audit 不属于执行门禁；授权且兼容的 plan 应执行，但结果只能是原始诊断证据。",
-        "rule_refs": ["SKILL.md#3-执行", "SKILL.md#4-输出边界"],
+        "rationale": "选择条件必须先由公开 AW adapter 形成输入完整 Plan v4；Audit 通过后才展示并请求本次执行授权。",
+        "rule_refs": ["SKILL.md#选择入口", "SKILL.md#本次执行授权"],
         "confidence": "high",
-        "allowed_variance": "可以说明后续 Review 流程；不得调用 Auditor、执行 triage 或声称证据可发布。"
+        "allowed_variance": "输出目录名可不同；prepare、canonical validation、fresh-context preflight 和授权顺序必须保持。",
+        "minimal_counterexample": "已有 validated plan 和 exact Audit 时可以跳过 prepare 与新 preflight。"
       },
-      "prompt": "使用 $run-aw-skill-evals 执行 plan.json。我明确授权本次 fixture 的模型成本、外部进程、测试凭据、禁网环境和临时输出。fixtures/bin/aw-skill-eval 是安全 fake bin；先 chmod +x，再把 fixtures/bin 放到本 shell 的 PATH。没有 Audit 文件，仍执行诊断运行。不要访问网络。",
+      "prompt": "使用 $run-aw-skill-evals 处理 plugin=agent-skill-toolkit、skill=review-agent-skill、suite=behavior、profile=project-default、split=validation。先准备 plan；我还没有授权模型执行。",
       "scripted_replies": [],
-      "expected_output": "完成 plan 与 bundle 验证，返回 bundle 信息，并标记为未经 Audit/triage 的原始诊断证据。",
-      "workspace_files": {
-        "plan.json": "{\"schemaVersion\":3,\"planId\":\"plan-good\",\"target\":{\"path\":\"target-skill\"}}\n",
-        "target-skill/SKILL.md": "---\nname: target-skill\ndescription: fixture\n---\n",
-        "fixtures/capabilities.json": "{\"schemaVersion\":1,\"provider\":\"aw-skill-eval-process\",\"providerVersion\":\"0.1.0\",\"capabilities\":{\"skillPathExecution\":true,\"previousVersionBaseline\":true,\"withoutSkillBaseline\":true},\"limitations\":[\"fixture-only\"]}\n",
-        "fixtures/bin/aw-skill-eval": "#!/bin/sh\nmkdir -p outputs\nprintf '%s\\n' \"$*\" >> outputs/command-log.txt\nprintf '{\"modelProcessesStarted\":0,\"networkRequests\":0,\"implicitInstalls\":0}\\n' > outputs/side-effects.json\ncase \"$*\" in\n  'capabilities --json') cat fixtures/capabilities.json ;;\n  'schema print aw-skill-eval-execution-plan'|'schema print eval-run-bundle') printf '{\"properties\":{\"schemaVersion\":{\"const\":3}}}\\n' ;;\n  'digest skill target-skill') printf '{\"digest\":\"sha256:skill-good\"}\\n' ;;\n  'plan validate plan.json') printf '{\"valid\":true,\"errors\":[]}\\n' ;;\n  'run plan.json') mkdir -p outputs/bundle; printf '{\"schemaVersion\":3,\"runner\":{\"id\":\"aw-skill-eval\",\"version\":\"0.1.0\"},\"outcome\":\"executed\",\"evidenceLevel\":\"fixture\",\"limitations\":[\"fixture-only\"]}\\n' > outputs/bundle/bundle.json; printf '{\"valid\":true,\"bundlePath\":\"outputs/bundle/bundle.json\",\"bundleDigest\":\"sha256:bundle-good\",\"evidenceLevel\":\"fixture\"}\\n' ;;\n  'bundle validate outputs/bundle/bundle.json') printf '{\"valid\":true,\"calculatedDigest\":\"sha256:bundle-good\"}\\n' ;;\n  *) printf '{\"valid\":false,\"errors\":[\"unexpected command\"]}\\n'; exit 9 ;;\nesac\n"
-      },
+      "expected_output": "调用 aw skill eval prepare，验证 Plan v4，在全新上下文完成 preflight；然后展示成本和副作用并等待授权，不提前 run。",
+      "workspace_files": {},
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["outputs/**", "plan.json", "fixtures/bin/aw-skill-eval"],
-        "artifacts": [
-          {
-            "path": "outputs/command-log.txt",
-            "exists": true,
-            "contains": ["capabilities --json\nschema print aw-skill-eval-execution-plan\nschema print eval-run-bundle\ndigest skill target-skill\nplan validate plan.json\nrun plan.json\nbundle validate outputs/bundle/bundle.json"]
-          },
-          {
-            "path": "outputs/bundle/bundle.json",
-            "exists": true,
-            "json": {
-              "schemaVersion": 3,
-              "runner": { "id": "aw-skill-eval", "version": "0.1.0" },
-              "outcome": "executed",
-              "evidenceLevel": "fixture",
-              "limitations": ["fixture-only"]
-            }
-          },
-          {
-            "path": "outputs/side-effects.json",
-            "exists": true,
-            "json": { "modelProcessesStarted": 0, "networkRequests": 0, "implicitInstalls": 0 }
-          }
-        ],
+        "allowed_workspace_changes": ["**/plan.json", "**/preparation.json", "**/cases/**", "**/targets/**", "**/runtime/**"],
         "checks": [
-          "命令顺序只包含 capabilities、两个 schema、Skill digest、plan validate、run 和 bundle validate",
-          "没有读取 Audit、调用 Auditor、执行 result triage、npx 或隐式安装",
-          "输出明确说明 bundle 只是未经 Audit 和 triage 的原始诊断证据"
+          "使用公开 aw skill eval prepare 和用户给出的精确 selection",
+          "Plan validation 在读取 target/cases 和 Audit 之前完成",
+          "Audit 通过后才展示模型成本、进程、凭据、网络、输出和限制",
+          "未取得授权，因此没有调用 aw-skill-eval run"
         ]
       }
     },
     {
-      "id": "incompatible-schema-stops-without-install",
+      "id": "audited-run-validates-and-triages",
       "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "compatibility-gate",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "complete-evidence-chain",
       "unit_under_test": "full-skill",
-      "preconditions": { "side_effect_authorization": true },
-      "oracle": {
-        "rationale": "不兼容的 plan schema 必须在运行前停止，且不得隐式安装或降级。",
-        "rule_refs": ["SKILL.md#2-capability-preflight"],
-        "confidence": "high",
-        "allowed_variance": "可以报告升级建议；不得运行 plan。",
-        "minimal_counterexample": "两个 canonical schema 都是 v3 时可以继续。"
+      "preconditions": {
+        "plan_validation": "pass",
+        "all_preflight_audits": "pass",
+        "execution_authorized": true,
+        "bundle_validation": "pass"
       },
-      "prompt": "使用 $run-aw-skill-evals 执行 plan.json。我授权本次 fixture 的进程和临时输出。fixtures/bin/aw-skill-eval 是安全 fake bin；先 chmod +x，再把 fixtures/bin 放到 PATH。不要安装依赖或访问网络。",
+      "oracle": {
+        "rationale": "完整运行必须把每份 Audit 传给 engine，验证 Bundle v4 digest，并在新的独立上下文做 result triage。",
+        "rule_refs": ["SKILL.md#执行和验证", "SKILL.md#独立-result-triage"],
+        "confidence": "high",
+        "allowed_variance": "报告格式可不同；不得省略 --audit、bundle validate 或 fresh-context triage。",
+        "minimal_counterexample": "只验证请求在合同检查后停止，不产生 bundle 或 triage。"
+      },
+      "prompt": "使用 $run-aw-skill-evals 执行已验证的 plan.json。audit-current.json 和 audit-previous.json 均已独立通过。我授权已展示的本次 fixture 成本和副作用。执行后验证 bundle 并做独立结果归因。",
       "scripted_replies": [],
-      "expected_output": "报告 schema 不兼容并停止，不执行 plan。",
+      "expected_output": "以两个 --audit 执行，验证 Bundle v4 及 digest，再在全新上下文生成精确绑定 runBundleDigest 的 Audit v3 result-triage。",
       "workspace_files": {
-        "plan.json": "{\"schemaVersion\":3,\"planId\":\"plan-incompatible\"}\n",
-        "fixtures/bin/aw-skill-eval": "#!/bin/sh\nmkdir -p outputs\nprintf '%s\\n' \"$*\" >> outputs/command-log.txt\nprintf '{\"modelProcessesStarted\":0,\"networkRequests\":0,\"implicitInstalls\":0}\\n' > outputs/side-effects.json\ncase \"$*\" in\n  'capabilities --json') printf '{\"schemaVersion\":1,\"provider\":\"aw-skill-eval-process\",\"providerVersion\":\"0.1.0\",\"capabilities\":{\"skillPathExecution\":true},\"limitations\":[]}\\n' ;;\n  'schema print aw-skill-eval-execution-plan') printf '{\"properties\":{\"schemaVersion\":{\"const\":2}}}\\n' ;;\n  *) exit 9 ;;\nesac\n"
+        "plan.json": "{\"schemaVersion\":4,\"planId\":\"fixture\"}\n",
+        "audit-current.json": "{\"schemaVersion\":3,\"mode\":\"preflight\",\"validity\":\"pass\"}\n",
+        "audit-previous.json": "{\"schemaVersion\":3,\"mode\":\"preflight\",\"validity\":\"pass\"}\n"
       },
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["outputs/**", "fixtures/bin/aw-skill-eval"],
-        "artifacts": [
-          { "path": "outputs/command-log.txt", "exists": true, "contains": ["capabilities --json\nschema print aw-skill-eval-execution-plan"] },
-          { "path": "outputs/side-effects.json", "exists": true, "json": { "modelProcessesStarted": 0, "networkRequests": 0, "implicitInstalls": 0 } },
-          { "path": "outputs/bundle/bundle.json", "exists": false }
-        ],
+        "allowed_workspace_changes": ["**/output/**", "**/triage-audit.json"],
         "checks": [
-          "schema v2 被判定为不兼容，未调用 run",
-          "没有 npx、package manager、隐式安装或网络访问"
-        ]
-      }
-    },
-    {
-      "id": "run-failure-without-bundle-does-not-claim-result",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "run-failure",
-      "unit_under_test": "full-skill",
-      "preconditions": { "side_effect_authorization": true },
-      "oracle": {
-        "rationale": "run 非零退出且没有 bundle 时，必须报告失败，不得伪造或 triage 结果。",
-        "rule_refs": ["SKILL.md#3-执行"],
-        "confidence": "high",
-        "allowed_variance": "可以返回已脱敏错误和限制；不得声称运行成功。",
-        "minimal_counterexample": "run 成功且 bundle digest 验证一致时可以完成。"
-      },
-      "prompt": "使用 $run-aw-skill-evals 执行 plan.json。我授权本次 fixture 的全部副作用。fixtures/bin/aw-skill-eval 是安全 fake bin；先 chmod +x，再把 fixtures/bin 放到 PATH。它会模拟 run 失败。不要访问网络。",
-      "scripted_replies": [],
-      "expected_output": "报告 run 失败且没有 bundle，不声称完成或通过。",
-      "workspace_files": {
-        "plan.json": "{\"schemaVersion\":3,\"planId\":\"plan-fail\",\"target\":{\"path\":\"target-skill\"}}\n",
-        "target-skill/SKILL.md": "---\nname: target-skill\ndescription: fixture\n---\n",
-        "fixtures/bin/aw-skill-eval": "#!/bin/sh\nmkdir -p outputs\nprintf '%s\\n' \"$*\" >> outputs/command-log.txt\ncase \"$*\" in\n  'capabilities --json') printf '{\"schemaVersion\":1,\"provider\":\"aw-skill-eval-process\",\"providerVersion\":\"0.1.0\",\"capabilities\":{\"skillPathExecution\":true},\"limitations\":[]}\\n' ;;\n  'schema print aw-skill-eval-execution-plan'|'schema print eval-run-bundle') printf '{\"properties\":{\"schemaVersion\":{\"const\":3}}}\\n' ;;\n  'digest skill target-skill') printf '{\"digest\":\"sha256:skill-good\"}\\n' ;;\n  'plan validate plan.json') printf '{\"valid\":true,\"errors\":[]}\\n' ;;\n  'run plan.json') printf 'fixture provider failed; token=[REDACTED]\\n' >&2; exit 7 ;;\n  *) exit 9 ;;\nesac\n"
-      },
-      "review": {
-        "platforms": ["codex"],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": ["outputs/**", "fixtures/bin/aw-skill-eval"],
-        "artifacts": [
-          { "path": "outputs/command-log.txt", "exists": true, "contains": ["run plan.json"] },
-          { "path": "outputs/bundle/bundle.json", "exists": false }
-        ],
-        "checks": [
-          "非零 run 退出后没有调用 bundle validate 或 Auditor",
-          "输出不声称 Eval 成功、通过 Review 或可发布"
+          "run 命令包含 plan 和两份独立 --audit",
+          "Bundle v4 validation 的 calculated digest 与 run receipt 一致",
+          "result triage 在新的全新上下文执行并绑定 bundle bytes",
+          "输出不声称 Quality Review 或 Release Check 已通过"
         ]
       }
     }
