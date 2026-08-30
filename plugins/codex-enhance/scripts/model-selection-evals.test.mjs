@@ -5,12 +5,13 @@ import path from 'node:path';
 
 import {
   evaluateModelSelectionRun,
-  loadModelEvalSpec,
-  modelEvalReportStatus,
   modelEvalRunCase,
-  parseModelEvalArgs,
-  summarizeModelEval,
 } from '../skills/codex-explore/evals/run-model-selection-evals.mjs';
+import * as modelProvider from '../skills/codex-explore/evals/run-model-selection-evals.mjs';
+import * as workflowProvider from '../skills/codex-explore/evals/run-workflow-evals.mjs';
+import * as livenessProvider from '../skills/codex-explore/evals/run-liveness-evals.mjs';
+import modelManifestDocument from '../skills/codex-explore/evals/manifest.json' with { type: 'json' };
+import modelCorpusDocument from '../skills/codex-explore/evals/evals.json' with { type: 'json' };
 import {
   readRolloutEvidenceFromRollouts,
   readSpawnCallsFromRollouts,
@@ -18,37 +19,75 @@ import {
   shouldStopEarly,
 } from '../skills/codex-explore/evals/eval-harness.mjs';
 
-function testArguments() {
-  assert.deepEqual(
-    parseModelEvalArgs([
-      '--runs',
-      '2',
-      '--threshold',
-      '0.6',
-      '--case',
-      'auto_standard',
-    ]),
-    {
-      runs: 2,
-      threshold: 0.6,
-      timeoutMs: 180_000,
-      codexBin: 'codex',
-      model: undefined,
-      caseId: 'auto_standard',
-      output: undefined,
-      allowEnvironmentSkips: false,
-      help: false,
-    },
+async function testProviderManifestComposition() {
+  const manifest = modelManifestDocument;
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.plugin, 'codex-enhance');
+  assert.equal(manifest.skill, 'codex-explore');
+  const providerSuites = manifest.suites.filter((suite) => suite.kind === 'provider');
+  assert.deepEqual(providerSuites.map((suite) => suite.id), [
+    'model-selection',
+    'workflow',
+    'liveness',
+  ]);
+  const entryModules = {
+    'run-model-selection-evals.mjs': modelProvider,
+    'run-workflow-evals.mjs': workflowProvider,
+    'run-liveness-evals.mjs': livenessProvider,
+  };
+  const capabilityKeys = [
+    'cleanContext',
+    'conversation',
+    'duration',
+    'materialization',
+    'parallelRuns',
+    'previousVersionBaseline',
+    'sandbox',
+    'skillPathExecution',
+    'tokenUsage',
+    'toolTrace',
+    'triggerDiscovery',
+    'withoutSkillBaseline',
+  ];
+  for (const suite of providerSuites) {
+    assert.equal(Object.hasOwn(suite, 'entry'), false);
+    assert.equal(Object.hasOwn(suite, 'supports'), false);
+    assert.equal(Object.hasOwn(suite, 'suiteTimeoutMs'), false);
+    assert.equal(Object.hasOwn(suite, 'command'), false);
+    assert.equal(typeof suite.cases, 'string');
+    assert.equal(path.isAbsolute(suite.cases), false);
+    const provider = suite.provider;
+    assert.ok(provider && typeof provider === 'object');
+    assert.equal(typeof provider.id, 'string');
+    assert.equal(typeof provider.entry, 'string');
+    assert.equal(path.isAbsolute(provider.entry), false);
+    assert.equal(provider.entry.startsWith('../'), false);
+    assert.match(provider.entry, /^run-[a-z-]+-evals\.mjs$/u);
+    assert.equal(Array.isArray(provider.assets), true);
+    assert.equal(Array.isArray(provider.credentialEnvironment), true);
+    assert.ok(provider.credentialEnvironment.length > 0);
+    assert.equal(new Set(provider.credentialEnvironment).size, provider.credentialEnvironment.length);
+    assert.equal(
+      provider.credentialEnvironment.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)),
+      true,
+    );
+    assert.deepEqual(Object.keys(provider.capabilities).sort(), [...capabilityKeys].sort());
+    assert.equal(
+      Object.values(provider.capabilities).every((value) => typeof value === 'boolean'),
+      true,
+    );
+    const entryModule = entryModules[path.basename(provider.entry)];
+    assert.ok(entryModule, `missing bundled provider entry ${provider.entry}`);
+    assert.equal(typeof entryModule.runEvalProvider, 'function');
+  }
+  assert.equal(modelCorpusDocument.skill_name, 'codex-explore');
+  assert.ok(Array.isArray(modelCorpusDocument.evals));
+  assert.equal(modelCorpusDocument.evals.length > 0, true);
+  assert.equal(
+    new Set(modelCorpusDocument.evals.map((entry) => entry.id)).size,
+    modelCorpusDocument.evals.length,
   );
-  assert.throws(() => parseModelEvalArgs(['--runs', '0']), /positive integer/);
-}
-
-async function testEvalSpec() {
-  const spec = await loadModelEvalSpec();
-  assert.equal(spec.skill_name, 'codex-explore');
-  assert.equal(spec.evals.length > 0, true);
-  assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
-  for (const entry of spec.evals) {
+  for (const entry of modelCorpusDocument.evals) {
     assert.equal(entry.assertions.length > 0, true);
     assert.equal(['routing', 'gate'].includes(entry.eval_type), true);
     assert.equal(typeof entry.scenario_family, 'string');
@@ -62,6 +101,8 @@ async function testEvalSpec() {
       )),
       true,
     );
+    assert.equal(Object.hasOwn(entry, 'runs'), false);
+    assert.equal(Object.hasOwn(entry, 'profiles'), false);
   }
 
   assert.deepEqual(
@@ -838,71 +879,11 @@ function testMechanicalAssertions() {
   assert.equal(misleadingFailureText.passed, false);
 }
 
-function testEnvironmentSkipReportStatus() {
-  const entry = {
-    id: 'environment_skip',
-    expected_output: 'test',
-    expected: {
-      spawn_calls: { min: 0, max: 0 },
-      allowed_environment_errors: ['must match the configured schema'],
-    },
-  };
-  const passingRun = {
-    execution_error: false,
-    termination: 'completed',
-    exit_code: 0,
-    parent_model_override: 'gpt-5.5',
-    spawn_calls: [],
-  };
-  const skippedRun = {
-    execution_error: true,
-    termination: 'completed',
-    exit_code: 1,
-    event_trace: [{ type: 'error', message: 'must match the configured schema' }],
-    spawn_calls: [],
-  };
-  const result = summarizeModelEval(entry, [passingRun, passingRun, skippedRun], 0.5);
-  assert.equal(result.runs[0].parent_model_override, 'gpt-5.5');
-  assert.equal(result.complete, false);
-  assert.equal(result.environment_skips, 1);
-  assert.deepEqual(modelEvalReportStatus([result], false), { complete: false, passed: false });
-  assert.deepEqual(modelEvalReportStatus([result], true), { complete: false, passed: true });
-}
-
-function testCriticalPolicyRequiresEveryRunnablePass() {
-  const entry = {
-    id: 'critical_route',
-    expected_output: 'test',
-    expected: { spawn_calls: { min: 0, max: 0 } },
-  };
-  const passingRun = {
-    execution_error: false,
-    termination: 'completed',
-    exit_code: 0,
-    spawn_calls: [],
-  };
-  const failingRun = {
-    ...passingRun,
-    spawn_calls: [{ arguments: { agent_type: 'codex-explore-standard' } }],
-  };
-  const result = summarizeModelEval(
-    entry,
-    [passingRun, passingRun, failingRun],
-    0.5,
-    'critical',
-  );
-  assert.equal(result.pass_rate, 2 / 3);
-  assert.equal(result.passed, false);
-}
-
 async function main() {
-  testArguments();
-await testEvalSpec();
-await testRolloutArgumentEvidence();
-await testV1RolloutLineageEvidence();
-testMechanicalAssertions();
-  testEnvironmentSkipReportStatus();
-  testCriticalPolicyRequiresEveryRunnablePass();
+  await testProviderManifestComposition();
+  await testRolloutArgumentEvidence();
+  await testV1RolloutLineageEvidence();
+  testMechanicalAssertions();
   console.log('model selection eval tests passed');
 }
 

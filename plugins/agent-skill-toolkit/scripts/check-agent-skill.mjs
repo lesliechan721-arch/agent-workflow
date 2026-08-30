@@ -96,7 +96,8 @@ function updateLengthPrefixed(hash, value) {
 async function productionDigest(files) {
   const hash = createHash('sha256');
   updateLengthPrefixed(hash, PRODUCTION_DIGEST_DOMAIN);
-  for (const file of [...productionFiles(files)].sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const file of [...productionFiles(files)].sort((a, b) =>
+    a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) {
     const content = await readFile(file.absolute);
     updateLengthPrefixed(hash, file.path);
     updateLengthPrefixed(hash, process.platform !== 'win32' && (file.mode & 0o111) !== 0 ? '100755' : '100644');

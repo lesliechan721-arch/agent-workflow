@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -14,79 +13,33 @@ import type { PluginMeta } from '../src/types.js';
 import { createCatalogRuntimeImportResolver } from '../src/utils/catalog-runtime-projection.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 import { validateSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
-import {
-  PLUGIN_EVAL_SCHEMA_VERSION,
-  type MaterializedPluginEvalArtifact,
-  type MaterializedPluginEvalSubject,
-  type PluginEvalManifest,
-  type PluginEvalProfile,
-} from './plugin-eval-contract.js';
+export interface AwSkillEvalMaterializationProfile {
+  id: string;
+  scope: 'project' | 'user';
+  plugins: Array<{ name: string; config: Record<string, unknown> }>;
+}
 
 const execFileAsync = promisify(execFile);
 
-export interface MaterializePluginEvalOptions {
+export interface MaterializeAwSkillEvalOptions {
   plugin: PluginMeta;
   plugins: PluginMeta[];
-  manifest: PluginEvalManifest;
+  profile: AwSkillEvalMaterializationProfile;
+  requiredSkills: ReadonlySet<string>;
+  initializeGitRepository: boolean;
   outputRoot: string;
   workRoot: string;
   env?: NodeJS.ProcessEnv;
-  selectedProfiles?: ReadonlySet<string>;
+}
+
+export interface AwSkillEvalMaterializedSubject {
+  root: string;
 }
 
 interface PreparedEvalBundle {
-  sourceRoot: string;
-  stagingRoot: string;
   bundleRoot: string;
   plugin: PluginMeta;
-  bundleDigest: string;
   cleanup(): Promise<void>;
-}
-
-function sha256(content: string | Buffer): string {
-  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
-}
-
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJson).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-async function listFiles(root: string): Promise<string[]> {
-  if (!(await fs.pathExists(root))) {
-    return [];
-  }
-  const entries = await fs.readdir(root, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const entryPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      const nested = await listFiles(entryPath);
-      files.push(...nested.map((file) => path.join(entry.name, file)));
-    } else if (entry.isFile()) {
-      files.push(entry.name);
-    }
-  }
-  return files.sort((left, right) => left.localeCompare(right));
-}
-
-async function digestTree(root: string): Promise<string> {
-  const hash = createHash('sha256');
-  for (const relativePath of await listFiles(root)) {
-    hash.update(relativePath.split(path.sep).join('/'));
-    hash.update('\0');
-    hash.update(await fs.readFile(path.join(root, relativePath)));
-    hash.update('\0');
-  }
-  return `sha256:${hash.digest('hex')}`;
 }
 
 async function prepareEvalBundle(
@@ -107,15 +60,12 @@ async function prepareEvalBundle(
       preparedRuntimeContext: prepared.runtimeContext,
     });
     return {
-      sourceRoot: plugin.rootDir,
-      stagingRoot: prepared.plugin.rootDir,
       bundleRoot,
       plugin: {
         ...prepared.plugin,
         rootDir: bundleRoot,
         manifestPath: path.join(bundleRoot, '.agents-plugin', 'plugin.json'),
       },
-      bundleDigest: await digestTree(bundleRoot),
       cleanup: async () => {
         await prepared.cleanup();
         await fs.remove(tempRoot);
@@ -148,38 +98,6 @@ function createIsolatedEnv(
     AW_CODEX_HOME: path.join(scopeRoot, 'codex-home'),
     NODE_PATH: '',
   };
-}
-
-async function collectArtifacts(
-  root: string,
-  subjectRoot: string,
-): Promise<MaterializedPluginEvalArtifact[]> {
-  const artifacts: MaterializedPluginEvalArtifact[] = [];
-  for (const relativePath of await listFiles(root)) {
-    const absolutePath = path.join(root, relativePath);
-    const normalized = relativePath.split(path.sep).join('/');
-    const segments = normalized.split('/');
-    let kind: MaterializedPluginEvalArtifact['kind'] = 'config';
-    let key: string | undefined;
-    const skillsIndex = segments.indexOf('skills');
-    const agentsIndex = segments.indexOf('agents');
-    if (skillsIndex >= 0 && segments[skillsIndex + 1]) {
-      kind = 'skill';
-      key = segments[skillsIndex + 1];
-    } else if (normalized.endsWith('.toml') && agentsIndex >= 0) {
-      kind = 'agent';
-      key = path.basename(normalized, '.toml');
-    } else if (normalized.endsWith('config.toml')) {
-      kind = 'instruction';
-    }
-    artifacts.push({
-      kind,
-      ...(key ? { key } : {}),
-      path: path.relative(subjectRoot, absolutePath).split(path.sep).join('/'),
-      contentDigest: sha256(await fs.readFile(absolutePath)),
-    });
-  }
-  return artifacts;
 }
 
 async function snapshotRuntimeSkills(sourceRoot: string, targetRoot: string): Promise<void> {
@@ -258,6 +176,8 @@ async function initializeSubjectGitRepository(
     '-m',
     'Materialize eval subject',
   ], { cwd: subjectRoot, env });
+  await fs.remove(path.join(subjectRoot, '.git', 'index'));
+  await execFileAsync('git', ['read-tree', '--reset', 'HEAD'], { cwd: subjectRoot, env });
 }
 
 async function copyUserMaterializedArtifacts(options: {
@@ -293,7 +213,7 @@ async function copyUserMaterializedArtifacts(options: {
 
 async function materializeStaticCodexSkills(options: {
   prepared: PreparedEvalBundle;
-  profile: PluginEvalProfile;
+  profile: AwSkillEvalMaterializationProfile;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
@@ -315,14 +235,12 @@ async function materializeStaticCodexSkills(options: {
 
 async function materializeProfile(options: {
   preparedByName: ReadonlyMap<string, PreparedEvalBundle>;
-  ownerPlugin: PluginMeta;
-  ownerSkill: string;
   requiredSkills: ReadonlySet<string>;
-  profile: PluginEvalProfile;
+  profile: AwSkillEvalMaterializationProfile;
   outputRoot: string;
   baseEnv: NodeJS.ProcessEnv;
   initializeGitRepository: boolean;
-}): Promise<MaterializedPluginEvalSubject> {
+}): Promise<AwSkillEvalMaterializedSubject> {
   const scopeRoot = path.join(options.outputRoot, 'subjects', options.profile.id);
   await fs.remove(scopeRoot);
   await fs.ensureDir(scopeRoot);
@@ -395,9 +313,12 @@ async function materializeProfile(options: {
         env,
         pluginNames: installations.map(({ installation }) => installation.name),
       });
-  const artifacts = await collectArtifacts(subjectRoot, subjectRoot);
-  const materializedSkills = new Set(artifacts.flatMap((artifact) =>
-    artifact.kind === 'skill' && artifact.key ? [artifact.key] : []));
+  const skillsRoot = path.join(subjectRoot, '.agents', 'skills');
+  const materializedSkills = new Set(
+    (await fs.readdir(skillsRoot, { withFileTypes: true }).catch(() => []))
+      .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+      .map((entry) => entry.name),
+  );
   for (const skill of options.requiredSkills) {
     if (!materializedSkills.has(skill)) {
       throw new Error(
@@ -412,41 +333,15 @@ async function materializeProfile(options: {
     ]);
   }
 
-  const installedPlugins = installations.map(({ installation, prepared }) => ({
-    name: installation.name,
-    version: prepared.plugin.manifest.version,
-    configDigest: sha256(stableJson(installation.config)),
-    bundleDigest: prepared.bundleDigest,
-  }));
-  const compositeBundleDigest = sha256(stableJson(
-    installedPlugins.map(({ name, version, bundleDigest }) => ({ name, version, bundleDigest })),
-  ));
-
-  const subject: MaterializedPluginEvalSubject = {
-    schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
-    plugin: options.ownerPlugin.manifest.name,
-    skill: options.ownerSkill,
-    pluginVersion: options.ownerPlugin.manifest.version,
-    platform: 'codex',
-    profile: options.profile.id,
-    scope: options.profile.scope,
-    modelExecution: options.profile.runModel,
-    evidenceLevel: options.profile.scope === 'project' ? 'runtime-project' : 'materialized-user',
+  const subject: AwSkillEvalMaterializedSubject = {
     root: path.relative(options.outputRoot, subjectRoot).split(path.sep).join('/'),
-    configDigest: sha256(stableJson(
-      options.profile.plugins.map(({ name, config }) => ({ name, config })),
-    )),
-    bundleDigest: compositeBundleDigest,
-    installedPlugins,
-    artifacts,
   };
-  await fs.writeJson(path.join(scopeRoot, 'subject.json'), subject, { spaces: 2 });
   return subject;
 }
 
-export async function materializePluginEvalSubjects(
-  options: MaterializePluginEvalOptions,
-): Promise<MaterializedPluginEvalSubject[]> {
+export async function materializeAwSkillEvalSubject(
+  options: MaterializeAwSkillEvalOptions,
+): Promise<AwSkillEvalMaterializedSubject> {
   const sourcePlugins = new Map<string, PluginMeta>();
   for (const plugin of options.plugins) {
     const name = plugin.manifest.name;
@@ -459,8 +354,7 @@ export async function materializePluginEvalSubjects(
     throw new Error(`Owner plugin source is missing: ${options.plugin.manifest.name}`);
   }
 
-  const requiredPluginNames = [...new Set(options.manifest.profiles.flatMap((profile) =>
-    profile.plugins.map((plugin) => plugin.name)))];
+  const requiredPluginNames = [...new Set(options.profile.plugins.map((plugin) => plugin.name))];
   const preparedByName = new Map<string, PreparedEvalBundle>();
   try {
     for (const pluginName of requiredPluginNames) {
@@ -476,53 +370,37 @@ export async function materializePluginEvalSubjects(
       );
     }
 
-    const subjects: MaterializedPluginEvalSubject[] = [];
-    for (const profile of options.manifest.profiles) {
-      if (options.selectedProfiles && !options.selectedProfiles.has(profile.id)) {
-        continue;
-      }
-      const owners = new Map<string, string>();
-      for (const installation of profile.plugins) {
-        const prepared = preparedByName.get(installation.name)!;
-        const staticSkillsRoot = path.join(prepared.bundleRoot, 'codex', 'skills');
-        const staticSkills = await fs.pathExists(staticSkillsRoot)
-          ? await fs.readdir(staticSkillsRoot, { withFileTypes: true })
-          : [];
-        const declaredSkills = [
-          ...staticSkills.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
-          ...(prepared.plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
-            target.target === 'codex.skill' && target.skillKey ? [target.skillKey] : []),
-        ];
-        for (const skill of new Set(declaredSkills)) {
-          const existing = owners.get(skill);
-          if (existing && existing !== installation.name) {
-            throw new Error(
-              `Eval profile "${profile.id}" installs duplicate Codex Skill key "${skill}" ` +
-              `from plugins "${existing}" and "${installation.name}".`,
-            );
-          }
-          owners.set(skill, installation.name);
+    const owners = new Map<string, string>();
+    for (const installation of options.profile.plugins) {
+      const prepared = preparedByName.get(installation.name)!;
+      const staticSkillsRoot = path.join(prepared.bundleRoot, 'codex', 'skills');
+      const staticSkills = await fs.pathExists(staticSkillsRoot)
+        ? await fs.readdir(staticSkillsRoot, { withFileTypes: true })
+        : [];
+      const declaredSkills = [
+        ...staticSkills.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+        ...(prepared.plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
+          target.target === 'codex.skill' && target.skillKey ? [target.skillKey] : []),
+      ];
+      for (const skill of new Set(declaredSkills)) {
+        const existing = owners.get(skill);
+        if (existing && existing !== installation.name) {
+          throw new Error(
+            `Eval profile "${options.profile.id}" installs duplicate Codex Skill key "${skill}" ` +
+            `from plugins "${existing}" and "${installation.name}".`,
+          );
         }
+        owners.set(skill, installation.name);
       }
-      const requiredSkills = new Set<string>([options.manifest.skill]);
-      for (const suite of options.manifest.suites) {
-        if (suite.profiles.includes(profile.id)) {
-          for (const skill of suite.skills) requiredSkills.add(skill);
-        }
-      }
-      subjects.push(await materializeProfile({
-        preparedByName,
-        ownerPlugin: options.plugin,
-        ownerSkill: options.manifest.skill,
-        requiredSkills,
-        profile,
-        outputRoot: options.outputRoot,
-        baseEnv: options.env ?? process.env,
-        initializeGitRepository: options.manifest.suites.some((suite) =>
-          suite.kind === 'conversation'),
-      }));
     }
-    return subjects;
+    return await materializeProfile({
+      preparedByName,
+      requiredSkills: options.requiredSkills,
+      profile: options.profile,
+      outputRoot: options.outputRoot,
+      baseEnv: options.env ?? process.env,
+      initializeGitRepository: options.initializeGitRepository,
+    });
   } finally {
     await Promise.all([...preparedByName.values()].map((prepared) => prepared.cleanup()));
   }
@@ -530,7 +408,7 @@ export async function materializePluginEvalSubjects(
 
 export function resolveMaterializedSubjectRoot(
   outputRoot: string,
-  subject: MaterializedPluginEvalSubject,
+  subject: AwSkillEvalMaterializedSubject,
 ): string {
   return path.resolve(outputRoot, subject.root);
 }

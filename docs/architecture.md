@@ -229,16 +229,18 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - active marketplace、backup、quarantine 和 lifecycle snapshot 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
 
-## Agent Skill Eval Runner 边界
+## Agent Skill Eval Plan 与 Runner 边界
 
-- Eval Runner 是可替换的执行适配器。每个 Runner 可以定义自己的执行计划输入；Review 从已安装 Skill 能力中选择兼容 Runner，不维护中心 dispatcher 或 Runner 配置表。
-- 所有兼容 Runner 输出统一的 `EvalRunBundle v3`。bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，不包含 Audit 字段。
-- 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。它消费 `AwSkillEvalExecutionPlan v3`，只负责本次副作用授权、运行时能力检查、执行和 bundle 完整性。
-- plugin model Eval 把本次构建的 CLI production closure 实体部署到 run-owned runtime capsule，并提供只指向 capsule 内入口的临时 `aw` launcher。探针和实际模型进程使用同一前置 `PATH`；它们不能通过 CLI 模块路径访问仓库或用户全局 `aw`。最终 capsule 的 package identity 和确定性 content digest 进入公开 eval evidence 和 model environment identity；依赖字节变化时，batch 在复用 checkpoint 前拒绝 append。materialize-only 不创建 capsule。
+- Skill-local `evals/manifest.json` 的准备合同是 CLI 拥有的 `AwSkillEvalManifest v1`。`aw skill eval prepare` 通过 Catalog Workspace 解析 canonical plugin，复用真实 bundle、依赖、profile config 和平台 materialization，输出一个 profile 的输入完整 `AwSkillEvalExecutionPlan v4` 目录。Plan 输入只引用目录内的 target、可选 previous target、筛选后的 cases、provider capability 文档、suite metadata/fixture 和移除目标 Skill 后的完整 subject base；最终目录在 staging 完整验证后原子发布，已有、过宽或含符号链接的目标 fail closed。profile 不得把 sensitive config 值带入 Plan。
+- `aw skill eval check` 只读取 Manifest 注册的 document/schema，并用 Draft 2020-12 `json-schema` checker 输出 CLI 拥有的 `AwSkillEvalCheckResult v1`。它不 build 或 materialize plugin，不运行 renderer、provider、任意脚本或模型，不生成 `EvalRunBundle`，也不消费 provider/model 凭据；结果只绑定 document 和 schema 摘要。
+- `aw` 的 Eval 子命令只有 `aw skill eval prepare|check|provider`。`prepare` 和 `check` 是确定性操作，不启动模型；`provider` 是 Plan 记录的低层 provider 进程入口，不是第二个运行编排器。
+- Eval 执行的唯一机器 owner 是 npm package `@lesliechan721/agent-skill-eval` 的 `aw-skill-eval` bin。当前合同固定为 Plan v4、`EvalRunBundle v4`、`EvalAuditResult v3`、provider capabilities v2 和 provider output v1。兼容 bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，Audit 是独立输入和结果，不嵌入 bundle。
+- 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。任何会启动模型的执行都必须先取得覆盖当前 Plan 的 passing preflight Audit，再调用 `aw-skill-eval run <plan.json> --audit <audit.json>`；CLI 不提供第二个 `run` wrapper。
+- Plan、bundle 和运行输出都是可删除、可重建的弱状态。准备或执行中断后，删除本次不完整输出并重新 `prepare`、Audit 和 `run`；不维护 batch checkpoint 或续跑 ledger。
 - Conversation suite 或 case 可用最小 `environment.pathPrepend` 声明 Eval-owned PATH fixture。路径相对声明它的 Eval 根解析，必须是根内的普通文件或目录树，且不能包含符号链接。Runner 只复制已声明 fixture 到本次隔离 workspace，并只在那里设置 executable mode 和前置 PATH；Oracle 不依赖仓库私有 CLI 路径。声明 `workspace_valid: true` 的确定性 fixture 必须 materialize 后通过公开 `aw catalog status --json`，并让每个预期有效插件通过 `aw plugin validate --json`。该 preflight 不运行模型，也不代替 Oracle Audit。
 - `hostSourceAccessAbsent` 只按 app-server 事件中的显式命令、审批和文件访问输入归因。命令输出、Agent 消息、reasoning 和 diff 中的宿主路径文本不是访问证据。
 - Plan 可用可选的 `minimumEvidenceLevel` 固定最低证据要求。省略时为 `executed`；要求 `comparative` 时，默认 runner 只在 macOS/Linux 的 Full Access verified observation 或更强 external containment 下接受 grading。verified observation 必须在 bundle 中保留非 OS 强隔离限制，不能记录后代清理保证。
-- Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。未经 Audit/triage 的 bundle 可以作为原始诊断证据，但不得影响 Review finding、生产 Skill 修改或发布结论。
+- Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。运行前没有 passing Audit 时不得启动模型；没有 result triage 的 bundle 只能作为原始诊断证据，不得影响 Review finding、生产 Skill 修改或发布结论。
 
 ## Quality Review、Release Check 与 Review Publication
 
@@ -246,7 +248,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 
 - **Quality Review** 只报告设计、复杂度、findings、未知项和最小改动；主产物是 `report.md`，可选 `QualityReviewResult`。workflow Review 还定义有界的 scope。Review 不计算发布准备度，`QualityReviewResult` 也不拥有 Eval 证据等级。
 - **Release Check** 是独立的机器检查，产物为 `release-check.json`。它消费自己的确定性输入并拥有 readiness 结论；它不是 Review mode，也不会把 readiness 或 Eval 等级写回 Quality Review。
-- **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。只有本次请求的顶层 Reviewer 可以发布其目标；下层 Reviewer 只返回材料，除非用户明确要求多个独立归档目标。Publication 不重新评审、不运行或封存 Eval batch、不更新 README，也不维护可变 index。
+- **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。只有本次请求的顶层 Reviewer 可以发布其目标；下层 Reviewer 只返回材料，除非用户明确要求多个独立归档目标。Publication 不重新评审、不运行或封存 Eval 执行结果、不更新 README，也不维护可变 index。
 
 公开入口是 `aw review digest|publish|verify|list|show`，并统一由 `aw.review-publication.v1` 表示运行时能力。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。
 

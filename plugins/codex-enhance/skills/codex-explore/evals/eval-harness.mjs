@@ -21,6 +21,21 @@ import { fileURLToPath } from 'node:url';
 import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
+export const PROVIDER_CREDENTIAL_ENVIRONMENT = [
+  'ALL_PROXY',
+  'AW_SKILL_EVAL_CODEX_BIN',
+  'AW_SKILL_EVAL_CODEX_MODEL',
+  'CODEX_HOME',
+  'HOME',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NODE_EXTRA_CA_CERTS',
+  'NO_PROXY',
+  'OPENAI_API_KEY',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
+];
+
 export async function readEvalResource(relativePath) {
   const normalized = path.normalize(relativePath);
   if (
@@ -30,18 +45,12 @@ export async function readEvalResource(relativePath) {
   ) {
     throw new Error(`Eval resource must stay inside evals/: ${relativePath}`);
   }
-  const localPath = path.join(evalDir, normalized);
   try {
-    return await readFile(localPath, 'utf8');
+    return await readFile(path.join(evalDir, normalized), 'utf8');
   } catch (error) {
-    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) {
-      throw error;
-    }
+    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) throw error;
   }
-
-  const context = JSON.parse(
-    await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'),
-  );
+  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
   if (typeof context.sourceRoot !== 'string' || context.sourceRoot.trim() === '') {
     throw new Error(`Eval resource is missing from bundle: ${relativePath}`);
   }
@@ -50,19 +59,18 @@ export async function readEvalResource(relativePath) {
     'utf8',
   );
 }
-export async function createEvalWorkspace({ configValues = {} } = {}) {
+export async function createEvalWorkspace({ configValues = {}, sourceRoot } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-eval-'));
   try {
-    const materializedProjectRoot = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    if (!materializedProjectRoot) {
+    if (!sourceRoot) {
       throw new Error(
-        'AW_PLUGIN_EVAL_PROJECT_ROOT is required; run this suite through pnpm plugin:eval.',
+        'custom provider input.workspacePath is required; use the workspace snapshot from the prepared Eval Plan.',
       );
     }
     if (Object.keys(configValues).length > 0) {
       throw new Error('Specialized eval config must be represented by a materialized profile.');
     }
-    await cp(materializedProjectRoot, root, { recursive: true, force: true });
+    await cp(sourceRoot, root, { recursive: true, force: true });
     await setupTriggerWorkspace({ workspaceRoot: root });
     return {
       root,
@@ -72,6 +80,67 @@ export async function createEvalWorkspace({ configValues = {} } = {}) {
     await rm(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+function redactedProviderEvidence(value) {
+  const secrets = PROVIDER_CREDENTIAL_ENVIRONMENT
+    .map((name) => process.env[name])
+    .filter((entry) => typeof entry === 'string' && entry !== '');
+  return JSON.parse(JSON.stringify(value, (_key, entry) => {
+    if (typeof entry !== 'string') return entry;
+    return secrets.reduce(
+      (result, secret) => result.replaceAll(secret, '[redacted credential]'),
+      entry,
+    );
+  }));
+}
+
+export async function createProviderOutput({
+  providerId,
+  graderId,
+  run,
+  result,
+  outputDir,
+}) {
+  const evidencePath = path.join(outputDir, 'provider-evidence.json');
+  const tracePath = path.join(outputDir, 'provider-trace.json');
+  await Promise.all([
+    writeFile(
+      evidencePath,
+      `${JSON.stringify(redactedProviderEvidence(run), null, 2)}\n`,
+      'utf8',
+    ),
+    writeFile(
+      tracePath,
+      `${JSON.stringify(redactedProviderEvidence(run.event_trace ?? []), null, 2)}\n`,
+      'utf8',
+    ),
+  ]);
+  const artifacts = [
+    { path: path.basename(evidencePath), role: 'report' },
+    { path: path.basename(tracePath), role: 'trace' },
+  ];
+  if (typeof run.final_message === 'string' && run.final_message !== '') {
+    const outputPath = path.join(outputDir, 'model-output.txt');
+    await writeFile(
+      outputPath,
+      `${redactedProviderEvidence(run.final_message)}\n`,
+      'utf8',
+    );
+    artifacts.push({ path: path.basename(outputPath), role: 'output' });
+  }
+  return {
+    schemaVersion: 1,
+    provider: { id: providerId, version: 'manifest-v1' },
+    usage: run.usage && typeof run.usage === 'object'
+      ? redactedProviderEvidence(run.usage)
+      : null,
+    grading: {
+      grader: { id: graderId, version: '1' },
+      result: redactedProviderEvidence(result),
+    },
+    artifacts,
+  };
 }
 
 export function parseExecEventLine(line) {
@@ -812,7 +881,6 @@ export async function runCodexOnce(workspace, evalCase, options) {
         cwd: workspace.root,
         env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
       });
       const observed = {
         loaded: evalCase.explicit_skill,
@@ -828,56 +896,9 @@ export async function runCodexOnce(workspace, evalCase, options) {
       let stderr = '';
       let finalMessage = null;
       let usage = null;
-      let stopReason = null;
-      let interruptedSignal = null;
       let settled = false;
-      let forceKillTimer;
-      let descendantCleanupConfirmed = null;
       let rolloutPollPending = false;
       const eventTrace = [];
-
-      const stop = (reason) => {
-        if (stopReason || child.exitCode !== null || child.signalCode !== null) {
-          return;
-        }
-        stopReason = reason;
-        if (process.platform === 'win32') {
-          child.kill('SIGTERM');
-        } else {
-          try {
-            process.kill(-child.pid, 'SIGTERM');
-          } catch (error) {
-            if (error?.code !== 'ESRCH') {
-              stderr = `${stderr}\nFailed to terminate eval process group: ${error.message}`.trim();
-            }
-          }
-        }
-        forceKillTimer = setTimeout(() => {
-          if (process.platform === 'win32') {
-            child.kill('SIGKILL');
-            return;
-          }
-          try {
-            process.kill(-child.pid, 'SIGKILL');
-          } catch {}
-        }, 2_000);
-        forceKillTimer.unref();
-      };
-      const handleInterrupt = (signal) => {
-        interruptedSignal = signal;
-        stop(`parent_${signal.toLowerCase()}`);
-      };
-      const handleSigint = () => handleInterrupt('SIGINT');
-      const handleSigterm = () => handleInterrupt('SIGTERM');
-      const removeInterruptHandlers = () => {
-        process.off('SIGINT', handleSigint);
-        process.off('SIGTERM', handleSigterm);
-      };
-      process.once('SIGINT', handleSigint);
-      process.once('SIGTERM', handleSigterm);
-
-      const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
-      timeout.unref();
 
       const pollRollouts = async () => {
         if (rolloutPollPending) {
@@ -905,8 +926,6 @@ export async function runCodexOnce(workspace, evalCase, options) {
           observed.leafToolCalls = rolloutEvidence.leaf_calls;
           observed.leafTraceAvailable = rolloutEvidence.leaf_trace_available;
           observed.leafTrace = rolloutEvidence.leaf_trace;
-          const earlyReason = shouldStopEarly(evalCase, observed);
-          if (earlyReason) stop(earlyReason);
         } catch (error) {
           if (error?.code !== 'ENOENT') {
             stderr = `${stderr}\nFailed to poll rollout evidence: ${
@@ -949,10 +968,6 @@ export async function runCodexOnce(workspace, evalCase, options) {
         if (event?.type === 'turn.completed' && event.usage) {
           usage = event.usage;
         }
-        const earlyReason = shouldStopEarly(evalCase, observed);
-        if (earlyReason) {
-          stop(earlyReason);
-        }
       });
 
       child.once('error', (error) => {
@@ -960,10 +975,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
           return;
         }
         settled = true;
-        clearTimeout(timeout);
-        clearTimeout(forceKillTimer);
         clearInterval(rolloutPollTimer);
-        removeInterruptHandlers();
         lines.close();
         reject(new Error(`Failed to start ${options.codexBin}: ${error.message}`));
       });
@@ -973,35 +985,8 @@ export async function runCodexOnce(workspace, evalCase, options) {
           return;
         }
         settled = true;
-        clearTimeout(timeout);
         clearInterval(rolloutPollTimer);
-        removeInterruptHandlers();
         lines.close();
-        if (stopReason) {
-          if (process.platform === 'win32') {
-            descendantCleanupConfirmed = false;
-          } else {
-            const processGroupExists = () => {
-              try {
-                process.kill(-child.pid, 0);
-                return true;
-              } catch (error) {
-                return error?.code !== 'ESRCH';
-              }
-            };
-            if (processGroupExists()) {
-              try {
-                process.kill(-child.pid, 'SIGKILL');
-              } catch {}
-            }
-            const cleanupDeadline = Date.now() + 2_000;
-            while (processGroupExists() && Date.now() < cleanupDeadline) {
-              await new Promise((done) => setTimeout(done, 25));
-            }
-            descendantCleanupConfirmed = !processGroupExists();
-          }
-        }
-        clearTimeout(forceKillTimer);
         try {
           const rolloutEvidence = await readRolloutEvidenceFromRollouts(codexHome);
           observed.collaborationTimeline = rolloutEvidence.parent_calls;
@@ -1029,14 +1014,8 @@ export async function runCodexOnce(workspace, evalCase, options) {
           observed.spawnEvidence ??=
             `rollout:${observed.spawnCalls[0].call_id ?? 'spawn_agent'}`;
         }
-        if (interruptedSignal) {
-          reject(new Error(`Interrupted by ${interruptedSignal}.`));
-          return;
-        }
-        const termination = stopReason ?? 'completed';
-        const executionError =
-          termination === 'timeout' ||
-          (termination === 'completed' && exitCode !== 0);
+        const termination = 'completed';
+        const executionError = exitCode !== 0;
         resolve({
           loaded: observed.loaded,
           spawned: observed.spawned,
@@ -1051,7 +1030,6 @@ export async function runCodexOnce(workspace, evalCase, options) {
           exit_code: exitCode,
           signal,
           execution_error: executionError,
-          descendant_cleanup_confirmed: descendantCleanupConfirmed,
           stderr: stderr.trim() || undefined,
           final_message: finalMessage,
           parent_model_override: parentModelOverride,

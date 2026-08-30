@@ -26,7 +26,7 @@ const EXECUTABLE_OVERRIDE_ENV = [
 
 function usage() {
   return [
-    'Usage: check-aw-plugin-release.mjs <plugin-root> --workspace-root <dir> [--review <review.json>]... --final <profile=path>... [--preflight-audit path]... [--run-bundle path]... [--triage-audit path]... [--profile name] [--output file] [--format json|text]',
+    'Usage: check-aw-plugin-release.mjs <plugin-root> --workspace-root <dir> [--review <review.json>]... --final <profile=path>... [--eval-plan path]... [--preflight-audit path]... [--run-bundle path]... [--triage-audit path]... [--profile name] [--output file] [--format json|text]',
     'Dynamic codex.skill and claude.skill targets require matching materialized final leaves for their declared profiles and scopes.',
   ].join('\n');
 }
@@ -51,6 +51,7 @@ function parseArgs(argv) {
   const reviews = [];
   const finals = [];
   const profiles = [];
+  const evalPlans = [];
   const preflightAudits = [];
   const runBundles = [];
   const triageAudits = [];
@@ -67,6 +68,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (value === '--final') {
       finals.push(parseNamedPath(valueAfter(argv, index, value), value));
+      index += 1;
+    } else if (value === '--eval-plan') {
+      evalPlans.push(path.resolve(valueAfter(argv, index, value)));
       index += 1;
     } else if (value === '--preflight-audit') {
       preflightAudits.push(path.resolve(valueAfter(argv, index, value)));
@@ -99,6 +103,7 @@ function parseArgs(argv) {
     reviews,
     finals,
     profiles: [...new Set(profiles)],
+    evalPlans,
     preflightAudits,
     runBundles,
     triageAudits,
@@ -141,6 +146,7 @@ async function skillRoots(root) {
 async function assertEvidenceFiles(options) {
   for (const [label, paths] of [
     ['Review', options.reviews],
+    ['Eval plan', options.evalPlans],
     ['preflight audit', options.preflightAudits],
     ['run bundle', options.runBundles],
     ['triage audit', options.triageAudits],
@@ -229,65 +235,175 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-async function loadEvidence(paths, expectedMode, validator, bundleByDigest = null) {
+function auditKey(targetDigest, caseCorpusDigest) {
+  return `${targetDigest ?? ''}\u0000${caseCorpusDigest ?? ''}`;
+}
+
+function selectionKey(targetDigest, profile, suite) {
+  return `${targetDigest ?? ''}\u0000${profile ?? ''}\u0000${suite ?? ''}`;
+}
+
+function caseEntries(document) {
+  if (Array.isArray(document)) return document;
+  if (Array.isArray(document?.cases)) return document.cases;
+  if (Array.isArray(document?.evals)) return document.evals;
+  return [];
+}
+
+async function selectedPlanCases(planPath, plan) {
+  const selected = [];
+  for (const relativePath of plan?.cases?.paths ?? []) {
+    const document = JSON.parse(await readFile(path.resolve(path.dirname(planPath), relativePath), 'utf8'));
+    selected.push(...caseEntries(document));
+  }
+  return selected;
+}
+
+async function loadAuditEvidence(paths, expectedMode, validator, relatedEvidence) {
   const entries = [];
   const duplicates = [];
-  const byTarget = new Map();
+  const byKey = new Map();
   for (const evidencePath of paths) {
     const value = JSON.parse(await readFile(evidencePath, 'utf8'));
     const targetDigest = value?.targetSkillDigest;
     const validatorArgs = [evidencePath, '--format', 'json'];
-    if (expectedMode === 'result-triage') {
-      const bundle = bundleByDigest?.get(targetDigest);
+    let key;
+    if (expectedMode === 'preflight') {
+      key = auditKey(targetDigest, value?.caseCorpusDigest);
+      const plan = relatedEvidence?.get(key);
+      if (plan) validatorArgs.push('--plan', plan.path);
+    } else if (expectedMode === 'result-triage') {
+      key = value?.runBundleDigest;
+      const bundle = relatedEvidence?.get(key);
       if (bundle) validatorArgs.push('--run-bundle', bundle.path);
     }
     const validation = await runJson(validator, validatorArgs, true);
     const entry = {
       path: evidencePath,
       value,
+      targetDigest,
       digest: await digestFile(evidencePath),
       validation,
+      key,
     };
     entries.push(entry);
     if (value?.mode !== expectedMode) {
       validation.valid = false;
       validation.errors = [...(validation.errors ?? []), `audit mode must be ${expectedMode}`];
     }
-    if (byTarget.has(targetDigest)) duplicates.push(targetDigest);
-    else byTarget.set(targetDigest, entry);
+    if (byKey.has(key)) duplicates.push(key);
+    else byKey.set(key, entry);
   }
-  return { entries, byTarget, duplicates };
+  return { entries, byKey, duplicates };
+}
+
+async function loadEvalPlans(paths) {
+  const entries = [];
+  const duplicates = [];
+  const bySelection = new Map();
+  const byAuditKey = new Map();
+  for (const planPath of paths) {
+    let validation;
+    try {
+      const { stdout } = await execFileAsync(
+        'aw-skill-eval',
+        ['plan', 'validate', planPath],
+        { encoding: 'utf8', env: executionEnv() },
+      );
+      validation = JSON.parse(stdout);
+    } catch (error) {
+      if (typeof error?.stdout !== 'string' || !error.stdout.trim()) throw error;
+      validation = JSON.parse(error.stdout);
+    }
+    const value = JSON.parse(await readFile(planPath, 'utf8'));
+    const receiptPath = path.join(path.dirname(planPath), 'preparation.json');
+    const receiptStats = await lstat(receiptPath).catch(() => null);
+    const receipt = receiptStats?.isFile() && !receiptStats.isSymbolicLink()
+      ? JSON.parse(await readFile(receiptPath, 'utf8'))
+      : null;
+    const targetDigest = validation.calculated?.targetSkillDigest ?? value?.target?.digest;
+    const skillDigests = new Set(typeof targetDigest === 'string' ? [targetDigest] : []);
+    for (const digest of Object.values(validation.calculated?.configurationSkillDigests ?? {})) {
+      if (typeof digest === 'string') skillDigests.add(digest);
+    }
+    const entry = {
+      path: planPath,
+      value,
+      targetDigest,
+      skillDigests,
+      digest: await digestFile(planPath),
+      validation,
+      receipt,
+      selectedCases: validation.valid ? await selectedPlanCases(planPath, value) : [],
+    };
+    const receiptErrors = [];
+    if (
+      receipt?.schemaVersion !== 1
+      || receipt?.command !== 'skill:eval:prepare'
+      || typeof receipt?.plugin !== 'string'
+      || typeof receipt?.skill !== 'string'
+      || typeof receipt?.suite !== 'string'
+      || typeof receipt?.profile !== 'string'
+      || typeof receipt?.planPath !== 'string'
+    ) {
+      receiptErrors.push('adjacent preparation.json must be a skill:eval:prepare v1 receipt');
+    } else if (path.resolve(path.dirname(receiptPath), receipt.planPath) !== path.resolve(planPath)) {
+      receiptErrors.push('preparation receipt planPath does not identify this Eval plan');
+    }
+    if (receipt?.targetDigest !== targetDigest) {
+      receiptErrors.push('preparation receipt targetDigest does not match the validated Eval plan');
+    }
+    if (receipt?.corpusDigest !== validation.calculated?.caseCorpusDigest) {
+      receiptErrors.push('preparation receipt corpusDigest does not match the validated Eval plan');
+    }
+    if (receiptErrors.length > 0) {
+      validation.valid = false;
+      validation.errors = [...(validation.errors ?? []), ...receiptErrors];
+    }
+    entries.push(entry);
+    const key = selectionKey(targetDigest, receipt?.profile, receipt?.suite);
+    entry.selectionKey = key;
+    if (bySelection.has(key)) duplicates.push(key);
+    else bySelection.set(key, entry);
+    for (const digest of skillDigests) {
+      const key = auditKey(digest, validation.calculated?.caseCorpusDigest);
+      if (!byAuditKey.has(key)) byAuditKey.set(key, entry);
+    }
+  }
+  return { entries, bySelection, byAuditKey, duplicates };
 }
 
 async function loadRunBundles(paths, validator) {
   const entries = [];
   const duplicates = [];
-  const byTarget = new Map();
+  const byPlanDigest = new Map();
+  const byDigest = new Map();
   for (const bundlePath of paths) {
     const value = JSON.parse(await readFile(bundlePath, 'utf8'));
     const validation = await runJson(validator, [bundlePath, '--format', 'json'], true);
     const entry = {
       path: bundlePath,
       value,
+      targetDigest: value?.targetSkillDigest,
       digest: await digestFile(bundlePath),
       validation,
     };
     entries.push(entry);
-    if (byTarget.has(value?.targetSkillDigest)) duplicates.push(value?.targetSkillDigest);
-    else byTarget.set(value?.targetSkillDigest, entry);
+    if (byPlanDigest.has(value?.planDigest)) duplicates.push(value?.planDigest);
+    else byPlanDigest.set(value?.planDigest, entry);
+    byDigest.set(entry.digest, entry);
   }
-  return { entries, byTarget, duplicates };
+  return { entries, byPlanDigest, byDigest, duplicates };
 }
 
-async function evalRequirement(skillRoot, requiresEval = false) {
+async function evalRequirement(skillRoot, requiresEval = false, releaseProfile = null) {
   const manifestPath = path.join(skillRoot, 'evals', 'manifest.json');
   const content = await readFile(manifestPath, 'utf8').catch(() => null);
   if (content === null) {
     return {
       required: requiresEval,
       missingManifest: requiresEval,
-      corpusDigest: null,
-      releaseCases: [],
+      chains: [],
       releaseSuiteCount: 0,
       unsupportedSuites: [],
     };
@@ -297,46 +413,52 @@ async function evalRequirement(skillRoot, requiresEval = false) {
     ? manifest.suites.filter((suite) => suite?.requiredForRelease === true)
     : [];
   const required = manifest.requiredForRelease === true || requiredSuites.length > 0;
-  const caseDocuments = [];
-  const releaseCaseRuns = new Map();
+  const releaseScope = releaseProfile === null
+    ? null
+    : releaseProfile.endsWith('-project') ? 'project' : 'user';
+  const requiredProfiles = Array.isArray(manifest.profiles)
+    ? manifest.profiles.filter((profile) =>
+      profile?.requiredForRelease === true
+      && (releaseScope === null || profile.scope === releaseScope))
+    : [];
+  const chains = [];
   const unsupportedSuites = [];
   for (const suite of requiredSuites) {
+    const suiteProfiles = requiredProfiles.filter((profile) => suite.profiles?.includes(profile.id));
+    if (suiteProfiles.length === 0) continue;
     if (typeof suite.cases !== 'string') {
-      unsupportedSuites.push(suite.id ?? '<unknown>');
+      unsupportedSuites.push(...suiteProfiles.map((profile) => `${profile.id}/${suite.id ?? '<unknown>'}`));
       continue;
     }
     const casePath = path.resolve(path.dirname(manifestPath), suite.cases);
     const document = JSON.parse(await readFile(casePath, 'utf8'));
-    caseDocuments.push(stableJson(document));
+    const suiteCases = caseEntries(document);
     const releaseSplits = Array.isArray(suite.releaseSplits) ? new Set(suite.releaseSplits) : new Set();
-    for (const entry of document.cases ?? document.evals ?? []) {
-      if (
-        typeof entry?.id === 'string'
-        && (releaseSplits.size === 0 || releaseSplits.has(entry.split))
-      ) {
-        const minimumRuns = Number.isInteger(suite.defaultRuns) && suite.defaultRuns > 0
-          ? suite.defaultRuns
-          : 1;
-        releaseCaseRuns.set(
-          entry.id,
-          Math.max(releaseCaseRuns.get(entry.id) ?? 0, minimumRuns),
-        );
-      }
+    const selectedCases = suiteCases.filter((entry) =>
+      typeof entry?.id === 'string'
+      && (releaseSplits.size === 0 || releaseSplits.has('all') || releaseSplits.has(entry.split)));
+    const minimumRuns = Number.isInteger(suite.defaultRuns) && suite.defaultRuns > 0
+      ? suite.defaultRuns
+      : 1;
+    for (const profile of suiteProfiles) {
+      chains.push({
+        plugin: manifest.plugin,
+        skill: manifest.skill,
+        profile: profile.id,
+        suite: suite.id,
+        suiteCases,
+        selectedCases,
+        releaseCases: selectedCases
+          .map((entry) => ({ caseId: entry.id, minimumRuns }))
+          .sort((left, right) => left.caseId.localeCompare(right.caseId)),
+      });
     }
   }
-  caseDocuments.sort();
-  const corpusDigest = caseDocuments.length === 0
-    ? null
-    : `sha256:${createHash('sha256').update(caseDocuments.join('\n')).digest('hex')}`;
-  const releaseCases = [...releaseCaseRuns]
-    .map(([caseId, minimumRuns]) => ({ caseId, minimumRuns }))
-    .sort((left, right) => left.caseId.localeCompare(right.caseId));
   return {
     required: requiresEval || required,
     missingManifest: false,
-    corpusDigest,
-    releaseCases,
-    releaseSuiteCount: requiredSuites.length,
+    chains,
+    releaseSuiteCount: chains.length,
     unsupportedSuites,
   };
 }
@@ -430,6 +552,7 @@ async function main() {
   const hasLeafInventory = sourceRoots.length > 0 || dynamicLeaves.length > 0
     || [...finalRootInventories.values()].some((roots) => roots.length > 0);
   const evidenceCount = options.reviews.length
+    + options.evalPlans.length
     + options.preflightAudits.length
     + options.runBundles.length
     + options.triageAudits.length;
@@ -456,26 +579,29 @@ async function main() {
   const reasons = [];
   const targets = [];
   const consumedReviewPaths = new Set();
-  const evalRequiredDigests = new Set();
+  const consumedEvalPaths = new Set();
   try {
+    const evalPlanEvidence = await loadEvalPlans(options.evalPlans);
     const runBundleEvidence = await loadRunBundles(options.runBundles, evalBundleValidator);
-    const preflightEvidence = await loadEvidence(
+    const preflightEvidence = await loadAuditEvidence(
       options.preflightAudits,
       'preflight',
       evalAuditValidator,
+      evalPlanEvidence.byAuditKey,
     );
-    const triageEvidence = await loadEvidence(
+    const triageEvidence = await loadAuditEvidence(
       options.triageAudits,
       'result-triage',
       evalAuditValidator,
-      runBundleEvidence.byTarget,
+      runBundleEvidence.byDigest,
     );
     for (const [label, evidence] of [
+      ['Eval plan', evalPlanEvidence],
       ['preflight audit', preflightEvidence],
       ['run bundle', runBundleEvidence],
       ['triage audit', triageEvidence],
     ]) {
-      for (const digest of evidence.duplicates) reasons.push(`duplicate ${label} for target ${digest}`);
+      for (const key of evidence.duplicates) reasons.push(`duplicate ${label} for Eval chain ${JSON.stringify(key)}`);
       for (const entry of evidence.entries) {
         if (!entry.validation.valid) {
           reasons.push(`${label} ${entry.path} is invalid: ${(entry.validation.errors ?? []).join('; ')}`);
@@ -543,33 +669,49 @@ async function main() {
 
       let evalEvidence = null;
       if (evalRequired) {
-        evalRequiredDigests.add(check.target.digest);
         if (evalRequirementValue.releaseSuiteCount === 0) {
           reasons.push(`${kind}:${name}:${profile ?? 'source'} requires at least one release-required Eval suite`);
-        }
-        if (evalRequirementValue.corpusDigest === null) {
-          reasons.push(`${kind}:${name}:${profile ?? 'source'} requires a non-empty release Eval corpus digest`);
-        }
-        if (evalRequirementValue.releaseCases.length === 0) {
-          reasons.push(`${kind}:${name}:${profile ?? 'source'} requires non-empty release Eval cases`);
         }
         if (evalRequirementValue.unsupportedSuites.length > 0) {
           reasons.push(
             `${kind}:${name}:${profile ?? 'source'} has required Eval suites without bindable case corpora: ${evalRequirementValue.unsupportedSuites.join(', ')}`,
           );
         }
-        const preflight = preflightEvidence.byTarget.get(check.target.digest);
-        const bundle = runBundleEvidence.byTarget.get(check.target.digest);
-        const triage = triageEvidence.byTarget.get(check.target.digest);
-        if (!preflight || !bundle || !triage) {
-          reasons.push(`${kind}:${name}:${profile ?? 'source'} requires a complete preflight/run/triage Eval evidence chain`);
-        } else {
+        const chains = [];
+        for (const requirement of evalRequirementValue.chains) {
+          const chainName = `${requirement.profile}/${requirement.suite}`;
+          const evalPlan = evalPlanEvidence.bySelection.get(
+            selectionKey(check.target.digest, requirement.profile, requirement.suite),
+          );
+          const bundle = evalPlan ? runBundleEvidence.byPlanDigest.get(evalPlan.digest) : null;
+          const triage = bundle ? triageEvidence.byKey.get(bundle.digest) : null;
+          const expectedPreflightDigests = evalPlan ? [...evalPlan.skillDigests] : [];
+          const corpusDigest = evalPlan?.validation.calculated?.caseCorpusDigest;
+          const preflights = expectedPreflightDigests
+            .map((digest) => preflightEvidence.byKey.get(auditKey(digest, corpusDigest)))
+            .filter(Boolean);
+          const preflight = preflightEvidence.byKey.get(auditKey(check.target.digest, corpusDigest));
+          if (
+            !evalPlan
+            || !preflight
+            || preflights.length !== expectedPreflightDigests.length
+            || !bundle
+            || !triage
+          ) {
+            reasons.push(
+              `${kind}:${name}:${profile ?? 'source'} is missing complete Eval chain ${chainName} (Plan/preflight/run/triage)`,
+            );
+            chains.push({ profile: requirement.profile, suite: requirement.suite, valid: false });
+            continue;
+          }
+          for (const entry of [evalPlan, ...preflights, bundle, triage]) consumedEvalPaths.add(entry.path);
           const chainErrors = [];
-          if (!preflight.validation.valid) chainErrors.push('preflight audit is invalid');
+          if (!evalPlan.validation.valid) chainErrors.push('Eval plan is invalid');
+          if (preflights.some((entry) => !entry.validation.valid)) chainErrors.push('a preflight audit is invalid');
           if (!bundle.validation.valid) chainErrors.push('run bundle is invalid');
           if (!triage.validation.valid) chainErrors.push('triage audit is invalid');
-          if (preflight.value.validity !== 'pass' || preflight.value.releaseEligible !== true) {
-            chainErrors.push('preflight audit is not release eligible');
+          if (preflights.some((entry) => entry.value.validity !== 'pass' || entry.value.releaseEligible !== true)) {
+            chainErrors.push('a preflight audit is not release eligible');
           }
           if (triage.value.validity !== 'pass' || triage.value.releaseEligible !== true) {
             chainErrors.push('triage audit is not release eligible');
@@ -580,14 +722,30 @@ async function main() {
           if (triage.value.caseCorpusDigest !== bundle.value.caseCorpusDigest) {
             chainErrors.push('triage caseCorpusDigest does not match the run bundle');
           }
+          if (bundle.value.planDigest !== evalPlan.digest) {
+            chainErrors.push('run bundle planDigest does not match the Eval plan bytes');
+          }
           if (triage.value.runBundleDigest !== bundle.digest) {
             chainErrors.push('triage runBundleDigest does not match the run bundle bytes');
           }
           if (
-            evalRequirementValue.corpusDigest !== null
-            && preflight.value.caseCorpusDigest !== evalRequirementValue.corpusDigest
+            evalPlan.receipt.plugin !== requirement.plugin
+            || evalPlan.receipt.skill !== requirement.skill
           ) {
-            chainErrors.push('Eval evidence caseCorpusDigest does not match the current required suite corpus');
+            chainErrors.push('Eval plan preparation receipt does not match the current plugin/Skill');
+          }
+          const currentCaseById = new Map(requirement.suiteCases
+            .filter((entry) => typeof entry?.id === 'string')
+            .map((entry) => [entry.id, stableJson(entry)]));
+          const actualCaseById = new Map(evalPlan.selectedCases
+            .filter((entry) => typeof entry?.id === 'string')
+            .map((entry) => [entry.id, stableJson(entry)]));
+          if (
+            actualCaseById.size !== evalPlan.selectedCases.length
+            || [...actualCaseById].some(([caseId, value]) => currentCaseById.get(caseId) !== value)
+            || requirement.releaseCases.some((entry) => !actualCaseById.has(entry.caseId))
+          ) {
+            chainErrors.push('Eval plan case corpus does not match the current required suite cases');
           }
           const preflightReleaseCases = preflight.value.cases
             .filter((entry) => entry.releaseRelevant)
@@ -601,9 +759,9 @@ async function main() {
             chainErrors.push('triage audit release-relevant cases do not match the preflight audit');
           }
           if (
-            evalRequirementValue.releaseCases.length > 0
+            requirement.releaseCases.length > 0
             && JSON.stringify(preflightReleaseCases) !== JSON.stringify(
-              evalRequirementValue.releaseCases.map((entry) => entry.caseId),
+              requirement.releaseCases.map((entry) => entry.caseId),
             )
           ) {
             chainErrors.push('preflight audit release-relevant cases do not match the current required suite cases');
@@ -618,23 +776,34 @@ async function main() {
             if (!completedRuns.has(run.caseId)) completedRuns.set(run.caseId, new Set());
             completedRuns.get(run.caseId).add(run.runIndex);
           }
-          const insufficientCases = evalRequirementValue.releaseCases
+          const insufficientCases = requirement.releaseCases
             .filter((entry) => (completedRuns.get(entry.caseId)?.size ?? 0) < entry.minimumRuns)
             .map((entry) => `${entry.caseId} (${completedRuns.get(entry.caseId)?.size ?? 0}/${entry.minimumRuns})`);
           if (insufficientCases.length > 0) {
             chainErrors.push(`run bundle lacks completed with-skill runs for required cases: ${insufficientCases.join(', ')}`);
           }
           if (chainErrors.length > 0) {
-            reasons.push(`${kind}:${name}:${profile ?? 'source'} Eval evidence chain is invalid: ${chainErrors.join('; ')}`);
+            reasons.push(`${kind}:${name}:${profile ?? 'source'} Eval chain ${chainName} is invalid: ${chainErrors.join('; ')}`);
           }
-          evalEvidence = {
+          chains.push({
+            profile: requirement.profile,
+            suite: requirement.suite,
             valid: chainErrors.length === 0,
             evidenceLevel: bundle.value.evidenceLevel ?? null,
-            preflightAuditDigest: preflight.digest,
+            planDigest: evalPlan.digest,
+            preflightAuditDigests: preflights.map((entry) => entry.digest).sort(),
             runBundleDigest: bundle.digest,
             triageAuditDigest: triage.digest,
-          };
+          });
         }
+        evalEvidence = {
+          valid: chains.length === evalRequirementValue.chains.length
+            && chains.every((entry) => entry.valid),
+          evidenceLevel: chains.length > 0 && chains.every((entry) => entry.evidenceLevel === 'executed')
+            ? 'executed'
+            : null,
+          chains,
+        };
       }
       targets.push({
         kind,
@@ -681,7 +850,7 @@ async function main() {
     }
     for (const leaf of dynamicLeaves) {
       const final = finalByProfile.get(leaf.profile).get(leaf.name);
-      const requirement = await evalRequirement(leaf.sourceRoot, leaf.requiresEval);
+      const requirement = await evalRequirement(leaf.sourceRoot, leaf.requiresEval, leaf.profile);
       if (!final) {
         reasons.push(`dynamic:${leaf.id}:${leaf.name}:${leaf.profile} is missing`);
         targets.push({
@@ -718,14 +887,14 @@ async function main() {
       }
     }
     for (const [label, evidence] of [
+      ['Eval plan', evalPlanEvidence],
       ['preflight audit', preflightEvidence],
       ['run bundle', runBundleEvidence],
       ['triage audit', triageEvidence],
     ]) {
       for (const entry of evidence.entries) {
-        const digest = entry.value?.targetSkillDigest;
-        if (!evalRequiredDigests.has(digest)) {
-          reasons.push(`${label} ${entry.path} is not consumed by a release-required leaf target`);
+        if (!consumedEvalPaths.has(entry.path)) {
+          reasons.push(`${label} ${entry.path} is not consumed by a required profile/suite Eval chain`);
         }
       }
     }

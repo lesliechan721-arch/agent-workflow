@@ -1,0 +1,1687 @@
+{
+  "skill_name": "codex-subagent-guide",
+  "policy": {
+    "optimization": "critical",
+    "false_negative_cost": "critical",
+    "false_positive_cost": "critical",
+    "rationale": "丢失显式字段、错误选择 role、近似 context 或在不兼容 schema 上继续启动都会违反委派合同；任一关键 routing 错误都不能由其它 case 抵消。"
+  },
+  "evals": [
+    {
+      "id": "simple_preset_fresh-v1",
+      "sourceCaseId": "simple_preset_fresh",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。请立即启动一个子代理，只读核对 src/simple.ts 的事实；上下文可以在 message 中完整说明。",
+      "expected_output": "使用简单任务 role；V1 使用干净 fork_context，V2 使用干净 fork_turns；不传 model 或 reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "simple_preset_fresh-v2",
+      "sourceCaseId": "simple_preset_fresh",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。请立即启动一个子代理，只读核对 src/simple.ts 的事实；上下文可以在 message 中完整说明。",
+      "expected_output": "使用简单任务 role；V1 使用干净 fork_context，V2 使用干净 fork_turns；不传 model 或 reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "readonly_complexity_not_simple-v1",
+      "sourceCaseId": "readonly_complexity_not_simple",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。请立即启动一个子代理，只读调查 src/complex/a.ts、src/complex/b.ts 和 docs/architecture.md 中跨模块并发生命周期问题的未知根因，要求完整因果证据但不要修改文件；使用干净上下文。",
+      "expected_output": "只读不自动等于简单；未知根因和跨模块因果调查使用复杂任务 role。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "readonly_complexity_not_simple-v2",
+      "sourceCaseId": "readonly_complexity_not_simple",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。请立即启动一个子代理，只读调查 src/complex/a.ts、src/complex/b.ts 和 docs/architecture.md 中跨模块并发生命周期问题的未知根因，要求完整因果证据但不要修改文件；使用干净上下文。",
+      "expected_output": "只读不自动等于简单；未知根因和跨模块因果调查使用复杂任务 role。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "general_preset_fresh-v1",
+      "sourceCaseId": "general_preset_fresh",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已批准委派。请启动一个子代理，完成边界清晰的常规文档实现；使用干净上下文。",
+      "expected_output": "使用通用任务 role，不直接传预设 model 或 effort。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "general_preset_fresh-v2",
+      "sourceCaseId": "general_preset_fresh",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已批准委派。请启动一个子代理，完成边界清晰的常规文档实现；使用干净上下文。",
+      "expected_output": "使用通用任务 role，不直接传预设 model 或 effort。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "complex_preset_fresh-v1",
+      "sourceCaseId": "complex_preset_fresh",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。启动子代理调查并修复跨模块并发和生命周期问题，根因未知；不继承历史。",
+      "expected_output": "使用复杂任务 role，不直接传预设 model 或 effort。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "complex_preset_fresh-v2",
+      "sourceCaseId": "complex_preset_fresh",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。启动子代理调查并修复跨模块并发和生命周期问题，根因未知；不继承历史。",
+      "expected_output": "使用复杂任务 role，不直接传预设 model 或 effort。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "planning_review_preset_fresh-v1",
+      "sourceCaseId": "planning_review_preset_fresh",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已授权使用子代理。启动一个 agent 审核 changes/review.diff 并给出缺陷结论；使用干净上下文。",
+      "expected_output": "这是范围有限的常规审核，使用通用 role。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "planning_review_preset_fresh-v2",
+      "sourceCaseId": "planning_review_preset_fresh",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "没有 task-scoped override 时，应按最终交付物选择固定 preset role，并在 V1/V2 使用对应的干净上下文字段。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已授权使用子代理。启动一个 agent 审核 changes/review.diff 并给出缺陷结论；使用干净上下文。",
+      "expected_output": "这是范围有限的常规审核，使用通用 role。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_model_only-v1",
+      "sourceCaseId": "custom_model_only",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。项目规则只指定 model=gpt-5.6-terra；立即启动子代理，未指定字段不要补预设，使用干净上下文。",
+      "expected_output": "只透传 model，不注入预设 agent_type 或 effort。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_model_only-v2",
+      "sourceCaseId": "custom_model_only",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。项目规则只指定 model=gpt-5.6-terra；立即启动子代理，未指定字段不要补预设，使用干净上下文。",
+      "expected_output": "只透传 model，不注入预设 agent_type 或 effort。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_effort_only-v1",
+      "sourceCaseId": "custom_effort_only",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已批准委派。适用 AGENTS.md 只要求 reasoning_effort=high；立即启动子代理，不补 model 或 agent_type，使用干净上下文。",
+      "expected_output": "只透传 reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": "high",
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_effort_only-v2",
+      "sourceCaseId": "custom_effort_only",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已批准委派。适用 AGENTS.md 只要求 reasoning_effort=high；立即启动子代理，不补 model 或 agent_type，使用干净上下文。",
+      "expected_output": "只透传 reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": "high",
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_agent_type_only-v1",
+      "sourceCaseId": "custom_agent_type_only",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。用户明确指定 agent_type=codex-subagent-complex；立即启动，不传 model 或 effort，使用干净上下文。",
+      "expected_output": "只透传显式 agent_type。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_agent_type_only-v2",
+      "sourceCaseId": "custom_agent_type_only",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。用户明确指定 agent_type=codex-subagent-complex；立即启动，不传 model 或 effort，使用干净上下文。",
+      "expected_output": "只透传显式 agent_type。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_model_and_effort-v1",
+      "sourceCaseId": "custom_model_and_effort",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已允许委派。另一个技能要求 model=gpt-5.6-terra 且 reasoning_effort=xhigh；立即启动，不补 agent_type，使用干净上下文。",
+      "expected_output": "透传两个显式字段，不注入预设 role。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "xhigh",
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_model_and_effort-v2",
+      "sourceCaseId": "custom_model_and_effort",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 已允许委派。另一个技能要求 model=gpt-5.6-terra 且 reasoning_effort=xhigh；立即启动，不补 agent_type，使用干净上下文。",
+      "expected_output": "透传两个显式字段，不注入预设 role。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "xhigh",
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_override_scoped_to_subtask-v1",
+      "sourceCaseId": "custom_override_scoped_to_subtask",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并且不再选择 preset role。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。整个请求有两个子任务：A 明确使用 model=gpt-5.6-terra 核对格式；B 负责复杂跨模块实现。当前只启动 B，A 的显式 model 不应影响 B；使用干净上下文。",
+      "expected_output": "显式 override 只影响其作用域内的子任务；B 使用复杂任务 role，不携带 A 的 model。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "custom_override_scoped_to_subtask-v2",
+      "sourceCaseId": "custom_override_scoped_to_subtask",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "explicit-override-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "task-scoped 显式字段必须原样保留，未指定字段不得由 preset 补齐；其它子任务的 override 不得泄漏到当前 spawn。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把 model override 明确改为适用于当前子任务 B 后，应透传 model，并且不再选择 preset role。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。整个请求有两个子任务：A 明确使用 model=gpt-5.6-terra 核对格式；B 负责复杂跨模块实现。当前只启动 B，A 的显式 model 不应影响 B；使用干净上下文。",
+      "expected_output": "显式 override 只影响其作用域内的子任务；B 使用复杂任务 role，不携带 A 的 model。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "partial_preset-v1",
+      "sourceCaseId": "partial_preset",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "partial-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。任务必须继承最近两轮，且最终交付物是只读事实核对。V2 立即启动；V1 若没有部分历史字段则停止并说明。",
+      "expected_output": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "partial_history_unsupported"
+        }
+      }
+    },
+    {
+      "id": "partial_preset-v2",
+      "sourceCaseId": "partial_preset",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "partial-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。任务必须继承最近两轮，且最终交付物是只读事实核对。V2 立即启动；V1 若没有部分历史字段则停止并说明。",
+      "expected_output": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "2"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "partial_custom_model-v1",
+      "sourceCaseId": "partial_custom_model",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "partial-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
+      },
+      "prompt": "$codex-subagent-guide 已允许委派。必须继承最近三轮，并显式使用 model=gpt-5.6-terra。V2 立即启动；V1 若不能部分 fork 就停止说明。",
+      "expected_output": "V2 部分 fork 可与显式 model 组合；V1 停止。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "partial_history_unsupported"
+        }
+      }
+    },
+    {
+      "id": "partial_custom_model-v2",
+      "sourceCaseId": "partial_custom_model",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "partial-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
+      },
+      "prompt": "$codex-subagent-guide 已允许委派。必须继承最近三轮，并显式使用 model=gpt-5.6-terra。V2 立即启动；V1 若不能部分 fork 就停止说明。",
+      "expected_output": "V2 部分 fork 可与显式 model 组合；V1 停止。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "3"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "full_history-v1",
+      "sourceCaseId": "full_history",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "full-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准，用户明确要求继承全部对话历史。立即启动子代理，并遵守全历史 fork 的继承约束。",
+      "expected_output": "选择全历史 fork，并省略 agent_type、model、reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": true,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "full_history-v2",
+      "sourceCaseId": "full_history",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "full-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准，用户明确要求继承全部对话历史。立即启动子代理，并遵守全历史 fork 的继承约束。",
+      "expected_output": "选择全历史 fork，并省略 agent_type、model、reasoning_effort。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "all"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "full_history_custom_override-v1",
+      "sourceCaseId": "full_history_custom_override",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "full-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "移除 model override 后，V1 和 V2 都应使用各自的完整历史字段启动一次。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准，但用户同时明确要求完整历史 fork 和 model=gpt-5.6-terra。不要忽略任何一项：当前 schema 允许时立即 spawn；判定互斥时不要 spawn，只说明冲突。",
+      "expected_output": "逐字段服从 schema：V1 允许完整历史与 model override，V2 阻断互斥组合。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": true,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "full_history_custom_override-v2",
+      "sourceCaseId": "full_history_custom_override",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "full-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "移除 model override 后，V1 和 V2 都应使用各自的完整历史字段启动一次。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准，但用户同时明确要求完整历史 fork 和 model=gpt-5.6-terra。不要忽略任何一项：当前 schema 允许时立即 spawn；判定互斥时不要 spawn，只说明冲突。",
+      "expected_output": "逐字段服从 schema：V1 允许完整历史与 model override，V2 阻断互斥组合。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "routing_override_conflict"
+        }
+      }
+    },
+    {
+      "id": "project_rule_partial_context-v1",
+      "sourceCaseId": "project_rule_partial_context",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "partial-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。适用 AGENTS.md 明确要求子代理继承最近两轮，最终交付物是只读事实核对；这不是用户临时偏好。V2 立即启动，V1 若没有部分历史字段则停止并说明。",
+      "expected_output": "项目规则的部分历史要求同样生效；V2 与简单 role 组合，V1 不伪造支持。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "partial_history_unsupported"
+        }
+      }
+    },
+    {
+      "id": "project_rule_partial_context-v2",
+      "sourceCaseId": "project_rule_partial_context",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "partial-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "最近 N 轮必须用 V2 的精确 fork_turns 表达；V1 无等价字段时必须失败关闭，不能用全历史近似。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "把最近 N 轮要求改为完整历史后，应改用 profile 的全历史字段，而不是部分历史分支。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。适用 AGENTS.md 明确要求子代理继承最近两轮，最终交付物是只读事实核对；这不是用户临时偏好。V2 立即启动，V1 若没有部分历史字段则停止并说明。",
+      "expected_output": "项目规则的部分历史要求同样生效；V2 与简单 role 组合，V1 不伪造支持。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "2"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "skill_rule_full_history_context-v1",
+      "sourceCaseId": "skill_rule_full_history_context",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "full-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。另一个已加载 skill 明确要求这个子任务继承完整历史；立即启动并遵守该 context 要求，不要因为任务可以在 message 中自包含而改用干净上下文。",
+      "expected_output": "其它已加载 skill 的完整历史要求生效，并省略与全历史 fork 不兼容的 routing override。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": true,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "skill_rule_full_history_context-v2",
+      "sourceCaseId": "skill_rule_full_history_context",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "full-history-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "完整历史必须按 profile 使用 fork_context=true 或 fork_turns=all；与显式 override 冲突时必须按 schema 失败关闭。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。另一个已加载 skill 明确要求这个子任务继承完整历史；立即启动并遵守该 context 要求，不要因为任务可以在 message 中自包含而改用干净上下文。",
+      "expected_output": "其它已加载 skill 的完整历史要求生效，并省略与全历史 fork 不兼容的 routing override。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "all"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
+      }
+    },
+    {
+      "id": "missing_preset_role-v1",
+      "sourceCaseId": "missing_preset_role",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "routing-failure-close",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "恢复 codex-subagent-simple role 后，应使用该 preset 启动一次，而不是保持阻断。"
+      },
+      "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent-simple。不要回退到 model override 或其它 role；说明阻断。",
+      "expected_output": "缺失预设 role 时 fail closed。",
+      "files": [],
+      "omit_roles": [
+        "codex-subagent-simple"
+      ],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "preset_role_unavailable"
+        }
+      }
+    },
+    {
+      "id": "missing_preset_role-v2",
+      "sourceCaseId": "missing_preset_role",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "routing-failure-close",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "恢复 codex-subagent-simple role 后，应使用该 preset 启动一次，而不是保持阻断。"
+      },
+      "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent-simple。不要回退到 model override 或其它 role；说明阻断。",
+      "expected_output": "缺失预设 role 时 fail closed。",
+      "files": [],
+      "omit_roles": [
+        "codex-subagent-simple"
+      ],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "preset_role_unavailable"
+        }
+      }
+    },
+    {
+      "id": "fixed_role_custom_conflict-v1",
+      "sourceCaseId": "fixed_role_custom_conflict",
+      "runtimeProfile": "v1",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "routing-failure-close",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "移除 agent_type 与 model 的互斥声明后，应按全部显式字段启动一次。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。当前 schema 明确说明 agent_type=codex-subagent-complex 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+      "expected_output": "固定 role 与显式 model 冲突时停止。",
+      "files": [],
+      "expectations": {
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "routing_override_conflict"
+        }
+      }
+    },
+    {
+      "id": "fixed_role_custom_conflict-v2",
+      "sourceCaseId": "fixed_role_custom_conflict",
+      "runtimeProfile": "v2",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "routing-failure-close",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "delegation_authorized": true,
+        "runtime_profiles": [
+          "v1",
+          "v2"
+        ],
+        "schema_and_roles": "由每个 profile 的 materialized subject 和 case expectations 提供"
+      },
+      "oracle": {
+        "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
+        "rule_refs": [
+          "../SKILL.md#Spawn 参数",
+          "../SKILL.md#上下文"
+        ],
+        "confidence": "high",
+        "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。",
+        "minimal_counterexample": "移除 agent_type 与 model 的互斥声明后，应按全部显式字段启动一次。"
+      },
+      "prompt": "$codex-subagent-guide 委派已获准。当前 schema 明确说明 agent_type=codex-subagent-complex 与用户指定 model=gpt-5.6-sol 互斥；不要猜测或降级，不要 spawn，只说明冲突。",
+      "expected_output": "固定 role 与显式 model 冲突时停止。",
+      "files": [],
+      "expectations": {
+        "v2": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "routing_override_conflict"
+        }
+      }
+    }
+  ]
+}

@@ -24,6 +24,20 @@ import {
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_KEY = 'codex-subagent-guide';
+export const PROVIDER_CREDENTIAL_ENVIRONMENT = [
+  'ALL_PROXY',
+  'AW_SKILL_EVAL_CODEX_BIN',
+  'AW_SKILL_EVAL_CODEX_MODEL',
+  'CODEX_HOME',
+  'HOME',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NODE_EXTRA_CA_CERTS',
+  'NO_PROXY',
+  'OPENAI_API_KEY',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
+];
 const GUIDE_ROLE_NAMES = [
   'codex-subagent-simple',
   'codex-subagent-general',
@@ -55,11 +69,8 @@ export async function readEvalResource(relativePath) {
   try {
     return await readFile(path.join(evalDir, normalized), 'utf8');
   } catch (error) {
-    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) {
-      throw error;
-    }
+    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) throw error;
   }
-
   const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
   if (typeof context.sourceRoot !== 'string' || context.sourceRoot.trim() === '') {
     throw new Error(`Eval resource is missing from bundle: ${relativePath}`);
@@ -102,19 +113,22 @@ async function readMaterializedRoles(root) {
   });
 }
 
-export async function createEvalWorkspace({ withSkill = true, fixture = 'default' } = {}) {
+export async function createEvalWorkspace({
+  withSkill = true,
+  fixture = 'default',
+  sourceRoot,
+} = {}) {
   if (!TRIGGER_WORKSPACE_FIXTURES.has(fixture)) {
     throw new Error(`Unsupported trigger workspace fixture: ${fixture}`);
   }
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-guide-eval-'));
   try {
-    const materializedProjectRoot = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    if (!materializedProjectRoot) {
+    if (!sourceRoot) {
       throw new Error(
-        'AW_PLUGIN_EVAL_PROJECT_ROOT is required; run this suite through pnpm plugin:eval.',
+        'custom provider input.workspacePath is required; use the workspace snapshot from the prepared Eval Plan.',
       );
     }
-    await cp(materializedProjectRoot, root, { recursive: true, force: true });
+    await cp(sourceRoot, root, { recursive: true, force: true });
     const skillRoot = path.join(root, '.agents', 'skills', SKILL_KEY);
     const skillPath = path.join(skillRoot, 'SKILL.md');
     const roles = await readMaterializedRoles(root);
@@ -145,6 +159,67 @@ export async function createEvalWorkspace({ withSkill = true, fixture = 'default
     await rm(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+function redactedProviderEvidence(value) {
+  const secrets = PROVIDER_CREDENTIAL_ENVIRONMENT
+    .map((name) => process.env[name])
+    .filter((entry) => typeof entry === 'string' && entry !== '');
+  return JSON.parse(JSON.stringify(value, (_key, entry) => {
+    if (typeof entry !== 'string') return entry;
+    return secrets.reduce(
+      (result, secret) => result.replaceAll(secret, '[redacted credential]'),
+      entry,
+    );
+  }));
+}
+
+export async function createProviderOutput({
+  providerId,
+  graderId,
+  run,
+  result,
+  outputDir,
+}) {
+  const evidencePath = path.join(outputDir, 'provider-evidence.json');
+  const tracePath = path.join(outputDir, 'provider-trace.json');
+  await Promise.all([
+    writeFile(
+      evidencePath,
+      `${JSON.stringify(redactedProviderEvidence(run), null, 2)}\n`,
+      'utf8',
+    ),
+    writeFile(
+      tracePath,
+      `${JSON.stringify(redactedProviderEvidence(run.event_trace ?? []), null, 2)}\n`,
+      'utf8',
+    ),
+  ]);
+  const artifacts = [
+    { path: path.basename(evidencePath), role: 'report' },
+    { path: path.basename(tracePath), role: 'trace' },
+  ];
+  if (typeof run.final_message === 'string' && run.final_message !== '') {
+    const outputPath = path.join(outputDir, 'model-output.txt');
+    await writeFile(
+      outputPath,
+      `${redactedProviderEvidence(run.final_message)}\n`,
+      'utf8',
+    );
+    artifacts.push({ path: path.basename(outputPath), role: 'output' });
+  }
+  return {
+    schemaVersion: 1,
+    provider: { id: providerId, version: 'manifest-v1' },
+    usage: run.usage && typeof run.usage === 'object'
+      ? redactedProviderEvidence(run.usage)
+      : null,
+    grading: {
+      grader: { id: graderId, version: '1' },
+      result: redactedProviderEvidence(result),
+    },
+    artifacts,
+  };
 }
 
 export function parseExecEventLine(line) {
@@ -724,37 +799,9 @@ export async function runCodexOnce(workspace, evalCase, options) {
       let stderr = '';
       let finalMessage = null;
       let usage = null;
-      let stopReason = null;
-      let interruptedSignal = null;
       let settled = false;
-      let forceKillTimer;
       let rolloutPollPending = false;
       const eventTrace = [];
-
-      const stop = (reason) => {
-        if (stopReason || child.exitCode !== null || child.signalCode !== null) {
-          return;
-        }
-        stopReason = reason;
-        child.kill('SIGTERM');
-        forceKillTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
-        forceKillTimer.unref();
-      };
-      const handleInterrupt = (signal) => {
-        interruptedSignal = signal;
-        stop(`parent_${signal.toLowerCase()}`);
-      };
-      const handleSigint = () => handleInterrupt('SIGINT');
-      const handleSigterm = () => handleInterrupt('SIGTERM');
-      const removeInterruptHandlers = () => {
-        process.off('SIGINT', handleSigint);
-        process.off('SIGTERM', handleSigterm);
-      };
-      process.once('SIGINT', handleSigint);
-      process.once('SIGTERM', handleSigterm);
-
-      const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
-      timeout.unref();
       const pollRollouts = async () => {
         if (rolloutPollPending) {
           return;
@@ -766,10 +813,6 @@ export async function runCodexOnce(workspace, evalCase, options) {
             observed.spawned = true;
             observed.spawnCalls = calls;
             observed.spawnEvidence ??= `rollout:${calls[0].call_id ?? 'spawn_agent'}`;
-            const reason = earlyStopReason(evalCase, observed);
-            if (reason) {
-              stop(reason);
-            }
           }
         } catch (error) {
           if (error?.code !== 'ENOENT') {
@@ -811,10 +854,6 @@ export async function runCodexOnce(workspace, evalCase, options) {
         if (event?.type === 'turn.completed' && event.usage) {
           usage = event.usage;
         }
-        const reason = earlyStopReason(evalCase, observed);
-        if (reason) {
-          stop(reason);
-        }
       });
 
       child.once('error', (error) => {
@@ -822,10 +861,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
           return;
         }
         settled = true;
-        clearTimeout(timeout);
-        clearTimeout(forceKillTimer);
         clearInterval(rolloutPollTimer);
-        removeInterruptHandlers();
         lines.close();
         reject(new Error(`Failed to start ${options.codexBin}: ${error.message}`));
       });
@@ -835,10 +871,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
           return;
         }
         settled = true;
-        clearTimeout(timeout);
-        clearTimeout(forceKillTimer);
         clearInterval(rolloutPollTimer);
-        removeInterruptHandlers();
         lines.close();
         try {
           observed.collaborationTimeline = await readCollaborationTimelineFromRollouts(codexHome);
@@ -855,14 +888,8 @@ export async function runCodexOnce(workspace, evalCase, options) {
           observed.spawnEvidence ??=
             `rollout:${observed.spawnCalls[0].call_id ?? 'spawn_agent'}`;
         }
-        if (interruptedSignal) {
-          reject(new Error(`Interrupted by ${interruptedSignal}.`));
-          return;
-        }
-        const termination = stopReason ?? 'completed';
-        const executionError =
-          termination === 'timeout' ||
-          (termination === 'completed' && exitCode !== 0);
+        const termination = 'completed';
+        const executionError = exitCode !== 0;
         resolve({
           requested_explicitly: observed.requestedExplicitly,
           loaded: observed.loaded,
@@ -886,39 +913,4 @@ export async function runCodexOnce(workspace, evalCase, options) {
   } finally {
     await removeEvalDirectory(codexHome);
   }
-}
-
-export function ratePasses(rate, expected, threshold) {
-  return expected ? rate > threshold : rate < threshold;
-}
-
-export function executionErrorEvidence(run) {
-  const eventErrors = (run.event_trace ?? []).flatMap((event) => {
-    if (event?.type === 'error' && typeof event.message === 'string') {
-      return [event.message];
-    }
-    if (event?.item?.type === 'error' && typeof event.item.message === 'string') {
-      return [event.item.message];
-    }
-    if (event?.type === 'turn.failed' && typeof event.error?.message === 'string') {
-      return [event.error.message];
-    }
-    return [];
-  });
-  return JSON.stringify({
-    termination: run.termination ?? null,
-    exit_code: run.exit_code ?? null,
-    signal: run.signal ?? null,
-    stderr: run.stderr ?? null,
-    error_events: eventErrors,
-  });
-}
-
-export async function writeJsonReport(report, outputPath) {
-  const output = `${JSON.stringify(report, null, 2)}\n`;
-  if (outputPath) {
-    await mkdir(path.dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, output, 'utf8');
-  }
-  process.stdout.write(output);
 }

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aw.invalid/schemas/aw-skill-eval-check-result.schema.json",
+  "title": "AwSkillEvalCheckResult",
+  "type": "object",
+  "required": ["schemaVersion", "checker", "plugin", "skill", "suite", "profile", "document", "schema", "passed", "errors"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "checker": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "const": "json-schema" },
+        "version": { "const": "1" }
+      },
+      "additionalProperties": false
+    },
+    "plugin": { "type": "string", "minLength": 1 },
+    "skill": { "type": "string", "minLength": 1 },
+    "suite": { "type": "string", "minLength": 1 },
+    "profile": { "type": "string", "minLength": 1 },
+    "document": {
+      "type": "object",
+      "required": ["path", "digest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "schema": {
+      "type": "object",
+      "required": ["path", "digest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "passed": { "type": "boolean" },
+    "errors": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

@@ -1,56 +1,12 @@
 import { rm } from 'node:fs/promises';
-import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
 import {
+  createProviderOutput,
   createEvalWorkspace,
-  executionErrorEvidence,
-  readEvalResource,
+  PROVIDER_CREDENTIAL_ENVIRONMENT,
   runCodexOnce,
-  writeJsonReport,
 } from './eval-harness.mjs';
-
-const DEFAULT_OPTIONS = {
-  runs: 1,
-  timeoutMs: 900_000,
-  codexBin: 'codex',
-  model: 'gpt-5.6-luna',
-  caseId: undefined,
-  output: undefined,
-};
-
-function valueAfter(argv, index, flag) {
-  const value = argv[index + 1];
-  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value.`);
-  return value;
-}
-
-export function parseLifecycleArgs(argv) {
-  const options = { ...DEFAULT_OPTIONS, help: false };
-  for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (flag === '-h' || flag === '--help') {
-      options.help = true;
-      continue;
-    }
-    const value = valueAfter(argv, index, flag);
-    index += 1;
-    if (flag === '--runs' || flag === '--timeout-ms') {
-      const parsed = Number(value);
-      if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`${flag} must be a positive integer.`);
-      }
-      if (flag === '--runs') options.runs = parsed;
-      else options.timeoutMs = parsed;
-    } else if (flag === '--case') options.caseId = value;
-    else if (flag === '--codex-bin') options.codexBin = value;
-    else if (flag === '--model') options.model = value;
-    else if (flag === '--output') options.output = path.resolve(value);
-    else throw new Error(`Unknown option: ${flag}`);
-  }
-  return options;
-}
 
 function waitTimedOut(call) {
   if (call?.output && typeof call.output === 'object') {
@@ -141,127 +97,61 @@ export function evaluateLifecycleTimeline(calls, expected) {
   return { passed: assertions.every((entry) => entry.passed), assertions };
 }
 
-export function selectLifecycleCases(document, { caseId, profile }) {
-  if (document?.skill_name !== 'codex-subagent-guide' || !Array.isArray(document.evals)) {
-    throw new Error('lifecycle-evals.json must describe codex-subagent-guide.');
+function validateLifecycleCase(evalCase) {
+  if (!evalCase || typeof evalCase !== 'object' || Array.isArray(evalCase)) {
+    throw new Error('Provider lifecycle case must be an object.');
   }
-  const profileCases = document.evals.filter(
-    (entry) => !Array.isArray(entry.profiles) || entry.profiles.includes(profile),
-  );
-  const cases = caseId
-    ? profileCases.filter((entry) => entry.id === caseId)
-    : profileCases;
-  if (cases.length === 0) {
-    throw new Error(`Unknown lifecycle case for profile ${profile}: ${caseId ?? 'all'}`);
+  if (typeof evalCase.id !== 'string' || typeof evalCase.prompt !== 'string') {
+    throw new Error('Provider lifecycle case id and prompt are required.');
   }
-  return cases;
+  if (!evalCase.expected || typeof evalCase.expected !== 'object') {
+    throw new Error(`${evalCase.id}.expected is required.`);
+  }
+  return evalCase;
 }
 
-async function loadCases(caseId) {
-  const documents = await Promise.all([
-    'lifecycle-evals.json',
-    'lifecycle-timeout-evals.json',
-  ].map(async (resource) => JSON.parse(await readEvalResource(resource))));
-  const document = {
-    skill_name: 'codex-subagent-guide',
-    evals: documents.flatMap((entry) => entry.evals ?? []),
-  };
-  return selectLifecycleCases(document, {
-    caseId,
-    profile: process.env.AW_PLUGIN_EVAL_PROFILE ?? 'project-default',
+export async function runEvalProvider(input) {
+  const evalCase = validateLifecycleCase(input.case);
+  if (evalCase.id !== input.caseId) {
+    throw new Error('Provider case id does not match input.caseId.');
+  }
+  const workspace = await createEvalWorkspace({
+    sourceRoot: input.workspacePath,
+    withSkill: input.skillMode !== 'without-skill',
   });
-}
-
-async function runCase(evalCase, options) {
-  const runs = [];
-  for (let index = 0; index < options.runs; index += 1) {
-    const workspace = await createEvalWorkspace({ withSkill: true });
-    try {
-      const run = await runCodexOnce(
-        workspace,
-        {
-          query: evalCase.prompt,
-          explicit_skill: true,
-          should_load_skill: true,
-          should_spawn_agent: true,
-          wait_for_completion: true,
-          codex_config: {},
-        },
-        {
-          profile: 'v2',
-          model: options.model,
-          codexBin: options.codexBin,
-          timeoutMs: options.timeoutMs,
-          captureTrace: true,
-        },
-      );
-      const grade = evaluateLifecycleTimeline(run.collaboration_timeline, evalCase.expected);
-      runs.push({ run: index + 1, ...run, assertions: grade.assertions, passed: grade.passed });
-    } finally {
-      await rm(workspace.root, { recursive: true, force: true });
-    }
-  }
-  return {
-    id: evalCase.id,
-    complete: runs.every((run) => !run.execution_error && run.collaboration_timeline?.length > 0),
-    passed: runs.every((run) => run.passed),
-    runs,
-  };
-}
-
-async function main() {
-  const options = parseLifecycleArgs(process.argv.slice(2));
-  if (options.help) {
-    process.stdout.write('Usage: run-lifecycle-evals.mjs [--runs N] [--case ID] [--model MODEL] [--codex-bin PATH] [--timeout-ms MS] [--output PATH]\n');
-    return;
-  }
-  const cases = await loadCases(options.caseId);
-  const results = [];
-  let environmentError = null;
   try {
-    for (const evalCase of cases) results.push(await runCase(evalCase, options));
-  } catch (error) {
-    environmentError = executionErrorEvidence({
-      execution_error: true,
-      stderr: error instanceof Error ? error.stack ?? error.message : String(error),
+    const run = await runCodexOnce(workspace, {
+      query: evalCase.prompt,
+      explicit_skill: true,
+      should_load_skill: true,
+      should_spawn_agent: true,
+      wait_for_completion: true,
+      codex_config: {},
+    }, {
+      profile: 'v2',
+      model: process.env.AW_SKILL_EVAL_CODEX_MODEL ?? 'gpt-5.6-luna',
+      codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
+      captureTrace: true,
+      sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
     });
+    const evaluation = evaluateLifecycleTimeline(
+      run.collaboration_timeline,
+      evalCase.expected,
+    );
+    return createProviderOutput({
+      providerId: 'codex-subagent-lifecycle',
+      graderId: 'codex-subagent-lifecycle-mechanical',
+      run,
+      result: {
+        caseId: input.caseId,
+        configuration: input.configuration,
+        skillMode: input.skillMode,
+        complete: !run.execution_error && run.collaboration_timeline?.length > 0,
+        ...evaluation,
+      },
+      outputDir: input.outputDir,
+    });
+  } finally {
+    await rm(workspace.root, { recursive: true, force: true });
   }
-  const complete = !environmentError && results.length === cases.length &&
-    results.every((entry) => entry.complete);
-  const passed = complete && results.every((entry) => entry.passed);
-  const report = {
-    schema_version: 2,
-    generated_at: new Date().toISOString(),
-    complete,
-    passed,
-    ...(environmentError ? { environment_error: environmentError } : {}),
-    summary: {
-      cases: results.length,
-      passed: results.filter((entry) => entry.passed).length,
-      failed: results.filter((entry) => !entry.passed).length,
-    },
-    case_results: cases.map((evalCase) => {
-      const result = results.find((entry) => entry.id === evalCase.id);
-      const caseComplete = result?.complete === true;
-      const casePassed = caseComplete && result.passed === true;
-      return {
-        id: evalCase.id,
-        outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete',
-        complete: caseComplete,
-        mechanical_passed: casePassed,
-      };
-    }),
-    results,
-  };
-  await writeJsonReport(report, options.output);
-  if (!passed) process.exitCode = 1;
-}
-
-const isMain = process.argv[1] &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
-  main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  });
 }

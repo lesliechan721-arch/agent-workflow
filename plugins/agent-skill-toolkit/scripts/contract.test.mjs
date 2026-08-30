@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -21,6 +21,16 @@ async function exists(root, relative) {
 }
 
 async function runtimeExportSource(plugin, exportName) {
+  if (plugin === '@aw/agent-skill-eval') {
+    const sources = {
+      'case-corpus-digest': 'dist/corpus-digest.js',
+      'eval-audit-result-schema': 'dist/schemas/eval-audit-result.schema.json',
+      'eval-run-bundle-schema': 'dist/schemas/eval-run-bundle.schema.json',
+      'eval-run-bundle-validator': 'dist/bundle-validation-runtime.js',
+    };
+    assert.ok(sources[exportName], `missing virtual runtime export ${plugin}:${exportName}`);
+    return path.resolve(sourceRoot, '../../packages/agent-skill-eval', sources[exportName]);
+  }
   const providerRoot = path.resolve(sourceRoot, '..', plugin);
   const manifest = JSON.parse(await readFile(path.join(providerRoot, '.agents-plugin/plugin.json'), 'utf8'));
   const item = manifest.buildConfig?.runtimeExports?.find((entry) => entry.name === exportName);
@@ -34,8 +44,6 @@ test('reviewer manifest and runtime expose only the current quality contract', a
     manifest.buildConfig.runtimeExports.map((entry) => entry.name).sort(),
     [
       'check-agent-skill',
-      'eval-audit-result-schema',
-      'eval-run-bundle-schema',
       'quality-review-result-schema',
       'review-dimensions',
       'review-publication-reference',
@@ -51,8 +59,6 @@ test('reviewer manifest and runtime expose only the current quality contract', a
     manifest.buildConfig.runtimeExports.map((entry) => `${entry.name}:${entry.source}`).sort(),
     [
       'check-agent-skill:./scripts/check-agent-skill.mjs',
-      'eval-audit-result-schema:./schemas/eval-audit-result.schema.json',
-      'eval-run-bundle-schema:./schemas/eval-run-bundle.schema.json',
       'quality-review-result-schema:./schemas/quality-review-result.schema.json',
       'review-dimensions:./standards/review-dimensions.json',
       'review-publication-reference:./references/review-publication.md',
@@ -95,6 +101,7 @@ test('reviewer production and materialized closures use registered current depen
     manifest.buildConfig.buildImports.map((entry) => `${entry.plugin}:${entry.export}`).sort(),
     [
       '@aw/agent-skill-eval:case-corpus-digest',
+      '@aw/agent-skill-eval:eval-run-bundle-validator',
       'agent-content-toolkit:content-rules',
     ],
   );
@@ -102,8 +109,12 @@ test('reviewer production and materialized closures use registered current depen
     manifest.buildConfig.skillRuntimeFiles
       .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
       .sort(),
-    [],
+    [
+      '@aw/agent-skill-eval:eval-audit-result-schema',
+      '@aw/agent-skill-eval:eval-run-bundle-schema',
+    ],
   );
+  if (!context) return;
   const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill');
   for (const relative of [
     'assets/review-input-bundle.schema.json',
@@ -155,16 +166,19 @@ test('materialized audit validator runs with its projected dependency closure', 
   const templatePath = path.join(auditRoot, 'assets/eval-audit-result-template.json');
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-runtime-contract-'));
   try {
-    const { stdout } = await execFileAsync(process.execPath, [
-      validator,
-      templatePath,
-      '--format',
-      'json',
+    const { stdout } = await execFileAsync(process.execPath, [validator, '--help'], {
+      cwd: auditRoot,
+      encoding: 'utf8',
+    });
+    assert.match(stdout, /--plan <plan\.json>/u);
+
+    const sourceOnly = await execFileAsync(process.execPath, [
+      validator, templatePath, '--format', 'json',
     ], {
       cwd: auditRoot,
       encoding: 'utf8',
     });
-    assert.equal(JSON.parse(stdout).valid, true);
+    assert.equal(JSON.parse(sourceOnly.stdout).valid, true);
 
     const invalid = JSON.parse(await readFile(templatePath, 'utf8'));
     invalid.runBundleDigest = 'sha256:' + '1'.repeat(64);
@@ -244,21 +258,165 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
   }
 });
 
-test('materialized audit validator matches the canonical digest for a formerly divergent corpus', async () => {
+test('materialized audit validator uses the canonical corpus digest runtime', async () => {
   if (!context) return;
   const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
   const runtimeDigest = path.join(auditRoot, 'scripts/corpus-digest.mjs');
   const packageDigest = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/corpus-digest.js');
   assert.deepEqual(await readFile(runtimeDigest), await readFile(packageDigest));
-  const casePath = path.join(sourceRoot, 'skills/review-agent-skill/evals/behavior-cases.json');
-  const { stdout } = await execFileAsync(process.execPath, [
-    path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs'),
-    '--digest-only', '--case', casePath,
-  ], { cwd: auditRoot, encoding: 'utf8' });
-  assert.equal(
-    stdout.trim(),
-    'sha256:49775372bbdccd493d2117883e306743c84828df3d9858af95b8597b1fa0b9a9',
-  );
+});
+
+test('materialized Bundle validator matches the canonical package validator', async () => {
+  if (!context) return;
+  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
+  const validator = path.join(auditRoot, 'scripts/validate-eval-run-bundle.mjs');
+  const packageValidator = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/bin.js');
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'bundle-validator-differential-'));
+  const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex');
+  const targetSkillDigest = 'sha256:' + '1'.repeat(64);
+  const evidenceRoot = path.join(temporary, 'evidence');
+  const runRoot = path.join(evidenceRoot, 'case-1', 'current', '1');
+  const baselineRoot = path.join(evidenceRoot, 'case-1', 'baseline', '1');
+  const grading = {
+    grader: { id: 'fixture-grader', version: '1' },
+    result: { score: 1 },
+  };
+  const providerOutput = {
+    schemaVersion: 1,
+    provider: { id: 'fixture-provider', version: '1' },
+    usage: { tokens: 2 },
+    grading,
+    artifacts: [{ path: 'provider.txt', role: 'output' }],
+  };
+  async function pluginValidation(bundlePath) {
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [validator, bundlePath, '--format', 'json'], {
+        cwd: auditRoot,
+        encoding: 'utf8',
+      });
+      return JSON.parse(stdout);
+    } catch (error) {
+      return JSON.parse(error.stdout);
+    }
+  }
+  async function packageValidation(bundlePath) {
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [
+        packageValidator,
+        'bundle',
+        'validate',
+        bundlePath,
+      ], { encoding: 'utf8' });
+      return JSON.parse(stdout);
+    } catch (error) {
+      return JSON.parse(error.stdout);
+    }
+  }
+  try {
+    await Promise.all([
+      mkdir(runRoot, { recursive: true }),
+      mkdir(baselineRoot, { recursive: true }),
+    ]);
+    const stdout = JSON.stringify(providerOutput);
+    const gradingRaw = JSON.stringify(grading);
+    await writeFile(path.join(runRoot, 'stdout.txt'), stdout);
+    await writeFile(path.join(runRoot, 'stderr.txt'), '');
+    await writeFile(path.join(runRoot, 'provider.txt'), 'provider\n');
+    await writeFile(path.join(runRoot, 'grading.json'), gradingRaw);
+    await writeFile(path.join(baselineRoot, 'stdout.txt'), stdout);
+    await writeFile(path.join(baselineRoot, 'stderr.txt'), '');
+    await writeFile(path.join(baselineRoot, 'provider.txt'), 'provider\n');
+    await writeFile(path.join(baselineRoot, 'grading.json'), gradingRaw);
+    const bundle = {
+      schemaVersion: 4,
+      runner: { id: 'fixture-runner', version: '1' },
+      independentContext: true,
+      provider: { id: 'fixture-provider', version: '1' },
+      providerCapabilitiesDigest: 'sha256:' + '2'.repeat(64),
+      planDigest: 'sha256:' + '3'.repeat(64),
+      targetSkillDigest,
+      caseCorpusDigest: 'sha256:' + '4'.repeat(64),
+      runtimeInputs: [{ id: 'workspace', digest: 'sha256:' + '5'.repeat(64) }],
+      comparisonPlanned: false,
+      evidenceLevel: 'executed',
+      processManagement: { mode: 'managed', descendantCleanupGuaranteed: true },
+      runs: [{
+        caseId: 'case-1',
+        configuration: 'current',
+        comparisonId: null,
+        skillMode: 'with-skill',
+        skillDigest: targetSkillDigest,
+        runIndex: 1,
+        status: 'completed',
+        exitCode: 0,
+        durationMs: 1,
+        stdoutPath: 'case-1/current/1/stdout.txt',
+        stdoutDigest: digest(stdout),
+        stderrPath: 'case-1/current/1/stderr.txt',
+        stderrDigest: digest(''),
+        usage: providerOutput.usage,
+        grading,
+        artifacts: [
+          { role: 'output', path: 'case-1/current/1/provider.txt', digest: digest('provider\n') },
+          { role: 'grading', path: 'case-1/current/1/grading.json', digest: digest(gradingRaw) },
+        ],
+      }],
+      aggregate: {
+        cases: 1,
+        configurations: 1,
+        runs: 1,
+        completed: 1,
+        processFailed: 0,
+        timedOut: 0,
+        comparisons: [],
+      },
+      limitations: [],
+    };
+    for (const [name, mutate] of [
+      ['valid', () => undefined],
+      ['usage', (value) => { value.runs[0].usage.tokens = 9; }],
+      ['grading', (value) => { value.runs[0].grading.result.score = 0; }],
+      ['runtime-input-id', (value) => { value.runtimeInputs.push({ ...value.runtimeInputs[0] }); }],
+      ['comparison', (value) => {
+        value.runs[0].comparisonId = 'pair-1';
+        const baseline = structuredClone(value.runs[0]);
+        baseline.configuration = 'baseline';
+        baseline.skillMode = 'without-skill';
+        baseline.skillDigest = null;
+        baseline.stdoutPath = baseline.stdoutPath.replace('/current/', '/baseline/');
+        baseline.stderrPath = baseline.stderrPath.replace('/current/', '/baseline/');
+        baseline.artifacts = baseline.artifacts.map((artifact) => ({
+          ...artifact,
+          path: artifact.path.replace('/current/', '/baseline/'),
+        }));
+        value.runs.push(baseline);
+        value.comparisonPlanned = true;
+        value.evidenceLevel = 'comparative';
+        value.aggregate.configurations = 2;
+        value.aggregate.runs = 2;
+        value.aggregate.completed = 2;
+        value.aggregate.comparisons = [{
+          comparisonId: 'pair-1',
+          caseId: 'case-1',
+          runIndex: 1,
+          paired: true,
+          comparable: true,
+        }];
+      }],
+    ]) {
+      const value = structuredClone(bundle);
+      mutate(value);
+      const bundlePath = path.join(evidenceRoot, `${name}.json`);
+      await writeFile(bundlePath, JSON.stringify(value));
+      const canonical = await packageValidation(bundlePath);
+      const projected = await pluginValidation(bundlePath);
+      assert.equal(projected.valid, canonical.valid, name);
+      assert.deepEqual(projected.errors, canonical.errors, name);
+      assert.deepEqual(projected.calculated, canonical.calculated, name);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test('audit triage rejects conclusions from an unmet bundle evidence requirement', async () => {
@@ -270,16 +428,25 @@ test('audit triage rejects conclusions from an unmet bundle evidence requirement
   const targetSkillDigest = 'sha256:' + '1'.repeat(64);
   const caseCorpusDigest = 'sha256:' + '2'.repeat(64);
   try {
-    await writeFile(path.join(temporary, 'stdout.txt'), '');
+    const stdout = JSON.stringify({
+      schemaVersion: 1,
+      provider: { id: 'fixture', version: '1' },
+      usage: null,
+      grading: null,
+      artifacts: [],
+    });
+    await writeFile(path.join(temporary, 'stdout.txt'), stdout);
     await writeFile(path.join(temporary, 'stderr.txt'), '');
     const bundle = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runner: { id: 'fixture', version: '1' },
       independentContext: true,
       provider: { id: 'fixture', version: '1' },
+      providerCapabilitiesDigest: 'sha256:' + '4'.repeat(64),
       planDigest: 'sha256:' + '3'.repeat(64),
       targetSkillDigest,
       caseCorpusDigest,
+      runtimeInputs: [],
       comparisonPlanned: false,
       evidenceLevel: 'executed',
       evidenceRequirement: {
@@ -304,7 +471,7 @@ test('audit triage rejects conclusions from an unmet bundle evidence requirement
         exitCode: 0,
         durationMs: 1,
         stdoutPath: 'stdout.txt',
-        stdoutDigest: digest(''),
+        stdoutDigest: digest(stdout),
         stderrPath: 'stderr.txt',
         stderrDigest: digest(''),
         usage: null,

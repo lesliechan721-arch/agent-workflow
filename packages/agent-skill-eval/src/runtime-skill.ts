@@ -64,6 +64,7 @@ function digestProductionRecords(
 async function runtimeSkillFiles(
   root: string,
   platform: NodeJS.Platform,
+  filterSkillOnly = true,
 ): Promise<RuntimeSkillFile[]> {
   const rootStat = await stat(root)
   if (rootStat.isFile()) {
@@ -80,8 +81,8 @@ async function runtimeSkillFiles(
     const entries = await readdir(directory, { withFileTypes: true })
     entries.sort((left, right) => left.name.localeCompare(right.name))
     for (const entry of entries) {
-      if (alwaysIgnored.has(entry.name)) continue
-      if (relativeDirectory === '' && authorOnlyRoots.has(entry.name)) continue
+      if (filterSkillOnly && alwaysIgnored.has(entry.name)) continue
+      if (filterSkillOnly && relativeDirectory === '' && authorOnlyRoots.has(entry.name)) continue
       const absolutePath = path.join(directory, entry.name)
       const relativePath = path.join(relativeDirectory, entry.name)
       if (entry.isSymbolicLink()) throw new Error(`Skill target cannot contain symlinks: ${relativePath}`)
@@ -138,6 +139,30 @@ export async function captureRuntimeSkill(
   return { sourceRoot, digest: digestCapturedRuntimeSkill(files), files }
 }
 
+export async function computeCanonicalDirectoryDigest(
+  directoryPath: string,
+  options: RuntimeSkillDigestOptions = {},
+): Promise<Digest> {
+  return (await captureCanonicalDirectory(directoryPath, options)).digest
+}
+
+export async function captureCanonicalDirectory(
+  directoryPath: string,
+  options: RuntimeSkillDigestOptions = {},
+): Promise<CapturedRuntimeSkill> {
+  if ((await lstat(directoryPath)).isSymbolicLink()) throw new Error('directory cannot be a symlink')
+  const sourceRoot = await realpath(directoryPath)
+  if (!(await stat(sourceRoot)).isDirectory()) throw new Error('runtime input must be a directory')
+  const files = await Promise.all(
+    (await runtimeSkillFiles(sourceRoot, options.platform ?? process.platform, false)).map(async (file) => ({
+      relativePath: file.relativePath,
+      mode: file.mode,
+      bytes: await readFile(file.absolutePath),
+    })),
+  )
+  return { sourceRoot, digest: digestCapturedRuntimeSkill(files), files }
+}
+
 export async function materializeCapturedRuntimeSkill(
   captured: CapturedRuntimeSkill,
   destinationPath: string,
@@ -156,6 +181,27 @@ export async function materializeCapturedRuntimeSkill(
   }
   const digest = await computeSkillDigest(destinationPath, options)
   if (digest !== captured.digest) throw new Error('Runtime Skill snapshot digest does not match captured Skill bytes')
+  return { root: await realpath(destinationPath), digest }
+}
+
+export async function materializeCapturedCanonicalDirectory(
+  captured: CapturedRuntimeSkill,
+  destinationPath: string,
+  options: RuntimeSkillDigestOptions = {},
+): Promise<RuntimeSkillSnapshot> {
+  const resolvedDestination = path.resolve(destinationPath)
+  if (pathsOverlap(captured.sourceRoot, resolvedDestination))
+    throw new Error('runtime input snapshot destination must not overlap its source')
+  await mkdir(destinationPath, { recursive: true })
+  const platform = options.platform ?? process.platform
+  for (const file of captured.files) {
+    const destination = path.join(destinationPath, ...file.relativePath.split('/'))
+    await mkdir(path.dirname(destination), { recursive: true })
+    await writeFile(destination, file.bytes, { flag: 'wx', mode: file.mode === '100755' ? 0o755 : 0o644 })
+    if (platform !== 'win32') await chmod(destination, file.mode === '100755' ? 0o755 : 0o644)
+  }
+  const digest = await computeCanonicalDirectoryDigest(destinationPath, options)
+  if (digest !== captured.digest) throw new Error('runtime input snapshot digest does not match captured bytes')
   return { root: await realpath(destinationPath), digest }
 }
 

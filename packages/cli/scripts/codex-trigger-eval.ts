@@ -1,7 +1,5 @@
-import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 import { computeSkillDigest } from '@lesliechan721/agent-skill-eval';
@@ -11,46 +9,20 @@ import {
   EvalAppServerSession,
   extractAppServerThreadId,
   inspectAppServerConfigWarning,
-  runCodexEvalIsolationProbe,
+  type CodexEvalProcessManagementEvidence,
 } from './codex-eval-app-server.js';
-import {
-  codexEvalIsolationEvidence,
-  inspectCodexEvalHostIsolation,
-  type CodexEvalHostIsolationEvidence,
-  type CodexEvalRpcIsolationEvidence,
-} from './codex-eval-isolation.js';
 
 import {
   assertCodexEvalCanStartWork,
   applyCodexEvalProviderEnvironment,
-  CODEX_EVAL_CLI_ENTRY_ENV,
-  CODEX_EVAL_CLI_NODE_ENV,
-  cleanCodexEvalRuntimeConfig,
-  codexEvalRuntimeEvidence,
   createCodexEvalTemporaryRoot,
   materializeCodexEvalRuntimeHome,
-  redactCodexEvalValue,
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js';
 import {
-  PLUGIN_EVAL_SCHEMA_VERSION,
-  readPluginEvalTriggerCases,
-  type PluginEvalCaseCheckpoint,
-  type PluginEvalSplit,
-  type PluginEvalProcessManagementEvidence,
-  type PluginEvalSuiteReport,
-  type PluginEvalTriggerCase,
-  type PluginEvalTriggerSuite,
-} from './plugin-eval-contract.js';
-
-const DEFAULT_OBSERVED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
-  mode: 'observed',
-  inspectionAvailable: true,
-  userAcknowledged: false,
-  descendantCleanupGuaranteed: false,
-  limitation:
-    'Process-tree inspection observes and cleans known descendants but does not guarantee descendant cleanup.',
-};
+  type AwSkillEvalTriggerCase,
+  type AwSkillEvalTriggerSuiteCaseContract,
+} from './aw-skill-eval-cases.js';
 
 async function createTriggerTemporaryRoot(
   workRoot?: string,
@@ -63,12 +35,9 @@ async function createTriggerTemporaryRoot(
   });
 }
 
-const execFileAsync = promisify(execFile);
 const PASS_THRESHOLD = 0.5;
 const PASSTHROUGH_ENV = new Set([
   'PATH',
-  CODEX_EVAL_CLI_ENTRY_ENV,
-  CODEX_EVAL_CLI_NODE_ENV,
   'LANG',
   'LC_ALL',
   'HTTP_PROXY',
@@ -90,13 +59,11 @@ const PROTECTED_ENV = new Set([
   'TEMP',
   'TMP',
   'PATH',
-  CODEX_EVAL_CLI_ENTRY_ENV,
-  CODEX_EVAL_CLI_NODE_ENV,
 ]);
 
 interface TriggerFixtureContext {
   workspaceRoot: string;
-  evalCase: PluginEvalTriggerCase;
+  evalCase: AwSkillEvalTriggerCase;
   env: NodeJS.ProcessEnv;
 }
 
@@ -147,7 +114,7 @@ export interface TriggerRunEvidence {
 
 interface TriggerCaseSummary {
   id: string;
-  split: PluginEvalTriggerCase['split'];
+  split: AwSkillEvalTriggerCase['split'];
   query: string;
   expected: {
     load_skill?: boolean;
@@ -174,13 +141,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function sha256(value: string | Buffer): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
-}
-
-async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
-  await fs.ensureDir(path.dirname(filePath));
-  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  await fs.writeJson(temporary, value, { spaces: 2 });
-  await fs.rename(temporary, filePath);
 }
 
 function stableJson(value: unknown): string {
@@ -252,8 +212,8 @@ function explicitSkillRequested(query: string, skillName: string): boolean {
 }
 
 function expectedLoadedSkills(
-  suite: PluginEvalTriggerSuite,
-  evalCase: PluginEvalTriggerCase,
+  suite: AwSkillEvalTriggerSuiteCaseContract,
+  evalCase: AwSkillEvalTriggerCase,
 ): string[] {
   if (evalCase.expected_loaded_skills) {
     return [...evalCase.expected_loaded_skills];
@@ -396,8 +356,8 @@ function resolveCodexExecutable(codexBin: string): string {
 }
 
 function expectedEarlyStop(
-  suite: PluginEvalTriggerSuite,
-  evalCase: PluginEvalTriggerCase,
+  suite: AwSkillEvalTriggerSuiteCaseContract,
+  evalCase: AwSkillEvalTriggerCase,
   observed: TriggerObservation,
   loadedSkills: string[],
 ): string | null {
@@ -447,7 +407,7 @@ function expectedEarlyStop(
 
 async function loadFixtureModule(
   pluginRoot: string,
-  suite: PluginEvalTriggerSuite,
+  suite: AwSkillEvalTriggerSuiteCaseContract,
 ): Promise<TriggerFixtureModule | null> {
   if (!suite.fixtureModule) {
     return null;
@@ -550,8 +510,8 @@ async function snapshotStrictControlPlane(
 }
 
 async function runTriggerOnce(options: {
-  suite: PluginEvalTriggerSuite;
-  evalCase: PluginEvalTriggerCase;
+  suite: AwSkillEvalTriggerSuiteCaseContract;
+  evalCase: AwSkillEvalTriggerCase;
   subjectRoot: string;
   fixture: TriggerFixtureModule | null;
   codexBin: string;
@@ -559,8 +519,10 @@ async function runTriggerOnce(options: {
   codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
-  processManagement: PluginEvalProcessManagementEvidence;
+  processManagement: CodexEvalProcessManagementEvidence;
   workRoot?: string;
+  allowMissingSkills?: boolean;
+  manageTimeout?: boolean;
 }): Promise<TriggerRunEvidence> {
   assertCodexEvalCanStartWork();
   const temporaryRoot = await createTriggerTemporaryRoot(
@@ -588,12 +550,15 @@ async function runTriggerOnce(options: {
     if (options.suite.isolation === 'strict') {
       await isolateTriggerWorkspaceSkills(workspaceRoot, options.suite.skills);
     }
-    const skillPaths = new Map(options.suite.skills.map((skillName) => [
+    const declaredSkillPaths = new Map(options.suite.skills.map((skillName) => [
       skillName,
       path.join(workspaceRoot, '.agents', 'skills', skillName, 'SKILL.md'),
     ]));
-    for (const [skillName, skillPath] of skillPaths) {
-      if (!(await fs.pathExists(skillPath))) {
+    const skillPaths = new Map<string, string>();
+    for (const [skillName, skillPath] of declaredSkillPaths) {
+      if (await fs.pathExists(skillPath)) {
+        skillPaths.set(skillName, skillPath);
+      } else if (!options.allowMissingSkills) {
         throw new Error(`Materialized trigger Skill is missing: ${skillName} (${skillPath})`);
       }
     }
@@ -603,7 +568,7 @@ async function runTriggerOnce(options: {
         await computeSkillDigest(path.dirname(skillPath)),
       ] as const,
     )));
-    const ownerSkillPath = skillPaths.get(options.suite.skill)!;
+    const ownerSkillPath = declaredSkillPaths.get(options.suite.skill)!;
     let env = buildIsolatedEnv(
       options.sourceEnv,
       runRoot,
@@ -781,8 +746,10 @@ async function runTriggerOnce(options: {
       );
       if (reason) finishRun(reason);
     });
-    turnTimer = setTimeout(() => finishRun('timeout'), options.timeoutMs);
-    turnTimer.unref();
+    if (options.manageTimeout !== false) {
+      turnTimer = setTimeout(() => finishRun('timeout'), options.timeoutMs);
+      turnTimer.unref();
+    }
     await session.initialize();
     const threadResult = await session.sendRequest('thread/start', {
       cwd: workspaceRoot,
@@ -914,6 +881,39 @@ async function runTriggerOnce(options: {
   }
 }
 
+export async function runCodexTriggerProviderCase(options: {
+  suite: AwSkillEvalTriggerSuiteCaseContract;
+  evalCase: AwSkillEvalTriggerCase;
+  subjectRoot: string;
+  fixtureRoot: string;
+  codexBin: string;
+  model?: string;
+  codexRuntime: CodexEvalRuntimeConfig;
+  sourceEnv?: NodeJS.ProcessEnv;
+}): Promise<TriggerRunEvidence> {
+  const fixture = await loadFixtureModule(options.fixtureRoot, options.suite);
+  return runTriggerOnce({
+    suite: options.suite,
+    evalCase: options.evalCase,
+    subjectRoot: options.subjectRoot,
+    fixture,
+    codexBin: options.codexBin,
+    ...(options.model ? { model: options.model } : {}),
+    codexRuntime: options.codexRuntime,
+    timeoutMs: options.suite.perRunTimeoutMs,
+    sourceEnv: options.sourceEnv ?? process.env,
+    processManagement: {
+      mode: 'unmanaged-confirmed',
+      inspectionAvailable: false,
+      userAcknowledged: true,
+      descendantCleanupGuaranteed: false,
+      limitation: 'The AwSkillEval engine owns the provider process tree and timeout.',
+    },
+    allowMissingSkills: true,
+    manageTimeout: false,
+  });
+}
+
 function ratePasses(
   rate: number,
   expected: boolean,
@@ -926,8 +926,8 @@ function ratePasses(
 }
 
 export function summarizeTriggerCase(
-  suite: PluginEvalTriggerSuite,
-  evalCase: PluginEvalTriggerCase,
+  suite: AwSkillEvalTriggerSuiteCaseContract,
+  evalCase: AwSkillEvalTriggerCase,
   runs: TriggerRunEvidence[],
 ): TriggerCaseSummary {
   const loadRate = runs.filter((run) => run.loaded).length / runs.length;
@@ -983,273 +983,5 @@ export function summarizeTriggerCase(
     complete,
     passed: complete && loadPassed && routePassed && spawnPassed,
     runs,
-  };
-}
-
-async function readCodexVersion(
-  codexBin: string,
-  env: NodeJS.ProcessEnv,
-): Promise<string | null> {
-  try {
-    const result = await execFileAsync(resolveCodexExecutable(codexBin), ['--version'], {
-      env,
-      timeout: 10_000,
-      encoding: 'utf8',
-    });
-    return result.stdout.trim() || result.stderr.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-export async function runCodexTriggerSuite(options: {
-  suite: PluginEvalTriggerSuite;
-  split: PluginEvalSplit;
-  subjectRoot: string;
-  pluginRoot: string;
-  profile: string;
-  runs: number;
-  caseId?: string;
-  caseIds?: string[];
-  codexBin: string;
-  model?: string;
-  codexRuntime?: CodexEvalRuntimeConfig;
-  sourceEnv?: NodeJS.ProcessEnv;
-  reportPath?: string;
-  stderr?: (text: string) => void;
-  processManagement?: PluginEvalProcessManagementEvidence;
-  workRoot?: string;
-  onCaseCompleted?: (checkpoint: PluginEvalCaseCheckpoint) => Promise<void>;
-  stopOnIncomplete?: boolean;
-}): Promise<PluginEvalSuiteReport> {
-  const sourceEnv = options.sourceEnv ?? process.env;
-  const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
-  const model = options.model ?? codexRuntime.model ?? undefined;
-  const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
-  const corpus = await readPluginEvalTriggerCases(options.pluginRoot, options.suite);
-  let cases = options.split === 'all'
-    ? corpus.cases
-    : corpus.cases.filter((entry) => entry.split === options.split);
-  if (options.caseId && options.caseIds) {
-    throw new Error('runCodexTriggerSuite cannot combine caseId and caseIds.');
-  }
-  if (options.caseId) {
-    cases = cases.filter((entry) => entry.id === options.caseId);
-  }
-  if (options.caseIds) {
-    const requested = new Set(options.caseIds);
-    cases = cases.filter((entry) => requested.has(entry.id));
-    const found = new Set(cases.map((entry) => entry.id));
-    const missing = [...requested].filter((id) => !found.has(id));
-    if (missing.length > 0) {
-      throw new Error(`Unknown trigger cases: ${missing.join(', ')}`);
-    }
-  }
-  if (cases.length === 0) {
-    throw new Error(
-      `Trigger suite "${options.suite.id}" has no matching cases for ${options.caseId ?? options.split}.`,
-    );
-  }
-  let fixture: TriggerFixtureModule | null;
-  let hostIsolation: CodexEvalHostIsolationEvidence | null = null;
-  let runtimeProbe: CodexEvalRpcIsolationEvidence | null = null;
-  try {
-    if (options.suite.isolation === 'strict') {
-      hostIsolation = await inspectCodexEvalHostIsolation({ sourceEnv });
-      runtimeProbe = await runCodexEvalIsolationProbe({
-        subjectRoot: options.subjectRoot,
-        skillName: options.suite.skill,
-        skillNames: options.suite.skills,
-        codexBin: options.codexBin,
-        codexRuntime,
-        sourceEnv,
-        processManagement,
-      });
-    }
-    fixture = await loadFixtureModule(options.pluginRoot, options.suite);
-  } catch (error) {
-    const diagnostic = error instanceof Error ? error.stack ?? error.message : String(error);
-    const report = redactCodexEvalValue({
-      schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
-      generated_at: new Date().toISOString(),
-      suite: options.suite.id,
-      owner_skill: options.suite.skill,
-      participant_skills: options.suite.skills,
-      profile: options.profile,
-      split: options.split,
-      complete: false,
-      passed: false,
-      environment_error: diagnostic,
-      environment: {
-        isolation: codexEvalIsolationEvidence({
-          mode: options.suite.isolation,
-          host: hostIsolation,
-          runtimeProbe,
-        }),
-        codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
-      },
-      summary: { cases: cases.length, passed: 0, failed: 0 },
-      results: [],
-    }, codexRuntime);
-    if (options.reportPath) {
-      await fs.ensureDir(path.dirname(options.reportPath));
-      await writeJsonAtomic(options.reportPath, report);
-    }
-    return redactCodexEvalValue({
-      id: options.suite.id,
-      kind: 'trigger',
-      skills: options.suite.skills,
-      profile: options.profile,
-      split: options.split,
-      outcome: 'incomplete',
-      complete: false,
-      mechanicalPassed: false,
-      qualitativeReview: 'not_required',
-      ...(options.reportPath ? { reportPath: options.reportPath } : {}),
-      summary: report.summary,
-      diagnostics: [diagnostic],
-    }, codexRuntime);
-  }
-  const participantSkillDigests = Object.fromEntries(await Promise.all(
-    options.suite.skills.map(async (skillName) => [
-      skillName,
-      await computeSkillDigest(path.join(
-        options.subjectRoot,
-        '.agents',
-        'skills',
-        skillName,
-      )),
-    ]),
-  ));
-  const codexVersion = await readCodexVersion(options.codexBin, sourceEnv);
-
-  const createSuiteReport = (
-    caseResults: TriggerCaseSummary[],
-    reportPath = options.reportPath,
-  ): PluginEvalSuiteReport => {
-    const complete = caseResults.length > 0 && caseResults.every((result) => result.complete);
-    const passed = complete && caseResults.every((result) => result.passed);
-    return redactCodexEvalValue({
-      id: options.suite.id,
-      kind: 'trigger',
-      skills: options.suite.skills,
-      profile: options.profile,
-      split: options.split,
-      outcome: !complete ? 'incomplete' : passed ? 'passed' : 'failed',
-      complete,
-      mechanicalPassed: passed,
-      qualitativeReview: 'not_required',
-      ...(reportPath ? { reportPath } : {}),
-      caseResults: caseResults.map((result) => ({
-        id: result.id,
-        outcome: !result.complete ? 'incomplete' : result.passed ? 'passed' : 'failed',
-        complete: result.complete,
-        mechanicalPassed: result.passed,
-        qualitativeReview: 'not_required',
-        summary: {
-          split: result.split,
-          expected: result.expected,
-          observed: result.observed,
-        },
-        diagnostics: result.runs.flatMap((run) => run.diagnostics),
-      })),
-      summary: {
-        cases: caseResults.length,
-        passed: caseResults.filter((result) => result.passed).length,
-        failed: caseResults.filter((result) => !result.passed).length,
-      },
-      diagnostics: caseResults.flatMap((result) =>
-        result.runs.flatMap((run) => run.diagnostics)),
-    }, codexRuntime) as PluginEvalSuiteReport;
-  };
-
-  const writeProgressReport = async (
-    caseResults: TriggerCaseSummary[],
-  ): Promise<void> => {
-    if (!options.reportPath) return;
-    const complete = caseResults.length === cases.length &&
-      caseResults.every((result) => result.complete);
-    const passed = complete && caseResults.every((result) => result.passed);
-    const report = redactCodexEvalValue({
-      schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
-      generated_at: new Date().toISOString(),
-      suite: options.suite.id,
-      owner_skill: options.suite.skill,
-      participant_skills: options.suite.skills,
-      profile: options.profile,
-      split: options.split,
-      runs_per_case: options.runs,
-      threshold: PASS_THRESHOLD,
-      route_minimum_pass_rate: options.suite.minimumPassRate ?? null,
-      forbid_multiple_skill_loads: options.suite.forbidMultipleSkillLoads,
-      model: model ?? null,
-      complete,
-      passed,
-      environment: {
-        codex_version: codexVersion,
-        isolation: {
-          ...codexEvalIsolationEvidence({
-            mode: options.suite.isolation,
-            host: hostIsolation,
-            runtimeProbe,
-          }),
-          app_server_protocol: true,
-          project_rules_ignored_by_default: true,
-        },
-        codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
-        skill_sha256: participantSkillDigests[options.suite.skill],
-        participant_skill_sha256: participantSkillDigests,
-        corpus_sha256: sha256(stableJson(corpus)),
-      },
-      summary: {
-        cases: cases.length,
-        completed: caseResults.length,
-        passed: caseResults.filter((result) => result.passed).length,
-        failed: caseResults.filter((result) => !result.passed).length,
-      },
-      results: caseResults,
-    }, codexRuntime);
-    await writeJsonAtomic(options.reportPath, report);
-  };
-
-  const results: TriggerCaseSummary[] = [];
-  for (const evalCase of cases) {
-    const runs: TriggerRunEvidence[] = [];
-    for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
-      assertCodexEvalCanStartWork();
-      options.stderr?.(
-        `[${evalCase.split}] ${evalCase.id} run ${runIndex + 1}/${options.runs}\n`,
-      );
-      runs.push(await runTriggerOnce({
-        suite: options.suite,
-        evalCase,
-        subjectRoot: options.subjectRoot,
-        fixture,
-        codexBin: options.codexBin,
-        model,
-        codexRuntime,
-        timeoutMs: options.suite.perRunTimeoutMs,
-        sourceEnv,
-        processManagement,
-        workRoot: options.workRoot,
-      }));
-    }
-    const caseResult = summarizeTriggerCase(options.suite, evalCase, runs);
-    results.push(caseResult);
-    await writeProgressReport(results);
-    await options.onCaseCompleted?.({
-      caseId: evalCase.id,
-      report: createSuiteReport([caseResult]),
-    });
-    if (options.stopOnIncomplete && !caseResult.complete) break;
-  }
-  const complete = results.length === cases.length && results.every((result) => result.complete);
-  const passed = complete && results.every((result) => result.passed);
-  await writeProgressReport(results);
-  return {
-    ...createSuiteReport(results),
-    complete,
-    mechanicalPassed: passed,
-    outcome: !complete ? 'incomplete' : passed ? 'passed' : 'failed',
   };
 }

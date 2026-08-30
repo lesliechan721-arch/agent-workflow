@@ -9,11 +9,10 @@ import {
   evaluateLifecycleTrace,
   evaluateParentScopeIsolation,
   evaluateWorkflowRun,
-  loadWorkflowEvalSpec,
-  parseWorkflowEvalArgs,
   workflowEvalRunCase,
 } from '../skills/codex-explore/evals/run-workflow-evals.mjs';
 import { buildCollaborationTimeline } from '../skills/codex-explore/evals/eval-harness.mjs';
+import workflowCorpusDocument from '../skills/codex-explore/evals/workflow-evals.json' with { type: 'json' };
 
 const lifecycleContract = {
   minimum_initial_wait_timeout_ms: 600_000,
@@ -89,26 +88,8 @@ function runResult(finalMessage, collaborationTimeline = passingTimeline()) {
   };
 }
 
-function testArguments() {
-  assert.deepEqual(
-    parseWorkflowEvalArgs(['--runs', '2', '--timeout-ms', '240000']),
-    {
-      runs: 2,
-      timeoutMs: 240_000,
-      codexBin: 'codex',
-      model: undefined,
-      output: undefined,
-      help: false,
-    },
-  );
-  assert.throws(
-    () => parseWorkflowEvalArgs(['--timeout-ms', '100']),
-    /at least 10000/,
-  );
-}
-
-async function testSpecAndAssertions() {
-  const spec = await loadWorkflowEvalSpec();
+function testCorpusAndAssertions() {
+  const spec = workflowCorpusDocument;
   assert.equal(spec.skill_name, 'codex-explore');
   assert.equal(spec.evals.length > 0, true);
   assert.equal(spec.evals.every((entry) => (
@@ -486,8 +467,7 @@ async function testWorkspaceSnapshots() {
 }
 
 async function main() {
-  testArguments();
-  await testSpecAndAssertions();
+  testCorpusAndAssertions();
   testRolloutTimeline();
   testCodeModeRolloutTimeline();
   testLifecycleAssertions();

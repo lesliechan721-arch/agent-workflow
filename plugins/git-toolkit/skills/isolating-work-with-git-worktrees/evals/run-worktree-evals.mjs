@@ -3,107 +3,16 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/p
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
-import { waitForEvalChild } from '../../../scripts/eval-child-process.mjs';
-import { gitMetadataWritableArgs } from '../../../scripts/eval-git-permissions.mjs';
-import {
-  commandRunsScript,
-  gitInvocations,
-} from '../../../scripts/eval-git-trace.mjs';
-import { isolateMaterializedSkills } from '../../../scripts/eval-participant-skills.mjs';
-
-const evalDir = path.dirname(fileURLToPath(import.meta.url));
-const skillKey = 'isolating-work-with-git-worktrees';
 const REPOSITORY_ISOLATION_CASE = 'use_full_clone_for_repository_level_isolation';
-const defaults = {
-  runs: 1,
-  timeoutMs: 300_000,
-  codexBin: 'codex',
-  model: 'gpt-5.6-luna',
-  caseId: undefined,
-  output: undefined,
-};
+const providerId = 'git-worktree-provider';
+const providerVersion = 'manifest-v1';
 const GIT_METADATA_WRITE_CASES = new Set([
   'preserve_dirty_workspace_and_use_default_path',
   'stop_when_default_root_not_ignored',
   'report_dirty_baseline',
   REPOSITORY_ISOLATION_CASE,
 ]);
-
-function usage() {
-  return [
-    'Usage: run-worktree-evals.mjs [options]',
-    '  --runs N          Runs per current/baseline variant (default: 1)',
-    '  --case ID         Run one case from evals.json',
-    '  --model MODEL     Codex model (default: gpt-5.6-luna)',
-    '  --codex-bin PATH  Codex executable (default: codex)',
-    '  --timeout-ms MS   Timeout per model run (default: 300000)',
-    '  --output PATH     Write the JSON report to PATH',
-    'Exit 0 means every current run passed its mechanical checks.',
-  ].join('\n');
-}
-
-function valueAfter(argv, index, flag) {
-  const value = argv[index + 1];
-  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value.`);
-  return value;
-}
-
-export function parseArgs(argv) {
-  const options = { ...defaults, help: false };
-  for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index];
-    if (flag === '-h' || flag === '--help') {
-      options.help = true;
-      continue;
-    }
-    const value = valueAfter(argv, index, flag);
-    index += 1;
-    if (flag === '--runs' || flag === '--timeout-ms') {
-      const parsed = Number(value);
-      if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`${flag} must be a positive integer.`);
-      }
-      if (flag === '--runs') options.runs = parsed;
-      else options.timeoutMs = parsed;
-    } else if (flag === '--case') options.caseId = value;
-    else if (flag === '--model') options.model = value;
-    else if (flag === '--codex-bin') options.codexBin = value;
-    else if (flag === '--output') options.output = path.resolve(value);
-    else throw new Error(`Unknown option: ${flag}`);
-  }
-  return options;
-}
-
-async function readEvalResource(relativePath) {
-  const normalized = path.normalize(relativePath);
-  if (normalized === '..' || normalized.startsWith(`..${path.sep}`) || path.isAbsolute(normalized)) {
-    throw new Error(`Eval resource must stay inside evals/: ${relativePath}`);
-  }
-  try {
-    return await readFile(path.join(evalDir, normalized), 'utf8');
-  } catch (error) {
-    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) throw error;
-  }
-  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
-  return readFile(
-    path.join(context.sourceRoot, 'skills', skillKey, 'evals', normalized),
-    'utf8',
-  );
-}
-
-export async function loadCases(caseId) {
-  const document = JSON.parse(await readEvalResource('evals.json'));
-  if (document?.skill_name !== skillKey || !Array.isArray(document.evals)) {
-    throw new Error(`evals.json must describe ${skillKey}.`);
-  }
-  const cases = caseId
-    ? document.evals.filter((entry) => entry.id === caseId)
-    : document.evals;
-  if (cases.length === 0) throw new Error(`Unknown worktree eval case: ${caseId}`);
-  return cases;
-}
 
 function execFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -120,6 +29,113 @@ function execFile(command, args, options = {}) {
     child.on('error', reject);
     child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
+}
+
+const gitOptionsWithValue = new Set([
+  '-C', '-c', '--config-env', '--git-dir', '--namespace', '--super-prefix', '--work-tree',
+]);
+
+function unquoteShellToken(token) {
+  if (
+    token.length >= 2
+    && ((token.startsWith('"') && token.endsWith('"'))
+      || (token.startsWith("'") && token.endsWith("'")))
+  ) return token.slice(1, -1);
+  return token;
+}
+
+function shellTokens(command) {
+  return (command.match(/"[^"]*"|'[^']*'|[^\s]+/gu) ?? []).map(unquoteShellToken);
+}
+
+function splitShellSegments(command) {
+  const segments = [];
+  let buffer = '';
+  let quote = null;
+  let escaped = false;
+  const push = () => {
+    if (buffer.trim()) segments.push(buffer.trim());
+    buffer = '';
+  };
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (escaped) {
+      buffer += character;
+      escaped = false;
+    } else if (quote) {
+      buffer += character;
+      if (character === '\\' && quote !== "'") escaped = true;
+      else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      buffer += character;
+    } else if (['&&', '||'].includes(command.slice(index, index + 2))) {
+      push();
+      index += 1;
+    } else if (character === ';' || character === '|' || character === '\n') {
+      push();
+    } else {
+      buffer += character;
+    }
+  }
+  push();
+  return segments;
+}
+
+function unwrapShellCommand(command) {
+  const match = command.match(
+    /^(?:\S*\/)?(?:bash|sh|zsh)\s+-(?:c|lc)\s+([\s\S]+)$/u,
+  );
+  return match ? unquoteShellToken(match[1]) : command;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function containsDirectScriptInvocation(command, executable, script) {
+  const withoutWrapperPrefix = command.replace(
+    /^(?:\S*\/)?(?:bash|sh|zsh)\s+-(?:c|lc)\s+['"]?/u,
+    '',
+  );
+  const executablePattern = `(?:\\S*\\/)?${escapeRegExp(executable)}`;
+  const scriptPattern = `(?:\\.?\\/)?${escapeRegExp(script)}`;
+  return new RegExp(
+    `(?:^|&&|\\|\\||[;|\\n({])\\s*${executablePattern}\\s+['"]?${scriptPattern}(?=['"\\s;&|)\\]}]|$)`,
+    'u',
+  ).test(withoutWrapperPrefix);
+}
+
+function gitInvocations(command) {
+  return splitShellSegments(unwrapShellCommand(command)).flatMap((segment) => {
+    const tokens = shellTokens(segment).map((token) => token
+      .replace(/^[({]+/u, '')
+      .replace(/[)}]+$/u, ''));
+    const gitIndex = tokens.findIndex((token) => path.basename(token) === 'git');
+    if (gitIndex < 0) return [];
+    let index = gitIndex + 1;
+    while (index < tokens.length && tokens[index].startsWith('-')) {
+      if (tokens[index] === '--') {
+        index += 1;
+        break;
+      }
+      index += gitOptionsWithValue.has(tokens[index]) ? 2 : 1;
+    }
+    return index >= tokens.length
+      ? []
+      : [{ subcommand: tokens[index], args: tokens.slice(index + 1) }];
+  });
+}
+
+function commandRunsScript(command, executable, script) {
+  const parsedInvocation = splitShellSegments(unwrapShellCommand(command)).some((segment) => {
+    const tokens = shellTokens(segment).map((token) => token
+      .replace(/^[({]+/u, '')
+      .replace(/[)}]+$/u, ''));
+    const index = tokens.findIndex((token) => path.basename(token) === executable);
+    return index >= 0 && path.basename(tokens[index + 1] ?? '') === script;
+  });
+  return parsedInvocation || containsDirectScriptInvocation(command, executable, script);
 }
 
 function isolatedGitEnv() {
@@ -141,6 +157,29 @@ async function git(root, args, { allowFailure = false } = {}) {
     throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
   }
   return result;
+}
+
+async function gitMetadataWritableArgs(repo, fixtureRoot) {
+  const [root, absoluteGitDir, commonDir] = await Promise.all([
+    realpath(fixtureRoot),
+    git(repo, ['rev-parse', '--absolute-git-dir']),
+    git(repo, ['rev-parse', '--git-common-dir']),
+  ]);
+  const roots = [];
+  for (const candidate of [
+    absoluteGitDir.stdout.trim(),
+    path.isAbsolute(commonDir.stdout.trim())
+      ? commonDir.stdout.trim()
+      : path.resolve(repo, commonDir.stdout.trim()),
+  ]) {
+    const resolved = await realpath(candidate);
+    const relative = path.relative(root, resolved);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`Git metadata path escapes the eval fixture: ${resolved}`);
+    }
+    if (!roots.includes(resolved)) roots.push(resolved);
+  }
+  return roots.flatMap((rootPath) => ['--add-dir', rootPath]);
 }
 
 async function exists(target) {
@@ -180,15 +219,10 @@ async function addOrigin(tempRoot, repo) {
   return origin;
 }
 
-async function copyMaterializedSkills(repo, withSkill) {
-  const materializedRoot = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-  if (!materializedRoot) {
-    throw new Error('AW_PLUGIN_EVAL_PROJECT_ROOT is required; run through pnpm plugin:eval.');
-  }
-  await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), {
+async function copyMaterializedSkills(repo, workspacePath) {
+  await cp(path.join(workspacePath, '.agents'), path.join(repo, '.agents'), {
     recursive: true,
   });
-  await isolateMaterializedSkills(path.join(repo, '.agents'), skillKey, withSkill);
 }
 
 export function ignoreEntriesForCase(caseId) {
@@ -197,7 +231,7 @@ export function ignoreEntriesForCase(caseId) {
     : ['.agents/', '.worktrees/'];
 }
 
-async function prepareWorkspace(evalCase, withSkill) {
+async function prepareWorkspace(evalCase, workspacePath) {
   const tempRoot = await realpath(
     await mkdtemp(path.join(os.tmpdir(), 'git-worktree-skill-eval-')),
   );
@@ -215,7 +249,7 @@ async function prepareWorkspace(evalCase, withSkill) {
       await git(primary, ['branch', 'feature']);
       const repo = path.join(tempRoot, 'platform-worktree');
       await git(primary, ['worktree', 'add', '--quiet', repo, 'feature']);
-      await copyMaterializedSkills(repo, withSkill);
+      await copyMaterializedSkills(repo, workspacePath);
       return {
         tempRoot, externalTempRoot, repo, primary, testMarker, caseId: evalCase.id,
       };
@@ -254,7 +288,7 @@ async function prepareWorkspace(evalCase, withSkill) {
       'commit', '--quiet', '--allow-empty', '-m',
       'chore: keep local main ahead of origin for base verification',
     ]);
-    await copyMaterializedSkills(repo, withSkill);
+    await copyMaterializedSkills(repo, workspacePath);
     const primaryRefsBefore = (await git(repo, ['show-ref'])).stdout;
     const originRefsBefore = (await git(origin, ['show-ref'])).stdout;
     return {
@@ -408,7 +442,7 @@ function finalMessage(stdout) {
   return typeof message === 'string' ? message : JSON.stringify(message);
 }
 
-async function runCodex(workspace, prompt, options) {
+async function runCodex(workspace, prompt) {
   const metadataArgs = worktreeCaseAllowsGitWrites(workspace.caseId)
     ? await gitMetadataWritableArgs(workspace.repo, workspace.tempRoot)
     : [];
@@ -416,11 +450,12 @@ async function runCodex(workspace, prompt, options) {
   const args = [
     'exec', '--json', '--skip-git-repo-check', '--color', 'never',
     '--sandbox', 'workspace-write', ...metadataArgs,
-    '--cd', workspace.repo, '--model', options.model,
+    '--cd', workspace.repo,
+    '--model', process.env.AW_SKILL_EVAL_CODEX_MODEL ?? 'gpt-5.6-luna',
     '--config', 'approval_policy="never"',
     '--config', 'skills.include_instructions=true', containedPrompt,
   ];
-  const child = spawn(options.codexBin, args, {
+  const child = spawn(process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex', args, {
     cwd: workspace.repo,
     env: {
       ...process.env,
@@ -429,7 +464,6 @@ async function runCodex(workspace, prompt, options) {
       TEMP: workspace.externalTempRoot,
       WORKTREE_EVAL_MARKER: workspace.testMarker,
     },
-    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -438,8 +472,17 @@ async function runCodex(workspace, prompt, options) {
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
-  const result = await waitForEvalChild(child, options.timeoutMs);
-  return { ...result, stdout, stderr, final_message: finalMessage(stdout) };
+  const result = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+  return {
+    ...result,
+    timedOut: false,
+    stdout,
+    stderr,
+    final_message: finalMessage(stdout),
+  };
 }
 
 export function worktreeCaseAllowsGitWrites(caseId) {
@@ -587,94 +630,118 @@ async function evaluateCase(evalCase, workspace, before, run) {
   return { passed: checks.every((check) => check.passed), checks };
 }
 
-async function runVariant(evalCase, variant, options) {
-  const runs = [];
-  for (let index = 0; index < options.runs; index += 1) {
-    const workspace = await prepareWorkspace(evalCase, variant === 'current');
+function usageFromEvents(stdout) {
+  let usage = null;
+  for (const line of stdout.split('\n')) {
     try {
-      const before = await snapshot(workspace.primary);
-      const model = await runCodex(workspace, runtimePrompt(evalCase), options);
-      const evaluation = await evaluateCase(evalCase, workspace, before, model);
-      runs.push({ run: index + 1, model, evaluation });
-    } finally {
-      await rm(workspace.tempRoot, { recursive: true, force: true });
+      const event = JSON.parse(line);
+      if (event?.usage && typeof event.usage === 'object' && !Array.isArray(event.usage)) {
+        usage = event.usage;
+      }
+    } catch {
+      // Codex JSONL can contain non-event diagnostics.
     }
   }
-  return {
-    variant,
-    complete: runs.every((entry) => !entry.model.timedOut && entry.model.code === 0),
-    passed: runs.every((entry) => entry.evaluation.passed),
-    runs,
-  };
+  return usage;
 }
 
-async function writeReport(report, output) {
-  const text = `${JSON.stringify(report, null, 2)}\n`;
-  if (output) {
-    await mkdir(path.dirname(output), { recursive: true });
-    await writeFile(output, text, 'utf8');
+async function credentialValues(input) {
+  const suiteRoot = input.runtimeInputs['eval-suite'];
+  if (!suiteRoot) throw new Error('Worktree provider requires the eval-suite runtime input.');
+  const suite = JSON.parse(await readFile(path.join(suiteRoot, 'suite.json'), 'utf8'));
+  const names = suite?.provider?.credentialEnvironment ?? [];
+  if (!Array.isArray(names) || names.some((name) => typeof name !== 'string')) {
+    throw new Error('Worktree provider credentialEnvironment is invalid.');
   }
-  process.stdout.write(text);
+  return [...new Set(names.flatMap((name) => {
+    const value = process.env[name];
+    return value ? [value] : [];
+  }))].sort((left, right) => right.length - left.length);
 }
 
-async function main() {
-  let options;
+function redactText(value, secrets) {
+  return secrets.reduce((text, secret) => {
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    return text
+      .split(secret).join('[REDACTED]')
+      .split(escaped).join('[REDACTED]');
+  }, value);
+}
+
+function redactCredentialValues(value, secrets) {
+  if (typeof value === 'string') return redactText(value, secrets);
+  if (Array.isArray(value)) return value.map((entry) => redactCredentialValues(entry, secrets));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value)
+      .map(([key, entry]) => [
+        redactText(key, secrets),
+        redactCredentialValues(entry, secrets),
+      ]));
+  }
+  return value;
+}
+
+async function writeArtifacts(input, model, evaluation, secrets) {
+  const reportPath = path.join(input.outputDir, 'provider-evidence.json');
+  const tracePath = path.join(input.outputDir, 'codex-events.jsonl');
+  const outputPath = path.join(input.outputDir, 'model-output.txt');
+  const safeModel = redactCredentialValues(model, secrets);
+  const safeEvaluation = redactCredentialValues(evaluation, secrets);
+  await Promise.all([
+    writeFile(reportPath, `${JSON.stringify({
+      caseId: input.caseId,
+      configuration: input.configuration,
+      skillMode: input.skillMode,
+      model: {
+        exitCode: safeModel.code,
+        signal: safeModel.signal,
+        stderr: safeModel.stderr,
+      },
+      evaluation: safeEvaluation,
+    }, null, 2)}\n`, 'utf8'),
+    writeFile(tracePath, redactText(model.stdout, secrets), 'utf8'),
+    writeFile(outputPath, `${redactText(model.final_message, secrets)}\n`, 'utf8'),
+  ]);
+  return [
+    { path: path.basename(reportPath), role: 'report' },
+    { path: path.basename(tracePath), role: 'trace' },
+    { path: path.basename(outputPath), role: 'output' },
+  ];
+}
+
+function validateCase(evalCase, caseId) {
+  if (
+    evalCase?.id !== caseId
+    || typeof evalCase.prompt !== 'string'
+    || typeof evalCase.expected_output !== 'string'
+  ) throw new Error(`Worktree provider received invalid case ${caseId}.`);
+}
+
+export async function runEvalProvider(input) {
+  validateCase(input.case, input.caseId);
+  const secrets = await credentialValues(input);
+  const workspace = await prepareWorkspace(input.case, input.workspacePath);
   try {
-    options = parseArgs(process.argv.slice(2));
-  } catch (error) {
-    process.stderr.write(`${error.message}\n\n${usage()}\n`);
-    process.exitCode = 2;
-    return;
+    const before = await snapshot(workspace.primary);
+    const model = await runCodex(workspace, runtimePrompt(input.case));
+    const evaluation = await evaluateCase(input.case, workspace, before, model);
+    return redactCredentialValues({
+      schemaVersion: 1,
+      provider: { id: providerId, version: providerVersion },
+      usage: usageFromEvents(model.stdout),
+      grading: {
+        grader: { id: 'git-worktree-mechanical', version: '1' },
+        result: {
+          caseId: input.caseId,
+          configuration: input.configuration,
+          passed: evaluation.passed,
+          complete: model.code === 0,
+          checks: evaluation.checks,
+        },
+      },
+      artifacts: await writeArtifacts(input, model, evaluation, secrets),
+    }, secrets);
+  } finally {
+    await rm(workspace.tempRoot, { recursive: true, force: true });
   }
-  if (options.help) {
-    process.stdout.write(`${usage()}\n`);
-    return;
-  }
-  const cases = await loadCases(options.caseId);
-  const results = [];
-  let environmentError = null;
-  try {
-    for (const evalCase of cases) {
-      process.stderr.write(`${evalCase.id}: current and baseline\n`);
-      results.push({
-        id: evalCase.id,
-        current: await runVariant(evalCase, 'current', options),
-        baseline: await runVariant(evalCase, 'baseline', options),
-      });
-    }
-  } catch (error) {
-    environmentError = error instanceof Error ? error.stack ?? error.message : String(error);
-  }
-  const complete = !environmentError
-    && results.length === cases.length
-    && results.every((entry) => entry.current.complete && entry.baseline.complete);
-  const passed = complete && results.every((entry) => entry.current.passed);
-  const report = {
-    schema_version: 2,
-    generated_at: new Date().toISOString(),
-    complete,
-    passed,
-    ...(environmentError ? { environment_error: environmentError } : {}),
-    case_results: cases.map((evalCase) => {
-      const result = results.find((entry) => entry.id === evalCase.id);
-      const caseComplete = result?.current.complete === true && result?.baseline.complete === true;
-      const casePassed = caseComplete && result.current.passed === true;
-      return {
-        id: evalCase.id,
-        outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete',
-        complete: caseComplete,
-        mechanical_passed: casePassed,
-      };
-    }),
-    results,
-  };
-  await writeReport(report, options.output);
-  if (!passed) process.exitCode = 1;
 }
-
-const isMain = process.argv[1]
-  && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});

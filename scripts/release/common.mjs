@@ -695,6 +695,7 @@ const RELEASE_INPUT_PATHS = [
   'packages/agent-skill-eval/tsconfig.json',
   'packages/agent-skill-eval/vitest.config.ts',
   'packages/agent-skill-eval/src',
+  'packages/agent-skill-eval/schemas',
   'packages/agent-skill-eval/scripts',
   'packages/plugin-core/package.json',
   'packages/plugin-core/tsconfig.json',

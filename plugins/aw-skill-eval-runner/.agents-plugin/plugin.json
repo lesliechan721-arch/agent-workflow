@@ -2,8 +2,10 @@
   "schemaVersion": 2,
   "name": "aw-skill-eval-runner",
   "version": "0.1.0",
-  "description": "通过共享 aw-skill-eval CLI 执行 Agent Skill Eval plan，并生成中立的运行证据。",
-  "dependencies": [],
+  "description": "准备、审核并通过共享 aw-skill-eval CLI 执行 Agent Skill Eval，生成完整证据链。",
+  "dependencies": [
+    "agent-skill-toolkit"
+  ],
   "skills": "./skills",
   "scripts": {
     "tests": {
@@ -26,9 +28,16 @@
   },
   "interface": {
     "displayName": "AW Skill Eval Runner",
-    "shortDescription": "执行 Agent Skill Eval plan，并生成中立的 EvalRunBundle 证据",
+    "shortDescription": "准备、审核并执行 Agent Skill Eval，生成完整证据链",
     "capabilities": [
       "Skills"
     ]
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.skill-eval.v1"
+      ]
+    }
   }
 }

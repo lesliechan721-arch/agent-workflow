@@ -95,7 +95,7 @@
       },
       "prompt": "插件的 full QualityReviewResult 已通过，但没有提供 audit 或 run bundle。请判断是否可发布。",
       "scripted_replies": [],
-      "expected_output": "发布检查失败，并要求实际 Audit v3 preflight、RunBundle v3、Audit v3 result-triage 链。",
+      "expected_output": "发布检查失败，并要求实际 Audit v3 preflight、EvalRunBundle v4、Audit v3 result-triage 链。",
       "review": {
         "platforms": [
           "codex"

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "plugin": "dev-workflow",
   "skill": "dev-implement",
   "profiles": [
@@ -12,7 +12,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     }
   ],
@@ -33,6 +32,7 @@
       "strictNegativeSplits": [
         "validation"
       ],
+      "forbidMultipleSkillLoads": false,
       "profiles": [
         "project-default"
       ],

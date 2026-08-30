@@ -107,9 +107,17 @@
       },
       {
         "skill": "review-aw-plugin",
+        "target": "scripts/eval-run-bundle-validator.mjs",
+        "import": {
+          "plugin": "@aw/agent-skill-eval",
+          "export": "eval-run-bundle-validator"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
         "target": "assets/eval-audit-result.schema.json",
         "import": {
-          "plugin": "agent-skill-toolkit",
+          "plugin": "@aw/agent-skill-eval",
           "export": "eval-audit-result-schema"
         }
       },
@@ -117,7 +125,7 @@
         "skill": "review-aw-plugin",
         "target": "assets/eval-run-bundle.schema.json",
         "import": {
-          "plugin": "agent-skill-toolkit",
+          "plugin": "@aw/agent-skill-eval",
           "export": "eval-run-bundle-schema"
         }
       },

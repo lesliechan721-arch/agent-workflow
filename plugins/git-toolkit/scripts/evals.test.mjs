@@ -15,6 +15,17 @@ import process from 'node:process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
+import commitTriggerDocument from '../skills/git-commit/evals/trigger-cases.json' with { type: 'json' };
+import commitBehaviorDocument from '../skills/git-commit/evals/behavior-cases.json' with { type: 'json' };
+import commitManifestDocument from '../skills/git-commit/evals/manifest.json' with { type: 'json' };
+import mergeTriggerDocument from '../skills/reconciling-git-merges/evals/trigger-cases.json' with { type: 'json' };
+import mergeEvalDocument from '../skills/reconciling-git-merges/evals/evals.json' with { type: 'json' };
+import mergeManifestDocument from '../skills/reconciling-git-merges/evals/manifest.json' with { type: 'json' };
+import worktreeTriggerDocument from '../skills/isolating-work-with-git-worktrees/evals/trigger-cases.json' with { type: 'json' };
+import worktreeDiagnosticDocument from '../skills/isolating-work-with-git-worktrees/evals/trigger-diagnostic-cases.json' with { type: 'json' };
+import worktreeEvalDocument from '../skills/isolating-work-with-git-worktrees/evals/evals.json' with { type: 'json' };
+import worktreeManifestDocument from '../skills/isolating-work-with-git-worktrees/evals/manifest.json' with { type: 'json' };
+
 import {
   captureTriggerWorkspaceState,
   setupTriggerWorkspace,
@@ -24,18 +35,16 @@ import {
   declaredAssertionCoverage,
   hookFailureMessageChecks,
   inspectCommitExecTrace,
-  loadCases as loadCommitCases,
-  parseArgs as parseCommitEvalArgs,
   partialMessageExcludesUnstagedFact,
+  runEvalProvider as commitRunEvalProvider,
 } from '../skills/git-commit/evals/run-commit-evals.mjs';
 import {
   analysisMessageChecks,
   ambiguousRetentionChecks,
   committedControlPaths,
-  loadCases as loadMergeCases,
   mergeCommitState,
-  parseArgs as parseMergeEvalArgs,
   semanticMergeOutcomeChecks,
+  runEvalProvider as mergeRunEvalProvider,
 } from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
 import {
   captureTriggerWorkspaceState as captureMergeTriggerWorkspaceState,
@@ -44,11 +53,10 @@ import {
 import {
   ignoreEntriesForCase as worktreeIgnoreEntriesForCase,
   inspectExecTrace as inspectWorktreeExecTrace,
-  loadCases as loadWorktreeCases,
-  parseArgs as parseWorktreeEvalArgs,
   snapshot as snapshotWorktreeRepository,
   worktreeCaseAllowsGitWrites,
   worktreePathsOutsideRoot,
+  runEvalProvider as worktreeRunEvalProvider,
 } from '../skills/isolating-work-with-git-worktrees/evals/run-worktree-evals.mjs';
 import {
   captureTriggerWorkspaceState as captureWorktreeTriggerWorkspaceState,
@@ -102,119 +110,99 @@ async function resolveTestContext() {
   const contextPath = process.env.AW_PLUGIN_CONTEXT;
   if (!contextPath) {
     return {
-      sourceRoot: bundledPluginRoot,
       bundleRoot: bundledPluginRoot,
       platform: null,
     };
   }
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
-  const sourceManifest = JSON.parse(await readFile(
-    path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
+  const bundleRoot = path.resolve(context.plugin.rootDir);
+  const bundleManifest = JSON.parse(await readFile(
+    path.join(bundleRoot, '.agents-plugin', 'plugin.json'),
     'utf8',
   ));
   assert.equal(context.plugin.name, 'git-toolkit');
-  assert.equal(context.plugin.version, sourceManifest.version);
+  assert.equal(context.plugin.version, bundleManifest.version);
   assert.equal(context.event, 'test');
   return {
-    sourceRoot: context.sourceRoot,
-    bundleRoot: context.plugin.rootDir,
+    bundleRoot,
     platform: context.platform,
   };
 }
 
-async function testEvalCorpora(sourceRoot) {
-  const [
-    triggerContent,
-    behaviorContent,
-    commitManifestContent,
-    mergeTriggerContent,
-    mergeEvalContent,
-    mergeManifestContent,
-    worktreeTriggerContent,
-    worktreeDiagnosticTriggerContent,
-    worktreeEvalContent,
-    worktreeManifestContent,
-    worktreeEvalReadmeContent,
-  ] = await Promise.all([
-    readFile(
-      path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'trigger-cases.json'),
-      'utf8',
-    ),
-    readFile(
-      path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'behavior-cases.json'),
-      'utf8',
-    ),
-    readFile(
-      path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'manifest.json'),
-      'utf8',
-    ),
-    readFile(
-      path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'trigger-cases.json'),
-      'utf8',
-    ),
-    readFile(
-      path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'evals.json'),
-      'utf8',
-    ),
-    readFile(
-      path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'manifest.json'),
-      'utf8',
-    ),
-    readFile(
-      path.join(
-        sourceRoot,
-        'skills',
-        'isolating-work-with-git-worktrees',
-        'evals',
-        'trigger-cases.json',
-      ),
-      'utf8',
-    ),
-    readFile(
-      path.join(
-        sourceRoot,
-        'skills',
-        'isolating-work-with-git-worktrees',
-        'evals',
-        'trigger-diagnostic-cases.json',
-      ),
-      'utf8',
-    ),
-    readFile(
-      path.join(
-        sourceRoot,
-        'skills',
-        'isolating-work-with-git-worktrees',
-        'evals',
-        'evals.json',
-      ),
-      'utf8',
-    ),
-    readFile(
-      path.join(
-        sourceRoot,
-        'skills',
-        'isolating-work-with-git-worktrees',
-        'evals',
-        'manifest.json',
-      ),
-      'utf8',
-    ),
-    readFile(
-      path.join(
-        sourceRoot,
-        'skills',
-        'isolating-work-with-git-worktrees',
-        'evals',
-        'README.md',
-      ),
-      'utf8',
-    ),
+async function assertProviderManifest(manifest, bundleRoot, expectedSkill, expectedProviderIds) {
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.plugin, 'git-toolkit');
+  assert.equal(manifest.skill, expectedSkill);
+  const providerSuites = manifest.suites.filter((suite) => suite.kind === 'provider');
+  assert.deepEqual(
+    providerSuites.map((suite) => suite.id),
+    expectedProviderIds,
+  );
+  const evalRoot = path.join(bundleRoot, 'skills', expectedSkill, 'evals');
+  const capabilityKeys = [
+    'cleanContext',
+    'conversation',
+    'duration',
+    'materialization',
+    'parallelRuns',
+    'previousVersionBaseline',
+    'sandbox',
+    'skillPathExecution',
+    'tokenUsage',
+    'toolTrace',
+    'triggerDiscovery',
+    'withoutSkillBaseline',
+  ];
+  const entryModules = new Map([
+    ['run-commit-evals.mjs', commitRunEvalProvider],
+    ['run-merge-evals.mjs', mergeRunEvalProvider],
+    ['run-worktree-evals.mjs', worktreeRunEvalProvider],
   ]);
-  const document = JSON.parse(triggerContent);
-  const behaviorDocument = JSON.parse(behaviorContent);
+  for (const suite of providerSuites) {
+    assert.equal(suite.kind, 'provider');
+    assert.equal(Object.hasOwn(suite, 'entry'), false);
+    assert.equal(Object.hasOwn(suite, 'supports'), false);
+    assert.equal(Object.hasOwn(suite, 'suiteTimeoutMs'), false);
+    assert.equal(Object.hasOwn(suite, 'command'), false);
+    assert.ok(suite.provider && typeof suite.provider === 'object');
+    const provider = suite.provider;
+    assert.equal(typeof provider.id, 'string');
+    assert.equal(typeof provider.entry, 'string');
+    assert.equal(path.isAbsolute(provider.entry), false);
+    assert.match(provider.entry, /\.mjs$/u);
+    assert.equal(Array.isArray(provider.assets ?? []), true);
+    for (const asset of provider.assets ?? []) {
+      assert.equal(typeof asset, 'string');
+      assert.equal(path.isAbsolute(asset), false);
+      assert.notEqual(path.posix.normalize(asset), '..');
+      assert.equal(path.posix.normalize(asset).startsWith('../'), false);
+    }
+    assert.equal(Array.isArray(provider.credentialEnvironment), true);
+    assert.ok(provider.credentialEnvironment.length > 0);
+    assert.equal(new Set(provider.credentialEnvironment).size, provider.credentialEnvironment.length);
+    assert.equal(
+      provider.credentialEnvironment.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)),
+      true,
+    );
+    assert.deepEqual(Object.keys(provider.capabilities).sort(), [...capabilityKeys].sort());
+    assert.equal(
+      Object.values(provider.capabilities).every((value) => typeof value === 'boolean'),
+      true,
+    );
+    assert.equal(typeof suite.cases, 'string');
+    assert.equal(path.isAbsolute(suite.cases), false);
+    const entryPath = path.resolve(evalRoot, provider.entry);
+    const relativeEntry = path.relative(evalRoot, entryPath);
+    assert.equal(relativeEntry === '..' || relativeEntry.startsWith(`..${path.sep}`), false);
+    assert.equal(typeof entryModules.get(path.basename(entryPath)), 'function');
+  }
+}
+
+async function testEvalCorpora(bundleRoot) {
+  const document = commitTriggerDocument;
+  const behaviorDocument = commitBehaviorDocument;
   const behaviorCases = behaviorDocument.evals;
-  const commitManifest = JSON.parse(commitManifestContent);
+  const commitManifest = commitManifestDocument;
   const { cases } = document;
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.skill, 'git-commit');
@@ -334,32 +322,20 @@ async function testEvalCorpora(sourceRoot) {
   assert.equal(commitManifest.skill, 'git-commit');
   assert.equal(commitManifest.suites.length, 2);
   const commitBehaviorSuite = commitManifest.suites.find((suite) => suite.id === 'behavior');
-  assert.equal(commitBehaviorSuite.kind, 'command');
+  assert.equal(commitBehaviorSuite.kind, 'provider');
   assert.deepEqual(commitBehaviorSuite.skills, ['git-commit']);
-  assert.equal(commitBehaviorSuite.entry, './run-commit-evals.mjs');
   assert.equal(commitBehaviorSuite.cases, './behavior-cases.json');
   assert.equal(commitBehaviorSuite.requiredForRelease, true);
   assert.equal(commitBehaviorSuite.defaultRuns, 3);
-  assert.equal(commitBehaviorSuite.suiteTimeoutMs, 16200000);
-  assert.deepEqual(
-    (await loadCommitCases()).map((entry) => entry.id),
-    behaviorCases.map((entry) => entry.id),
+  assert.equal(commitBehaviorSuite.perRunTimeoutMs, 300000);
+  await assertProviderManifest(
+    commitManifest,
+    bundleRoot,
+    'git-commit',
+    ['behavior'],
   );
-  assert.deepEqual(
-    parseCommitEvalArgs(['--runs', '2', '--case', 'hook_rejection']),
-    {
-      runs: 2,
-      timeoutMs: 300000,
-      codexBin: 'codex',
-      model: 'gpt-5.6-luna',
-      caseId: 'hook_rejection',
-      output: undefined,
-      help: false,
-    },
-  );
-  assert.throws(() => parseCommitEvalArgs(['--timeout-ms', '0']), /positive integer/);
 
-  const mergeDocument = JSON.parse(mergeTriggerContent);
+  const mergeDocument = mergeTriggerDocument;
   const mergeCases = mergeDocument.cases;
   const participants = new Set(['reconciling-git-merges', 'git-commit']);
   assert.equal(mergeDocument.schemaVersion, 1);
@@ -398,8 +374,8 @@ async function testEvalCorpora(sourceRoot) {
     assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
   }
 
-  const mergeEvals = JSON.parse(mergeEvalContent);
-  const mergeManifest = JSON.parse(mergeManifestContent);
+  const mergeEvals = mergeEvalDocument;
+  const mergeManifest = mergeManifestDocument;
   assert.equal(mergeEvals.skill_name, 'reconciling-git-merges');
   assert.equal(mergeEvals.evals.length, 4);
   assert.deepEqual(
@@ -415,8 +391,8 @@ async function testEvalCorpora(sourceRoot) {
     assert.equal(typeof entry.prompt, 'string');
     assert.equal(typeof entry.expected_output, 'string');
     assert.equal(entry.files.length, 1);
-    const fixturePath = path.join(sourceRoot, 'skills', 'reconciling-git-merges', entry.files[0]);
-    assert.ok((await readFile(fixturePath)).length > 0);
+    assert.equal(path.isAbsolute(entry.files[0]), false);
+    assert.equal(path.posix.normalize(entry.files[0]).startsWith('../'), false);
   }
   assert.equal(mergeManifest.skill, 'reconciling-git-merges');
   assert.equal(mergeManifest.suites.length, 2);
@@ -427,27 +403,18 @@ async function testEvalCorpora(sourceRoot) {
   assert.equal(routerSuite.forbidMultipleSkillLoads, true);
   assert.equal(routerSuite.cases, './trigger-cases.json');
   assert.equal(routerSuite.fixtureModule, './trigger-fixture.mjs');
-  assert.equal(behaviorSuite.kind, 'command');
+  assert.equal(behaviorSuite.kind, 'provider');
   assert.deepEqual(behaviorSuite.skills, ['reconciling-git-merges', 'git-commit']);
-  assert.equal(behaviorSuite.entry, './run-merge-evals.mjs');
   assert.equal(behaviorSuite.cases, './evals.json');
   assert.equal(behaviorSuite.requiredForRelease, true);
   assert.equal(behaviorSuite.defaultRuns, 3);
-  assert.equal(behaviorSuite.suiteTimeoutMs, 9000000);
-  assert.deepEqual(
-    (await loadMergeCases()).map((entry) => entry.id),
-    mergeEvals.evals.map((entry) => entry.id),
+  assert.equal(behaviorSuite.perRunTimeoutMs, 300000);
+  await assertProviderManifest(
+    mergeManifest,
+    bundleRoot,
+    'reconciling-git-merges',
+    ['behavior'],
   );
-  assert.deepEqual(parseMergeEvalArgs(['--runs', '2', '--case', 'semantic_same_file']), {
-    runs: 2,
-    timeoutMs: 300000,
-    codexBin: 'codex',
-    model: 'gpt-5.6-luna',
-    caseId: 'semantic_same_file',
-    output: undefined,
-    help: false,
-  });
-  assert.throws(() => parseMergeEvalArgs(['--runs', '0']), /positive integer/);
   assert.equal(
     mergeCases.find((entry) => entry.id === 'source_08').workspace_fixture,
     'ambiguous_retention',
@@ -481,7 +448,7 @@ async function testEvalCorpora(sourceRoot) {
     assert.equal(entry.preconditions.workspace_fixture, fixture);
   }
 
-  const worktreeDocument = JSON.parse(worktreeTriggerContent);
+  const worktreeDocument = worktreeTriggerDocument;
   const worktreeCases = worktreeDocument.cases;
   const worktreeParticipants = new Set([
     'isolating-work-with-git-worktrees',
@@ -540,20 +507,20 @@ async function testEvalCorpora(sourceRoot) {
     assert.ok(entry, `Missing required worktree routing case ${id}`);
     assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
   }
-  const worktreeDiagnosticDocument = JSON.parse(worktreeDiagnosticTriggerContent);
-  assert.equal(worktreeDiagnosticDocument.policy.optimization, 'recall-first');
-  assert.equal(worktreeDiagnosticDocument.policy.false_positive_cost, 'low');
+  const worktreeDiagnosticCases = worktreeDiagnosticDocument;
+  assert.equal(worktreeDiagnosticCases.policy.optimization, 'recall-first');
+  assert.equal(worktreeDiagnosticCases.policy.false_positive_cost, 'low');
   assert.deepEqual(
-    worktreeDiagnosticDocument.cases.map((entry) => entry.id),
+    worktreeDiagnosticCases.cases.map((entry) => entry.id),
     ['source_15', 'sanity_full_clone'],
   );
-  const fullCloneDiagnostic = worktreeDiagnosticDocument.cases.find(
+  const fullCloneDiagnostic = worktreeDiagnosticCases.cases.find(
     (entry) => entry.id === 'source_15',
   );
   assert.equal(fullCloneDiagnostic.case_role, 'diagnostic');
   assert.equal(fullCloneDiagnostic.oracle.confidence, 'medium');
   assert.match(fullCloneDiagnostic.oracle.rationale, /expected-tradeoff/);
-  const fullCloneSanityDiagnostic = worktreeDiagnosticDocument.cases.find(
+  const fullCloneSanityDiagnostic = worktreeDiagnosticCases.cases.find(
     (entry) => entry.id === 'sanity_full_clone',
   );
   assert.equal(fullCloneSanityDiagnostic.split, 'sanity');
@@ -602,8 +569,8 @@ async function testEvalCorpora(sourceRoot) {
     [...worktreeParticipants].sort(),
   );
 
-  const worktreeEvals = JSON.parse(worktreeEvalContent);
-  const worktreeManifest = JSON.parse(worktreeManifestContent);
+  const worktreeEvals = worktreeEvalDocument;
+  const worktreeManifest = worktreeManifestDocument;
   assert.equal(worktreeEvals.skill_name, 'isolating-work-with-git-worktrees');
   assert.equal(worktreeEvals.policy.optimization, 'critical');
   assert.deepEqual(
@@ -647,37 +614,23 @@ async function testEvalCorpora(sourceRoot) {
   );
   assert.deepEqual(worktreeDiagnosticRouterSuite.releaseSplits, []);
   assert.equal(worktreeDiagnosticRouterSuite.requiredForRelease, false);
-  assert.equal(worktreeBehaviorSuite.kind, 'command');
+  assert.equal(worktreeBehaviorSuite.kind, 'provider');
   assert.deepEqual(worktreeBehaviorSuite.skills, [
     'isolating-work-with-git-worktrees',
     'reconciling-git-merges',
     'git-commit',
   ]);
-  assert.equal(worktreeBehaviorSuite.entry, './run-worktree-evals.mjs');
   assert.equal(worktreeBehaviorSuite.cases, './evals.json');
   assert.equal(worktreeBehaviorSuite.requiredForRelease, true);
   assert.equal(worktreeBehaviorSuite.defaultRuns, 3);
-  assert.equal(worktreeBehaviorSuite.suiteTimeoutMs, 10800000);
+  assert.equal(worktreeBehaviorSuite.perRunTimeoutMs, 300000);
   assert.equal(worktreeRouterSuite.fixtureModule, './trigger-fixture.mjs');
-  assert.match(worktreeEvalReadmeContent, /--batch-name release\b/);
-  assert.equal(worktreeEvalReadmeContent.includes('--runs 1'), false);
-  assert.deepEqual(
-    (await loadWorktreeCases()).map((entry) => entry.id),
-    worktreeEvals.evals.map((entry) => entry.id),
+  await assertProviderManifest(
+    worktreeManifest,
+    bundleRoot,
+    'isolating-work-with-git-worktrees',
+    ['behavior'],
   );
-  assert.deepEqual(
-    parseWorktreeEvalArgs(['--runs', '2', '--case', 'reuse_existing_isolation']),
-    {
-      runs: 2,
-      timeoutMs: 300000,
-      codexBin: 'codex',
-      model: 'gpt-5.6-luna',
-      caseId: 'reuse_existing_isolation',
-      output: undefined,
-      help: false,
-    },
-  );
-  assert.throws(() => parseWorktreeEvalArgs(['--timeout-ms', '0']), /positive integer/);
   assert.equal(worktreeCaseAllowsGitWrites('stop_when_default_root_not_ignored'), true);
   assert.equal(
     worktreeCaseAllowsGitWrites('use_full_clone_for_repository_level_isolation'),
@@ -717,119 +670,39 @@ function assertCoreWorktreeContract(skill) {
 }
 
 async function testSkillRenders(context) {
-  const [source, mergeSource, worktreeSource] = await Promise.all([
-    readFile(path.join(context.sourceRoot, 'skills', 'git-commit', 'SKILL.md'), 'utf8'),
-    readFile(
-      path.join(context.sourceRoot, 'skills', 'reconciling-git-merges', 'SKILL.md'),
-      'utf8',
-    ),
-    readFile(
-      path.join(
-        context.sourceRoot,
-        'skills',
-        'isolating-work-with-git-worktrees',
-        'SKILL.md',
-      ),
-      'utf8',
-    ),
+  const skillsRoot = path.join(
+    context.bundleRoot,
+    ...(context.platform ? [context.platform] : []),
+    'skills',
+  );
+  const [renderedCommitSkill, renderedMergeSkill, renderedWorktreeSkill] = await Promise.all([
+    readFile(path.join(skillsRoot, 'git-commit', 'SKILL.md'), 'utf8'),
+    readFile(path.join(skillsRoot, 'reconciling-git-merges', 'SKILL.md'), 'utf8'),
+    readFile(path.join(skillsRoot, 'isolating-work-with-git-worktrees', 'SKILL.md'), 'utf8'),
   ]);
 
-  let renderedCommitSkill = source;
-  let renderedMergeSkill = mergeSource;
-  let renderedWorktreeSkill = worktreeSource;
-
   if (context.platform) {
-    const [
-      bundledSkill,
-      bundledOpenai,
-      bundledMergeSkill,
-      bundledMergeOpenai,
-      bundledWorktreeSkill,
-      bundledWorktreeOpenai,
-    ] = await Promise.all([
-      readFile(
-        path.join(
-          context.bundleRoot,
-          context.platform,
-          'skills',
-          'git-commit',
-          'SKILL.md',
-        ),
-        'utf8',
-      ),
-      readFile(
-        path.join(
-          context.bundleRoot,
-          context.platform,
-          'skills',
-          'git-commit',
-          'agents',
-          'openai.yaml',
-        ),
-        'utf8',
-      ),
-      readFile(
-        path.join(
-          context.bundleRoot,
-          context.platform,
-          'skills',
-          'reconciling-git-merges',
-          'SKILL.md',
-        ),
-        'utf8',
-      ),
-      readFile(
-        path.join(
-          context.bundleRoot,
-          context.platform,
-          'skills',
-          'reconciling-git-merges',
-          'agents',
-          'openai.yaml',
-        ),
-        'utf8',
-      ),
-      readFile(
-        path.join(
-          context.bundleRoot,
-          context.platform,
-          'skills',
-          'isolating-work-with-git-worktrees',
-          'SKILL.md',
-        ),
-        'utf8',
-      ),
-      readFile(
-        path.join(
-          context.bundleRoot,
-          context.platform,
-          'skills',
-          'isolating-work-with-git-worktrees',
-          'agents',
-          'openai.yaml',
-        ),
-        'utf8',
-      ),
+    const [commitOpenai, mergeOpenai, worktreeOpenai] = await Promise.all([
+      readFile(path.join(skillsRoot, 'git-commit', 'agents', 'openai.yaml'), 'utf8'),
+      readFile(path.join(skillsRoot, 'reconciling-git-merges', 'agents', 'openai.yaml'), 'utf8'),
+      readFile(path.join(skillsRoot, 'isolating-work-with-git-worktrees', 'agents', 'openai.yaml'), 'utf8'),
     ]);
     assert.match(
-      bundledOpenai,
+      commitOpenai,
       /default_prompt: "使用 \$git-commit 核对当前改动，并按仓库规范完成 Git 提交。"/,
     );
-    assert.match(bundledOpenai, /allow_implicit_invocation: true/);
+    assert.match(commitOpenai, /allow_implicit_invocation: true/);
     assert.match(
-      bundledMergeOpenai,
+      mergeOpenai,
       /default_prompt: "使用 \$reconciling-git-merges 协调 Git merge 双方意图并验证组合结果。"/,
     );
-    assert.match(bundledMergeOpenai, /allow_implicit_invocation: true/);
+    assert.match(mergeOpenai, /allow_implicit_invocation: true/);
     assert.match(
-      bundledWorktreeOpenai,
+      worktreeOpenai,
       /default_prompt: "使用 \$isolating-work-with-git-worktrees：安全创建或复用 Git worktree/,
     );
-    assert.match(bundledWorktreeOpenai, /allow_implicit_invocation: true/);
+    assert.match(worktreeOpenai, /allow_implicit_invocation: true/);
     assert.ok(['codex', 'claude'].includes(context.platform));
-    renderedCommitSkill = bundledSkill;
-    renderedMergeSkill = bundledMergeSkill;
-    renderedWorktreeSkill = bundledWorktreeSkill;
   }
 
   assertCoreCommitContract(renderedCommitSkill);
@@ -2113,7 +1986,7 @@ async function testMergeEvalAssertions() {
 
 async function main() {
   const context = await resolveTestContext();
-  await testEvalCorpora(context.sourceRoot);
+  await testEvalCorpora(context.bundleRoot);
   await testSkillRenders(context);
   await testWorkspaceFixture();
   await testHostileGitConfigurationIsIgnored();

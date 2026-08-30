@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "plugin": "git-toolkit",
   "skill": "git-commit",
   "profiles": [
@@ -12,7 +12,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     },
     {
@@ -24,7 +23,6 @@
           "config": {}
         }
       ],
-      "runModel": false,
       "requiredForRelease": true
     }
   ],
@@ -54,11 +52,10 @@
     },
     {
       "id": "behavior",
-      "kind": "command",
+      "kind": "provider",
       "skills": [
         "git-commit"
       ],
-      "entry": "./run-commit-evals.mjs",
       "cases": "./behavior-cases.json",
       "profiles": [
         "project-default"
@@ -67,14 +64,38 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000,
-      "suiteTimeoutMs": 16200000,
-      "supports": [
-        "runs",
-        "case",
-        "model",
-        "codexBin",
-        "timeout"
-      ]
+      "provider": {
+        "id": "git-commit-provider",
+        "entry": "./run-commit-evals.mjs",
+        "credentialEnvironment": [
+          "AW_SKILL_EVAL_CODEX_BIN",
+          "AW_SKILL_EVAL_CODEX_MODEL",
+          "CODEX_HOME",
+          "HOME",
+          "OPENAI_API_KEY",
+          "ALL_PROXY",
+          "HTTPS_PROXY",
+          "HTTP_PROXY",
+          "NO_PROXY",
+          "NODE_EXTRA_CA_CERTS",
+          "SSL_CERT_DIR",
+          "SSL_CERT_FILE"
+        ],
+        "capabilities": {
+          "triggerDiscovery": false,
+          "conversation": true,
+          "skillPathExecution": true,
+          "previousVersionBaseline": true,
+          "withoutSkillBaseline": true,
+          "cleanContext": true,
+          "parallelRuns": false,
+          "toolTrace": true,
+          "tokenUsage": true,
+          "duration": true,
+          "sandbox": true,
+          "materialization": true
+        }
+      }
     }
   ]
 }

@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aw.invalid/schemas/aw-skill-eval-manifest.schema.json",
+  "title": "AwSkillEvalManifest",
+  "type": "object",
+  "required": ["schemaVersion", "plugin", "skill", "profiles", "suites"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "plugin": { "$ref": "#/$defs/id" },
+    "skill": { "$ref": "#/$defs/id" },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/profile" }
+    },
+    "suites": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/triggerSuite" },
+          { "$ref": "#/$defs/conversationSuite" },
+          { "$ref": "#/$defs/providerSuite" },
+          { "$ref": "#/$defs/checkSuite" }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "profile": {
+      "type": "object",
+      "required": ["id", "scope", "plugins", "requiredForRelease"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "scope": { "enum": ["project", "user"] },
+        "plugins": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "config"],
+            "properties": {
+              "name": { "$ref": "#/$defs/id" },
+              "config": { "type": "object" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "requiredForRelease": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "commonProperties": {
+      "id": { "$ref": "#/$defs/id" },
+      "skills": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "$ref": "#/$defs/id" }
+      },
+      "cases": { "type": "string", "minLength": 1 },
+      "profiles": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "$ref": "#/$defs/id" }
+      },
+      "defaultRuns": { "type": "integer", "minimum": 1 },
+      "releaseSplits": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": { "enum": ["train", "validation", "sanity", "all"] }
+      },
+      "requiredForRelease": { "type": "boolean" },
+      "perRunTimeoutMs": { "type": "integer", "minimum": 1000 }
+    },
+    "triggerSuite": {
+      "type": "object",
+      "required": ["id", "kind", "skills", "cases", "profiles", "defaultRuns", "releaseSplits", "requiredForRelease", "perRunTimeoutMs", "observeSpawnAgent", "isolation", "strictNegativeSplits"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "trigger" },
+        "skills": { "$ref": "#/$defs/commonProperties/skills" },
+        "cases": { "$ref": "#/$defs/commonProperties/cases" },
+        "profiles": { "$ref": "#/$defs/commonProperties/profiles" },
+        "defaultRuns": { "$ref": "#/$defs/commonProperties/defaultRuns" },
+        "releaseSplits": { "$ref": "#/$defs/commonProperties/releaseSplits" },
+        "requiredForRelease": { "$ref": "#/$defs/commonProperties/requiredForRelease" },
+        "perRunTimeoutMs": { "$ref": "#/$defs/commonProperties/perRunTimeoutMs" },
+        "fixtureModule": { "type": "string", "minLength": 1 },
+        "observeSpawnAgent": { "type": "boolean" },
+        "isolation": { "enum": ["standard", "strict"] },
+        "strictNegativeSplits": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["train", "validation", "sanity"] }
+        },
+        "minimumPassRate": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "forbidMultipleSkillLoads": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "conversationSuite": {
+      "type": "object",
+      "required": ["id", "kind", "skills", "cases", "profiles", "defaultRuns", "releaseSplits", "requiredForRelease", "perRunTimeoutMs", "isolation"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "conversation" },
+        "skills": { "$ref": "#/$defs/commonProperties/skills" },
+        "cases": { "$ref": "#/$defs/commonProperties/cases" },
+        "profiles": { "$ref": "#/$defs/commonProperties/profiles" },
+        "defaultRuns": { "$ref": "#/$defs/commonProperties/defaultRuns" },
+        "releaseSplits": { "$ref": "#/$defs/commonProperties/releaseSplits" },
+        "requiredForRelease": { "$ref": "#/$defs/commonProperties/requiredForRelease" },
+        "perRunTimeoutMs": { "$ref": "#/$defs/commonProperties/perRunTimeoutMs" },
+        "isolation": { "enum": ["standard", "strict"] },
+        "environment": {
+          "type": "object",
+          "required": ["pathPrepend"],
+          "properties": {
+            "pathPrepend": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["triggerDiscovery", "conversation", "skillPathExecution", "previousVersionBaseline", "withoutSkillBaseline", "cleanContext", "parallelRuns", "toolTrace", "tokenUsage", "duration", "sandbox", "materialization"],
+      "properties": {
+        "triggerDiscovery": { "type": "boolean" },
+        "conversation": { "type": "boolean" },
+        "skillPathExecution": { "type": "boolean" },
+        "previousVersionBaseline": { "type": "boolean" },
+        "withoutSkillBaseline": { "type": "boolean" },
+        "cleanContext": { "type": "boolean" },
+        "parallelRuns": { "type": "boolean" },
+        "toolTrace": { "type": "boolean" },
+        "tokenUsage": { "type": "boolean" },
+        "duration": { "type": "boolean" },
+        "sandbox": { "type": "boolean" },
+        "materialization": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "providerSuite": {
+      "type": "object",
+      "required": ["id", "kind", "skills", "cases", "profiles", "defaultRuns", "releaseSplits", "requiredForRelease", "perRunTimeoutMs", "provider"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "provider" },
+        "skills": { "$ref": "#/$defs/commonProperties/skills" },
+        "cases": { "$ref": "#/$defs/commonProperties/cases" },
+        "profiles": { "$ref": "#/$defs/commonProperties/profiles" },
+        "defaultRuns": { "$ref": "#/$defs/commonProperties/defaultRuns" },
+        "releaseSplits": { "$ref": "#/$defs/commonProperties/releaseSplits" },
+        "requiredForRelease": { "$ref": "#/$defs/commonProperties/requiredForRelease" },
+        "perRunTimeoutMs": { "$ref": "#/$defs/commonProperties/perRunTimeoutMs" },
+        "provider": {
+          "type": "object",
+          "required": ["id", "entry", "capabilities"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "entry": { "type": "string", "minLength": 1, "pattern": "\\.mjs$" },
+            "assets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "credentialEnvironment": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            },
+            "capabilities": { "$ref": "#/$defs/capabilities" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "checkSuite": {
+      "type": "object",
+      "required": ["id", "kind", "skills", "profiles", "defaultRuns", "releaseSplits", "requiredForRelease", "perRunTimeoutMs", "checker", "document", "schema"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "check" },
+        "skills": { "$ref": "#/$defs/commonProperties/skills" },
+        "profiles": { "$ref": "#/$defs/commonProperties/profiles" },
+        "defaultRuns": { "$ref": "#/$defs/commonProperties/defaultRuns" },
+        "releaseSplits": { "$ref": "#/$defs/commonProperties/releaseSplits" },
+        "requiredForRelease": { "$ref": "#/$defs/commonProperties/requiredForRelease" },
+        "perRunTimeoutMs": { "$ref": "#/$defs/commonProperties/perRunTimeoutMs" },
+        "checker": { "const": "json-schema" },
+        "document": { "type": "string", "minLength": 1 },
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

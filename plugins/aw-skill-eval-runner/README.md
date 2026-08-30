@@ -1,11 +1,7 @@
 # aw-skill-eval-runner
 
-使用 `aw-skill-eval` 执行 Agent Skill Eval，并生成中立的 `EvalRunBundle v3`。
+提供默认 AW Agent Skill Eval 的单一 Agent-facing 编排入口。`run-aw-skill-evals` 依赖 `agent-skill-toolkit` 的独立 Auditor，并调用 canonical `aw`/`aw-skill-eval` 命令；插件不复制执行引擎或 Eval schema。
 
-运行环境必须提供 Node.js 22+ 和 `aw-skill-eval` 命令。本插件不依赖 `agent-skill-toolkit`。
+输入可以是现有 `AwSkillEvalExecutionPlan v4` 加 passing `EvalAuditResult v3`，也可以是 plugin/Skill/suite/profile/case/split 选择条件。后者先由 `aw skill eval prepare` 生成输入完整 plan。
 
-`run-aw-skill-evals` 可以由模型自动选择，也可由用户显式调用。它验证本次副作用授权、`AwSkillEvalExecutionPlan v3`、运行时能力和 bundle 完整性。Audit 缺失不会阻止诊断执行。
-
-Plan 可用 `minimumEvidenceLevel` 要求比较证据。macOS/Linux 在 Full Access 或普通 Terminal 能力探测通过后使用 `verified-observed` 进程管理；受限会话仍可执行只要求 `executed` 的诊断计划。验证观察不是 OS 强隔离，限制会写入 bundle。
-
-本插件不设计或审核 case，不调用 Auditor，也不解释结果。Review 或发布使用运行证据前，必须在消费侧完成 preflight Audit 和 result triage。
+执行前必须有精确覆盖当前 plan 的独立 preflight Audit，并在 Audit 通过后取得本次模型成本与副作用授权。执行生成 `EvalRunBundle v4`，验证后再由全新上下文输出 result-triage Audit v3。Runner 不修改 Skill，也不作 Quality Review 或 Release Check 结论。

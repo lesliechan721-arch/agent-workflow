@@ -1,10 +1,13 @@
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
-import { getRuntimeCapabilities } from './capabilities.js'
 import { isPathInside, pathsOverlap, safeSegment, sha256, stable } from './common.js'
 export { computeCaseCorpusDigest } from './corpus-digest.js'
 import { validateJsonSchema } from './json-schema.js'
-import { captureRuntimeSkill, type CapturedRuntimeSkill } from './runtime-skill.js'
+import {
+  captureCanonicalDirectory,
+  captureRuntimeSkill,
+  type CapturedRuntimeSkill,
+} from './runtime-skill.js'
 import { getSchema } from './schemas.js'
 import { assertSafeOutputPath } from './output-path.js'
 import type { Digest, RuntimeCapabilities, ValidationResult } from './types.js'
@@ -18,8 +21,15 @@ export interface EvalConfiguration {
   env?: Record<string, string>
 }
 
+export interface RuntimeInput {
+  id: string
+  kind: 'directory'
+  path: string
+  digest: Digest
+}
+
 export interface AwSkillEvalExecutionPlan {
-  schemaVersion: 3
+  schemaVersion: 4
   planId: string
   minimumEvidenceLevel?: 'executed' | 'comparative'
   target: { name: string; path: string; digest: Digest }
@@ -27,12 +37,15 @@ export interface AwSkillEvalExecutionPlan {
   provider: {
     id: string
     command: string[]
+    describeCommand: string[]
     cwd?: string | null
     env?: Record<string, string>
     capabilitiesPath: string
     capabilitiesDigest: Digest
     inheritEnvironment: boolean
+    environmentAllowlist?: string[]
   }
+  runtimeInputs: RuntimeInput[]
   configurations: EvalConfiguration[]
   runsPerCase: number
   timeoutMs: number
@@ -48,6 +61,7 @@ export interface PlanCalculated {
   targetSkillDigest: Digest | null
   caseCorpusDigest: Digest | null
   capabilitiesDigest: Digest | null
+  runtimeInputDigests: Record<string, Digest | null>
   configurationSkillDigests: Record<string, Digest | null>
 }
 
@@ -63,11 +77,13 @@ export interface CapturedExecutionPlan {
   plan: AwSkillEvalExecutionPlan
   base: string
   outputRoot: string
+  providerCwd: string | null
   planFile: CapturedPlanFile
   caseFiles: CapturedPlanFile[]
   capabilitiesFile: CapturedPlanFile
   cases: EvalCase[]
   capabilities: RuntimeCapabilities
+  runtimeInputs: Map<string, CapturedRuntimeSkill>
   skills: Map<string, CapturedRuntimeSkill | null>
   boundSkills: Map<string, CapturedRuntimeSkill>
 }
@@ -108,9 +124,7 @@ async function readFencedJson<T>(
   outputRoot?: string,
 ): Promise<{ file: CapturedPlanFile; value: T }> {
   const candidate = path.resolve(base, value)
-  const actual = await realpath(candidate)
-  if (!isPathInside(base, actual)) throw new Error(`${label} leaves the plan directory`)
-  if ((await lstat(candidate)).isSymbolicLink()) throw new Error(`${label} cannot be a symlink`)
+  const actual = await resolvePlanInputPath(base, value, label, 'file')
   if (outputRoot && isPathInside(outputRoot, actual))
     throw new Error(`${label} must not be inside outputRoot`)
   const raw = await readFile(actual, 'utf8')
@@ -118,6 +132,29 @@ async function readFencedJson<T>(
     file: { label, requestedPath: candidate, canonicalPath: actual, digest: sha256(raw), raw },
     value: JSON.parse(raw) as T,
   }
+}
+
+async function resolvePlanInputPath(
+  base: string,
+  value: string,
+  label: string,
+  kind: 'file' | 'directory',
+): Promise<string> {
+  const candidate = path.resolve(base, value)
+  if (!isPathInside(base, candidate)) throw new Error(`${label} leaves the plan directory`)
+  const relative = path.relative(base, candidate)
+  let current = base
+  for (const segment of relative.split(path.sep)) {
+    if (!segment) continue
+    current = path.join(current, segment)
+    if ((await lstat(current)).isSymbolicLink()) throw new Error(`${label} cannot contain a symlink path component`)
+  }
+  const actual = await realpath(candidate)
+  if (!isPathInside(base, actual)) throw new Error(`${label} leaves the plan directory`)
+  const info = await lstat(actual)
+  if (kind === 'file' && !info.isFile()) throw new Error(`${label} must be a regular file`)
+  if (kind === 'directory' && !info.isDirectory()) throw new Error(`${label} must be a directory`)
+  return actual
 }
 
 export async function captureAndValidateExecutionPlan(
@@ -128,6 +165,7 @@ export async function captureAndValidateExecutionPlan(
     targetSkillDigest: null,
     caseCorpusDigest: null,
     capabilitiesDigest: null,
+    runtimeInputDigests: {},
     configurationSkillDigests: {},
   }
   let plan: AwSkillEvalExecutionPlan
@@ -202,14 +240,9 @@ export async function captureAndValidateExecutionPlan(
     )
     capabilitiesFile = loaded.file
     calculated.capabilitiesDigest = loaded.file.digest
-    errors.push(...validateJsonSchema(await getSchema('eval-runtime-capabilities'), loaded.value).map((entry) => `capabilities: ${entry}`))
+    errors.push(...validateJsonSchema(await getSchema('eval-provider-capabilities'), loaded.value).map((entry) => `capabilities: ${entry}`))
     capabilities = loaded.value
-    const runtimeCapabilities = getRuntimeCapabilities()
     if (capabilities.provider !== plan.provider.id) errors.push('provider id does not match capability document')
-    if (capabilities.provider !== runtimeCapabilities.provider)
-      errors.push('capability provider does not match the current aw-skill-eval runtime')
-    if (capabilities.providerVersion !== runtimeCapabilities.providerVersion)
-      errors.push('capability providerVersion does not match the current aw-skill-eval runtime')
     for (const configuration of plan.configurations) {
       if (configuration.skillMode === 'with-skill' && !capabilities.capabilities.skillPathExecution)
         errors.push('provider does not support with-skill execution')
@@ -233,9 +266,9 @@ export async function captureAndValidateExecutionPlan(
   const capturedSkills = new Map<string, CapturedRuntimeSkill | null>()
   const boundSkills = new Map<string, CapturedRuntimeSkill>()
   try {
-    const target = path.resolve(base, plan.target.path)
-    if ((await lstat(target)).isSymbolicLink()) throw new Error('symlink')
+    const target = await resolvePlanInputPath(base, plan.target.path, 'target path', 'directory')
     targetSkill = await captureRuntimeSkill(target)
+    if (!isPathInside(base, targetSkill.sourceRoot)) throw new Error('target path leaves the plan directory')
     calculated.targetSkillDigest = targetSkill.digest
     if (pathsOverlap(targetSkill.sourceRoot, outputRoot)) errors.push('outputRoot must not overlap the target Skill tree')
     configurationRoots.set('with-skill', targetSkill.sourceRoot)
@@ -261,8 +294,12 @@ export async function captureAndValidateExecutionPlan(
       continue
     }
     try {
-      const previousPath = path.resolve(base, configuration.skillPath)
-      if ((await lstat(previousPath)).isSymbolicLink()) throw new Error('symlink')
+      const previousPath = await resolvePlanInputPath(
+        base,
+        configuration.skillPath,
+        `${configuration.id} previous-version path`,
+        'directory',
+      )
       const captured = await captureRuntimeSkill(previousPath)
       if (!isPathInside(base, captured.sourceRoot)) throw new Error('previous-version path leaves the plan directory')
       if (pathsOverlap(captured.sourceRoot, outputRoot)) throw new Error('previous-version path overlaps outputRoot')
@@ -299,6 +336,8 @@ export async function captureAndValidateExecutionPlan(
     calculated.caseCorpusDigest = sha256(canonicalDocuments.sort().join('\n'))
     if (evalTypes.has('trigger') && capabilities && !capabilities.capabilities.triggerDiscovery)
       errors.push('provider does not support trigger discovery')
+    if (evalTypes.has('conversation') && capabilities && !capabilities.capabilities.conversation)
+      errors.push('provider does not support conversation execution')
   } catch (error) {
     errors.push(`case corpus is unavailable or invalid: ${(error as Error).message}`)
   }
@@ -309,13 +348,50 @@ export async function captureAndValidateExecutionPlan(
     errors.push('case corpus digest does not match case documents')
   if (calculated.capabilitiesDigest && calculated.capabilitiesDigest !== plan.provider.capabilitiesDigest)
     errors.push('capabilitiesDigest does not match capability document')
+  const runtimeInputs = new Map<string, CapturedRuntimeSkill>()
+  if (new Set(plan.runtimeInputs.map((entry) => entry.id)).size !== plan.runtimeInputs.length)
+    errors.push('runtime input ids must be unique')
+  for (const runtimeInput of plan.runtimeInputs) {
+    try {
+      const inputPath = await resolvePlanInputPath(
+        base,
+        runtimeInput.path,
+        `runtime input ${runtimeInput.id}`,
+        'directory',
+      )
+      const captured = await captureCanonicalDirectory(inputPath)
+      calculated.runtimeInputDigests[runtimeInput.id] = captured.digest
+      runtimeInputs.set(runtimeInput.id, captured)
+      if (pathsOverlap(captured.sourceRoot, outputRoot))
+        errors.push(`runtime input ${runtimeInput.id} must not overlap outputRoot`)
+      if (captured.digest !== runtimeInput.digest)
+        errors.push(`runtime input ${runtimeInput.id} digest does not match directory content`)
+    } catch (error) {
+      errors.push(`runtime input ${runtimeInput.id} is unavailable or unsafe: ${(error as Error).message}`)
+    }
+  }
   if (plan.provider.command.some((value) => value.includes('\0')))
     errors.push('provider command contains invalid argv')
+  if (plan.provider.describeCommand.some((value) => value.includes('\0')))
+    errors.push('provider describeCommand contains invalid argv')
+  if (plan.provider.environmentAllowlist !== undefined) {
+    if (new Set(plan.provider.environmentAllowlist).size !== plan.provider.environmentAllowlist.length)
+      errors.push('provider environmentAllowlist entries must be unique')
+    if (plan.provider.environmentAllowlist.some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)))
+      errors.push('provider environmentAllowlist contains an invalid environment variable name')
+  }
+  let providerCwd: string | null = null
   if (plan.provider.cwd !== null && plan.provider.cwd !== undefined) {
-    const providerCwd = path.resolve(base, plan.provider.cwd)
-    if (!isPathInside(base, providerCwd)) errors.push('provider cwd must stay inside the plan directory')
-    for (const [configurationId, skillRoot] of configurationRoots)
-      if (pathsOverlap(skillRoot, providerCwd)) errors.push(`provider cwd must not overlap ${configurationId} Skill content`)
+    try {
+      providerCwd = await resolvePlanInputPath(base, plan.provider.cwd, 'provider cwd', 'directory')
+      if (pathsOverlap(providerCwd, outputRoot)) errors.push('provider cwd must not overlap outputRoot')
+      for (const [configurationId, skillRoot] of configurationRoots)
+        if (pathsOverlap(skillRoot, providerCwd)) errors.push(`provider cwd must not overlap ${configurationId} Skill content`)
+      for (const [id, runtimeInput] of runtimeInputs)
+        if (pathsOverlap(runtimeInput.sourceRoot, providerCwd)) errors.push(`provider cwd must not overlap runtime input ${id}`)
+    } catch (error) {
+      errors.push(`provider cwd is unavailable or unsafe: ${(error as Error).message}`)
+    }
   }
   if (errors.length > 0 || !capabilities || !capabilitiesFile || !targetSkill) {
     return { valid: false, errors, calculated, captured: null }
@@ -328,11 +404,13 @@ export async function captureAndValidateExecutionPlan(
       plan,
       base,
       outputRoot,
+      providerCwd,
       planFile,
       caseFiles,
       capabilitiesFile: { ...capabilitiesFile, label: 'provider capabilities' },
       cases: capturedCases,
       capabilities,
+      runtimeInputs,
       skills: capturedSkills,
       boundSkills,
     },

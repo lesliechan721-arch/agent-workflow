@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "plugin": "git-toolkit",
   "skill": "reconciling-git-merges",
   "profiles": [
@@ -12,7 +12,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     },
     {
@@ -24,7 +23,6 @@
           "config": {}
         }
       ],
-      "runModel": false,
       "requiredForRelease": true
     }
   ],
@@ -57,12 +55,11 @@
     },
     {
       "id": "behavior",
-      "kind": "command",
+      "kind": "provider",
       "skills": [
         "reconciling-git-merges",
         "git-commit"
       ],
-      "entry": "./run-merge-evals.mjs",
       "cases": "./evals.json",
       "profiles": [
         "project-default"
@@ -71,14 +68,41 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000,
-      "suiteTimeoutMs": 9000000,
-      "supports": [
-        "runs",
-        "case",
-        "model",
-        "codexBin",
-        "timeout"
-      ]
+      "provider": {
+        "id": "git-merge-provider",
+        "entry": "./run-merge-evals.mjs",
+        "assets": [
+          "./files"
+        ],
+        "credentialEnvironment": [
+          "AW_SKILL_EVAL_CODEX_BIN",
+          "AW_SKILL_EVAL_CODEX_MODEL",
+          "CODEX_HOME",
+          "HOME",
+          "OPENAI_API_KEY",
+          "ALL_PROXY",
+          "HTTPS_PROXY",
+          "HTTP_PROXY",
+          "NO_PROXY",
+          "NODE_EXTRA_CA_CERTS",
+          "SSL_CERT_DIR",
+          "SSL_CERT_FILE"
+        ],
+        "capabilities": {
+          "triggerDiscovery": false,
+          "conversation": true,
+          "skillPathExecution": true,
+          "previousVersionBaseline": true,
+          "withoutSkillBaseline": true,
+          "cleanContext": true,
+          "parallelRuns": false,
+          "toolTrace": true,
+          "tokenUsage": true,
+          "duration": true,
+          "sandbox": true,
+          "materialization": true
+        }
+      }
     }
   ]
 }

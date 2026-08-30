@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "plugin": "dev-workflow",
   "skill": "dev-workflow",
   "profiles": [
@@ -12,7 +12,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     },
     {
@@ -28,7 +27,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     }
   ],
@@ -49,6 +47,7 @@
       "strictNegativeSplits": [
         "validation"
       ],
+      "forbidMultipleSkillLoads": false,
       "profiles": [
         "project-default"
       ],
@@ -76,6 +75,7 @@
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false,
       "profiles": [
         "project-composed"
       ],

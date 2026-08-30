@@ -13,11 +13,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  buildCodexArgs,
   copyCodexRuntimeFiles,
   createEvalWorkspace,
   readEvalResource,
-  resolveParentModelOverride,
   shouldStopEarly,
 } from '../skills/codex-explore/evals/eval-harness.mjs';
 import { setupTriggerWorkspace } from '../skills/codex-explore/evals/trigger-fixture.mjs';
@@ -89,86 +87,56 @@ async function testFixture() {
   }
 }
 
-async function testSpecializedWorkspaceRequiresFinalArtifact() {
-  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-  delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+async function testCustomProviderWorkspaceUsesRuntimeSnapshot() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-provider-workspace-'));
+  const authorSource = path.join(root, 'author-source');
+  const runtimeSnapshot = path.join(root, 'runtime-snapshot');
+  const contextPath = path.join(root, 'author-context.json');
+  const previousContext = process.env.AW_PLUGIN_CONTEXT;
   try {
-    await assert.rejects(createEvalWorkspace(), /AW_PLUGIN_EVAL_PROJECT_ROOT is required/);
-  } finally {
-    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
-  }
-}
+    await Promise.all([
+      mkdir(path.join(authorSource, '.agents', 'skills', 'codex-explore'), { recursive: true }),
+      mkdir(path.join(runtimeSnapshot, '.agents', 'skills', 'codex-explore'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(authorSource, '.agents', 'skills', 'codex-explore', 'SKILL.md'),
+        '# Author source\n',
+        'utf8',
+      ),
+      writeFile(
+        path.join(runtimeSnapshot, '.agents', 'skills', 'codex-explore', 'SKILL.md'),
+        '# Runtime snapshot\n',
+        'utf8',
+      ),
+      writeFile(path.join(authorSource, 'origin.txt'), 'author source\n', 'utf8'),
+      writeFile(path.join(runtimeSnapshot, 'origin.txt'), 'runtime snapshot\n', 'utf8'),
+      writeFile(contextPath, `${JSON.stringify({ sourceRoot: authorSource })}\n`, 'utf8'),
+    ]);
+    process.env.AW_PLUGIN_CONTEXT = contextPath;
 
-async function testSpecializedWorkspaceCopiesFinalArtifact() {
-  const subject = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-subject-'));
-  const skillPath = path.join(subject, '.agents', 'skills', 'codex-explore', 'SKILL.md');
-  const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-  try {
-    await mkdir(path.dirname(skillPath), { recursive: true });
-    await mkdir(path.join(subject, '.codex'), { recursive: true });
-    await writeFile(skillPath, '# Materialized Explore\n', 'utf8');
-    await writeFile(path.join(subject, '.codex', 'config.toml'), '# final config\n', 'utf8');
-    process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = subject;
-    const workspace = await createEvalWorkspace();
+    const customProviderInput = Object.freeze({ workspacePath: runtimeSnapshot });
+    const workspace = await createEvalWorkspace({
+      sourceRoot: customProviderInput.workspacePath,
+    });
     try {
-      assert.equal(await readFile(workspace.skillPath, 'utf8'), '# Materialized Explore\n');
+      assert.equal(await readFile(workspace.skillPath, 'utf8'), '# Runtime snapshot\n');
       assert.equal(
-        await readFile(path.join(workspace.root, '.codex', 'config.toml'), 'utf8'),
-        '# final config\n',
+        await readFile(path.join(workspace.root, 'origin.txt'), 'utf8'),
+        'runtime snapshot\n',
       );
-      assert.match(
-        await readFile(path.join(workspace.root, 'known', 'constants.ts'), 'utf8'),
-        /RETRY_LIMIT/,
-      );
-      const args = buildCodexArgs(
-        workspace,
-        { query: '$codex-explore inspect', codex_config: {} },
-        {
-          model: 'gpt-test',
-          modelProvider: 'fixture-provider',
-          sensitiveEnvironmentNames: ['CUSTOM_TOKEN'],
-        },
-      );
-      assert.ok(args.includes('--enable'));
-      assert.ok(args.includes('multi_agent'));
-      assert.ok(args.includes('executed_tool_call_metadata'));
-      assert.ok(args.includes('suppress_unstable_features_warning=true'));
-      assert.ok(args.includes('gpt-test'));
-      assert.ok(args.includes('model_provider="fixture-provider"'));
-      assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME","CUSTOM_TOKEN"]'));
-      assert.equal(args.includes('--ignore-user-config'), false);
-      assert.equal(args.some((arg) => arg.startsWith('agents.codex-explore-')), false);
-      const v1Args = buildCodexArgs(
-        workspace,
-        {
-          query: '$codex-explore inspect with V1',
-          parent_model: 'gpt-5.5',
-          codex_config: { 'features.multi_agent_v2.enabled': false },
-        },
-        { model: 'gpt-5.6-sol' },
-      );
-      assert.equal(v1Args[v1Args.indexOf('--model') + 1], 'gpt-5.5');
-      assert.equal(v1Args.includes('gpt-5.6-sol'), false);
-      assert.equal(
-        resolveParentModelOverride(
-          { parent_model: 'gpt-5.5' },
-          { model: 'gpt-5.6-sol' },
-        ),
-        'gpt-5.5',
-      );
-      assert.equal(
-        resolveParentModelOverride({}, { model: 'gpt-5.6-sol' }),
-        'gpt-5.6-sol',
-      );
-      assert.equal(resolveParentModelOverride({}, {}), null);
     } finally {
       await rm(workspace.root, { recursive: true, force: true });
     }
+
+    await assert.rejects(
+      createEvalWorkspace(),
+      /custom provider input\.workspacePath is required/,
+    );
   } finally {
-    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
-    else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
-    await rm(subject, { recursive: true, force: true });
+    if (previousContext === undefined) delete process.env.AW_PLUGIN_CONTEXT;
+    else process.env.AW_PLUGIN_CONTEXT = previousContext;
+    await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -209,10 +177,9 @@ async function main() {
   await testEvalCorpus();
   testPositiveEarlyStopRequiresRawSpawnArguments();
   await testFixture();
-  await testSpecializedWorkspaceRequiresFinalArtifact();
-  await testSpecializedWorkspaceCopiesFinalArtifact();
+  await testCustomProviderWorkspaceUsesRuntimeSnapshot();
   await testCredentialIsolation();
-  console.log('codex-explore trigger assets and specialized harness tests passed');
+  console.log('codex-explore trigger assets and provider workspace tests passed');
 }
 
 main().catch((error) => {

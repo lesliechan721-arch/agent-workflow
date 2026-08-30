@@ -9,6 +9,17 @@ function matchesType(value: unknown, type: string): boolean {
 }
 
 function validateNode(schema: JsonSchema, value: unknown, pointer: string, errors: string[]): void {
+  if (Array.isArray(schema.allOf)) {
+    for (const entry of schema.allOf) {
+      if (entry && typeof entry === 'object') validateNode(entry as JsonSchema, value, pointer, errors)
+    }
+  }
+  if (schema.if && typeof schema.if === 'object') {
+    const conditionalErrors: string[] = []
+    validateNode(schema.if as JsonSchema, value, pointer, conditionalErrors)
+    const branch = conditionalErrors.length === 0 ? schema.then : schema.else
+    if (branch && typeof branch === 'object') validateNode(branch as JsonSchema, value, pointer, errors)
+  }
   if (schema.const !== undefined && !Object.is(value, schema.const))
     errors.push(`${pointer}: must equal ${JSON.stringify(schema.const)}`)
   if (Array.isArray(schema.enum) && !schema.enum.some((entry) => Object.is(entry, value)))

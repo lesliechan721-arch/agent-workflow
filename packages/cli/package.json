@@ -33,7 +33,6 @@
     "test:smoke:bootstrap:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-bootstrap-smoke.test.ts",
     "test:smoke:fetch": "pnpm run test:smoke:publish:catalog",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
-    "plugin:eval": "tsc -p tsconfig.json && node dist/scripts/eval-plugin-skills-audited.js",
     "test:smoke:plugin-scripts": "vitest run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
     "prepack": "pnpm --dir ../.. build:ensure",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
@@ -42,6 +41,7 @@
     "@inkjs/ui": "^2.0.0",
     "@lesliechan721/agent-skill-eval": "workspace:0.1.0",
     "@lesliechan721/aw-plugin-core": "workspace:0.1.0",
+    "ajv": "^8.17.1",
     "commander": "^14.0.1",
     "fs-extra": "^11.3.0",
     "ink": "^7.1.1",

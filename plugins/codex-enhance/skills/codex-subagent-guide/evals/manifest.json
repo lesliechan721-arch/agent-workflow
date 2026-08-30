@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 1,
   "plugin": "codex-enhance",
   "skill": "codex-subagent-guide",
   "profiles": [
@@ -12,7 +12,6 @@
           "config": {}
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     },
     {
@@ -26,7 +25,6 @@
           }
         }
       ],
-      "runModel": true,
       "requiredForRelease": true
     },
     {
@@ -38,7 +36,6 @@
           "config": {}
         }
       ],
-      "runModel": false,
       "requiredForRelease": true
     },
     {
@@ -60,7 +57,6 @@
           }
         }
       ],
-      "runModel": false,
       "requiredForRelease": true
     },
     {
@@ -82,7 +78,6 @@
           }
         }
       ],
-      "runModel": false,
       "requiredForRelease": true
     }
   ],
@@ -139,12 +134,11 @@
     },
     {
       "id": "routing",
-      "kind": "command",
+      "kind": "provider",
       "skills": [
         "codex-subagent-guide"
       ],
-      "entry": "./run-routing-evals.mjs",
-      "cases": "./evals.json",
+      "cases": "./provider-evals.json",
       "profiles": [
         "project-default"
       ],
@@ -152,22 +146,49 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000,
-      "suiteTimeoutMs": 43200000,
-      "supports": [
-        "runs",
-        "case",
-        "model",
-        "codexBin",
-        "timeout"
-      ]
+      "provider": {
+        "id": "codex-subagent-routing",
+        "entry": "run-routing-evals.mjs",
+        "assets": [
+          "eval-harness.mjs",
+          "trigger-fixture.mjs"
+        ],
+        "credentialEnvironment": [
+          "ALL_PROXY",
+          "AW_SKILL_EVAL_CODEX_BIN",
+          "AW_SKILL_EVAL_CODEX_MODEL",
+          "CODEX_HOME",
+          "HOME",
+          "HTTPS_PROXY",
+          "HTTP_PROXY",
+          "NODE_EXTRA_CA_CERTS",
+          "NO_PROXY",
+          "OPENAI_API_KEY",
+          "SSL_CERT_DIR",
+          "SSL_CERT_FILE"
+        ],
+        "capabilities": {
+          "triggerDiscovery": false,
+          "conversation": true,
+          "skillPathExecution": true,
+          "previousVersionBaseline": true,
+          "withoutSkillBaseline": true,
+          "cleanContext": true,
+          "parallelRuns": false,
+          "toolTrace": true,
+          "tokenUsage": true,
+          "duration": true,
+          "sandbox": true,
+          "materialization": true
+        }
+      }
     },
     {
       "id": "lifecycle",
-      "kind": "command",
+      "kind": "provider",
       "skills": [
         "codex-subagent-guide"
       ],
-      "entry": "./run-lifecycle-evals.mjs",
       "cases": "./lifecycle-evals.json",
       "profiles": [
         "project-default"
@@ -176,22 +197,49 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 900000,
-      "suiteTimeoutMs": 3600000,
-      "supports": [
-        "runs",
-        "case",
-        "model",
-        "codexBin",
-        "timeout"
-      ]
+      "provider": {
+        "id": "codex-subagent-lifecycle",
+        "entry": "run-lifecycle-evals.mjs",
+        "assets": [
+          "eval-harness.mjs",
+          "trigger-fixture.mjs"
+        ],
+        "credentialEnvironment": [
+          "ALL_PROXY",
+          "AW_SKILL_EVAL_CODEX_BIN",
+          "AW_SKILL_EVAL_CODEX_MODEL",
+          "CODEX_HOME",
+          "HOME",
+          "HTTPS_PROXY",
+          "HTTP_PROXY",
+          "NODE_EXTRA_CA_CERTS",
+          "NO_PROXY",
+          "OPENAI_API_KEY",
+          "SSL_CERT_DIR",
+          "SSL_CERT_FILE"
+        ],
+        "capabilities": {
+          "triggerDiscovery": false,
+          "conversation": true,
+          "skillPathExecution": true,
+          "previousVersionBaseline": true,
+          "withoutSkillBaseline": true,
+          "cleanContext": true,
+          "parallelRuns": false,
+          "toolTrace": true,
+          "tokenUsage": true,
+          "duration": true,
+          "sandbox": true,
+          "materialization": true
+        }
+      }
     },
     {
       "id": "lifecycle-timeout",
-      "kind": "command",
+      "kind": "provider",
       "skills": [
         "codex-subagent-guide"
       ],
-      "entry": "./run-lifecycle-evals.mjs",
       "cases": "./lifecycle-timeout-evals.json",
       "profiles": [
         "project-timeout"
@@ -200,14 +248,42 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 900000,
-      "suiteTimeoutMs": 3600000,
-      "supports": [
-        "runs",
-        "case",
-        "model",
-        "codexBin",
-        "timeout"
-      ]
+      "provider": {
+        "id": "codex-subagent-lifecycle",
+        "entry": "run-lifecycle-evals.mjs",
+        "assets": [
+          "eval-harness.mjs",
+          "trigger-fixture.mjs"
+        ],
+        "credentialEnvironment": [
+          "ALL_PROXY",
+          "AW_SKILL_EVAL_CODEX_BIN",
+          "AW_SKILL_EVAL_CODEX_MODEL",
+          "CODEX_HOME",
+          "HOME",
+          "HTTPS_PROXY",
+          "HTTP_PROXY",
+          "NODE_EXTRA_CA_CERTS",
+          "NO_PROXY",
+          "OPENAI_API_KEY",
+          "SSL_CERT_DIR",
+          "SSL_CERT_FILE"
+        ],
+        "capabilities": {
+          "triggerDiscovery": false,
+          "conversation": true,
+          "skillPathExecution": true,
+          "previousVersionBaseline": true,
+          "withoutSkillBaseline": true,
+          "cleanContext": true,
+          "parallelRuns": false,
+          "toolTrace": true,
+          "tokenUsage": true,
+          "duration": true,
+          "sandbox": true,
+          "materialization": true
+        }
+      }
     }
   ]
 }

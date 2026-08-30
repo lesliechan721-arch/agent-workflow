@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises'
 import { validateJsonSchema } from './json-schema.js'
 import type {
   Digest,
-  RuntimeCapabilities,
+  EvalProviderCapabilities,
+  EvalProviderOutput,
   SchemaName,
   ValidationResult,
 } from './types.js'
@@ -10,7 +11,9 @@ import type {
 const schemaNames = new Set<SchemaName>([
   'aw-skill-eval-execution-plan',
   'eval-run-bundle',
-  'eval-runtime-capabilities',
+  'eval-audit-result',
+  'eval-provider-capabilities',
+  'eval-provider-output',
 ])
 
 export function isSchemaName(value: string): value is SchemaName {
@@ -29,13 +32,37 @@ export async function getSchemaDigest(name: SchemaName): Promise<Digest> {
   return digests[name]
 }
 
-export async function validateRuntimeCapabilities(
+export async function validateProviderCapabilities(
   value: unknown,
-): Promise<ValidationResult<RuntimeCapabilities>> {
-  const errors = validateJsonSchema(await getSchema('eval-runtime-capabilities'), value)
+): Promise<ValidationResult<EvalProviderCapabilities>> {
+  const errors = validateJsonSchema(await getSchema('eval-provider-capabilities'), value)
   return {
     valid: errors.length === 0,
     errors,
-    calculated: errors.length === 0 ? value as RuntimeCapabilities : null,
+    calculated: errors.length === 0 ? value as EvalProviderCapabilities : null,
+  }
+}
+
+export const validateRuntimeCapabilities = validateProviderCapabilities
+
+export async function validateProviderOutput(
+  value: unknown,
+): Promise<ValidationResult<EvalProviderOutput>> {
+  const errors = validateJsonSchema(await getSchema('eval-provider-output'), value)
+  return {
+    valid: errors.length === 0,
+    errors,
+    calculated: errors.length === 0 ? value as EvalProviderOutput : null,
+  }
+}
+
+export async function validateAuditResult<T = unknown>(
+  value: unknown,
+): Promise<ValidationResult<T>> {
+  const errors = validateJsonSchema(await getSchema('eval-audit-result'), value)
+  return {
+    valid: errors.length === 0,
+    errors,
+    calculated: errors.length === 0 ? value as T : null,
   }
 }

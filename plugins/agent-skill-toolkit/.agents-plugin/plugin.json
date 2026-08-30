@@ -101,24 +101,6 @@
             "capabilities": []
           }
         }
-      },
-      {
-        "name": "eval-audit-result-schema",
-        "source": "./schemas/eval-audit-result.schema.json",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "eval-run-bundle-schema",
-        "source": "./schemas/eval-run-bundle.schema.json",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
       }
     ],
     "buildImports": [
@@ -131,6 +113,11 @@
         "plugin": "@aw/agent-skill-eval",
         "export": "case-corpus-digest",
         "env": "AW_PLUGIN_IMPORT_CASE_CORPUS_DIGEST"
+      },
+      {
+        "plugin": "@aw/agent-skill-eval",
+        "export": "eval-run-bundle-validator",
+        "env": "AW_PLUGIN_IMPORT_EVAL_RUN_BUNDLE_VALIDATOR"
       }
     ],
     "skillRuntimeFiles": [
@@ -176,8 +163,11 @@
       },
       {
         "skill": "audit-agent-skill-evals",
-        "source": "./schemas/eval-audit-result.schema.json",
-        "target": "assets/eval-audit-result.schema.json"
+        "target": "assets/eval-audit-result.schema.json",
+        "import": {
+          "plugin": "@aw/agent-skill-eval",
+          "export": "eval-audit-result-schema"
+        }
       },
       {
         "skill": "audit-agent-skill-evals",
@@ -196,8 +186,11 @@
       },
       {
         "skill": "audit-agent-skill-evals",
-        "source": "./schemas/eval-run-bundle.schema.json",
-        "target": "assets/eval-run-bundle.schema.json"
+        "target": "assets/eval-run-bundle.schema.json",
+        "import": {
+          "plugin": "@aw/agent-skill-eval",
+          "export": "eval-run-bundle-schema"
+        }
       }
     ],
     "generatedSkillRuntimeFiles": [
@@ -232,6 +225,10 @@
       {
         "skill": "audit-agent-skill-evals",
         "target": "scripts/corpus-digest.mjs"
+      },
+      {
+        "skill": "audit-agent-skill-evals",
+        "target": "scripts/eval-run-bundle-validator.mjs"
       }
     ]
   },

@@ -2,11 +2,23 @@
 
 该 manifest 覆盖 default/non-default 和 project/user 最终制品；模型用例位于 project-default：
 
+## 准备与运行
+
+`aw skill eval prepare` 每次只准备 manifest 注册的一个 suite/profile。`--output` 必须指向 Workspace 外尚不存在的新目录。只做 materialization 诊断时只执行 prepare，不启动 provider：
+
 ```bash
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name materialization --materialize-only
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name trigger-validation-debug --suite trigger --split validation --runs 1
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name release
+aw skill eval prepare codex-enhance \
+  --skill codex-explore --suite trigger --profile project-default \
+  --output /tmp/aw-eval-plans/codex-explore-materialization --json
 ```
+
+需要模型时，先按目标 suite/profile 生成新的 Plan，再对该目录的 `plan.json` 使用 `$run-aw-skill-evals`。该 Skill 先协调独立 `audit-agent-skill-evals` 上下文完成 preflight Audit，再取得本次模型成本、外部进程、凭据、网络和临时输出的明确授权；授权后由 runner 执行带 Audit 的命令，并在运行后完成 result-triage：
+
+```bash
+aw-skill-eval run /tmp/aw-eval-plans/<plan-dir>/plan.json --audit /tmp/aw-eval-plans/<plan-dir>/preflight-audit.json
+```
+
+上面的命令只表示 `$run-aw-skill-evals` 在 Audit 和授权通过后调用的 `aw-skill-eval run <plan.json> --audit <audit.json>`。没有 Audit 或 result-triage 的 bundle 只能作为诊断证据，不能用于 Review、修改 Skill 或发布结论。
 
 ## 触发与 Gate
 
@@ -24,9 +36,9 @@ train 和 validation 包含大型陌生材料、显式调用但 Gate 应拒绝�
 trigger suite 要求 Codex 支持 app-server thread/turn 协议、V2 `subAgentActivity` 和 `spawn_agent.agent_type`：
 
 ```bash
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name trigger-train --suite trigger --split train --runs 3
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name trigger-validation --suite trigger --split validation --runs 3
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name trigger-sanity --suite trigger --split sanity --runs 3
+aw skill eval prepare codex-enhance --skill codex-explore --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-plans/codex-explore-trigger-train --json
+aw skill eval prepare codex-enhance --skill codex-explore --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-plans/codex-explore-trigger-validation --json
+aw skill eval prepare codex-enhance --skill codex-explore --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-plans/codex-explore-trigger-sanity --json
 ```
 
 fixture module 只补齐合成材料。显式 `$codex-explore` 记为宿主注入；自动触发只接受成功读取 `.agents/skills/codex-explore/SKILL.md` 的 `commandExecution` 完成事件。实际委派只接受 `subAgentActivity(kind=started)`；正向用例在加载和启动事件都出现后立即结束。该事件证明子代理已经启动，但不包含完整 spawn 参数；具体 role 和参数由 model-selection suite 验证。
@@ -51,10 +63,10 @@ V1 用例显式使用支持直接工具调用且未固定 V2 的父模型；只�
 
 runner 从父会话 rollout 的原始 function call 与 output 中提取 collaboration timeline。真实 smoke 覆盖正常完成路径；主动探测、恢复超限和过早清理由合成 timeline 单元测试覆盖。它不声称证明 Codex 内部消息投递语义或未出现在 timeline 中的主代理读取行为。
 
-该 runner 使用 `workspace-write` 观察只读提示词是否被遵守，因此报告中的 `read_only_enforcement` 固定为 `instruction-only`；workspace diff 只证明本次 eval 的最终文件没有变化，不证明权限隔离。
+该 runner 使用 `workspace-write` 观察只读提示词是否被遵守，因此 EvalRunBundle 中的 `read_only_enforcement` 固定为 `instruction-only`；workspace diff 只证明本次 Eval 的最终文件没有变化，不证明权限隔离。
 
 ```bash
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name workflow-debug --suite workflow --runs 1
+aw skill eval prepare codex-enhance --skill codex-explore --suite workflow --profile project-default --runs 1 --output /tmp/aw-eval-plans/codex-explore-workflow --json
 ```
 
 ## 存活协议消融
@@ -68,10 +80,10 @@ pnpm plugin:eval codex-enhance --skill codex-explore --batch-name workflow-debug
 - 结果可为设计讨论提供诊断证据，但不得单独驱动生产 Skill 修改；重新改变等待协议前，仍需有效 case admission、同族回归和当前 runtime 证据。
 
 ```bash
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name liveness --suite liveness --runs 3
+aw skill eval prepare codex-enhance --skill codex-explore --suite liveness --profile project-short-wait --runs 3 --output /tmp/aw-eval-plans/codex-explore-liveness --json
 ```
 
-报告按用例保留 accepted、probe、`progress` / `blocked`、duration、termination 和可用 token usage。叶子工具证据只接受 child rollout 与父 thread 的直接关联；child rollout 不可用时用例保持 `incomplete`，不按文件归属或最终文案推断。
+EvalRunBundle 按用例保留 accepted、probe、`progress` / `blocked`、duration、termination 和可用 token usage。叶子工具证据只接受 child rollout 与父 thread 的直接关联；child rollout 不可用时用例保持 `incomplete`，不按文件归属或最终文案推断。
 
 2026-08-10 的 Variant A 基线中，两个 V2 场景共 6 次运行均发送一次 probe，6 次都得到可接受终态，但 0 次收到 `progress` 或 `blocked`，未达到保留门槛。Variant B 的两个 V2 场景各 3/3 接受，probe 和状态消息均为 0；真实 V1 补充运行也取得可接受终态且没有 probe。该历史结果解释当前 Variant B 的来源，但不替代当前版本发布评估。
 
@@ -87,13 +99,13 @@ pnpm plugin:eval codex-enhance --skill codex-explore --batch-name liveness --sui
 runner 对每次运行的原始 `spawn_agent` 参数执行机械断言：
 
 ```bash
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name model-selection --suite model-selection --runs 3
+aw skill eval prepare codex-enhance --skill codex-explore --suite model-selection --profile project-default --runs 3 --output /tmp/aw-eval-plans/codex-explore-model-selection --json
 ```
 
 调试单个用例：
 
 ```bash
-pnpm plugin:eval codex-enhance --skill codex-explore --batch-name model-selection-debug --suite model-selection --runs 1 --case auto_standard
+aw skill eval prepare codex-enhance --skill codex-explore --suite model-selection --profile project-default --runs 1 --case auto_standard --output /tmp/aw-eval-plans/codex-explore-model-selection-auto-standard --json
 ```
 
 部分 backend 会要求保留服务端预注册的完整 `spawn_agent` schema，拒绝本地隐藏模型字段。只有执行失败、未发生 spawn 且错误事件明确包含 `must match the configured schema` 时，隐藏字段用例才记为 `environment_skipped`；其它失败仍正常阻断评估。

@@ -52,12 +52,64 @@ function getContainedRuntimeCapabilities() {
   }
 }
 
-function runExecutionPlan(
+async function auditPathsForPlan(planPath: string): Promise<string[]> {
+  const plan = JSON.parse(await readFile(planPath, 'utf8'))
+  const caseIds: string[] = []
+  for (const relativePath of plan.cases?.paths ?? []) {
+    try {
+      const value = JSON.parse(await readFile(path.resolve(path.dirname(planPath), relativePath), 'utf8'))
+      const rows = Array.isArray(value) ? value : value.cases ?? value.evals ?? []
+      caseIds.push(...rows.map((entry: { id?: unknown }) => String(entry.id ?? '')))
+    } catch {
+      caseIds.push('case-1')
+    }
+  }
+  const skillDigests = new Set<string>([
+    plan.target?.digest,
+    ...(plan.configurations ?? []).flatMap((entry: { skillMode?: string; skillDigest?: string }) =>
+      entry.skillMode === 'previous-version' && entry.skillDigest ? [entry.skillDigest] : []),
+  ].filter(Boolean))
+  const auditPaths: string[] = []
+  for (const skillDigest of skillDigests) {
+    const auditPath = path.join(
+      path.dirname(planPath),
+      `.audit-${skillDigest.slice('sha256:'.length, 'sha256:'.length + 12)}.json`,
+    )
+    await writeFile(auditPath, JSON.stringify({
+      schemaVersion: 3,
+      producer: 'audit-agent-skill-evals',
+      independentContext: true,
+      auditId: `audit-${skillDigest.slice(-12)}`,
+      mode: 'preflight',
+      targetSkillDigest: skillDigest,
+      caseCorpusDigest: plan.cases?.corpusDigest ?? digest('invalid-corpus'),
+      runBundleDigest: null,
+      validity: 'pass',
+      optimizationPolicy: 'balanced',
+      cases: [...new Set(caseIds)].map((caseId) => ({
+        caseId,
+        releaseRelevant: true,
+        admission: 'pass',
+        oracleConfidence: 'high',
+        findings: [],
+      })),
+      blockedCases: [],
+      releaseEligible: false,
+      failureTriage: [],
+      recommendedAction: 'collect-more-data',
+    }))
+    auditPaths.push(auditPath)
+  }
+  return auditPaths
+}
+
+async function runExecutionPlan(
   planPath: string,
-  options: Parameters<typeof runExecutionPlanWithoutContainment>[1] = {},
+  options: Partial<Parameters<typeof runExecutionPlanWithoutContainment>[1]> = {},
 ) {
   return runExecutionPlanWithoutContainment(planPath, {
     ...options,
+    auditPaths: options.auditPaths ?? await auditPathsForPlan(planPath),
     processHooks: { ...containedProcessHooks, ...options.processHooks },
   })
 }
@@ -116,22 +168,22 @@ describe('public Eval execution contracts', () => {
       process.execPath,
       [bin, 'schema', 'print', 'eval-audit-result'],
       { cwd: path.resolve('.') },
-    )).rejects.toThrow()
+    )).resolves.toMatchObject({ stdout: expect.stringContaining('EvalAuditResult') })
     await expect(validateRuntimeCapabilities(getRuntimeCapabilities())).resolves.toMatchObject({
       valid: true,
       errors: [],
       calculated: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         provider: 'aw-skill-eval-process',
       },
     })
     await expect(validateRuntimeCapabilities({
       ...getRuntimeCapabilities(),
-      schemaVersion: 2,
+      schemaVersion: 1,
     })).resolves.toMatchObject({
       valid: false,
       calculated: null,
-      errors: expect.arrayContaining(['$/schemaVersion: must equal 1']),
+      errors: expect.arrayContaining(['$/schemaVersion: must equal 2']),
     })
   })
 
@@ -229,19 +281,25 @@ describe('public Eval execution contracts', () => {
     await writeFile(capabilitiesPath, capabilitiesRaw)
     const planPath = path.join(root, 'plan.json')
     await writeFile(planPath, JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       planId: 'snapshot-race',
       target: { name: 'fixture', path: 'skill', digest: targetDigest },
       cases: { paths: ['cases.json'], corpusDigest: digest(caseRaw) },
       provider: {
         id: 'aw-skill-eval-process',
         command: [process.execPath, '-e', 'process.stdout.write("{}")'],
+        describeCommand: [
+          process.execPath,
+          '-e',
+          `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(capabilitiesPath)}, 'utf8'))`,
+        ],
         cwd: null,
         env: {},
         capabilitiesPath: 'capabilities.json',
         capabilitiesDigest: digest(capabilitiesRaw),
         inheritEnvironment: false,
       },
+      runtimeInputs: [],
       configurations: [{ id: 'current', skillMode: 'with-skill', comparisonId: null, env: {} }],
       runsPerCase: 1,
       timeoutMs: 1_000,
@@ -256,7 +314,7 @@ describe('public Eval execution contracts', () => {
         `const snapshot = fs.readFileSync(require('node:path').join(process.env.AGENT_EVAL_SKILL_PATH, 'references', 'zzz-payload.txt'), 'utf8')`,
         `fs.writeFileSync(${JSON.stringify(sourcePayload)}, 'source-a\\n')`,
         `if (snapshot !== 'source-a\\n') process.exit(9)`,
-        `process.stdout.write('{}')`,
+        `process.stdout.write(JSON.stringify({schemaVersion:1,provider:{id:${JSON.stringify(capabilities.provider)},version:${JSON.stringify(capabilities.providerVersion)}},usage:null,grading:null,artifacts:[]}))`,
       ].join(';')
       const plan = JSON.parse(await readFile(planPath, 'utf8'))
       plan.provider.command = [process.execPath, '-e', snapshotCheck]
@@ -384,13 +442,15 @@ describe('public Eval execution contracts', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-bundle-'))
     const bundlePath = path.join(root, 'bundle.json')
     const base = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runner: { id: 'fixture', version: '1' },
       independentContext: false,
       provider: { id: 'fixture', version: '1' },
+      providerCapabilitiesDigest: digest('capabilities'),
       planDigest: digest('plan'),
       targetSkillDigest: digest('skill'),
       caseCorpusDigest: digest('cases'),
+      runtimeInputs: [],
       comparisonPlanned: false,
       evidenceLevel: 'executed',
       runs: [],
@@ -541,19 +601,29 @@ describe('public Eval execution contracts', () => {
     const capabilitiesRaw = capabilitiesCommand.stdout
     await writeFile(capabilitiesPath, capabilitiesRaw)
     const plan = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       planId: 'plan-1',
       target: { name: 'fixture', path: 'skill', digest: targetDigest },
       cases: { paths: ['cases.json'], corpusDigest: caseCorpusDigest },
       provider: {
         id: 'aw-skill-eval-process',
-        command: [process.execPath, '-e', 'process.stdout.write(JSON.stringify({usage:{tokens:1,marker:process.env.AW_AGENT_SKILL_EVAL_PROCESS_MARKER},grading:{grader:{id:"fixture",version:"1"},result:{pass:true}}}))'],
+        command: [
+          process.execPath,
+          '-e',
+          `process.stdout.write(JSON.stringify({schemaVersion:1,provider:{id:${JSON.stringify(capabilities.provider)},version:${JSON.stringify(capabilities.providerVersion)}},usage:{tokens:1,marker:process.env.AW_AGENT_SKILL_EVAL_PROCESS_MARKER},grading:{grader:{id:"fixture",version:"1"},result:{pass:true}},artifacts:[]}))`,
+        ],
+        describeCommand: [
+          process.execPath,
+          '-e',
+          `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(capabilitiesPath)}, 'utf8'))`,
+        ],
         cwd: null,
         env: { AW_AGENT_SKILL_EVAL_PROCESS_MARKER: 'caller-controlled-marker' },
         capabilitiesPath: 'capabilities.json',
         capabilitiesDigest: digest(capabilitiesRaw),
         inheritEnvironment: false,
       },
+      runtimeInputs: [],
       configurations: [{ id: 'current', skillMode: 'with-skill', comparisonId: null, env: {} }],
       runsPerCase: 1,
       timeoutMs: 1_000,
@@ -588,20 +658,15 @@ describe('public Eval execution contracts', () => {
     plan.provider.capabilitiesDigest = digest(mismatchedCapabilitiesRaw)
     await writeFile(planPath, JSON.stringify(plan))
     const mismatchedCapabilities = await validateExecutionPlan(planPath)
-    expect(mismatchedCapabilities.valid).toBe(false)
-    expect(mismatchedCapabilities.errors).toContain(
-      'capability providerVersion does not match the current aw-skill-eval runtime',
-    )
-    await expect(runExecutionPlan(planPath)).rejects.toThrow(
-      'capability providerVersion does not match the current aw-skill-eval runtime',
-    )
+    expect(mismatchedCapabilities.valid).toBe(true)
+    await expect(runExecutionPlan(planPath)).rejects.toThrow('provider stdout identity does not match describe/capabilities')
 
     await writeFile(capabilitiesPath, capabilitiesRaw)
     plan.provider.capabilitiesDigest = digest(capabilitiesRaw)
     await writeFile(planPath, JSON.stringify(plan))
     const binaryRun = await execFileAsync(
       process.execPath,
-      [bin, 'run', planPath],
+      [bin, 'run', planPath, '--audit', ...(await auditPathsForPlan(planPath))],
       { cwd: path.resolve('.') },
     )
     const binaryResult = JSON.parse(binaryRun.stdout)
@@ -613,7 +678,9 @@ describe('public Eval execution contracts', () => {
     )
     expect(JSON.parse(binaryBundleValidation.stdout)).toMatchObject({ valid: true, errors: [] })
 
-    const result = await runExecutionPlanWithoutContainment(planPath)
+    const result = await runExecutionPlanWithoutContainment(planPath, {
+      auditPaths: await auditPathsForPlan(planPath),
+    })
     expect(result.evidenceLevel).toBe('executed')
     const validated = await validateRunBundle(result.bundlePath)
     expect(validated).toMatchObject({
@@ -665,6 +732,7 @@ describe('public Eval execution contracts', () => {
     await writeFile(planPath, JSON.stringify(plan))
     const priorBundle = await readFile(path.join(root, 'output', 'eval-run-bundle.json'), 'utf8')
     await expect(runExecutionPlanWithoutContainment(planPath, {
+      auditPaths: await auditPathsForPlan(planPath),
       sourceEnv: { CODEX_PERMISSION_PROFILE: ':workspace' },
       platform: 'linux',
     })).rejects.toThrow('one-off sandbox_permissions=require_escalated request is not Full Access')
@@ -674,12 +742,17 @@ describe('public Eval execution contracts', () => {
     plan.provider.command = [
       process.execPath,
       '-e',
-      'process.stdout.write(JSON.stringify({grading:{grader:{id:"fixture",version:"1"},result:{pass:true}}}))',
+      `process.stdout.write(JSON.stringify({schemaVersion:1,provider:{id:${JSON.stringify(capabilities.provider)},version:${JSON.stringify(capabilities.providerVersion)}},usage:null,grading:{grader:{id:"fixture",version:"1"},result:{pass:true}},artifacts:[]}))`,
     ]
     await writeFile(planPath, JSON.stringify(plan))
+    let diagnosticCleanupCalls = 0
     const diagnostic = await runExecutionPlan(planPath, {
       processHooks: {
-        terminateProcessTree: async () => { throw new Error('cleanup fixture failure') },
+        terminateProcessTree: async () => {
+          diagnosticCleanupCalls += 1
+          if (diagnosticCleanupCalls > 1) throw new Error('cleanup fixture failure')
+          return { confirmed: true }
+        },
       },
     })
     expect(diagnostic).toMatchObject({ evidenceLevel: 'executed', requirementsMet: false })
@@ -704,9 +777,14 @@ describe('public Eval execution contracts', () => {
     plan.configurations = [{ id: 'current', skillMode: 'with-skill', comparisonId: null, env: {} }]
 
     await writeFile(planPath, JSON.stringify(plan))
+    let executedCleanupCalls = 0
     const executedDiagnostic = await runExecutionPlan(planPath, {
       processHooks: {
-        terminateProcessTree: async () => { throw new Error('executed cleanup fixture failure') },
+        terminateProcessTree: async () => {
+          executedCleanupCalls += 1
+          if (executedCleanupCalls > 1) throw new Error('executed cleanup fixture failure')
+          return { confirmed: true }
+        },
       },
     })
     expect(executedDiagnostic).toMatchObject({ evidenceLevel: 'executed', requirementsMet: false })
@@ -725,7 +803,7 @@ describe('public Eval execution contracts', () => {
     plan.provider.command = [
       process.execPath,
       '-e',
-      'process.stdout.write(JSON.stringify({usage:{engine:"core"}}))',
+      `process.stdout.write(JSON.stringify({schemaVersion:1,provider:{id:${JSON.stringify(capabilities.provider)},version:${JSON.stringify(capabilities.providerVersion)}},usage:{engine:"core"},grading:null,artifacts:[]}))`,
     ]
     await writeFile(planPath, JSON.stringify(plan))
     let forgedRunnerCalled = false
@@ -842,7 +920,7 @@ describe('public Eval execution contracts', () => {
       plan.provider.command = [
         process.execPath,
         '-e',
-        `${setup}; process.stdout.write(JSON.stringify({grading:{grader:{id:"fixture",version:"1"},result:{pass:true}}}))`,
+        `${setup}; process.stdout.write(JSON.stringify({schemaVersion:1,provider:{id:${JSON.stringify(capabilities.provider)},version:${JSON.stringify(capabilities.providerVersion)}},usage:null,grading:{grader:{id:"fixture",version:"1"},result:{pass:true}},artifacts:[]}))`,
       ]
       await writeFile(planPath, JSON.stringify(plan))
       await expect(runExecutionPlan(planPath)).rejects.toThrow('Cannot commit runner-owned grading evidence')
@@ -894,6 +972,11 @@ describe('public Eval execution contracts', () => {
     expect(unmanagedPlan.errors.some((entry) => entry.includes('containment'))).toBe(true)
     await writeFile(planPath, JSON.stringify(plan))
 
+    plan.provider.command = [
+      process.execPath,
+      '-e',
+      `process.stdout.write(JSON.stringify({schemaVersion:1,provider:{id:${JSON.stringify(capabilities.provider)},version:${JSON.stringify(capabilities.providerVersion)}},usage:{tokens:1},grading:null,artifacts:[]}))`,
+    ]
     const validPlanRaw = JSON.stringify(plan)
     const invalidBeforeExecution = [
       {

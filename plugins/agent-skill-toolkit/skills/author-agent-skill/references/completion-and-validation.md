@@ -12,3 +12,5 @@
 - 未执行的模型 Eval、独立 Review 或发布检查明确标为未验证。
 
 作者完成条件是“请求的内容已修改并通过修改范围内的确定性验证”，不是“独立 Review 或 Eval 已通过”。
+
+用户另外要求执行已有 Eval 时，交给兼容 Runner；不先创建 Reviewer gate。默认 AW Runner 必须从 validated Plan v4 取得独立 passing preflight Audit，获得本次副作用授权，验证 EvalRunBundle v4，并在全新上下文完成 result-triage Audit v3。Audit fail 只停止 Eval 分支，不触发 Author 修改生产 Skill。

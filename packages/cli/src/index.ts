@@ -176,6 +176,15 @@ import {
   IMPLEMENTED_AW_CAPABILITIES,
 } from './commands/aw-capabilities.js';
 import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
+import {
+  checkSkillEval,
+  prepareSkillEval,
+} from './commands/skill-eval.js';
+import {
+  builtInEvalProviderCapabilities,
+  decodeCustomProviderCapabilities,
+  runSkillEvalProvider,
+} from './eval/provider.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -1142,6 +1151,178 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   const skill = program
     .command('skill')
     .description('Install, materialize, or validate Agent Skills');
+
+  const skillEval = skill
+    .command('eval')
+    .description('Prepare and run deterministic Agent Skill Eval inputs');
+
+  const skillEvalProvider = skillEval
+    .command('provider')
+    .description('Run one engine-owned Agent Skill Eval provider invocation');
+
+  for (const name of ['codex-trigger', 'codex-conversation'] as const) {
+    skillEvalProvider
+      .command(name)
+      .description(`Run one ${name} provider invocation`)
+      .option('--describe', 'emit RuntimeCapabilities v2', false)
+      .action(async (rawOptions: { describe?: boolean }) => {
+        try {
+          const result = rawOptions.describe
+            ? builtInEvalProviderCapabilities(name)
+            : await runSkillEvalProvider(name, env);
+          writeJsonReceipt(io.stdout, result);
+        } catch (error) {
+          writeLine(io.stderr, redactString(error instanceof Error ? error.message : String(error)));
+          commandExitState.exitCode = 1;
+        }
+      });
+  }
+
+  skillEvalProvider
+    .command('custom')
+    .description('Run one self-contained custom provider entry from the eval-suite snapshot')
+    .option('--describe', 'emit the bound RuntimeCapabilities v2', false)
+    .option('--capabilities <base64url>', 'internal canonical capability document')
+    .action(async (rawOptions: { describe?: boolean; capabilities?: string }) => {
+      try {
+        if (rawOptions.describe !== true && rawOptions.capabilities !== undefined) {
+          throw new Error('--capabilities is only valid with --describe.');
+        }
+        if (rawOptions.describe === true && rawOptions.capabilities === undefined) {
+          throw new Error('custom --describe requires --capabilities.');
+        }
+        const result = rawOptions.describe
+          ? await decodeCustomProviderCapabilities(rawOptions.capabilities!)
+          : await runSkillEvalProvider('custom', env);
+        writeJsonReceipt(io.stdout, result);
+      } catch (error) {
+        writeLine(io.stderr, redactString(error instanceof Error ? error.message : String(error)));
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  skillEval
+    .command('prepare')
+    .description('Prepare one complete AwSkillEvalExecutionPlan v4 directory')
+    .argument('<plugin>', 'canonical Workspace plugin name')
+    .requiredOption('--skill <skill>', 'owner Skill name')
+    .requiredOption('--suite <suite>', 'Eval suite ID')
+    .requiredOption('--profile <profile>', 'Eval profile ID')
+    .option('--workspace-root <root>', 'Catalog Workspace root')
+    .option('--split <split>', 'case split filter')
+    .option('--case <id>', 'case ID filter')
+    .option('--runs <count>', 'runs per selected case')
+    .option('--baseline <mode>', 'append without-skill comparison')
+    .option('--previous-version <runtime-skill-root>', 'append a previous-version comparison')
+    .requiredOption('--output <plan-directory>', 'new Plan directory')
+    .requiredOption('--json', 'emit one preparation receipt JSON object')
+    .action(async (pluginName: string, rawOptions: {
+      skill: string;
+      suite: string;
+      profile: string;
+      workspaceRoot?: string;
+      split?: string;
+      case?: string;
+      runs?: string;
+      baseline?: string;
+      previousVersion?: string;
+      output: string;
+    }) => {
+      try {
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd,
+          ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
+          mode: 'existing',
+          env,
+        });
+        const runs = rawOptions.runs === undefined
+          ? undefined
+          : (/^[1-9][0-9]*$/u.test(rawOptions.runs) ? Number(rawOptions.runs) : Number.NaN);
+        const receipt = await prepareSkillEval({
+          workspaceRoot: workspace.workspaceRoot,
+          workspaceRootResolvedFrom: workspace.workspaceRootResolvedFrom,
+          pluginName,
+          skillName: rawOptions.skill,
+          suiteId: rawOptions.suite,
+          profileId: rawOptions.profile,
+          output: rawOptions.output,
+          cwd,
+          env,
+          ...(rawOptions.split === undefined ? {} : { split: rawOptions.split }),
+          ...(rawOptions.case === undefined ? {} : { caseId: rawOptions.case }),
+          ...(runs === undefined ? {} : { runs }),
+          ...(rawOptions.baseline === undefined ? {} : {
+            baseline: rawOptions.baseline as 'without-skill',
+          }),
+          ...(rawOptions.previousVersion === undefined ? {} : {
+            previousVersion: rawOptions.previousVersion,
+          }),
+        });
+        writeJsonReceipt(io.stdout, receipt);
+      } catch (error) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'skill:eval:prepare',
+          ok: false,
+          errors: [{
+            code: 'evalPreparationFailed',
+            message: redactString(error instanceof Error ? error.message : String(error)),
+          }],
+        });
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  skillEval
+    .command('check')
+    .description('Run one registered declarative Eval checker')
+    .argument('<plugin>', 'canonical Workspace plugin name')
+    .requiredOption('--skill <skill>', 'owner Skill name')
+    .requiredOption('--suite <suite>', 'check suite ID')
+    .requiredOption('--profile <profile>', 'Eval profile ID')
+    .option('--workspace-root <root>', 'Catalog Workspace root')
+    .requiredOption('--output <result.json>', 'new check result file')
+    .requiredOption('--json', 'emit one AwSkillEvalCheckResult JSON object')
+    .action(async (pluginName: string, rawOptions: {
+      skill: string;
+      suite: string;
+      profile: string;
+      workspaceRoot?: string;
+      output: string;
+    }) => {
+      try {
+        const workspace = await resolveCatalogWorkspaceRoot({
+          cwd,
+          ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
+          mode: 'existing',
+          env,
+        });
+        const result = await checkSkillEval({
+          workspaceRoot: workspace.workspaceRoot,
+          workspaceRootResolvedFrom: workspace.workspaceRootResolvedFrom,
+          pluginName,
+          skillName: rawOptions.skill,
+          suiteId: rawOptions.suite,
+          profileId: rawOptions.profile,
+          output: rawOptions.output,
+          cwd,
+          env,
+        });
+        writeJsonReceipt(io.stdout, result);
+        commandExitState.exitCode = result.passed ? 0 : 1;
+      } catch (error) {
+        writeJsonReceipt(io.stdout, {
+          schemaVersion: 1,
+          command: 'skill:eval:check',
+          ok: false,
+          errors: [{
+            code: 'evalCheckFailed',
+            message: redactString(error instanceof Error ? error.message : String(error)),
+          }],
+        });
+        commandExitState.exitCode = 1;
+      }
+    });
 
   const review = program
     .command('review')
