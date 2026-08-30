@@ -173,9 +173,27 @@ describe('Codex manager resolver', () => {
       authorizer,
       operationRequirement: getCodexOperationRequirement('project'),
       requiresNativeMaterialization: false,
-    })).rejects.toMatchObject({ code: 'codexSystemCliUnsupported' });
+    })).rejects.toMatchObject({ code: 'codexProjectPluginVersionTooLow' });
     expect(authorizer).not.toHaveBeenCalled();
     expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+  });
+
+  it.each([
+    ['unparseable', result('Codex development build')],
+    ['probe failure', result('', 'probe failed', 2)],
+  ])('uses the project-contract unsupported code for %s system evidence', async (
+    _label,
+    probeResult,
+  ) => {
+    const executable = await writePathCodex(isolation, 'project-unsupported-bin', 'linux');
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: executable.pathEntry },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      runner: async () => probeResult,
+      operationRequirement: getCodexOperationRequirement('project'),
+      requiresNativeMaterialization: false,
+    })).rejects.toMatchObject({ code: 'codexProjectPluginUnsupported' });
   });
 
   it('assumes an App consumer when project activation has no system CLI and needs no native write', async () => {

@@ -52,7 +52,7 @@ async function setEmbeddedRootOverride(rootDir: string | null): Promise<void> {
 
 afterEach(async () => {
   vi.resetModules();
-  vi.doUnmock('../../src/commands/status-v5.js');
+  vi.doUnmock('../../src/commands/status-v6.js');
   vi.doUnmock('../../src/commands/write-commands.js');
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -60,7 +60,7 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('CLI JSON v4 harness', () => {
+describe('CLI JSON Status v6 and Receipt v5 harness', () => {
   it('publishes the runtime plugin capability contract with isolated stdout', async () => {
     const result = await runCliEntry([
       'plugin', 'capabilities', '--surface', 'artifacts', '--json',
@@ -79,14 +79,14 @@ describe('CLI JSON v4 harness', () => {
     });
   });
 
-  it('keeps status v5 JSON on stdout', async () => {
+  it('keeps exact status v6 JSON on stdout', async () => {
     vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v5.js', () => ({
-      statusCommandV5: vi.fn(async () => {
+    vi.doMock('../../src/commands/status-v6.js', () => ({
+      statusCommandV6: vi.fn(async () => {
         const payload = {
-          schemaVersion: 5,
+          schemaVersion: 6,
           catalog: {
             primarySourceId: 'official',
             configDigest: 'sha256:config',
@@ -108,9 +108,12 @@ describe('CLI JSON v4 harness', () => {
             platform: 'codex',
             scope: 'project',
             cwd: tempDir,
+            desired: { enabled: true, scopes: ['project'], relation: 'root' },
+            actual: { state: 'drifted' },
             state: 'partial',
             components: [],
             errors: [],
+            recovery: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
           }],
           errors: [],
         };
@@ -129,9 +132,24 @@ describe('CLI JSON v4 harness', () => {
     );
 
     expect(result.exitCode, result.stderr).toBe(0);
-    expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 5,
-      targets: [{ state: 'partial' }],
+    expect(result.parseJsonStdout()).toEqual({
+      schemaVersion: 6,
+      catalog: {
+        primarySourceId: 'official', configDigest: 'sha256:config',
+        compositeDigest: 'sha256:composite', sources: [],
+      },
+      filters: {
+        plugins: ['git-commit'], platform: 'codex', scope: 'project', cwd: tempDir,
+      },
+      targets: [{
+        pluginName: 'git-commit', pluginId: 'official/git-commit', sourceId: 'official',
+        sourceIdentity: 'sha256:source', version: '1.0.0', platform: 'codex',
+        scope: 'project', cwd: tempDir,
+        desired: { enabled: true, scopes: ['project'], relation: 'root' },
+        actual: { state: 'drifted' }, state: 'partial', components: [], errors: [],
+        recovery: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+      }],
+      errors: [],
     });
     expect(result.stdout).not.toContain('调试：');
     expect(result.stderr).toContain('调试：command:start');
@@ -140,8 +158,8 @@ describe('CLI JSON v4 harness', () => {
   it('returns empty stdout, stderr error text, and exit 1 for a status execution error', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-error-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v5.js', () => ({
-      statusCommandV5: vi.fn(async () => {
+    vi.doMock('../../src/commands/status-v6.js', () => ({
+      statusCommandV6: vi.fn(async () => {
         throw new Error('status inspection failed');
       }),
     }));
@@ -172,6 +190,10 @@ describe('CLI JSON v4 harness', () => {
       rebuildResults: [],
       targetResults: [],
       overallState: 'succeeded',
+      layers: {
+        projectIntent: [], userIntent: [], sharedCodexNative: [],
+        userActivation: [], projectActivation: [], awExtensions: [],
+      },
       nativePlugins: {},
       repoManagedArtifacts: [],
       receiptTargets: [{
@@ -202,7 +224,7 @@ describe('CLI JSON v4 harness', () => {
     expect(success.parseJsonStdout()).toMatchObject({
       ok: true,
       command,
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       overallState: 'succeeded',
       targets: [{
         pluginName: 'git-commit',
@@ -211,13 +233,15 @@ describe('CLI JSON v4 harness', () => {
         platform: 'codex',
         scope: 'project',
         status: 'succeeded',
+        desired: { scope: 'project', relation: 'requested' },
+        recovery: [],
       }],
       errors: [],
     });
     expect(commands[`${command}WriteCommand` as keyof typeof commands]).toHaveBeenCalledOnce();
   });
 
-  it('emits a fail-closed config mutation receipt v4', async () => {
+  it('emits a fail-closed config mutation receipt v5', async () => {
     const workspace = await makeWorkspace();
     await setEmbeddedRootOverride(workspace.embeddedRoot);
 
@@ -229,7 +253,7 @@ describe('CLI JSON v4 harness', () => {
     expect(noOp.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:reset',
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       plugin: 'git-commit',
       overallState: 'failed',
       errors: [expect.objectContaining({ code: 'sourceMissing' })],

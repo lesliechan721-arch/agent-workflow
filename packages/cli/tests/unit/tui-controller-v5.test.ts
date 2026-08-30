@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/status-v5.js';
+import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
@@ -23,7 +23,7 @@ import { TuiRouter } from '../../src/tui/router.js';
 function source(
   id: string,
   options: { primary?: boolean; freshness?: 'remote' | 'cache' | 'path' | 'active'; error?: string; type?: 'git' | 'path' } = {},
-): StatusV5Payload['catalog']['sources'][number] {
+): StatusV6Payload['catalog']['sources'][number] {
   return {
     id,
     identity: `identity:${id}`,
@@ -36,12 +36,12 @@ function source(
 }
 
 function status(options: {
-  sources?: StatusV5Payload['catalog']['sources'];
-  targets?: StatusV5Payload['targets'];
-  errors?: StatusV5Payload['errors'];
-} = {}): StatusV5Payload {
+  sources?: StatusV6Payload['catalog']['sources'];
+  targets?: StatusV6Payload['targets'];
+  errors?: StatusV6Payload['errors'];
+} = {}): StatusV6Payload {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     catalog: {
       primarySourceId: 'official',
       configDigest: 'sha256:config',
@@ -61,8 +61,8 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-  errors?: StatusV5Payload['targets'][number]['errors'];
-}): StatusV5Payload['targets'][number] {
+  errors?: StatusV6Payload['targets'][number]['errors'];
+}): StatusV6Payload['targets'][number] {
   const pluginName = options.pluginName ?? 'demo';
   const sourceId = options.sourceId ?? 'official';
   return {
@@ -81,7 +81,7 @@ function target(options: {
   };
 }
 
-function summaries(...entries: Array<[string, string]>): StatusV5PluginSummary[] {
+function summaries(...entries: Array<[string, string]>): StatusV6PluginSummary[] {
   return entries.map(([sourceId, pluginName]) => ({
     pluginName,
     pluginId: `${sourceId}/${pluginName}`,
@@ -974,7 +974,7 @@ describe('TUI v4 router and ViewModel', () => {
       }],
     });
     const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
-    const project = (orderedTargets: StatusV5Payload['targets']) => buildTuiViewModel({
+    const project = (orderedTargets: StatusV6Payload['targets']) => buildTuiViewModel({
       status: status({ targets: orderedTargets }),
       pluginSummaries: summaries(
         ['official', 'leaf'],
@@ -1035,7 +1035,7 @@ describe('TUI v4 router and ViewModel', () => {
       }],
     });
     const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
-    const project = (orderedTargets: StatusV5Payload['targets']) => buildTuiViewModel({
+    const project = (orderedTargets: StatusV6Payload['targets']) => buildTuiViewModel({
       status: status({ targets: orderedTargets }),
       pluginSummaries: summaries(
         ['official', 'leaf'],
@@ -1830,7 +1830,7 @@ describe('TUI v4 Review safety', () => {
     expect(result).not.toHaveProperty('writeMayHaveCompleted');
   });
 
-  it('groups the frozen dependency plan and projects target-level partial evidence', async () => {
+  it('groups the frozen plan by intent layer and projects target-level partial evidence', async () => {
     const dependencyPlan = {
       dependencyPlanSchemaVersion: 1 as const,
       requestedPluginIds: ['official/root'],
@@ -1845,7 +1845,35 @@ describe('TUI v4 Review safety', () => {
         { pluginId: 'official/root', pluginName: 'root', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'absent' as const, action: 'install' as const, order: 2 },
       ],
     };
-    const evidence = { ...baseEvidence, dependencyPlan };
+    const codexReconcilePlans = [{
+      sharedNativeActions: [{
+        pluginId: 'official/root', codexPluginId: 'root@aw-official', action: 'replace',
+        desiredVersion: '2.0.0', affectsOtherScopes: true,
+      }],
+      activationActions: {
+        user: [{
+          pluginId: 'official/root', codexPluginId: 'root@aw-official',
+          scope: 'user', action: 'enable', desired: true,
+        }],
+        project: [{
+          pluginId: 'official/root', codexPluginId: 'root@aw-official',
+          scope: 'project', action: 'none', desired: false,
+        }],
+      },
+      extensionWrites: [{
+        pluginId: 'official/root', componentKey: 'extensions.instructions:guide',
+        kind: 'instruction', scope: 'user', action: 'write',
+      }],
+      extensionRemovals: [],
+      review: {
+        requiresConfirmation: true,
+        sharedImpact: {
+          pluginIds: ['root@aw-official'],
+          warning: 'Replacing shared native state can affect other projects.',
+        },
+      },
+    }] as unknown as NonNullable<OperationEvidence['codexReconcilePlans']>;
+    const evidence = { ...baseEvidence, dependencyPlan, codexReconcilePlans };
     const controller = new TuiController(dependencies({
       captureEvidence: vi.fn().mockResolvedValue(evidence),
       executeIntent: vi.fn().mockResolvedValue({
@@ -1865,10 +1893,21 @@ describe('TUI v4 Review safety', () => {
 
     expect(review.primaryLabel).toContain('3 个插件');
     expect(review.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'official/root', group: 'requested', relation: 'requested', kind: 'add' }),
-      expect.objectContaining({ pluginId: 'official/toolkit', group: 'dependencies', relation: 'direct', kind: 'keep' }),
+      expect.objectContaining({ pluginId: 'official/root', group: 'userIntent', relation: 'requested', kind: 'add' }),
+      expect.objectContaining({ pluginId: 'official/toolkit', group: 'userIntent', relation: 'direct', kind: 'keep' }),
+      expect.objectContaining({ pluginId: 'official/root', group: 'sharedCodexNative', kind: 'change' }),
+      expect.objectContaining({ pluginId: 'official/root', group: 'userActivation', kind: 'change' }),
+      expect.objectContaining({ pluginId: 'official/root', group: 'projectActivation', kind: 'keep' }),
+      expect.objectContaining({ pluginId: 'official/root', group: 'awExtensions', kind: 'change' }),
       expect.objectContaining({ group: 'preserved' }),
     ]));
+    expect(review).toMatchObject({
+      requiresConfirmation: true,
+      sharedImpact: {
+        pluginIds: ['root@aw-official'],
+        warning: expect.stringContaining('other projects'),
+      },
+    });
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
       state: 'partial',
       summary: { targets: expect.arrayContaining([

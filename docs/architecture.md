@@ -17,13 +17,13 @@
 - `commands/rebuild-command.ts` 解析当前 Catalog、依赖和现场状态，并交给统一 rebuild 流程。
 - `commands/rebuild-operations.ts` 编排 ownership 检查、清理、平台写入、lifecycle 和完成后检查。
 - `commands/rebuild-integration.ts` 把插件能力转换成平台原生写入和 AW-owned 组件。
-- `commands/status-v5.ts` 读取多来源 Catalog、live ownership 和平台组件，生成 status v5 和控制台输入。
+- `commands/status-v6.ts` 读取多来源 Catalog、live ownership 和平台组件，生成 Status v6 和控制台输入。
 - `commands/dependency-operation-plan.ts` 只生成一次命令内的依赖执行顺序；它不是持久安装记录。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存下一次 uninstall lifecycle 所需的弱状态。
 - `utils/multi-source-catalog.ts` 和 `utils/catalog-source-cache.ts` 解析 Catalog Sources Config v2 的 Git/path source，并管理可重建的本地快照。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
-- `output/command-receipt.ts` 生成五个写命令的 receipt v4。
+- `output/command-receipt.ts` 生成五个写命令的 receipt v5。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
 - Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
 - Core 的 AW capability registry 定义稳定 ID、集合规范化与摘要、Manifest 结构派生、受限生产源码扫描和 schema 1 runtime requirements receipt。未登记但语法合法的 ID 是可交换数据；是否支持只由当前 executable 的实现集合决定。`aw self describe --json` 公开该集合，`aw self check --json` 从最近的 receipt 或 Manifest 检查兼容性，`aw plugin requirements <plugin-directory> --add/--remove <capability> --json` 只修改 `requires.aw.capabilities`，并计算 declared、derived、detected 和 effective requirements。Plugin Manifest v2 要求显式 `schemaVersion: 2`。
@@ -111,9 +111,9 @@ Git 首次手动 refresh 直接建立 Active；已有 Active 时，高版本建�
 
 最小公开入口是 `aw catalog source refresh <id>`、`aw catalog source activate-candidate <id>`、`aw catalog source generation-status [id]` 和 `aw catalog source refresh-policy <id> <startup|manual>`，均支持 `--json`。policy 更新只原子写 generation state，不访问远端；无 Active 的 source 也可修改 policy，Path 只允许 `manual`。resolver 按 `config A → generation state → config B` 读取一致 control snapshot；config digest 变化最多重试三次，仍变化返回 `catalogGenerationIdentityMismatch`。Active resolver 一次验证 pointer、metadata、content-addressed 目录和 snapshot，并返回 metadata、manifest 和固定 snapshot root。`CatalogGenerationSet` 携带 config digest、source identity 和稳定 `generationSetDigest`；operation context 复用同一 control snapshot 和已验证 generation，不二次读取或验证。
 
-普通 install、upgrade、reinstall、uninstall、非离线 cleanup、plugin config、status、TUI 和 Portable 操作只读取 Active generation。每次操作建立一个 typed `CatalogOperationContext`，直接绑定 immutable snapshot 路径、已解析的本地 Catalog 证据和 `generationSetDigest`；依赖 closure、目标计划、Review 和执行都复用该 context。普通 operation context 的公开 source freshness 固定为 `active`；`remote | cache | path` 只描述 provider 或 refresh 输入，不能表示普通消费者当前绑定的数据。它不复制 generation，也不建立 reader lease。已有 Active 时，普通操作不调用 provider、不检查 Git branch，也不访问远端。Candidate 只有显式 activate 后才对新操作可见；Path 工作区变化也只有显式 refresh 后才建立新的 Active。
+普通 install、upgrade、reinstall、uninstall、非离线 cleanup、plugin config、status、TUI 和 Portable 操作只读取 Active generation。每次写操作或 TUI session 建立一个 typed `CatalogOperationContext`，直接绑定 immutable snapshot 路径、已解析的本地 Catalog 证据和 `generationSetDigest`；依赖 closure、目标计划、Review 和执行都复用该 context。普通 operation context 的公开 source freshness 固定为 `active`；`remote | cache | path` 只描述 provider 或 refresh 输入，不能表示普通消费者当前绑定的数据。它不复制 generation，也不建立 reader lease。已有 Active 时，普通操作不调用 provider、不检查 Git branch，也不访问远端。Candidate 只有显式 activate 后才对新操作可见；Path 工作区变化也只有显式 refresh 后才建立新的 Active。直接 `status` 不建立或刷新缺失的 Active。
 
-唯一的自动获取例外是：本次需要的已配置 source 完全没有 Active。操作开始时，每个缺失 source 最多尝试一次 bootstrap，最大并发数为 2；来源独立完成，多项失败按配置顺序选择首个错误。Git source 可以访问远端，Path source 读取本地路径。首次失败也保存 refresh policy 和 `lastCheck`。bootstrap 后重新解析完整 Active set。已有但损坏、metadata 或 source identity 不匹配的 Active 必须 fail closed，不自动联网修复。多来源中已有 Active 的 source 不因其它 source bootstrap 失败而调用 provider。
+自动获取只适用于明确允许 bootstrap 的写入口和 TUI session。直接 `status`、离线 cleanup 和已经绑定 session context 的读取不 bootstrap。允许 bootstrap 时，每个缺失 source 最多尝试一次，最大并发数为 2；来源独立完成，多项失败按配置顺序选择首个错误。已有但损坏、metadata 或 source identity 不匹配的 Active 必须 fail closed，不自动联网修复。
 
 每个 source 仍在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 保留 transport cache。它只用于显式远端获取和 generation staging 输入，是可删除弱状态；它不决定 Active、普通读取、安装、配置或删除权限。
 
@@ -138,7 +138,7 @@ Git source 使用本机 Git 的 credential helper、SSH agent 和 SSH config 读
   → 写入原生和 AW-managed 组件
   → 按命令运行 lifecycle
   → 完成后检查
-  → 输出 receipt v4
+  → 输出 receipt v5
 ```
 
 一次写操作在 `AW_HOME` mutation lock 内只采集一个当前现场 inventory。来源身份检查、marketplace 选择和 dependency plan 复用该内存 snapshot；执行不为 plan 或 preflight 再做第二次全量 inventory。计划完成后，writer 只对计划中的目标重新构建并检查 live ownership、native registration、有效 config 和固定 generation evidence。删除操作为检查历史 project consumer 读取的 inventory 范围不同，不与普通 target inventory 合并。
@@ -151,13 +151,13 @@ TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。这个�
 
 TUI 只在首屏使用已绑定 Active 和 live status 发布后，对 `refreshPolicy=startup` 的 Git source 启动内存后台刷新，最大并发数为 2。单个 source 失败不阻止其它 source；Controller dispose 取消未完成的 provider 和 staging。后台或手动 refresh 只更新持久 generation 视图、Candidate、lastCheck 和页面进度，不静默重载当前 session 的 status、插件和依赖。只有本进程 refresh 明确返回 `activeChanged=true`，且 session 没有绑定该 `activeGenerationKey` 时，Controller 才派生 `reloadRequired`；缺失 session key 本身不表示 Active 改变，Active 不兼容或 source load 失败也不能形成 reload 循环。来源详情和刷新完成页同时显示新 Active 与本次 session，并提供“重新加载Catalog”。显式 reload 不新增持久状态，并以 `bootstrapMissingActive: false` 重建 session；reload 完成后清除本次内存 Active 变化事件，来源仍失败时继续显示来源问题。未保存的 config/source/Portable 草稿、ReviewPreparing、active Review、写入或来源修改进度及 refresh 进度继续阻止 reload。激活只在用户确认 Review 后复用本地 Candidate；成功后自动重建 session，Candidate 在 Review 后漂移时必须返回 stale 并建立新 Review。
 
-Review 仍是用户确认边界。Review evidence 包含 `generationSetDigest` 和所需 source generation 证据。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。Execute 在同一个 `AW_HOME` mutation lock 内重新解析当前 Active set，验证绑定的 generation 目录和 metadata 仍存在，并比较 Review digest。source config 改变或 Candidate 被 activate 后，Execute 必须在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或新 Review。该检查不访问远端 branch。
+Review 仍是用户确认边界。插件 Review 按 Project intent、User intent、Shared Codex native、User activation、Project activation 和 AW extensions 分层。直接 CLI `--yes` 与 TUI 使用同一个 `requiresConfirmation` 和 `sharedImpact` descriptor；shared replace 或 reinstall 必须说明它可能影响其它项目。Review evidence 包含 `generationSetDigest` 和所需 source generation 证据。用户确认后才进入 `Progress` 并开始写执行；`Progress` 不接受 Esc 取消，只能按现有约定请求在操作完成后退出。`ReviewPreparing` 的可取消只读状态和 `Progress` 的已接受写状态不得共用 busy 或取消语义。Execute 在同一个 `AW_HOME` mutation lock 内重新解析当前 Active set，验证绑定的 generation 目录和 metadata 仍存在，并比较 Review digest。source config 改变或 Candidate 被 activate 后，Execute 必须在 plugin、config 或 native 写入前返回 typed `operationReviewStale` 或新 Review。该检查不访问远端 branch。
 
-Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。Codex project scope 不使用 native manager。用户级正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt/status v5，也不成为 `operationReviewStale` 证据。
+Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。Codex project scope 不使用 native manager。用户级正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt v5 或 Status v6，也不成为 `operationReviewStale` 证据。
 
 TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 
-依赖执行顺序只在本次命令内存在。receipt 可摘要公开 requested/resolved plugin ID、dependency edge、relation、requiredBy 和 dependency state；它不公开持久计划、摘要、锁或来源内部证据。
+依赖执行顺序只在本次命令内存在。Receipt v5 与 Review 使用相同的六个插件层。它保留 requested/resolved plugin ID、dependency edge、relation、requiredBy、desired intent、target state 和恢复建议；partial 或 failed 结果不能丢失 desired intent。receipt 不公开持久计划、摘要、锁或来源内部证据。
 
 - `install`：按当前 Catalog 安装请求插件和缺失依赖；已存在且完整的依赖使用 `keep`，不重复安装。
 - `upgrade`：按当前 Catalog 重建选择的目标和完整依赖闭包；`--all` 从 live owner 发现目标。依赖按稳定的依赖优先顺序重建。
@@ -178,24 +178,29 @@ TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为 offline cleanup�
 
 ## Live Status and Config
 
-`aw status` 是只读操作。它组合多来源 Active Catalog、live owner、原生平台组件和有效配置，并对每个来源独立报告错误。它不运行 lifecycle，也不创建 config 目录。已有 Active 时，status 只读取 immutable local snapshot，远端调用数为零；无 Active 时只允许前述单次 bootstrap。普通 config read/write 和 TUI settings 使用相同规则。
+`aw status` 输出 Status v6。它组合 user/project intent、当前 Active Catalog、managed inventory、live native/config evidence 和 AW extension projection。它严格只读：不创建 `.agent-workflows`、AW_HOME 或平台目录，不运行 lifecycle，不下载或授权 manager，不调用 native add/remove，不修改 trust/config，也不调用 Catalog provider。Active 缺失或来源不可用时，它保留可识别的 desired intent 和 managed inventory，并输出结构化 `unresolved`、`orphaned` 与恢复动作。PATH 中没有 Codex consumer 时，activation evidence 只标为 `assumed`，不把缺失 PATH 当成命令失败。
 
-每个 target 的状态为：
+每个 target 必须同时包含 `desired` 和 `actual`。`desired` 说明 enabled、scope 和 `root | dependency | managed | none` relation。`actual.state` 的公开状态为：
 
 | 状态 | 含义 | 建议 |
 |---|---|---|
-| `present` | 所有期望 AW-owned 组件存在 | 无 |
-| `absent` | 没有发现该 target 的 AW-owned 组件 | `aw install` |
-| `partial` | 只有部分组件或组件不完整 | `aw reinstall` |
-| `error` | Catalog、发现或组件检查失败 | 修复来源或现场后重试 |
+| `ready` | desired 与现场一致 | 无 |
+| `needsSync` | desired 已保存，但 shared native、activation 或 extension 缺失或版本待同步 | `aw sync` |
+| `drifted` | activation、extension 或 shared native 被手动修改、损坏或不再有效 | `aw reinstall` 或 `aw sync` |
+| `conflict` | user/project extension overlap 或 foreign shared native 阻止安全收敛 | overlap 先卸载不保留 scope 的 root intent 再同步；foreign 先由用户移除或重命名再同步 |
+| `orphaned` | 没有 desired root，但 managed/AW-owned 现场仍存在 | `aw cleanup` |
+| `unresolved` | desired intent 存在，但当前 Catalog 来源无法解析 | 刷新来源后 `aw sync`，或清理 AW-owned 现场 |
+| `absent` | 没有 desired intent，也没有 managed/AW-owned 现场 | 无 |
 
 组件状态为 `present | absent | partial | foreign | error`。`foreign` 表示 exclusive artifact slot 已被当前插件不拥有的内容占用；它不能作为已安装证据。公开 collision evidence 只包含 `reason`（`ownerMismatch | unownedContent | typeMismatch`）、`artifactKind`、`artifactKey`、`expectedOwner` 和可选 `actualOwner`，不得包含组件绝对路径、credential、未知 stderr 或临时内部信息。
 
-target 聚合只使用 AW-owned live 证据。所有 own 组件健康时为 `present`；存在 own 组件但必要组件缺失或损坏时为 `partial`；没有 own 组件时为 `absent`。foreign-only target 为 `absent` 并带结构化 `artifactCollision`；own 不完整且存在 collision 时为 `partial` 并带相同错误。每个 Status v5 target error 有必填 `severity: warning | blocking`。`artifactCollision` 在所有 target state 中都是 `blocking`；`awCapabilityUnsupported` 保持非阻断。`hasErrors` 统计任意 blocking target error，并继续统计 source 和全局错误。当前插件的普通 cleanup 和 uninstall 不删除 foreign component；collision 只阻止 install、upgrade 和 reinstall，不阻止安全清理 AW-owned 内容。
+`state: present | absent | partial | error` 和 `components` 继续作为当前 TUI 的 ownership-health adapter，但不替代 `actual.state`。每个 Status v6 target error 有必填 `severity: warning | blocking`。needsSync 和 drift warning 本身不使命令失败；source、inventory 和安全 blocker 继续使 `hasErrors=true`。当前插件的普通 cleanup 和 uninstall 不删除 foreign component。
 
-Status v5 对已检查的直接依赖公开 `ready | absent | blockedByCollision | incomplete | error` readiness。依赖问题携带 `dependencyPluginId`；有可识别根因时还携带稳定的 `rootIssueId` 和 `rootIssueCode`。依赖 artifact collision 必须投影为 `blockedByCollision` 和 `artifactCollision` 根因。consumer 的依赖 warning 只进入 readiness 和 error evidence，不能把健康的 AW-owned target 从 `present` 改成 `partial`，也不能覆盖根因。
+Codex target 可包含 `sharedNative { pluginId, state, version?, shared:true }`、`activation { user?, project?, effective?, evidence }` 和 `extensions { state, kinds }`。同一 shared native identity 在顶层只出现一次，不伪装成 user 与 project 两个 owner。pure-native user/project overlap 可以为 ready；mixed 或 AW-only extension overlap 为 `conflict`，并提供卸载不保留 scope root intent 后再同步的两条路径。foreign 恢复要求用户先移除或重命名冲突；普通 `cleanup` 明确保留 foreign 内容。
 
-`status --json` 只输出 schema 5，不提供 schema 4 参数或双轨输出。公开状态只描述当前组件和安全诊断；它不输出内部 cache 路径、生命周期内容或依赖执行细节。人类 CLI 和 TUI 把 `artifactCollision` 显示为需要移除或迁移占用内容的输出冲突，不把它显示为安装不完整。
+当前 desired-state 边界的稳定错误码为 `pluginIntentStateInvalid`、`codexProjectPluginVersionTooLow`、`codexProjectPluginUnsupported`、`codexProjectConfigNotEffective`、`codexSharedNativeForeign`、`codexSharedNativeCorrupt`、`codexSharedNativeUpdateRequired`、`codexExtensionScopeConflict`、`codexActivationDrift`、`codexExtensionDrift`、`codexIntentSourceUnavailable` 和 `operationReviewStale`。正常的 `needsSync` 或 drift warning 不要求 `status` 返回命令失败。
+
+Status v6 对已检查的直接依赖继续公开 `ready | absent | blockedByCollision | incomplete | error` readiness。依赖问题携带 `dependencyPluginId`，并在可识别时携带稳定的 `rootIssueId` 和 `rootIssueCode`。`status --json` 只输出 schema 6，不提供 schema 5 参数、fixture 或双轨输出。JSON、人类 CLI 和 TUI 使用同一 typed target model；人类输出可按 verbose 控制组件细节。
 
 TUI placement 在 ownership health 之外投影 collision blocker，但不能把 foreign-only collision 计为 installed。foreign-only placement 使用 `blocked`；`present` 或 `partial` placement 保留 installed ownership health，并同时保留 collision blocker。每个平台 placement 独立判断：混合平台仍可进入添加并只列可用 target；所有平台都阻断时，Preview 和平台菜单先提供“查看输出冲突”，且不显示添加、升级或重新安装。installed collision 仍提供安全移除入口，删除只处理 AW-owned 内容并保留 foreign 内容。
 
@@ -203,7 +208,7 @@ TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live 
 
 TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。
 
-target health 只表示当前 live 组件是否完整，不表示 Catalog 版本是否更新。控制台可以从可靠的原生安装证据生成私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v5 JSON。旧版但完整的原生安装仍为 `present`，仅 revision 为 `upgradeAvailable`。
+ownership health 只表示当前 live 组件是否完整。Status v6 的 shared native version 比较进入 `needsSync` 和 `codexSharedNativeUpdateRequired`。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v6 JSON。
 
 配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
@@ -215,7 +220,7 @@ Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层�
 
 ### TUI 诊断投影与脱敏边界
 
-TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v5 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；Active generation 正常、缺失和损坏必须使用不同影响与恢复动作。
+TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v6 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；Active generation 正常、缺失和损坏必须使用不同影响与恢复动作。
 
 技术层只接受白名单结构字段：安全错误 code、可选 stage、sourceId、requestedRef、resolvedCommit、last-good 证据，以及有限的 platform、scope、plugin、dependency、field、freshness 或 compatibility context。技术层在显示前再次执行通用凭据脱敏、URL userinfo 和敏感 query 清理、已知 home、cwd、临时目录和来源路径替换，并截断文本。任意 native stderr、未知 `Error.cause`、内部绝对路径、digest、credential 或未证明安全的 status message 不进入诊断 ViewModel；不能证明 cause 安全时省略 cause，只保留 code、stage 和白名单 context。
 
@@ -229,12 +234,13 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - active marketplace、backup、quarantine 和 lifecycle snapshot 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
 
-### Codex shared native 与 project activation 的 staged rollout gate
+### Codex shared native 与 project activation
 
-以下条目是目标架构门禁，不表示当前 write、status 或 materialization 已完成迁移。后续阶段必须硬切删除旧 Codex project materialization；不得保留旧路径作为 AW fallback，也不得同时维护两套 project 安装模型。
+当前 write、Status v6 和 Receipt v5 使用以下合同。旧 Codex project materialization 不作为 AW fallback，也不维护第二套 project 安装模型。
 
 - Intent 只表示 desired state。user/project enablement、选中平台和 scope 都是待达成目标，不是安装事实。actual state 只来自当前 live ownership、Codex native config/cache/manifest，以及可观察的 native loader 证据。
 - Codex plugin 只物化一份 shared native user package。project scope 只在项目的 Codex 配置中激活该 native plugin。不得为此保存 project path、global claim、refcount、native installed ledger 或第二套安装状态；qualification report 也不是 installed ledger。
+- Shared native 现场使用 payload-aware inspector。它比较当前 Catalog 派生的 canonical tree digest 与 native cache，覆盖非 manifest 文件、文件 mode 和 symlink boundary；AW owner marker 与 native 管理的 `skills` manifest 投影按固定规则规范化。payload 修改或删除为 `corrupt`，越界 symlink 为 `foreign`。write preview 与 mutation lock 内重算使用同一实际 payload digest；repair 不得复用现场，并按 shared impact 要求 `--yes` 或 TUI 确认。
 - 基础 Codex native plugin 合同最低为 `0.145.0`。涉及 project activation 的操作最低为 `0.151.0`。开发 qualification 固定拒绝非精确 `0.151.0`，避免把其它版本的行为外推到 rollout allowlist。
 - PATH 中有 Codex CLI 时，操作按适用版本门禁探测它。PATH 中没有 system CLI 且操作只修改 project activation 时，不探测 Codex App，也不获取 manager；系统把 App 的 project activation 能力标记为 `assumed`。只有操作需要物化或移除 shared native package 时才解析 manager；system CLI 缺失时，AW-managed manager 必须取得精确 `0.151.0`。
 - 每种 native kind 必须先通过显式真实 qualification 才能进入 rollout allowlist。未被行为证据证明的 kind 必须返回 `unsupported`，不能从帮助文本、源码字符串或相邻 kind 推断。当前 `0.151.0` qualification 可证明 Skill、MCP、Hook 和 App；slash command 因没有可用的离线运行时证据保持 `unsupported`。

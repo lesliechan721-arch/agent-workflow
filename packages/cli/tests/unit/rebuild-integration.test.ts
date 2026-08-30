@@ -11,7 +11,7 @@ import {
   discoverRebuildTargetNames,
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
-import { projectTargetRevision, statusCommandV5 } from '../../src/commands/status-v5.js';
+import { projectTargetRevision, statusCommandV6 } from '../../src/commands/status-v6.js';
 import {
   executeRebuildOperation,
   type RebuildActiveStore,

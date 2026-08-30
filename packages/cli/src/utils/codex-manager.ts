@@ -29,6 +29,8 @@ export const MANAGED_CODEX_MARKER_FILE = '.aw-managed-runtime.json';
 
 export type CodexManagerErrorCode =
   | 'codexSystemCliUnsupported'
+  | 'codexProjectPluginVersionTooLow'
+  | 'codexProjectPluginUnsupported'
   | 'managedCodexAuthorizationRequired'
   | 'managedCodexUnavailable';
 
@@ -764,6 +766,18 @@ function unsupportedSystemDiagnostic(
   return `The installed system Codex CLI is not supported.${detected} Required minimum: ${system.requiredMinVersion}. Upgrade the official Codex CLI and retry; AW does not bypass an installed but unsupported system CLI.`;
 }
 
+function unsupportedSystemCode(
+  options: Pick<CodexManagerOptions, 'operationRequirement'>,
+  result?: AgentVersionProbeResult,
+): CodexManagerErrorCode {
+  if (!options.operationRequirement?.requiresProjectPluginContract) {
+    return 'codexSystemCliUnsupported';
+  }
+  return result?.status === 'tooOld'
+    ? 'codexProjectPluginVersionTooLow'
+    : 'codexProjectPluginUnsupported';
+}
+
 const MANAGED_AUTHORIZATION_DIAGNOSTIC =
   'This operation must acquire or rebuild the pinned AW-managed Codex runtime. Retry with --allow-managed-codex-install, or approve the interactive prompt.';
 
@@ -786,14 +800,14 @@ export async function previewCodexManager(
   if (system.state === 'unsupported') {
     return {
       state: 'blocked',
-      code: 'codexSystemCliUnsupported',
+      code: unsupportedSystemCode(options),
       diagnostic: system.diagnostic,
     };
   }
   if (system.state === 'probed') {
     return {
       state: 'blocked',
-      code: 'codexSystemCliUnsupported',
+      code: unsupportedSystemCode(options, system.result),
       diagnostic: unsupportedSystemDiagnostic(system.result),
     };
   }
@@ -820,11 +834,11 @@ export async function resolveCodexManager(
     };
   }
   if (system.state === 'unsupported') {
-    throw new CodexManagerError('codexSystemCliUnsupported', system.diagnostic);
+    throw new CodexManagerError(unsupportedSystemCode(options), system.diagnostic);
   }
   if (system.state === 'probed') {
     throw new CodexManagerError(
-      'codexSystemCliUnsupported',
+      unsupportedSystemCode(options, system.result),
       unsupportedSystemDiagnostic(system.result),
     );
   }
@@ -886,11 +900,11 @@ export async function resolveCodexOperationConsumer(
     };
   }
   if (system.state === 'unsupported') {
-    throw new CodexManagerError('codexSystemCliUnsupported', system.diagnostic);
+    throw new CodexManagerError(unsupportedSystemCode(options), system.diagnostic);
   }
   if (system.state === 'probed') {
     throw new CodexManagerError(
-      'codexSystemCliUnsupported',
+      unsupportedSystemCode(options, system.result),
       unsupportedSystemDiagnostic(system.result),
     );
   }

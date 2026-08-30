@@ -47,10 +47,43 @@ describe('CLI entry v4', () => {
     expect(await runCli([
       'sync', 'official/demo', '--all', '--platform', 'codex', '--scope', 'project', '--json',
     ], { interactive: false, io: conflict.io })).toBe(1);
-    expect(JSON.parse(conflict.stdout())).toMatchObject({
+    expect(JSON.parse(conflict.stdout())).toEqual({
       ok: false,
       command: 'sync',
-      errors: [{ code: 'syncSelectorConflict' }],
+      receiptSchemaVersion: 5,
+      overallState: 'failed',
+      warnings: [],
+      errors: [{
+        code: 'syncSelectorConflict',
+        message: 'syncSelectorConflict: Plugin selectors and --all are mutually exclusive.',
+      }],
+      layers: {
+        projectIntent: [{
+          pluginId: 'official/demo', platform: 'codex', scope: 'project',
+          relation: 'requested', action: 'sync', requiredBy: [],
+        }],
+        userIntent: [],
+        sharedCodexNative: [],
+        userActivation: [],
+        projectActivation: [],
+        awExtensions: [],
+      },
+      targets: [{
+        pluginName: 'demo',
+        pluginId: 'official/demo',
+        platform: 'codex',
+        scope: 'project',
+        status: 'failed',
+        cleanupAttempted: false,
+        actions: [],
+        removed: [],
+        absent: [],
+        residual: [],
+        quarantined: [],
+        failures: [],
+        desired: { scope: 'project', relation: 'requested' },
+        recovery: ['remove either plugin selectors or --all, then rerun sync'],
+      }],
     });
 
     const missing = capture();

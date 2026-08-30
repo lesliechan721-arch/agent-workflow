@@ -5,8 +5,9 @@ import {
   buildRebuildReceiptJson,
 } from '../../src/output/command-receipt.js';
 import { createDependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
+import type { CodexReconcilePlan } from '../../src/utils/codex-reconciler.js';
 
-describe('command receipt v4', () => {
+describe('command receipt v5', () => {
   it('serializes the five write commands with one receipt schema', () => {
     for (const command of ['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'] as const) {
       const receipt = buildRebuildReceiptJson(command, {
@@ -36,7 +37,14 @@ describe('command receipt v4', () => {
       expect(receipt).toMatchObject({
         ok: true,
         command,
-        receiptSchemaVersion: 4,
+        receiptSchemaVersion: 5,
+        layers: {
+          userIntent: [expect.objectContaining({
+            pluginId: 'git-commit',
+            relation: 'requested',
+            action: command,
+          })],
+        },
         targets: [{ pluginName: 'git-commit', status: 'succeeded' }],
       });
     }
@@ -59,10 +67,10 @@ describe('command receipt v4', () => {
         channel: 'latest',
         freshness: 'cache',
       }],
-    })).toMatchObject({ command: 'init', receiptSchemaVersion: 4, ok: true });
+    })).toMatchObject({ command: 'init', receiptSchemaVersion: 5, ok: true });
   });
 
-  it('projects dependency plan v2 identity and kept target state without changing receipt schema v4', () => {
+  it('projects dependency plan v2 identity and kept target state into receipt v5 layers', () => {
     const dependencyPlan = createDependencyOperationPlan({
       requestedPluginIds: ['team/root'],
       resolvedPluginIds: ['team/leaf', 'team/root'],
@@ -86,11 +94,66 @@ describe('command receipt v4', () => {
     });
 
     expect(receipt).toMatchObject({
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       dependencyPlanSchemaVersion: 2,
       requestedPluginIds: ['team/root'],
       resolvedPluginIds: ['team/leaf', 'team/root'],
+      layers: {
+        userIntent: [expect.objectContaining({ pluginId: 'team/leaf', relation: 'dependency' })],
+      },
       targets: [{ relation: 'dependency', requiredBy: ['team/root'], dependencyState: 'kept' }],
+    });
+  });
+
+  it('keeps desired intent and shared-impact recovery in a failed receipt', () => {
+    const codexPlan = {
+      sharedNativeActions: [{
+        pluginId: 'team/demo', codexPluginId: 'demo@aw-team', action: 'replace',
+        desiredVersion: '2.0.0', affectsOtherScopes: true,
+      }],
+      activationActions: {
+        user: [{ pluginId: 'team/demo', codexPluginId: 'demo@aw-team', scope: 'user', action: 'enable', desired: true }],
+        project: [{ pluginId: 'team/demo', codexPluginId: 'demo@aw-team', scope: 'project', action: 'none', desired: false }],
+      },
+      extensionWrites: [{ pluginId: 'team/demo', componentKey: 'rules', kind: 'permission', scope: 'user', action: 'write' }],
+      extensionRemovals: [],
+      review: {
+        requiresConfirmation: true,
+        sharedImpact: {
+          pluginIds: ['demo@aw-team'],
+          warning: 'Replacing shared native state can affect other projects.',
+        },
+      },
+    } as unknown as CodexReconcilePlan;
+    const receipt = buildRebuildReceiptJson('sync', {
+      platforms: ['codex'], plugins: [], warnings: [], overallState: 'failed',
+      codexReconcilePlans: [codexPlan],
+      rebuildResults: [{
+        status: 'failed', command: 'install', target: {
+          pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team',
+          pluginVersion: '2.0.0', platform: 'codex', scope: 'user', cwd: '/repo',
+        },
+        actions: [], cleanupAttempted: false, removed: [], absent: [], residual: [],
+        quarantined: [], failures: [{ phase: 'postcheck', message: 'codexExtensionDrift: drift' }],
+        error: { phase: 'postcheck', message: 'codexExtensionDrift: drift' },
+      }],
+    });
+
+    expect(receipt).toMatchObject({
+      receiptSchemaVersion: 5,
+      layers: {
+        sharedCodexNative: [expect.objectContaining({
+          codexPluginId: 'demo@aw-team', shared: true, sharedImpact: true,
+          warning: expect.stringContaining('other projects'),
+        })],
+        userActivation: [expect.objectContaining({ desired: true })],
+        projectActivation: [expect.objectContaining({ desired: false })],
+        awExtensions: [expect.objectContaining({ componentKey: 'rules', action: 'write' })],
+      },
+      targets: [expect.objectContaining({
+        desired: { scope: 'user', relation: 'requested' },
+        recovery: expect.arrayContaining(['run sync']),
+      })],
     });
   });
 });

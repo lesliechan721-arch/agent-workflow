@@ -2,12 +2,12 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
-import type { CatalogSourceResolution, PlatformName } from '../types.js';
+import type { CatalogSourceResolution, PlatformName, Scope } from '../types.js';
 import {
-  statusCommandV5,
+  statusCommandV6,
   type StatusTargetRevision,
-  type StatusV5Target,
-} from '../commands/status-v5.js';
+  type StatusV6Target,
+} from '../commands/status-v6.js';
 import {
   addCatalogSourceCommand,
   listCatalogSources,
@@ -160,7 +160,7 @@ function digest(value: unknown): string {
 }
 
 export function statusTargetFingerprint(
-  targets: StatusV5Target[],
+  targets: StatusV6Target[],
   revisions: StatusTargetRevision[] = [],
 ): string {
   return digest({
@@ -186,10 +186,10 @@ export function statusTargetFingerprint(
 }
 
 export function configAffectedStatusTargets(
-  targets: StatusV5Target[],
+  targets: StatusV6Target[],
   pluginId: string,
   configScope: 'user' | 'project',
-): StatusV5Target[] {
+): StatusV6Target[] {
   return targets.filter((target) => target.pluginId === pluginId
     && (configScope === 'user' || target.scope === 'project')
     && (target.state === 'present' || target.state === 'partial'))
@@ -260,22 +260,29 @@ function pluginIntent(intent: OperationIntent): intent is Extract<OperationInten
 
 function assertIntentIsLegal(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
-  targets: Awaited<ReturnType<typeof statusCommandV5>>['payload']['targets'],
+  targets: Awaited<ReturnType<typeof statusCommandV6>>['payload']['targets'],
   revisions: StatusTargetRevision[] = [],
 ): void {
   const platforms: PlatformName[] = intent.platform === 'both'
     ? ['codex', 'claude']
     : [intent.platform];
   for (const platform of platforms) {
-    const selected = targets.find((target) => target.pluginId === intent.pluginId
-      && target.platform === platform && target.scope === intent.scope);
+    const platformTargets = targets.filter((target) => target.pluginId === intent.pluginId
+      && target.platform === platform);
+    const selected = platformTargets.find((target) => target.scope === intent.scope)
+      ?? (platform === 'codex' ? platformTargets[0] : undefined);
     if (!selected || selected.errors.some((error) => error.code === 'unsupportedTarget')) {
       throw new TuiOperationBlockedError('unsupportedTarget', '所选插件不支持这个平台和使用位置。');
     }
-    const otherScopeInstalled = targets.some((target) =>
-      target.platform === platform
-      && target.scope !== intent.scope
-      && (target.state === 'present' || target.state === 'partial'));
+    const otherScope = intent.scope === 'user' ? 'project' : 'user';
+    const otherScopeInstalled = platform === 'codex'
+      ? platformTargets.some((target) =>
+          target.desired.scopes.includes(otherScope)
+          || target.activation?.[otherScope] === true)
+      : targets.some((target) =>
+          target.platform === platform
+          && target.scope !== intent.scope
+          && (target.state === 'present' || target.state === 'partial'));
     if (intent.action === 'install' && otherScopeInstalled) {
       throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
     }
@@ -306,7 +313,7 @@ function assertIntentIsLegal(
 
 async function assertTypedIssueOrigin(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
-  targets: Awaited<ReturnType<typeof statusCommandV5>>['payload']['targets'],
+  targets: Awaited<ReturnType<typeof statusCommandV6>>['payload']['targets'],
 ): Promise<void> {
   if (!intent.originIssue) return;
   const stale = (message: string): never => {
@@ -315,7 +322,9 @@ async function assertTypedIssueOrigin(
   const selected = targets.find((target) =>
     target.pluginId === intent.pluginId
     && target.platform === intent.platform
-    && target.scope === intent.scope);
+    && target.scope === intent.scope)
+    ?? targets.find((target) => target.pluginId === intent.pluginId
+      && target.platform === 'codex');
   if (intent.originIssue.category === 'dependencyMissing') {
     if (intent.originIssue.actionId !== 'installDependency'
       || intent.action !== 'install' || !selected || selected.state !== 'absent') {
@@ -352,10 +361,14 @@ async function assertTypedIssueOrigin(
     return;
   }
   else if (intent.originIssue.category === 'scopeConflict') {
-    const installedScopes = new Set(targets.filter((target) =>
-      target.pluginId === intent.pluginId
-      && target.platform === intent.platform
-      && (target.state === 'present' || target.state === 'partial')).map((target) => target.scope));
+    const installedScopes = new Set<Scope>();
+    for (const target of targets.filter((candidate) =>
+      candidate.pluginId === intent.pluginId && candidate.platform === intent.platform)) {
+      if (target.state === 'present' || target.state === 'partial') installedScopes.add(target.scope);
+      for (const scope of target.desired.scopes) installedScopes.add(scope);
+      if (target.activation?.user === true) installedScopes.add('user');
+      if (target.activation?.project === true) installedScopes.add('project');
+    }
     const correctBranch = intent.action === 'uninstall'
       && ((intent.originIssue.actionId === 'keepUserScope' && intent.scope === 'project')
         || (intent.originIssue.actionId === 'keepProjectScope' && intent.scope === 'user'));
@@ -393,7 +406,7 @@ interface DependencyCatalogNode {
 async function loadDependencyOverviews(options: {
   context: CliExecutionContext;
   cliVersion: string;
-  status: Awaited<ReturnType<typeof statusCommandV5>>;
+  status: Awaited<ReturnType<typeof statusCommandV6>>;
   signal: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
   bootstrapMissingActive?: boolean;
@@ -700,7 +713,7 @@ export function createTuiControllerDependencies(
   };
   const catalogOperationByEvidence = new WeakMap<OperationEvidence, CatalogOperationContext>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
-  let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV5>> | undefined;
+  let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV6>> | undefined;
   let bootstrapNextCatalogSession = true;
   const sessionContextForPlugin = (pluginId: string): CatalogOperationContext | undefined => {
     const sourceId = parsePluginId(pluginId).sourceId;
@@ -720,14 +733,12 @@ export function createTuiControllerDependencies(
       }).catch(() => undefined);
     if (catalogOperationContext) sessionCatalogOperationContext = catalogOperationContext;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await statusCommandV5({
+      const result = await statusCommandV6({
         cwd: context.cwd,
         env: context.env,
         cliVersion: packageInfo.version,
         verbose: context.diagnostics.verbose,
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
-        ...(!catalogOperationContext ? { bootstrapMissingActive: false } : {}),
-        catalogGenerationRuntime,
         inventoryCatalogSourceReferences: readInventory,
       });
       signal.throwIfAborted();
@@ -892,11 +903,10 @@ export function createTuiControllerDependencies(
         : undefined;
     let catalogOperation: CatalogOperationContext | undefined;
     let catalogOperationError: unknown;
-    if (!offlineCleanupReason && intent.kind !== 'portableInstall'
-      && sessionCatalogOperationContext) {
+    if (!offlineCleanupReason && intent.kind !== 'portableInstall') {
       try {
         const sourceIds = [parsePluginId(intent.pluginId).sourceId!];
-        catalogOperation = bootstrapMissingActive
+        catalogOperation = bootstrapMissingActive && sessionCatalogOperationContext
           ? selectCatalogOperationContext(sessionCatalogOperationContext, sourceIds)
           : await resolveCatalogOperationContext({
               cliVersion: packageInfo.version,
@@ -1028,7 +1038,7 @@ export function createTuiControllerDependencies(
     const statusCatalogOperation = offlineCleanupReason
       ? undefined
       : catalogOperation ?? (bootstrapMissingActive ? sessionCatalogOperationContext : undefined);
-    const status = await statusCommandV5({
+    const status = await statusCommandV6({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
           ? [intent.originIssue.consumerPluginId] : [])])],
@@ -1040,10 +1050,6 @@ export function createTuiControllerDependencies(
       env: context.env,
       cliVersion: packageInfo.version,
       ...(statusCatalogOperation ? { catalogOperationContext: statusCatalogOperation } : {}),
-      ...(offlineCleanupReason || !bootstrapMissingActive
-        || (!statusCatalogOperation && sessionCatalogOperationContext)
-        ? { bootstrapMissingActive: false }
-        : {}),
       inventoryCatalogSourceReferences: operationInventory,
     });
     signal?.throwIfAborted();
@@ -1353,23 +1359,43 @@ export function createTuiControllerDependencies(
         && (intent.originIssue.category === 'sourceMissing'
           || intent.originIssue.category === 'sourceUnavailable');
       const sourceIds = pluginIds.map((pluginId) => parsePluginId(pluginId).sourceId!);
-      const catalogOperation = offlineCleanup
+      let catalogOperation = offlineCleanup
         ? undefined
         : sessionCatalogOperationContext
           ? selectCatalogOperationContext(sessionCatalogOperationContext, sourceIds)
           : undefined;
-      const status = await statusCommandV5({
+      const statusOptions = {
         plugins: pluginIds,
         platform: intent.platform,
         cwd: context.cwd,
         env: context.env,
         cliVersion: packageInfo.version,
-        ...(catalogOperation ? { catalogOperationContext: catalogOperation } : {}),
-        ...(offlineCleanup || sessionCatalogOperationContext
-          ? { bootstrapMissingActive: false }
-          : {}),
         inventoryCatalogSourceReferences: readInventory,
+      };
+      let status = await statusCommandV6({
+        ...statusOptions,
+        ...(catalogOperation ? { catalogOperationContext: catalogOperation } : {}),
       });
+      const platforms: PlatformName[] = intent.platform === 'both'
+        ? ['codex', 'claude']
+        : [intent.platform];
+      const missingSelectedTarget = platforms.some((platform) =>
+        !status.payload.targets.some((target) => target.pluginId === intent.pluginId
+          && target.platform === platform
+          && (platform === 'codex' || target.scope === intent.scope)));
+      if (!offlineCleanup && !catalogOperation && missingSelectedTarget) {
+        catalogOperation = await resolveCatalogOperationContext({
+          cliVersion: packageInfo.version,
+          sourceIds,
+          env: context.env,
+          runtime: catalogGenerationRuntime,
+          signal,
+        });
+        status = await statusCommandV6({
+          ...statusOptions,
+          catalogOperationContext: catalogOperation,
+        });
+      }
       signal.throwIfAborted();
       await assertTypedIssueOrigin(intent, status.payload.targets);
       assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);

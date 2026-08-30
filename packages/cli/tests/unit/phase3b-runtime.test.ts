@@ -37,7 +37,7 @@ import {
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import {
   readCatalogSourcesConfigSnapshot,
-  replaceCatalogSourcesConfig,
+  replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
@@ -48,6 +48,20 @@ import {
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 
 const SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
+
+async function replaceCatalogSourcesConfig(
+  options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
+) {
+  const replaced = await replaceCatalogSourcesConfigWithoutActive(options);
+  await Promise.all(options.config.sources.filter((source) => source.type === 'path').map(
+    async (source) => refreshCatalogSourceGeneration({
+      sourceId: source.id,
+      cliVersion: '1.0.0',
+      env: options.env,
+    }).catch(() => undefined),
+  ));
+  return replaced;
+}
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -355,7 +369,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).rejects.toThrow();
   });
 
-  it('emits config receipt 4 and keeps a namespaced store after its source is removed', async () => {
+  it('emits config receipt 5 and keeps a namespaced store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const primaryRoot = path.join(isolation.layout.fixtureCwd, 'primary-source');
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
@@ -390,7 +404,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).toBe(0);
     const setReceipt = JSON.parse(setOutput.readStdout()) as { sourceIdentity: string };
     expect(setReceipt).toMatchObject({
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       command: 'config:set',
       pluginName: 'demo',
       pluginId: 'team/demo',
@@ -447,7 +461,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(1);
     expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       targets: expect.arrayContaining([
         expect.objectContaining({
           pluginId: 'team/demo',
@@ -2143,9 +2157,11 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(payload.targets).toContainEqual(expect.objectContaining({
       pluginId: 'team/demo',
       state: 'error',
-      errors: expect.arrayContaining([expect.objectContaining({
-        code: expect.stringContaining('Unable to parse Codex config TOML'),
-      })]),
+      actual: { state: 'orphaned' },
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'codexSharedNativeCorrupt' }),
+        expect.objectContaining({ code: 'codexActivationDrift' }),
+      ]),
     }));
     expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
     expect(payload.errors.map((error) => error.message).join('\n')).not.toContain(isolation.layout.rootDir);

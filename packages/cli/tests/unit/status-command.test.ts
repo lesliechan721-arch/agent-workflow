@@ -1,9 +1,9 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { statusCommandV5 } from '../../src/commands/status-v5.js';
+import { statusCommandV6 } from '../../src/commands/status-v6.js';
 import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
@@ -11,6 +11,14 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
+import {
+  createEmptyPluginIntentState,
+  resolvePluginIntentStatePath,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
+import { resolveAwHome, resolveCodexPaths } from '../../src/utils/paths.js';
+import { getCodexHome } from '../../src/utils/state-paths.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -61,8 +69,44 @@ async function filesystemSnapshot(root: string): Promise<Array<{
   return output.sort((left, right) => left.path.localeCompare(right.path));
 }
 
-describe('status v5 current behavior', () => {
-  it('uses the current Codex project capability gate', async () => {
+async function writeCodexNativeResidue(options: {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  version: string;
+  userEnabled: boolean;
+  sourceIdentity: string;
+}): Promise<void> {
+  const marketplaceRoot = path.join(resolveAwHome(options.env), 'marketplaces', 'local');
+  const marketplaceName = 'aw-local';
+  await fs.ensureDir(marketplaceRoot);
+  await Promise.all([
+    fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+      schemaVersion: 2,
+      sourceId: 'local',
+      sourceIdentity: options.sourceIdentity,
+      marketplaceName,
+    }),
+    fs.outputJson(path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'), {
+      name: marketplaceName, owner: {}, interface: {}, plugins: [],
+    }),
+  ]);
+  const configPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
+  await fs.outputFile(configPath, [
+    `[marketplaces.${marketplaceName}]`,
+    `source = ${JSON.stringify(marketplaceRoot)}`,
+    'source_type = "local"',
+    `[plugins."demo@${marketplaceName}"]`,
+    `enabled = ${String(options.userEnabled)}`,
+    '',
+  ].join('\n'));
+  await fs.outputJson(path.join(
+    getCodexHome(options.env),
+    'plugins', 'cache', marketplaceName, 'demo', options.version, 'plugin.json',
+  ), { name: 'demo', version: options.version });
+}
+
+describe('status v6 current behavior', () => {
+  it('reports a qualified pure-native Codex project target without scoped materialization', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'capability-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
@@ -72,19 +116,303 @@ describe('status v5 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
 
-    const result = await statusCommandV5({
-      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env: { ...env, PATH: '' },
       platform: 'codex', scope: 'project', json: true,
     });
 
-    expect(result.payload.schemaVersion).toBe(5);
+    expect(result.payload.schemaVersion).toBe(6);
     expect(result.payload.targets).toEqual([
       expect.objectContaining({
         pluginId: 'local/demo',
-        state: 'error',
-        errors: [expect.objectContaining({ code: 'unsupportedTarget' })],
+        state: 'absent',
+        desired: { enabled: false, scopes: [], relation: 'none' },
+        actual: { state: 'absent' },
+        sharedNative: expect.objectContaining({ state: 'missing', shared: true }),
+        activation: { evidence: 'assumed' },
       }),
     ]);
+  });
+
+  it('aggregates user and project pure-native intent into one missing shared target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'pure-native-intent-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    for (const scope of ['user', 'project'] as const) {
+      await writePluginIntentState({ scope, cwd: isolation.layout.fixtureCwd, env }, {
+        ...createEmptyPluginIntentState(),
+        roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+      });
+    }
+
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', json: true,
+    });
+
+    expect(result.payload.targets).toHaveLength(1);
+    expect(result.payload.targets[0]).toMatchObject({
+      desired: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+      actual: { state: 'needsSync' },
+      sharedNative: { state: 'missing', shared: true },
+      activation: { evidence: 'assumed' },
+      recovery: [expect.objectContaining({ command: 'sync' })],
+    });
+  });
+
+  it('reports a mixed user/project intent as an extension conflict with two recovery actions', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-conflict-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    for (const scope of ['user', 'project'] as const) {
+      await writePluginIntentState({ scope, cwd: isolation.layout.fixtureCwd, env }, {
+        ...createEmptyPluginIntentState(),
+        roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+      });
+    }
+
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      actual: { state: 'conflict' },
+      extensions: expect.objectContaining({ state: 'conflict' }),
+      errors: expect.arrayContaining([expect.objectContaining({ code: 'codexExtensionScopeConflict' })]),
+      recovery: [
+        expect.objectContaining({
+          command: 'uninstall',
+          scope: 'user',
+          description: expect.stringContaining(
+            'aw uninstall local/demo --platform codex --scope user',
+          ),
+        }),
+        expect.objectContaining({
+          command: 'uninstall',
+          scope: 'project',
+          description: expect.stringContaining(
+            'aw uninstall local/demo --platform codex --scope project',
+          ),
+        }),
+      ],
+    })]);
+    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(false);
+  });
+
+  it('keeps unavailable desired intent visible as unresolved', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unresolved-source');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const { env } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'gone/demo', platforms: ['codex'] }],
+    });
+
+    const result = await statusCommandV6({
+      plugins: ['gone/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', scope: 'project', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      desired: { enabled: true, scopes: ['project'], relation: 'root' },
+      actual: { state: 'unresolved' },
+      errors: expect.arrayContaining([expect.objectContaining({ code: 'codexIntentSourceUnavailable' })]),
+    })]);
+  });
+
+  it('reports managed Codex inventory without desired roots as orphaned', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-managed-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      managed: { codexPluginIds: ['demo@aw'] },
+    });
+
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      desired: { enabled: false, scopes: [], relation: 'managed' },
+      actual: { state: 'orphaned' },
+      recovery: [expect.objectContaining({ command: 'cleanup' })],
+    })]);
+  });
+
+  it('keeps desired intent structured when the Catalog has no active generation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'official/demo', platforms: ['codex'] }],
+    });
+
+    const result = await statusCommandV6({
+      plugins: ['official/demo'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      platform: 'codex', scope: 'project', json: true,
+    });
+
+    expect(result.payload.catalog.sources).toEqual([
+      expect.objectContaining({ id: 'official', error: expect.any(String) }),
+    ]);
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      pluginId: 'official/demo',
+      desired: { enabled: true, scopes: ['project'], relation: 'root' },
+      actual: { state: 'unresolved' },
+      recovery: [
+        expect.objectContaining({ command: 'sync' }),
+        expect.objectContaining({ command: 'cleanup' }),
+      ],
+    })]);
+  });
+
+  it('keeps managed-only Codex inventory cleanable without an active Catalog', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    await writePluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, {
+      ...createEmptyPluginIntentState(),
+      managed: { codexPluginIds: ['demo@aw-official'] },
+    });
+
+    const result = await statusCommandV6({
+      plugins: ['official/demo'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      platform: 'codex', scope: 'user', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      pluginId: 'official/demo',
+      desired: { enabled: false, scopes: [], relation: 'managed' },
+      actual: { state: 'orphaned' },
+      sharedNative: { pluginId: 'demo@aw-official', state: 'missing', shared: true },
+      recovery: [expect.objectContaining({ command: 'cleanup' })],
+    })]);
+  });
+
+  it('uses stable codes for shared update and activation drift', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-drift-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+      manifest.version = '2.0.0';
+    });
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+      managed: { codexPluginIds: ['demo@aw-local'] },
+    });
+    await writeCodexNativeResidue({
+      cwd: isolation.layout.fixtureCwd, env, version: '1.0.0', userEnabled: false,
+      sourceIdentity,
+    });
+
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', scope: 'user', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      actual: { state: 'needsSync' },
+      sharedNative: expect.objectContaining({ state: 'outdated', version: '1.0.0' }),
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'codexSharedNativeUpdateRequired' }),
+        expect.objectContaining({ code: 'codexActivationDrift' }),
+      ]),
+    })]);
+    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(false);
+  });
+
+  it.each([
+    ['foreign', 'conflict', 'codexSharedNativeForeign'],
+    ['corrupt', 'drifted', 'codexSharedNativeCorrupt'],
+  ] as const)('reports %s shared native state with a stable code', async (
+    nativeState,
+    actualState,
+    errorCode,
+  ) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, `native-${nativeState}-source`);
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+      manifest.version = '2.0.0';
+    });
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+      managed: { codexPluginIds: ['demo@aw-local'] },
+    });
+    await writeCodexNativeResidue({
+      cwd: isolation.layout.fixtureCwd, env, version: '2.0.0', userEnabled: true,
+      sourceIdentity,
+    });
+    const cacheVersionRoot = path.join(
+      getCodexHome(env), 'plugins', 'cache', 'aw-local', 'demo', '2.0.0',
+    );
+    if (nativeState === 'foreign') {
+      await fs.outputJson(path.join(cacheVersionRoot, 'plugin.json'), {
+        name: 'other', version: '2.0.0',
+      });
+    } else {
+      await fs.outputFile(path.join(cacheVersionRoot, 'payload.txt'), 'tampered\n');
+    }
+
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', scope: 'user', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      actual: { state: actualState },
+      sharedNative: expect.objectContaining({ state: nativeState }),
+      errors: expect.arrayContaining([expect.objectContaining({ code: errorCode })]),
+    })]);
+  });
+
+  it('uses pluginIntentStateInvalid for an unreadable desired-state file', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-intent-source');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const { env } = await configurePathSource(sourceRoot);
+    await fs.outputFile(resolvePluginIntentStatePath({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env,
+    }), '{ invalid intent');
+
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env, json: true,
+    });
+
+    expect(result.hasErrors).toBe(true);
+    expect(result.payload.errors).toContainEqual({
+      code: 'pluginIntentStateInvalid',
+      message: 'pluginIntentStateInvalid: user plugin intent state is invalid.',
+    });
   });
 
   it('keeps a partial target when another Catalog source fails', async () => {
@@ -138,7 +466,7 @@ describe('status v5 current behavior', () => {
       },
     });
 
-    const result = await statusCommandV5({
+    const result = await statusCommandV6({
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       platform: 'codex', scope: 'project', verbose: true, json: true,
     });
@@ -187,7 +515,7 @@ describe('status v5 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
 
-    const result = await statusCommandV5({
+    const result = await statusCommandV6({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
       env: { ...env, AW_RENDER_SENTINEL: sentinel },
       platform: 'codex', scope: 'project', verbose: true,
@@ -219,7 +547,7 @@ describe('status v5 current behavior', () => {
       },
     });
 
-    const result = await statusCommandV5({
+    const result = await statusCommandV6({
       cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'project', json: true,
     });
@@ -238,20 +566,48 @@ describe('status v5 current behavior', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'read-only-source');
     await createCatalogSnapshotFixture(sourceRoot);
     const { env } = await configurePathSource(sourceRoot);
-    await statusCommandV5({
-      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
-      platform: 'claude', scope: 'project', json: true,
-    });
-    const before = await filesystemSnapshot(isolation.layout.fixtureCwd);
+    const nativeRunner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+    const before = await filesystemSnapshot(isolation.layout.rootDir);
 
-    const result = await statusCommandV5({
-      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
-      platform: 'claude', scope: 'project', json: true,
-    });
+    let result;
+    try {
+      result = await statusCommandV6({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+        platform: 'claude', scope: 'project', json: true,
+      });
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
 
     expect(result.payload.targets).toEqual([
       expect.objectContaining({ pluginId: 'local/demo', state: 'absent' }),
     ]);
-    expect(await filesystemSnapshot(isolation.layout.fixtureCwd)).toEqual(before);
+    expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
+    expect(nativeRunner).not.toHaveBeenCalled();
+  });
+
+  it('does not materialize intent or state paths while reading missing state', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const env = isolation.env;
+    const nativeRunner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+    const before = await filesystemSnapshot(isolation.layout.rootDir);
+
+    try {
+      const result = await statusCommandV6({
+        cwd: isolation.layout.fixtureCwd, env, json: true,
+      });
+      expect(result.payload.schemaVersion).toBe(6);
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
+
+    expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
+    expect(await fs.pathExists(path.join(isolation.layout.fixtureCwd, '.agent-workflows'))).toBe(false);
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+    expect(await fs.pathExists(isolation.layout.codexHomeDir)).toBe(false);
+    expect(await fs.pathExists(isolation.layout.claudeHomeDir)).toBe(false);
+    expect(nativeRunner).not.toHaveBeenCalled();
   });
 });

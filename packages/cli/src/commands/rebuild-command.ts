@@ -50,7 +50,7 @@ import {
   createRebuildIntegration,
   discoverRebuildTargetNames,
   executeCodexReconcileActivations,
-  inspectCodexNativeResidue,
+  inspectCodexSharedNativeLive,
   inspectNativeMarketplaceRegistrations,
   type PreparedRebuildTarget,
   type RebuildExecutionContext,
@@ -65,6 +65,7 @@ import {
   withResolvedMultiSourceCatalog,
   type DesiredArtifactSelection,
 } from '../utils/multi-source-catalog.js';
+import { calculateCodexSharedNativePayloadDigest } from '../utils/catalog-digests.js';
 import {
   resolveCatalogOperationContext,
   type CatalogOperationContext,
@@ -2222,11 +2223,7 @@ export async function runRebuildCommand(options: {
           const surface = analyzeCodexSurface(entry.plugin.manifest);
           const marketplaceName = marketplaceNameFor(entry, 'codex', planned.resolvedScope);
           const codexPluginId = `${entry.plugin.manifest.name}@${marketplaceName}`;
-          const contentDigest = entry.source.manifest.entries.find((candidate) =>
-            candidate.name === entry.plugin.manifest.name)?.contentDigest;
-          if (!contentDigest) {
-            throw new Error(`codexReconcileEvidenceInvalid: ${entry.pluginId} has no content digest.`);
-          }
+          const contentDigest = await calculateCodexSharedNativePayloadDigest(entry.plugin.rootDir);
           const desiredScopes = desiredScopesForEntry(entry);
           catalogClosure.push({
             pluginId: entry.pluginId,
@@ -2240,11 +2237,16 @@ export async function runRebuildCommand(options: {
             intentScopes: intentScopesForEntry(entry),
             surface,
           });
-          const residue = surface.nativeKinds.length > 0
-            ? await inspectCodexNativeResidue({
+          const managedBefore = beforeByScope.user.managed.codexPluginIds.includes(codexPluginId)
+            || beforeByScope.project.managed.codexPluginIds.includes(codexPluginId);
+          const sharedInspection = surface.nativeKinds.length > 0
+            ? await inspectCodexSharedNativeLive({
                 pluginName: entry.plugin.manifest.name,
+                desiredVersion: entry.plugin.manifest.version,
+                expectedPayloadDigest: contentDigest,
                 cwd: options.commandOptions.cwd,
                 env: runtimeEnv,
+                managedByCurrentIntent: managedBefore,
                 marketplaceName,
                 marketplaceRoot: path.join(
                   resolveAwHome(runtimeEnv),
@@ -2252,25 +2254,9 @@ export async function runRebuildCommand(options: {
                   entry.source.sourceId,
                 ),
               })
-            : { state: 'absent' as const, labels: [], versions: [] };
-          const managedBefore = beforeByScope.user.managed.codexPluginIds.includes(codexPluginId)
-            || beforeByScope.project.managed.codexPluginIds.includes(codexPluginId);
-          const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = residue.state === 'foreign'
-            ? { state: 'foreign', diagnostic: 'marketplaceRegistrationForeign', nativeAction: 'blocked' }
-            : residue.state === 'absent'
-              ? { state: 'absent', nativeAction: 'install' }
-              : residue.versions.length === 0
-                ? { state: 'corrupt', diagnostic: 'manifestMissing', nativeAction: 'blocked' }
-                : residue.versions.every((version) => version === entry.plugin.manifest.version)
-                  ? managedBefore
-                    ? { state: 'present', version: entry.plugin.manifest.version, nativeAction: 'none' }
-                    : { state: 'claimable', version: entry.plugin.manifest.version, nativeAction: 'none' }
-                  : {
-                      state: 'outdated',
-                      version: residue.versions[0]!,
-                      desiredVersion: entry.plugin.manifest.version,
-                      nativeAction: 'replace',
-                    };
+            : undefined;
+          const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
+            ?? { state: 'absent', nativeAction: 'install' };
           const projectionEntries: Array<{
             scope: Scope;
             artifactKey: string;
@@ -2330,6 +2316,12 @@ export async function runRebuildCommand(options: {
           liveEvidence.push({
             codexPluginId,
             sharedNative,
+            ...(sharedInspection?.actualPayloadDigest
+              ? { sharedNativePayloadDigest: sharedInspection.actualPayloadDigest }
+              : {}),
+            ...(sharedInspection?.payloadPath
+              ? { sharedNativePayloadPath: sharedInspection.payloadPath }
+              : {}),
             ...(sharedNative.state === 'corrupt' ? { repairableSharedNative: true } : {}),
             activations: {
               user: userConfig?.snapshot.plugins[codexPluginId]?.enabled,
@@ -2490,7 +2482,8 @@ export async function runRebuildCommand(options: {
           && (options.command === 'install'
             || options.command === 'upgrade'
             || options.command === 'reinstall')) {
-          const sharedNativeImpact = lockedCodexPlans.some((plan) => plan.review.requiresYes);
+          const sharedNativeImpact = lockedCodexPlans.some((plan) =>
+            plan.review.requiresConfirmation);
           if (sharedNativeImpact) {
             throw namespacedPreflightError(
               'sharedNativeImpactAuthorizationRequired: Replacing or force-reinstalling shared Codex native state requires --yes.',

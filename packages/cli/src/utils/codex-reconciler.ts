@@ -45,6 +45,8 @@ export type CodexLiveExtensionState = 'absent' | 'present' | 'drifted' | 'foreig
 export interface CodexReconcilerLiveEvidence {
   codexPluginId: string;
   sharedNative: CodexSharedNativeState;
+  sharedNativePayloadDigest?: string;
+  sharedNativePayloadPath?: string;
   repairableSharedNative?: boolean;
   activations: {
     user?: boolean;
@@ -112,8 +114,11 @@ export interface CodexReconcilePostcheckDescriptor {
 export interface CodexReconcileReviewDescriptor {
   evidenceDigest: string;
   planDigest: string;
-  requiresYes: boolean;
-  sharedImpactPluginIds: string[];
+  requiresConfirmation: boolean;
+  sharedImpact: {
+    pluginIds: string[];
+    warning?: string;
+  };
 }
 
 export interface CodexReconcilePlan {
@@ -560,8 +565,13 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
     review: {
       evidenceDigest,
       planDigest,
-      requiresYes: sharedImpactPluginIds.length > 0,
-      sharedImpactPluginIds,
+      requiresConfirmation: sharedImpactPluginIds.length > 0,
+      sharedImpact: {
+        pluginIds: sharedImpactPluginIds,
+        ...(sharedImpactPluginIds.length > 0 ? {
+          warning: 'Replacing or reinstalling shared Codex native state can affect other projects.',
+        } : {}),
+      },
     },
   };
 }

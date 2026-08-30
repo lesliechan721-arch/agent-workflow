@@ -53,7 +53,7 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult, statusCommandV5 } from './commands/status-v5.js';
+import { loadConsoleItemsResult, statusCommandV6 } from './commands/status-v6.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
@@ -1528,7 +1528,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill <name...>', 'install only selected Skill names')
     .option('--agent <id...>', 'install to explicit Agent IDs')
     .option('-y, --yes', 'confirm the reviewed install', false)
-    .option('-j, --json', 'emit one receipt v4 JSON object', false)
+    .option('-j, --json', 'emit one receipt v5 JSON object', false)
     .action(async (selector: string, rawOptions: {
       scope: string;
       skill?: string[];
@@ -1544,7 +1544,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ? error.code
           : 'portableInstallFailed');
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'skill:install',
           ok: false,
           status: 'failed',
@@ -1635,7 +1635,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .requiredOption('-s, --scope <scope>', 'project or user')
     .requiredOption('--out <dir>', 'output directory')
     .option('--skill <name...>', 'write only selected Skill names')
-    .option('-j, --json', 'emit one receipt v4 JSON object', false)
+    .option('-j, --json', 'emit one receipt v5 JSON object', false)
     .action(async (selector: string, rawOptions: {
       scope: string;
       out: string;
@@ -1664,7 +1664,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ? error.code
           : 'portableMaterializeFailed');
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'skill:materialize',
           ok: false,
           plugin: { id: selector },
@@ -2163,7 +2163,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const message = failure instanceof Error ? failure.message : String(error);
     if (json) {
       writeJsonReceipt(io.stdout, {
-        receiptSchemaVersion: 4,
+        receiptSchemaVersion: 5,
         command,
         ok: false,
         changed: false,
@@ -2222,7 +2222,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             : message.split(':', 1)[0] || 'configMutationFailed';
     if (json && !message.includes('Usage:')) {
       writeJsonReceipt(io.stdout, {
-        receiptSchemaVersion: 4,
+        receiptSchemaVersion: 5,
         command,
         ok: false,
         overallState: 'failed',
@@ -2664,18 +2664,28 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       } catch (error) {
         const message = redactString(error instanceof Error ? error.message : String(error));
         if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, {
-            ok: false,
-            command: 'sync',
-            receiptSchemaVersion: 4,
-            overallState: 'failed',
+          const code = (error as { code?: string }).code ?? message.split(':', 1)[0];
+          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('sync', {
+            platforms: ['codex'],
+            plugins: plugins ?? [],
             warnings: [],
-            errors: [{
-              code: (error as { code?: string }).code ?? message.split(':', 1)[0],
-              message,
-            }],
-            targets: [],
-          });
+            overallState: 'failed',
+            errors: [{ code, message }],
+            receiptTargets: (plugins ?? []).map((selector) => {
+              let pluginName = selector;
+              try {
+                pluginName = parsePluginId(selector).pluginName;
+              } catch {
+                // Keep the raw selector in the failed receipt.
+              }
+              return {
+                pluginName,
+                pluginId: selector,
+                platform: 'codex' as const,
+                scope: rawOptions.scope === 'user' ? 'user' as const : 'project' as const,
+              };
+            }),
+          }));
         } else {
           writeLine(io.stderr, message);
         }
@@ -3093,7 +3103,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'config:set',
           ...writeReceipt,
           plugin: plugin.manifest.name,
@@ -3253,7 +3263,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'config:unset',
           ...writeReceipt,
           plugin: plugin.manifest.name,
@@ -3385,7 +3395,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: resetReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'config:reset',
           ...resetReceipt,
           plugin: plugin.manifest.name,
@@ -3523,7 +3533,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('status', rawOptions);
       const result = await runActionWithContext(
         context,
-        () => statusCommandV5({
+        () => statusCommandV6({
           plugins: plugins ?? [],
           cwd,
           env: context.env,
@@ -3658,7 +3668,7 @@ export async function runCli(
       const message = 'option --subdir cannot be used with option --no-subdir';
       if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'catalog:source:update',
           ok: false,
           changed: false,

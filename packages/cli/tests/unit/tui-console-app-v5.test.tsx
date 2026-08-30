@@ -2,7 +2,7 @@ import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/status-v5.js';
+import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
 import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
@@ -50,7 +50,7 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-}): StatusV5Payload['targets'][number] {
+}): StatusV6Payload['targets'][number] {
   const sourceId = options.sourceId ?? 'official';
   return {
     pluginName: options.pluginName,
@@ -72,7 +72,7 @@ function target(options: {
 }
 
 function loadResult(): TuiStatusLoadResult {
-  const summaries: StatusV5PluginSummary[] = [
+  const summaries: StatusV6PluginSummary[] = [
     {
       pluginName: 'agent-lab',
       pluginId: 'official/agent-lab',
@@ -115,8 +115,8 @@ function loadResult(): TuiStatusLoadResult {
           : 'absent',
       }))),
   );
-  const payload: StatusV5Payload = {
-      schemaVersion: 5,
+  const payload: StatusV6Payload = {
+      schemaVersion: 6,
       catalog: {
         primarySourceId: 'official',
         configDigest: 'sha256:config',
@@ -4312,7 +4312,7 @@ describe('ConsoleAppV4', () => {
     expect(relations.lastFrame()).not.toContain('› Agent Skill Toolkit');
   });
 
-  it('groups a dependency Review without giving its headings a separate focus and keeps the primary action reachable', async () => {
+  it('groups a layered Review without giving its headings a separate focus and keeps the primary action reachable', async () => {
     const plan = dependencyPlan();
     const executeIntent = vi.fn();
     const value = controller({
@@ -4328,11 +4328,11 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
     expect(screens).toContain('D05');
-    expect(instance.lastFrame()).toContain('根插件');
-    expect(instance.lastFrame()).toContain('依赖');
+    expect(instance.lastFrame()).toContain('Project intent');
+    expect(instance.lastFrame()).toContain('User intent');
     expect(instance.lastFrame()).toContain('保持');
-    expect(instance.lastFrame()).toContain('Codex · 当前项目');
-    expect(instance.lastFrame()).toContain('所有项目 · 已可用');
+    expect(instance.lastFrame()).toContain('skill-toolkit');
+    expect(instance.lastFrame()).toContain('content-toolkit');
     expect(instance.lastFrame()).toContain('› 添加插件 3 个插件');
     expect(instance.lastFrame()).toContain('↑↓ 移动');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);

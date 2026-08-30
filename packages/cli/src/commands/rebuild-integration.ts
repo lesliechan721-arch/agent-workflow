@@ -75,6 +75,7 @@ import {
   inspectOwnedComponents,
   writeOwnedTextFile,
   type OwnedComponent,
+  type NativeOwnershipProbe,
   type OwnerIdentity,
   type OwnershipInspection,
 } from '../utils/ownership.js';
@@ -111,6 +112,12 @@ import {
 import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
+import {
+  inspectCodexSharedNative,
+  type CodexSharedNativeManifestEvidence,
+  type CodexSharedNativeState,
+} from '../utils/codex-shared-native.js';
+import { calculateCodexSharedNativePayloadDigest } from '../utils/catalog-digests.js';
 import { assertCanonicalProjectManagedRoots } from '../utils/project-boundary.js';
 import {
   findCodexRoleNameConflict,
@@ -2332,6 +2339,211 @@ export async function inspectCodexNativeResidue(options: {
         };
 }
 
+function isPathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+async function codexPayloadPathSafe(payloadRoot: string): Promise<boolean> {
+  const rootStats = await lstatCodexResidueIfPresent(payloadRoot);
+  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return false;
+  const pending = [payloadRoot];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = path.resolve(path.dirname(entryPath), await fs.readlink(entryPath));
+        if (!isPathWithin(payloadRoot, target)) return false;
+      } else if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (!entry.isFile()) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+export interface CodexSharedNativeLiveInspection {
+  sharedNative: CodexSharedNativeState;
+  actualPayloadDigest?: string;
+  payloadPath?: string;
+}
+
+/**
+ * Read-only filesystem projection for the payload-aware shared-native classifier.
+ * It does not invoke Codex or create native/config state.
+ */
+export async function inspectCodexSharedNativeLive(options: {
+  pluginName: string;
+  desiredVersion: string;
+  expectedPayloadDigest: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  managedByCurrentIntent: boolean;
+  marketplaceName?: string;
+  marketplaceRoot?: string;
+}): Promise<CodexSharedNativeLiveInspection> {
+  const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
+  const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
+  const pluginId = `${options.pluginName}@${marketplaceName}`;
+  const config = await readCodexConfigFile(
+    resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
+  );
+  const cacheRoot = path.join(
+    getCodexHome(options.env),
+    'plugins',
+    'cache',
+    marketplaceName,
+    options.pluginName,
+  );
+  const installedManifestPath = path.join(
+    getCodexHome(options.env),
+    'plugins',
+    pluginId,
+    'manifest.json',
+  );
+  const cacheRootStats = await lstatCodexResidueIfPresent(cacheRoot);
+  let unsafeCachePath = Boolean(cacheRootStats
+    && (!cacheRootStats.isDirectory() || cacheRootStats.isSymbolicLink()));
+  const candidates: Array<{
+    version?: string;
+    manifest: CodexSharedNativeManifestEvidence;
+    payloadPath: string;
+  }> = [];
+  if (cacheRootStats?.isDirectory() && !cacheRootStats.isSymbolicLink()) {
+    for (const entry of await fs.readdir(cacheRoot, { withFileTypes: true })) {
+      const payloadPath = path.join(cacheRoot, entry.name);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) {
+        unsafeCachePath = true;
+        continue;
+      }
+      const manifestPaths = [
+        path.join(payloadPath, 'plugin.json'),
+        path.join(payloadPath, '.codex-plugin', 'plugin.json'),
+      ];
+      const existingManifestPaths: string[] = [];
+      for (const manifestPath of manifestPaths) {
+        const stats = await lstatCodexResidueIfPresent(manifestPath);
+        if (stats) existingManifestPaths.push(manifestPath);
+      }
+      if (existingManifestPaths.length !== 1) {
+        candidates.push({
+          version: entry.name,
+          manifest: existingManifestPaths.length === 0 ? { state: 'absent' } : { state: 'unreadable' },
+          payloadPath,
+        });
+        continue;
+      }
+      const manifestPath = existingManifestPaths[0]!;
+      const manifestStats = await lstatCodexResidueIfPresent(manifestPath);
+      if (!manifestStats?.isFile() || manifestStats.isSymbolicLink()) {
+        candidates.push({ version: entry.name, manifest: { state: 'unreadable' }, payloadPath });
+        continue;
+      }
+      let manifest: Record<string, unknown>;
+      try {
+        const value = await fs.readJson(manifestPath) as unknown;
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid manifest');
+        manifest = value as Record<string, unknown>;
+      } catch {
+        candidates.push({ version: entry.name, manifest: { state: 'unreadable' }, payloadPath });
+        continue;
+      }
+      const pathSafe = await codexPayloadPathSafe(payloadPath);
+      let payloadDigest = options.expectedPayloadDigest;
+      if (pathSafe) {
+        try {
+          payloadDigest = await calculateCodexSharedNativePayloadDigest(payloadPath);
+        } catch {
+          candidates.push({ version: entry.name, manifest: { state: 'unreadable' }, payloadPath });
+          continue;
+        }
+      }
+      candidates.push({
+        version: typeof manifest.version === 'string' ? manifest.version : entry.name,
+        payloadPath,
+        manifest: {
+          state: 'present',
+          identity: typeof manifest.id === 'string'
+            ? manifest.id
+            : typeof manifest.name === 'string' ? manifest.name : '',
+          version: typeof manifest.version === 'string' ? manifest.version : '',
+          payloadDigest,
+          payloadPath,
+          pathSafe,
+        },
+      });
+    }
+  }
+  let installedVersion: string | undefined;
+  const installedStats = await lstatCodexResidueIfPresent(installedManifestPath);
+  if (installedStats?.isFile() && !installedStats.isSymbolicLink()) {
+    try {
+      const installed = await fs.readJson(installedManifestPath) as Record<string, unknown>;
+      if (typeof installed.version === 'string') installedVersion = installed.version;
+    } catch {
+      installedVersion = undefined;
+    }
+  }
+  const selected = candidates.find((candidate) => candidate.version === installedVersion)
+    ?? candidates.find((candidate) => candidate.version === options.desiredVersion)
+    ?? (candidates.length === 1 ? candidates[0] : undefined);
+  const pluginListEntries = candidates.map((candidate) => ({
+    pluginId,
+    enabled: config.snapshot.plugins[pluginId]?.enabled === true,
+    ...(candidate.version ? { version: candidate.version } : {}),
+    path: candidate.payloadPath,
+  }));
+  if (installedStats && pluginListEntries.length === 0) {
+    pluginListEntries.push({
+      pluginId,
+      enabled: config.snapshot.plugins[pluginId]?.enabled === true,
+      ...(installedVersion ? { version: installedVersion } : {}),
+      path: path.dirname(installedManifestPath),
+    });
+  }
+  if (unsafeCachePath && pluginListEntries.length === 0) {
+    pluginListEntries.push({
+      pluginId,
+      enabled: config.snapshot.plugins[pluginId]?.enabled === true,
+      version: options.desiredVersion,
+      path: cacheRoot,
+    });
+  }
+  const manifest: CodexSharedNativeManifestEvidence = unsafeCachePath
+    ? {
+        state: 'present',
+        identity: pluginId,
+        version: options.desiredVersion,
+        payloadDigest: options.expectedPayloadDigest,
+        payloadPath: cacheRoot,
+        pathSafe: false,
+      }
+    : selected?.manifest ?? { state: 'absent' };
+  const sharedNative = inspectCodexSharedNative({
+    pluginName: options.pluginName,
+    pluginId,
+    marketplaceName,
+    canonicalMarketplaceRoot: marketplaceRoot,
+    desiredVersion: options.desiredVersion,
+    expectedPayloadDigest: options.expectedPayloadDigest,
+    marketplaceRegistration: config.snapshot.marketplaces[marketplaceName],
+    marketplacePathSafe: true,
+    pluginListEntries,
+    manifest,
+    managedByCurrentIntent: options.managedByCurrentIntent && manifest.state === 'present',
+  });
+  return {
+    sharedNative,
+    ...(manifest.state === 'present' ? {
+      actualPayloadDigest: manifest.payloadDigest,
+      payloadPath: manifest.payloadPath,
+    } : {}),
+  };
+}
+
 export async function codexNativeRemovalRequired(options: {
   pluginName: string;
   cwd: string;
@@ -4110,12 +4322,20 @@ export async function inspectRebuildTarget(options: {
   cwd: string;
   catalog: CatalogResolution;
   context: RebuildExecutionContext;
+  userActivationDesired?: ReadonlySet<string>;
+  nativeProbe?: NativeOwnershipProbe;
 }): Promise<{
   target: DesiredTarget;
   inspection: OwnershipInspection;
   installedVersion?: string;
 }> {
-  const integration = createRebuildIntegration({ context: options.context });
+  const integration = createRebuildIntegration({
+    context: {
+      ...options.context,
+      codexUserActivationDesired: options.userActivationDesired
+        ?? options.context.codexUserActivationDesired,
+    },
+  });
   const target = await integration.buildTarget({
     ...(options.sourceId ? {
       sourceId: options.sourceId,
@@ -4135,7 +4355,9 @@ export async function inspectRebuildTarget(options: {
   });
   const inspection = await inspectOwnedComponents({
     components: target.ownedComponents,
-    nativeProbe: integration.driver.probeNativeHealth ?? integration.driver.probeNative,
+    nativeProbe: options.nativeProbe
+      ?? integration.driver.probeNativeHealth
+      ?? integration.driver.probeNative,
     verifyHealth: true,
   });
   if (!target.requiresNative) return { target, inspection };

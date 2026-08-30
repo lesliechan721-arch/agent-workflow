@@ -5,10 +5,10 @@ import type { PortableReview, PortableInstallReceipt } from '../portable/command
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import type {
-  StatusV5Payload,
-  StatusV5PluginSummary,
+  StatusV6Payload,
+  StatusV6PluginSummary,
   StatusTargetRevision,
-} from '../commands/status-v5.js';
+} from '../commands/status-v6.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
@@ -178,7 +178,10 @@ export interface OperationEvidence {
 
 export interface OperationReviewChange {
   kind: 'add' | 'change' | 'remove' | 'keep' | 'warning';
-  group?: 'requested' | 'dependencies' | 'runtime' | 'portableTarget' | 'portableInputs' | 'portableWarnings' | 'configChanges' | 'configImpact' | 'preserved';
+  group?: 'requested' | 'dependencies' | 'projectIntent' | 'userIntent'
+    | 'sharedCodexNative' | 'userActivation' | 'projectActivation' | 'awExtensions'
+    | 'runtime' | 'portableTarget' | 'portableInputs' | 'portableWarnings'
+    | 'configChanges' | 'configImpact' | 'preserved';
   pluginId?: string;
   relation?: 'requested' | 'direct' | 'transitive';
   title: string;
@@ -206,6 +209,11 @@ export interface OperationReviewModel {
   equivalentCommand?: string;
   primaryLabel: string;
   destructive?: boolean;
+  requiresConfirmation: boolean;
+  sharedImpact: {
+    pluginIds: string[];
+    warning?: string;
+  };
   catalogBinding?: {
     sourceId: string;
     catalogVersion: string;
@@ -333,8 +341,8 @@ export interface PluginOperationProgressLine {
 
 export interface TuiStatusLoadResult {
   cliChannel?: 'latest' | 'beta';
-  payload: StatusV5Payload;
-  pluginSummaries: StatusV5PluginSummary[];
+  payload: StatusV6Payload;
+  pluginSummaries: StatusV6PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
@@ -693,7 +701,7 @@ function reviewChanges(
             : 'change';
         return {
           kind: actionKind,
-          group: relation === 'requested' ? 'requested' : 'dependencies',
+          group: target.resolvedScope === 'project' ? 'projectIntent' : 'userIntent',
           pluginId: target.pluginId,
           relation,
           title: pluginNameFromId(target.pluginId),
@@ -706,7 +714,39 @@ function reviewChanges(
         title: '插件设置和已有依赖保持不变',
         description: '移除根插件时不会自动清理依赖。',
       });
-      return [...changes, ...runtimeChanges];
+      const codexChanges = (evidence?.codexReconcilePlans ?? []).flatMap((codexPlan) => [
+        ...codexPlan.sharedNativeActions.map((action): OperationReviewChange => ({
+          kind: action.action === 'reuse' || action.action === 'none' ? 'keep'
+            : action.action === 'install' || action.action === 'claim' ? 'add' : 'change',
+          group: 'sharedCodexNative',
+          pluginId: action.pluginId,
+          title: action.codexPluginId,
+          description: `${action.action} · shared${action.affectsOtherScopes ? ' · 可能影响其他项目' : ''}`,
+        })),
+        ...codexPlan.activationActions.user.map((action): OperationReviewChange => ({
+          kind: action.action === 'none' ? 'keep' : action.desired ? 'change' : 'remove',
+          group: 'userActivation',
+          pluginId: action.pluginId,
+          title: action.codexPluginId,
+          description: `desired=${String(action.desired)} · ${action.action}`,
+        })),
+        ...codexPlan.activationActions.project.map((action): OperationReviewChange => ({
+          kind: action.action === 'none' ? 'keep' : action.desired ? 'change' : 'remove',
+          group: 'projectActivation',
+          pluginId: action.pluginId,
+          title: action.codexPluginId,
+          description: `desired=${String(action.desired)} · ${action.action}`,
+        })),
+        ...[...codexPlan.extensionWrites, ...codexPlan.extensionRemovals]
+          .map((action): OperationReviewChange => ({
+            kind: action.action === 'write' ? 'change' : 'remove',
+            group: 'awExtensions',
+            pluginId: action.pluginId,
+            title: action.componentKey,
+            description: `${action.scope} · ${action.action}`,
+          })),
+      ]);
+      return [...changes, ...codexChanges, ...runtimeChanges];
     }
     const platforms: PlatformName[] = intent.platform === 'both'
       ? ['codex', 'claude']
@@ -1830,7 +1870,7 @@ export class TuiController {
     pluginId: string,
     platform: PlatformName,
     scope: Scope,
-  ): StatusV5Payload['targets'][number]['state'] | undefined {
+  ): StatusV6Payload['targets'][number]['state'] | undefined {
     return this.#status?.payload.targets.find((target) =>
       target.pluginId === pluginId
       && target.platform === platform
@@ -2308,6 +2348,17 @@ export class TuiController {
         ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
         : labels.primaryLabel,
       ...(labels.destructive ? { destructive: true } : {}),
+      requiresConfirmation: (evidence.codexReconcilePlans ?? []).some((plan) =>
+        plan.review.requiresConfirmation),
+      sharedImpact: {
+        pluginIds: [...new Set((evidence.codexReconcilePlans ?? []).flatMap((plan) =>
+          plan.review.sharedImpact.pluginIds))],
+        ...((evidence.codexReconcilePlans ?? []).find((plan) =>
+          plan.review.sharedImpact.warning)?.review.sharedImpact.warning
+          ? { warning: (evidence.codexReconcilePlans ?? []).find((plan) =>
+              plan.review.sharedImpact.warning)!.review.sharedImpact.warning }
+          : {}),
+      },
     };
     this.#tickets.set(reviewToken, {
       intent: structuredClone(intent),

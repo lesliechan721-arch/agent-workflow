@@ -3,7 +3,7 @@ import fs from 'fs-extra';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV5Payload } from '../../src/commands/status-v5.js';
+import type { StatusV6Payload } from '../../src/commands/status-v6.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import {
   configAffectedStatusTargets,
@@ -22,7 +22,7 @@ import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
 const runtimeMocks = vi.hoisted(() => ({
-  statusCommandV5: vi.fn(),
+  statusCommandV6: vi.fn(),
   cleanupWriteCommand: vi.fn(),
   installWriteCommand: vi.fn(),
   reinstallWriteCommand: vi.fn(),
@@ -34,9 +34,9 @@ const runtimeMocks = vi.hoisted(() => ({
   resetPluginConfigWithHelper: vi.fn(),
 }));
 
-vi.mock('../../src/commands/status-v5.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/commands/status-v5.js')>(),
-  statusCommandV5: runtimeMocks.statusCommandV5,
+vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
+  statusCommandV6: runtimeMocks.statusCommandV6,
 }));
 
 vi.mock('../../src/commands/write-commands.js', () => ({
@@ -65,7 +65,8 @@ vi.mock('../../src/utils/plugin-config-write.js', () => ({
 function target(
   scope: 'user' | 'project',
   state: 'absent' | 'present' | 'partial' | 'error',
-): StatusV5Payload['targets'][number] {
+): StatusV6Payload['targets'][number] {
+  const enabled = state === 'present' || state === 'partial';
   return {
     pluginName: 'demo',
     pluginId: 'official/demo',
@@ -75,22 +76,33 @@ function target(
     platform: 'codex',
     scope,
     cwd: '/workspace',
+    desired: {
+      enabled,
+      scopes: enabled ? [scope] : [],
+      relation: enabled ? 'managed' : 'none',
+    },
+    actual: {
+      state: state === 'absent' ? 'absent'
+        : state === 'present' ? 'ready' : 'drifted',
+    },
     state,
     components: [],
     errors: state === 'error'
       ? [{ code: 'targetError', message: 'safe failure', severity: 'blocking' }]
       : [],
+    recovery: [],
+    activation: { [scope]: enabled, evidence: 'assumed' },
   };
 }
 
 function bundleUnavailableStatus(
   configDigest = 'sha256:config',
-): Awaited<ReturnType<typeof runtimeMocks.statusCommandV5>> {
+): Awaited<ReturnType<typeof runtimeMocks.statusCommandV6>> {
   const orphan = target('user', 'error');
   orphan.errors = [{ code: 'bundleUnavailable', message: 'safe failure', severity: 'blocking' }];
   return {
     payload: {
-      schemaVersion: 5,
+      schemaVersion: 6,
       catalog: {
         primarySourceId: 'official',
         configDigest,
@@ -139,7 +151,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     ['present', 'error'],
     ['error', 'present'],
   ] as const)('fails closed for forged %s + %s scope origin before any write', async (userState, projectState) => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', userState), target('project', projectState)] },
     });
     const isolation = getCurrentSourceTestIsolation();
@@ -173,7 +185,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   });
 
   it.each(['partial', 'present'] as const)('keeps present + %s scope conflict validation valid', async (projectState) => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', 'present'), target('project', projectState)] },
     });
     const isolation = getCurrentSourceTestIsolation();
@@ -219,7 +231,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     ['unknown', 'present'],
     ['upgradeAvailable', 'partial'],
   ] as const)('rejects upgrade when revision is %s and placement is %s', async (revisionState, placementState) => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', placementState)] },
       targetRevisions: [{
         pluginId: 'official/demo', platform: 'codex', scope: 'user',
@@ -245,7 +257,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   });
 
   it('accepts upgrade only for a present placement with upgradeAvailable evidence', async () => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', 'present')] },
       targetRevisions: [{
         pluginId: 'official/demo', platform: 'codex', scope: 'user',
@@ -280,9 +292,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         catalog: {
           configDigest: configured.digest,
           compositeDigest: 'sha256:composite',
@@ -342,7 +354,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       },
     });
 
-    expect(runtimeMocks.statusCommandV5).toHaveBeenCalledOnce();
+    expect(runtimeMocks.statusCommandV6).toHaveBeenCalledOnce();
     expect(stages).toEqual(['config', 'evidence']);
     expect(debugLog.mock.calls.map(([event]) => event)
       .filter((event) => event.type.startsWith('review.prepare.'))).toEqual([
@@ -369,9 +381,9 @@ describe('TUI controller runtime scope conflict validation', () => {
     const projectTarget = {
       ...target('project', 'partial'), pluginId: 'team/demo', sourceId: 'team', platform: 'claude' as const,
     };
-    const statusResult = (targets: StatusV5Payload['targets']) => ({
+    const statusResult = (targets: StatusV6Payload['targets']) => ({
       payload: {
-        schemaVersion: 5 as const,
+        schemaVersion: 6 as const,
         catalog: {
           configDigest: configured.digest,
           compositeDigest: 'sha256:composite',
@@ -395,8 +407,8 @@ describe('TUI controller runtime scope conflict validation', () => {
       overallState: 'succeeded',
       targetResults: options.applyTargets.map((entry) => ({ target: entry, action: 'reinstall', state: 'completed' })),
     }));
-    const createController = async (targets: StatusV5Payload['targets']) => {
-      runtimeMocks.statusCommandV5.mockResolvedValue(statusResult(targets));
+    const createController = async (targets: StatusV6Payload['targets']) => {
+      runtimeMocks.statusCommandV6.mockResolvedValue(statusResult(targets));
       const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
@@ -444,7 +456,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       changes: [{ key: 'mode', title: 'Mode', before: 'old', after: 'stale' }],
     });
     const writesBeforeDrift = runtimeMocks.applyPluginConfigWrite.mock.calls.length;
-    runtimeMocks.statusCommandV5.mockResolvedValue(statusResult([userTarget]));
+    runtimeMocks.statusCommandV6.mockResolvedValue(statusResult([userTarget]));
     const stale = await drifting.executeOperation(driftReview.reviewToken);
     expect(stale).toMatchObject({ state: 'stale' });
     if (stale.state === 'stale') {
@@ -455,7 +467,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   });
 
   it('rejects config Review preparation without a loaded TUI session', async () => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
         catalog: {
           configDigest: 'sha256:stale-config',
@@ -482,7 +494,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     }, new AbortController().signal, (stage) => { stages.push(stage); }))
       .rejects.toMatchObject({ code: 'operationReviewStale' });
 
-    expect(runtimeMocks.statusCommandV5).not.toHaveBeenCalled();
+    expect(runtimeMocks.statusCommandV6).not.toHaveBeenCalled();
     expect(stages).toEqual([]);
   });
 
@@ -506,24 +518,19 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
         catalog: {
           configDigest: configured.digest,
           compositeDigest: 'sha256:composite',
         },
         targets: [{
-          pluginName: 'demo',
+          ...target('user', state),
           pluginId: 'team/demo',
           sourceId: 'team',
           sourceIdentity: 'identity:team',
           version: '0.0.0',
-          platform: 'codex',
-          scope: 'user',
           cwd: isolation.layout.fixtureCwd,
-          state,
-          components: [],
-          errors: [],
         }],
       },
       pluginSummaries: [{
@@ -562,7 +569,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       source: { sourceId: 'team' },
     });
 
-    expect(runtimeMocks.statusCommandV5).toHaveBeenCalledOnce();
+    expect(runtimeMocks.statusCommandV6).toHaveBeenCalledOnce();
     expect(stages).toEqual(['status', 'catalog', 'evidence']);
   });
 
@@ -580,13 +587,13 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
         catalog: { configDigest: configured.digest, compositeDigest: 'sha256:composite' },
         targets: [{
-          pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
-          version: '0.0.0', platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
-          state: 'absent', components: [],
+          ...target('user', 'absent'),
+          pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
+          version: '0.0.0', cwd: isolation.layout.fixtureCwd,
           errors: [{ code: 'artifactCollision', message: 'safe collision', severity: 'blocking' }],
         }],
       },
@@ -628,7 +635,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       message: 'safe collision',
       severity: 'blocking',
     }];
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [collisionTarget] },
       targetRevisions: revisionState ? [{
         pluginId: 'official/demo',
@@ -676,7 +683,7 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
     expect(stages).toEqual(['validate', 'evidence']);
-    expect(runtimeMocks.statusCommandV5).not.toHaveBeenCalled();
+    expect(runtimeMocks.statusCommandV6).not.toHaveBeenCalled();
   });
 
   it('stops a managed source mutation when public preflight rejects it', async () => {
@@ -763,7 +770,7 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     expect(runtimeMocks.preparePortableInstall).toHaveBeenCalledOnce();
     expect(stages).toEqual(['portable', 'evidence']);
-    expect(runtimeMocks.statusCommandV5).not.toHaveBeenCalled();
+    expect(runtimeMocks.statusCommandV6).not.toHaveBeenCalled();
   });
 
   it('uses status ownership evidence to run ordinary cleanup when the current Catalog bundle is absent', async () => {
@@ -785,7 +792,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       },
     });
     const configSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue(bundleUnavailableStatus(configSnapshot.digest));
+    runtimeMocks.statusCommandV6.mockResolvedValue(bundleUnavailableStatus(configSnapshot.digest));
     runtimeMocks.cleanupWriteCommand.mockResolvedValue({
       platforms: ['codex'],
       plugins: ['demo'],

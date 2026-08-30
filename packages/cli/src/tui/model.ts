@@ -6,13 +6,13 @@ import type {
   Scope,
 } from '../types.js';
 import type {
-  StatusV5Payload,
-  StatusV5PluginSummary,
-  StatusV5Target,
-  StatusV5Component,
+  StatusV6Payload,
+  StatusV6PluginSummary,
+  StatusV6Target,
+  StatusV6Component,
   StatusTargetRevision,
   TargetRevisionState,
-} from '../commands/status-v5.js';
+} from '../commands/status-v6.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 import {
   safeDiagnosticCode,
@@ -86,7 +86,7 @@ export interface PluginListItemViewModel {
     platform: PlatformName;
     scope: Scope;
     key: string;
-    state: StatusV5Component['state'];
+    state: StatusV6Component['state'];
     errorCode?: string;
   }>;
 }
@@ -386,13 +386,13 @@ function compareText(left: string, right: string): number {
   return left.localeCompare(right, 'en');
 }
 
-function targetHealth(target: StatusV5Target): 'ready' | 'incomplete' | 'error' {
+function targetHealth(target: StatusV6Target): 'ready' | 'incomplete' | 'error' {
   if (target.state === 'present') return 'ready';
   if (target.state === 'partial') return 'incomplete';
   return 'error';
 }
 
-function isInstalledScopeEvidence(target: StatusV5Target): boolean {
+function isInstalledScopeEvidence(target: StatusV6Target): boolean {
   return target.state === 'present' || target.state === 'partial';
 }
 
@@ -402,7 +402,7 @@ function dependencyPluginIdFromMessage(message: string): string | undefined {
 
 function rootPlacementFromIssueId(
   issueId: string | undefined,
-  fallback: Pick<StatusV5Target, 'platform' | 'scope'>,
+  fallback: Pick<StatusV6Target, 'platform' | 'scope'>,
 ): Pick<TargetIssueEntityViewModel, 'platform' | 'scope'> {
   if (issueId) {
     for (const platform of ['claude', 'codex'] as const) {
@@ -433,8 +433,8 @@ function rootPluginIdFromIssueId(
 }
 
 function targetIssueRelationship(options: {
-  target: StatusV5Target;
-  error?: StatusV5Target['errors'][number];
+  target: StatusV6Target;
+  error?: StatusV6Target['errors'][number];
   dependencyPluginId?: string;
 }): {
   relationship: 'direct' | 'consumer';
@@ -470,10 +470,10 @@ function targetIssueRelationship(options: {
 
 export function projectPlatformPlacement(
   platform: PlatformName,
-  targets: StatusV5Target[],
+  targets: StatusV6Target[],
   revisions: StatusTargetRevision[] = [],
 ): PlatformPlacementSummary {
-  const revisionFor = (target: StatusV5Target): TargetRevisionState =>
+  const revisionFor = (target: StatusV6Target): TargetRevisionState =>
     revisions.find((entry) => entry.pluginId === target.pluginId
       && entry.platform === target.platform
       && entry.scope === target.scope)?.revision
@@ -642,7 +642,7 @@ export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean 
 }
 
 function sourceState(
-  source: StatusV5Payload['catalog']['sources'][number],
+  source: StatusV6Payload['catalog']['sources'][number],
   health?: SourceHealthViewModel,
 ): SourceTabViewModel['state'] {
   if (health?.state === 'ready') return 'ready';
@@ -691,9 +691,9 @@ function sourceIssue(
   };
 }
 
-function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
+function targetIssues(payload: StatusV6Payload): UserIssueDraft[] {
   const issues: UserIssueDraft[] = [];
-  const byPlacement = new Map<string, StatusV5Target[]>();
+  const byPlacement = new Map<string, StatusV6Target[]>();
   const canonicalRootsByEntity = new Map<string, string>();
   for (const target of payload.targets) {
     for (const error of target.errors) {
@@ -732,7 +732,7 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
       code: TargetIssueRootCode;
       category: UserIssueCategory;
       mergeEligible: boolean;
-      error?: StatusV5Target['errors'][number];
+      error?: StatusV6Target['errors'][number];
       dependencyPluginId?: string;
     };
     const dependencyRootMap = new Map<string, TargetIssueRoot>();
@@ -964,7 +964,7 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
   return issues;
 }
 
-function statusIssues(payload: StatusV5Payload): UserIssueDraft[] {
+function statusIssues(payload: StatusV6Payload): UserIssueDraft[] {
   const targetCodes = new Set(payload.targets.flatMap((target) =>
     target.errors.map((error) => error.code)));
   const issues = new Map<string, UserIssueDraft>();
@@ -1007,7 +1007,7 @@ function statusIssues(payload: StatusV5Payload): UserIssueDraft[] {
   return [...issues.values()];
 }
 
-function configIssues(pluginSummaries: StatusV5PluginSummary[]): UserIssueDraft[] {
+function configIssues(pluginSummaries: StatusV6PluginSummary[]): UserIssueDraft[] {
   return pluginSummaries.flatMap((summary): UserIssueDraft[] => {
     const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
     if (summary.configDiagnostic) {
@@ -1069,8 +1069,8 @@ function configIssues(pluginSummaries: StatusV5PluginSummary[]): UserIssueDraft[
 
 function dependencyOverviewIssues(
   overviews: PluginDependencyOverviewViewModel[],
-  pluginSummaries: StatusV5PluginSummary[],
-  status: StatusV5Payload,
+  pluginSummaries: StatusV6PluginSummary[],
+  status: StatusV6Payload,
 ): UserIssueDraft[] {
   const summaryById = new Map(pluginSummaries.map((summary) => [summary.pluginId, summary]));
   return overviews.flatMap((overview) => overview.blockers.flatMap((blocker): UserIssueDraft[] => {
@@ -1355,8 +1355,8 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
 }
 
 export function buildTuiViewModel(options: {
-  status: StatusV5Payload;
-  pluginSummaries: StatusV5PluginSummary[];
+  status: StatusV6Payload;
+  pluginSummaries: StatusV6PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
@@ -1366,7 +1366,7 @@ export function buildTuiViewModel(options: {
   const dependencyById = new Map((options.dependencyOverviews ?? [])
     .map((overview) => [overview.pluginId, overview]));
   const summaryById = new Map(options.pluginSummaries.map((summary) => [summary.pluginId, summary]));
-  const targetsByPlugin = new Map<string, StatusV5Target[]>();
+  const targetsByPlugin = new Map<string, StatusV6Target[]>();
   for (const target of options.status.targets) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }

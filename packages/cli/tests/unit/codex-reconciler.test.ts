@@ -309,8 +309,8 @@ describe('Codex desired-state reconciliation planner', () => {
     const forced = createCodexReconcilePlan(input('reinstall', target(), live({
       state: 'present', version: '1.0.0', nativeAction: 'none',
     })));
-    expect(outdated.review).toMatchObject({ requiresYes: true });
-    expect(forced.review).toMatchObject({ requiresYes: true });
+    expect(outdated.review).toMatchObject({ requiresConfirmation: true });
+    expect(forced.review).toMatchObject({ requiresConfirmation: true });
   });
 
   it('uses assumed support only for activation-only project work', () => {
