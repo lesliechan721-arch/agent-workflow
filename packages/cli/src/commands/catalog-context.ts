@@ -124,6 +124,22 @@ export async function getCatalogContext(options: {
     branch: options.branch,
     env: options.env,
   })
+  if (target.remoteResolvedFrom === 'invalid-explicit') {
+    issues.push({
+      code: 'publicationRemoteInvalid',
+      scope: 'publication',
+      message: 'Explicit Catalog publication remote must name an existing Git remote exactly and must not contain whitespace, control characters, or a leading hyphen.',
+      blocking: true,
+    })
+  }
+  if (!target.branchValid) {
+    issues.push({
+      code: 'publicationBranchInvalid',
+      scope: 'publication',
+      message: 'Explicit Catalog publication branch is not a safe Git branch name.',
+      blocking: true,
+    })
+  }
   const repositoryRoot = target.repositoryRoot
   const sourceHead = repositoryRoot ? await git(repositoryRoot, ['rev-parse', '--verify', 'HEAD'], options.env) : null
   const status = repositoryRoot

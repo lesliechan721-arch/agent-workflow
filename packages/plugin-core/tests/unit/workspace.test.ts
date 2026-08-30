@@ -15,7 +15,6 @@ import {
   resolveCatalogVersionMutation,
   resolveCatalogWorkspaceOutputPath,
   validateCatalogSnapshotComplete,
-  validatePublishedCatalogPublicationParent,
   validatePublishedCatalogSnapshot,
 } from '../../src/workspace.js'
 import { validateMarketplaceSourceMeta } from '../../src/manifest-contract.js'
@@ -35,41 +34,6 @@ function stableStringify(value: unknown): string {
 
 function sha256(value: unknown): string {
   return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`
-}
-
-async function convertPublishedSnapshotToLegacyV4(snapshotRoot: string): Promise<void> {
-  const manifestPath = path.join(snapshotRoot, 'catalog-manifest.json')
-  const manifest = await fs.readJson(manifestPath)
-  const compatibility = { aw: { minVersion: '0.0.0' } }
-  const entries = manifest.entries.map((entry: Record<string, unknown>) => {
-    const legacy = { ...entry }
-    delete legacy.dependencies
-    delete legacy.requires
-    return { ...legacy, compatibility }
-  })
-  const contentDigest = sha256({
-    schemaIdentity: { schemaVersion: 4 },
-    marketplaceMetadata: {
-      name: 'aw',
-      owner: manifest.marketplace.owner,
-      interface: manifest.marketplace.interface,
-    },
-    compatibility,
-    plugins: entries.map((entry: Record<string, string>) => ({
-      name: entry.name,
-      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
-      contentDigest: entry.contentDigest,
-    })).sort((left: { name: string }, right: { name: string }) => left.name.localeCompare(right.name)),
-  })
-  await fs.writeJson(manifestPath, {
-    schemaVersion: 4,
-    catalogVersion: manifest.catalogVersion,
-    channel: manifest.channel,
-    compatibility,
-    marketplace: manifest.marketplace,
-    release: { ...manifest.release, planId: contentDigest, contentDigest },
-    entries,
-  })
 }
 
 async function createWorkspace(): Promise<string> {
@@ -620,7 +584,7 @@ describe('AW Catalog Workspace v1', () => {
     )
   })
 
-  it('uses a validated published v4 snapshot only as a v5 publication parent', async () => {
+  it('rejects a schema 4 publication parent before building the next snapshot', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
@@ -631,45 +595,19 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: '4'.repeat(40),
       adapter,
     })
-    await convertPublishedSnapshotToLegacyV4(first.outputRoot)
-
-    await expect(validateCatalogSnapshotComplete(first.outputRoot))
-      .rejects.toThrow(/unknown field "compatibility"/u)
-    await expect(validatePublishedCatalogPublicationParent(first.outputRoot)).resolves.toMatchObject({
-      catalogVersion: '0.1.0-beta.1',
-      ledger: { schemaVersion: 2, records: [{ version: '0.1.0-beta.1' }] },
-    })
+    const manifestPath = path.join(first.outputRoot, 'catalog-manifest.json')
+    const publishedManifest = await fs.readJson(manifestPath)
+    await fs.writeJson(manifestPath, { ...publishedManifest, schemaVersion: 4 })
 
     await mutateCatalogWorkspaceVersion(root, { version: '0.1.0-beta.2' })
-    const second = await preparePublishedCatalogWorkspace({
+    let buildCalled = false
+    await expect(preparePublishedCatalogWorkspace({
       workspaceRoot: root,
       sourceHead: '5'.repeat(40),
       previousSnapshotRoot: first.outputRoot,
-      adapter,
-    })
-    const validation = await validatePublishedCatalogSnapshot(second.outputRoot)
-    expect(validation.manifest).toMatchObject({
-      schemaVersion: 5,
-      catalogVersion: '0.1.0-beta.2',
-      entries: [{ version: '0.1.0-beta.1' }],
-    })
-    expect(validation.ledger.records).toHaveLength(2)
-
-    const legacyManifestPath = path.join(first.outputRoot, 'catalog-manifest.json')
-    const legacyLedgerPath = path.join(first.outputRoot, 'plugin-release-ledger.json')
-    const legacyManifest = await fs.readJson(legacyManifestPath)
-    const legacyLedger = await fs.readJson(legacyLedgerPath)
-    legacyLedger.records[0].manifestDigest = `sha256:${'2'.repeat(64)}`
-    await fs.writeJson(legacyLedgerPath, legacyLedger)
-    await expect(validatePublishedCatalogPublicationParent(first.outputRoot))
-      .rejects.toThrow(/does not match catalog entry/u)
-
-    legacyLedger.records[0].manifestDigest = legacyManifest.entries[0].manifestDigest
-    await fs.writeJson(legacyLedgerPath, legacyLedger)
-    legacyManifest.release.contentDigest = `sha256:${'0'.repeat(64)}`
-    await fs.writeJson(legacyManifestPath, legacyManifest)
-    await expect(validatePublishedCatalogPublicationParent(first.outputRoot))
-      .rejects.toThrow(/legacy catalog release contentDigest/u)
+      adapter: { build: async () => { buildCalled = true } },
+    })).rejects.toThrow(/schemaVersion: expected 5/u)
+    expect(buildCalled).toBe(false)
   })
 
   it('uses the committed Workspace version as the exact release candidate', async () => {

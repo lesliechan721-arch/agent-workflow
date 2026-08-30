@@ -356,11 +356,23 @@ export async function getCatalogStatus(options: {
     return receipt;
   }
   if (target.remote === null) {
+    const invalidExplicit = target.remoteResolvedFrom === 'invalid-explicit';
     receipt.issues.push({
-      code: target.ambiguous ? 'remoteAmbiguous' : 'remoteUnavailable',
-      message: target.ambiguous
+      code: invalidExplicit ? 'remoteInvalid' : target.ambiguous ? 'remoteAmbiguous' : 'remoteUnavailable',
+      message: invalidExplicit
+        ? 'Explicit Catalog publication remote must name an existing Git remote exactly.'
+        : target.ambiguous
         ? 'Catalog publication remote is ambiguous. Use --remote.'
         : 'Catalog publication remote is unavailable. Configure a Git remote or use --remote.',
+      blocking: true,
+    });
+    receipt.ok = false;
+    return receipt;
+  }
+  if (!target.branchValid) {
+    receipt.issues.push({
+      code: 'branchInvalid',
+      message: 'Explicit Catalog publication branch is not a safe Git branch name.',
       blocking: true,
     });
     receipt.ok = false;

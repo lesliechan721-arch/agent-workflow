@@ -246,6 +246,9 @@ describe('Catalog context and unified inference', () => {
     expect(JSON.parse(ambiguous.stdout()).publication).toMatchObject({
       remote: null, remoteResolvedFrom: 'ambiguous', ambiguous: true,
     })
+    expect(JSON.parse(ambiguous.stdout()).issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: 'publication', blocking: true }),
+    ]))
     const explicit = capture()
     await runCli(['catalog', 'context', '--remote', 'mirror', '--branch', 'preview', '--json'], {
       cwd: root,
@@ -254,6 +257,44 @@ describe('Catalog context and unified inference', () => {
     expect(JSON.parse(explicit.stdout()).publication).toMatchObject({
       remote: 'mirror', remoteResolvedFrom: 'explicit', branch: 'preview', branchResolvedFrom: 'explicit',
     })
+  })
+
+  it('blocks invalid explicit publication remotes and branches in read-only context', async () => {
+    const root = await createRoot()
+    const remote = await createRoot()
+    await execFileAsync('git', ['init', '--quiet'], { cwd: root })
+    await initializeWorkspace(root)
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root })
+
+    for (const value of ['missing', '', '-option', 'has space', 'line\nbreak', 'control\u0001']) {
+      const output = capture()
+      expect(await runCli(['catalog', 'context', `--remote=${value}`, '--json'], {
+        cwd: root,
+        io: output.io,
+      })).toBe(1)
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        publication: { remote: null, remoteResolvedFrom: 'invalid-explicit' },
+        issues: expect.arrayContaining([
+          expect.objectContaining({ code: 'publicationRemoteInvalid', scope: 'publication', blocking: true }),
+        ]),
+      })
+      expect(output.stderr()).toBe('')
+    }
+
+    for (const value of ['', '-option', 'has space', 'line\nbreak', 'bad..branch', '@{-1}']) {
+      const output = capture()
+      expect(await runCli(['catalog', 'context', `--branch=${value}`, '--json'], {
+        cwd: root,
+        io: output.io,
+      })).toBe(1)
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        publication: { branch: value, branchResolvedFrom: 'explicit' },
+        issues: expect.arrayContaining([
+          expect.objectContaining({ code: 'publicationBranchInvalid', scope: 'publication', blocking: true }),
+        ]),
+      })
+      expect(output.stderr()).toBe('')
+    }
   })
 
   it('keeps a valid marker authoritative when Workspace content is invalid', async () => {

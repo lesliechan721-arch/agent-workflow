@@ -8,7 +8,6 @@ import fs from 'fs-extra';
 import {
   preparePublishedCatalogWorkspace,
   readCatalogWorkspace,
-  validatePublishedCatalogPublicationParent,
   validatePublishedCatalogSnapshot,
   type CatalogWorkspace,
   type CatalogWorkspaceBuildAdapter,
@@ -140,15 +139,29 @@ export function safeRemoteIdentity(value: string): string {
     .replace(/^[^@\s]+@(?=[^:/\s]+[/:])/u, '');
 }
 
-function assertSafeRemoteUrl(value: string): string {
-  if (value.trim() === '' || value !== value.trim() || /\s/u.test(value) || value.startsWith('-')) {
+function assertSafeRemoteUrl(value: string, options: { allowCredentials?: boolean } = {}): string {
+  if (value.trim() === '' || value !== value.trim() || /[\s\p{Cc}]/u.test(value) || value.startsWith('-')) {
     throw new CatalogPublicationInspectionError('remoteInvalid', 'Catalog remote URL is unsafe.');
   }
-  if (/^[a-z][a-z\d+.-]*:\/\/[^/\s?#]*@/iu.test(value)) {
+  if (!options.allowCredentials && /^[a-z][a-z\d+.-]*:\/\/[^/\s?#]*@/iu.test(value)) {
     throw new CatalogPublicationInspectionError(
       'remoteInvalid',
       'Catalog remote URL must not contain embedded credentials.',
     );
+  }
+  return value;
+}
+
+function assertSafeRemoteName(value: string): string {
+  if (value === '' || value !== value.trim() || value.startsWith('-') || /[\s\p{Cc}]/u.test(value)) {
+    throw new CatalogPublicationInspectionError('remoteInvalid', 'Catalog remote name is unsafe.');
+  }
+  return value;
+}
+
+function assertSafeBranchValue(value: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(value)) {
+    throw new CatalogPublicationInspectionError('branchInvalid', 'Invalid Catalog publication branch name.');
   }
   return value;
 }
@@ -297,8 +310,10 @@ export async function prepareCatalogPublicationInspection(options: {
       'Catalog publication accepts a configured remote name or a direct remote URL, not both.',
     );
   }
-  const remote = options.remote ?? (options.remoteUrl === undefined ? 'origin' : 'direct');
-  const branch = options.branch ?? 'catalog';
+  const remote = options.remoteUrl === undefined
+    ? assertSafeRemoteName(options.remote ?? 'origin')
+    : 'direct';
+  const branch = assertSafeBranchValue(options.branch ?? 'catalog');
   const env = options.remoteUrl === undefined
     ? sanitizedGitEnvironment(options.env)
     : directRemoteGitEnvironment(options.env);
@@ -316,6 +331,47 @@ export async function prepareCatalogPublicationInspection(options: {
       'gitWorkspaceInvalid',
       'Catalog Workspace must be inside a real Git worktree.',
     );
+    await publicationGit(
+      repoRoot,
+      ['check-ref-format', '--branch', branch],
+      env,
+      'branchInvalid',
+      'Invalid Catalog publication branch name.',
+    );
+    if (options.remoteUrl !== undefined) {
+      fetchUrl = assertSafeRemoteUrl(options.remoteUrl);
+      pushUrl = fetchUrl;
+    } else {
+      const configuredRemotes = (await publicationGit(
+        repoRoot,
+        ['remote'],
+        env,
+        'remoteMissing',
+        'Could not inspect configured Git remotes.',
+      )).split('\n').filter(Boolean);
+      if (!configuredRemotes.includes(remote)) {
+        throw new CatalogPublicationInspectionError(
+          'remoteInvalid',
+          `Git remote ${JSON.stringify(remote)} is not configured.`,
+        );
+      }
+      fetchUrl = assertSafeRemoteUrl(await publicationGit(
+        repoRoot,
+        ['remote', 'get-url', remote],
+        env,
+        'remoteMissing',
+        `Git remote ${JSON.stringify(remote)} is not configured.`,
+      ), { allowCredentials: true });
+      pushUrl = assertSafeRemoteUrl(await publicationGit(
+        repoRoot,
+        ['remote', 'get-url', '--push', remote],
+        env,
+        'remoteMissing',
+        `Git remote ${JSON.stringify(remote)} has no push URL.`,
+      ), { allowCredentials: true });
+    }
+    safeFetchUrl = safeRemoteIdentity(fetchUrl);
+    safePushUrl = safeRemoteIdentity(pushUrl);
     const sourceHead = await publicationGit(
       repoRoot,
       ['rev-parse', '--verify', 'HEAD'],
@@ -347,13 +403,6 @@ export async function prepareCatalogPublicationInspection(options: {
       );
     }
     const archivedCatalogWorkspaceRoot = path.join(sourceRoot, catalogWorkspaceRelative);
-    await publicationGit(
-      repoRoot,
-      ['check-ref-format', '--branch', branch],
-      env,
-      'branchInvalid',
-      'Invalid Catalog publication branch name.',
-    );
     let catalogWorkspace: CatalogWorkspace;
     try {
       catalogWorkspace = await readCatalogWorkspace(archivedCatalogWorkspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
@@ -385,27 +434,6 @@ export async function prepareCatalogPublicationInspection(options: {
         `Catalog ${catalogVersion} already has an attempted publication record. Run aw catalog version <higher> before publishing again.`,
       );
     }
-    if (options.remoteUrl !== undefined) {
-      fetchUrl = assertSafeRemoteUrl(options.remoteUrl);
-      pushUrl = fetchUrl;
-    } else {
-      fetchUrl = await publicationGit(
-        repoRoot,
-        ['remote', 'get-url', remote],
-        env,
-        'remoteMissing',
-        `Git remote ${JSON.stringify(remote)} is not configured.`,
-      );
-      pushUrl = await publicationGit(
-        repoRoot,
-        ['remote', 'get-url', '--push', remote],
-        env,
-        'remoteMissing',
-        `Git remote ${JSON.stringify(remote)} has no push URL.`,
-      );
-    }
-    safeFetchUrl = safeRemoteIdentity(fetchUrl);
-    safePushUrl = safeRemoteIdentity(pushUrl);
     const remoteIdentityDigest = digest(JSON.stringify({ fetchUrl, pushUrl }));
     const branchRef = `refs/heads/${branch}`;
     const tagRef = `refs/tags/${tag}`;
@@ -438,8 +466,8 @@ export async function prepareCatalogPublicationInspection(options: {
         '--work-tree', previousSnapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
       ], env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
       try {
-        const previous = await validatePublishedCatalogPublicationParent(previousSnapshotRoot);
-        publishedVersion = previous.catalogVersion;
+        const previous = await validatePublishedCatalogSnapshot(previousSnapshotRoot);
+        publishedVersion = previous.manifest.catalogVersion;
       } catch (error) {
         throw inspectionError('remoteSnapshotInvalid', error);
       }
@@ -561,15 +589,15 @@ async function resolveRemoteUrlForInspection(options: {
   if (options.remoteUrl !== undefined) {
     return { remoteUrl: assertSafeRemoteUrl(options.remoteUrl), env };
   }
-  const remote = options.remote ?? 'origin';
+  const remote = assertSafeRemoteName(options.remote ?? 'origin');
   return {
-    remoteUrl: await publicationGit(
+    remoteUrl: assertSafeRemoteUrl(await publicationGit(
       options.workspaceRoot,
       ['remote', 'get-url', '--push', remote],
       env,
       'remoteMissing',
       `Git remote ${JSON.stringify(remote)} has no push URL.`,
-    ),
+    ), { allowCredentials: true }),
     env,
   };
 }
@@ -609,6 +637,7 @@ export async function readCatalogPublicationBranchState(options: {
   ledger: Awaited<ReturnType<typeof validatePublishedCatalogSnapshot>>['ledger'];
   snapshotDigest: string;
 } | null> {
+  assertSafeBranchValue(options.branch);
   const resolved = await resolveRemoteUrlForInspection(options);
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-remote-read-'));
   try {
