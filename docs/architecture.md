@@ -229,6 +229,20 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - active marketplace、backup、quarantine 和 lifecycle snapshot 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
 
+### Codex shared native 与 project activation 的 staged rollout gate
+
+以下条目是目标架构门禁，不表示当前 write、status 或 materialization 已完成迁移。后续阶段必须硬切删除旧 Codex project materialization；不得保留旧路径作为 AW fallback，也不得同时维护两套 project 安装模型。
+
+- Intent 只表示 desired state。user/project enablement、选中平台和 scope 都是待达成目标，不是安装事实。actual state 只来自当前 live ownership、Codex native config/cache/manifest，以及可观察的 native loader 证据。
+- Codex plugin 只物化一份 shared native user package。project scope 只在项目的 Codex 配置中激活该 native plugin。不得为此保存 project path、global claim、refcount、native installed ledger 或第二套安装状态；qualification report 也不是 installed ledger。
+- 基础 Codex native plugin 合同最低为 `0.145.0`。涉及 project activation 的操作最低为 `0.151.0`。开发 qualification 固定拒绝非精确 `0.151.0`，避免把其它版本的行为外推到 rollout allowlist。
+- PATH 中有 Codex CLI 时，操作按适用版本门禁探测它。PATH 中没有 system CLI 且操作只修改 project activation 时，不探测 Codex App，也不获取 manager；系统把 App 的 project activation 能力标记为 `assumed`。只有操作需要物化或移除 shared native package 时才解析 manager；system CLI 缺失时，AW-managed manager 必须取得精确 `0.151.0`。
+- 每种 native kind 必须先通过显式真实 qualification 才能进入 rollout allowlist。未被行为证据证明的 kind 必须返回 `unsupported`，不能从帮助文本、源码字符串或相邻 kind 推断。当前 `0.151.0` qualification 可证明 Skill、MCP、Hook 和 App；slash command 因没有可用的离线运行时证据保持 `unsupported`。
+- project activation 的最低行为合同是：native add 默认创建 user enabled；`user=false, project=true` 只在受信任的精确 project cwd 加载；neutral cwd 不加载；`user=true, project=true` 在两处加载同一 shared native plugin；project trust 未生效时 project-only activation 不加载。
+- `status` 始终只读。它只能读取 Intent、live ownership 和 native evidence，并标明 observed 或 assumed；不得安装 manager、调用 native add/remove、修改 trust/config、创建 claim/refcount，或把 qualification report 当现场事实。
+
+独立入口 `pnpm qualification:codex-project-native` 只用于 rollout qualification。它使用临时 Codex home、临时项目和临时本地 marketplace，且不进入普通 test、build 或 release 默认链。机器报告只说明该次 CLI/OS 的 qualification 结果，不授权或记录任何用户安装。
+
 ## Agent Skill Eval Plan 与 Runner 边界
 
 - Skill-local `evals/manifest.json` 的准备合同是 CLI 拥有的 `AwSkillEvalManifest v1`。`aw skill eval prepare` 通过 Catalog Workspace 解析 canonical plugin，复用真实 bundle、依赖、profile config 和平台 materialization，输出一个 profile 的输入完整 `AwSkillEvalExecutionPlan v4` 目录。Plan 输入只引用目录内的 target、可选 previous target、筛选后的 cases、provider capability 文档、suite metadata/fixture 和移除目标 Skill 后的完整 subject base；最终目录在 staging 完整验证后原子发布，已有、过宽或含符号链接的目标 fail closed。profile 不得把 sensitive config 值带入 Plan。
