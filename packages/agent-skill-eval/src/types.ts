@@ -120,5 +120,8 @@ export type SchemaName =
   | 'aw-skill-eval-execution-plan'
   | 'eval-run-bundle'
   | 'eval-audit-result'
+  | 'eval-spec'
+  | 'eval-audit'
+  | 'eval-result'
   | 'eval-provider-capabilities'
   | 'eval-provider-output'

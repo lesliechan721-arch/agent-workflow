@@ -1,4 +1,13 @@
 export { validateExecutionPlan } from './plan.js'
+export { computeEvalFileDigest } from './eval-file.js'
+export { parseEvalSpec, validateEvalSpec, validateEvalSpecFile } from './eval-spec.js'
+export { parseEvalAudit, validateEvalAudit, validateEvalAuditFile } from './eval-audit.js'
+export {
+  computeEvalResultSummary,
+  parseEvalResult,
+  validateEvalResult,
+  validateEvalResultFile,
+} from './eval-result.js'
 export { canonicalJson, computeCaseCorpusDigest } from './corpus-digest.js'
 export { getRuntimeCapabilities } from './capabilities.js'
 export { runExecutionPlan } from './run.js'
@@ -36,6 +45,30 @@ export type {
   PlanCalculated,
   RuntimeInput,
 } from './plan.js'
+export type {
+  EvalBaseline,
+  EvalProvider,
+  EvalSpec,
+  EvalSpecCalculated,
+  EvalSpecPathDigest,
+} from './eval-spec.js'
+export type {
+  EvalAudit,
+  EvalAuditBinding,
+  EvalAuditBlockedCase,
+  EvalAuditFileCalculated,
+  EvalAuditIssue,
+  EvalAuditTarget,
+} from './eval-audit.js'
+export type {
+  EvalGrade,
+  EvalResult,
+  EvalResultBinding,
+  EvalResultFileCalculated,
+  EvalResultRun,
+  EvalResultSummary,
+  EvalRunError,
+} from './eval-result.js'
 export type {
   BundleCalculated,
   ComparisonAggregate,
