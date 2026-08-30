@@ -473,6 +473,7 @@ export interface CommandOptions {
   cwd: string;
   scriptTimeoutMs?: number;
   allowManagedCodexInstall?: boolean;
+  yes?: boolean;
 }
 
 export interface DependencyScopeOverride {

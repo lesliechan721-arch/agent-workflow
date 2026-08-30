@@ -1071,6 +1071,7 @@ export function createTuiControllerDependencies(
       });
     }
     let dependencyPlan: DependencyOperationPlan | undefined;
+    let codexReconcilePlans: OperationEvidence['codexReconcilePlans'];
     await preparation?.reporter.emit('catalog');
     const offlineCleanupTarget = offlineCleanupReason && intent.kind === 'pluginWrite'
       ? status.payload.targets.find((target) => target.pluginId === intent.pluginId
@@ -1175,6 +1176,7 @@ export function createTuiControllerDependencies(
         } : {}),
       });
       signal?.throwIfAborted();
+      codexReconcilePlans = preview?.codexReconcilePlans;
       if (hasDeclaredDependencies
         && (intent.action === 'install'
           || intent.action === 'upgrade'
@@ -1233,6 +1235,7 @@ export function createTuiControllerDependencies(
       source: selected.source,
       ...(offlineCleanup ? { offlineCleanup } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
+      ...(codexReconcilePlans ? { codexReconcilePlans } : {}),
       ...(codexManager ? { codexManager } : {}),
       targetFingerprint: statusTargetFingerprint(
         evidenceTargets,
@@ -1730,6 +1733,9 @@ export function createTuiControllerDependencies(
               inventoryCatalogSourceReferences: operationInventory,
               ...(currentEvidence.dependencyPlan
                 ? { expectedOperationDependencyPlan: currentEvidence.dependencyPlan }
+                : {}),
+              ...(currentEvidence.codexReconcilePlans
+                ? { expectedCodexReconcilePlans: currentEvidence.codexReconcilePlans }
                 : {}),
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
               ...(catalogOperation ? {

@@ -12,6 +12,7 @@ import type {
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
+import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 import type {
   RebuildProgressFeed,
   RebuildProgressSnapshot,
@@ -141,6 +142,7 @@ export interface OperationEvidence {
   targetFingerprint?: string;
   offlineCleanup?: OfflineCleanupTargetEvidence;
   dependencyPlan?: DependencyOperationPlan;
+  codexReconcilePlans?: CodexReconcilePlan[];
   codexManager?: {
     state: 'system' | 'cached' | 'requires-install';
     packageName: '@openai/codex';

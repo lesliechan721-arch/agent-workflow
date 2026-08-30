@@ -16,7 +16,7 @@ function capture() {
 }
 
 describe('CLI entry v4', () => {
-  it('publishes the five write commands plus status and config', async () => {
+  it('publishes the write commands plus sync, status, and config', async () => {
     const output = capture();
     expect(await runCli(['--help'], { io: output.io })).toBe(0);
     for (const command of [
@@ -25,6 +25,7 @@ describe('CLI entry v4', () => {
       'reinstall',
       'uninstall',
       'cleanup',
+      'sync',
       'status',
       'config',
       'plugin',
@@ -33,6 +34,34 @@ describe('CLI entry v4', () => {
     ]) {
       expect(output.stdout()).toContain(command);
     }
+  });
+
+  it('publishes Codex sync selection and stable non-interactive failure', async () => {
+    const help = capture();
+    expect(await runCli(['sync', '--help'], { io: help.io })).toBe(0);
+    expect(help.stdout()).toContain('--all');
+    expect(help.stdout()).toContain('--yes');
+    expect(help.stdout()).toContain('--allow-managed-codex-install');
+
+    const conflict = capture();
+    expect(await runCli([
+      'sync', 'official/demo', '--all', '--platform', 'codex', '--scope', 'project', '--json',
+    ], { interactive: false, io: conflict.io })).toBe(1);
+    expect(JSON.parse(conflict.stdout())).toMatchObject({
+      ok: false,
+      command: 'sync',
+      errors: [{ code: 'syncSelectorConflict' }],
+    });
+
+    const missing = capture();
+    expect(await runCli([
+      'sync', '--platform', 'codex', '--scope', 'project', '--json',
+    ], { interactive: false, io: missing.io })).toBe(1);
+    expect(JSON.parse(missing.stdout())).toMatchObject({
+      ok: false,
+      command: 'sync',
+      errors: [{ code: 'syncSelectionRequired' }],
+    });
   });
 
   it.each(['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'])(

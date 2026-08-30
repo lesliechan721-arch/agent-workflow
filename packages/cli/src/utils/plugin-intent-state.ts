@@ -250,6 +250,18 @@ export function upsertPluginIntentRoot(
   });
 }
 
+export function mergePluginIntentRootPlatforms(
+  state: PluginIntentState,
+  root: PluginIntentRoot,
+): PluginIntentState {
+  const pluginId = parseCanonicalPluginId(root.pluginId, 'root.pluginId');
+  const current = state.roots.find((entry) => entry.pluginId === pluginId);
+  return upsertPluginIntentRoot(state, {
+    pluginId,
+    platforms: [...(current?.platforms ?? []), ...root.platforms],
+  });
+}
+
 export function addPluginIntentRoot(
   state: PluginIntentState,
   root: PluginIntentRoot,
@@ -270,6 +282,21 @@ export function removePluginIntentRoot(
     ...state,
     roots: state.roots.filter((entry) => entry.pluginId !== canonicalPluginId),
   });
+}
+
+export function removePluginIntentRootPlatforms(
+  state: PluginIntentState,
+  root: PluginIntentRoot,
+): PluginIntentState {
+  const pluginId = parseCanonicalPluginId(root.pluginId, 'root.pluginId');
+  const removed = new Set(root.platforms.map((platform) =>
+    parsePlatform(platform, 'root.platforms[]')));
+  const current = state.roots.find((entry) => entry.pluginId === pluginId);
+  if (!current) return state;
+  const platforms = current.platforms.filter((platform) => !removed.has(platform));
+  return platforms.length === 0
+    ? removePluginIntentRoot(state, pluginId)
+    : upsertPluginIntentRoot(state, { pluginId, platforms });
 }
 
 export function widenPluginIntentManagedCodexOwnership(

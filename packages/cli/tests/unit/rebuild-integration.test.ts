@@ -18,7 +18,11 @@ import {
 } from '../../src/commands/rebuild-operations.js';
 import { createCommandExecutionContext as createBaseCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { CatalogResolution, CodexSharedHookGroup, PluginMeta } from '../../src/types.js';
-import { SYSTEM_CODEX_MANAGER, type NativeCliRunner } from '../../src/utils/native-cli.js';
+import {
+  SYSTEM_CODEX_MANAGER,
+  type NativeCliInvocation,
+  type NativeCliRunner,
+} from '../../src/utils/native-cli.js';
 import {
   OWNED_TEXT_HEADER_PREFIX,
   inspectOwnedComponents,
@@ -2015,7 +2019,7 @@ describe('rebuild adapter integration', () => {
     expect(await fs.readFile(outside, 'utf8')).toBe('foreign\n');
   });
 
-  it('materializes static Codex project skills with owner markers and rejects apps', async () => {
+  it('routes static Codex project skills and apps through shared native only', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const pluginRoot = path.join(isolation.layout.rootDir, 'project-skill-plugin');
@@ -2066,19 +2070,11 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
       includeHistoricalLifecycleArtifacts: false,
     });
-    const result = await executeRebuildOperation({
-      command: 'install',
-      target,
-      driver: integration.driver,
-      activeStore,
-    });
     const skillRoot = path.join(cwd, '.agents', 'skills', 'repo-check');
-    expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).toContain('Repo check');
-    expect(await readSkillOwnerMarker({
-      skillRoot,
-      allowedRoot: path.dirname(skillRoot),
-    })).toMatchObject({ plugin: 'project-skill-plugin', artifactKey: 'repo-check' });
+    expect(target.requiresNative).toBe(true);
+    expect(target.writeNativeRequired).toBe(true);
+    expect(target.artifacts.some((artifact) => artifact.kind === 'skill')).toBe(false);
+    expect(await fs.pathExists(skillRoot)).toBe(false);
 
     await expect(integration.buildTarget({
       plugin: {
@@ -2091,7 +2087,88 @@ describe('rebuild adapter integration', () => {
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
       includeHistoricalLifecycleArtifacts: false,
-    })).rejects.toThrow('不支持 apps');
+    })).resolves.toMatchObject({ requiresNative: true, writeNativeRequired: true });
+  });
+
+  it.each([
+    ['effective', true],
+    ['not effective', false],
+  ] as const)('postchecks exact and neutral Codex project activation when trust is %s', async (_label, exactEnabled) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const pluginName = 'project-native-postcheck';
+    const pluginRoot = path.join(isolation.layout.rootDir, pluginName);
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'check', 'SKILL.md'), '# Check\n');
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, pluginName);
+    plugin.rootDir = pluginRoot;
+    plugin.manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    plugin.manifest.version = '1.0.0';
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    plugin.manifest.skills = './skills';
+    await fs.outputJson(plugin.manifestPath, plugin.manifest);
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+      `[plugins."${pluginName}@aw"]`,
+      'enabled = true',
+      '',
+    ].join('\n'));
+    await fs.outputJson(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'cache',
+      'aw',
+      pluginName,
+      plugin.manifest.version,
+      '.codex-plugin',
+      'plugin.json',
+    ), { name: pluginName, version: plugin.manifest.version, skills: './skills' });
+    const calls: NativeCliInvocation[] = [];
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async (invocation) => {
+          calls.push(invocation);
+          const exact = await fs.realpath(invocation.cwd!)
+            === await fs.realpath(isolation.layout.fixtureCwd);
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              installed: [{
+                pluginId: `${pluginName}@aw`,
+                installed: true,
+                enabled: exact ? exactEnabled : false,
+                version: plugin.manifest.version,
+              }],
+              available: [],
+            }),
+            stderr: '',
+          };
+        },
+      }),
+    });
+    const target = await integration.buildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    expect(target).toMatchObject({ requiresNative: true, writeNativeRequired: false });
+    const result = await executeRebuildOperation({
+      command: 'install', target, driver: integration.driver, activeStore,
+    });
+    expect(result.status, JSON.stringify(result.failures)).toBe(exactEnabled ? 'succeeded' : 'failed');
+    if (!exactEnabled) {
+      expect(result.failures).toEqual(expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringContaining('codexProjectConfigNotEffective') }),
+      ]));
+    }
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
   });
 
   it.each([
@@ -2193,7 +2270,7 @@ describe('rebuild adapter integration', () => {
   });
 
   it.each(['codex-enhance'])(
-    'installs %s dynamic user Skills through the active manifest and real cache copy',
+    'installs %s dynamic user Skills as AW-owned Codex extensions',
     async (pluginName) => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
@@ -2277,18 +2354,12 @@ describe('rebuild adapter integration', () => {
       const skillArtifact = target.artifacts.find((artifact) =>
         artifact.target === 'codex.skill' && artifact.state !== 'disabled');
       expect(skillArtifact?.artifactKey).toBeTruthy();
-      expect(await fs.pathExists(path.join(
+      expect(skillArtifact!.path).toBe(path.join(
         isolation.layout.codexHomeDir,
-        'plugins',
-        'cache',
-        'aw',
-        pluginName,
-        plugin.manifest.version,
-        'codex',
         'skills',
         skillArtifact!.artifactKey!,
-        'SKILL.md',
-      ))).toBe(true);
+      ));
+      expect(await fs.pathExists(path.join(skillArtifact!.path, 'SKILL.md'))).toBe(true);
     },
   );
 
@@ -2420,7 +2491,7 @@ describe('rebuild adapter integration', () => {
     })).rejects.toThrow('roleNameConflict');
   });
 
-  it('fails Codex project preflight on unreadable config and external user ownership', async () => {
+  it('limits Codex project user-config preflight to shared native surfaces', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const plugin = {
@@ -2454,15 +2525,16 @@ describe('rebuild adapter integration', () => {
       includeHistoricalLifecycleArtifacts: false,
     });
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), '[broken');
-    await expect(build()).rejects.toThrow('codexProjectUserConfigUnreadable');
+    await expect(build()).resolves.toMatchObject({ requiresNative: false });
 
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
       '[plugins."safety-plugin@external"]',
       'enabled = true',
       '',
     ].join('\n'));
-    await expect(build()).rejects.toThrow('externalOwnershipPresent');
+    await expect(build()).resolves.toMatchObject({ requiresNative: false });
 
+    plugin.manifest.apps = './apps.json';
     plugin.marketplaceName = 'aw-team';
     plugin.sourceId = 'team';
     plugin.sourceIdentity = `sha256:${'1'.repeat(64)}`;
@@ -2538,7 +2610,7 @@ describe('rebuild adapter integration', () => {
         env: isolation.env,
         nativeCliRunner: async () => { throw new Error('project must not call native CLI'); },
       }),
-    })).resolves.toMatchObject({ inspection: { state: 'absent' } });
+    })).resolves.toMatchObject({ inspection: { state: 'error' } });
 
     const userRolePath = path.join(isolation.layout.codexHomeDir, 'agents', 'foreign.toml');
     await fs.outputFile(userRolePath, 'name = "user-role"\n');
@@ -2897,10 +2969,10 @@ describe('rebuild adapter integration', () => {
     });
     expect(result.status).toBe('failed');
     expect(result.cleanupAttempted).toBe(true);
-    expect(calls.filter((call) => call === `codex plugin remove ${plugin.manifest.name}@aw`)).toHaveLength(1);
-    expect(calls.filter((call) => call === 'codex plugin marketplace remove aw')).toHaveLength(1);
-    expect(installed).toBe(false);
-    expect(marketplace).toBe(false);
+    expect(calls.filter((call) => call === `codex plugin remove ${plugin.manifest.name}@aw`)).toHaveLength(0);
+    expect(calls.filter((call) => call === 'codex plugin marketplace remove aw')).toHaveLength(0);
+    expect(installed).toBe(true);
+    expect(marketplace).toBe(true);
   });
 
   it('reports Codex native residue when list is empty and preserves the marketplace', async () => {
@@ -2966,14 +3038,9 @@ describe('rebuild adapter integration', () => {
     const result = await executeRebuildOperation({
       command: 'cleanup', target, driver: integration.driver, activeStore,
     });
-    expect(result.status).toBe('failed');
-    expect(result.residual).toEqual(expect.arrayContaining([`${pluginName}@aw`]));
-    expect(result.failures).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        message: expect.stringContaining('Retry cleanup or uninstall, upgrade AW'),
-      }),
-    ]));
-    expect(calls).toContain(`codex plugin remove ${pluginName}@aw`);
+    expect(result.status).toBe('succeeded');
+    expect(result.residual).toEqual([]);
+    expect(calls).not.toContain(`codex plugin remove ${pluginName}@aw`);
     expect(calls).not.toContain('codex plugin marketplace remove aw');
     expect(await fs.pathExists(cacheRoot)).toBe(true);
   });
@@ -3011,8 +3078,8 @@ describe('rebuild adapter integration', () => {
     const result = await executeRebuildOperation({
       command: 'cleanup', target, driver: integration.driver, activeStore,
     });
-    expect(result.status).toBe('failed');
-    expect(result.residual).toContain(`${pluginName}@aw`);
+    expect(result.status).toBe('succeeded');
+    expect(result.residual).toEqual([]);
     expect(calls).not.toContain(`codex plugin remove ${pluginName}@aw`);
   });
 
@@ -3083,7 +3150,7 @@ describe('rebuild adapter integration', () => {
       command: 'cleanup', target, driver: integration.driver, activeStore,
     });
     expect(second.status, JSON.stringify(second.failures)).toBe('succeeded');
-    expect(calls).toContain('codex plugin marketplace remove aw');
+    expect(calls).not.toContain('codex plugin marketplace remove aw');
   });
 
   it('reinstalls Codex plugin A while same-scope plugin B keeps the marketplace', async () => {
@@ -3232,7 +3299,7 @@ describe('rebuild adapter integration', () => {
     expect(await fs.pathExists(skillRoot)).toBe(false);
   });
 
-  it('materializes a generated slash command as a Codex project skill', async () => {
+  it('does not materialize unsupported slash commands into a Codex project', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const fixtureRoot = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
@@ -3273,14 +3340,12 @@ describe('rebuild adapter integration', () => {
       'SKILL.md',
     );
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(await fs.readFile(generatedSkill, 'utf8')).toContain('# Review');
-    expect(await readSkillOwnerMarker({
-      skillRoot: path.dirname(generatedSkill),
-      allowedRoot: path.dirname(path.dirname(generatedSkill)),
-    })).toMatchObject({ plugin: 'slash-commands-only' });
+    expect(target.requiresNative).toBe(false);
+    expect(target.artifacts.some((artifact) => artifact.kind === 'skill')).toBe(false);
+    expect(await fs.pathExists(generatedSkill)).toBe(false);
   });
 
-  it('writes the Codex project instruction, MCP, hook, permission, and agent surfaces', async () => {
+  it('writes AW-only Codex project extensions without native MCP or hook payloads', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const fixturesRoot = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
@@ -3303,26 +3368,22 @@ describe('rebuild adapter integration', () => {
         catalog: { rootDir: fixturesRoot, source: 'local' } as CatalogResolution,
         includeHistoricalLifecycleArtifacts: false,
       });
-      const result = await executeRebuildOperation({
-        command: 'install',
-        target,
-        driver: integration.driver,
-        activeStore,
-      });
-      expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
+      expect(target.artifacts.some((artifact) => artifact.kind === 'mcpServer')).toBe(false);
+      expect(target.artifacts.some((artifact) => artifact.kind === 'hook')).toBe(false);
+      await integration.driver.writeArtifacts(target);
     }
     const config = await fs.readFile(
       path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
       'utf8',
     );
     expect(config).toContain('extensions-only');
-    expect(config).toContain('mcp_servers');
-    expect(await fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'hooks.json'))).toBe(true);
+    expect(config).not.toContain('mcp_servers');
+    expect(await fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'hooks.json'))).toBe(false);
     expect((await fs.readdir(path.join(isolation.layout.fixtureCwd, '.codex', 'rules'))).length).toBeGreaterThan(0);
     expect((await fs.readdir(path.join(isolation.layout.fixtureCwd, '.codex', 'agents'))).length).toBeGreaterThan(0);
   });
 
-  it('rejects a hooks target symlink swap without writing the external file', async () => {
+  it('does not create a project hook write plan for native Codex hooks', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const plugin = await createCodexSharedConfigPlugin({
@@ -3342,37 +3403,13 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
       includeHistoricalLifecycleArtifacts: false,
     });
-    const hooksPath = resolveCodexPaths(cwd, 'project', isolation.env).hooksPath;
-    const externalPath = path.join(isolation.layout.rootDir, 'external-hooks.json');
-    await fs.outputJson(hooksPath, { hooks: {} });
-    await fs.outputFile(externalPath, '{"external":true}\n');
-    const identity = target.artifacts.find((artifact) => artifact.kind === 'hook')?.hookGroups?.[0];
-    if (!identity) throw new Error('Expected hook identity.');
-    const rendered = renderTrackedHookGroupIdentity(identity);
-    const group: CodexSharedHookGroup = {
-      event: rendered.event,
-      ...(rendered.matcher === undefined ? {} : { matcher: rendered.matcher }),
-      hooks: rendered.hooks as unknown as Record<string, unknown>[],
-      rawGroup: {
-        ...(rendered.matcher === undefined ? {} : { matcher: rendered.matcher }),
-        hooks: rendered.hooks as unknown as Record<string, unknown>[],
-      },
-    };
-
-    await expect(applyCodexHookGroupsTransactionFile(
-      hooksPath,
-      (parsed) => [...parsed.rawGroups, group],
-      { beforeCommit: async () => {
-        await fs.unlink(hooksPath);
-        await fs.symlink(externalPath, hooksPath);
-      } },
-    )).rejects.toThrow('symbolic link');
-    await expect(fs.readFile(externalPath, 'utf8')).resolves.toBe('{"external":true}\n');
-    expect((await fs.readdir(path.dirname(hooksPath))).filter((entry) => entry.includes('.tmp-')))
-      .toEqual([]);
+    expect(target.requiresNative).toBe(true);
+    expect(target.artifacts.some((artifact) => artifact.kind === 'hook')).toBe(false);
+    await expect(fs.pathExists(resolveCodexPaths(cwd, 'project', isolation.env).hooksPath))
+      .resolves.toBe(false);
   });
 
-  it('keeps same-name shared config owners namespaced and rejects their indivisible MCP collision', async () => {
+  it('keeps same-name shared native owners isolated by marketplace identity', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const integration = createRebuildIntegration({
@@ -3411,19 +3448,19 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: plugin.rootDir, source: 'local' },
       includeHistoricalLifecycleArtifacts: false,
     })));
-    const mcpLabels = targets.map((target) => target.ownedComponents.find((component) =>
-      component.kind === 'shared-config' && component.label.includes('mcp_servers.shared-server'))?.label);
-    expect(mcpLabels[0]).toBe(mcpLabels[1]);
+    expect(targets.every((target) =>
+      target.artifacts.every((artifact) => artifact.kind !== 'mcpServer'))).toBe(true);
     const collisions = preflightDesiredArtifactCollisions(targets.map((target) => ({
       pluginId: target.identity.pluginId!,
       targetKey: 'codex/project',
       artifactKeys: target.ownedComponents.map((component) =>
-        'path' in component ? path.resolve(component.path) : `shared:${component.label}`),
+        'path' in component
+          ? path.resolve(component.path)
+          : component.kind === 'native-plugin'
+            ? `native:${component.pluginId}`
+            : `shared:${component.label}`),
     })));
-    expect(collisions).toEqual([expect.objectContaining({
-      pluginIds: ['first/same-shared', 'second/same-shared'],
-      artifactKey: expect.stringContaining('mcp_servers.shared-server'),
-    })]);
+    expect(collisions).toEqual([]);
     for (const plugin of plugins) delete plugin.manifest.mcpServers;
     const instructionTargets = await Promise.all(plugins.map((plugin) => integration.buildTarget({
       sourceId: plugin.sourceId,
@@ -3670,7 +3707,7 @@ describe('rebuild adapter integration', () => {
   });
 
   it.each(['upgrade', 'reinstall'] as const)(
-    'cleans the last v1 MCP and hook capability when v2 removes the class during %s',
+    'does not project native MCP and hook capability during %s planning',
     async (command) => {
       const isolation = getCurrentSourceTestIsolation();
       const cwd = await fs.realpath(isolation.layout.fixtureCwd);
@@ -3696,69 +3733,16 @@ describe('rebuild adapter integration', () => {
       const catalog = { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution;
       const v1 = await integration.buildTarget({
         plugin: base, platform: 'codex', scope: 'project', cwd,
-        command: 'install', catalog, includeHistoricalLifecycleArtifacts: false,
-      });
-      const installed = await executeRebuildOperation({
-        command: 'install', target: v1, driver: integration.driver, activeStore,
-      });
-      expect(installed.status, JSON.stringify(installed.failures)).toBe('succeeded');
-
-      const v2: PluginMeta = {
-        ...base,
-        manifest: {
-          ...base.manifest,
-          version: '2.0.0',
-          mcpServers: undefined,
-          extensions: undefined,
-        },
-      };
-      await fs.outputJson(v2.manifestPath, v2.manifest);
-      await fs.remove(path.join(v2.rootDir, '.mcp.json'));
-      const statusCatalogRoot = await createSyntheticCatalog({
-        root: isolation.layout.rootDir,
-        pluginRoots: [v2.rootDir],
-      });
-      const sourceSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
-      await replaceCatalogSourcesConfig({
-        config: {
-          schemaVersion: 2,
-          sources: [{ id: 'local', type: 'path', primary: true, path: statusCatalogRoot }],
-        },
-        expectedDigest: sourceSnapshot.digest,
-        env: isolation.env,
-      });
-      const beforeStatus = await statusCommandV5({
-        cwd, env: isolation.env, platform: 'codex', scope: 'project', json: true,
-      });
-      expect(beforeStatus.payload.targets).toEqual([]);
-      expect(beforeStatus.payload.errors).toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: 'legacyStateUnsupported' }),
-      ]));
-      const next = await integration.buildTarget({
-        plugin: v2, platform: 'codex', scope: 'project', cwd,
         command, catalog, includeHistoricalLifecycleArtifacts: false,
       });
-      const result = await executeRebuildOperation({
-        command, target: next, driver: integration.driver, activeStore,
-      });
-      expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
       const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
-      const config = await fs.readFile(codexPaths.configTomlPath, 'utf8').catch(() => '');
-      expect(config).not.toContain('legacy');
+      expect(v1.requiresNative).toBe(true);
+      expect(v1.artifacts.some((artifact) => artifact.kind === 'mcpServer')).toBe(false);
+      expect(v1.artifacts.some((artifact) => artifact.kind === 'hook')).toBe(false);
+      await integration.driver.writeArtifacts(v1);
+      const config = await fs.readFile(codexPaths.configTomlPath, 'utf8');
+      expect(config).not.toContain('mcp_servers');
       await expect(fs.pathExists(codexPaths.hooksPath)).resolves.toBe(false);
-      const status = await inspectRebuildTarget({
-        plugin: v2, platform: 'codex', scope: 'project', cwd, catalog,
-        context: createCommandExecutionContext({
-          env: isolation.env,
-          nativeCliRunner: async () => { throw new Error('status must not call native CLI'); },
-        }),
-      });
-      expect(status.inspection.state).toBe('absent');
-      const afterStatus = await statusCommandV5({
-        cwd, env: isolation.env, platform: 'codex', scope: 'project', json: true,
-      });
-      expect(afterStatus.payload.targets).toEqual([]);
-      expect(afterStatus.payload.errors).toEqual([]);
     },
   );
 
@@ -3797,13 +3781,9 @@ describe('rebuild adapter integration', () => {
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
         includeHistoricalLifecycleArtifacts: false,
       });
-      const result = await executeRebuildOperation({
-        command: 'install',
-        target,
-        driver: integration.driver,
-        activeStore,
-      });
-      expect(result.status, `${name}: ${JSON.stringify(result.failures)}`).toBe('succeeded');
+      expect(target.artifacts.some((artifact) =>
+        artifact.kind === 'mcpServer' || artifact.kind === 'hook')).toBe(false);
+      await integration.driver.writeArtifacts(target);
       if (name === 'codex-enhance') {
         const repeatTarget = await integration.buildTarget({
           sourceId: plugin.sourceId,
@@ -3817,28 +3797,14 @@ describe('rebuild adapter integration', () => {
           catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
           includeHistoricalLifecycleArtifacts: true,
         });
-        const repeated = await executeRebuildOperation({
-          command: 'upgrade',
-          target: repeatTarget,
-          driver: integration.driver,
-          activeStore,
-        });
-        expect(repeated.status, JSON.stringify(repeated.failures)).toBe('succeeded');
+        await integration.driver.writeArtifacts(repeatTarget);
       }
     }
 
     const cwd = isolation.layout.fixtureCwd;
     const skillsRoot = path.join(cwd, '.agents', 'skills');
     await expect(fs.pathExists(path.join(skillsRoot, 'git-commit', 'SKILL.md')))
-      .resolves.toBe(true);
-    await expect(readSkillOwnerMarker({
-      skillRoot: path.join(skillsRoot, 'git-commit'),
-      allowedRoot: skillsRoot,
-    })).resolves.toMatchObject({
-      schemaVersion: 2,
-      sourceId: 'official',
-      plugin: 'git-toolkit',
-    });
+      .resolves.toBe(false);
     const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
     await expect(fs.pathExists(path.join(skillsRoot, 'codex-subagent-guide', 'SKILL.md')))
       .resolves.toBe(true);
@@ -3847,7 +3813,7 @@ describe('rebuild adapter integration', () => {
     await expect(fs.pathExists(path.join(skillsRoot, 'requirements-clarifier')))
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillsRoot, 'decision-grill', 'SKILL.md')))
-      .resolves.toBe(true);
+      .resolves.toBe(false);
     await expect(fs.pathExists(path.join(
       codexPaths.agentsDir,
       'aw-codex-enhance-codex-subagent-simple.toml',
@@ -4295,6 +4261,12 @@ describe('rebuild adapter integration', () => {
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     const requiredSkills = reinstallTarget.artifacts.filter((artifact) =>
       artifact.kind === 'skill' && artifact.state !== 'disabled' && artifact.artifactKey);
+    if (_kind === 'slash') {
+      expect(installedTarget.requiresNative).toBe(false);
+      expect(reinstallTarget.requiresNative).toBe(false);
+      expect(await fs.pathExists(cacheRoot)).toBe(false);
+      return;
+    }
     expect(requiredSkills.length).toBeGreaterThan(0);
     const cacheManifest = await fs.readJson(path.join(cacheRoot, '.codex-plugin', 'plugin.json'));
     const skillsRoot = cacheManifest.skills.replace(/^\.\//u, '');

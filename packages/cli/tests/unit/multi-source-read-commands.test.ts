@@ -360,29 +360,10 @@ describe('multi-source read commands', () => {
       targets: Array<{ components: Array<{ error?: { message: string } }> }>;
     };
     expect(brokenPayload).toMatchObject({
-      targets: [expect.objectContaining({
-        state: 'absent',
-        errors: expect.arrayContaining([expect.objectContaining({
-          code: 'artifactCollision',
-          severity: 'blocking',
-          collision: expect.objectContaining({
-            reason: 'unownedContent',
-            artifactKind: 'skill-directory',
-            artifactKey: 'review',
-            expectedOwner: 'team/demo',
-          }),
-        })]),
-        components: expect.arrayContaining([expect.objectContaining({
-          key: 'review',
-          state: 'foreign',
-          error: expect.objectContaining({
-            code: 'artifactCollision',
-            severity: 'blocking',
-            message: expect.any(String),
-          }),
-        })]),
-      })],
+      targets: [expect.objectContaining({ state: 'absent', errors: [] })],
     });
+    expect(brokenPayload.targets[0]!.components)
+      .not.toContainEqual(expect.objectContaining({ key: 'review' }));
     expect(await statusCommandV5({
       plugins: ['team/demo'],
       cwd: isolation.layout.fixtureCwd,
@@ -403,8 +384,8 @@ describe('multi-source read commands', () => {
       io: collisionHuman.io,
       interactive: false,
     });
-    expect(collisionHuman.readStdout()).toContain('component review: foreign');
-    expect(collisionHuman.readStdout()).toContain('请移除或迁移冲突内容后重试');
+    expect(collisionHuman.readStdout()).not.toContain('component review');
+    expect(collisionHuman.readStdout()).not.toContain('请移除或迁移冲突内容后重试');
     expect(collisionHuman.readStdout()).not.toContain(isolation.layout.rootDir);
   });
 
@@ -460,19 +441,14 @@ describe('multi-source read commands', () => {
       schemaVersion: 5,
       targets: [expect.objectContaining({
         state: 'partial',
-        errors: expect.arrayContaining([expect.objectContaining({
-          code: 'artifactCollision',
-          collision: expect.objectContaining({
-            reason: 'unownedContent', artifactKind: 'skill-directory', artifactKey: 'collision',
-            expectedOwner: 'team/demo',
-          }),
-        })]),
+        errors: [],
         components: expect.arrayContaining([
           expect.objectContaining({ key: 'owned', state: 'partial' }),
-          expect.objectContaining({ key: 'collision', state: 'foreign' }),
         ]),
       })],
     });
+    expect(result.payload.targets[0]!.components)
+      .not.toContainEqual(expect.objectContaining({ key: 'collision' }));
     expect(JSON.stringify(result.payload.targets[0]!.errors)).not.toContain(isolation.layout.rootDir);
   });
 
@@ -1021,18 +997,21 @@ describe('multi-source read commands', () => {
         io: captured.io,
         interactive: false,
       })).toBe(1);
-      expect(JSON.parse(captured.readStdout())).toMatchObject({
-        schemaVersion: 5,
-        targets: expect.arrayContaining([
-          expect.objectContaining({
-            pluginId: 'good/demo',
-            state: 'error',
-            errors: expect.arrayContaining([
-              expect.objectContaining({ code: expect.any(String) }),
-            ]),
-          }),
-        ]),
-      });
+      const payload = JSON.parse(captured.readStdout());
+      expect(payload).toMatchObject({ schemaVersion: 5 });
+      expect(payload.targets).toEqual(expect.arrayContaining([
+        platform === 'codex'
+          ? expect.objectContaining({
+              pluginId: 'good/demo', platform: 'codex', state: 'absent', errors: [],
+            })
+          : expect.objectContaining({
+              pluginId: 'good/demo',
+              state: 'error',
+              errors: expect.arrayContaining([
+                expect.objectContaining({ code: expect.any(String) }),
+              ]),
+            }),
+      ]));
       expect(captured.readStdout().trim().split('\n').filter(Boolean).length).toBeGreaterThan(0);
       expect(captured.readStderr()).toBe('');
     },

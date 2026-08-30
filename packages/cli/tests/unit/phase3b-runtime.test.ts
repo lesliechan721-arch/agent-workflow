@@ -597,7 +597,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }))).toBe(true);
   });
 
-  it('cleans a lost-source native consumer from live inventory', async () => {
+  it('preserves a lost-source shared native consumer for explicit reconciliation', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
     await Promise.all([
@@ -672,9 +672,9 @@ describe('phase 3B namespaced runtime stores', () => {
       overallState: 'succeeded',
       targetResults: [expect.objectContaining({ state: 'completed' })],
     });
-    expect(calls).toContain('codex plugin remove demo@aw');
-    await expect(fs.pathExists(cacheRoot)).resolves.toBe(false);
-    await expect(fs.pathExists(installedRoot)).resolves.toBe(false);
+    expect(calls).not.toContain('codex plugin remove demo@aw');
+    await expect(fs.pathExists(cacheRoot)).resolves.toBe(true);
+    await expect(fs.pathExists(installedRoot)).resolves.toBe(true);
   });
 
   it('keeps an existing marketplace root when its strict identity is missing', async () => {
@@ -2081,7 +2081,7 @@ describe('phase 3B namespaced runtime stores', () => {
       .not.toContainEqual(expect.objectContaining({ platform: 'codex' }));
   });
 
-  it('ignores invalid Codex user inventory while retaining canonical project-owner evidence', async () => {
+  it('fails closed on invalid shared Codex inventory for a native project target', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-codex-inventory-source');
     await fs.outputFile(
@@ -2133,15 +2133,20 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       io: output.io,
       interactive: false,
-    })).toBe(0);
+    })).toBe(1);
     const stdout = output.readStdout();
     const payload = JSON.parse(stdout) as {
-      targets: Array<{ pluginId: string }>;
+      targets: Array<{ pluginId: string; state: string; errors: Array<{ code: string }> }>;
       errors: Array<{ code: string; message: string }>;
     };
     expect(stdout.trim().split('\n')).toHaveLength(1);
-    expect(payload.targets).toContainEqual(expect.objectContaining({ pluginId: 'team/demo' }));
-    expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'nativeStateUnreadable' }));
+    expect(payload.targets).toContainEqual(expect.objectContaining({
+      pluginId: 'team/demo',
+      state: 'error',
+      errors: expect.arrayContaining([expect.objectContaining({
+        code: expect.stringContaining('Unable to parse Codex config TOML'),
+      })]),
+    }));
     expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
     expect(payload.errors.map((error) => error.message).join('\n')).not.toContain(isolation.layout.rootDir);
     expect(output.readStderr()).toBe('');
@@ -2205,17 +2210,11 @@ describe('phase 3B namespaced runtime stores', () => {
     async (command) => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.layout.fixtureCwd, `revoked-${command}-source`);
-      await fs.outputFile(
-        path.join(sourceRoot, 'plugins', 'demo', 'skills', 'managed', 'SKILL.md'),
-        '---\nname: managed\ndescription: managed\n---\n',
-      );
-      await fs.outputFile(
-        path.join(sourceRoot, 'plugins', 'demo', 'skills', 'managed', 'agents', 'openai.yaml'),
-        'policy:\n  allow_implicit_invocation: true\n',
-      );
       await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX'];
-        manifest.skills = './skills';
+        manifest.extensions = {
+          instructions: [{ name: 'policy', title: 'Policy', content: 'Keep this policy.' }],
+        };
       });
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
       await replaceCatalogSourcesConfig({

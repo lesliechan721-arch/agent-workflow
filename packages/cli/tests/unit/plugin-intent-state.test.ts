@@ -9,9 +9,11 @@ import {
   canonicalizePluginIntentState,
   convergePluginIntentManagedCodexOwnership,
   createEmptyPluginIntentState,
+  mergePluginIntentRootPlatforms,
   parsePluginIntentState,
   readPluginIntentState,
   removePluginIntentRoot,
+  removePluginIntentRootPlatforms,
   resolvePluginIntentStatePath,
   serializePluginIntentState,
   upsertPluginIntentRoot,
@@ -102,6 +104,25 @@ describe('plugin intent state v1', () => {
       platforms: ['claude'],
     }]);
     expect(removePluginIntentRoot(updated, 'official/demo').roots).toEqual([]);
+  });
+
+  it('merges and removes only selected root platforms', () => {
+    const initial = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'official/demo',
+      platforms: ['claude'],
+    });
+    const merged = mergePluginIntentRootPlatforms(initial, {
+      pluginId: 'official/demo',
+      platforms: ['codex'],
+    });
+    expect(merged.roots).toEqual([{
+      pluginId: 'official/demo',
+      platforms: ['claude', 'codex'],
+    }]);
+    expect(removePluginIntentRootPlatforms(merged, {
+      pluginId: 'official/demo',
+      platforms: ['codex'],
+    }).roots).toEqual([{ pluginId: 'official/demo', platforms: ['claude'] }]);
   });
 
   it('widens managed ownership before work and converges it after success', () => {

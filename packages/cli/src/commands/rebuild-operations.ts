@@ -54,6 +54,7 @@ export interface DesiredTarget {
   desiredOwnedComponents?: readonly OwnedComponent[];
   optionalOwnedComponents?: readonly OwnedComponent[];
   requiresNative: boolean;
+  writeNativeRequired?: boolean;
   artifacts: readonly GeneratedArtifact[];
   lifecycleSource: PluginMeta;
 }
@@ -552,13 +553,14 @@ async function cleanupTarget(
   accumulator: ResultAccumulator,
   ownedAction: 'cleanup.owned' | 'recovery.cleanup',
   events: RebuildActionEvents,
+  components: readonly OwnedComponent[] = target.ownedComponents,
 ): Promise<{ phase: RebuildFailure['phase']; message: string } | null> {
   accumulator.cleanupAttempted = true;
   try {
     const cleanup = await action(
       accumulator,
       ownedAction,
-      () => cleanupOwned(target, driver),
+      () => cleanupOwned(target, driver, components),
       events,
       (value) => value.failures[0]?.message
         ?? (value.residual.length > 0
@@ -664,7 +666,7 @@ async function materializeTarget(options: {
   let failurePhase: RebuildActionName = 'native.write';
   let prepared: PreparedLifecycleActiveSnapshot | undefined;
   try {
-    if (target.requiresNative) {
+    if (target.writeNativeRequired ?? target.requiresNative) {
       failurePhase = 'native.write';
       await action(accumulator, failurePhase, () => driver.writeNative(target), events);
     }
@@ -721,20 +723,48 @@ async function materializeTarget(options: {
         });
       }
     }
-    await cleanupTarget(target, driver, store, accumulator, 'recovery.cleanup', events);
-    if (driver.rollbackMaterialize) {
-      try {
-        await action(
-          accumulator,
-          'marketplace.rollback',
-          () => driver.rollbackMaterialize!(target),
-          events,
-        );
-      } catch (rollbackError) {
-        accumulator.failures.push({
-          phase: 'marketplace.rollback',
-          message: errorMessage(rollbackError),
-        });
+    if (target.identity.platform === 'codex') {
+      await cleanupTarget(
+        target,
+        driver,
+        store,
+        accumulator,
+        'recovery.cleanup',
+        events,
+        target.ownedComponents.filter((component) =>
+          component.kind === 'skill-directory' || component.kind === 'owned-text-file'),
+      );
+      if (driver.commitMaterialize) {
+        try {
+          await action(
+            accumulator,
+            'marketplace.commit',
+            () => driver.commitMaterialize!(target),
+            events,
+          );
+        } catch (commitError) {
+          accumulator.failures.push({
+            phase: 'marketplace.commit',
+            message: errorMessage(commitError),
+          });
+        }
+      }
+    } else {
+      await cleanupTarget(target, driver, store, accumulator, 'recovery.cleanup', events);
+      if (driver.rollbackMaterialize) {
+        try {
+          await action(
+            accumulator,
+            'marketplace.rollback',
+            () => driver.rollbackMaterialize!(target),
+            events,
+          );
+        } catch (rollbackError) {
+          accumulator.failures.push({
+            phase: 'marketplace.rollback',
+            message: errorMessage(rollbackError),
+          });
+        }
       }
     }
     return failed(command, target, accumulator, failurePhase, primary);

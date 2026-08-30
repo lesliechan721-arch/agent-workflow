@@ -25,7 +25,7 @@ export interface CliCommandResult {
 
 export interface RebuildReceiptJson {
   ok: boolean;
-  command: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
+  command: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
   receiptSchemaVersion: 4;
   dependencyPlanSchemaVersion?: number;
   requestedPluginIds?: string[];

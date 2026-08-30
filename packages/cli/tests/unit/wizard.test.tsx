@@ -222,7 +222,7 @@ describe('command wizard', () => {
     expect(frame).toContain('写入平台插件失败。');
     expect(frame).toContain('清理失败写入');
     expectTuiTextProjected(instance.frames.join('\n'));
-    expect(nativeState).toBe('absent');
+    expect(nativeState).toBe('present');
   });
 
   it('shows real progress, the latest eight messages, and keeps them on the receipt page', async () => {

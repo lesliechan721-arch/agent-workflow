@@ -31,6 +31,7 @@ import {
   uninstallWriteCommand as uninstallCommand,
   upgradeWriteCommand as upgradeCommand,
 } from './commands/write-commands.js';
+import { syncCommand } from './commands/sync-command.js';
 import type { RebuildCommandResult } from './commands/rebuild-command.js';
 import {
   formatInteractiveConsoleUnavailableMessage,
@@ -686,6 +687,7 @@ interface RawWriteWizardOptions extends RawDiagnosticsOptions {
   force?: boolean;
   allowManagedCodexInstall?: boolean;
   dependencyScope?: string[];
+  yes?: boolean;
 }
 
 export function createManagedCodexAuthorizer(
@@ -709,6 +711,7 @@ async function executeWriteCommand(
   pluginNames: string[],
   rawOptions: RawWriteWizardOptions,
   context: CliExecutionContext,
+  directCli = false,
 ): Promise<RebuildCommandResult> {
   const raw = { cwd: context.cwd, ...rawOptions };
   const commandOptions = command === 'install'
@@ -727,6 +730,7 @@ async function executeWriteCommand(
   const managedCodexAuthorizer = createManagedCodexAuthorizer(rawOptions, context);
   const runtime = {
     ...context,
+    directCli,
     ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
   switch (command) {
@@ -765,7 +769,7 @@ async function runWriteCommandAction(
   if (!missing) {
     return {
       cancelled: false,
-      result: await executeWriteCommand(command, pluginNames, rawOptions, context),
+      result: await executeWriteCommand(command, pluginNames, rawOptions, context, true),
     };
   }
   if (!isWizardAvailable(context, rawOptions)) {
@@ -2599,6 +2603,87 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   program
+    .command('sync')
+    .description('Reconcile Codex actual state from existing desired intent')
+    .argument('[plugins...]')
+    .requiredOption('-s, --scope <scope>', 'project or user')
+    .requiredOption('-p, --platform <platform>', 'codex')
+    .option('-a, --all', 'reconcile every desired plugin in the selected scope', false)
+    .option('-y, --yes', 'authorize shared native replacement or forced repair', false)
+    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-j, --json', 'print sync receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (
+      plugins: string[],
+      rawOptions: {
+        scope: string;
+        platform: string;
+        all?: boolean;
+        yes?: boolean;
+        allowManagedCodexInstall?: boolean;
+        json?: boolean;
+      } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('sync', rawOptions);
+      try {
+        const normalized = normalizeInstallCommandOptions({
+          cwd: context.cwd,
+          scope: rawOptions.scope,
+          platform: rawOptions.platform,
+          allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
+        });
+        if (normalized.platform !== 'codex') {
+          throw new Error('syncPlatformUnsupported: sync requires --platform codex.');
+        }
+        const syncPlatform = normalized.platform;
+        const result = await runActionWithContext(context, () => syncCommand(
+          plugins ?? [],
+          {
+            cwd: context.cwd,
+            env: context.env,
+            platform: syncPlatform,
+            scope: normalized.scope,
+            all: rawOptions.all,
+            yes: rawOptions.yes,
+            json: rawOptions.json,
+            interactive: context.interactive && context.isTty && !context.isCi,
+            prompt: context.prompt,
+            allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
+          },
+          context,
+        ));
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('sync', result));
+        } else {
+          for (const line of renderRebuildReceipt('sync', result)) writeLine(io.stdout, line);
+        }
+        writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
+        commandExitState.exitCode = resolveCommandReceiptExitCode(result);
+      } catch (error) {
+        const message = redactString(error instanceof Error ? error.message : String(error));
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, {
+            ok: false,
+            command: 'sync',
+            receiptSchemaVersion: 4,
+            overallState: 'failed',
+            warnings: [],
+            errors: [{
+              code: (error as { code?: string }).code ?? message.split(':', 1)[0],
+              message,
+            }],
+            targets: [],
+          });
+        } else {
+          writeLine(io.stderr, message);
+        }
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  program
     .command('install')
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
@@ -2611,6 +2696,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     )
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-y, --yes', 'authorize shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2624,6 +2710,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           dependencyScope?: string[];
           scriptTimeout?: string;
           allowManagedCodexInstall?: boolean;
+          yes?: boolean;
           json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
@@ -2689,6 +2776,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-y, --yes', 'authorize shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2702,6 +2790,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform?: string;
           scriptTimeout?: string;
           allowManagedCodexInstall?: boolean;
+          yes?: boolean;
           json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
@@ -2741,6 +2830,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         json?: boolean;
         force?: boolean;
         allowManagedCodexInstall?: boolean;
+        yes?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('cleanup', rawOptions);
@@ -2766,6 +2856,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-y, --yes', 'authorize shared Codex native replacement or forced reinstall', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2777,6 +2868,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         platform?: string;
         scriptTimeout?: string;
         allowManagedCodexInstall?: boolean;
+        yes?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
