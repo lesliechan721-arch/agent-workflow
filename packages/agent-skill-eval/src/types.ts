@@ -52,6 +52,7 @@ export interface ProcessRequest {
   args: string[]
   cwd: string
   env: NodeJS.ProcessEnv
+  stdin?: string
   timeoutMs: number
   maxBufferBytes: number
   signal?: AbortSignal

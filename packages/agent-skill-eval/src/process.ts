@@ -141,8 +141,9 @@ export async function runProviderProcess(
     const child = spawn(request.executable, request.args, {
       cwd: request.cwd,
       env: childEnvironment,
+      shell: false,
       detached: platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [request.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     })
     const handle = child.pid === undefined ? null : { pid: child.pid }
     const verifiedObservation: ProcessTreeObservation | undefined =
@@ -261,8 +262,14 @@ export async function runProviderProcess(
     const output = (buffer: Buffer, truncated: boolean): string =>
       scrubProcessMarker(buffer.toString('utf8'), marker, truncated)
 
-    child.stdout.on('data', (chunk: Buffer) => append('stdout', chunk))
-    child.stderr.on('data', (chunk: Buffer) => append('stderr', chunk))
+    child.stdout!.on('data', (chunk: Buffer) => append('stdout', chunk))
+    child.stderr!.on('data', (chunk: Buffer) => append('stderr', chunk))
+    if (request.stdin !== undefined) {
+      child.stdin?.on('error', () => {
+        // Process exit remains authoritative for a closed stdin pipe.
+      })
+      child.stdin?.end(request.stdin)
+    }
 
     let spawnHookError: unknown = null
     let spawnError: unknown = null

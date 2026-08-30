@@ -28,7 +28,12 @@
     "test:unit": "pnpm run build && vitest run tests/unit",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
   },
+  "dependencies": {
+    "fs-extra": "^11.3.0",
+    "toml-eslint-parser": "^1.0.3"
+  },
   "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
