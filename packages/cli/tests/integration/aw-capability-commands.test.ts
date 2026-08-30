@@ -193,6 +193,42 @@ describe('AW capability CLI commands', () => {
     expect(await fs.pathExists(path.join(pluginRoot, 'aw-plugin-requirements.json'))).toBe(false)
   })
 
+  it('projects an undeclared Hook AW command into effective requirements before the support gate', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-hook-requirements-'))
+    tempDirs.push(root)
+    await fs.copy(fixturePath('repo-template'), root)
+    const pluginRoot = path.join(root, 'plugins', 'git-commit')
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
+    const manifest = await fs.readJson(manifestPath)
+    manifest.extensions.hooks[0].command = 'aw catalog publish'
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 })
+
+    const requirements = await runCliEntry([
+      'plugin', 'requirements', pluginRoot, '--workspace-root', root, '--json',
+    ], { cwd: root })
+    expect(requirements.exitCode).toBe(0)
+    expect(requirements.parseJsonStdout()).toMatchObject({
+      declared: [],
+      detected: expect.arrayContaining(['aw.catalog-publication.v1']),
+      effective: expect.arrayContaining(['aw.catalog-publication.v1']),
+      unsupportedByCurrentAw: [],
+    })
+
+    manifest.requires = { aw: { capabilities: ['aw.future-feature.v3'] } }
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 })
+    const validation = await runCliEntry([
+      'plugin', 'validate', pluginRoot, '--workspace-root', root, '--json',
+    ], { cwd: root })
+    expect(validation.exitCode).toBe(1)
+    expect(validation.stderr).toBe('')
+    expect(validation.parseJsonStdout()).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringContaining('awCapabilityUnsupported'),
+      ]),
+    })
+  })
+
   it('adds and removes a declared capability without changing the plugin version', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-mutate-'))
     tempDirs.push(root)

@@ -12,6 +12,7 @@ import {
   getAwCapabilityRegistry,
   normalizeAwCapabilities,
   parseAwPluginRequirementsReceipt,
+  readPluginManifest,
   resolvePluginRequirements,
   scanPluginAwCliRequirements,
 } from '../../src/manifest.js'
@@ -40,30 +41,18 @@ function manifest(overrides: Record<string, unknown> = {}): NormalizedPluginMani
 
 describe('AW capability contracts', () => {
   it('publishes a unique fixed registry and stable normalized digest', () => {
-    const expectedRegistry = [
+    const registry = getAwCapabilityRegistry()
+    expect(registry).toEqual(AW_CAPABILITY_IDS)
+    expect(registry.every((capability) => (
+      normalizeAwCapabilities([capability])[0] === capability
+    ))).toBe(true)
+    expect(new Set(registry).size).toBe(registry.length)
+    expect(registry).toEqual(expect.arrayContaining([
       'aw.plugin-manifest.v2',
-      'aw.plugin-skills.v1',
-      'aw.plugin-build-config.v1',
-      'aw.plugin-config.v1',
-      'aw.plugin-lifecycle.v1',
-      'aw.dynamic-artifacts.v2',
-      'aw.portable-skills.v1',
-      'aw.runtime-imports.v1',
-      'aw.skill-validation.v1',
-      'aw.skill-eval.v1',
       'aw.plugin-authoring.v1',
-      'aw.catalog-context.v1',
-      'aw.catalog-authoring.v1',
-      'aw.catalog-source.v2',
-      'aw.catalog-dev-source.v1',
-      'aw.catalog-publication.v1',
-      'aw.review-publication.v1',
       'aw.catalog-snapshot.v5',
       'aw.self-check.v1',
-    ]
-    expect(AW_CAPABILITY_IDS).toEqual(expectedRegistry)
-    expect(getAwCapabilityRegistry()).toEqual(expectedRegistry)
-    expect(new Set(getAwCapabilityRegistry()).size).toBe(getAwCapabilityRegistry().length)
+    ]))
     expect(normalizeAwCapabilities([
       'aw.plugin-skills.v1', 'aw.plugin-config.v1', 'aw.plugin-skills.v1',
     ])).toEqual(['aw.plugin-config.v1', 'aw.plugin-skills.v1'])
@@ -225,6 +214,262 @@ describe('AW capability contracts', () => {
     expect(result.observations.map((entry) => entry.path)).toContain('portable/portable-one/scripts/run.bash')
     expect(result.observations).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ command: 'aw rejected fixture' }),
+    ]))
+  })
+
+  it('derives requirements from structured Hook and MCP executables', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-executables-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(
+      path.join(pluginRoot, 'hook', 'entry.mjs'),
+      'import "./helper.mjs"\n',
+    )
+    await fs.outputFile(
+      path.join(pluginRoot, 'hook', 'helper.mjs'),
+      'spawnSync("aw", ["catalog", "publish"])\n',
+    )
+    await fs.outputFile(path.join(pluginRoot, 'hook', 'run.sh'), [
+      'aw catalog source list',
+      '. ./shell-helper.sh',
+      '',
+    ].join('\n'))
+    await fs.outputFile(path.join(pluginRoot, 'hook', 'shell-helper.sh'), 'aw review show record\n')
+    await fs.outputFile(
+      path.join(pluginRoot, 'mcp', 'entry.mjs'),
+      'export { run } from "./helper.mjs"\n',
+    )
+    await fs.outputFile(
+      path.join(pluginRoot, 'mcp', 'helper.mjs'),
+      'export const run = () => spawnSync("aw", ["skill", "validate"])\n',
+    )
+    await fs.outputFile(path.join(pluginRoot, 'mcp', 'run.ps1'), [
+      'aw catalog status',
+      '. ./shell-helper.ps1',
+      '',
+    ].join('\n'))
+    await fs.outputFile(path.join(pluginRoot, 'mcp', 'shell-helper.ps1'), 'aw review list\n')
+    await fs.writeJson(path.join(pluginRoot, '.mcp.json'), {
+      mcpServers: {
+        direct: { command: 'aw', args: ['catalog', 'dev', 'status'] },
+        node: { command: 'node', args: ['./mcp/entry.mjs'] },
+        shell: { command: 'pwsh', args: ['./mcp/run.ps1'] },
+        foreign: { command: 'python', args: ['./mcp/ignored.py'] },
+      },
+    })
+
+    const result = await scanPluginAwCliRequirements({
+      pluginRoot,
+      manifest: manifest({
+        mcpServers: './.mcp.json',
+        extensions: {
+          hooks: [
+            { event: 'before_tool', command: 'aw plugin validate .' },
+            { event: 'after_tool', command: 'node ./hook/entry.mjs' },
+            { event: 'session_start', command: 'bash ./hook/run.sh' },
+            { event: 'session_start', command: 'echo foreign' },
+          ],
+          nativeHooks: {
+            claude: [{ event: 'Stop', command: 'aw self check' }],
+            codex: [{ event: 'Stop', command: 'git status' }],
+          },
+        },
+      }),
+    })
+
+    expect(result.detected).toEqual([
+      'aw.catalog-authoring.v1',
+      'aw.catalog-dev-source.v1',
+      'aw.catalog-publication.v1',
+      'aw.catalog-source.v2',
+      'aw.plugin-authoring.v1',
+      'aw.self-check.v1',
+      'aw.skill-validation.v1',
+    ])
+    expect(result.detected).not.toContain('aw.review-publication.v1')
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'aw-command-detected', path: '.agents-plugin/plugin.json',
+        command: 'aw plugin validate',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected', path: '.agents-plugin/plugin.json',
+        command: 'aw self check',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected', path: 'hook/helper.mjs',
+        command: 'aw catalog publish',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected', path: 'hook/run.sh',
+        command: 'aw catalog source',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected', path: '.mcp.json',
+        command: 'aw catalog dev',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected', path: 'mcp/helper.mjs',
+        command: 'aw skill validate',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-detected', path: 'mcp/run.ps1',
+        command: 'aw catalog status',
+      }),
+    ]))
+    expect(result.observations.map((entry) => entry.path)).not.toContain('hook/shell-helper.sh')
+    expect(result.observations.map((entry) => entry.path)).not.toContain('mcp/shell-helper.ps1')
+    expect(result.observations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: expect.stringContaining('python') }),
+      expect.objectContaining({ command: expect.stringContaining('echo') }),
+      expect.objectContaining({ command: expect.stringContaining('git') }),
+    ]))
+  })
+
+  it('scans only Hook commands that are effective on a supported platform', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-hook-overrides-'))
+    tempDirs.push(pluginRoot)
+    const result = await scanPluginAwCliRequirements({
+      pluginRoot,
+      manifest: manifest({
+        extensions: {
+          hooks: [{
+            event: 'before_tool',
+            command: 'aw catalog publish',
+            agentOverrides: {
+              claude: { command: 'aw self check' },
+              codex: null,
+            },
+          }],
+        },
+      }),
+    })
+
+    expect(result.detected).toEqual(['aw.self-check.v1'])
+    expect(result.observations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'aw catalog publish' }),
+    ]))
+  })
+
+  it('keeps a base Hook command when one supported platform still uses it', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-hook-base-'))
+    tempDirs.push(pluginRoot)
+    const result = await scanPluginAwCliRequirements({
+      pluginRoot,
+      manifest: manifest({
+        extensions: {
+          hooks: [{
+            event: 'before_tool',
+            command: 'aw catalog publish',
+            agentOverrides: { claude: null },
+          }],
+        },
+      }),
+    })
+
+    expect(result.detected).toEqual(['aw.catalog-publication.v1'])
+    expect(result.observations.filter((entry) => (
+      entry.command === 'aw catalog publish'
+    ))).toHaveLength(1)
+  })
+
+  it('keeps templated MCP JSON non-blocking after source manifest validation', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-mcp-template-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), JSON.stringify({
+      schemaVersion: 2,
+      name: 'template-mcp',
+      version: '1.0.0',
+      description: 'Template MCP.',
+      mcpServers: './.mcp.json',
+      buildConfig: {
+        templates: {
+          vars: { COMMAND: { claude: 'aw', codex: 'aw' } },
+          include: ['.mcp.json'],
+        },
+      },
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+      },
+    }))
+    await fs.outputFile(path.join(pluginRoot, '.mcp.json'), [
+      '{ "mcpServers": {',
+      '  "server": { "command": {{COMMAND}}, "args": ["self", "check"] }',
+      '} }',
+    ].join('\n'))
+
+    const plugin = await readPluginManifest(pluginRoot, { mode: 'source' })
+    const result = await resolvePluginRequirements({
+      pluginRoot,
+      manifest: plugin.manifest,
+      implementedCapabilities: [],
+    })
+
+    expect(result.detected).toEqual([])
+    expect(result.observations).toEqual([expect.objectContaining({
+      code: 'aw-command-dynamic',
+      blocking: false,
+      path: '.mcp.json',
+      message: expect.stringContaining('requires.aw.capabilities'),
+    })])
+  })
+
+  it('blocks static unknown AW executables and keeps indeterminate structured commands advisory', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-executable-edge-'))
+    tempDirs.push(pluginRoot)
+    const outside = path.join(pluginRoot, '..', `${path.basename(pluginRoot)}-outside.mjs`)
+    tempDirs.push(outside)
+    await fs.outputFile(outside, 'spawnSync("aw", ["catalog", "publish"])\n')
+    await fs.writeJson(path.join(pluginRoot, '.mcp.json'), {
+      mcpServers: {
+        unknown: { command: 'aw', args: ['future', 'command'] },
+        dynamic: { command: 'aw', args: ['$GROUP', 'status'] },
+        outside: { command: 'node', args: [`../${path.basename(outside)}`] },
+        foreign: { command: 'python', args: ['$DYNAMIC'] },
+      },
+    })
+
+    const result = await scanPluginAwCliRequirements({
+      pluginRoot,
+      manifest: manifest({
+        mcpServers: './.mcp.json',
+        extensions: {
+          hooks: [
+            { event: 'before_tool', command: 'aw future command' },
+            { event: 'after_tool', command: 'aw $GROUP status' },
+            { event: 'session_start', command: 'node "./hook.mjs"' },
+            { event: 'session_start', command: 'bash ../outside.sh' },
+            { event: 'session_start', command: 'echo $FOREIGN' },
+          ],
+        },
+      }),
+    })
+
+    expect(result.detected).toEqual([])
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'aw-command-unmapped', blocking: true,
+        path: '.agents-plugin/plugin.json', command: 'aw future command',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-unmapped', blocking: true,
+        path: '.mcp.json', command: 'aw future command',
+      }),
+      expect.objectContaining({
+        code: 'aw-command-dynamic', blocking: false,
+        path: '.agents-plugin/plugin.json',
+        message: expect.stringContaining('requires.aw.capabilities'),
+      }),
+      expect.objectContaining({
+        code: 'aw-command-dynamic', blocking: false,
+        path: '.mcp.json',
+        message: expect.stringContaining('requires.aw.capabilities'),
+      }),
+    ]))
+    expect(result.observations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: expect.stringContaining('python') }),
+      expect.objectContaining({ command: expect.stringContaining('echo') }),
     ]))
   })
 
