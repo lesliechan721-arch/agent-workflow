@@ -20,7 +20,11 @@ import {
   summarizeTriggerCase,
   type TriggerRunEvidence,
 } from '../../scripts/codex-trigger-eval.js'
-import { cleanCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js'
+import {
+  cleanCodexEvalRuntimeConfig,
+  redactCodexEvalValue,
+  type CodexEvalRuntimeConfig,
+} from '../../scripts/codex-eval-runtime-config.js'
 import { inspectCodexEvalHostIsolation } from '../../scripts/codex-eval-isolation.js'
 import type {
   AwSkillEvalConversationSuite,
@@ -268,16 +272,19 @@ async function writeProviderArtifacts(options: {
   outputDir: string
   evidence: TriggerRunEvidence | AppServerRunEvidence
   finalMessages: string[]
+  runtime: CodexEvalRuntimeConfig
 }): Promise<EvalProviderOutput['artifacts']> {
   const evidencePath = path.join(options.outputDir, 'provider-evidence.json')
   const tracePath = path.join(options.outputDir, 'provider-trace.json')
+  const evidence = redactCodexEvalValue(options.evidence, options.runtime)
+  const finalMessages = redactCodexEvalValue(options.finalMessages, options.runtime)
   await Promise.all([
-    fs.writeJson(evidencePath, options.evidence, { spaces: 2 }),
+    fs.writeJson(evidencePath, evidence, { spaces: 2 }),
     fs.writeJson(
       tracePath,
-      'eventTrace' in options.evidence
-        ? options.evidence.eventTrace
-        : options.evidence.event_trace,
+      'eventTrace' in evidence
+        ? evidence.eventTrace
+        : evidence.event_trace,
       { spaces: 2 },
     ),
   ])
@@ -285,12 +292,19 @@ async function writeProviderArtifacts(options: {
     { path: path.basename(evidencePath), role: 'report' },
     { path: path.basename(tracePath), role: 'trace' },
   ]
-  if (options.finalMessages.length > 0) {
+  if (finalMessages.length > 0) {
     const outputPath = path.join(options.outputDir, 'model-output.txt')
-    await fs.writeFile(outputPath, `${options.finalMessages.join('\n\n')}\n`)
+    await fs.writeFile(outputPath, `${finalMessages.join('\n\n')}\n`)
     artifacts.push({ path: path.basename(outputPath), role: 'output' })
   }
   return artifacts
+}
+
+function redactProviderError(error: unknown, runtime: CodexEvalRuntimeConfig): Error {
+  return new Error(redactCodexEvalValue(
+    error instanceof Error ? error.message : String(error),
+    runtime,
+  ))
 }
 
 async function runCodexTriggerProvider(
@@ -301,9 +315,9 @@ async function runCodexTriggerProvider(
   if (suiteRoot.suite.kind !== 'trigger') throw new Error('codex-trigger requires a trigger suite.')
   const suite = suiteRoot.suite as unknown as AwSkillEvalTriggerSuiteCaseContract
   const evalCase = normalizeAwSkillEvalTriggerCase(invocation.caseValue, 0, suite)
+  const runtime = cleanCodexEvalRuntimeConfig(env, env.AW_SKILL_EVAL_CODEX_MODEL)
   const subjectRoot = await materializeSubject({ invocation, skillName: suite.skill })
   try {
-    const runtime = cleanCodexEvalRuntimeConfig(env, env.AW_SKILL_EVAL_CODEX_MODEL)
     if (suite.isolation === 'strict') {
       await inspectCodexEvalHostIsolation({ sourceEnv: env })
       await runCodexEvalIsolationProbe({
@@ -334,7 +348,7 @@ async function runCodexTriggerProvider(
       sourceEnv: env,
     })
     const summary = summarizeTriggerCase(suite, evalCase, [evidence])
-    return {
+    const output: EvalProviderOutput = {
       schemaVersion: 1,
       provider: { id: 'codex-trigger', version: BUILTIN_EVAL_PROVIDER_VERSION },
       usage: usageRecord(evidence.usage),
@@ -346,8 +360,12 @@ async function runCodexTriggerProvider(
         outputDir: invocation.outputDir,
         evidence,
         finalMessages: evidence.final_message ? [evidence.final_message] : [],
+        runtime,
       }),
     }
+    return redactCodexEvalValue(output, runtime)
+  } catch (error) {
+    throw redactProviderError(error, runtime)
   } finally {
     await fs.remove(subjectRoot)
   }
@@ -362,6 +380,7 @@ async function runCodexConversationProvider(
     throw new Error('codex-conversation requires a conversation suite.')
   }
   const suite = suiteRoot.suite as unknown as AwSkillEvalConversationSuite & { skill: string }
+  const runtime = cleanCodexEvalRuntimeConfig(env, env.AW_SKILL_EVAL_CODEX_MODEL)
   const subjectRoot = await materializeSubject({ invocation, skillName: suite.skill })
   try {
     const suitePathPrepend = suite.environment?.pathPrepend ?? []
@@ -371,7 +390,6 @@ async function runCodexConversationProvider(
       fixtureRoot: suiteRoot.evalRoot,
       suitePathPrepend: suitePathPrepend.map((entry) => entry.replace(/^eval-root\//u, '')),
     })
-    const runtime = cleanCodexEvalRuntimeConfig(env, env.AW_SKILL_EVAL_CODEX_MODEL)
     if (suite.isolation === 'strict') await inspectCodexEvalHostIsolation({ sourceEnv: env })
     const evidence = await runCodexConversationProviderCase({
       evalCase,
@@ -397,7 +415,7 @@ async function runCodexConversationProvider(
         })),
       ],
     })
-    return {
+    const output: EvalProviderOutput = {
       schemaVersion: 1,
       provider: { id: 'codex-conversation', version: BUILTIN_EVAL_PROVIDER_VERSION },
       usage: usageRecord(evidence.usage),
@@ -413,8 +431,12 @@ async function runCodexConversationProvider(
         outputDir: invocation.outputDir,
         evidence,
         finalMessages: evidence.finalMessages,
+        runtime,
       }),
     }
+    return redactCodexEvalValue(output, runtime)
+  } catch (error) {
+    throw redactProviderError(error, runtime)
   } finally {
     await fs.remove(subjectRoot)
   }

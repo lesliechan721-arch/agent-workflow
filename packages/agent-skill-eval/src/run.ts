@@ -658,59 +658,56 @@ async function runOne(input: {
   let usage: Record<string, unknown> | null = null
   let grading: Record<string, unknown> | null = null
   let artifacts: Awaited<ReturnType<typeof providerArtifacts>> = []
-  try {
-    const value = redactJsonValue(JSON.parse(result.stdout.trim()) as unknown, secrets)
-    stdoutEvidence = `${JSON.stringify(value, null, 2)}\n`
-    const validation = await validateProviderOutput(value)
-    if (!validation.valid || !validation.calculated)
-      throw new Error(`provider stdout does not match EvalProviderOutput v1: ${validation.errors.join('; ')}`)
-    const parsed = validation.calculated
-    if (
-      parsed.provider.id !== plan.provider.id ||
-      parsed.provider.version !== input.providerCapabilities.providerVersion
-    ) throw new Error('provider stdout identity does not match describe/capabilities')
-    usage = parsed.usage
-    grading = result.gradingEvidenceAccepted ? gradingOf(parsed.grading) : null
-    if (!result.gradingEvidenceAccepted && parsed.grading !== null) {
-      executionLimitations.push(
-        `Run ${caseId}/${configuration.id}/${runIndex}: provider grading was not accepted because descendant cleanup is not guaranteed.`,
-      )
-    }
-    artifacts = await providerArtifacts(parsed, runDirectory, outputRoot, secrets)
-    if (artifacts.some((entry) => entry.role === 'grading'))
-      throw new Error('provider artifacts must not declare the runner-owned grading role')
-    if (grading) {
-      const gradingPath = path.join(runDirectory, 'grading.json')
-      const gradingBytes = Buffer.from(`${JSON.stringify(grading, null, 2)}\n`)
-      let gradingDigest: Digest
-      try {
-        gradingDigest = await writeRunnerOwnedEvidence(
-          base,
-          outputRoot,
-          runDirectory,
-          gradingPath,
-          'grading artifact',
-          gradingBytes,
-        )
-      } catch (error) {
-        throw new RunnerOwnedOutputError(`Cannot commit runner-owned grading evidence: ${(error as Error).message}`)
-      }
-      artifacts.push({
-        role: 'grading',
-        path: toPosixRelative(outputRoot, gradingPath),
-        digest: gradingDigest,
-      })
-    }
-  } catch (error) {
-    if (error instanceof RunnerOwnedOutputError) {
-      throw new RunnerOwnedOutputError(redactText(error.message, secrets))
-    }
-    usage = null
-    grading = null
-    artifacts = []
-    if (status === 'completed') {
+  if (status === 'completed') {
+    let parsed: EvalProviderOutput | null = null
+    try {
+      const value = redactJsonValue(JSON.parse(result.stdout.trim()) as unknown, secrets)
+      stdoutEvidence = `${JSON.stringify(value, null, 2)}\n`
+      const validation = await validateProviderOutput(value)
+      if (!validation.valid || !validation.calculated)
+        throw new Error(`provider stdout does not match EvalProviderOutput v1: ${validation.errors.join('; ')}`)
+      parsed = validation.calculated
+    } catch (error) {
       status = 'error'
       stderr += `${stderr ? '\n' : ''}Provider JSON/artifact error: ${redactText((error as Error).message, secrets)}`
+    }
+    if (parsed) {
+      if (
+        parsed.provider.id !== plan.provider.id ||
+        parsed.provider.version !== input.providerCapabilities.providerVersion
+      ) throw new Error('provider stdout identity does not match describe/capabilities')
+      usage = parsed.usage
+      grading = result.gradingEvidenceAccepted ? gradingOf(parsed.grading) : null
+      if (!result.gradingEvidenceAccepted && parsed.grading !== null) {
+        executionLimitations.push(
+          `Run ${caseId}/${configuration.id}/${runIndex}: provider grading was not accepted because descendant cleanup is not guaranteed.`,
+        )
+      }
+      artifacts = await providerArtifacts(parsed, runDirectory, outputRoot, secrets)
+      if (artifacts.some((entry) => entry.role === 'grading'))
+        throw new Error('provider artifacts must not declare the runner-owned grading role')
+      if (grading) {
+        const gradingPath = path.join(runDirectory, 'grading.json')
+        const gradingBytes = Buffer.from(`${JSON.stringify(grading, null, 2)}\n`)
+        let gradingDigest: Digest
+        try {
+          gradingDigest = await writeRunnerOwnedEvidence(
+            base,
+            outputRoot,
+            runDirectory,
+            gradingPath,
+            'grading artifact',
+            gradingBytes,
+          )
+        } catch (error) {
+          throw new RunnerOwnedOutputError(`Cannot commit runner-owned grading evidence: ${(error as Error).message}`)
+        }
+        artifacts.push({
+          role: 'grading',
+          path: toPosixRelative(outputRoot, gradingPath),
+          digest: gradingDigest,
+        })
+      }
     }
   }
   const stdoutPath = path.join(runDirectory, 'stdout.txt')
@@ -854,7 +851,8 @@ export async function runExecutionPlan(
     plan.configurations.flatMap((entry) => entry.comparisonId === null ? [] : [entry.comparisonId]),
   ).size * plan.runsPerCase
   const comparableComparisons = comparisons.filter((entry) => entry.comparable).length
-  const requirementsMet = !executionCleanupFailed && (
+  const allRunsCompleted = runs.every((entry) => entry.status === 'completed')
+  const requirementsMet = !executionCleanupFailed && allRunsCompleted && (
     minimumEvidenceLevel === 'executed' || (
       plannedComparisons > 0 && comparableComparisons === plannedComparisons
     )

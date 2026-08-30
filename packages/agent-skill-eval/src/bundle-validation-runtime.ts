@@ -252,6 +252,12 @@ function providerOutputFrom(value: unknown): { output: RuntimeProviderOutput | n
 
 async function providerOutputBindingErrors(root: string, bundle: RuntimeBundle, run: RuntimeRun, index: number): Promise<string[]> {
   const errors: string[] = []
+  if (run.status !== 'completed') {
+    if (run.usage !== null) errors.push(`runs[${index}] failed run must have usage=null`)
+    if (run.grading !== null) errors.push(`runs[${index}] failed run must have grading=null`)
+    if (run.artifacts.length > 0) errors.push(`runs[${index}] failed run must not declare provider artifacts`)
+    return errors
+  }
   if (!isCanonicalEvidencePath(run.stdoutPath)) return errors
   const stdoutPath = path.resolve(root, run.stdoutPath)
   try {
@@ -396,9 +402,12 @@ export async function validateEvalRunBundleRuntime(
       errors.push('evidenceRequirement.comparableComparisons does not match aggregate comparisons')
     if (bundle.evidenceRequirement.plannedComparisons < comparisons.length)
       errors.push('evidenceRequirement.plannedComparisons is smaller than aggregate comparisons')
-    const comparisonCoverageSatisfied = bundle.evidenceRequirement.minimumEvidenceLevel === 'executed' || (
-      bundle.evidenceRequirement.plannedComparisons > 0 &&
-      comparableComparisons === bundle.evidenceRequirement.plannedComparisons
+    const allRunsCompleted = bundle.runs.every((run) => run.status === 'completed')
+    const comparisonCoverageSatisfied = allRunsCompleted && (
+      bundle.evidenceRequirement.minimumEvidenceLevel === 'executed' || (
+        bundle.evidenceRequirement.plannedComparisons > 0 &&
+        comparableComparisons === bundle.evidenceRequirement.plannedComparisons
+      )
     )
     if (bundle.evidenceRequirement.satisfied && !comparisonCoverageSatisfied)
       errors.push('evidenceRequirement.satisfied cannot be true without required comparison coverage')

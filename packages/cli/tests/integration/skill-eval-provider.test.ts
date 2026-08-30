@@ -52,6 +52,8 @@ async function writeFakeAppServer(subjectBase: string, startMarker: string): Pro
     "const fs = require('node:fs')",
     "const path = require('node:path')",
     "const readline = require('node:readline')",
+    "const secret = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, 'auth.json'), 'utf8')).tokens.access_token",
+    "process.stderr.write('fake stderr: ' + secret + '\\n')",
     `fs.writeFileSync(${JSON.stringify(startMarker)}, 'started')`,
     "const send = (value) => process.stdout.write(JSON.stringify(value) + '\\n')",
     "const input = readline.createInterface({ input: process.stdin })",
@@ -67,12 +69,12 @@ async function writeFakeAppServer(subjectBase: string, startMarker: string): Pro
     "      return",
     "    }",
     "    const skill = path.join(process.cwd(), '.agents', 'skills', 'owner-skill', 'SKILL.md')",
-    "    if (fs.existsSync(skill)) send({ method: 'item/completed', params: { threadId: 'thread-1', item: { type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/owner-skill/SKILL.md' } } })",
-    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { type: 'agentMessage', phase: 'final_answer', text: fs.existsSync(skill) ? 'skill-present' : 'skill-absent' } } })",
+    "    if (fs.existsSync(skill)) send({ method: 'item/completed', params: { threadId: 'thread-1', item: { type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/owner-skill/SKILL.md; echo ' + secret } } })",
+    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { type: 'agentMessage', phase: 'final_answer', text: (fs.existsSync(skill) ? 'skill-present: ' : 'skill-absent: ') + secret } } })",
     "    send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', tokenUsage: { totalTokens: 7 } } })",
     "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { status: 'completed' } } })",
     "  } else if (frame.id === 41) {",
-    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { type: 'agentMessage', phase: 'final_answer', text: 'conversation-complete' } } })",
+    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { type: 'agentMessage', phase: 'final_answer', text: 'conversation-complete: ' + secret } } })",
     "    send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', tokenUsage: { totalTokens: 11 } } })",
     "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { status: 'completed' } } })",
     "  }",
@@ -150,9 +152,15 @@ describe('aw skill eval provider', () => {
 
   it('runs one trigger and one conversation case through a fake Codex app-server', async () => {
     const root = await createRoot()
+    const secret = 'auth-secret-from-codex-home'
     const subjectBase = path.join(root, 'aw-subject-base')
     const startMarker = path.join(root, 'codex-started.marker')
-    await fs.ensureDir(path.join(subjectBase, '.agents', 'skills'))
+    await Promise.all([
+      fs.ensureDir(path.join(subjectBase, '.agents', 'skills')),
+      fs.outputJson(path.join(root, 'source-codex-home', 'auth.json'), {
+        tokens: { access_token: secret },
+      }),
+    ])
     await writeFakeAppServer(subjectBase, startMarker)
     const currentSkill = path.join(root, 'current-skill')
     await writeSkill(currentSkill, 'owner-skill', 'current marker')
@@ -199,6 +207,22 @@ describe('aw skill eval provider', () => {
       { path: 'provider-evidence.json', role: 'report' },
       { path: 'provider-trace.json', role: 'trace' },
     ]))
+    expect(trigger.stdout()).not.toContain(secret)
+    expect(trigger.stderr()).not.toContain(secret)
+    const triggerArtifactContents: string[] = []
+    for (const artifact of triggerOutput.artifacts) {
+      const content = await fs.readFile(path.join(triggerEnv.AGENT_EVAL_OUTPUT_DIR!, artifact.path), 'utf8')
+      triggerArtifactContents.push(content)
+      expect(content).not.toContain(secret)
+      if (artifact.path.endsWith('.json')) expect(() => JSON.parse(content)).not.toThrow()
+    }
+    expect(triggerArtifactContents.join('\n')).toContain('[redacted]')
+    const triggerEvidence = await fs.readJson(path.join(
+      triggerEnv.AGENT_EVAL_OUTPUT_DIR!,
+      'provider-evidence.json',
+    ))
+    expect(triggerEvidence.stderr).toContain('[redacted]')
+    expect(JSON.stringify(triggerEvidence.event_trace)).toContain('[redacted]')
 
     await fs.remove(startMarker)
     const invalidCase = capture()
@@ -274,6 +298,25 @@ describe('aw skill eval provider', () => {
       grading: { result: { passed: true, complete: true, qualitativeReview: 'required' } },
     })
     expect(conversationOutput.artifacts).toContainEqual({ path: 'model-output.txt', role: 'output' })
+    expect(conversation.stdout()).not.toContain(secret)
+    expect(conversation.stderr()).not.toContain(secret)
+    const conversationArtifactContents: string[] = []
+    for (const artifact of conversationOutput.artifacts) {
+      const content = await fs.readFile(path.join(
+        conversationEnv.AGENT_EVAL_OUTPUT_DIR!,
+        artifact.path,
+      ), 'utf8')
+      conversationArtifactContents.push(content)
+      expect(content).not.toContain(secret)
+      if (artifact.path.endsWith('.json')) expect(() => JSON.parse(content)).not.toThrow()
+    }
+    expect(conversationArtifactContents.join('\n')).toContain('[redacted]')
+    const conversationEvidence = await fs.readJson(path.join(
+      conversationEnv.AGENT_EVAL_OUTPUT_DIR!,
+      'provider-evidence.json',
+    ))
+    expect(conversationEvidence.stderr).toContain('[redacted]')
+    expect(conversationEvidence.finalMessages).toContain('conversation-complete: [redacted]')
   }, 20_000)
 
   it('executes one custom snapshot entry and overlays current, previous, or no target Skill', async () => {

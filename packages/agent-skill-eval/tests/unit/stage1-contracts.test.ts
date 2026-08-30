@@ -260,6 +260,97 @@ describe('stage 1 execution contracts', () => {
     }
   })
 
+  it('returns self-validating diagnostic Bundles for provider failure and timeout', async () => {
+    const scenarios = [
+      {
+        name: 'process failure',
+        command: `process.stderr.write('provider failed'); process.exit(7)`,
+        expected: { status: 'process-failed', exitCode: 7, stderr: 'provider failed' },
+      },
+      {
+        name: 'timeout',
+        command: `setInterval(() => {}, 10_000)`,
+        expected: { status: 'timeout', exitCode: null, stderr: '' },
+      },
+    ]
+    for (const scenario of scenarios) {
+      const fixture = await createFixture()
+      try {
+        fixture.plan.provider.command = [process.execPath, '-e', scenario.command]
+        await writeFile(fixture.planPath, JSON.stringify(fixture.plan))
+        const result = await runExecutionPlan(fixture.planPath, {
+          auditPaths: [fixture.auditPath],
+          processHooks,
+        })
+        const outputRoot = path.dirname(result.bundlePath)
+        await expect(validateRunBundle(result.bundlePath, {
+          providerCapabilitiesPath: path.join(fixture.root, 'capabilities.json'),
+        })).resolves.toMatchObject({ valid: true })
+        const bundle = JSON.parse(await readFile(result.bundlePath, 'utf8'))
+        expect(result.requirementsMet, scenario.name).toBe(false)
+        expect(bundle.evidenceRequirement.satisfied, scenario.name).toBe(false)
+        expect(bundle.runs[0], scenario.name).toMatchObject({
+          status: scenario.expected.status,
+          exitCode: scenario.expected.exitCode,
+          usage: null,
+          grading: null,
+          artifacts: [],
+        })
+        const stdout = await readFile(path.join(outputRoot, bundle.runs[0].stdoutPath))
+        const stderr = await readFile(path.join(outputRoot, bundle.runs[0].stderrPath))
+        expect(stdout.toString('utf8'), scenario.name).toBe('')
+        expect(stderr.toString('utf8'), scenario.name).toBe(scenario.expected.stderr)
+        expect(bundle.runs[0].stdoutDigest, scenario.name).toBe(digest(stdout))
+        expect(bundle.runs[0].stderrDigest, scenario.name).toBe(digest(stderr))
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true })
+      }
+    }
+  })
+
+  it('uses failure status before valid provider output and marks invalid completed output as an error', async () => {
+    const fixture = await createFixture()
+    try {
+      const providerOutput = {
+        schemaVersion: 1,
+        provider: { id: 'fixture-provider', version: '1.0.0' },
+        usage: { tokens: 99 },
+        grading: { grader: { id: 'fixture', version: '1' }, result: { pass: true } },
+        artifacts: [{ path: 'provider.txt', role: 'output' }],
+      }
+      fixture.plan.provider.command = [
+        process.execPath,
+        '-e',
+        `require('node:fs').writeFileSync(require('node:path').join(process.env.AGENT_EVAL_OUTPUT_DIR, 'provider.txt'), 'ignored'); process.stdout.write(${JSON.stringify(JSON.stringify(providerOutput))}); process.exit(7)`,
+      ]
+      await writeFile(fixture.planPath, JSON.stringify(fixture.plan))
+      const failed = await runExecutionPlan(fixture.planPath, {
+        auditPaths: [fixture.auditPath],
+        processHooks,
+      })
+      await expect(readFile(failed.bundlePath, 'utf8').then(JSON.parse)).resolves.toMatchObject({
+        runs: [{ status: 'process-failed', usage: null, grading: null, artifacts: [] }],
+        evidenceRequirement: { satisfied: false },
+      })
+
+      fixture.plan.provider.command = [process.execPath, '-e', `process.stdout.write('not JSON')`]
+      await writeFile(fixture.planPath, JSON.stringify(fixture.plan))
+      const invalid = await runExecutionPlan(fixture.planPath, {
+        auditPaths: [fixture.auditPath],
+        processHooks,
+      })
+      const invalidBundle = JSON.parse(await readFile(invalid.bundlePath, 'utf8'))
+      expect(invalidBundle.runs[0]).toMatchObject({ status: 'error', usage: null, grading: null, artifacts: [] })
+      await expect(readFile(path.join(path.dirname(invalid.bundlePath), invalidBundle.runs[0].stderrPath), 'utf8'))
+        .resolves.toContain('Provider JSON/artifact error:')
+      await expect(validateRunBundle(invalid.bundlePath, {
+        providerCapabilitiesPath: path.join(fixture.root, 'capabilities.json'),
+      })).resolves.toMatchObject({ valid: true })
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true })
+    }
+  })
+
   it('resolves only allowlisted provider credentials at execution time', async () => {
     const fixture = await createFixture()
     try {
@@ -629,6 +720,48 @@ describe('stage 1 execution contracts', () => {
         const changed = structuredClone(bundle)
         mutate(changed)
         const changedPath = path.join(fixture.root, `${name}-tampered.json`)
+        await writeFile(changedPath, JSON.stringify(changed))
+        const validation = await validateRunBundle(changedPath, {
+          evidenceRoot: outputRoot,
+          providerCapabilitiesPath: capabilitiesPath,
+        })
+        expect(validation.valid).toBe(false)
+        expect(validation.errors.some((entry) => entry.includes(expectedError))).toBe(true)
+      }
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects usage, grading, and provider artifacts added to a failed run', async () => {
+    const fixture = await createFixture()
+    try {
+      fixture.plan.provider.command = [process.execPath, '-e', `process.stderr.write('failed'); process.exit(7)`]
+      await writeFile(fixture.planPath, JSON.stringify(fixture.plan))
+      const execution = await runExecutionPlan(fixture.planPath, {
+        auditPaths: [fixture.auditPath],
+        processHooks,
+      })
+      const outputRoot = path.dirname(execution.bundlePath)
+      const capabilitiesPath = path.join(fixture.root, 'capabilities.json')
+      const bundle = JSON.parse(await readFile(execution.bundlePath, 'utf8'))
+      const mutations: Array<[string, (value: Record<string, any>) => void, string]> = [
+        ['usage', (value) => { value.runs[0].usage = { tokens: 7 } }, 'failed run must have usage=null'],
+        ['grading', (value) => {
+          value.runs[0].grading = { grader: { id: 'fixture', version: '1' }, result: { pass: true } }
+        }, 'failed run must have grading=null'],
+        ['artifact', (value) => {
+          value.runs[0].artifacts = [{
+            role: 'output',
+            path: value.runs[0].stdoutPath,
+            digest: value.runs[0].stdoutDigest,
+          }]
+        }, 'failed run must not declare provider artifacts'],
+      ]
+      for (const [name, mutate, expectedError] of mutations) {
+        const changed = structuredClone(bundle)
+        mutate(changed)
+        const changedPath = path.join(fixture.root, `failed-${name}-tampered.json`)
         await writeFile(changedPath, JSON.stringify(changed))
         const validation = await validateRunBundle(changedPath, {
           evidenceRoot: outputRoot,

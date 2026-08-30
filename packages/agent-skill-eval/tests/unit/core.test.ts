@@ -659,7 +659,7 @@ describe('public Eval execution contracts', () => {
     await writeFile(planPath, JSON.stringify(plan))
     const mismatchedCapabilities = await validateExecutionPlan(planPath)
     expect(mismatchedCapabilities.valid).toBe(true)
-    await expect(runExecutionPlan(planPath)).rejects.toThrow('Generated EvalRunBundle is invalid')
+    await expect(runExecutionPlan(planPath)).rejects.toThrow('provider stdout identity does not match describe/capabilities')
 
     await writeFile(capabilitiesPath, capabilitiesRaw)
     plan.provider.capabilitiesDigest = digest(capabilitiesRaw)
