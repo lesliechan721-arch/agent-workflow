@@ -469,7 +469,21 @@ export interface CommandOptions {
   allowManagedCodexInstall?: boolean;
 }
 
-export type InstallCommandOptions = CommandOptions;
+export interface DependencyScopeOverride {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+}
+
+export interface DependencyScopeSelector {
+  pluginId: string;
+  platform?: PlatformName;
+  scope: Scope;
+}
+
+export interface InstallCommandOptions extends CommandOptions {
+  dependencyScopeOverrides?: DependencyScopeSelector[];
+}
 
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;

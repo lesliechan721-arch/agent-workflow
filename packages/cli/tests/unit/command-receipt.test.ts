@@ -62,7 +62,7 @@ describe('command receipt v4', () => {
     })).toMatchObject({ command: 'init', receiptSchemaVersion: 4, ok: true });
   });
 
-  it('projects dependency plan identity and kept target state without changing receipt schema v4', () => {
+  it('projects dependency plan v2 identity and kept target state without changing receipt schema v4', () => {
     const dependencyPlan = createDependencyOperationPlan({
       requestedPluginIds: ['team/root'],
       resolvedPluginIds: ['team/leaf', 'team/root'],
@@ -87,7 +87,7 @@ describe('command receipt v4', () => {
 
     expect(receipt).toMatchObject({
       receiptSchemaVersion: 4,
-      dependencyPlanSchemaVersion: 1,
+      dependencyPlanSchemaVersion: 2,
       requestedPluginIds: ['team/root'],
       resolvedPluginIds: ['team/leaf', 'team/root'],
       targets: [{ relation: 'dependency', requiredBy: ['team/root'], dependencyState: 'kept' }],

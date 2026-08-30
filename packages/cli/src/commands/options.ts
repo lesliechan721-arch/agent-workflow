@@ -7,6 +7,7 @@ import type {
   StatusCommandOptions,
   UpgradeCommandOptions,
 } from '../types.js';
+import { parsePluginId } from '../utils/multi-source-catalog.js';
 
 export interface NormalizeCommandOptionsDefaults {
   cwd?: string;
@@ -26,6 +27,8 @@ export type RawCommandOptions = {
 };
 
 export type RawInstallCommandOptions = RawCommandOptions & {
+  dependencyScope?: string | string[];
+  dependencyScopeOverrides?: InstallCommandOptions['dependencyScopeOverrides'];
 };
 
 export type RawUpgradeCommandOptions = RawCommandOptions & {
@@ -93,6 +96,64 @@ export function parsePlatformValue(platform: unknown): PlatformSelection {
 
   throw new Error(
     `Unsupported platform "${renderUnsupportedValue(platform)}". Expected one of: codex, claude, both.`,
+  );
+}
+
+export function parseDependencyScopeOverrides(
+  values: string | readonly string[] | undefined,
+): NonNullable<InstallCommandOptions['dependencyScopeOverrides']> {
+  const inputs = values === undefined ? [] : typeof values === 'string' ? [values] : [...values];
+  const byKey = new Map<string, NonNullable<InstallCommandOptions['dependencyScopeOverrides']>[number]>();
+  for (const input of inputs) {
+    if (input !== input.trim() || input.trim() === '') {
+      throw new Error('Invalid dependency scope override: expected <pluginId>[#platform]=<project|user>.');
+    }
+    const separator = input.lastIndexOf('=');
+    if (separator <= 0 || separator !== input.indexOf('=')) {
+      throw new Error(`Invalid dependency scope override "${input}".`);
+    }
+    const selector = input.slice(0, separator);
+    const scope = parseScopeValue(input.slice(separator + 1));
+    const platformSeparator = selector.lastIndexOf('#');
+    const pluginId = platformSeparator < 0 ? selector : selector.slice(0, platformSeparator);
+    const parsed = parsePluginId(pluginId);
+    if (!parsed.sourceId) {
+      throw new Error(`Invalid dependency scope plugin ID "${pluginId}": expected source/plugin.`);
+    }
+    const canonicalPluginId = `${parsed.sourceId}/${parsed.pluginName}`;
+    const parsedPlatform = platformSeparator < 0
+      ? undefined
+      : parsePlatformValue(selector.slice(platformSeparator + 1));
+    if (parsedPlatform === 'both') {
+      throw new Error('Invalid dependency scope platform: expected codex or claude.');
+    }
+    const key = `${canonicalPluginId}\0${parsedPlatform ?? '*'}`;
+    const current = byKey.get(key);
+    if (current && current.scope !== scope) {
+      throw new Error(
+        `dependencyScopeOverrideConflict: ${canonicalPluginId}`
+        + `${parsedPlatform ? `#${parsedPlatform}` : ''}`,
+      );
+    }
+    byKey.set(key, {
+      pluginId: canonicalPluginId,
+      ...(parsedPlatform ? { platform: parsedPlatform } : {}),
+      scope,
+    });
+  }
+  return [...byKey.values()].sort((left, right) => {
+    const leftKey = `${left.pluginId}\0${left.platform ?? '*'}`;
+    const rightKey = `${right.pluginId}\0${right.platform ?? '*'}`;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+}
+
+function normalizeDependencyScopeOverrides(
+  overrides: readonly NonNullable<InstallCommandOptions['dependencyScopeOverrides']>[number][],
+): NonNullable<InstallCommandOptions['dependencyScopeOverrides']> {
+  return parseDependencyScopeOverrides(
+    overrides.map((override) =>
+      `${override.pluginId}${override.platform ? `#${override.platform}` : ''}=${override.scope}`),
   );
 }
 
@@ -173,13 +234,24 @@ export function normalizeInstallCommandOptions(
   raw: RawInstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): InstallCommandOptions {
+  const normalized = normalizeCommandOptions(raw, {
+    defaultScope: 'user',
+    requirePlatform: true,
+    missingPlatformMessage: 'install 命令需要显式指定 `--platform codex|claude|both`。',
+    ...defaults,
+  });
+  const dependencyScopeOverrides = [
+    ...parseDependencyScopeOverrides(raw.dependencyScope),
+    ...normalizeDependencyScopeOverrides(raw.dependencyScopeOverrides ?? []),
+  ];
+  const normalizedDependencyScopeOverrides = normalizeDependencyScopeOverrides(
+    dependencyScopeOverrides,
+  );
   return {
-    ...normalizeCommandOptions(raw, {
-      defaultScope: 'user',
-      requirePlatform: true,
-      missingPlatformMessage: 'install 命令需要显式指定 `--platform codex|claude|both`。',
-      ...defaults,
-    }),
+    ...normalized,
+    ...(normalizedDependencyScopeOverrides.length > 0
+      ? { dependencyScopeOverrides: normalizedDependencyScopeOverrides }
+      : {}),
   };
 }
 

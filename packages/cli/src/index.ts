@@ -365,6 +365,9 @@ export function buildEquivalentWriteCommandTokens(
     ...(rawOptions.allowManagedCodexInstall === true
       ? ['--allow-managed-codex-install']
       : []),
+    ...(command === 'install'
+      ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
+      : []),
     ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
     ...(!all && selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
   ];
@@ -682,6 +685,7 @@ interface RawWriteWizardOptions extends RawDiagnosticsOptions {
   json?: boolean;
   force?: boolean;
   allowManagedCodexInstall?: boolean;
+  dependencyScope?: string[];
 }
 
 export function createManagedCodexAuthorizer(
@@ -2599,6 +2603,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
+    .option(
+      '--dependency-scope <pluginId[#platform]=scope>',
+      'place one dependency at project or user scope; repeat for more dependencies',
+      (value: string, previous: string[]) => [...previous, value],
+      [],
+    )
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -2611,6 +2621,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         rawOptions: {
           scope?: string;
           platform?: string;
+          dependencyScope?: string[];
           scriptTimeout?: string;
           allowManagedCodexInstall?: boolean;
           json?: boolean;

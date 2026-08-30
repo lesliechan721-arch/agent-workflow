@@ -1507,7 +1507,9 @@ describe('five namespaced write commands', () => {
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
     expect(result.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['leaf', 'root']);
-    expect(result.dependencyPlan?.dependencyEdges).toEqual([{ from: 'team/root', to: 'team/leaf' }]);
+    expect(result.dependencyPlan?.dependencyEdges).toEqual([
+      { from: 'team/root', to: 'team/leaf', platform: 'codex' },
+    ]);
     expect(inventoryReads).toEqual([false]);
   });
 

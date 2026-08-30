@@ -44,6 +44,16 @@ describe('CLI entry v4', () => {
     },
   );
 
+  it('publishes repeatable dependency placement on install only', async () => {
+    const install = capture();
+    expect(await runCli(['install', '--help'], { io: install.io })).toBe(0);
+    expect(install.stdout()).toContain('--dependency-scope');
+
+    const uninstall = capture();
+    expect(await runCli(['uninstall', '--help'], { io: uninstall.io })).toBe(0);
+    expect(uninstall.stdout()).not.toContain('--dependency-scope');
+  });
+
   it('asks once at the first interactive managed Codex acquisition', async () => {
     const confirm = vi.fn().mockResolvedValue({ cancelled: false, value: true });
     const authorizer = createManagedCodexAuthorizer(
