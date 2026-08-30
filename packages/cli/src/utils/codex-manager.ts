@@ -5,7 +5,10 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { AgentVersionProbeResult } from '../types.js';
+import type {
+  AgentVersionProbeResult,
+  CodexOperationRequirement,
+} from '../types.js';
 import {
   extractStrictSemVerTokenFromVersionOutput,
   probeAgentVersion,
@@ -20,7 +23,7 @@ import {
 import { getCodexHome, resolveAwHome } from './state-paths.js';
 
 export const MANAGED_CODEX_PACKAGE_NAME = '@openai/codex';
-export const MANAGED_CODEX_VERSION = '0.150.1';
+export const MANAGED_CODEX_VERSION = '0.151.0';
 export const MANAGED_CODEX_REGISTRY = 'https://registry.npmjs.org/';
 export const MANAGED_CODEX_MARKER_FILE = '.aw-managed-runtime.json';
 
@@ -47,9 +50,26 @@ export interface CodexManagerOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   execPath?: string;
+  operationRequirement?: CodexOperationRequirement;
   platform?: NodeJS.Platform;
   pnpmEntry?: string;
   runner?: NativeCliRunner;
+}
+
+export type CodexOperationConsumer =
+  | {
+      support: 'observed';
+      manager: CodexManager;
+      requirement: CodexOperationRequirement;
+    }
+  | {
+      support: 'assumed';
+      requirement: CodexOperationRequirement;
+    };
+
+export interface ResolveCodexOperationConsumerOptions extends CodexManagerOptions {
+  operationRequirement: CodexOperationRequirement;
+  requiresNativeMaterialization: boolean;
 }
 
 export type CodexManagerPreview =
@@ -721,6 +741,7 @@ async function probeSystemCodex(options: CodexManagerOptions): Promise<SystemCod
     command: manager.command,
     cwd: options.cwd,
     env: options.env,
+    minimumVersion: options.operationRequirement?.minimumVersion,
     runner: options.runner,
   });
   if (
@@ -808,6 +829,12 @@ export async function resolveCodexManager(
     );
   }
 
+  return resolveManagedCodexAfterMissingSystem(options);
+}
+
+async function resolveManagedCodexAfterMissingSystem(
+  options: CodexManagerOptions,
+): Promise<CodexManager> {
   const managed = await inspectManagedCodexRuntime(options);
   if (managed.state === 'valid') return managed.manager;
   if (managed.state === 'blocked') {
@@ -842,4 +869,40 @@ export async function resolveCodexManager(
       MANAGED_UNAVAILABLE_DIAGNOSTIC,
     );
   }
+}
+
+export async function resolveCodexOperationConsumer(
+  options: ResolveCodexOperationConsumerOptions,
+): Promise<CodexOperationConsumer> {
+  const system = await probeSystemCodex(options);
+  if (system.state === 'probed' && system.result.status === 'supported') {
+    return {
+      support: 'observed',
+      manager: {
+        ...system.manager,
+        version: system.result.detectedVersion!,
+      },
+      requirement: options.operationRequirement,
+    };
+  }
+  if (system.state === 'unsupported') {
+    throw new CodexManagerError('codexSystemCliUnsupported', system.diagnostic);
+  }
+  if (system.state === 'probed') {
+    throw new CodexManagerError(
+      'codexSystemCliUnsupported',
+      unsupportedSystemDiagnostic(system.result),
+    );
+  }
+  if (!options.requiresNativeMaterialization) {
+    return {
+      support: 'assumed',
+      requirement: options.operationRequirement,
+    };
+  }
+  return {
+    support: 'observed',
+    manager: await resolveManagedCodexAfterMissingSystem(options),
+    requirement: options.operationRequirement,
+  };
 }

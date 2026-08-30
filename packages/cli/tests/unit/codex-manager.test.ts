@@ -11,7 +11,9 @@ import {
   MANAGED_CODEX_VERSION,
   previewCodexManager,
   resolveCodexManager,
+  resolveCodexOperationConsumer,
 } from '../../src/utils/codex-manager.js';
+import { getCodexOperationRequirement } from '../../src/utils/agent-version.js';
 import {
   buildCodexMarketplaceAddInvocation,
   buildCodexPluginListInvocation,
@@ -156,6 +158,56 @@ describe('Codex manager resolver', () => {
       argsPrefix: [],
     });
     expect(authorizer).not.toHaveBeenCalled();
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+  });
+
+  it('blocks system Codex 0.150 for a project operation without managed fallback', async () => {
+    const executable = await writePathCodex(isolation, 'project-system-bin', 'linux');
+    const authorizer = vi.fn(() => true);
+
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: executable.pathEntry },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      runner: async () => result('codex-cli 0.150.0'),
+      authorizer,
+      operationRequirement: getCodexOperationRequirement('project'),
+      requiresNativeMaterialization: false,
+    })).rejects.toMatchObject({ code: 'codexSystemCliUnsupported' });
+    expect(authorizer).not.toHaveBeenCalled();
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+  });
+
+  it('assumes an App consumer when project activation has no system CLI and needs no native write', async () => {
+    const runner = vi.fn(async () => result('must not run'));
+    const authorizer = vi.fn(() => true);
+    const requirement = getCodexOperationRequirement('project');
+
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: '' },
+      cwd: isolation.layout.fixtureCwd,
+      runner,
+      authorizer,
+      operationRequirement: requirement,
+      requiresNativeMaterialization: false,
+    })).resolves.toEqual({ support: 'assumed', requirement });
+    expect(runner).not.toHaveBeenCalled();
+    expect(authorizer).not.toHaveBeenCalled();
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+  });
+
+  it('resolves and authorizes managed Codex only when native materialization is required', async () => {
+    const authorizer = vi.fn(() => false);
+
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: '' },
+      cwd: isolation.layout.fixtureCwd,
+      runner: async () => { throw missingExecutable(); },
+      authorizer,
+      operationRequirement: getCodexOperationRequirement('project'),
+      requiresNativeMaterialization: true,
+    })).rejects.toMatchObject({ code: 'managedCodexAuthorizationRequired' });
+    expect(authorizer).toHaveBeenCalledTimes(1);
     expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
   });
 

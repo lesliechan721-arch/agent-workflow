@@ -413,12 +413,12 @@ describe('pack smoke', () => {
       }),
       fs.outputJson(path.join(localCodexFixture, 'package.json'), {
         name: '@openai/codex',
-        version: '0.150.1',
+        version: '0.151.0',
         bin: { codex: 'bin/codex.js' },
       }),
       fs.outputFile(path.join(localCodexFixture, 'bin', 'codex.js'), [
         "const args = process.argv.slice(2);",
-        "if (args.length === 1 && args[0] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0); }",
+        "if (args.length === 1 && args[0] === '--version') { console.log('codex-cli 0.151.0'); process.exit(0); }",
         "if (args[0] === 'plugin' && args[1] === '--help') { console.log('plugin help'); process.exit(0); }",
         'process.exit(2);',
       ].join('\n')),
@@ -470,7 +470,7 @@ describe('pack smoke', () => {
           '    pnpmEntry = invocation.args[0];',
           "    const packageJsonPath = path.join(invocation.cwd, 'package.json');",
           "    const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));",
-          "    if (packageJson.dependencies?.['@openai/codex'] !== '0.150.1') throw new Error('Unexpected managed Codex dependency.');",
+          "    if (packageJson.dependencies?.['@openai/codex'] !== '0.151.0') throw new Error('Unexpected managed Codex dependency.');",
           "    packageJson.dependencies['@openai/codex'] = `file:${fixtureTarball}`;",
           "    await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\\n`);",
           '  }',
@@ -511,7 +511,7 @@ describe('pack smoke', () => {
       managedRuntimeHome,
       'runtimes',
       'codex',
-      '0.150.1',
+      '0.151.0',
       `${process.platform}-${process.arch}`,
     );
     expect(managedRuntime).toEqual({
@@ -527,7 +527,7 @@ describe('pack smoke', () => {
       '@openai',
       'codex',
       'package.json',
-    ))).resolves.toMatchObject({ name: '@openai/codex', version: '0.150.1' });
+    ))).resolves.toMatchObject({ name: '@openai/codex', version: '0.151.0' });
     await expect(fs.readFile(parentLockfile, 'utf8')).resolves.toBe(parentLockfileBefore);
     await expect(fs.readFile(parentMarker, 'utf8')).resolves.toBe(parentMarkerBefore);
     await expect(listFilesRecursively(parentNodeModules)).resolves.toEqual(parentNodeModulesBefore);

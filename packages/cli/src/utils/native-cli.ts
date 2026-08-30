@@ -46,6 +46,34 @@ export interface NativeCliResult {
   stderr: string;
 }
 
+export interface CodexPluginListEntry {
+  pluginId: string;
+  enabled: boolean;
+  version?: string;
+  path?: string;
+}
+
+export interface CodexProjectPluginListInvocations {
+  exact: NativeCliInvocation;
+  neutral: NativeCliInvocation;
+}
+
+export interface CodexProjectActivationPostcheck {
+  effective: true;
+  pluginId: string;
+  exactActive: boolean;
+  neutralActive: boolean;
+}
+
+export class CodexProjectConfigNotEffectiveError extends Error {
+  readonly code = 'codexProjectConfigNotEffective';
+
+  constructor(pluginId: string) {
+    super(`codexProjectConfigNotEffective: Codex did not apply the expected project activation for ${pluginId}.`);
+    this.name = 'CodexProjectConfigNotEffectiveError';
+  }
+}
+
 export interface NativeCliErrorOptions {
   invocation: NativeCliInvocation;
   exitCode: number;
@@ -600,6 +628,122 @@ export function buildCodexPluginListInvocation(
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
   return buildCodexInvocation(manager, ['plugin', 'list'], cwd, env);
+}
+
+export function buildCodexPluginListJsonInvocation(
+  manager: CodexManager,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): NativeCliInvocation {
+  return buildCodexInvocation(manager, ['plugin', 'list', '--json'], cwd, env);
+}
+
+export function buildCodexProjectPluginListInvocations(
+  manager: CodexManager,
+  options: {
+    exactCwd: string;
+    neutralCwd: string;
+    env: NodeJS.ProcessEnv;
+  },
+): CodexProjectPluginListInvocations {
+  return {
+    exact: buildCodexPluginListJsonInvocation(manager, options.exactCwd, options.env),
+    neutral: buildCodexPluginListJsonInvocation(manager, options.neutralCwd, options.env),
+  };
+}
+
+function readCodexPluginListEntry(value: unknown, index: number): CodexPluginListEntry {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`codexPluginListInvalid: installed[${index}] must be an object.`);
+  }
+  const record = value as Record<string, unknown>;
+  const pluginId = record.pluginId;
+  if (
+    typeof pluginId !== 'string'
+    || pluginId !== pluginId.trim()
+    || !/^[^@\s]+@[^@\s]+$/u.test(pluginId)
+  ) {
+    throw new Error(`codexPluginListInvalid: installed[${index}].pluginId must be an exact namespaced ID.`);
+  }
+  if (record.installed !== true) {
+    throw new Error(`codexPluginListInvalid: installed[${index}].installed must be true.`);
+  }
+  if (typeof record.enabled !== 'boolean') {
+    throw new Error(`codexPluginListInvalid: installed[${index}].enabled must be boolean.`);
+  }
+  if (record.version !== undefined && typeof record.version !== 'string') {
+    throw new Error(`codexPluginListInvalid: installed[${index}].version must be string.`);
+  }
+  const source = record.source;
+  if (source !== undefined && (!source || typeof source !== 'object' || Array.isArray(source))) {
+    throw new Error(`codexPluginListInvalid: installed[${index}].source must be an object.`);
+  }
+  const pluginPath = source && typeof source === 'object'
+    ? (source as Record<string, unknown>).path
+    : undefined;
+  if (pluginPath !== undefined && typeof pluginPath !== 'string') {
+    throw new Error(`codexPluginListInvalid: installed[${index}].source.path must be string.`);
+  }
+  return {
+    pluginId,
+    enabled: record.enabled,
+    ...(typeof record.version === 'string' ? { version: record.version } : {}),
+    ...(typeof pluginPath === 'string' ? { path: pluginPath } : {}),
+  };
+}
+
+export function parseCodexPluginListJson(stdout: string): CodexPluginListEntry[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    throw new Error('codexPluginListInvalid: Codex plugin list did not return JSON.');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('codexPluginListInvalid: expected a Codex 0.151 plugin list object.');
+  }
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.installed) || !Array.isArray(record.available)) {
+    throw new Error('codexPluginListInvalid: expected installed[] and available[].');
+  }
+  return record.installed.map(readCodexPluginListEntry);
+}
+
+function isCodexPluginActive(entries: readonly CodexPluginListEntry[], pluginId: string): boolean {
+  const matches = entries.filter((entry) => entry.pluginId === pluginId);
+  if (matches.length > 1) {
+    throw new Error(`codexPluginListInvalid: duplicate plugin ID ${pluginId}.`);
+  }
+  return matches.length === 1 && matches[0]!.enabled;
+}
+
+export function postcheckCodexProjectPluginActivation(options: {
+  pluginId: string;
+  userEnabled: boolean;
+  projectEnabled: boolean;
+  exactResult: NativeCliResult;
+  neutralResult: NativeCliResult;
+}): CodexProjectActivationPostcheck {
+  const exactActive = isCodexPluginActive(
+    parseCodexPluginListJson(options.exactResult.stdout),
+    options.pluginId,
+  );
+  const neutralActive = isCodexPluginActive(
+    parseCodexPluginListJson(options.neutralResult.stdout),
+    options.pluginId,
+  );
+  if (
+    exactActive !== (options.userEnabled || options.projectEnabled)
+    || neutralActive !== options.userEnabled
+  ) {
+    throw new CodexProjectConfigNotEffectiveError(options.pluginId);
+  }
+  return {
+    effective: true,
+    pluginId: options.pluginId,
+    exactActive,
+    neutralActive,
+  };
 }
 
 export function buildCodexPluginRemoveInvocation(

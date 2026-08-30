@@ -1745,7 +1745,7 @@ describe('TUI v4 Review safety', () => {
       codexManager: {
         state: 'requires-install',
         packageName: '@openai/codex',
-        version: '0.150.1',
+        version: '0.151.0',
       },
     };
     const controller = new TuiController(dependencies({
@@ -1762,7 +1762,7 @@ describe('TUI v4 Review safety', () => {
       kind: 'add',
       group: 'runtime',
       title: '获取 Codex runtime',
-      description: '@openai/codex@0.150.1 · AW-managed 缓存',
+      description: '@openai/codex@0.151.0 · AW-managed 缓存',
     }));
     expect(review.equivalentCommand).toContain('--allow-managed-codex-install');
     expect(operationEvidenceFingerprint(evidence)).toBe(operationEvidenceFingerprint({
@@ -1790,7 +1790,7 @@ describe('TUI v4 Review safety', () => {
       codexManager: {
         state: managerState,
         packageName: '@openai/codex',
-        version: '0.150.1',
+        version: '0.151.0',
       },
     };
     const controller = new TuiController(dependencies({

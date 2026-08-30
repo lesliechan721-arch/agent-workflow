@@ -4,6 +4,8 @@ import {
   clearAgentVersionProbeCacheForTests,
   extractStrictSemVerTokenFromVersionOutput,
   getAgentVersionRequirement,
+  getCodexOperationRequirement,
+  probeCodexOperationVersion,
   probeAgentVersion,
 } from '../../src/utils/agent-version.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -45,6 +47,32 @@ describe('agent-version', () => {
     expect(requirement).toMatchObject({ platform, command, displayName });
     expect(extractStrictSemVerTokenFromVersionOutput(requirement.minVersion))
       .toBe(requirement.minVersion);
+  });
+
+  it('keeps the base Codex gate separate from the project activation gate', async () => {
+    const user = getCodexOperationRequirement('user');
+    const project = getCodexOperationRequirement('project');
+
+    expect(user).toEqual({
+      scope: 'user',
+      minimumVersion: '0.145.0',
+      requiresProjectPluginContract: false,
+    });
+    expect(project).toEqual({
+      scope: 'project',
+      minimumVersion: '0.151.0',
+      requiresProjectPluginContract: true,
+    });
+    await expect(probeCodexOperationVersion(user, {
+      runner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.150.0', stderr: '' }),
+    })).resolves.toMatchObject({ status: 'supported', requiredMinVersion: '0.145.0' });
+    await expect(probeCodexOperationVersion(project, {
+      runner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.150.0', stderr: '' }),
+    })).resolves.toMatchObject({
+      status: 'tooOld',
+      requiredMinVersion: '0.151.0',
+      detectedVersion: '0.150.0',
+    });
   });
 
   it('extracts the first strict SemVer token from supported version outputs', () => {

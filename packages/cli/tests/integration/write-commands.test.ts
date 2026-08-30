@@ -2674,7 +2674,7 @@ describe('five namespaced write commands', () => {
       await expect(options.authorizer!()).resolves.toBe(true);
       return {
         kind: 'managed' as const,
-        version: '0.150.1',
+        version: '0.151.0',
         command: 'codex',
         argsPrefix: [] as string[],
       };
@@ -5029,7 +5029,7 @@ describe('five namespaced write commands', () => {
     });
     const manager = {
       kind: 'managed' as const,
-      version: '0.150.1',
+      version: '0.151.0',
       command: '/managed/node',
       argsPrefix: ['/managed/codex.js'],
     };

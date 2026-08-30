@@ -842,7 +842,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       codexManager: {
         state: 'requires-install',
         packageName: '@openai/codex',
-        version: '0.150.1',
+        version: '0.151.0',
       },
       targetFingerprint: expect.stringMatching(/^sha256:/u),
     });

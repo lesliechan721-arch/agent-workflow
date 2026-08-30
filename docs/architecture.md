@@ -63,7 +63,7 @@ installed plugin
   catalog-cache/sources/<sourceId>/{current,last-good}/
   marketplaces/**
   lifecycle-active/**
-  runtimes/codex/0.150.1/<platform-arch>/**
+  runtimes/codex/0.151.0/<platform-arch>/**
 ```
 
 - 源码层是插件作者维护的输入。`evals/**`、正式报告和 `.DS_Store` 不进入 runtime bundle；Skill `README.md` 是 production source。
