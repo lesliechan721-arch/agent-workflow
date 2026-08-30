@@ -31,9 +31,9 @@
       "scripted_replies": [],
       "expected_output": "scope admitted；识别跨插件 gate 传播，给正确 owner 和最小路径。",
       "workspace_files": {
-        "plugins/eval-designer/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-designer\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"runtimeExports\":[{\"name\":\"eval-plan\",\"source\":\"./plan.json\"}]}}\n",
+        "plugins/eval-designer/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-designer\",\"version\":\"0.1.0\",\"skills\":\"./skills\",\"buildConfig\":{\"runtimeExports\":[{\"name\":\"eval-plan\",\"source\":\"./plan.json\",\"requires\":{\"aw\":{\"capabilities\":[]}}}]}}\n",
         "plugins/eval-designer/skills/design/SKILL.md": "---\nname: design\ndescription: Design Eval assets.\n---\n\nDesign cases and mark audit not assessed.\n",
-        "plugins/eval-auditor/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-auditor\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-designer\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-designer\",\"export\":\"eval-plan\",\"env\":\"PLAN\"}],\"runtimeExports\":[{\"name\":\"audit-result\",\"source\":\"./audit.json\"}]}}\n",
+        "plugins/eval-auditor/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-auditor\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-designer\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-designer\",\"export\":\"eval-plan\",\"env\":\"PLAN\"}],\"runtimeExports\":[{\"name\":\"audit-result\",\"source\":\"./audit.json\",\"requires\":{\"aw\":{\"capabilities\":[]}}}]}}\n",
         "plugins/eval-auditor/skills/audit/SKILL.md": "---\nname: audit\ndescription: Audit Eval assets.\n---\n\nOwn semantic preflight.\n",
         "plugins/eval-runner/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"eval-runner\",\"version\":\"0.1.0\",\"dependencies\":[\"eval-auditor\"],\"skills\":\"./skills\",\"buildConfig\":{\"buildImports\":[{\"plugin\":\"eval-auditor\",\"export\":\"audit-result\",\"env\":\"AUDIT\"}]}}\n",
         "plugins/eval-runner/skills/run/SKILL.md": "---\nname: run\ndescription: Run admitted Eval assets.\n---\n\nOwn the machine execution gate.\n"

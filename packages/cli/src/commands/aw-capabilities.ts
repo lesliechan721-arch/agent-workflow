@@ -3,8 +3,6 @@ import path from 'node:path'
 
 import {
   readCatalogWorkspace,
-  resolveCatalogWorkspaceRoot,
-  type CatalogWorkspaceResolvedFrom,
   type PluginMeta,
 } from '@lesliechan721/aw-plugin-core'
 import {
@@ -21,6 +19,10 @@ import {
 import fs from 'fs-extra'
 
 import { CLI_RESERVED_IMPORTS, readPluginManifest } from '../utils/manifest.js'
+import {
+  resolveCatalogWorkspaceRoot,
+  type CatalogWorkspaceResolvedFrom,
+} from './catalog-workspace-resolution.js'
 
 export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-manifest.v2',
@@ -38,6 +40,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.catalog-source.v2',
   'aw.catalog-dev-source.v1',
   'aw.catalog-publication.v1',
+  'aw.review-publication.v1',
   'aw.catalog-snapshot.v5',
   'aw.self-check.v1',
 ] as const

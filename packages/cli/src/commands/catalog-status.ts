@@ -8,9 +8,7 @@ import {
   DEFAULT_CATALOG_OUTPUT_PATH,
   deriveCatalogChannel,
   readCatalogWorkspace,
-  resolveCatalogWorkspaceRoot,
   validateCatalogSnapshotComplete,
-  type CatalogWorkspaceResolvedFrom,
   type CatalogWorkspace,
 } from '@lesliechan721/aw-plugin-core';
 
@@ -22,6 +20,10 @@ import {
   type CatalogPublicationIssue,
 } from './catalog-publication-inspection.js';
 import { catalogPublicationDescriptorDigest } from './catalog-publish.js';
+import {
+  resolveCatalogWorkspaceRoot,
+  type CatalogWorkspaceResolvedFrom,
+} from './catalog-workspace-resolution.js';
 import {
   resolveCatalogPublicationTarget,
   type CatalogBranchResolvedFrom,

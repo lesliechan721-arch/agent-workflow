@@ -12,51 +12,113 @@
     "runtimeExports": [
       {
         "name": "skill-rules",
-        "source": "./standards/skill-rules.json"
+        "source": "./standards/skill-rules.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "review-dimensions",
-        "source": "./standards/review-dimensions.json"
+        "source": "./standards/review-dimensions.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "review-publication-reference",
-        "source": "./references/review-publication.md"
+        "source": "./references/review-publication.md",
+        "requires": {
+          "aw": {
+            "capabilities": [
+              "aw.review-publication.v1"
+            ]
+          }
+        }
       },
       {
         "name": "validate-json-contract",
-        "source": "./scripts/validate-json-contract.mjs"
+        "source": "./scripts/validate-json-contract.mjs",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "validate-eval-audit-result",
-        "source": "./scripts/validate-eval-audit-result.mjs"
+        "source": "./scripts/validate-eval-audit-result.mjs",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "validate-eval-run-bundle",
-        "source": "./scripts/validate-eval-run-bundle.mjs"
+        "source": "./scripts/validate-eval-run-bundle.mjs",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "check-agent-skill",
-        "source": "./scripts/check-agent-skill.mjs"
+        "source": "./scripts/check-agent-skill.mjs",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "validate-quality-review-result",
-        "source": "./scripts/validate-quality-review-result.mjs"
+        "source": "./scripts/validate-quality-review-result.mjs",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "quality-review-result-schema",
-        "source": "./schemas/quality-review-result.schema.json"
+        "source": "./schemas/quality-review-result.schema.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "skill-design-brief-schema",
-        "source": "./schemas/skill-design-brief.schema.json"
+        "source": "./schemas/skill-design-brief.schema.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "eval-audit-result-schema",
-        "source": "./schemas/eval-audit-result.schema.json"
+        "source": "./schemas/eval-audit-result.schema.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       },
       {
         "name": "eval-run-bundle-schema",
-        "source": "./schemas/eval-run-bundle.schema.json"
+        "source": "./schemas/eval-run-bundle.schema.json",
+        "requires": {
+          "aw": {
+            "capabilities": []
+          }
+        }
       }
     ],
     "buildImports": [
@@ -208,5 +270,13 @@
     "capabilities": [
       "Skills"
     ]
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.review-publication.v1",
+        "aw.skill-validation.v1"
+      ]
+    }
   }
 }

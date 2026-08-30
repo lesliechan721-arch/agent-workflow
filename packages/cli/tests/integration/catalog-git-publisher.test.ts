@@ -56,6 +56,7 @@ async function createWorkspace(version = '0.1.0'): Promise<{ root: string; remot
   await execFileAsync('git', ['init', '--quiet'], { cwd: root });
   await runCli([
     'catalog', 'init', '--workspace-root', root, '--catalog-version', version,
+    '--owner-url', 'https://catalog.example.com/publisher-demo',
   ], { cwd: root, io: quietIo() });
   await runCli([
     'plugin', 'init', 'publisher-demo', '--description', 'Publisher demo.', '--no-skills',

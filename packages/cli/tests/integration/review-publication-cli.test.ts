@@ -96,7 +96,10 @@ async function createReviewRepository(): Promise<string> {
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
-      buildConfig: { runtimeExports: [{ name: 'standard', source: './standard.txt' }] },
+      buildConfig: { runtimeExports: [{
+        name: 'standard', source: './standard.txt',
+        requires: { aw: { capabilities: [] } },
+      }] },
     },
     { spaces: 2 },
   );

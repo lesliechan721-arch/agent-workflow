@@ -1680,7 +1680,10 @@ describe('authoring tools', () => {
       'runtime-provider',
       createBaseManifest('runtime-provider', {
         buildConfig: {
-          runtimeExports: [{ name: 'standard', source: './standard.txt' }],
+          runtimeExports: [{
+            name: 'standard', source: './standard.txt',
+            requires: { aw: { capabilities: [] } },
+          }],
         },
       }),
       { 'standard.txt': providerBytes },
@@ -3788,7 +3791,10 @@ describe('authoring tools', () => {
           policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
         },
         extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
-        buildConfig: { runtimeExports: [{ name: 'shared', source: './shared.txt' }] },
+        buildConfig: { runtimeExports: [{
+          name: 'shared', source: './shared.txt',
+          requires: { aw: { capabilities: [] } },
+        }] },
       }),
       { 'shared.txt': providerBytes },
     );
@@ -3883,8 +3889,14 @@ describe('authoring tools', () => {
         },
         buildConfig: {
           runtimeExports: [
-            { name: 'registry', source: './registry.json' },
-            { name: 'unsafe-runtime', source: './unsafe-runtime.txt' },
+            {
+              name: 'registry', source: './registry.json',
+              requires: { aw: { capabilities: [] } },
+            },
+            {
+              name: 'unsafe-runtime', source: './unsafe-runtime.txt',
+              requires: { aw: { capabilities: [] } },
+            },
           ],
         },
       }),
@@ -6110,7 +6122,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v8 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v9 is unavailable'),
     });
   });
 
@@ -6159,7 +6171,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v8 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v9 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6172,7 +6184,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v8 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v9 is unavailable'),
     });
   });
 

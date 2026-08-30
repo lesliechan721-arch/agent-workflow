@@ -64,6 +64,18 @@ test('reviewer manifest and runtime expose only the current quality contract', a
       'validate-quality-review-result:./scripts/validate-quality-review-result.mjs',
     ],
   );
+  for (const runtimeExport of manifest.buildConfig.runtimeExports) {
+    assert.deepEqual(
+      runtimeExport.requires.aw.capabilities,
+      runtimeExport.name === 'review-publication-reference'
+        ? ['aw.review-publication.v1']
+        : [],
+    );
+  }
+  assert.deepEqual(manifest.requires.aw.capabilities, [
+    'aw.review-publication.v1',
+    'aw.skill-validation.v1',
+  ]);
   const targets = manifest.buildConfig.skillRuntimeFiles
     .filter((entry) => entry.skill === 'review-agent-skill')
     .map((entry) => entry.target)

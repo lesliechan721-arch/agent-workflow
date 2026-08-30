@@ -113,7 +113,7 @@ describe('AW capability CLI commands', () => {
     })
   })
 
-  it('fails self check when manifest scanning finds an unmapped literal command', async () => {
+  it('keeps an unmapped inline Markdown command advisory during self check', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-unmapped-'))
     tempDirs.push(root)
     const pluginRoot = path.join(root, 'plugin')
@@ -124,14 +124,18 @@ describe('AW capability CLI commands', () => {
     )
 
     const result = await runCliEntry(['self', 'check', '--from', pluginRoot, '--json'], { cwd: root })
-    expect(result.exitCode).toBe(1)
+    expect(result.exitCode).toBe(0)
     expect(result.stderr).toBe('')
     expect(result.parseJsonStdout()).toMatchObject({
       command: 'self:check',
-      ok: false,
+      ok: true,
       missingCapabilities: [],
       observations: expect.arrayContaining([
-        expect.objectContaining({ code: 'aw-command-unmapped', blocking: true }),
+        expect.objectContaining({
+          code: 'aw-command-unmapped',
+          blocking: false,
+          provenance: 'inline-code',
+        }),
       ]),
     })
   })
@@ -250,7 +254,7 @@ describe('AW capability CLI commands', () => {
     const pluginRoot = path.join(root, 'plugins', 'git-commit')
     await fs.appendFile(
       path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'),
-      '\nRun `aw unknown command` when needed.\n',
+      '\naw unknown command\n',
     )
 
     const result = await runCliEntry(['plugin', 'requirements', pluginRoot, '--json'], { cwd: root })

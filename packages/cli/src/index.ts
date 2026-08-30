@@ -6,9 +6,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, Option } from 'commander';
-import { resolveCatalogWorkspaceRoot } from '@lesliechan721/aw-plugin-core';
 
 import { initCommand } from './commands/init.js';
+import { resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
   addCatalogSourceCommand,
   explicitRefPolicy,
@@ -1676,6 +1676,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd,
           ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
           mode: 'initialize',
+          env,
         });
         await runCatalogInitCommand({
           ...rawOptions,
@@ -1696,7 +1697,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
     .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
     .option('--branch <name>', 'explicit Catalog publication branch')
-    .requiredOption('--json', 'emit one schema 1 JSON object')
+    .requiredOption('--json', 'emit one schema 2 JSON object')
     .action(async (rawOptions: { workspaceRoot?: string; remote?: string; branch?: string }) => {
       const receipt = await getCatalogContext({
         cwd,
@@ -1921,7 +1922,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogDev
     .command('status')
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
-    .requiredOption('--json', 'emit one schema 1 JSON receipt')
+    .requiredOption('--json', 'emit one schema 2 JSON receipt')
     .action(async (rawOptions: { workspaceRoot?: string }) => {
       const receipt = await getCatalogDevSourceStatus({
         cwd,

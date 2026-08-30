@@ -83,7 +83,7 @@ function statusReceipt({ ok, issue = null }) {
       version: '0.4.0',
       channel: 'latest',
       ownerName: 'Fixture Owner',
-      ownerUrl: 'https://example.invalid/catalog-owner',
+      ownerUrl: 'https://catalog.example.com/owner',
       displayName: 'Publisher Fixture',
     },
     plugins: [{
@@ -159,7 +159,7 @@ if (command === 'self check') {
 
 if (command === 'catalog context') {
   emit({
-    schemaVersion: 1,
+    schemaVersion: 2,
     command: 'catalog:context',
     toolchain: { ...toolchain, digest: toolchainDigest },
     workspace: {
@@ -186,7 +186,7 @@ if (command === 'catalog context') {
       snapshotPath: path.join(root, '.aw', 'catalog'),
       suggestedSourceId: 'publisher-fixture-dev',
       existingSourceId: null,
-      active: false,
+      configured: false,
     },
     issues: [],
   });

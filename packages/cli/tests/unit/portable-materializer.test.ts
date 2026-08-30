@@ -356,7 +356,10 @@ describe('portable materializer', () => {
       ...baseManifest('provider'),
       distributions: undefined,
       skills: './skills',
-      buildConfig: { runtimeExports: [{ name: 'runtime', source: './runtime.txt' }] },
+      buildConfig: { runtimeExports: [{
+        name: 'runtime', source: './runtime.txt',
+        requires: { aw: { capabilities: [] } },
+      }] },
     };
     const provider = await pluginFixture(root, providerManifest);
     await fs.outputFile(path.join(provider.rootDir, 'skills', 'native', 'SKILL.md'), '---\nname: native\ndescription: native\n---\n');

@@ -41,8 +41,8 @@ aw self check --from <skill-root> --json
      --branch <context.publication.branch> --preflight --json
    ```
 
-4. Preflight 必须成功。直接从 JSON 展示最终绝对 `workspace.root`、`publication.remote`、`publication.branch` 和 `publication.descriptorDigest`；同时保留 CLI 返回的 source、版本和 publication receipt 字段。任一授权字段缺失时停止；不得猜测、重算或省略。
-5. 请求用户仅对这一次 identity 明确授权：绝对 root、remote、branch 和 descriptor digest 必须与本次 preflight 完全相同。旧授权、笼统的“发布最新版”或只授权 remote 不足以继续。
+4. Preflight 必须成功。在请求授权前，直接从同一个 JSON receipt 展示以下全部字段：最终绝对 `workspace.root`、`workspace.identity`、`git.sourceHead`、`catalog.version`、`publication.remote`、安全的 `publication.fetchUrl`、安全的 `publication.pushUrl`、`publication.branch`、`publication.parent`、`publication.tag`、`publication.snapshotDigest`、`publication.planId` 和完整 `publication.descriptorDigest`。任一字段缺失时停止；不得猜测、重算或省略。
+5. 展示全部字段后，请求用户精确授权这一次完整 `publication.descriptorDigest`。其它展示字段是该 descriptor 的人类可读上下文，不是独立授权 token。旧授权、笼统的“发布最新版”或只授权 remote 不足以继续。
 6. 只有精确授权后才运行：
 
    ```bash
@@ -53,7 +53,7 @@ aw self check --from <skill-root> --json
      --yes --json
    ```
 
-7. 核对 publish receipt 的 `workspaceRoot`、`remote`、`branch` 和 `descriptorDigest` 与授权 identity；保留 receipt 的其它 CLI 证据。drift 或不一致时报告失败，不修改或删除 attempt。
+7. 核对 publish receipt 的 `workspaceRoot`、`remote`、`branch` 和 `descriptorDigest` 与 preflight 及已授权 digest；保留 receipt 的其它 CLI 证据。drift 或不一致时报告失败，不修改或删除 attempt。
 
 ## 失败边界
 

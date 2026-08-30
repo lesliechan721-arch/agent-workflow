@@ -49,7 +49,11 @@ export interface BuildConfigManifestOverrides {
   claude?: ClaudeManifestOverrides;
   codex?: Record<string, never>;
 }
-export interface BuildConfigRuntimeExport { name: string; source: string }
+export interface BuildConfigRuntimeExport {
+  name: string;
+  source: string;
+  requires: { aw: { capabilities: string[] } };
+}
 export interface BuildConfigImportReference { plugin: string; export: string }
 export interface BuildConfigBuildImport extends BuildConfigImportReference { env: string }
 export interface BuildConfigSkillRuntimeFile {
@@ -181,7 +185,15 @@ export type DynamicArtifactKind = 'instruction' | 'codexRole' | 'skill';
 export type ManagedArtifactId = string;
 export interface ArtifactRuntimeImportDefinition extends BuildConfigImportReference {
   name: string;
-  resolved?: { path: string; digest: string; providerPluginId: PluginId; providerVersion: PluginVersion; source: string };
+  resolved?: {
+    path: string;
+    digest: string;
+    providerPluginId: PluginId;
+    providerVersion: PluginVersion;
+    source: string;
+    requiredCapabilities: string[];
+    capabilitySetDigest: string;
+  };
 }
 export interface PluginArtifactTargetDefinition {
   id: string;

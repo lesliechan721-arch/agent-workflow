@@ -113,4 +113,7 @@ test('staged manifest preserves the source content toolkit identity', async () =
     sourceManifest.buildConfig.runtimeExports.map(({ name }) => name).sort(),
     ['content-rules', 'reference-audit-result-schema'],
   );
+  for (const runtimeExport of sourceManifest.buildConfig.runtimeExports) {
+    assert.deepEqual(runtimeExport.requires.aw.capabilities, []);
+  }
 });

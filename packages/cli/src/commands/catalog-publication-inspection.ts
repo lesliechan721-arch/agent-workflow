@@ -360,6 +360,13 @@ export async function prepareCatalogPublicationInspection(options: {
     } catch (error) {
       throw inspectionError('workspaceInvalid', error);
     }
+    const ownerUrl = catalogWorkspace.metadata.owner.url;
+    if (URL.canParse(ownerUrl) && new URL(ownerUrl).hostname === 'example.invalid') {
+      throw new CatalogPublicationInspectionError(
+        'catalogMetadataIncomplete',
+        'Catalog owner URL still uses the example.invalid placeholder. Set plugins/marketplace-source.json owner.url before publication.',
+      );
+    }
     await validateCatalogPublicationPlugins(catalogWorkspace, env);
     const catalogVersion = catalogWorkspace.metadata.catalog.version;
     const tag = `catalog-v${catalogVersion}`;

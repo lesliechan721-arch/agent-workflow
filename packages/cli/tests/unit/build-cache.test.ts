@@ -450,7 +450,10 @@ describe('build cache input and environment identity', () => {
     await fs.writeFile(providerManifestPath, JSON.stringify({
       name: 'provider',
       buildConfig: {
-        runtimeExports: [{ name: 'rules', source: './standards/rules.json' }],
+        runtimeExports: [{
+          name: 'rules', source: './standards/rules.json',
+          requires: { aw: { capabilities: [] } },
+        }],
       },
     }));
     await fs.writeFile(buildScriptPath, 'export const build = 1;\n');

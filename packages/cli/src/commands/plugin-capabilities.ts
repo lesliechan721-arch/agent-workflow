@@ -45,6 +45,10 @@ const adapterFacts: Readonly<Partial<Record<
   'build-config': {
     'buildConfig.cacheable': { requires: 'A deterministic scripts.node.build.' },
     'buildConfig.runtimeExports': { conflicts: 'Skill, report, eval, generated, and dependency roots.' },
+    'buildConfig.runtimeExports[].requires.aw.capabilities': {
+      requires: 'The provider-owned complete capability set for this export; an empty set is valid.',
+      provenance: ['CLI runtime import resolver'],
+    },
     'buildConfig.buildImports': { requires: 'scripts.node.build and a unique AW_PLUGIN_IMPORT_* environment variable.' },
     'buildConfig.manifestOverrides.claude': { profiles: 'CLAUDE', requires: 'CLAUDE product support.' },
     'buildConfig.skillRuntimeFiles': { requires: 'A declared static Skill and a target below references/, assets/, or scripts/.' },

@@ -3,9 +3,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
-  resolveCatalogWorkspaceRoot,
   validatePublishedCatalogSnapshot,
-  type CatalogWorkspaceResolvedFrom,
 } from '@lesliechan721/aw-plugin-core';
 
 import {
@@ -22,6 +20,10 @@ import {
   type CatalogBranchResolvedFrom,
   type CatalogRemoteResolvedFrom,
 } from './catalog-publication-target.js';
+import {
+  resolveCatalogWorkspaceRoot,
+  type CatalogWorkspaceResolvedFrom,
+} from './catalog-workspace-resolution.js';
 
 export { safeRemoteIdentity, sanitizedGitEnvironment } from './catalog-publication-inspection.js';
 

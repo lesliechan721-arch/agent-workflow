@@ -13,12 +13,14 @@ const context = process.env.AW_PLUGIN_CONTEXT
   : null;
 const sourceRoot = context?.sourceRoot ?? localRoot;
 const runtimeRoot = context?.platform ? path.join(localRoot, context.platform) : localRoot;
+const expectedDeclaredCapabilities = [
+  'aw.catalog-dev-source.v1',
+  'aw.plugin-authoring.v1',
+];
 const expectedDetectedCapabilities = [
   'aw.catalog-authoring.v1',
   'aw.catalog-context.v1',
-  'aw.catalog-dev-source.v1',
   'aw.catalog-publication.v1',
-  'aw.plugin-authoring.v1',
   'aw.self-check.v1',
 ];
 const execFileAsync = promisify(execFile);
@@ -117,16 +119,19 @@ async function readRequirementsReceipt() {
   return JSON.parse(stdout);
 }
 
-test('manifest keeps only scanner-derived Catalog capability requirements', async () => {
+test('manifest declares inline-only commands and keeps hard evidence scanner-derived', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.name, 'aw-catalog-development');
   assert.deepEqual(manifest.dependencies, ['aw-plugin-development']);
 
   const requirements = await readRequirementsReceipt();
-  assert.deepEqual(requirements.declared, []);
+  assert.deepEqual(requirements.declared, expectedDeclaredCapabilities);
   assert.deepEqual(requirements.detected, expectedDetectedCapabilities);
-  assert.ok(expectedDetectedCapabilities.every((capability) => requirements.effective.includes(capability)));
+  assert.ok([
+    ...expectedDeclaredCapabilities,
+    ...expectedDetectedCapabilities,
+  ].every((capability) => requirements.effective.includes(capability)));
   assert.deepEqual(requirements.unsupportedByCurrentAw, []);
 
   const pluginDevelopment = JSON.parse(await readFile(
@@ -161,7 +166,11 @@ test('Catalog author uses context and Catalog development-source commands', asyn
   assert.match(author, /只在 root 缺失或歧义时询问/u);
   assert.match(author, /initialization\.suggestedRoot/u);
   assert.match(author, /aw catalog dev activate --workspace-root <workspace\.root> --json/u);
-  assert.match(author, /catalog dev status/u);
+  assert.match(author, /aw catalog dev status --workspace-root <workspace\.root> --json/u);
+  assert.match(author, /`ok` 和 `ready` 都为 `true`/u);
+  assert.match(author, /`ok: false` 是诊断失败/u);
+  assert.match(author, /`ok: true, ready: false`/u);
+  assert.match(author, /使用 activate receipt 的 `source\.id` 组成 `<source\.id>\/<plugin>`/u);
   assert.match(author, /catalog dev deactivate/u);
   assert.doesNotMatch(author, /aw catalog source/u);
   assert.match(author, /受影响插件及其反向依赖闭包/u);
@@ -247,8 +256,16 @@ test('Catalog publisher preflights and binds the user authorization to the recei
   assert.match(publisher, /--workspace-root <context\.workspace\.root>/u);
   assert.match(publisher, /--remote <context\.publication\.remote>/u);
   assert.match(publisher, /--branch <context\.publication\.branch> --preflight --json/u);
-  assert.match(publisher, /绝对 `workspace\.root`、`publication\.remote`、`publication\.branch` 和 `publication\.descriptorDigest`/u);
-  assert.match(publisher, /仅对这一次 identity 明确授权/u);
+  for (const field of [
+    'workspace.root', 'workspace.identity', 'git.sourceHead', 'catalog.version',
+    'publication.remote', 'publication.fetchUrl', 'publication.pushUrl',
+    'publication.branch', 'publication.parent', 'publication.tag',
+    'publication.snapshotDigest', 'publication.planId', 'publication.descriptorDigest',
+  ]) {
+    assert.ok(publisher.includes(`\`${field}\``), `Publisher must display ${field} before authorization.`);
+  }
+  assert.match(publisher, /请求用户精确授权这一次完整 `publication\.descriptorDigest`/u);
+  assert.match(publisher, /不是独立授权 token/u);
   assert.match(publisher, /--workspace-root <preflight\.workspace\.root>/u);
   assert.match(publisher, /--remote <preflight\.publication\.remote>/u);
   assert.match(publisher, /--branch <preflight\.publication\.branch>/u);
@@ -376,6 +393,11 @@ test('Publisher Eval fixture separates public receipts from private remote evide
       const context = await runEvalFixture({ fixture, cliEntry, cwd: root, args: contextArgs });
       assert.equal(context.exitCode, 0, context.stderr);
       const contextReceipt = parseSingleJson(context.stdout, `${evalCase.id}: context`);
+      assert.equal(contextReceipt.schemaVersion, 2);
+      assert.equal(contextReceipt.developmentSource.configured, false);
+      assert.deepEqual(Object.keys(contextReceipt.developmentSource).sort(), [
+        'configured', 'existingSourceId', 'snapshotPath', 'suggestedSourceId',
+      ]);
       assert.deepEqual(Object.keys(contextReceipt).sort(), [
         'command', 'developmentSource', 'git', 'initialization', 'issues',
         'publication', 'schemaVersion', 'toolchain', 'workspace',

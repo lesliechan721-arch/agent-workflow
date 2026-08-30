@@ -79,4 +79,13 @@ describe('plugin authoring capability structure registry', () => {
         expect.objectContaining({ field: 'artifacts.targets[].skillKey', required: 'for Skill targets' }),
       ]))
   })
+
+  it('publishes required runtime export capability metadata', () => {
+    expect(getPluginAuthoringCapabilitySurface('build-config').entries)
+      .toContainEqual(expect.objectContaining({
+        field: 'buildConfig.runtimeExports[].requires.aw.capabilities',
+        type: 'unique AW capability ID[]',
+        required: true,
+      }))
+  })
 })

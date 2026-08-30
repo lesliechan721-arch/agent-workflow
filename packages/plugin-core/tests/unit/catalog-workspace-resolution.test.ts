@@ -1,14 +1,12 @@
-import { execFile } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
-import { promisify } from 'node:util'
 
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { resolveCatalogWorkspaceRoot } from '../../src/catalog-workspace-resolution.js'
+import { findNearestCatalogWorkspaceRoot } from '../../src/catalog-workspace-resolution.js'
+import { readCatalogWorkspaceMarker } from '../../src/workspace.js'
 
-const execFileAsync = promisify(execFile)
 const roots: string[] = []
 
 async function createRoot(): Promise<string> {
@@ -36,10 +34,15 @@ describe('Catalog Workspace resolution', () => {
     await fs.ensureDir(deep)
     await writeMarker(root)
 
-    await expect(resolveCatalogWorkspaceRoot({ cwd: deep, mode: 'existing' })).resolves.toEqual({
-      workspaceRoot: root,
-      workspaceRootResolvedFrom: 'workspace-marker',
-    })
+    await expect(findNearestCatalogWorkspaceRoot({ from: deep })).resolves.toBe(root)
+  })
+
+  it('returns null when no ancestor has a marker', async () => {
+    const root = await createRoot()
+    const deep = path.join(root, 'plugins', 'demo')
+    await fs.ensureDir(deep)
+
+    await expect(findNearestCatalogWorkspaceRoot({ from: deep })).resolves.toBeNull()
   })
 
   it('fails at an invalid nearest marker instead of crossing it', async () => {
@@ -50,8 +53,8 @@ describe('Catalog Workspace resolution', () => {
     await writeMarker(root)
     await fs.writeJson(path.join(nested, '.aw-workspace.json'), { schemaVersion: 99 })
 
-    await expect(resolveCatalogWorkspaceRoot({ cwd: deep, mode: 'existing' }))
-      .rejects.toThrow(`Invalid Catalog Workspace marker: ${path.join(nested, '.aw-workspace.json')}`)
+    await expect(findNearestCatalogWorkspaceRoot({ from: deep }))
+      .rejects.toThrow('Invalid Catalog Workspace marker.')
   })
 
   it('fails at a symbolic-link nearest marker instead of crossing it', async () => {
@@ -63,49 +66,21 @@ describe('Catalog Workspace resolution', () => {
     await writeMarker(root)
     await fs.symlink(path.join(root, 'missing-marker.json'), path.join(nested, '.aw-workspace.json'))
 
-    await expect(resolveCatalogWorkspaceRoot({ cwd: deep, mode: 'existing' }))
-      .rejects.toThrow(`Invalid Catalog Workspace marker: ${path.join(nested, '.aw-workspace.json')}`)
+    await expect(findNearestCatalogWorkspaceRoot({ from: deep }))
+      .rejects.toThrow(`Catalog Workspace marker must be a regular non-symbolic-link file: ${path.join(nested, '.aw-workspace.json')}`)
   })
 
-  it('suggests the Git worktree root for initialization without an existing workspace', async () => {
+  it('uses the formal marker reader for validation', async () => {
     const root = await createRoot()
-    const deep = path.join(root, 'packages', 'demo')
+    const deep = path.join(root, 'plugins', 'demo')
     await fs.ensureDir(deep)
-    await execFileAsync('git', ['init', '--quiet'], { cwd: root })
-
-    await expect(resolveCatalogWorkspaceRoot({ cwd: deep, mode: 'initialize' })).resolves.toEqual({
-      workspaceRoot: root,
-      workspaceRootResolvedFrom: 'git-worktree',
+    await fs.writeJson(path.join(root, '.aw-workspace.json'), {
+      schemaVersion: 1,
+      kind: 'aw-catalog-workspace',
+      workspaceIdentity: '',
     })
-  })
 
-  it('ignores injected repository-selection environment when discovering an initialization root', async () => {
-    const selected = await createRoot()
-    const actual = await createRoot()
-    const deep = path.join(actual, 'packages', 'demo')
-    await fs.ensureDir(deep)
-    await Promise.all([
-      execFileAsync('git', ['init', '--quiet'], { cwd: selected }),
-      execFileAsync('git', ['init', '--quiet'], { cwd: actual }),
-    ])
-    const previous = {
-      GIT_DIR: process.env.GIT_DIR,
-      GIT_WORK_TREE: process.env.GIT_WORK_TREE,
-      GIT_COMMON_DIR: process.env.GIT_COMMON_DIR,
-    }
-    process.env.GIT_DIR = path.join(selected, '.git')
-    process.env.GIT_WORK_TREE = selected
-    process.env.GIT_COMMON_DIR = path.join(selected, '.git')
-    try {
-      await expect(resolveCatalogWorkspaceRoot({ cwd: deep, mode: 'initialize' })).resolves.toEqual({
-        workspaceRoot: actual,
-        workspaceRootResolvedFrom: 'git-worktree',
-      })
-    } finally {
-      for (const [name, value] of Object.entries(previous)) {
-        if (value === undefined) delete process.env[name]
-        else process.env[name] = value
-      }
-    }
+    await expect(readCatalogWorkspaceMarker(root)).rejects.toThrow('Invalid Catalog Workspace marker.')
+    await expect(findNearestCatalogWorkspaceRoot({ from: deep })).rejects.toThrow('Invalid Catalog Workspace marker.')
   })
 })

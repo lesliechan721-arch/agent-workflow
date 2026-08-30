@@ -73,7 +73,12 @@ test('AW requirements receipt combines derived, detected, and dynamic authoring 
   const result = await runAw(['plugin', 'requirements', sourceRoot, '--json'], sourceRoot);
 
   assert.equal(result.command, 'plugin:requirements');
-  assert.deepEqual(result.declared, ['aw.plugin-authoring.v1']);
+  assert.deepEqual(result.declared, [
+    'aw.catalog-context.v1',
+    'aw.plugin-authoring.v1',
+    'aw.self-check.v1',
+    'aw.skill-validation.v1',
+  ]);
   assert.deepEqual(result.unsupportedByCurrentAw, []);
   for (const capability of [
     'aw.catalog-context.v1',

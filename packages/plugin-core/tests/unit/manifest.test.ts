@@ -97,7 +97,10 @@ describe('plugin manifest v2 structure', () => {
     }],
     ['runtime export', {
       buildConfig: {
-        runtimeExports: [{ name: 'shared-runtime', source: './runtime/.git/shared.mjs' }],
+        runtimeExports: [{
+          name: 'shared-runtime', source: './runtime/.git/shared.mjs',
+          requires: { aw: { capabilities: [] } },
+        }],
       },
     }],
   ])('rejects ignored source segments in a %s declaration', (_label, override) => {

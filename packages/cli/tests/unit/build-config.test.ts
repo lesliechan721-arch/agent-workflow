@@ -124,7 +124,13 @@ describe('buildConfig validation', () => {
     const manifest = validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
       buildConfig: {
-        runtimeExports: [{ name: 'frontmatter-registry', source: './registry.json' }],
+        runtimeExports: [{
+          name: 'frontmatter-registry', source: './registry.json',
+          requires: { aw: { capabilities: [
+            'aw.review-publication.v1',
+            'aw.plugin-skills.v1',
+          ] } },
+        }],
         buildImports: [{
           plugin: 'provider',
           export: 'frontmatter-registry',
@@ -140,7 +146,13 @@ describe('buildConfig validation', () => {
     });
 
     expect(manifest.buildConfig).toMatchObject({
-      runtimeExports: [{ name: 'frontmatter-registry', source: './registry.json' }],
+      runtimeExports: [{
+        name: 'frontmatter-registry', source: './registry.json',
+        requires: { aw: { capabilities: [
+          'aw.plugin-skills.v1',
+          'aw.review-publication.v1',
+        ] } },
+      }],
       buildImports: [{
         plugin: 'provider',
         export: 'frontmatter-registry',
@@ -153,6 +165,26 @@ describe('buildConfig validation', () => {
         import: { plugin: 'provider', export: 'frontmatter-registry' },
       }],
     });
+  });
+
+  it('requires runtime export metadata and accepts an explicit empty capability set', () => {
+    expect(() => validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      buildConfig: {
+        runtimeExports: [{ name: 'missing-requires', source: './registry.json' }],
+      },
+    })).toThrow("must have required property 'requires'");
+
+    expect(validatePluginManifest('/tmp/plugin', {
+      ...baseManifest,
+      buildConfig: {
+        runtimeExports: [{
+          name: 'empty-requires',
+          source: './registry.json',
+          requires: { aw: { capabilities: [] } },
+        }],
+      },
+    }).buildConfig?.runtimeExports?.[0]?.requires.aw.capabilities).toEqual([]);
   });
 
   it('normalizes declared build-generated Skill runtime targets', () => {
@@ -286,7 +318,10 @@ describe('buildConfig validation', () => {
 
   it.each([
     {
-      buildConfig: { runtimeExports: [{ name: 'registry', source: './a/../registry.json' }] },
+      buildConfig: { runtimeExports: [{
+        name: 'registry', source: './a/../registry.json',
+        requires: { aw: { capabilities: [] } },
+      }] },
       error: 'canonical POSIX path',
     },
     {
@@ -311,7 +346,10 @@ describe('buildConfig validation', () => {
       error: 'exactly one of source or import',
     },
     {
-      buildConfig: { runtimeExports: [{ name: 'registry', source: './registry.json', extra: true }] },
+      buildConfig: { runtimeExports: [{
+        name: 'registry', source: './registry.json',
+        requires: { aw: { capabilities: [] } }, extra: true,
+      }] },
       error: '/buildConfig/runtimeExports/0 must NOT have additional properties',
     },
     {

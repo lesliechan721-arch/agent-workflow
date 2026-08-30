@@ -851,7 +851,10 @@ describe('plugin script test runner', () => {
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       buildConfig: {
-        runtimeExports: [{ name: 'registry', source: './registry.json' }],
+        runtimeExports: [{
+          name: 'registry', source: './registry.json',
+          requires: { aw: { capabilities: [] } },
+        }],
       },
     }, { spaces: 2 });
     await fs.outputFile(path.join(providerRoot, 'registry.json'), '{"catalog":true}\n');

@@ -45,6 +45,7 @@ it('uses the built common publisher to bootstrap independent official beta and l
   await execFileAsync('git', ['init', '--quiet'], { cwd: workspaceRoot });
   await runAw(cliEntry, workspaceRoot, [
     'catalog', 'init', '--workspace-root', workspaceRoot,
+    '--owner-url', 'https://catalog.example.com/bootstrap-demo',
   ]);
   await runAw(cliEntry, workspaceRoot, [
     'plugin', 'init', 'bootstrap-demo', '--description', 'Bootstrap demo.', '--no-skills',

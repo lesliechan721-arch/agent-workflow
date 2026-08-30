@@ -35,7 +35,10 @@
   },
   "requires": {
     "aw": {
-      "capabilities": []
+      "capabilities": [
+        "aw.catalog-dev-source.v1",
+        "aw.plugin-authoring.v1"
+      ]
     }
   }
 }
