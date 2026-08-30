@@ -6,7 +6,7 @@
 
 ```bash
 aw skill eval prepare git-toolkit \
-  --skill git-commit --suite trigger --profile project-default \
+  git-commit --suite trigger --profile project-default \
   --output /tmp/aw-eval-specs/git-commit-materialization --json
 ```
 
@@ -34,14 +34,14 @@ provider 每次只处理 engine 给出的一个 case、variant 和 attempt。它
 ## 准备触发与行为评测 Spec
 
 ```bash
-aw skill eval prepare git-toolkit --skill git-commit --suite trigger --profile project-default --split validation --runs 1 --output /tmp/aw-eval-specs/git-commit-trigger-validation-debug --json
-aw skill eval prepare git-toolkit --skill git-commit --suite behavior --profile project-default --case staged_only_with_unstaged_hunks --output /tmp/aw-eval-specs/git-commit-behavior-debug --json
+aw skill eval prepare git-toolkit git-commit --suite trigger --profile project-default --split validation --runs 1 --output /tmp/aw-eval-specs/git-commit-trigger-validation-debug --json
+aw skill eval prepare git-toolkit git-commit --suite behavior --profile project-default --case staged_only_with_unstaged_hunks --output /tmp/aw-eval-specs/git-commit-behavior-debug --json
 ```
 
 每个所选 suite/profile 应分别准备对应 Spec 并交给 `$run-aw-skill-evals`。检查 train：
 
 ```bash
-aw skill eval prepare git-toolkit --skill git-commit --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-specs/git-commit-trigger-train --json
+aw skill eval prepare git-toolkit git-commit --suite trigger --profile project-default --split train --runs 3 --output /tmp/aw-eval-specs/git-commit-trigger-train --json
 ```
 
 trigger fixture 使用同时包含已暂存、未暂存和未跟踪内容的临时 Git 仓库。

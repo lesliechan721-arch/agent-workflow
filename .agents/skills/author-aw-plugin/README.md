@@ -4,7 +4,7 @@
 
 ## 使用前提
 
-需要 Node.js 22+、已安装且提供所需作者命令的公开 `aw` CLI、既有合法 Catalog Workspace、目标工作区依赖，以及 `agent-content-toolkit` 和 `agent-skill-toolkit`。不需要 clone `agent-workflows` 或安装它的 `node_modules`。没有合法 Workspace 时，本 Skill 会停止并要求使用 `author-aw-catalog`。
+需要 Node.js 22+、当前 PATH 中已安装且提供所需作者命令的公开 `aw` CLI、目标工作区依赖，以及 `agent-content-toolkit` 和 `agent-skill-toolkit`。本 Skill 先检查本身的 AW requirements，再从 `aw catalog context --json` 取得既有合法 Workspace。没有 Workspace 时，本 Skill 会停止并要求使用 `author-aw-catalog`。
 
 ## 工作方式与结果
 
@@ -12,4 +12,4 @@
 
 普通用户删除请求必须先使用 `author-aw-catalog`。只有它明确交接 Workspace 和插件名后，本 Skill 才调用公开的 `aw plugin remove`，返回 JSON receipt；成功后不再验证已删除插件，也不会修改 Catalog metadata、commit、build 或 publish。
 
-它通过当前 PATH 的 `aw plugin capabilities` 查询字段合同；修改 Skill 时组合 `author-agent-skill`，并用 `aw skill validate` 验证。它不拥有 Catalog metadata、inventory、版本、聚合 build/validate 或远端发布，也不手改 generated runtime、catalog 或 cache。独立 Review、Eval Audit、模型 Eval 和发布裁决不属于默认作者完成条件。
+它先读取 `aw plugin capabilities --json` 的实际领域，再按需查询一个领域；修改 Skill 时组合 `author-agent-skill`，并用 `aw skill validate` 验证。修改完成后先读取 `aw plugin requirements` receipt，再验证目标插件。它不拥有 Catalog metadata、inventory、版本、聚合 build/validate 或远端发布，也不手改 generated runtime、catalog 或 cache。独立 Review、Eval Audit、模型 Eval 和发布裁决不属于默认作者完成条件。

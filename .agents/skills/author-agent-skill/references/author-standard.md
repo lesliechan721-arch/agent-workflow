@@ -68,12 +68,21 @@ Evidence: official-guidance; sources: agent-skills.optimizing-descriptions
 
 ## `skill.composition-fitness`
 
-一个 Agent Skill 应承接一个可独立解释和触发的工作单元；单 Skill 内部的独立意图、权限或证据生命周期不得靠更多分支维持。
+一个 Agent Skill 应承接一个可独立解释和触发的工作单元；单 Skill 内部的独立意图、权限或证据生命周期不得靠更多分支维持。可复用 standalone/leaf 不反向依赖已知 caller 的目录、生命周期、阶段、状态名或后续能力；caller 或 orchestrator 负责适配这些上下文。
 
-- **action：** 枚举该 Skill 内的用户意图、权限和证据生命周期；必要时拆成薄入口与 specialists。
-- **completion：** 每个保留 branch 不能独立成为另一个 Skill，或拆分已有清晰 handoff。
+- **action：** 标明 standalone、leaf 或 orchestrator，枚举直接消费者、caller-specific 假设、用户意图、权限和证据生命周期；把 caller 拥有的目录、阶段、状态和后续能力保留在 caller、adapter 或 orchestrator。
+- **completion：** 可复用 standalone/leaf 在不加载 caller 或 orchestrator 时仍能完成自己的直接用户意图；每个保留 branch 不能独立成为另一个 Skill，或拆分已有清晰 handoff。
 
 Evidence: heuristic; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
+
+## `skill.output-boundary`
+
+固定输出字段或机器结构只用于真实 consumer boundary；同一 Agent 在同一上下文连续使用多个 Skill 不自动形成该边界。
+
+- **action：** 增加固定输出前，记录 consumer、边界类型、持久性、validation owner 和缺少合同时的具体失败；没有真实 consumer 时改用语义完成条件或简短人类摘要。
+- **completion：** 每个固定字段都会改变 parser、持久 artifact、独立 actor 或明确人类决策者的行为；否则删除或放宽，且不新增 schema 或 validator。
+
+Evidence: normative; sources: agent-skill-toolkit.output-boundary
 
 ## `skill.package-resources`
 

@@ -24,7 +24,6 @@ const OBSERVED_CONTAINMENT_LIMITATION =
   'Observed process management is non-portable and does not guarantee descendant cleanup.'
 const VERIFIED_OBSERVED_CONTAINMENT_LIMITATION =
   'Verified process observation is not OS-enforced containment and does not guarantee descendant cleanup.'
-const CORE_PROCESS_RECEIPT = Symbol('core-process-receipt')
 
 export interface ProviderProcessDependencies {
   containment?: 'managed' | 'verified-observed' | 'observed' | 'unmanaged-confirmed'
@@ -36,21 +35,6 @@ export class ProviderProcessCleanupError extends Error {
     super(message, { cause })
     this.name = 'ProviderProcessCleanupError'
   }
-}
-
-function issueCoreProcessReceipt(result: ProcessResult): ProcessResult {
-  Object.defineProperty(result, CORE_PROCESS_RECEIPT, { value: true })
-  return result
-}
-
-export function hasCoreProcessReceipt(result: ProcessResult): boolean {
-  return (result as ProcessResult & { [CORE_PROCESS_RECEIPT]?: true })[
-    CORE_PROCESS_RECEIPT
-  ] === true
-}
-
-export function hasCoreManagedProcessReceipt(result: ProcessResult): boolean {
-  return result.descendantCleanupGuaranteed && hasCoreProcessReceipt(result)
 }
 
 function scrubProcessMarker(value: string, marker: string, truncated: boolean = false): string {
@@ -114,7 +98,7 @@ export async function runProviderProcess(
       ? VERIFIED_OBSERVED_CONTAINMENT_LIMITATION
       : undefined
   if (request.signal?.aborted) {
-    return issueCoreProcessReceipt({
+    return {
       stdout: '',
       stderr: '',
       exitCode: null,
@@ -129,7 +113,7 @@ export async function runProviderProcess(
       gradingEvidenceAccepted,
       containmentMode: containment,
       ...(containmentLimitation ? { containmentLimitation } : {}),
-    })
+    }
   }
 
   const marker = containment === 'unmanaged-confirmed' ? '' : randomUUID()
@@ -289,7 +273,7 @@ export async function runProviderProcess(
       void (async () => {
         await spawnReady
         await (cleanupStarted ?? startCleanup('complete'))
-        const result = issueCoreProcessReceipt({
+        const result: ProcessResult = {
           stdout: output(stdout, stdoutTruncated),
           stderr: output(stderr, stderrTruncated),
           exitCode: spawnError ? null : exitCode,
@@ -304,17 +288,17 @@ export async function runProviderProcess(
           gradingEvidenceAccepted,
           containmentMode: containment,
           ...(containmentLimitation ? { containmentLimitation } : {}),
-        })
+        }
         if (cleanupFailure) {
           throw new ProviderProcessCleanupError(
             errorMessage(cleanupFailure, marker),
             safeErrorCause(cleanupFailure, marker),
-            issueCoreProcessReceipt({
+            {
               ...result,
               stderr: `${result.stderr}${result.stderr && !result.stderr.endsWith('\n') ? '\n' : ''}${errorMessage(cleanupFailure, marker)}\n`,
               descendantCleanupGuaranteed: false,
               gradingEvidenceAccepted: false,
-            }),
+            },
           )
         }
         if (spawnHookError) {

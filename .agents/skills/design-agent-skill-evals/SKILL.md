@@ -1,9 +1,9 @@
 ---
 name: design-agent-skill-evals
 description: >-
-  当用户要为一个 Agent Skill 创建或修改 trigger、routing、behavior、outcome 或 cost Eval case/suite 时使用。负责测试目标、场景族、Oracle、assertion 和运行策略；不审核 Oracle、不运行 Eval、不修改生产 Skill。
+  当用户要为一个 Agent Skill 创建或修改 trigger、conversation 或 custom-process Eval case/suite 时使用。负责测试目标、现实场景族、Oracle、错误成本和最小 case 合同；不审核 Oracle、不运行 Eval、不修改生产 Skill。
 metadata:
-  short-description: 设计现实、分层、可审核的 Agent Skill Eval case 与 suite
+  short-description: 设计最小、现实、可审核的 Agent Skill Eval case 与 suite
 ---
 
 # Design Agent Skill Evals
@@ -12,10 +12,10 @@ metadata:
 
 ## 工作流
 
-1. **定义决策目标**：明确 unit under test、test layer、optimization policy 与 false-negative / false-positive 的现实代价。
-2. **建立场景族**：先列 representative、regression、boundary、challenge、diagnostic；不用同义 query 冒充独立场景。
-3. **设计 case**：记录真实 query/fixture、preconditions、Oracle rationale、rule refs、allowed variance、observable assertions 和重要边界的 minimal pair。
-4. **设计运行策略**：三次运行仅作初始取样；混合结果需要扩样和 trace。区分 train、validation、regression 与不进入发布指标的 challenge/diagnostic；选择合适 baseline。
-5. **输出**：生成 case 文件、suite metadata 和预期 artifact，使用 `assets/eval-case-template.json`。详细标准见 `references/eval-design-standard.md`。
+1. **定义 suite 决策**：选择 `trigger`、`conversation` 或 `custom-process`，明确 unit under test。把 default grader、optimization policy、false-negative/false-positive 成本和 runtime 条件放在 suite，不复制到普通 case。
+2. **建立场景族**：覆盖 materially distinct 的 representative、regression、boundary、challenge 和 diagnostic 场景。使用简短 tag 或设计说明表示场景归属；不用同义 query 增加虚假覆盖。
+3. **写最小 case**：写入前读取 [case 合同](references/case-contract.md)。普通 case 只保留 `id`、`split`、`tags` 和 suite kind 所需的输入、预期或 assertions。只有关键 tag 才添加条件性 `audit` metadata。
+4. **设计现实 Oracle**：assertion 必须可从模型输出、工具事件、workspace 变化或明确 artifact 观察。为重要错误说明现实代价；允许方差和 minimal counterexample 只在相应风险需要时记录。
+5. **交付**：更新 case 文件、suite metadata 和必要 fixture；可从 `assets/eval-case-template.json` 起稿。运行策略由 suite/profile 与执行时选择拥有，不能在每个 case 重复。交付时写明 `Audit status: not assessed`，并把结构验证交给当前公开 `aw skill eval prepare` 和 `aw-skill-eval spec validate` 路径。
 
-交付时明确 `Audit status: not assessed`。是否审核或运行由用户请求或上层工作流决定；本 Skill 不自动启动审核、子代理或 Eval runner。
+不自动调用 Auditor、Runner 或子代理。用户未要求生产 Skill 修改时，不扩大到 Skill 作者任务。

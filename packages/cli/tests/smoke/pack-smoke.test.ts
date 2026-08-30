@@ -906,14 +906,15 @@ describe('pack smoke', () => {
       'second-skill',
       'SKILL.md',
     ))).resolves.toBe(true);
-    const capabilities = await execFileAsync(evalBin, ['capabilities', '--json'], {
+    const evalHelp = await execFileAsync(evalBin, ['--help'], {
       cwd: tempRoot,
       env: process.env,
     });
-    expect(JSON.parse(capabilities.stdout)).toMatchObject({
-      provider: 'aw-skill-eval-process',
-    });
-    expect(capabilities.stderr).toBe('');
+    expect(evalHelp.stdout).toContain('spec validate <spec.json>');
+    expect(evalHelp.stdout).toContain('audit validate <audit.json> --spec <spec.json>');
+    expect(evalHelp.stdout).toContain('result validate <result.json> --spec <spec.json> --audit <audit.json>');
+    expect(evalHelp.stdout).not.toContain('capabilities');
+    expect(evalHelp.stderr).toBe('');
 
     if (process.platform !== 'win32') {
       const installedEvalRoot = path.join(

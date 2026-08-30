@@ -162,7 +162,7 @@ test('AW workflow inventory keeps manifest dependencies separate from typed impo
   }
 });
 
-test('AW workflow inventory rejects removed CLI capability exports', async () => {
+test('AW workflow inventory rejects removed reserved capability exports', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-cli-import-'));
   temps.push(temp);
   const a = path.join(temp, 'a');
@@ -193,8 +193,10 @@ test('AW workflow inventory rejects removed CLI capability exports', async () =>
   const result = JSON.parse(stdout);
   assert.deepEqual(result.unresolved.buildImportEdges.map(({ to, reason }) => ({ to, reason })), [
     { to: '@aw/cli', reason: 'missing-provider' },
+    { to: '@aw/agent-skill-eval', reason: 'missing-provider' },
   ]);
   assert.deepEqual(result.unresolved.skillRuntimeFileImportEdges.map(({ to, reason }) => ({ to, reason })), [
+    { to: '@aw/agent-skill-eval', reason: 'missing-provider' },
     { to: '@aw/cli', reason: 'missing-provider' },
   ]);
 });

@@ -1,8 +1,9 @@
 import { stable } from './common.js'
 import { readEvalContractFile } from './eval-file.js'
-import type { EvalProvider } from './eval-spec.js'
+import type { EvalProvider, EvalSpec, EvalSpecCalculated } from './eval-spec.js'
 import { validateJsonSchema } from './json-schema.js'
 import { getSchema } from './schemas.js'
+import type { SelectedCasesDocument } from './selected-cases.js'
 import type { Digest, ValidationResult } from './types.js'
 
 export interface EvalGrade {
@@ -53,11 +54,37 @@ export interface EvalResultBinding {
   targetDigest: Digest
   caseDigest: Digest
   provider: EvalProvider
+  selectedCaseIds: readonly string[]
+  allowedVariants: readonly EvalResultRun['variant'][]
+  runs: number
 }
 
 export interface EvalResultFileCalculated {
   result: EvalResult
   resultDigest: Digest
+}
+
+export function evalResultVariantsForSpec(spec: EvalSpec): EvalResultRun['variant'][] {
+  if (spec.baseline.type === 'without-skill') return ['current', 'without-skill']
+  if (spec.baseline.type === 'previous-version') return ['current', 'previous-version']
+  return ['current']
+}
+
+export function createEvalResultBinding(
+  calculated: EvalSpecCalculated,
+  auditDigest: Digest,
+  selectedCases: Pick<SelectedCasesDocument, 'cases'>,
+): EvalResultBinding {
+  return {
+    specDigest: calculated.specDigest,
+    auditDigest,
+    targetDigest: calculated.targetDigest,
+    caseDigest: calculated.caseDigest,
+    provider: calculated.spec.provider,
+    selectedCaseIds: selectedCases.cases.map((entry) => entry.id),
+    allowedVariants: evalResultVariantsForSpec(calculated.spec),
+    runs: calculated.spec.runs,
+  }
 }
 
 export function computeEvalResultSummary(runs: readonly EvalResultRun[]): EvalResultSummary {
@@ -92,6 +119,25 @@ export async function validateEvalResult(
     }
     if (stable(result.provider) !== stable(binding.provider))
       errors.push('Result provider does not match its binding')
+    const selectedCaseIds = new Set(binding.selectedCaseIds)
+    const allowedVariants = new Set(binding.allowedVariants)
+    const observedRuns = new Set<string>()
+    for (const [index, run] of result.runs.entries()) {
+      if (!selectedCaseIds.has(run.caseId)) {
+        errors.push(`run ${index} caseId is not selected by its binding`)
+      }
+      if (!allowedVariants.has(run.variant)) {
+        errors.push(`run ${index} variant is not enabled by its binding`)
+      }
+      if (run.attempt > binding.runs) {
+        errors.push(`run ${index} attempt exceeds its binding`)
+      }
+      const identity = JSON.stringify([run.caseId, run.variant, run.attempt])
+      if (observedRuns.has(identity)) {
+        errors.push(`run ${index} duplicates a case, variant, and attempt tuple`)
+      }
+      observedRuns.add(identity)
+    }
   }
   return { valid: errors.length === 0, errors, calculated: errors.length === 0 ? result : null }
 }

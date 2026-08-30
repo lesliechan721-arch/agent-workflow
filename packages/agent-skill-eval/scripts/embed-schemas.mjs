@@ -2,14 +2,9 @@ import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 
 const names = [
-  'aw-skill-eval-execution-plan',
-  'eval-run-bundle',
-  'eval-audit-result',
   'eval-spec',
   'eval-audit',
   'eval-result',
-  'eval-provider-capabilities',
-  'eval-provider-output',
 ]
 const canonicalRoot = new URL('../schemas/', import.meta.url)
 const outputRoot = new URL('../dist/schemas/', import.meta.url)

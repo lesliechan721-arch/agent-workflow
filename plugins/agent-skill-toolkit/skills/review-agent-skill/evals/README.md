@@ -5,7 +5,7 @@
 通过公开 adapter 按 suite/profile/case 选择准备 `EvalSpec v1`：
 
 ```bash
-aw skill eval prepare agent-skill-toolkit --skill review-agent-skill --suite behavior --profile project-default --output ./review-agent-skill-spec --json
+aw skill eval prepare agent-skill-toolkit review-agent-skill --suite behavior --profile project-default --output ./review-agent-skill-spec --json
 ```
 
 执行前验证 Spec，并复用与 target 和 selected cases 精确绑定的单份 `EvalAudit v1`；没有可复用 Audit 时，由全新上下文生成一份。Runner 执行 `aw-skill-eval run <spec> --audit <audit>`，生成 `EvalResult v1`，再用 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>` 验证。

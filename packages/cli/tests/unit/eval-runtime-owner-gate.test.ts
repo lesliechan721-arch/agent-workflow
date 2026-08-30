@@ -7,7 +7,7 @@ import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
-  assertCompatibleRuntimeIdentity,
+  assertCompatibleRuntimeVersion,
   assertRunnerSkillBundle,
 } from '../../../../scripts/verify-eval-runtime-owner.mjs'
 
@@ -20,15 +20,12 @@ async function writeRunnerSkill(commands: string | string[]): Promise<string> {
   await fs.outputFile(path.join(root, 'SKILL.md'), [
     '---',
     'name: run-aw-skill-evals',
-    'description: Run one audited Agent Skill Eval plan.',
+    'description: Run one audited Agent Skill EvalSpec.',
     '---',
     '',
     'Requires @lesliechan721/agent-skill-eval >= 0.1.0.',
     '',
     '```sh',
-    'aw-skill-eval capabilities --json',
-    'aw-skill-eval schema print aw-skill-eval-execution-plan',
-    'aw-skill-eval schema print eval-run-bundle',
     ...commandLines,
     '```',
     '',
@@ -59,12 +56,7 @@ describe('Eval runtime owner gate', () => {
       'agents/openai.yaml',
       'aw-plugin-requirements.json',
     ]))
-    expect(() => assertCompatibleRuntimeIdentity({
-      capabilities: {
-        schemaVersion: 2,
-        provider: 'aw-skill-eval-process',
-        providerVersion: '0.1.0',
-      },
+    expect(() => assertCompatibleRuntimeVersion({
       packageVersion: '0.1.0',
       minimumPackageVersion: bundle.minimumPackageVersion,
     })).not.toThrow()
@@ -73,8 +65,9 @@ describe('Eval runtime owner gate', () => {
       fileURLToPath(new URL('../../../../scripts/verify-eval-runtime-owner.mjs', import.meta.url)),
       'utf8',
     )
-    expect(verifier).toContain("['aw-skill-eval-execution-plan', 4]")
-    expect(verifier).toContain("['eval-run-bundle', 4]")
+    expect(verifier).toContain("{ name: 'eval-spec', version: 1 }")
+    expect(verifier).toContain("{ name: 'eval-audit', version: 1 }")
+    expect(verifier).toContain("{ name: 'eval-result', version: 1 }")
   })
 
   it.each([
@@ -98,10 +91,10 @@ describe('Eval runtime owner gate', () => {
   })
 
   it('rejects a Runner model command without its required Audit', async () => {
-    const root = await writeRunnerSkill('aw-skill-eval run <plan.json>')
+    const root = await writeRunnerSkill('aw-skill-eval run <spec.json>')
 
     await expect(assertRunnerSkillBundle(root)).rejects.toThrow(
-      'undocumented aw-skill-eval command: aw-skill-eval run <plan.json>',
+      'undocumented aw-skill-eval command: aw-skill-eval run <spec.json>',
     )
   })
 
@@ -118,7 +111,7 @@ describe('Eval runtime owner gate', () => {
   })
 
   it('rejects a bundled executable even when SKILL.md does not reference it', async () => {
-    const root = await writeRunnerSkill('aw-skill-eval run <plan.json> --audit <audit.json>')
+    const root = await writeRunnerSkill('aw-skill-eval run <spec.json> --audit <audit.json>')
     await fs.outputFile(path.join(root, 'scripts', 'run-evals'), '#!/bin/sh\n')
 
     await expect(assertRunnerSkillBundle(root)).rejects.toThrow('unexpected directory: scripts')

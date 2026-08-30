@@ -14,6 +14,8 @@
 
 检查每条边是否真的需要 handoff；传递的是昂贵证据还是可便宜重算的事实；是否为了上下文隔离制造持久状态；子代理输出是否足以让父级判断。
 
+同一 Agent 在同一上下文中连续使用多个 Skill，不自动构成 handoff boundary。稳定合同必须有脚本或 parser、跨上下文或跨进程 consumer、持久 artifact、独立 actor，或明确的人类决策用途；即使边界真实，也只保留 consumer 必需字段。
+
 ### 4. State and evidence ownership
 
 检查 identity、digest、readiness、coverage、Audit 和运行证据是否只有一个权威 owner；同一状态是否在 prose、JSON、summary 和 gate 中重复编码；模型是否填写机器可直接计算的事实。

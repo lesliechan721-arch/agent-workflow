@@ -1,57 +1,82 @@
 ---
 name: run-aw-skill-evals
 description: >-
-  当任务需要使用 aw-skill-eval 验证或执行 AwSkillEvalExecutionPlan，并在执行时生成 EvalRunBundle 时使用。负责本次副作用授权、运行时能力检查、共享 CLI 编排和 bundle 完整性验证；不审核 case，不执行 Audit 或 result triage，不解释失败归因，不修改 Skill，也不发布 Review。
-compatibility: 需要 Node.js 22+、@lesliechan721/agent-skill-eval >= 0.0.0，且 aw-skill-eval 位于 PATH。
-user-invocable: true
+  当用户要准备、验证或执行 AW Agent Skill Eval 时使用。接受 plugin/Skill/suite/profile 选择或已有 EvalSpec，复用或取得独立 EvalAudit，披露真实调用与副作用后执行，并验证 EvalResult；只在异常或结果将驱动 Skill 修改时请求 triage。
+compatibility: 需要 @lesliechan721/agent-skill-eval >= 0.1.0，且 aw 与 aw-skill-eval 位于 PATH；依赖 agent-skill-toolkit。
 metadata:
-  short-description: 使用 aw-skill-eval 执行 Eval plan 并生成证据
+  short-description: 准备、审核并执行 AW Skill Eval，按需归因异常结果
 ---
 
 # Run AW Skill Evals
 
-## 依赖
+本 Skill 是默认 AW Eval 的 Agent-facing 编排入口。它不设计 case、不修改 Skill、不发布 Review，也不复制 schema、provider 或 digest 实现。
 
-本 Skill 只调用已安装的 `aw-skill-eval`。不得使用 `npx`，不得自行实现 provider、snapshot、进程管理、timeout、采集或 evidence-level 逻辑。
+## 1. 选择并验证 EvalSpec
 
-## 1. 确认操作模式与人工授权
+已有 `<spec.json>` 时直接使用。只有 plugin/Skill/suite/profile 或 case/split/runs/baseline 选择时，先读取 `aw skill eval prepare --help`，再调用：
 
-先确认用户要求“只验证”还是“执行”。只验证时不得启动 provider、产生模型成本、读取模型凭据或创建 Eval 输出，不要求模型执行副作用授权。执行时，在读取凭据或启动 provider 前，列出 plan 需要的模型成本、外部进程、凭据、网络访问和临时输出。只有用户对本次运行明确授权后才能继续；缺少授权时停止，不运行命令。
+```bash
+aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json
+```
 
-## 2. Capability preflight
+只添加 `--help` 当前公开的选择参数。receipt 必须 `ok=true`，并使用其 `specPath`。然后运行：
 
-1. 运行 `aw-skill-eval capabilities --json`，要求 `schemaVersion=1`。
-2. 保存当前 provider capability document，并确认 plan 绑定其 path 与 SHA-256。
-3. 核对 plan 请求的能力均被声明支持，并保留全部 `limitations`。
-4. 读取 `minimumEvidenceLevel`；省略时按 `executed`。要求 `comparative` 时，只有 macOS/Linux 的 Full Access 或普通 Terminal 能力探测通过，或者宿主提供更强 external containment，才能启动 provider。`workspace`、`read-only` 和未知非空 permission profile 必须在启动前阻断；单次提权不等于 Full Access。
-5. 从已安装包读取 canonical schema：
-   - `aw-skill-eval schema print aw-skill-eval-execution-plan`
-   - `aw-skill-eval schema print eval-run-bundle`
-6. 要求 plan 和 bundle 使用 schema v3。
+```bash
+aw-skill-eval spec validate <spec.json>
+```
 
-命令或合同不兼容时停止并报告，不降低 plan 要求。
+要求零退出且 `valid=true`。用户只要求准备或验证时，返回 spec 路径和选择摘要后结束，不进入执行。
 
-## 3. 验证与执行
+## 2. 复用或取得 EvalAudit
 
-1. 运行 `aw-skill-eval digest skill <skill-dir>`，确认当前 Skill digest 与 plan 一致。
-2. 运行 `aw-skill-eval plan validate <plan.json>`，要求 `{valid:true}`。
-3. 若用户只要求验证，返回验证结果并停止；不得调用 `aw-skill-eval run <plan.json>`。
-4. 若用户要求执行，运行 `aw-skill-eval run <plan.json>`。
-5. 要求返回 `{valid:true,bundlePath,bundleDigest,evidenceLevel,requirementsMet}`。
-6. 运行 `aw-skill-eval bundle validate <bundle.json>`，核对 calculated digest 与返回的 `bundleDigest`。
+先检查用户显式提供的 Audit；没有显式路径时，只检查 spec 同目录的 `audit.json`。用以下命令验证 target、可选 previous-version、case digest 和 selected case 覆盖：
 
-`requirementsMet=false` 或非零退出时停止，不称为满足计划。若清理验证失败后返回了诊断 bundle，仍验证并报告该 bundle，但不得把其中的 `executed` 证据升级为 `comparative`。bundle 验证失败时停止。
+```bash
+aw-skill-eval audit validate <audit.json> --spec <spec.json>
+```
 
-## 4. 输出边界
+精确绑定且 `status=pass` 时复用。Audit 缺失或因 target/case 绑定陈旧而不可复用时，在全新上下文调用 `audit-agent-skill-evals` 的 preflight，并只传 validated spec。`status=fail` 或 `unknown`、blocked case、格式错误或重新验证失败时停止；不得启动模型，也不得为通过而修改 Audit、case 或 Skill。
 
-只验证时返回 plan、capability 和 schema 的验证结果，并明确说明未执行。执行时返回 bundle path、bundle digest、`runner.id`、`runner.version`、`evidenceLevel`、`evidenceRequirement`、`processManagement`、`requirementsMet` 和全部 `limitations`。
+## 3. 披露调用与副作用
 
-`EvalRunBundle` 是原始诊断执行证据。没有 preflight Audit 和 result triage 时，它不得影响 Review、生产 Skill 修改或发布结论。本 Skill 不调用 Auditor，也不把 Audit 缺失作为执行门禁。
+从 validated spec/cases 计算并显示 cases 数、runs、baseline 和预计真实模型调用数。variant 数在无 baseline 时为 1，有 without-skill 或 previous-version baseline 时为 2：
 
-## 完成条件
+- `codex-trigger`：`cases × runs × variants`。
+- `codex-conversation`：上述 provider attempt 的 2 倍，因为每次包含 conversation 和独立 grader。
+- `custom-process`：调用数标为未知。
 
-- 执行请求已获得本次副作用授权；只验证请求未启动 provider 或创建 Eval 输出。
-- plan、capability 和 schema 兼容。
-- 只验证请求已返回验证结果并明确说明未执行；或执行成功，且 bundle digest 与独立验证结果一致。
-- 执行输出明确标记证据级别和限制，不声称已通过 Review 或发布门禁。
-- comparative 证据明确标记 `verified-observed` 或更强的 `managed`；前者不是 OS 强隔离，不得声称绝对后代清理保证。
+只从 validated spec/cases 显示 provider 进程类别、可能使用现有 credential 环境、模型网络和 validator 解析出的 `outputDir`。`codex-trigger` 和 `codex-conversation` 属于内置 Codex provider 进程，会访问模型网络，并可能使用当前 credential 环境；不读取或显示 credential 值。`custom-process` 属于自定义外部进程，其实际 credential 和网络行为未知。
+
+用户已明确请求执行且预计调用数 `<=10` 时直接进入下一步。预计调用数 `>10` 时先取得本次确认。`custom-process` 因调用数和外部影响未知，任何执行都先确认。确认只绑定当前 spec、Audit 和已披露副作用。
+
+## 4. 执行
+
+只调用一次 canonical runner：
+
+```bash
+aw-skill-eval run <spec.json> --audit <audit.json>
+```
+
+不自动重试或续跑。命令失败时保留其诊断和已产生的 result 路径；没有 result 时停止并报告执行失败。run 失败且需要检查 provider 环境时，转到高级诊断分支。
+
+## 5. 验证并按需归因
+
+对 run 返回的 result 运行：
+
+```bash
+aw-skill-eval result validate <result.json> --spec <spec.json> --audit <audit.json>
+```
+
+验证失败时停止，并把 validator 错误作为机器合同结果。验证成功后，返回 spec、Audit、result 路径，选择摘要、实际 result summary 和副作用摘要。
+
+clean success 直接结束，不要求 triage。只有出现 execution/grade 失败、current 结果混合、current 相对 baseline 回归，或该结果将驱动生产 Skill 修改时，才在全新上下文调用 `audit-agent-skill-evals` 的 result-triage，并传 validated EvalResult、spec 和 Audit。triage 默认返回聊天结论；用户指定时可写 `triage.md`。
+
+## 高级诊断
+
+本分支不属于五步公共路径。只在安装或版本升级、用户显式请求 provider 环境诊断，或 run 失败后需要定位环境问题时运行：
+
+```bash
+aw skill eval doctor --json
+```
+
+只报告可执行文件、credential 名称及存在状态和进程清理支持；不得读取 credential 值。诊断结果不替代 Spec、Audit 或 Result validation，也不自动授权重试。

@@ -278,14 +278,7 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
   return suites
 }
 
-export async function isAwSkillEvalManifestV1(plugin: PluginMeta, skill: string): Promise<boolean> {
-  const selectedSkill = safeId(skill, 'selected Skill')
-  const manifestPath = path.join(plugin.rootDir, 'skills', selectedSkill, 'evals', 'manifest.json')
-  const value = await fs.readJson(manifestPath) as Record<string, unknown>
-  return value.version === 1
-}
-
-export async function readAwSkillEvalManifestV1(options: {
+export async function readAwSkillEvalManifest(options: {
   plugin: PluginMeta
   skill: string
 }): Promise<LoadedAwSkillEvalManifestV1> {
@@ -329,5 +322,41 @@ export async function readAwSkillEvalManifestV1(options: {
     evalRoot,
     manifestPath,
     casesBySuite,
+  }
+}
+
+export async function validateAwSkillEvalManifest(options: {
+  plugin: PluginMeta
+  skill: string
+}): Promise<{
+  valid: boolean
+  errors: string[]
+  manifest: AwSkillEvalManifestV1 | null
+}> {
+  try {
+    const result = await readAwSkillEvalManifest(options)
+    return { valid: true, errors: [], manifest: result.manifest }
+  } catch (error) {
+    return {
+      valid: false,
+      errors: [error instanceof Error ? error.message : String(error)],
+      manifest: null,
+    }
+  }
+}
+
+export function assertNoSensitiveProfileConfig(
+  profile: AwSkillEvalManifestV1Profile,
+  plugins: readonly PluginMeta[],
+): void {
+  const byName = new Map(plugins.map((plugin) => [plugin.manifest.name, plugin]))
+  for (const installation of profile.plugins) {
+    const plugin = byName.get(installation.name)
+    if (!plugin) throw new Error(`Eval profile "${profile.id}" references unknown plugin "${installation.name}".`)
+    for (const [key, field] of Object.entries(plugin.manifest.config?.schema ?? {})) {
+      if (field.sensitive === true && Object.hasOwn(installation.config, key)) {
+        throw new Error(`Eval profile "${profile.id}" provides a sensitive config field for plugin "${installation.name}".`)
+      }
+    }
   }
 }

@@ -6,7 +6,7 @@
 
 ```bash
 aw skill eval prepare git-toolkit \
-  --skill isolating-work-with-git-worktrees --suite router --profile project-default \
+  isolating-work-with-git-worktrees --suite router --profile project-default \
   --output /tmp/aw-eval-specs/git-worktree-materialization --json
 ```
 
@@ -23,7 +23,7 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 `trigger-diagnostic-cases.json` 单独保存完整仓库隔离请求，不进入 description 优化。若本 Skill 被加载但正确选择 clone，则记录为 expected tradeoff。运行 `source_15`：
 
 ```bash
-aw skill eval prepare git-toolkit --skill isolating-work-with-git-worktrees --suite router-diagnostic --profile project-default --case source_15 --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-diagnostic-source-15 --json
+aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite router-diagnostic --profile project-default --case source_15 --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-diagnostic-source-15 --json
 ```
 
 `trigger-fixture.mjs` 默认提供干净的 feature checkout，只在 query 明确依赖本地状态时使用对应的 dirty、linked-worktree、commit-ready 或 merge-conflict fixture。fixture 必须与 query 声明的分支和 Git 状态一致，不能把评测宿主的偶然状态当作触发信号。
@@ -41,9 +41,9 @@ fixture 只覆盖这些高价值边界，不枚举所有 `git worktree` 命令�
 
 ```bash
 pnpm plugin:test git
-aw skill eval prepare git-toolkit --skill isolating-work-with-git-worktrees --suite router --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-validation --json
-aw skill eval prepare git-toolkit --skill isolating-work-with-git-worktrees --suite router --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-sanity --json
-aw skill eval prepare git-toolkit --skill isolating-work-with-git-worktrees --suite behavior --profile project-default --runs 3 --output /tmp/aw-eval-specs/git-worktree-behavior --json
+aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite router --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-validation --json
+aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite router --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/git-worktree-router-sanity --json
+aw skill eval prepare git-toolkit isolating-work-with-git-worktrees --suite behavior --profile project-default --runs 3 --output /tmp/aw-eval-specs/git-worktree-behavior --json
 ```
 
 准备与运行中的 materialization 命令只验证 project/user 最终制品，不启动模型。其余 Spec 应分别交给 `$run-aw-skill-evals`；trigger 使用 manifest 的三次运行默认值。

@@ -15,7 +15,9 @@ import {
 import { validateEvalAuditFile } from './eval-audit.js'
 import {
   computeEvalResultSummary,
+  createEvalResultBinding,
   validateEvalResult,
+  type EvalResultBinding,
   type EvalResult,
   type EvalResultRun,
 } from './eval-result.js'
@@ -133,12 +135,6 @@ function assertDigestsMatchSpec(
     || digests.cases !== calculated.caseDigest
     || digests.previousTarget !== calculated.previousTargetDigest
   ) throw new BoundInputChangedError('Prepared Eval input no longer matches EvalSpec digests.')
-}
-
-function variants(calculated: EvalSpecCalculated): EvalProviderVariant[] {
-  if (calculated.spec.baseline.type === 'without-skill') return ['current', 'without-skill']
-  if (calculated.spec.baseline.type === 'previous-version') return ['current', 'previous-version']
-  return ['current']
 }
 
 function triggerProviderCase(
@@ -396,8 +392,12 @@ function isCleanupFailure(error: unknown): boolean {
     /cleanup|termination|process-tree/u.test(error instanceof Error ? error.message : String(error))
 }
 
-async function writeResultSafely(resultPath: string, result: EvalResult): Promise<Digest> {
-  const validation = await validateEvalResult(result)
+async function writeResultSafely(
+  resultPath: string,
+  result: EvalResult,
+  binding: EvalResultBinding,
+): Promise<Digest> {
+  const validation = await validateEvalResult(result, binding)
   if (!validation.valid) throw new Error(`Generated EvalResult is invalid: ${validation.errors.join('; ')}`)
   if (await fs.pathExists(resultPath)) throw new Error('Eval result.json already exists.')
   const bytes = Buffer.from(`${JSON.stringify(result, null, 2)}\n`)
@@ -440,6 +440,11 @@ export async function runEvalSpec(
   if (!auditValidation.valid || !auditValidation.calculated) {
     throw new Error(`EvalAudit does not admit execution: ${auditValidation.errors.join('; ')}`)
   }
+  const resultBinding = createEvalResultBinding(
+    calculated,
+    auditValidation.calculated.auditDigest,
+    document,
+  )
   const captured = await inputDigests(calculated)
   assertDigestsMatchSpec(calculated, captured)
   await assertInputsUnchanged(calculated, captured)
@@ -459,7 +464,7 @@ export async function runEvalSpec(
   }
   for (const evalCase of document.cases) {
     if (stop) break
-    for (const variant of variants(calculated)) {
+    for (const variant of resultBinding.allowedVariants) {
       if (stop) break
       for (let attempt = 1; attempt <= calculated.spec.runs; attempt += 1) {
         const attemptStarted = Date.now()
@@ -571,6 +576,6 @@ export async function runEvalSpec(
     summary: computeEvalResultSummary(runs),
   }
   const resultPath = path.join(calculated.paths.outputDir, 'result.json')
-  const resultDigest = await writeResultSafely(resultPath, result)
+  const resultDigest = await writeResultSafely(resultPath, result, resultBinding)
   return { valid: true, resultPath, resultDigest, result }
 }

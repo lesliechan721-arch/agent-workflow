@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -552,6 +552,88 @@ describe('custom process provider', () => {
     expect(JSON.stringify(artifact)).not.toContain('test-secret-value')
     await expect(readFile(path.join(paths.outputDir, 'secret.txt'), 'utf8'))
       .resolves.toBe('[redacted]')
+  })
+
+  it.each([
+    ['success', 'success', 2_000],
+    ['failure', 'failure', 2_000],
+    ['timeout', 'timeout', 120],
+  ])('removes credential plaintext and temporary state after %s', async (_label, mode, timeoutMs) => {
+    const paths = await runRoot()
+    const secret = `custom-provider-${mode}-secret`
+    const script = [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "let input = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { input += chunk })",
+      "process.stdin.on('end', () => {",
+      "  const value = JSON.parse(input)",
+      "  const secret = process.env.OPENAI_API_KEY",
+      "  fs.writeFileSync(path.join(value.workspacePath, 'workspace-secret.txt'), secret)",
+      "  fs.writeFileSync(path.join(value.fixturesPath, 'fixture-secret.txt'), secret)",
+      "  fs.writeFileSync(path.join(value.outputDir, 'output-secret.txt'), secret)",
+      "  fs.writeFileSync(path.join(process.env.HOME, 'home-secret.txt'), secret)",
+      "  fs.writeFileSync(path.join(process.env.TMPDIR, 'tmp-secret.txt'), secret)",
+      "  process.stderr.write(`provider stderr ${secret}`)",
+      mode === 'success'
+        ? "  process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))"
+        : mode === 'failure'
+          ? '  process.exitCode = 7'
+          : '  setInterval(() => {}, 1000)',
+      '})',
+    ].join(';')
+    let result: Awaited<ReturnType<typeof executeCustomProcessProvider>> | undefined
+    let error: unknown
+    try {
+      result = await executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: { ...input(paths, { id: 'case-1' }), timeoutMs },
+        sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    if (mode === 'success') {
+      expect(result).toEqual({
+        usage: null,
+        grade: { passed: true, score: 1 },
+      })
+      expect(error).toBeUndefined()
+    } else {
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).not.toContain(secret)
+      expect(result).toBeUndefined()
+    }
+    expect(JSON.stringify(result ?? null)).not.toContain(secret)
+    await expect(readFile(path.join(paths.workspacePath, 'workspace-secret.txt'), 'utf8'))
+      .resolves.toBe('[redacted]')
+    await expect(readFile(path.join(paths.fixturesPath, 'fixture-secret.txt'), 'utf8'))
+      .resolves.toBe('[redacted]')
+    await expect(readFile(path.join(paths.outputDir, 'output-secret.txt'), 'utf8'))
+      .resolves.toBe('[redacted]')
+    await expect(access(path.join(paths.root, '.custom-provider-home')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(path.join(paths.root, '.custom-provider-tmp')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it.each(['home', 'tmp'])('does not remove a pre-existing foreign %s directory', async (kind) => {
+    const paths = await runRoot()
+    const foreignRoot = path.join(paths.root, `.custom-provider-${kind}`)
+    const foreignFile = path.join(foreignRoot, 'foreign.txt')
+    await mkdir(foreignRoot)
+    await writeFile(foreignFile, 'keep')
+
+    await expect(executeCustomProcessProvider({
+      command: [process.execPath, '-e', 'process.exitCode = 99'],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH },
+    })).rejects.toThrow()
+    await expect(readFile(foreignFile, 'utf8')).resolves.toBe('keep')
   })
 
   it('rejects extra stdout and redacts credential values from errors', async () => {

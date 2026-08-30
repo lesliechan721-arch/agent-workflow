@@ -10,7 +10,6 @@ export const AW_CAPABILITY_IDS = [
   'aw.portable-skills.v1',
   'aw.runtime-imports.v1',
   'aw.skill-validation.v1',
-  'aw.skill-eval.v1',
   'aw.skill-eval.v2',
   'aw.plugin-authoring.v1',
   'aw.catalog-context.v1',

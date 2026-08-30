@@ -779,6 +779,7 @@ describe('EvalSpec v1 execution', () => {
     expect(resultOutput.valid).toBe(true)
     const inspection = JSON.parse((await execFileAsync(process.execPath, [
       bin, 'inspect-result', result.resultPath,
+      '--spec', data.specPath, '--audit', data.auditPath,
     ])).stdout) as { groups: unknown[] }
     expect(inspection.groups).toEqual([expect.objectContaining({
       caseId: 'case-1',
@@ -788,5 +789,18 @@ describe('EvalSpec v1 execution', () => {
         'without-skill': expect.objectContaining({ status: 'completed' }),
       },
     })])
+
+    const unknownCaseResult = structuredClone(result.result)
+    unknownCaseResult.runs[0]!.caseId = 'not-selected'
+    const unknownCaseResultPath = path.join(data.root, 'unknown-case-result.json')
+    await writeFile(unknownCaseResultPath, `${JSON.stringify(unknownCaseResult, null, 2)}\n`)
+    await expect(execFileAsync(process.execPath, [
+      bin, 'result', 'validate', unknownCaseResultPath,
+      '--spec', data.specPath, '--audit', data.auditPath,
+    ])).rejects.toMatchObject({ code: 1 })
+    await expect(execFileAsync(process.execPath, [
+      bin, 'inspect-result', unknownCaseResultPath,
+      '--spec', data.specPath, '--audit', data.auditPath,
+    ])).rejects.toMatchObject({ code: 1 })
   })
 })

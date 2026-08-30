@@ -64,7 +64,6 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(tempRoots.splice(0).map((root) => fs.remove(root)));
 });
-
 describe('catalog runtime projection', () => {
   it('validates portable generated source and final closure without a native Skill root', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-generated-runtime-'));
@@ -291,60 +290,17 @@ describe('catalog runtime projection', () => {
     })).rejects.toThrow('unknown reserved provider "@aw/cli"');
   });
 
-  it('exposes the self-contained Eval runtime helpers through its reserved provider', async () => {
+  it('rejects the removed Eval virtual runtime provider', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-virtual-projection-'));
     tempRoots.push(root);
     const consumer = await createPlugin({ root, name: 'consumer' });
     const resolver = createCatalogRuntimeImportResolver([consumer]);
-    const resolution = await resolver.resolve({
-      consumer,
-      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
-      purpose: 'build',
-    });
-    expect(resolution).toMatchObject({
-      provider: '@aw/agent-skill-eval',
-      name: 'case-corpus-digest',
-      source: './dist/corpus-digest.js',
-      virtual: true,
-    });
-    await expect(fs.readFile(resolution.sourcePath, 'utf8')).resolves.toContain('computeCaseCorpusDigest');
+
     await expect(resolver.resolve({
       consumer,
       reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
-      purpose: 'skill-runtime-file',
-    })).resolves.toMatchObject({ sourcePath: resolution.sourcePath });
-    await expect(resolver.resolve({
-      consumer,
-      reference: { plugin: '@aw/agent-skill-eval', export: 'eval-run-bundle-validator' },
       purpose: 'build',
-    })).resolves.toMatchObject({
-      source: './dist/bundle-validation-runtime.js',
-      virtual: true,
-    });
-    for (const [exportName, source] of [
-      ['eval-audit-result-schema', './dist/schemas/eval-audit-result.schema.json'],
-      ['eval-run-bundle-schema', './dist/schemas/eval-run-bundle.schema.json'],
-    ] as const) {
-      const schemaResolution = await resolver.resolve({
-        consumer,
-        reference: { plugin: '@aw/agent-skill-eval', export: exportName },
-        purpose: 'skill-runtime-file',
-      });
-      expect(schemaResolution).toMatchObject({ source, virtual: true });
-      await expect(fs.readJson(schemaResolution.sourcePath)).resolves.toMatchObject({
-        properties: { schemaVersion: { const: expect.any(Number) } },
-      });
-    }
-    await expect(resolver.resolve({
-      consumer,
-      reference: { plugin: '@aw/agent-skill-eval', export: 'unknown' },
-      purpose: 'build',
-    })).rejects.toThrow('unknown @aw/agent-skill-eval export');
-    await expect(resolver.resolve({
-      consumer,
-      reference: { plugin: '@aw/agent-skill-eval', export: 'case-corpus-digest' },
-      purpose: 'artifact-runtime',
-    })).rejects.toThrow('only available to buildImports and skillRuntimeFiles');
+    })).rejects.toThrow('unknown reserved provider "@aw/agent-skill-eval"');
   });
 
   it('injects read-only catalog build imports and projects own and provider bytes with provenance', async () => {

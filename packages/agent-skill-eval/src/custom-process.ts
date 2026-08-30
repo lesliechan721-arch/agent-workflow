@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { observeProcessTree, terminateProcessTree, type ProcessTreeDependencies } from './process-tree.js'
@@ -194,6 +194,10 @@ function redactBuffer(value: Buffer, secrets: readonly string[]): Buffer {
 
 async function redactOutputTree(root: string, secrets: readonly string[]): Promise<void> {
   if (secrets.length === 0) return
+  const rootInfo = await lstat(root)
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw new Error('custom process credential cleanup requires an ordinary owned directory.')
+  }
   for (const entry of await readdir(root, { withFileTypes: true })) {
     const target = path.join(root, entry.name)
     const info = await lstat(target)
@@ -206,6 +210,20 @@ async function redactOutputTree(root: string, secrets: readonly string[]): Promi
     const content = await readFile(target)
     const redacted = redactBuffer(content, secrets)
     if (!redacted.equals(content)) await writeFile(target, redacted)
+  }
+}
+
+async function cleanupCustomProcessAttempt(
+  retainedRoots: readonly string[],
+  temporaryRoots: readonly string[],
+  secrets: readonly string[],
+): Promise<void> {
+  const results = await Promise.allSettled([
+    ...retainedRoots.map((root) => redactOutputTree(root, secrets)),
+    ...temporaryRoots.map((root) => rm(root, { recursive: true, force: true })),
+  ])
+  if (results.some((result) => result.status === 'rejected')) {
+    throw new Error('custom process credential cleanup failed.')
   }
 }
 
@@ -276,13 +294,14 @@ export async function executeCustomProcessProvider(
     throw new Error('custom process input contains an allowlisted credential value.')
   }
   const env = cleanEnvironment(sourceEnv, evalRoot)
-  await Promise.all([
-    mkdir(env.HOME!, { recursive: true, mode: 0o700 }),
-    mkdir(env.TMPDIR!, { recursive: true, mode: 0o700 }),
-  ])
+  const temporaryRoots: string[] = []
   let observation: ReturnType<typeof observeProcessTree> | undefined
   let result: Awaited<ReturnType<typeof runProviderProcess>>
   try {
+    await mkdir(env.HOME!, { mode: 0o700 })
+    temporaryRoots.push(env.HOME!)
+    await mkdir(env.TMPDIR!, { mode: 0o700 })
+    temporaryRoots.push(env.TMPDIR!)
     result = await runProviderProcess({
       executable: options.command[0],
       args: [...options.command.slice(1)],
@@ -324,7 +343,11 @@ export async function executeCustomProcessProvider(
       processTree: options.processTree,
     })
   } finally {
-    await redactOutputTree(options.input.outputDir, secrets)
+    await cleanupCustomProcessAttempt(
+      [options.input.workspacePath, options.input.fixturesPath, options.input.outputDir],
+      temporaryRoots,
+      secrets,
+    )
   }
   if (result.timedOut) throw new Error(`custom process timed out after ${options.input.timeoutMs}ms.`)
   if (result.cancelled) throw new Error('custom process was aborted.')

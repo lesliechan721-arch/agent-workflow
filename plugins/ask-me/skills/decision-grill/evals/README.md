@@ -8,7 +8,7 @@
 
 ```bash
 aw skill eval prepare ask-me \
-  --skill decision-grill --suite trigger --profile project-default \
+  decision-grill --suite trigger --profile project-default \
   --output /tmp/aw-eval-specs/decision-grill-trigger-project-default --json
 ```
 
@@ -23,12 +23,12 @@ aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-s
 发布检查范围只从当前 `evals/manifest.json` 的 `requiredForRelease` 和 `releaseSplits` 派生。每个所选 suite/profile 应分别准备，不要合并为一个 Spec：
 
 ```bash
-aw skill eval prepare ask-me --skill decision-grill --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-validation --json
-aw skill eval prepare ask-me --skill decision-grill --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-sanity --json
-aw skill eval prepare ask-me --skill decision-grill --suite router --profile project-default --split validation --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-validation --json
-aw skill eval prepare ask-me --skill decision-grill --suite router --profile project-default --split sanity --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-sanity --json
-aw skill eval prepare ask-me --skill decision-grill --suite behavior --profile project-default --output /tmp/aw-eval-specs/decision-grill-behavior --json
-aw skill eval prepare ask-me --skill decision-grill --suite decision-frame --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-frame --json
+aw skill eval prepare ask-me decision-grill --suite trigger --profile project-default --split validation --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-validation --json
+aw skill eval prepare ask-me decision-grill --suite trigger --profile project-default --split sanity --runs 3 --output /tmp/aw-eval-specs/decision-grill-trigger-sanity --json
+aw skill eval prepare ask-me decision-grill --suite router --profile project-default --split validation --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-validation --json
+aw skill eval prepare ask-me decision-grill --suite router --profile project-default --split sanity --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-sanity --json
+aw skill eval prepare ask-me decision-grill --suite behavior --profile project-default --output /tmp/aw-eval-specs/decision-grill-behavior --json
+aw skill eval prepare ask-me decision-grill --suite decision-frame --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-frame --json
 ```
 
 单 Skill trigger

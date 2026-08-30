@@ -3,7 +3,7 @@
 本目录由 `author-aw-plugin` 持有。`behavior-cases.json` 用 7 个复合请求检查 `AWAuthoringContext.components` 完整性、稳定 `aw plugin` 命令、Portable Agent Skills canonical reference、通用作者能力交接和 Author/Reviewer 边界。
 
 ```bash
-aw skill eval prepare aw-plugin-development --skill author-aw-plugin \
+aw skill eval prepare aw-plugin-development author-aw-plugin \
   --suite behavior --profile project-default --output ./author-aw-plugin-spec --json
 ```
 

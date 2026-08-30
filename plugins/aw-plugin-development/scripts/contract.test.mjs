@@ -75,27 +75,15 @@ test('review adapter manifest and runtime contain only current quality and relea
     .map((entry) => entry.target)
     .sort();
   assert.deepEqual(targets, [
-    'assets/eval-audit-result.schema.json',
-    'assets/eval-run-bundle.schema.json',
     'assets/quality-review-result.schema.json',
     'assets/review-dimensions.json',
     'references/review-publication.md',
     'scripts/check-agent-skill.mjs',
     'scripts/check-aw-plugin-release.mjs',
-    'scripts/corpus-digest.mjs',
-    'scripts/eval-run-bundle-validator.mjs',
     'scripts/review-skill-leaf-plan.mjs',
-    'scripts/validate-eval-audit-result.mjs',
-    'scripts/validate-eval-run-bundle.mjs',
-    'scripts/validate-json-contract.mjs',
     'scripts/validate-quality-review-result.mjs',
   ]);
   assert.ok((await readFile(path.join(reviewSkillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
-  if (context) {
-    assert.ok((await readFile(path.join(reviewSkillRoot, 'scripts/corpus-digest.mjs'), 'utf8')).length > 100);
-  } else {
-    assert.ok(targets.includes('scripts/corpus-digest.mjs'));
-  }
 });
 
 test('AW reviewer production and materialized closures use registered current dependencies', async () => {
@@ -110,19 +98,12 @@ test('AW reviewer production and materialized closures use registered current de
       .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
       .sort(),
     [
-      '@aw/agent-skill-eval:case-corpus-digest',
-      '@aw/agent-skill-eval:eval-audit-result-schema',
-      '@aw/agent-skill-eval:eval-run-bundle-schema',
-      '@aw/agent-skill-eval:eval-run-bundle-validator',
       'agent-skill-toolkit:check-agent-skill',
       'agent-skill-toolkit:quality-review-result-schema',
       'agent-skill-toolkit:review-dimensions',
       'agent-skill-toolkit:review-publication-reference',
       'agent-skill-toolkit:review-publication-reference',
       'agent-skill-toolkit:skill-design-brief-schema',
-      'agent-skill-toolkit:validate-eval-audit-result',
-      'agent-skill-toolkit:validate-eval-run-bundle',
-      'agent-skill-toolkit:validate-json-contract',
       'agent-skill-toolkit:validate-json-contract',
       'agent-skill-toolkit:validate-quality-review-result',
     ],

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   computeEvalFileDigest,
+  computeEvalResultSummary,
   computeSkillDigest,
   getSchema,
   parseEvalAudit,
@@ -74,7 +75,11 @@ function validAudit(spec: EvalSpec): EvalAudit {
 function validResult(binding: EvalResultBinding): EvalResult {
   return {
     version: 1,
-    ...binding,
+    specDigest: binding.specDigest,
+    auditDigest: binding.auditDigest,
+    targetDigest: binding.targetDigest,
+    caseDigest: binding.caseDigest,
+    provider: binding.provider,
     startedAt: '2026-08-30T00:00:00Z',
     finishedAt: '2026-08-30T00:00:01Z',
     runs: [
@@ -149,6 +154,9 @@ describe('independent Eval v1 contracts', () => {
       targetDigest: spec.target.digest,
       caseDigest: spec.cases.digest,
       provider: spec.provider,
+      selectedCaseIds: ['case-1', 'case-2'],
+      allowedVariants: ['current', 'without-skill'],
+      runs: spec.runs,
     }
     const result = validResult(binding)
     await expect(parseEvalResult(result)).resolves.toEqual(result)
@@ -185,6 +193,9 @@ describe('independent Eval v1 contracts', () => {
       targetDigest: spec.target.digest,
       caseDigest: spec.cases.digest,
       provider: spec.provider,
+      selectedCaseIds: ['case-1', 'case-2'],
+      allowedVariants: ['current', 'without-skill'],
+      runs: spec.runs,
     }
     const result = validResult(binding)
     await expect(validateEvalResult({ ...result, version: 2 })).resolves.toMatchObject({ valid: false })
@@ -267,6 +278,9 @@ describe('independent Eval v1 contracts', () => {
       targetDigest: spec.target.digest,
       caseDigest: spec.cases.digest,
       provider: spec.provider,
+      selectedCaseIds: ['case-1', 'case-2'],
+      allowedVariants: ['current', 'without-skill'],
+      runs: spec.runs,
     }
     const result = validResult(binding)
     await expect(validateEvalResult({
@@ -332,6 +346,9 @@ describe('independent Eval v1 contracts', () => {
       targetDigest: spec.target.digest,
       caseDigest: spec.cases.digest,
       provider: spec.provider,
+      selectedCaseIds: ['case-1', 'case-2'],
+      allowedVariants: ['current', 'without-skill'],
+      runs: spec.runs,
     }
     const result = validResult(binding)
     const completedWithoutGrade = structuredClone(result)
@@ -344,6 +361,64 @@ describe('independent Eval v1 contracts', () => {
       ...result,
       summary: { ...result.summary, error: 0 },
     })).resolves.toMatchObject({ valid: false })
+  })
+
+  it('binds every observed run while accepting an early partial result', async () => {
+    const { spec } = await createSpecFixture()
+    const binding: EvalResultBinding = {
+      specDigest: spec.target.digest,
+      auditDigest: spec.target.digest,
+      targetDigest: spec.target.digest,
+      caseDigest: spec.cases.digest,
+      provider: spec.provider,
+      selectedCaseIds: ['case-1', 'case-2'],
+      allowedVariants: ['current', 'without-skill'],
+      runs: spec.runs,
+    }
+    const result = validResult(binding)
+
+    const unknownCase = structuredClone(result)
+    unknownCase.runs[0]!.caseId = 'unknown-case'
+    await expect(validateEvalResult(unknownCase, binding)).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('caseId is not selected')]),
+    })
+
+    const disabledVariant = structuredClone(result)
+    disabledVariant.runs[0]!.variant = 'previous-version'
+    await expect(validateEvalResult(disabledVariant, binding)).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('variant is not enabled')]),
+    })
+
+    const excessiveAttempt = structuredClone(result)
+    excessiveAttempt.runs[0]!.attempt = spec.runs + 1
+    await expect(validateEvalResult(excessiveAttempt, binding)).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('attempt exceeds')]),
+    })
+
+    const duplicate = structuredClone(result)
+    duplicate.runs.push(structuredClone(duplicate.runs[0]!))
+    duplicate.summary = computeEvalResultSummary(duplicate.runs)
+    await expect(validateEvalResult(duplicate, binding)).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('duplicates a case')]),
+    })
+
+    const earlyFailure = structuredClone(result)
+    earlyFailure.runs = [{
+      ...earlyFailure.runs[0]!,
+      status: 'failed',
+      usage: null,
+      grade: null,
+      error: { message: 'provider failed before later runs started' },
+    }]
+    earlyFailure.summary = computeEvalResultSummary(earlyFailure.runs)
+    await expect(validateEvalResult(earlyFailure, binding)).resolves.toMatchObject({
+      valid: true,
+      errors: [],
+    })
   })
 
   it('binds Audit and Result file digests without using the legacy case schema', async () => {
@@ -364,6 +439,9 @@ describe('independent Eval v1 contracts', () => {
       targetDigest: fixture.spec.target.digest,
       caseDigest: fixture.spec.cases.digest,
       provider: fixture.spec.provider,
+      selectedCaseIds: ['case-1', 'case-2'],
+      allowedVariants: ['current', 'without-skill'],
+      runs: fixture.spec.runs,
     }
     const resultPath = path.join(fixture.root, 'result.json')
     await writeFile(resultPath, JSON.stringify(validResult(binding)))

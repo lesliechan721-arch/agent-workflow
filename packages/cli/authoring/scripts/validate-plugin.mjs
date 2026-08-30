@@ -1098,7 +1098,7 @@ function validateNonEmptyString(value, fieldName, maxLength) {
 
 async function loadSkillEvalManifestTools() {
   if (skillEvalManifestTools) return skillEvalManifestTools;
-  const modulePath = path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'eval', 'manifest.js');
+  const modulePath = path.join(CLI_PACKAGE_ROOT, 'dist', 'src', 'eval', 'manifest-v1.js');
   try {
     skillEvalManifestTools = await import(pathToFileURL(modulePath).href);
     return skillEvalManifestTools;
