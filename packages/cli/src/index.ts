@@ -1878,7 +1878,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
     .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
     .option('--branch <name>', 'explicit Catalog publication branch')
-    .requiredOption('--json', 'emit one schema 2 JSON object')
+    .requiredOption('--json', 'emit one schema 3 JSON object')
     .action(async (rawOptions: { workspaceRoot?: string; remote?: string; branch?: string }) => {
       const receipt = await getCatalogContext({
         cwd,
@@ -2118,12 +2118,23 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogDev
     .command('deactivate')
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
+    .option('--source-id <id>', 'recover one managed source by exact ID')
+    .option('--replacement-primary <id>', 'replacement when the target source is primary')
+    .option('-y, --yes', 'confirm recovery by source ID', false)
     .requiredOption('--json', 'emit one schema 1 JSON receipt')
-    .action(async (rawOptions: { workspaceRoot?: string }) => {
+    .action(async (rawOptions: {
+      workspaceRoot?: string;
+      sourceId?: string;
+      replacementPrimary?: string;
+      yes?: boolean;
+    }) => {
       try {
         const receipt = await deactivateCatalogDevSource({
           cwd,
           workspaceRoot: rawOptions.workspaceRoot,
+          sourceId: rawOptions.sourceId,
+          replacementPrimary: rawOptions.replacementPrimary,
+          yes: rawOptions.yes,
           env,
         });
         writeJsonReceipt(io.stdout, receipt);
@@ -2131,7 +2142,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       } catch (error) {
         const failure = catalogDevSourceError(error);
         writeJsonReceipt(io.stdout, createCatalogDevFailureReceipt({
-          command: 'deactivate', cwd, workspaceRoot: rawOptions.workspaceRoot, ...failure,
+          command: 'deactivate', cwd, workspaceRoot: rawOptions.workspaceRoot,
+          sourceId: rawOptions.sourceId, ...failure,
         }));
         commandExitState.exitCode = 1;
       }

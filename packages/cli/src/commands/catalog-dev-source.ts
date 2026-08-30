@@ -12,6 +12,7 @@ import type { CatalogSource, PathCatalogSource } from '../types.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import { catalogSourceCacheInternal } from '../utils/catalog-source-cache.js';
+import { removeCatalogSourceGenerationState } from '../utils/catalog-generation-service.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 import {
   CATALOG_SOURCE_ID_PATTERN,
@@ -35,7 +36,7 @@ export interface CatalogDevActivateReceipt {
   receiptSchemaVersion: 1;
   command: 'catalog:dev:activate';
   ok: boolean;
-  state: 'completed' | 'partial';
+  state: 'completed' | 'partial' | 'failed';
   workspaceIdentity: string | null;
   snapshot: { path: string; action: 'reused' | 'built'; digest: string | null };
   source: { id: string; action: 'added' | 'updated' | 'reused'; primary: boolean };
@@ -74,7 +75,7 @@ export interface CatalogDevDeactivateReceipt {
   receiptSchemaVersion: 1;
   command: 'catalog:dev:deactivate';
   ok: boolean;
-  state: 'completed' | 'partial';
+  state: 'completed' | 'partial' | 'failed';
   workspaceIdentity: string | null;
   snapshotPath: string;
   source: { id: string | null; action: 'removed' | 'absent' | 'retained'; previousPrimary: boolean };
@@ -154,7 +155,7 @@ export function createCatalogDevFailureReceipt(options: {
       receiptSchemaVersion: 1,
       command: 'catalog:dev:activate',
       ok: false,
-      state: 'completed',
+      state: 'failed',
       workspaceIdentity: null,
       snapshot: { path: snapshotPath, action: 'reused', digest: null },
       source: {
@@ -184,7 +185,7 @@ export function createCatalogDevFailureReceipt(options: {
     receiptSchemaVersion: 1,
     command: 'catalog:dev:deactivate',
     ok: false,
-    state: 'completed',
+    state: 'failed',
     workspaceIdentity: null,
     snapshotPath,
     source: { id: null, action: 'absent', previousPrimary: false },
@@ -257,7 +258,7 @@ export async function activateCatalogDevSource(options: {
         receiptSchemaVersion: 1,
         command: 'catalog:dev:activate',
         ok: false,
-        state: 'completed',
+        state: 'failed',
         workspaceIdentity: workspace.workspaceIdentity,
         snapshot: { path: snapshotPath, action: 'built', digest: null },
         source: { id: options.sourceId ?? normalizeSuggestedSourceId(workspace.workspaceRoot), action: 'reused', primary: false },
@@ -269,11 +270,14 @@ export async function activateCatalogDevSource(options: {
 
   let selectedId = options.sourceId ?? normalizeSuggestedSourceId(workspace.workspaceRoot);
   let sourceAction: 'added' | 'updated' | 'reused' = 'reused';
+  let sourceConfigDigestBefore: string | null = null;
+  let sourceOperationCompleted = false;
   try {
     const result = await withAwHomeMutationLock({
       env: options.env,
       action: async (awHomeMutationToken) => {
         const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+        sourceConfigDigestBefore = configSnapshot.digest;
         const owned = managedSources(configSnapshot.config.sources, workspace.workspaceIdentity);
         if (owned.length > 1) {
           throw new CatalogDevSourceError('multipleManagedSources', `Catalog Workspace identity ${workspace.workspaceIdentity} owns multiple development sources: ${owned.map((source) => source.id).join(', ')}.`);
@@ -299,12 +303,12 @@ export async function activateCatalogDevSource(options: {
         const runtime = { ...options.runtime?.sourceRuntime, awHomeMutationToken };
         if (!existing) {
           sourceAction = 'added';
-          return addCatalogSourceCommand({
+          const added = await addCatalogSourceCommand({
             source: {
               id: selectedId,
               type: 'path',
               path: snapshotPath,
-              primary: options.primary === true,
+              primary: false,
               managedBy: { kind: 'catalog-workspace', workspaceIdentity: workspace.workspaceIdentity },
             },
             cliVersion: options.cliVersion,
@@ -313,44 +317,48 @@ export async function activateCatalogDevSource(options: {
             runtime,
             managedByWorkspaceIdentity: workspace.workspaceIdentity,
           });
-        }
-        if (existing.path !== snapshotPath || (options.primary === true && !existing.primary)) {
-          sourceAction = 'updated';
-          const updated = existing.path === snapshotPath
-            ? { errors: [] }
-            : await updateCatalogSourceCommand({
-                sourceId: existing.id,
-                update: { type: 'path', path: snapshotPath },
-                cliVersion: options.cliVersion,
-                cwd: workspace.workspaceRoot,
-                env: options.env,
-                runtime,
-                managedByWorkspaceIdentity: workspace.workspaceIdentity,
-              });
-          if (options.primary === true && !existing.primary) {
+          sourceOperationCompleted = true;
+          if (added.errors.length === 0 && options.primary === true) {
             await setPrimaryCatalogSourceCommand({
-              sourceId: existing.id,
+              sourceId: selectedId,
               cwd: workspace.workspaceRoot,
               env: options.env,
               runtime,
             });
           }
-          if (existing.path !== snapshotPath) return updated;
-          const refreshed = await refreshCatalogSourceCommand({
+          return added;
+        }
+        let result: { errors: Array<{ code: string; message: string }> };
+        if (existing.path !== snapshotPath) {
+          sourceAction = 'updated';
+          result = await updateCatalogSourceCommand({
+            sourceId: existing.id,
+            update: { type: 'path', path: snapshotPath },
+            cliVersion: options.cliVersion,
+            cwd: workspace.workspaceRoot,
+            env: options.env,
+            runtime,
+            managedByWorkspaceIdentity: workspace.workspaceIdentity,
+          });
+        } else {
+          result = await refreshCatalogSourceCommand({
             sourceId: existing.id,
             cliVersion: options.cliVersion,
             env: options.env,
             runtime,
           });
-          return { errors: refreshed.errors };
         }
-        const refreshed = await refreshCatalogSourceCommand({
-          sourceId: existing.id,
-          cliVersion: options.cliVersion,
-          env: options.env,
-          runtime,
-        });
-        return { errors: refreshed.errors };
+        sourceOperationCompleted = true;
+        if (result.errors.length === 0 && options.primary === true && !existing.primary) {
+          sourceAction = 'updated';
+          await setPrimaryCatalogSourceCommand({
+            sourceId: existing.id,
+            cwd: workspace.workspaceRoot,
+            env: options.env,
+            runtime,
+          });
+        }
+        return result;
       },
     });
     const configured = (await readCatalogSourcesConfigSnapshot(options.env)).config.sources
@@ -373,11 +381,15 @@ export async function activateCatalogDevSource(options: {
       errors: refreshErrors,
     };
   } catch (error) {
+    const after = await readCatalogSourcesConfigSnapshot(options.env).catch(() => null);
+    const configChanged = sourceConfigDigestBefore !== null
+      && after !== null
+      && after.digest !== sourceConfigDigestBefore;
     return {
       receiptSchemaVersion: 1,
       command: 'catalog:dev:activate',
       ok: false,
-      state: 'completed',
+      state: snapshotAction === 'built' || sourceOperationCompleted || configChanged ? 'partial' : 'failed',
       workspaceIdentity: workspace.workspaceIdentity,
       snapshot: { path: snapshotPath, action: snapshotAction, digest: snapshotDigest },
       source: { id: selectedId, action: sourceAction, primary: false },
@@ -551,32 +563,108 @@ export async function getCatalogDevSourceStatus(options: {
 export async function deactivateCatalogDevSource(options: {
   cwd: string;
   workspaceRoot?: string;
+  sourceId?: string;
+  replacementPrimary?: string;
+  yes?: boolean;
   env: NodeJS.ProcessEnv;
   runtime?: CatalogDevSourceRuntime;
 }): Promise<CatalogDevDeactivateReceipt> {
-  const { workspace } = await resolveWorkspace(options.cwd, options.workspaceRoot);
-  const snapshotPath = path.join(workspace.workspaceRoot, DEFAULT_CATALOG_OUTPUT_PATH);
+  if (options.workspaceRoot !== undefined && options.sourceId !== undefined) {
+    throw new CatalogDevSourceError('invalidArguments', '--workspace-root and --source-id are mutually exclusive.');
+  }
   const config = await readCatalogSourcesConfigSnapshot(options.env).catch((error: unknown) => {
     throw new CatalogDevSourceError('sourceConfigInvalid', error instanceof Error ? error.message : String(error));
   });
-  const owned = managedSources(config.config.sources, workspace.workspaceIdentity);
+  let source: PathCatalogSource | undefined;
+  let workspaceIdentity: string;
+  let workspaceRoot: string;
+  let snapshotPath: string;
+  if (options.sourceId !== undefined) {
+    assertExplicitSourceId(options.sourceId);
+    const candidate = config.config.sources.find((entry) => entry.id === options.sourceId);
+    if (candidate?.type !== 'path' || candidate.managedBy?.kind !== 'catalog-workspace') {
+      throw new CatalogDevSourceError(
+        'managedSourceNotFound',
+        `Catalog source "${options.sourceId}" is not a Catalog Workspace-managed path source.`,
+      );
+    }
+    source = candidate;
+    workspaceIdentity = candidate.managedBy.workspaceIdentity;
+    snapshotPath = candidate.path;
+    const potentialOwnerRoot = path.dirname(path.dirname(snapshotPath));
+    const hasDevelopmentShape = path.join(potentialOwnerRoot, DEFAULT_CATALOG_OUTPUT_PATH) === snapshotPath;
+    workspaceRoot = hasDevelopmentShape ? potentialOwnerRoot : path.resolve(options.cwd);
+    const recoveryBase = {
+      receiptSchemaVersion: 1 as const,
+      command: 'catalog:dev:deactivate' as const,
+      workspaceIdentity,
+      snapshotPath,
+      ok: false as const,
+      state: 'failed' as const,
+      source: { id: candidate.id, action: 'retained' as const, previousPrimary: candidate.primary },
+      replacementPrimarySourceId: null,
+    };
+    if (options.yes !== true) {
+      return {
+        ...recoveryBase,
+        recovery: ['Rerun catalog dev deactivate with --source-id and --yes.'],
+        errors: [{ code: 'confirmationRequired', message: 'Recovery by --source-id requires --yes.' }],
+      };
+    }
+    if (hasDevelopmentShape) {
+      try {
+        const currentWorkspace = await readCatalogWorkspace(potentialOwnerRoot, { reservedImports: CLI_RESERVED_IMPORTS });
+        if (
+          currentWorkspace.workspaceIdentity === workspaceIdentity
+          && managedSources(config.config.sources, workspaceIdentity).length === 1
+        ) {
+          return {
+            ...recoveryBase,
+            recovery: ['Rerun catalog dev deactivate with --workspace-root.'],
+            errors: [{
+              code: 'workspaceOwnerHealthy',
+              message: 'This development source has one healthy owning Workspace. Use --workspace-root to deactivate it.',
+            }],
+          };
+        }
+      } catch {
+        // Missing or damaged Workspace content is the recovery condition.
+      }
+    }
+  } else {
+    const resolved = await resolveWorkspace(options.cwd, options.workspaceRoot);
+    workspaceIdentity = resolved.workspace.workspaceIdentity;
+    workspaceRoot = resolved.workspace.workspaceRoot;
+    snapshotPath = path.join(workspaceRoot, DEFAULT_CATALOG_OUTPUT_PATH);
+    const owned = managedSources(config.config.sources, workspaceIdentity);
+    if (owned.length > 1) {
+      return {
+        receiptSchemaVersion: 1, command: 'catalog:dev:deactivate', workspaceIdentity, snapshotPath,
+        ok: false, state: 'failed',
+        source: { id: null, action: 'retained', previousPrimary: false },
+        replacementPrimarySourceId: null,
+        recovery: ['Resolve the duplicate managed source configuration, then rerun catalog dev deactivate.'],
+        errors: [{ code: 'multipleManagedSources', message: `Workspace owns multiple development sources: ${owned.map((entry) => entry.id).join(', ')}.` }],
+      };
+    }
+    source = owned[0];
+  }
   const base = {
     receiptSchemaVersion: 1 as const,
     command: 'catalog:dev:deactivate' as const,
-    workspaceIdentity: workspace.workspaceIdentity,
+    workspaceIdentity,
     snapshotPath,
   };
-  if (owned.length > 1) {
-    return {
-      ...base, ok: false, state: 'completed',
-      source: { id: null, action: 'retained', previousPrimary: false },
-      replacementPrimarySourceId: null,
-      recovery: ['Resolve the duplicate managed source configuration, then rerun catalog dev deactivate.'],
-      errors: [{ code: 'multipleManagedSources', message: `Workspace owns multiple development sources: ${owned.map((source) => source.id).join(', ')}.` }],
-    };
-  }
-  const source = owned[0];
   if (!source) {
+    if (options.replacementPrimary !== undefined) {
+      return {
+        ...base, ok: false, state: 'failed',
+        source: { id: null, action: 'absent', previousPrimary: false },
+        replacementPrimarySourceId: null,
+        recovery: ['Remove --replacement-primary and rerun catalog dev deactivate.'],
+        errors: [{ code: 'replacementPrimaryInvalid', message: '--replacement-primary requires a primary target source.' }],
+      };
+    }
     return {
       ...base, ok: true, state: 'completed',
       source: { id: null, action: 'absent', previousPrimary: false },
@@ -587,12 +675,26 @@ export async function deactivateCatalogDevSource(options: {
   let replacementPrimarySourceId: string | null = null;
   if (source.primary) {
     const otherSources = config.config.sources.filter((entry) => entry.id !== source.id);
-    const official = otherSources.find(isDefaultOfficialCatalogSource);
-    if (official) replacementPrimarySourceId = official.id;
-    else if (otherSources.length === 1) replacementPrimarySourceId = otherSources[0]!.id;
-    else {
+    if (options.replacementPrimary !== undefined) {
+      const replacement = otherSources.find((entry) => entry.id === options.replacementPrimary);
+      if (!replacement) {
+        return {
+          ...base, ok: false, state: 'failed',
+          source: { id: source.id, action: 'retained', previousPrimary: true },
+          replacementPrimarySourceId: null,
+          recovery: ['Select an existing replacement primary source other than the target.'],
+          errors: [{ code: 'replacementPrimaryInvalid', message: `Replacement primary Catalog source "${options.replacementPrimary}" does not exist or is the target.` }],
+        };
+      }
+      replacementPrimarySourceId = replacement.id;
+    } else {
+      const official = otherSources.find(isDefaultOfficialCatalogSource);
+      if (official) replacementPrimarySourceId = official.id;
+      else if (otherSources.length === 1) replacementPrimarySourceId = otherSources[0]!.id;
+    }
+    if (replacementPrimarySourceId === null) {
       return {
-        ...base, ok: false, state: 'completed',
+        ...base, ok: false, state: 'failed',
         source: { id: source.id, action: 'retained', previousPrimary: true },
         replacementPrimarySourceId: null,
         recovery: ['Select a replacement primary source, then rerun catalog dev deactivate.'],
@@ -604,7 +706,16 @@ export async function deactivateCatalogDevSource(options: {
         }],
       };
     }
+  } else if (options.replacementPrimary !== undefined) {
+    return {
+      ...base, ok: false, state: 'failed',
+      source: { id: source.id, action: 'retained', previousPrimary: false },
+      replacementPrimarySourceId: null,
+      recovery: ['Remove --replacement-primary and rerun catalog dev deactivate.'],
+      errors: [{ code: 'replacementPrimaryInvalid', message: '--replacement-primary requires a primary target source.' }],
+    };
   }
+  let generationSelectionRemoved = false;
   try {
     await withAwHomeMutationLock({
       env: options.env,
@@ -614,20 +725,25 @@ export async function deactivateCatalogDevSource(options: {
           throw new CatalogDevSourceError('sourceConfigChanged', 'Catalog sources config changed before development source deactivation. Rerun the command.');
         }
         const runtime = { ...options.runtime?.sourceRuntime, awHomeMutationToken };
+        generationSelectionRemoved = await removeCatalogSourceGenerationState({
+          sourceId: source.id,
+          env: options.env,
+        });
         if (replacementPrimarySourceId) {
           await setPrimaryCatalogSourceCommand({
             sourceId: replacementPrimarySourceId,
-            cwd: workspace.workspaceRoot,
+            cwd: workspaceRoot,
             env: options.env,
             runtime,
           });
         }
         await removeCatalogSourceCommand({
           sourceId: source.id,
-          cwd: workspace.workspaceRoot,
+          cwd: workspaceRoot,
           env: options.env,
           runtime,
-          managedByWorkspaceIdentity: workspace.workspaceIdentity,
+          managedByWorkspaceIdentity: workspaceIdentity,
+          generationStateAlreadyRemoved: true,
         });
       },
     });
@@ -642,7 +758,7 @@ export async function deactivateCatalogDevSource(options: {
     const sourceStillExists = after?.config.sources.some((entry) => entry.id === source.id) ?? true;
     const configChanged = after !== null && after.digest !== config.digest;
     return {
-      ...base, ok: false, state: configChanged ? 'partial' : 'completed',
+      ...base, ok: false, state: configChanged || generationSelectionRemoved ? 'partial' : 'failed',
       source: { id: source.id, action: sourceStillExists ? 'retained' : 'removed', previousPrimary: source.primary },
       replacementPrimarySourceId,
       recovery: ['The snapshot was kept. Fix the source configuration or cache, then rerun catalog dev deactivate.'],

@@ -498,6 +498,7 @@ export async function removeCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
+  generationStateAlreadyRemoved?: boolean;
 }): Promise<CatalogSourceMutationReceipt> {
   return withCatalogSourceMutationLock({
     env: options.env,
@@ -523,7 +524,9 @@ export async function removeCatalogSourceCommand(options: {
         env,
         runtime,
       });
-      await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env });
+      if (options.generationStateAlreadyRemoved !== true) {
+        await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env });
+      }
       return receipt;
     },
   });

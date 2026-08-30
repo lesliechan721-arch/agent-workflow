@@ -101,9 +101,15 @@ Path source 消费本地 development snapshot；Git source 消费 published snap
 aw catalog dev activate --workspace-root "$workspace" --json
 aw catalog dev status --workspace-root "$workspace" --json
 aw catalog dev deactivate --workspace-root "$workspace" --json
+# Workspace 已删除、损坏或 identity 漂移时，按精确 managed source ID 恢复：
+aw catalog dev deactivate --source-id <id> --yes --json
 ```
 
-`activate` 会在 snapshot absent、stale、invalid 或显式要求时 build/complete validate，再原子提交 managed path source 并 refresh。config 提交后的 refresh 失败返回 partial receipt，不回滚 source；重跑 refresh 或 activate 可以恢复。Development status schema v2 的 `ok` 只表示诊断可靠完成；`ready` 只在 snapshot current、唯一 managed source、path 匹配、cache current 且 cache digest 匹配 snapshot 时为 `true`。`ok: true, ready: false` 仍以 exit 0 返回，并用 blocking issues 说明未就绪原因。`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。低层 `catalog source add/update` 不能声明 managed ownership。context schema v2 的 `developmentSource.configured` 只检查唯一 owned managed source 及其 path，不替代 readiness。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
+`activate` 会在 snapshot absent、stale、invalid 或显式要求时 build/complete validate，再原子提交 managed path source 并 refresh。`--primary` 在 add/update/refresh 成功后才提升 source；refresh 失败保留原 primary。config 提交后的 refresh 失败返回 partial receipt，不回滚 source；重跑 refresh 或 activate 可以恢复。activate/deactivate receipt schema 1 的 `state` 为 `completed | partial | failed`：最终目标完成为 completed，已有强或弱 mutation 但目标未完成为 partial，没有目标 mutation 为 failed。Development status schema v2 的 `ok` 只表示诊断可靠完成；`ready` 只在 snapshot current、唯一 managed source、path 匹配、cache current 且 cache digest 匹配 snapshot 时为 `true`。`ok: true, ready: false` 仍以 exit 0 返回，并用 blocking issues 说明未就绪原因。`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。
+
+普通 deactivate 使用 `--workspace-root`。只有 Workspace/marker 缺失或损坏、identity 已漂移、managed path 不再符合 `.aw/catalog` 形状，或同一 identity 有多个 managed source 时，才使用 `--source-id <id> --yes` 恢复。该模式只接受精确的 Workspace-managed path source；健康且唯一的 owner 会被拒绝。它从 `managedBy` 取得 identity，先删除该 source 的可重建 generation selection，再原子删除 source config；它不删除 snapshot、cache 或 immutable generation。selection 删除失败时 config 保持不变；config 删除失败时可以 refresh 或重跑 deactivate。目标为 primary 时，可用 `--replacement-primary <id>` 明确选择现有的其它 source；未指定时优先真实默认 official，再接受唯一其它 source，否则失败。非 primary 目标不能使用该参数。
+
+低层 `catalog source add/update` 不能声明 managed ownership。context schema v3 用合法 marker 决定 Workspace identity，并用 `workspace.health` 区分完整内容 healthy/degraded。Workspace 内容、source config 或 managed source 歧义不阻断 generic context；marker 非法仍阻断。`developmentSource.configured` 只检查唯一 owned managed source 及其 path，不替代 readiness。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
 
 ```bash
 activation_receipt="$(aw catalog dev activate --workspace-root "$workspace" --json)"
