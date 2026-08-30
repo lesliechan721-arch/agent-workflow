@@ -6,12 +6,13 @@ export interface ValidationResult<TCalculated = unknown> {
   calculated: TCalculated | null
 }
 
-export interface RuntimeCapabilities {
-  schemaVersion: 1
+export interface EvalProviderCapabilities {
+  schemaVersion: 2
   provider: string
   providerVersion: string
   capabilities: {
     triggerDiscovery: boolean
+    conversation: boolean
     skillPathExecution: boolean
     previousVersionBaseline: boolean
     withoutSkillBaseline: boolean
@@ -24,6 +25,21 @@ export interface RuntimeCapabilities {
     materialization: boolean
   }
   limitations: string[]
+}
+
+export type RuntimeCapabilities = EvalProviderCapabilities
+
+export interface EvalProviderArtifactOutput {
+  path: string
+  role?: 'trace' | 'report' | 'output' | 'other'
+}
+
+export interface EvalProviderOutput {
+  schemaVersion: 1
+  provider: { id: string; version: string }
+  usage: Record<string, unknown> | null
+  grading: Record<string, unknown> | null
+  artifacts: EvalProviderArtifactOutput[]
 }
 
 export interface RuntimeSkillSnapshot {
@@ -84,6 +100,7 @@ export interface ProcessResult {
 }
 
 export interface RunExecutionPlanOptions {
+  auditPaths: string[]
   processHooks?: ProcessLifecycleHooks
   beforeBundleCommit?: () => void | Promise<void>
   sourceEnv?: NodeJS.ProcessEnv
@@ -102,4 +119,6 @@ export interface RunExecutionResult {
 export type SchemaName =
   | 'aw-skill-eval-execution-plan'
   | 'eval-run-bundle'
-  | 'eval-runtime-capabilities'
+  | 'eval-audit-result'
+  | 'eval-provider-capabilities'
+  | 'eval-provider-output'

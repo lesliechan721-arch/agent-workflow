@@ -7,11 +7,12 @@ export function getRuntimeCapabilities(platform: NodeJS.Platform = process.platf
   const packageJson = require('../package.json') as { version: string }
   const processObservationAvailable = platform === 'darwin' || platform === 'linux' || platform === 'win32'
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     provider: 'aw-skill-eval-process',
     providerVersion: packageJson.version,
     capabilities: {
       triggerDiscovery: false,
+      conversation: false,
       skillPathExecution: processObservationAvailable,
       previousVersionBaseline: processObservationAvailable,
       withoutSkillBaseline: processObservationAvailable,

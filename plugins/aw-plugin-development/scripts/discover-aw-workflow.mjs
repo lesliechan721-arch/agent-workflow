@@ -141,6 +141,7 @@ function supportedPlatforms(manifest) {
 const RESERVED_RUNTIME_IMPORTS = new Map([
   ['@aw/agent-skill-eval', new Map([
     ['case-corpus-digest', new Set(['buildImportEdges', 'skillRuntimeFileImportEdges'])],
+    ['eval-run-bundle-validator', new Set(['buildImportEdges', 'skillRuntimeFileImportEdges'])],
   ])],
 ]);
 

@@ -150,6 +150,16 @@ describe('local prepared release', () => {
 
     await fs.writeFile(path.join(root, 'packages', 'cli', 'src', 'ignored.ts'), 'ignored source\n');
     await expect(assertTrackedHeadClean(root)).rejects.toThrow('packages/cli/src/ignored.ts');
+
+    await fs.rm(path.join(root, 'packages', 'cli', 'src', 'ignored.ts'));
+    await fs.mkdir(path.join(root, 'packages', 'agent-skill-eval', 'schemas'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'packages', 'agent-skill-eval', 'schemas', 'ignored.json'),
+      '{}\n',
+    );
+    await expect(assertTrackedHeadClean(root)).rejects.toThrow(
+      'packages/agent-skill-eval/schemas/ignored.json',
+    );
   });
 
   it('rejects assume-unchanged and skip-worktree release inputs', async () => {

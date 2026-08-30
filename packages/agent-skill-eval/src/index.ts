@@ -3,7 +3,11 @@ export { canonicalJson, computeCaseCorpusDigest } from './corpus-digest.js'
 export { getRuntimeCapabilities } from './capabilities.js'
 export { runExecutionPlan } from './run.js'
 export { validateRunBundle } from './bundle.js'
-export { computeSkillDigest, createRuntimeSkillSnapshot } from './runtime-skill.js'
+export {
+  computeCanonicalDirectoryDigest,
+  computeSkillDigest,
+  createRuntimeSkillSnapshot,
+} from './runtime-skill.js'
 export type { RuntimeSkillDigestOptions } from './runtime-skill.js'
 export {
   assertProviderProcessSupported,
@@ -16,13 +20,21 @@ export {
   observeProcessTree,
   terminateProcessTree,
 } from './process-tree.js'
-export { getSchema, getSchemaDigest, validateRuntimeCapabilities } from './schemas.js'
+export {
+  getSchema,
+  getSchemaDigest,
+  validateAuditResult,
+  validateProviderCapabilities,
+  validateProviderOutput,
+  validateRuntimeCapabilities,
+} from './schemas.js'
 export { validateJsonSchema } from './json-schema.js'
 export type {
   AwSkillEvalExecutionPlan,
   EvalCase,
   EvalConfiguration,
   PlanCalculated,
+  RuntimeInput,
 } from './plan.js'
 export type {
   BundleCalculated,
@@ -34,6 +46,9 @@ export type {
 } from './bundle.js'
 export type {
   Digest,
+  EvalProviderArtifactOutput,
+  EvalProviderCapabilities,
+  EvalProviderOutput,
   ExternalContainmentConfirmation,
   ProcessLifecycleHooks,
   ProcessRequest,

@@ -24,7 +24,7 @@ describe('aw-skill-eval execution owner gate', () => {
   it('fails closed when the shared bin and CLI bridge report different owners', () => {
     expect(() => assertCompatibleRuntimeIdentity({
       capabilities: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         provider: 'aw-skill-eval-process',
         providerVersion: '0.1.0-beta.2',
       },
@@ -54,7 +54,7 @@ describe('aw-skill-eval execution owner gate', () => {
     await writeFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n')
     await writeFile(
       path.join(skillRoot, 'assets', 'aw-skill-eval-execution-plan.template.json'),
-      '{"schemaVersion":3}\n',
+      '{"schemaVersion":4}\n',
     )
     return skillRoot
   }
@@ -63,6 +63,7 @@ describe('aw-skill-eval execution owner gate', () => {
     const skillRoot = await createRunnerSkill([
       'Use `assets/aw-skill-eval-execution-plan.template.json`.',
       'Run `aw-skill-eval capabilities --json`.',
+      'Run `aw-skill-eval run <plan.json> --audit <audit.json>`.',
     ].join('\n'))
     try {
       await expect(assertRunnerSkillBundle(skillRoot)).resolves.toEqual({
@@ -74,6 +75,17 @@ describe('aw-skill-eval execution owner gate', () => {
           'SKILL.md',
         ],
       })
+    } finally {
+      await rm(path.dirname(skillRoot), { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a Runner command that omits the required preflight Audit', async () => {
+    const skillRoot = await createRunnerSkill('Run `aw-skill-eval run <plan.json>`.')
+    try {
+      await expect(assertRunnerSkillBundle(skillRoot)).rejects.toThrow(
+        'undocumented aw-skill-eval command',
+      )
     } finally {
       await rm(path.dirname(skillRoot), { recursive: true, force: true })
     }

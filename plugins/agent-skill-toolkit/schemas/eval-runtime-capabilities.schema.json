@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "provider": {
       "type": "string",
@@ -26,6 +26,7 @@
       "type": "object",
       "required": [
         "triggerDiscovery",
+        "conversation",
         "skillPathExecution",
         "previousVersionBaseline",
         "withoutSkillBaseline",
@@ -39,6 +40,9 @@
       ],
       "properties": {
         "triggerDiscovery": {
+          "type": "boolean"
+        },
+        "conversation": {
           "type": "boolean"
         },
         "skillPathExecution": {

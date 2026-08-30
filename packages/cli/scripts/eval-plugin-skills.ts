@@ -163,7 +163,7 @@ function optionValue(args: string[], index: number, flag: string): string {
 function usage(): string {
   return [
     'Usage: pnpm plugin:eval <plugin> --skill <skill> [OPTIONS]',
-    '       pnpm plugin:eval --aw-skill-eval-plan <plan.json>',
+    '       pnpm plugin:eval --aw-skill-eval-plan <plan.json> --audit <audit.json> [--audit <audit.json>...]',
     '',
     'Options:',
     '  --skill <name>                Select exactly one Skill (required)',
@@ -184,16 +184,29 @@ function usage(): string {
     '  --allow-environment-skips     Diagnostic only; release remains incomplete',
     '  --allow-unmanaged-processes   Confirm eval without descendant process tracking',
     '  --aw-skill-eval-plan <path>    Run one AwSkillEvalExecutionPlan with aw-skill-eval',
+    '  --audit <path>                 Bind one required preflight EvalAuditResult',
   ].join('\n');
 }
 
-function awSkillEvalExecutionPlanPath(args: string[]): string | undefined {
+function awSkillEvalExecutionPlanInput(
+  args: string[],
+): { planPath: string; auditPaths: string[] } | undefined {
   const index = args.indexOf('--aw-skill-eval-plan');
   if (index < 0) return undefined;
-  if (args.length !== 2 || index !== 0 || !args[1] || args[1].startsWith('-')) {
-    throw new Error('--aw-skill-eval-plan requires exactly one plan path and no AW suite options.');
+  if (index !== 0 || !args[1] || args[1].startsWith('-')) {
+    throw new Error('--aw-skill-eval-plan requires exactly one plan path followed by --audit paths.');
   }
-  return path.resolve(args[1]);
+  const auditPaths: string[] = [];
+  for (let auditIndex = 2; auditIndex < args.length; auditIndex += 2) {
+    if (args[auditIndex] !== '--audit' || !args[auditIndex + 1] || args[auditIndex + 1]!.startsWith('-')) {
+      throw new Error('--aw-skill-eval-plan accepts only repeated --audit <path> values.');
+    }
+    auditPaths.push(path.resolve(args[auditIndex + 1]!));
+  }
+  if (auditPaths.length === 0) {
+    throw new Error('--aw-skill-eval-plan requires at least one --audit <path>.');
+  }
+  return { planPath: path.resolve(args[1]), auditPaths };
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -1705,9 +1718,10 @@ export async function runPluginEvals(
     return 0;
   }
   try {
-    const executionPlanPath = awSkillEvalExecutionPlanPath(args);
-    if (executionPlanPath) {
-      const result = await runAwSkillEvalExecutionPlan(executionPlanPath, {
+    const executionPlanInput = awSkillEvalExecutionPlanInput(args);
+    if (executionPlanInput) {
+      const result = await runAwSkillEvalExecutionPlan(executionPlanInput.planPath, {
+        auditPaths: executionPlanInput.auditPaths,
         sourceEnv: options.env ?? process.env,
         platform: options.platform,
         processTree: options.evalProcessTree,

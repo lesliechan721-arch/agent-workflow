@@ -455,7 +455,7 @@ describe('plugin eval runner', () => {
     expect(stdout).toContain('--aw-skill-eval-plan');
   });
 
-  it('runs an AwSkillEvalExecutionPlan through the production bridge without Audit', async () => {
+  it('runs an audited AwSkillEvalExecutionPlan through the production bridge', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-eval-plan-'));
     tempDirs.push(root);
     registerCurrentTestWritableStateRoot(root);
@@ -481,23 +481,29 @@ describe('plugin eval runner', () => {
     const providerPath = path.join(root, 'provider.mjs');
     await fs.writeFile(providerPath, [
       "import process from 'node:process';",
-      "process.stdout.write(JSON.stringify({ usage: { fixture: true } }) + '\\n');",
+      `process.stdout.write(JSON.stringify({ schemaVersion: 1, provider: { id: ${JSON.stringify(capabilities.provider)}, version: ${JSON.stringify(capabilities.providerVersion)} }, usage: { fixture: true }, grading: null, artifacts: [] }) + '\\n');`,
     ].join('\n'), 'utf8');
     const planPath = path.join(root, 'plan.json');
     await fs.writeJson(planPath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       planId: 'portable-fixture',
       target: { name: 'portable-fixture', path: './skill', digest: targetDigest },
       cases: { paths: ['./cases.json'], corpusDigest: caseCorpusDigest },
       provider: {
         id: capabilities.provider,
         command: [process.execPath, providerPath],
+        describeCommand: [
+          process.execPath,
+          '-e',
+          `process.stdout.write(require('node:fs').readFileSync(${JSON.stringify(capabilitiesPath)}, 'utf8'))`,
+        ],
         cwd: null,
         env: {},
         capabilitiesPath: './capabilities.json',
         capabilitiesDigest,
         inheritEnvironment: false,
       },
+      runtimeInputs: [],
       configurations: [{
         id: 'with-skill',
         skillMode: 'with-skill',
@@ -509,10 +515,35 @@ describe('plugin eval runner', () => {
       outputRoot: './output',
       capture: { outputs: true, trace: false, timing: true, usage: false },
     }, { spaces: 2 });
+    const auditPath = path.join(root, 'audit.json');
+    await fs.writeJson(auditPath, {
+      schemaVersion: 3,
+      producer: 'audit-agent-skill-evals',
+      independentContext: true,
+      auditId: 'portable-fixture-audit',
+      mode: 'preflight',
+      targetSkillDigest: targetDigest,
+      caseCorpusDigest,
+      runBundleDigest: null,
+      validity: 'pass',
+      optimizationPolicy: 'balanced',
+      cases: [{
+        caseId: 'portable_case',
+        releaseRelevant: true,
+        admission: 'pass',
+        oracleConfidence: 'high',
+        findings: [],
+      }],
+      blockedCases: [],
+      releaseEligible: false,
+      failureTriage: [],
+      recommendedAction: 'collect-more-data',
+    }, { spaces: 2 });
+    const rawExecutionArgs = ['--aw-skill-eval-plan', planPath, '--audit', auditPath];
     let stdout = '';
     let stderr = '';
 
-    const exitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
+    const exitCode = await runPluginEvals(rawExecutionArgs, {
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
     });
@@ -530,7 +561,7 @@ describe('plugin eval runner', () => {
       bundleValidation: { valid: true, errors: [] },
     });
     await expect(fs.readJson(result.bundlePath)).resolves.toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       runner: { id: 'aw-skill-eval', version: capabilities.providerVersion },
       aggregate: { runs: 1, completed: 1 },
       evidenceLevel: 'executed',
@@ -554,18 +585,14 @@ describe('plugin eval runner', () => {
     };
     stdout = '';
     stderr = '';
-    const failedCleanupExitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
+    const failedCleanupExitCode = await runPluginEvals(rawExecutionArgs, {
       evalProcessTree: failedCleanupProcessTree,
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
     });
-    expect(failedCleanupExitCode, stderr).toBe(1);
-    expect(JSON.parse(stdout)).toMatchObject({
-      valid: true,
-      evidenceLevel: 'executed',
-      requirementsMet: false,
-      bundleValidation: { valid: true, errors: [] },
-    });
+    expect(failedCleanupExitCode).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('cleanup');
 
     const plan = await fs.readJson(planPath);
     plan.minimumEvidenceLevel = 'comparative';
@@ -585,38 +612,20 @@ describe('plugin eval runner', () => {
     };
     stdout = '';
     stderr = '';
-    const unmetExitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
+    const unmetExitCode = await runPluginEvals(rawExecutionArgs, {
       env: { ...process.env, CODEX_PERMISSION_PROFILE: ':danger-full-access' },
       platform: 'linux',
       evalProcessTree,
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
     });
-    expect(unmetExitCode, stderr).toBe(1);
-    const unmet = JSON.parse(stdout);
-    expect(unmet).toMatchObject({
-      valid: true,
-      evidenceLevel: 'executed',
-      requirementsMet: false,
-      bundleValidation: { valid: true, errors: [] },
-    });
-    await expect(fs.readJson(unmet.bundlePath)).resolves.toMatchObject({
-      evidenceRequirement: {
-        minimumEvidenceLevel: 'comparative',
-        plannedComparisons: 1,
-        comparableComparisons: 0,
-        satisfied: false,
-      },
-      processManagement: {
-        mode: 'observed',
-        descendantCleanupGuaranteed: false,
-        limitation: 'Provider process cleanup could not be verified.',
-      },
-    });
+    expect(unmetExitCode).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('marked process identity');
 
     stdout = '';
     stderr = '';
-    const restrictedExitCode = await runPluginEvals(['--aw-skill-eval-plan', planPath], {
+    const restrictedExitCode = await runPluginEvals(rawExecutionArgs, {
       env: { ...process.env, CODEX_PERMISSION_PROFILE: ':workspace' },
       platform: 'linux',
       evalProcessTree,

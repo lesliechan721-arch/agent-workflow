@@ -28,7 +28,7 @@ export function getAwSkillEvalExecutionOwner(): { provider: string; version: str
 // not be translated into an AwSkillEvalExecutionPlan.
 export async function runAwSkillEvalExecutionPlan(
   planPath: string,
-  options: RunExecutionPlanOptions = {},
+  options: RunExecutionPlanOptions,
 ): Promise<AwSkillEvalExecutionResult> {
   const absolutePlanPath = path.resolve(planPath);
   const planValidation = await validateExecutionPlan(absolutePlanPath);

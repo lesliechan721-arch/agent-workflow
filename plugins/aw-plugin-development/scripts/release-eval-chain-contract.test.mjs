@@ -201,20 +201,28 @@ exec "${process.execPath}" "${skillValidatorBin}" "$@"
   const preflightRaw = JSON.stringify(preflight);
   await writeFile(preflightPath, preflightRaw);
 
-  const stdout = 'fixture stdout';
+  const stdout = JSON.stringify({
+    schemaVersion: 1,
+    provider: { id: 'fixture', version: '1' },
+    usage: null,
+    grading: null,
+    artifacts: [],
+  });
   const stderr = '';
   await mkdir(path.join(temp, 'runs'), { recursive: true });
   await writeFile(path.join(temp, 'runs', 'stdout.txt'), stdout);
   await writeFile(path.join(temp, 'runs', 'stderr.txt'), stderr);
   const bundlePath = path.join(temp, 'bundle.json');
   const bundle = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     runner: { id: 'aw-skill-eval', version: '0.1.0' },
     independentContext: false,
     provider: { id: 'fixture', version: '1' },
+    providerCapabilitiesDigest: `sha256:${'4'.repeat(64)}`,
     planDigest: `sha256:${'3'.repeat(64)}`,
     targetSkillDigest: check.target.digest,
     caseCorpusDigest: corpusDigest,
+    runtimeInputs: [],
     comparisonPlanned: false,
     evidenceLevel: 'executed',
     runs: [1, 2, 3].map((runIndex) => ({

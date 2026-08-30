@@ -15,7 +15,17 @@ const expectedProvider = 'aw-skill-eval-process'
 const canonicalSchemaNames = [
   'aw-skill-eval-execution-plan',
   'eval-run-bundle',
+  'eval-audit-result',
+  'eval-provider-capabilities',
+  'eval-provider-output',
 ]
+const canonicalSchemaVersions = new Map([
+  ['aw-skill-eval-execution-plan', 4],
+  ['eval-run-bundle', 4],
+  ['eval-audit-result', 3],
+  ['eval-provider-capabilities', 2],
+  ['eval-provider-output', 1],
+])
 const runnerSkillFiles = new Set([
   'README.md',
   'SKILL.md',
@@ -26,11 +36,14 @@ const runnerSkillFiles = new Set([
 const runnerSkillDirectories = new Set(['agents', 'assets'])
 const allowedRunnerCommands = [
   /^aw-skill-eval capabilities --json$/u,
-  /^aw-skill-eval schema print (?:aw-skill-eval-execution-plan|eval-run-bundle)$/u,
+  /^aw-skill-eval schema print (?:aw-skill-eval-execution-plan|eval-run-bundle|eval-audit-result|eval-provider-capabilities|eval-provider-output)$/u,
   /^aw-skill-eval digest skill <skill-dir>$/u,
   /^aw-skill-eval plan validate <plan\.json>$/u,
-  /^aw-skill-eval run <plan\.json>$/u,
+  /^aw-skill-eval run <plan\.json>(?: --audit <audit\.json>)+$/u,
   /^aw-skill-eval bundle validate <bundle\.json>$/u,
+  /^aw-skill-eval audit validate <audit\.json>$/u,
+  /^aw-skill-eval provider-capabilities validate <capabilities\.json>$/u,
+  /^aw-skill-eval provider-output validate <output\.json>$/u,
 ]
 
 function fail(message) {
@@ -233,7 +246,7 @@ export function assertCompatibleRuntimeIdentity({
   bridgeOwner,
 }) {
   const runtime = assertRecord(capabilities, 'aw-skill-eval capabilities')
-  if (runtime.schemaVersion !== 1) fail('aw-skill-eval capabilities schemaVersion must be 1.')
+  if (runtime.schemaVersion !== 2) fail('aw-skill-eval capabilities schemaVersion must be 2.')
   if (runtime.provider !== expectedProvider) {
     fail(`aw-skill-eval provider must be ${expectedProvider}, got ${JSON.stringify(runtime.provider)}.`)
   }
@@ -307,7 +320,7 @@ export async function verifyEvalRuntimeOwner() {
   const evalApi = await import(pathToFileURL(evalApiPath).href)
   const capabilityValidation = await evalApi.validateRuntimeCapabilities(capabilities)
   if (!capabilityValidation.valid) {
-    fail(`aw-skill-eval capabilities do not satisfy canonical schema v1:\n${capabilityValidation.errors.join('\n')}`)
+    fail(`aw-skill-eval capabilities do not satisfy canonical schema v2:\n${capabilityValidation.errors.join('\n')}`)
   }
 
   const schemas = []
@@ -321,13 +334,14 @@ export async function verifyEvalRuntimeOwner() {
     if (JSON.stringify(printed) !== JSON.stringify(canonical)) {
       fail(`aw-skill-eval schema print ${name} does not match the canonical package schema.`)
     }
-    if (printed?.properties?.schemaVersion?.const !== 3) {
-      fail(`${name} canonical schemaVersion must be 3.`)
+    const expectedSchemaVersion = canonicalSchemaVersions.get(name)
+    if (printed?.properties?.schemaVersion?.const !== expectedSchemaVersion) {
+      fail(`${name} canonical schemaVersion must be ${expectedSchemaVersion}.`)
     }
     const digest = await evalApi.getSchemaDigest(name)
     if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) fail(`${name} canonical schema digest is unreadable.`)
     if (digest !== sha256(JSON.stringify(canonical))) fail(`${name} canonical schema digest does not match its bytes.`)
-    schemas.push({ name, schemaVersion: 3, digest })
+    schemas.push({ name, schemaVersion: expectedSchemaVersion, digest })
   }
 
   const closureValidator = await import(pathToFileURL(closureValidatorPath).href)

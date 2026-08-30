@@ -131,6 +131,11 @@
         "plugin": "@aw/agent-skill-eval",
         "export": "case-corpus-digest",
         "env": "AW_PLUGIN_IMPORT_CASE_CORPUS_DIGEST"
+      },
+      {
+        "plugin": "@aw/agent-skill-eval",
+        "export": "eval-run-bundle-validator",
+        "env": "AW_PLUGIN_IMPORT_EVAL_RUN_BUNDLE_VALIDATOR"
       }
     ],
     "skillRuntimeFiles": [
@@ -232,6 +237,10 @@
       {
         "skill": "audit-agent-skill-evals",
         "target": "scripts/corpus-digest.mjs"
+      },
+      {
+        "skill": "audit-agent-skill-evals",
+        "target": "scripts/eval-run-bundle-validator.mjs"
       }
     ]
   },

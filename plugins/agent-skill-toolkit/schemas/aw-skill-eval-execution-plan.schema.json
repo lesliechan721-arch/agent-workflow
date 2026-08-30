@@ -9,6 +9,7 @@
     "target",
     "cases",
     "provider",
+    "runtimeInputs",
     "configurations",
     "runsPerCase",
     "timeoutMs",
@@ -17,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 3
+      "const": 4
     },
     "planId": {
       "type": "string",
@@ -81,6 +82,7 @@
       "required": [
         "id",
         "command",
+        "describeCommand",
         "capabilitiesPath",
         "capabilitiesDigest",
         "inheritEnvironment"
@@ -91,6 +93,14 @@
           "minLength": 1
         },
         "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "describeCommand": {
           "type": "array",
           "minItems": 1,
           "items": {
@@ -123,6 +133,37 @@
         }
       },
       "additionalProperties": false
+    },
+    "runtimeInputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "path",
+          "digest"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+          },
+          "kind": {
+            "const": "directory"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      }
     },
     "configurations": {
       "type": "array",

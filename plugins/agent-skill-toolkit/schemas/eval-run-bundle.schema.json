@@ -8,9 +8,11 @@
     "runner",
     "independentContext",
     "provider",
+    "providerCapabilitiesDigest",
     "planDigest",
     "targetSkillDigest",
     "caseCorpusDigest",
+    "runtimeInputs",
     "comparisonPlanned",
     "evidenceLevel",
     "runs",
@@ -19,7 +21,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 3
+      "const": 4
     },
     "runner": {
       "type": "object",
@@ -60,6 +62,10 @@
       },
       "additionalProperties": false
     },
+    "providerCapabilitiesDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "planDigest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
@@ -71,6 +77,27 @@
     "caseCorpusDigest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "runtimeInputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "digest"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      }
     },
     "comparisonPlanned": {
       "type": "boolean"

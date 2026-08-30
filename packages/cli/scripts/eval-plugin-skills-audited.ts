@@ -323,10 +323,13 @@ export async function runAuditedPluginEvals(
       return code;
     }
     if (parsed.executionPlan) {
-      if (parsed.auditPaths.length > 0) {
-        throw new Error('--aw-skill-eval-plan is a raw execution path; do not pass --audit to the Runner.');
+      if (parsed.auditPaths.length === 0) {
+        throw new Error('--aw-skill-eval-plan requires at least one --audit <EvalAuditResult.json>.');
       }
-      return await delegate(parsed.forwarded, runnerOptions);
+      return await delegate([
+        ...parsed.forwarded,
+        ...parsed.auditPaths.flatMap((auditPath) => ['--audit', auditPath]),
+      ], runnerOptions);
     }
     if (parsed.materializeOnly) {
       return await delegate(parsed.forwarded, runnerOptions);

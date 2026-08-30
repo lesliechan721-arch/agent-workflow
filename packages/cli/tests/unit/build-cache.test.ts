@@ -28,6 +28,7 @@ async function createRepo(): Promise<string> {
   await fs.mkdir(path.join(repoRoot, 'plugins', 'demo'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'tools'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'packages', 'agent-skill-eval', 'schemas'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'plugin-core', 'node_modules'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'plugin-core', 'schemas'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'cli'), { recursive: true });
@@ -203,6 +204,21 @@ describe('build cache input and environment identity', () => {
     await fs.unlink(linkPath);
     await fs.symlink('other.md', linkPath);
     expect(await computeBuildInputDigest(repoRoot)).not.toBe(nestedDigest);
+  });
+
+  it('invalidates the build cache when a canonical Eval schema changes', async () => {
+    const repoRoot = await createRepo();
+    const schemaPath = path.join(
+      repoRoot,
+      'packages',
+      'agent-skill-eval',
+      'schemas',
+      'eval-run-bundle.schema.json',
+    );
+    await fs.writeFile(schemaPath, '{"schemaVersion":4}\n');
+    const initialDigest = await computeBuildInputDigest(repoRoot);
+    await fs.writeFile(schemaPath, '{"schemaVersion":4,"title":"changed"}\n');
+    await expect(computeBuildInputDigest(repoRoot)).resolves.not.toBe(initialDigest);
   });
 
   it('binds registered input symlinks to referent bytes during a build', async () => {

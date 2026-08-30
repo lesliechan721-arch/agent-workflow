@@ -85,7 +85,12 @@ async function resolveEvalVirtualExport(
   if (purpose !== 'build' && purpose !== 'skill-runtime-file') {
     throw new Error('Invalid catalog runtime import: virtual provider "@aw/agent-skill-eval" is only available to buildImports and skillRuntimeFiles.');
   }
-  if (reference.export !== 'case-corpus-digest') {
+  const sources = {
+    'case-corpus-digest': './dist/corpus-digest.js',
+    'eval-run-bundle-validator': './dist/bundle-validation-runtime.js',
+  } as const;
+  const source = sources[reference.export as keyof typeof sources];
+  if (!source) {
     throw new Error(`Invalid catalog runtime import: unknown @aw/agent-skill-eval export "${reference.export}".`);
   }
   const cliPackageRoot = resolveCliPackageRoot();
@@ -104,15 +109,15 @@ async function resolveEvalVirtualExport(
   }
   const canonicalSource = await resolveCoreRuntimeSourceIdentity(
     packageRoot,
-    './dist/corpus-digest.js',
-    '@aw/agent-skill-eval runtime export "case-corpus-digest"',
+    source,
+    `@aw/agent-skill-eval runtime export "${reference.export}"`,
   );
   const requiredCapabilities: string[] = [];
   return {
     provider: '@aw/agent-skill-eval',
     providerVersion: packageJson.version,
     name: reference.export,
-    source: './dist/corpus-digest.js',
+    source,
     sourcePath: canonicalSource.sourceRealPath,
     sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
     requiredCapabilities,

@@ -99,6 +99,10 @@ async function fixture(validity: 'pass' | 'fail' = 'pass') {
       path.join(workspaceRoot, 'packages/agent-skill-eval/dist/corpus-digest.js'),
       path.join(validatorRoot, 'corpus-digest.mjs'),
     ),
+    fs.copyFile(
+      path.join(workspaceRoot, 'packages/agent-skill-eval/dist/bundle-validation-runtime.js'),
+      path.join(validatorRoot, 'eval-run-bundle-validator.mjs'),
+    ),
   ]);
   const { stdout: digestOutput } = await execFileAsync(process.execPath, [
     path.join(validatorRoot, 'validate-eval-audit-result.mjs'),

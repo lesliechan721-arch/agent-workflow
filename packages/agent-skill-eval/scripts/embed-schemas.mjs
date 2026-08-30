@@ -4,9 +4,11 @@ import { createHash } from 'node:crypto'
 const names = [
   'aw-skill-eval-execution-plan',
   'eval-run-bundle',
-  'eval-runtime-capabilities',
+  'eval-audit-result',
+  'eval-provider-capabilities',
+  'eval-provider-output',
 ]
-const canonicalRoot = new URL('../../../plugins/agent-skill-toolkit/schemas/', import.meta.url)
+const canonicalRoot = new URL('../schemas/', import.meta.url)
 const outputRoot = new URL('../dist/schemas/', import.meta.url)
 
 await mkdir(outputRoot, { recursive: true })
