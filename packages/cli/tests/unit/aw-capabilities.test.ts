@@ -30,6 +30,7 @@ describe('current AW executable capabilities', () => {
       'aw.runtime-imports.v1',
       'aw.skill-validation.v1',
       'aw.skill-eval.v1',
+      'aw.skill-eval.v2',
       'aw.plugin-authoring.v1',
       'aw.catalog-authoring.v1',
       'aw.catalog-context.v1',
@@ -54,6 +55,7 @@ describe('current AW executable capabilities', () => {
     expect(result.capabilities).toContain('aw.catalog-source.v2')
     expect(result.capabilities).toContain('aw.catalog-dev-source.v1')
     expect(result.capabilities).toContain('aw.skill-eval.v1')
+    expect(result.capabilities).toContain('aw.skill-eval.v2')
     expect(result.capabilitySetDigest).toBe(computeAwCapabilitySetDigest(result.capabilities))
   })
 

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, Option } from 'commander';
+import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
 
 import { initCommand } from './commands/init.js';
 import { resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
@@ -1202,33 +1203,59 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   skillEval
+    .command('doctor')
+    .description('Inspect Agent Skill Eval provider readiness without model execution')
+    .requiredOption('--json', 'emit one provider doctor JSON object')
+    .action(async () => {
+      try {
+        writeJsonReceipt(io.stdout, await doctorEvalProviders({ sourceEnv: env }));
+      } catch (error) {
+        writeJsonReceipt(io.stdout, {
+          ok: false,
+          error: redactString(error instanceof Error ? error.message : String(error)),
+        });
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  skillEval
     .command('prepare')
-    .description('Prepare one complete AwSkillEvalExecutionPlan v4 directory')
+    .description('Prepare one complete Agent Skill Eval input directory')
     .argument('<plugin>', 'canonical Workspace plugin name')
-    .requiredOption('--skill <skill>', 'owner Skill name')
-    .requiredOption('--suite <suite>', 'Eval suite ID')
-    .requiredOption('--profile <profile>', 'Eval profile ID')
+    .argument('[skill]', 'owner Skill name for Eval manifest v1')
+    .option('--skill <skill>', 'transitional owner Skill name for legacy manifests')
+    .option('--suite <suite>', 'Eval suite ID')
+    .option('--profile <profile>', 'Eval profile ID')
     .option('--workspace-root <root>', 'Catalog Workspace root')
     .option('--split <split>', 'case split filter')
     .option('--case <id>', 'case ID filter')
     .option('--runs <count>', 'runs per selected case')
+    .option('--timeout-ms <milliseconds>', 'timeout for each provider attempt')
     .option('--baseline <mode>', 'append without-skill comparison')
     .option('--previous-version <runtime-skill-root>', 'append a previous-version comparison')
+    .option('--keep-workspace', 'retain the preparation materialization workspace', false)
     .requiredOption('--output <plan-directory>', 'new Plan directory')
     .requiredOption('--json', 'emit one preparation receipt JSON object')
-    .action(async (pluginName: string, rawOptions: {
-      skill: string;
-      suite: string;
-      profile: string;
+    .action(async (pluginName: string, positionalSkill: string | undefined, rawOptions: {
+      skill?: string;
+      suite?: string;
+      profile?: string;
       workspaceRoot?: string;
       split?: string;
       case?: string;
       runs?: string;
+      timeoutMs?: string;
       baseline?: string;
       previousVersion?: string;
+      keepWorkspace?: boolean;
       output: string;
     }) => {
       try {
+        if (positionalSkill && rawOptions.skill && positionalSkill !== rawOptions.skill) {
+          throw new Error('Positional Skill and --skill must match when both are provided.');
+        }
+        const skillName = positionalSkill ?? rawOptions.skill;
+        if (!skillName) throw new Error('Eval prepare requires a Skill name.');
         const workspace = await resolveCatalogWorkspaceRoot({
           cwd,
           ...(rawOptions.workspaceRoot === undefined ? {} : { explicitRoot: rawOptions.workspaceRoot }),
@@ -1238,25 +1265,30 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const runs = rawOptions.runs === undefined
           ? undefined
           : (/^[1-9][0-9]*$/u.test(rawOptions.runs) ? Number(rawOptions.runs) : Number.NaN);
+        const timeoutMs = rawOptions.timeoutMs === undefined
+          ? undefined
+          : (/^[1-9][0-9]*$/u.test(rawOptions.timeoutMs) ? Number(rawOptions.timeoutMs) : Number.NaN);
         const receipt = await prepareSkillEval({
           workspaceRoot: workspace.workspaceRoot,
           workspaceRootResolvedFrom: workspace.workspaceRootResolvedFrom,
           pluginName,
-          skillName: rawOptions.skill,
-          suiteId: rawOptions.suite,
-          profileId: rawOptions.profile,
+          skillName,
+          ...(rawOptions.suite === undefined ? {} : { suiteId: rawOptions.suite }),
+          ...(rawOptions.profile === undefined ? {} : { profileId: rawOptions.profile }),
           output: rawOptions.output,
           cwd,
           env,
           ...(rawOptions.split === undefined ? {} : { split: rawOptions.split }),
           ...(rawOptions.case === undefined ? {} : { caseId: rawOptions.case }),
           ...(runs === undefined ? {} : { runs }),
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
           ...(rawOptions.baseline === undefined ? {} : {
             baseline: rawOptions.baseline as 'without-skill',
           }),
           ...(rawOptions.previousVersion === undefined ? {} : {
             previousVersion: rawOptions.previousVersion,
           }),
+          ...(rawOptions.keepWorkspace === true ? { keepWorkspace: true } : {}),
         });
         writeJsonReceipt(io.stdout, receipt);
       } catch (error) {

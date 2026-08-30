@@ -82,6 +82,39 @@ afterEach(async () => {
 })
 
 describe('canonical AwSkillEvalManifest reader', () => {
+  it('requires the owner plugin in every manifest v1 profile', async () => {
+    const fixture = await createFixture()
+    await fs.writeJson(path.join(fixture.evalRoot, 'selected-cases.json'), {
+      version: 1,
+      suite: { kind: 'trigger', unitUnderTest: 'owner-skill' },
+      cases: [{
+        id: 'loads_skill',
+        split: 'validation',
+        tags: [],
+        query: 'Use the owner Skill.',
+        expectedLoad: true,
+      }],
+    }, { spaces: 2 })
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
+      version: 1,
+      defaults: { profile: 'selected' },
+      profiles: {
+        selected: { scope: 'project', plugins: { 'fixture-plugin': {} } },
+        unused: { scope: 'project', plugins: { 'another-plugin': {} } },
+      },
+      suites: [{ id: 'trigger', kind: 'trigger', cases: 'selected-cases.json' }],
+    }, { spaces: 2 })
+
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: [expect.stringContaining('unused must include owner plugin "fixture-plugin"')],
+      manifest: null,
+    })
+  })
+
   it('accepts a self-contained v1 provider entry and applies optional defaults', async () => {
     const fixture = await createFixture()
     await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), providerManifest(), { spaces: 2 })

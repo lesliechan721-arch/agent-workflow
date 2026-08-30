@@ -10,6 +10,11 @@ import {
   type AwSkillEvalTriggerSuiteCaseContract,
 } from '../../scripts/aw-skill-eval-cases.js'
 import type { PluginMeta, Scope } from '../types.js'
+import {
+  isAwSkillEvalManifestV1,
+  readAwSkillEvalManifestV1,
+  type AwSkillEvalManifestV1,
+} from './manifest-v1.js'
 
 export const AW_SKILL_EVAL_MANIFEST_SCHEMA_VERSION = 1 as const
 export const AW_SKILL_EVAL_MANIFEST_SCHEMA = manifestSchema as Record<string, unknown>
@@ -565,8 +570,16 @@ export async function readAwSkillEvalManifest(options: {
 export async function validateAwSkillEvalManifest(options: {
   plugin: PluginMeta
   skill: string
-}): Promise<{ valid: boolean; errors: string[]; manifest: AwSkillEvalManifest | null }> {
+}): Promise<{
+  valid: boolean
+  errors: string[]
+  manifest: AwSkillEvalManifest | AwSkillEvalManifestV1 | null
+}> {
   try {
+    if (await isAwSkillEvalManifestV1(options.plugin, options.skill)) {
+      const result = await readAwSkillEvalManifestV1(options)
+      return { valid: true, errors: [], manifest: result.manifest }
+    }
     const result = await readAwSkillEvalManifest(options)
     return { valid: true, errors: [], manifest: result.manifest }
   } catch (error) {

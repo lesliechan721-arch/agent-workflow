@@ -45,7 +45,7 @@ describe('AW capability CLI commands', () => {
       command: 'self:describe',
       awVersion: expect.any(String),
       coreVersion: expect.any(String),
-      capabilities: expect.arrayContaining(['aw.self-check.v1', 'aw.skill-eval.v1']),
+      capabilities: expect.arrayContaining(['aw.self-check.v1', 'aw.skill-eval.v1', 'aw.skill-eval.v2']),
       capabilitySetDigest: expect.stringMatching(/^sha256:/u),
     })
   })

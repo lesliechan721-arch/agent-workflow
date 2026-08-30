@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 
-import { validateExecutionPlan } from '@lesliechan721/agent-skill-eval'
+import {
+  computeSkillDigest,
+  validateEvalSpecFile,
+  validateExecutionPlan,
+} from '@lesliechan721/agent-skill-eval'
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -282,6 +286,267 @@ afterEach(async () => {
 })
 
 describe('aw skill eval commands', () => {
+  it('prepares the new manifest v1 as a fixed EvalSpec workspace and runs doctor read-only', async () => {
+    const fixture = await createWorkspace()
+    await fs.outputFile(
+      path.join(fixture.skillRoot, 'references', 'generated-reference.md'),
+      'materialized generated reference\n',
+    )
+    await fs.writeFile(
+      path.join(fixture.skillRoot, 'SKILL.md'),
+      (await fs.readFile(path.join(fixture.skillRoot, 'SKILL.md'), 'utf8'))
+        .replaceAll('TODO', 'Fixture instruction'),
+    )
+    const selectedCasesPath = path.join(fixture.evalRoot, 'selected-cases.json')
+    const v1Cases = {
+      version: 1,
+      suite: {
+        kind: 'trigger',
+        unitUnderTest: 'owner-skill',
+        participants: ['owner-skill', 'participant-skill'],
+        runtime: { isolation: 'standard' },
+      },
+      cases: [{
+        id: 'validation_case',
+        split: 'validation',
+        tags: ['release'],
+        query: 'Use the owner Skill.',
+        expectedLoad: true,
+      }, {
+        id: 'train_case',
+        split: 'train',
+        tags: ['development'],
+        query: 'Do not use the owner Skill.',
+        expectedLoad: false,
+      }],
+    }
+    await fs.writeJson(selectedCasesPath, v1Cases, { spaces: 2 })
+    const heldOutCasesPath = path.join(fixture.evalRoot, 'held-out-cases.json')
+    await fs.writeJson(heldOutCasesPath, {
+      ...v1Cases,
+      cases: [{
+        id: 'held_out_case',
+        split: 'sanity',
+        tags: ['held-out'],
+        query: 'Held-out query must not enter another suite workspace.',
+        expectedLoad: false,
+      }],
+    }, { spaces: 2 })
+    const manifestPath = path.join(fixture.evalRoot, 'manifest.json')
+    const v1Manifest = {
+      version: 1,
+      defaults: { profile: 'project-default', runs: 2, timeoutMs: 12_000 },
+      profiles: {
+        'project-default': {
+          scope: 'project',
+          plugins: {
+            'eval-owner': { mode: 'fixture-mode' },
+            'participant-plugin': {},
+          },
+        },
+      },
+      suites: [{
+        id: 'trigger-suite',
+        kind: 'trigger',
+        cases: 'selected-cases.json',
+        requiredForRelease: true,
+        releaseSplits: ['validation'],
+      }, {
+        id: 'held-out-suite',
+        kind: 'trigger',
+        cases: 'held-out-cases.json',
+      }],
+    }
+    await fs.writeJson(manifestPath, v1Manifest, { spaces: 2 })
+    const sourceBefore = await treeDigests(fixture.ownerRoot)
+    const validation = capture()
+    expect(await runCli([
+      'plugin', 'validate', fixture.ownerRoot,
+      '--workspace-root', fixture.root,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: validation.io }), validation.stdout()).toBe(0)
+    expect(JSON.parse(validation.stdout())).toMatchObject({ ok: true, errors: [] })
+    const output = path.join(fixture.root, 'prepared-v1')
+    const command = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--suite', 'trigger-suite',
+      '--workspace-root', fixture.root,
+      '--split', 'validation',
+      '--case', 'validation_case',
+      '--runs', '3',
+      '--timeout-ms', '9000',
+      '--baseline', 'without-skill',
+      '--output', output,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: command.io }), command.stdout()).toBe(0)
+    const receipt = JSON.parse(command.stdout())
+    expect(receipt).toMatchObject({
+      schemaVersion: 1,
+      command: 'skill:eval:prepare',
+      ok: true,
+      plans: [{ suite: 'trigger-suite', profile: 'project-default', specPath: path.join(output, 'spec.json') }],
+    })
+    await expect(validateEvalSpecFile(path.join(output, 'spec.json'))).resolves.toMatchObject({ valid: true })
+    expect((await fs.readdir(output)).sort()).toEqual(['cases.json', 'spec.json', 'targets', 'workspace'])
+    await expect(fs.pathExists(path.join(output, 'output'))).resolves.toBe(false)
+    await expect(fs.pathExists(path.join(output, 'preparation.json'))).resolves.toBe(false)
+    await expect(fs.pathExists(path.join(output, 'provider'))).resolves.toBe(false)
+    await expect(fs.pathExists(path.join(output, 'targets', 'current', 'references', 'generated-reference.md')))
+      .resolves.toBe(true)
+    await expect(fs.pathExists(path.join(
+      output, 'workspace', 'subject', '.agents', 'skills', 'owner-skill',
+    ))).resolves.toBe(false)
+    await expect(fs.pathExists(path.join(
+      output, 'workspace', 'subject', '.agents', 'skills', 'participant-skill', 'SKILL.md',
+    ))).resolves.toBe(true)
+    await expect(fs.pathExists(path.join(output, 'workspace', 'eval', 'selected-cases.json')))
+      .resolves.toBe(false)
+    await expect(fs.pathExists(path.join(output, 'workspace', 'eval', 'held-out-cases.json')))
+      .resolves.toBe(false)
+    const spec = await fs.readJson(path.join(output, 'spec.json'))
+    expect(spec).toMatchObject({
+      version: 1,
+      source: { plugin: 'eval-owner', skill: 'owner-skill', suite: 'trigger-suite', profile: 'project-default' },
+      workspace: 'workspace',
+      provider: 'codex-trigger',
+      runs: 3,
+      timeoutMs: 9000,
+      baseline: { type: 'without-skill' },
+      outputDir: 'output',
+    })
+    expect(await fs.readJson(path.join(output, 'cases.json'))).toMatchObject({
+      version: 1,
+      cases: [{ id: 'validation_case' }],
+    })
+    expect(await computeSkillDigest(path.join(output, 'targets', 'current'))).toBe(spec.target.digest)
+    expect(await treeDigests(fixture.ownerRoot)).toEqual(sourceBefore)
+
+    fixture.env.AW_SKILL_EVAL_CODEX_BIN = 'fixture-isolated-codex'
+    const beforeDoctor = await treeDigests(fixture.root)
+    const doctor = capture()
+    expect(await runCli([
+      'skill', 'eval', 'doctor', '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: doctor.io }), doctor.stdout()).toBe(0)
+    expect(JSON.parse(doctor.stdout())).toMatchObject({
+      providers: ['codex-trigger', 'codex-conversation'],
+      codex: { requestedExecutable: 'fixture-isolated-codex' },
+      cleanup: { supported: expect.any(Boolean) },
+    })
+    expect(await treeDigests(fixture.root)).toEqual(beforeDoctor)
+
+    await fs.writeJson(path.join(fixture.evalRoot, 'custom-cases.json'), {
+      version: 1,
+      suite: { kind: 'custom-process', unitUnderTest: 'owner-skill' },
+      cases: [{
+        id: 'custom_case',
+        split: 'validation',
+        tags: ['custom'],
+        input: { prompt: 'Run custom provider.' },
+        expected: { ok: true },
+        assertions: ['Returns ok.'],
+      }],
+    }, { spaces: 2 })
+    const customManifest = {
+      ...v1Manifest,
+      suites: [{
+        id: 'custom-suite',
+        kind: 'custom-process',
+        cases: 'custom-cases.json',
+        provider: { type: 'custom-process', command: ['node', 'provider.mjs'] },
+      }],
+    }
+    await fs.writeJson(manifestPath, customManifest, { spaces: 2 })
+    const customOutput = path.join(fixture.root, 'custom-v1')
+    const custom = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--workspace-root', fixture.root, '--output', customOutput, '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: custom.io }), custom.stdout()).toBe(0)
+    await expect(fs.readJson(path.join(customOutput, 'spec.json'))).resolves.toMatchObject({
+      provider: {
+        type: 'custom-process',
+        command: ['node', 'workspace/eval/provider.mjs'],
+      },
+    })
+    await expect(fs.pathExists(path.join(customOutput, 'workspace', 'eval', 'provider.mjs')))
+      .resolves.toBe(true)
+    for (const [index, unsafeCommand] of [
+      [process.execPath, 'provider.mjs'],
+      ['node', '../provider.mjs'],
+      ['node', '/tmp/provider.mjs'],
+      ['node', 'nested\\provider.mjs'],
+      ['node', 'provider.mjs\0'],
+    ].entries()) {
+      await fs.writeJson(manifestPath, {
+        ...customManifest,
+        suites: [{ ...customManifest.suites[0], provider: { type: 'custom-process', command: unsafeCommand } }],
+      }, { spaces: 2 })
+      const unsafeOutput = path.join(fixture.root, `unsafe-custom-v1-${index}`)
+      const unsafe = capture()
+      expect(await runCli([
+        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        '--workspace-root', fixture.root, '--output', unsafeOutput, '--json',
+      ], { cwd: fixture.root, env: fixture.env, io: unsafe.io })).toBe(1)
+      await expect(fs.pathExists(unsafeOutput)).resolves.toBe(false)
+    }
+    await fs.writeJson(selectedCasesPath, v1Cases, { spaces: 2 })
+    await fs.writeJson(manifestPath, v1Manifest, { spaces: 2 })
+
+    await fs.writeJson(manifestPath, {
+      ...v1Manifest,
+      profiles: {
+        ...v1Manifest.profiles,
+        unused: { scope: 'project', plugins: { 'participant-plugin': {} } },
+      },
+    }, { spaces: 2 })
+    const invalidOwnerProfile = capture()
+    const invalidOwnerOutput = path.join(fixture.root, 'invalid-owner-profile-v1')
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--suite', 'trigger-suite',
+      '--workspace-root', fixture.root,
+      '--output', invalidOwnerOutput,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: invalidOwnerProfile.io })).toBe(1)
+    expect(`${invalidOwnerProfile.stdout()}${invalidOwnerProfile.stderr()}`)
+      .toContain('must include owner plugin')
+    await expect(fs.pathExists(invalidOwnerOutput)).resolves.toBe(false)
+    await fs.writeJson(manifestPath, v1Manifest, { spaces: 2 })
+
+    const sensitiveValue = 'new-manifest-secret-must-not-be-planned'
+    v1Manifest.profiles['project-default'].plugins['eval-owner'] = {
+      mode: 'fixture-mode',
+      token: sensitiveValue,
+    }
+    await fs.writeJson(manifestPath, v1Manifest, { spaces: 2 })
+    const sensitiveOutput = path.join(fixture.root, 'sensitive-v1')
+    const sensitive = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--suite', 'trigger-suite',
+      '--workspace-root', fixture.root, '--output', sensitiveOutput, '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: sensitive.io })).toBe(1)
+    expect(sensitive.stdout()).not.toContain(sensitiveValue)
+    await expect(fs.pathExists(sensitiveOutput)).resolves.toBe(false)
+
+    v1Manifest.profiles['project-default'].plugins['eval-owner'] = { mode: 'fixture-mode' }
+    await fs.writeJson(manifestPath, v1Manifest, { spaces: 2 })
+    const atomicOutput = path.join(fixture.root, 'atomic-v1')
+    const atomic = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--suite', 'trigger-suite',
+      '--workspace-root', fixture.root,
+      '--previous-version', path.join(fixture.root, 'missing-previous'),
+      '--output', atomicOutput,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: atomic.io })).toBe(1)
+    await expect(fs.pathExists(atomicOutput)).resolves.toBe(false)
+    expect((await fs.readdir(fixture.root)).filter((entry) => entry.includes('.atomic-v1.aw-eval-stage-')))
+      .toEqual([])
+  }, 30_000)
+
   it('validates canonical v1 Eval manifests through the public plugin validator', async () => {
     const fixture = await createWorkspace()
     const skillPath = path.join(fixture.skillRoot, 'SKILL.md')
@@ -354,6 +619,21 @@ describe('aw skill eval commands', () => {
 
   it('prepares one input-complete Plan from real profile materialization and comparisons', async () => {
     const fixture = await createWorkspace()
+    for (const [index, extra] of [
+      ['--timeout-ms', '9000'],
+      ['--keep-workspace'],
+    ].entries()) {
+      const unsupportedOutput = path.join(fixture.root, `legacy-v1-only-${index}`)
+      const unsupported = capture()
+      expect(await runCli([
+        'skill', 'eval', 'prepare', 'eval-owner',
+        '--skill', 'owner-skill', '--suite', 'trigger-suite', '--profile', 'project-default',
+        '--workspace-root', fixture.root,
+        ...extra,
+        '--output', unsupportedOutput, '--json',
+      ], { cwd: fixture.root, env: fixture.env, io: unsupported.io })).toBe(1)
+      await expect(fs.pathExists(unsupportedOutput)).resolves.toBe(false)
+    }
     const output = path.join(fixture.root, 'prepared-plan')
     const commandOutput = capture()
     expect(await runCli([

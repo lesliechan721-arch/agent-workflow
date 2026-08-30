@@ -145,6 +145,19 @@ export type {
   EvalProviderDoctorOptions,
   EvalProviderDoctorResult,
 } from './provider-doctor.js'
+export { runEvalSpec } from './eval-run.js'
+export type { RunEvalSpecOptions, RunEvalSpecResult } from './eval-run.js'
+export {
+  parseSelectedCases,
+  validateSelectedCases,
+  validateSelectedCasesFile,
+} from './selected-cases.js'
+export type {
+  SelectedCasesDocument,
+  SelectedCaseSuite,
+  SelectedCaseSuiteKind,
+  SelectedEvalCase,
+} from './selected-cases.js'
 export {
   inspectTriggerAppServerConfigWarning,
   inspectTriggerAppServerFrame,
