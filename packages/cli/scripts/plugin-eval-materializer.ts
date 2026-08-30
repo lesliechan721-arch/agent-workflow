@@ -18,16 +18,32 @@ import {
   PLUGIN_EVAL_SCHEMA_VERSION,
   type MaterializedPluginEvalArtifact,
   type MaterializedPluginEvalSubject,
-  type PluginEvalManifest,
-  type PluginEvalProfile,
 } from './plugin-eval-contract.js';
+
+export interface PluginEvalMaterializationProfile {
+  id: string;
+  scope: 'project' | 'user';
+  plugins: Array<{ name: string; config: Record<string, unknown> }>;
+  runModel: boolean;
+}
+
+export interface PluginEvalMaterializationManifest {
+  plugin: string;
+  skill: string;
+  profiles: PluginEvalMaterializationProfile[];
+  suites: Array<{
+    kind: string;
+    skills: string[];
+    profiles: string[];
+  }>;
+}
 
 const execFileAsync = promisify(execFile);
 
 export interface MaterializePluginEvalOptions {
   plugin: PluginMeta;
   plugins: PluginMeta[];
-  manifest: PluginEvalManifest;
+  manifest: PluginEvalMaterializationManifest;
   outputRoot: string;
   workRoot: string;
   env?: NodeJS.ProcessEnv;
@@ -258,6 +274,8 @@ async function initializeSubjectGitRepository(
     '-m',
     'Materialize eval subject',
   ], { cwd: subjectRoot, env });
+  await fs.remove(path.join(subjectRoot, '.git', 'index'));
+  await execFileAsync('git', ['read-tree', '--reset', 'HEAD'], { cwd: subjectRoot, env });
 }
 
 async function copyUserMaterializedArtifacts(options: {
@@ -293,7 +311,7 @@ async function copyUserMaterializedArtifacts(options: {
 
 async function materializeStaticCodexSkills(options: {
   prepared: PreparedEvalBundle;
-  profile: PluginEvalProfile;
+  profile: PluginEvalMaterializationProfile;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
@@ -318,7 +336,7 @@ async function materializeProfile(options: {
   ownerPlugin: PluginMeta;
   ownerSkill: string;
   requiredSkills: ReadonlySet<string>;
-  profile: PluginEvalProfile;
+  profile: PluginEvalMaterializationProfile;
   outputRoot: string;
   baseEnv: NodeJS.ProcessEnv;
   initializeGitRepository: boolean;

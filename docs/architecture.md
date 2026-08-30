@@ -231,9 +231,11 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 
 ## Agent Skill Eval Runner 边界
 
+- Skill-local `evals/manifest.json` 的准备合同是 CLI 拥有的 `AwSkillEvalManifest v1`。`aw skill eval prepare` 通过 Catalog Workspace 解析 canonical plugin，复用真实 bundle、依赖、profile config 和平台 materialization，输出一个 profile 的输入完整 `AwSkillEvalExecutionPlan v4` 目录。Plan 输入只引用目录内的 target、可选 previous target、筛选后的 cases、provider capability 文档、suite metadata/fixture 和移除目标 Skill 后的完整 subject base；最终目录在 staging 完整验证后原子发布，已有、过宽或含符号链接的目标 fail closed。profile 不得把 sensitive config 值带入 Plan。
+- `aw skill eval check` 只读取 Manifest 注册的 document/schema，并用 Draft 2020-12 `json-schema` checker 输出 CLI 拥有的 `AwSkillEvalCheckResult v1`。它不 build 或 materialize plugin，不运行 renderer、provider、任意脚本或模型，不生成 `EvalRunBundle`，也不消费 provider/model 凭据；结果只绑定 document 和 schema 摘要。
 - Eval Runner 是可替换的执行适配器。每个 Runner 可以定义自己的执行计划输入；Review 从已安装 Skill 能力中选择兼容 Runner，不维护中心 dispatcher 或 Runner 配置表。
 - 所有兼容 Runner 输出统一的 `EvalRunBundle v3`。bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，不包含 Audit 字段。
-- 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。它消费 `AwSkillEvalExecutionPlan v3`，只负责本次副作用授权、运行时能力检查、执行和 bundle 完整性。
+- 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。它消费 `AwSkillEvalExecutionPlan v4`，只负责本次副作用授权、运行时能力检查、执行和 bundle 完整性。
 - plugin model Eval 把本次构建的 CLI production closure 实体部署到 run-owned runtime capsule，并提供只指向 capsule 内入口的临时 `aw` launcher。探针和实际模型进程使用同一前置 `PATH`；它们不能通过 CLI 模块路径访问仓库或用户全局 `aw`。最终 capsule 的 package identity 和确定性 content digest 进入公开 eval evidence 和 model environment identity；依赖字节变化时，batch 在复用 checkpoint 前拒绝 append。materialize-only 不创建 capsule。
 - Conversation suite 或 case 可用最小 `environment.pathPrepend` 声明 Eval-owned PATH fixture。路径相对声明它的 Eval 根解析，必须是根内的普通文件或目录树，且不能包含符号链接。Runner 只复制已声明 fixture 到本次隔离 workspace，并只在那里设置 executable mode 和前置 PATH；Oracle 不依赖仓库私有 CLI 路径。声明 `workspace_valid: true` 的确定性 fixture 必须 materialize 后通过公开 `aw catalog status --json`，并让每个预期有效插件通过 `aw plugin validate --json`。该 preflight 不运行模型，也不代替 Oracle Audit。
 - `hostSourceAccessAbsent` 只按 app-server 事件中的显式命令、审批和文件访问输入归因。命令输出、Agent 消息、reasoning 和 diff 中的宿主路径文本不是访问证据。
