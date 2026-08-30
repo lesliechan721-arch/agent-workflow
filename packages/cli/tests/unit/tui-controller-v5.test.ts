@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
+import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
@@ -377,6 +378,115 @@ describe('TUI v4 router and ViewModel', () => {
     }), 'codex')[0]?.id).toBe('reinstall');
   });
 
+  it('keeps pure-native scope overlap legal and consumes real scoped uninstall recovery for mixed conflict', () => {
+    const pureNative = {
+      ...target({ scope: 'project', state: 'present' }),
+      desired: { enabled: true, scopes: ['project', 'user'] as const, relation: 'root' as const },
+      actual: { state: 'ready' as const },
+      recovery: [],
+      sharedNative: { pluginId: 'demo@aw-official', state: 'present' as const, shared: true as const },
+      activation: { user: true, project: true, effective: true, evidence: 'observed' as const },
+    };
+    const purePlugin = buildTuiViewModel({
+      status: status({ targets: [pureNative] }),
+      pluginSummaries: summaries(['official', 'demo']),
+    }).plugins[0]!;
+    expect(purePlugin.installedPlacements).toEqual([
+      expect.objectContaining({
+        state: 'installed', desiredScopes: ['project', 'user'], actualState: 'ready',
+      }),
+    ]);
+    expect(purePlugin.installedPlacements[0]?.state).not.toBe('scopeConflict');
+
+    const pureSingleScope = buildTuiViewModel({
+      status: status({ targets: [{
+        ...pureNative,
+        desired: { enabled: true, scopes: ['user'], relation: 'root' },
+        activation: { user: true, project: false, effective: true, evidence: 'observed' },
+      }] }),
+      pluginSummaries: [{
+        ...summaries(['official', 'demo'])[0]!,
+        supportedTargets: { codex: ['user', 'project'], claude: [] },
+      }],
+    }).plugins[0]!;
+    expect(buildPlatformActions(pureSingleScope, 'codex')[0]).toEqual({
+      id: 'addScope', platform: 'codex', scope: 'project',
+    });
+
+    const mixed = {
+      ...pureNative,
+      actual: { state: 'conflict' as const },
+      extensions: { state: 'conflict' as const, kinds: ['instruction'] as const },
+      recovery: [
+        {
+          command: 'uninstall' as const,
+          scope: 'user' as const,
+          description: '运行 aw uninstall official/demo --platform codex --scope user，再运行 aw sync official/demo --platform codex --scope project。',
+        },
+        {
+          command: 'uninstall' as const,
+          scope: 'project' as const,
+          description: '运行 aw uninstall official/demo --platform codex --scope project，再运行 aw sync official/demo --platform codex --scope user。',
+        },
+      ],
+    };
+    const mixedPlugin = buildTuiViewModel({
+      status: status({ targets: [mixed] }),
+      pluginSummaries: summaries(['official', 'demo']),
+    }).plugins[0]!;
+    expect(mixedPlugin.installedPlacements[0]).toMatchObject({
+      state: 'installed', health: 'incomplete', actualState: 'conflict',
+      extensions: { state: 'conflict' },
+      recovery: expect.arrayContaining([
+        expect.objectContaining({ command: 'uninstall', scope: 'user' }),
+        expect.objectContaining({ command: 'uninstall', scope: 'project' }),
+      ]),
+    });
+    expect(buildPlatformActions(mixedPlugin, 'codex').map((action) => action.id)).toEqual([
+      'resolveScopeConflict', 'resolveScopeConflict', 'technical',
+    ]);
+    expect(buildPluginDetailActions(mixedPlugin).filter((action) =>
+      action.id === 'resolveScopeConflict')).toHaveLength(2);
+    expect(buildTuiViewModel({
+      status: status({ targets: [mixed] }),
+      pluginSummaries: summaries(['official', 'demo']),
+    }).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'scopeConflict',
+        actions: expect.arrayContaining([
+          expect.objectContaining({ id: 'keepProjectScope', pluginId: 'official/demo' }),
+          expect.objectContaining({ id: 'keepUserScope', pluginId: 'official/demo' }),
+        ]),
+      }),
+    ]));
+
+    const foreign = buildTuiViewModel({
+      status: status({ targets: [{
+        ...pureNative,
+        actual: { state: 'conflict' },
+        sharedNative: { ...pureNative.sharedNative, state: 'foreign' },
+        recovery: [{
+          command: 'sync',
+          description: '先移除或重命名 foreign shared native；cleanup 会保留 foreign 内容。',
+        }],
+      }] }),
+      pluginSummaries: summaries(['official', 'demo']),
+    }).plugins[0]!;
+    expect(buildPlatformActions(foreign, 'codex').map((action) => action.id)).toEqual([
+      'sync', 'technical', 'remove',
+    ]);
+
+    const needsSync = menuPlugin({
+      aggregateStatus: 'needsAttention',
+      installedPlacements: [{
+        platform: 'codex', state: 'installed', scope: 'project', health: 'incomplete',
+        actualState: 'needsSync', desiredScopes: ['project'],
+        revision: { state: 'current', availableVersion: '2.0.0', installedVersion: '2.0.0' },
+      }],
+    });
+    expect(buildPlatformActions(needsSync, 'codex')[0]?.id).toBe('sync');
+  });
+
   it('centralizes install target compatibility and recomputes it for the selected scope', async () => {
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue({
@@ -404,6 +514,161 @@ describe('TUI v4 router and ViewModel', () => {
       { platform: 'codex', compatible: true },
       { platform: 'claude', compatible: true },
     ]);
+  });
+
+  it('keeps a typed per-platform placement draft and deterministically drops stale platform keys', async () => {
+    const previewDependencyPlacement = vi.fn(async (intent: Extract<import('../../src/tui/controller.js').OperationIntent, { kind: 'pluginWrite' }>): Promise<DependencyOperationPlan> => {
+      const platforms = intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform];
+      const selected = (pluginId: string, platform: 'codex' | 'claude') =>
+        intent.dependencyScopeOverrides?.find((entry) =>
+          entry.pluginId === pluginId && entry.platform === platform)?.scope;
+      const targets: DependencyOperationPlan['targets'] = platforms.flatMap((platform) => {
+        const directOverride = selected('official/toolkit', platform);
+        const directScope = directOverride ?? intent.scope;
+        const transitiveScope = directScope === 'user' ? 'user' : intent.scope;
+        return [
+          {
+            pluginId: 'official/toolkit', pluginName: 'Toolkit', platform,
+            relation: 'dependency', depth: 1, requiredBy: ['official/demo'],
+            rootScope: intent.scope, minimumScope: intent.scope, resolvedScope: directScope,
+            allowedScopes: ['project', 'user'], assignmentSource: directOverride
+              ? 'userOverride' : 'default', locked: intent.scope === 'user',
+            ...(directOverride ? { lockReason: 'dependencyScopeOverride', locked: true } : {}),
+            affectsOtherProjects: directScope === 'user', state: 'absent', action: 'install', order: 1,
+          },
+          {
+            pluginId: 'official/base', pluginName: 'Base', platform,
+            relation: 'dependency', depth: 2, requiredBy: ['official/toolkit'],
+            rootScope: intent.scope, minimumScope: transitiveScope, resolvedScope: transitiveScope,
+            allowedScopes: ['project', 'user'], assignmentSource: directScope === 'user'
+              ? 'consumerPromotion' : 'default', locked: intent.scope === 'user',
+            affectsOtherProjects: transitiveScope === 'user', state: 'absent', action: 'install', order: 0,
+          },
+          {
+            pluginId: 'official/reused', pluginName: 'Reused', platform,
+            relation: 'dependency', depth: 1, requiredBy: ['official/demo'],
+            rootScope: intent.scope, minimumScope: intent.scope, resolvedScope: 'user',
+            allowedScopes: ['project', 'user'], assignmentSource: 'existingWiderTarget',
+            locked: intent.scope === 'user', affectsOtherProjects: true,
+            state: 'present', action: 'keep', order: 2,
+          },
+          {
+            pluginId: 'official/demo', pluginName: 'Demo', platform,
+            relation: 'requested', depth: 0, requiredBy: [], rootScope: intent.scope,
+            minimumScope: intent.scope, resolvedScope: intent.scope,
+            allowedScopes: [intent.scope], assignmentSource: 'root', locked: true,
+            affectsOtherProjects: intent.scope === 'user', state: 'absent', action: 'install', order: 3,
+          },
+        ];
+      });
+      return {
+        dependencyPlanSchemaVersion: 2,
+        dependencyPlanDigest: `sha256:${JSON.stringify(targets)}`,
+        requestedPluginIds: ['official/demo'],
+        resolvedPluginIds: ['official/base', 'official/toolkit', 'official/reused', 'official/demo'],
+        dependencyEdges: platforms.flatMap((platform) => [
+          { from: 'official/demo', to: 'official/toolkit', platform },
+          { from: 'official/toolkit', to: 'official/base', platform },
+          { from: 'official/demo', to: 'official/reused', platform },
+        ]),
+        scopeOverrides: intent.dependencyScopeOverrides ?? [],
+        targets,
+        claimRoots: [],
+      };
+    });
+    const controller = new TuiController(dependencies({ previewDependencyPlacement }));
+    await controller.load();
+    controller.beginInstallFlow('official/demo', 'project');
+    controller.setInstallPlatforms(['codex', 'claude']);
+
+    await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(true);
+    expect(controller.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'official/reused', platform: 'codex', scope: 'user', explanation: '复用健康的所有项目安装' }),
+      expect.objectContaining({ pluginId: 'official/toolkit', platform: 'codex', scope: 'project' }),
+      expect.objectContaining({ pluginId: 'official/toolkit', platform: 'claude', scope: 'project' }),
+    ]));
+
+    await controller.setDependencyScope('official/toolkit', 'codex', 'user');
+    expect(controller.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+        assignmentSource: 'userOverride', locked: false,
+      }),
+      expect.objectContaining({ pluginId: 'official/base', platform: 'codex', scope: 'user', assignmentSource: 'consumerPromotion' }),
+      expect.objectContaining({ pluginId: 'official/toolkit', platform: 'claude', scope: 'project' }),
+    ]));
+
+    await controller.resetDependencyScopes();
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toEqual([]);
+    expect(controller.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'official/toolkit', platform: 'codex', scope: 'project', assignmentSource: 'default',
+      }),
+      expect.objectContaining({
+        pluginId: 'official/reused', platform: 'codex', scope: 'user', assignmentSource: 'existingWiderTarget',
+      }),
+    ]));
+
+    await controller.setDependencyScope('official/toolkit', 'codex', 'user');
+
+    controller.setInstallRootScope('user');
+    controller.setInstallPlatforms(['codex', 'claude']);
+    await controller.prepareInstallDependencyPlacement();
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toContainEqual({
+      pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+    });
+
+    controller.setInstallRootScope('project');
+    controller.setInstallPlatforms(['codex', 'claude']);
+    await controller.prepareInstallDependencyPlacement();
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toContainEqual({
+      pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+    });
+
+    await controller.setDependencyScope('official/toolkit', 'codex', 'project');
+    controller.setInstallRootScope('user');
+    controller.setInstallPlatforms(['codex', 'claude']);
+    await controller.prepareInstallDependencyPlacement();
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).not.toContainEqual({
+      pluginId: 'official/toolkit', platform: 'codex', scope: 'project',
+    });
+
+    controller.setInstallRootScope('project');
+    controller.setInstallPlatforms(['codex', 'claude']);
+    await controller.prepareInstallDependencyPlacement();
+    await controller.setDependencyScope('official/toolkit', 'codex', 'user');
+
+    controller.setInstallPlatforms(['claude']);
+    await controller.prepareInstallDependencyPlacement();
+    expect(controller.snapshot.installPlacementDraft?.dependencyScopeOverrides).toEqual([]);
+    expect(controller.snapshot.installPlacementDraft?.targets.every((entry) =>
+      entry.platform === 'claude')).toBe(true);
+
+    controller.setInstallRootScope('user');
+    controller.setInstallPlatforms(['claude']);
+    await expect(controller.prepareInstallDependencyPlacement()).resolves.toBe(false);
+    expect(controller.snapshot.installPlacementDraft?.targets.every((entry) => entry.locked)).toBe(true);
+  });
+
+  it('invalidates a late dependency placement preview when Back cancels it', async () => {
+    const preview = deferred<DependencyOperationPlan | undefined>();
+    const controller = new TuiController(dependencies({
+      previewDependencyPlacement: vi.fn(() => preview.promise),
+    }));
+    await controller.load();
+    controller.beginInstallFlow('official/demo', 'project');
+    controller.setInstallPlatforms(['codex']);
+    const preparation = controller.prepareInstallDependencyPlacement();
+    await nextTurn();
+    expect(controller.snapshot.installPlacementDraft?.state).toBe('loading');
+
+    controller.back();
+    preview.resolve(undefined);
+
+    await expect(preparation).rejects.toMatchObject({ name: 'AbortError' });
+    expect(controller.snapshot.installPlacementDraft).toMatchObject({
+      state: 'selecting', canContinue: false, targets: [],
+    });
   });
 
   it('projects manifest order, presentation groups, fallback fields, presets, and private values safely', () => {
@@ -1965,6 +2230,96 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.result).toMatchObject({
       state: 'blocked', code: 'operationFailed', summary: { code: 'operationFailed' },
     });
+  });
+
+  it.each([
+    ['user', false],
+    ['project', true],
+  ] as const)('reviews an existing dependency move to %s with the safe adjustment contract', async (
+    resolvedScope,
+    desiredOnly,
+  ) => {
+    const plan = (intent: Extract<import('../../src/tui/controller.js').OperationIntent, { kind: 'pluginWrite' }>): DependencyOperationPlan => ({
+      dependencyPlanSchemaVersion: 2,
+      dependencyPlanDigest: `sha256:${resolvedScope}`,
+      requestedPluginIds: ['official/demo'],
+      resolvedPluginIds: ['official/toolkit', 'official/demo'],
+      dependencyEdges: [{ from: 'official/demo', to: 'official/toolkit', platform: 'codex' }],
+      scopeOverrides: intent.dependencyScopeOverrides ?? [],
+      claimRoots: [],
+      targets: [
+        {
+          pluginId: 'official/toolkit', pluginName: 'Toolkit', platform: 'codex',
+          relation: 'dependency', depth: 1, requiredBy: ['official/demo'],
+          rootScope: 'project', minimumScope: 'project', resolvedScope,
+          allowedScopes: ['project', 'user'], assignmentSource: 'userOverride', locked: false,
+          affectsOtherProjects: resolvedScope === 'user', state: 'present', action: 'move', order: 0,
+        },
+        {
+          pluginId: 'official/demo', pluginName: 'Demo', platform: 'codex',
+          relation: 'requested', depth: 0, requiredBy: [], rootScope: 'project',
+          minimumScope: 'project', resolvedScope: 'project', allowedScopes: ['project'],
+          assignmentSource: 'root', locked: true, affectsOtherProjects: false,
+          state: 'present', action: 'keep', order: 1,
+        },
+      ],
+    });
+    const previewDependencyPlacement = vi.fn(async (intent: Extract<import('../../src/tui/controller.js').OperationIntent, { kind: 'pluginWrite' }>) =>
+      plan(intent));
+    const captureEvidence = vi.fn(async (intent: import('../../src/tui/controller.js').OperationIntent) => ({
+      ...baseEvidence,
+      dependencyPlan: plan(intent as Extract<typeof intent, { kind: 'pluginWrite' }>),
+    }));
+    const executeIntent = vi.fn().mockResolvedValue({ desiredPlacementUpdated: desiredOnly });
+    const controller = new TuiController(dependencies({
+      previewDependencyPlacement,
+      captureEvidence,
+      executeIntent,
+    }));
+    await controller.load();
+    controller.beginInstallFlow('official/demo', 'project', { adjustingExisting: true });
+    controller.setInstallPlatforms(['codex']);
+    await controller.prepareInstallDependencyPlacement();
+    await controller.setDependencyScope('official/toolkit', 'codex', resolvedScope);
+    const intent = controller.installPlacementIntent();
+
+    expect(intent).toMatchObject({
+      action: 'install',
+      dependencyPlacementAdjustment: true,
+      ...(desiredOnly ? { dependencyPlacementOnly: 'desired' } : {}),
+    });
+    if (!desiredOnly) expect(intent).not.toHaveProperty('dependencyPlacementOnly');
+    const review = await controller.buildOperationReview(intent);
+    if (desiredOnly) {
+      expect(review.changes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ title: '先更新依赖 desired placement' }),
+        expect.objectContaining({ title: '后续第 1 步：显式 user cleanup；不自动扫描/清理' }),
+        expect.objectContaining({ title: '后续第 2 步：同步当前项目' }),
+      ]));
+    } else {
+      expect(review.title).toBe('调整依赖位置');
+      expect(review.description).toContain('非破坏性变更');
+    }
+
+    const result = await controller.executeOperation(review.reviewToken);
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'install',
+      ...(desiredOnly ? { dependencyPlacementOnly: 'desired' } : {}),
+    }), expect.any(Object));
+    expect(executeIntent).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'cleanup' }), expect.anything());
+    if (desiredOnly) {
+      expect(result).toMatchObject({
+        state: 'succeeded',
+        summary: {
+          message: '依赖 desired placement 已更新。',
+          messages: expect.arrayContaining([
+            expect.stringContaining('第 1 步：AW 不会扫描未知项目或自动 cleanup'),
+            expect.stringContaining('第 2 步'),
+          ]),
+        },
+      });
+    }
   });
 
   it('single-flights plugin execution without a second pre-dispatch freshness scan', async () => {

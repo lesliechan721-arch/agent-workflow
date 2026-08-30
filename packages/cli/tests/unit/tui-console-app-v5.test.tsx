@@ -15,6 +15,7 @@ import {
   TuiController,
   userIssueKey,
   type OperationEvidence,
+  type OperationIntent,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
@@ -181,6 +182,73 @@ function dependencyPlan(): DependencyOperationPlan {
       { pluginId: 'official/skill-toolkit', pluginName: 'skill-toolkit', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'dependency', requiredBy: ['official/agent-lab'], state: 'absent', action: 'install', order: 2 },
       { pluginId: 'official/agent-lab', pluginName: 'agent-lab', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'requested', requiredBy: [], state: 'absent', action: 'install', order: 3 },
     ],
+  };
+}
+
+function placementPlanFor(intent: {
+  platform: 'codex' | 'claude' | 'both';
+  scope: 'user' | 'project';
+  dependencyScopeOverrides?: Array<{
+    pluginId: string;
+    platform: 'codex' | 'claude';
+    scope: 'user' | 'project';
+  }>;
+}): DependencyOperationPlan;
+function placementPlanFor(intent: {
+  platform: 'codex' | 'claude' | 'both';
+  scope: 'user' | 'project';
+  dependencyScopeOverrides?: Array<{
+    pluginId: string;
+    platform: 'codex' | 'claude';
+    scope: 'user' | 'project';
+  }>;
+}): DependencyOperationPlan {
+  const platforms = intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform];
+  const overrideScope = (pluginId: string, platform: 'codex' | 'claude') =>
+    intent.dependencyScopeOverrides?.find((entry) =>
+      entry.pluginId === pluginId && entry.platform === platform)?.scope;
+  const targets: DependencyOperationPlan['targets'] = platforms.flatMap((platform) => {
+    const directOverride = overrideScope('official/skill-toolkit', platform);
+    const directScope = directOverride ?? intent.scope;
+    return [
+      {
+        pluginId: 'official/content-toolkit', pluginName: 'Agent Content Toolkit', platform,
+        relation: 'dependency', depth: 2, requiredBy: ['official/skill-toolkit'],
+        rootScope: intent.scope, minimumScope: directScope, resolvedScope: directScope,
+        allowedScopes: ['project', 'user'], assignmentSource: directScope === 'user'
+          ? 'consumerPromotion' : 'default', locked: false,
+        affectsOtherProjects: directScope === 'user', state: 'present', action: 'keep', order: 0,
+      },
+      {
+        pluginId: 'official/skill-toolkit', pluginName: 'Agent Skill Toolkit', platform,
+        relation: 'dependency', depth: 1, requiredBy: ['official/agent-lab'],
+        rootScope: intent.scope, minimumScope: intent.scope, resolvedScope: directScope,
+        allowedScopes: ['project', 'user'], assignmentSource: directOverride
+          ? 'userOverride' : 'default', locked: directOverride !== undefined,
+        ...(directOverride ? { lockReason: 'dependencyScopeOverride' } : {}),
+        affectsOtherProjects: directScope === 'user', state: 'absent', action: 'install', order: 1,
+      },
+      {
+        pluginId: 'official/agent-lab', pluginName: 'Agent Lab', platform,
+        relation: 'requested', depth: 0, requiredBy: [], rootScope: intent.scope,
+        minimumScope: intent.scope, resolvedScope: intent.scope,
+        allowedScopes: [intent.scope], assignmentSource: 'root', locked: true,
+        affectsOtherProjects: intent.scope === 'user', state: 'absent', action: 'install', order: 2,
+      },
+    ];
+  });
+  return {
+    dependencyPlanSchemaVersion: 2,
+    dependencyPlanDigest: `sha256:${JSON.stringify(targets)}`,
+    requestedPluginIds: ['official/agent-lab'],
+    resolvedPluginIds: ['official/content-toolkit', 'official/skill-toolkit', 'official/agent-lab'],
+    dependencyEdges: platforms.flatMap((platform) => [
+      { from: 'official/agent-lab', to: 'official/skill-toolkit', platform },
+      { from: 'official/skill-toolkit', to: 'official/content-toolkit', platform },
+    ]),
+    scopeOverrides: intent.dependencyScopeOverrides ?? [],
+    targets,
+    claimRoots: [],
   };
 }
 
@@ -4312,6 +4380,250 @@ describe('ConsoleAppV4', () => {
     expect(relations.lastFrame()).not.toContain('› Agent Skill Toolkit');
   });
 
+  it('runs scope to platform to per-target placement to Review and restores the draft on Back', async () => {
+    const planFor = (intent: OperationIntent): DependencyOperationPlan => {
+      if (intent.kind !== 'pluginWrite') throw new Error('expected plugin write');
+      return placementPlanFor(intent);
+    };
+    const previewDependencyPlacement = vi.fn(async (intent: Extract<OperationIntent, { kind: 'pluginWrite' }>) =>
+      planFor(intent));
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => ({
+      ...evidence,
+      dependencyPlan: planFor(intent),
+    }));
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+      previewDependencyPlacement,
+      captureEvidence,
+    });
+    await value.load();
+    value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, '\r', '\u001B[B', '\r', '\u001B[B', '\r');
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'dependencyPlacement', pluginId: 'official/agent-lab',
+    });
+    expect(instance.lastFrame()).toContain('选择每个平台的依赖位置');
+    expect(instance.lastFrame()).toContain('Agent Skill Toolkit · Codex');
+    expect(instance.lastFrame()).toContain('Agent Content Toolkit · Codex');
+    expect(instance.lastFrame()).not.toContain('Space');
+    const beforeSpace = value.snapshot.installPlacementDraft;
+    await input(instance, ' ');
+    expect(value.snapshot.installPlacementDraft).toEqual(beforeSpace);
+
+    await input(instance, '\u001B[B', '\r', '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'dependencyPlacement', pluginId: 'official/agent-lab',
+    });
+    expect(value.snapshot.installPlacementDraft?.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user',
+        assignmentSource: 'userOverride',
+      }),
+      expect.objectContaining({
+        pluginId: 'official/content-toolkit', platform: 'codex', scope: 'user',
+        assignmentSource: 'consumerPromotion',
+      }),
+    ]));
+    expect(instance.lastFrame()).toContain('fixed-point 提升');
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(4);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'official/skill-toolkit', group: 'userIntent' }),
+      expect.objectContaining({ pluginId: 'official/content-toolkit', group: 'userIntent' }),
+    ]));
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      dependencyScopeOverrides: [expect.objectContaining({
+        pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user',
+      })],
+    }), expect.any(AbortSignal));
+
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'dependencyPlacement', pluginId: 'official/agent-lab',
+    });
+    expect(value.snapshot.installPlacementDraft?.dependencyScopeOverrides).toContainEqual({
+      pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user',
+    });
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+
+    await input(instance, '\u001B[A', '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'dependencyPlacementEditor',
+      pluginId: 'official/agent-lab',
+      dependencyPluginId: 'official/skill-toolkit',
+      platform: 'codex',
+    });
+  });
+
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps a long dependency placement list, current focus, actions, and HelpBar visible at %ix%i',
+    async (columns, rows) => {
+      const plan: DependencyOperationPlan = {
+        dependencyPlanSchemaVersion: 2,
+        dependencyPlanDigest: 'sha256:long-placement',
+        requestedPluginIds: ['official/agent-lab'],
+        resolvedPluginIds: [
+          ...Array.from({ length: 12 }, (_, index) => `official/dependency-${index + 1}`),
+          'official/agent-lab',
+        ],
+        dependencyEdges: Array.from({ length: 12 }, (_, index) => ({
+          from: 'official/agent-lab',
+          to: `official/dependency-${index + 1}`,
+          platform: 'codex' as const,
+        })),
+        scopeOverrides: [],
+        claimRoots: [],
+        targets: [
+          ...Array.from({ length: 12 }, (_, index): DependencyOperationPlan['targets'][number] => ({
+            pluginId: `official/dependency-${index + 1}`,
+            pluginName: `Dependency ${index + 1}`,
+            platform: 'codex', relation: 'dependency', depth: 1,
+            requiredBy: ['official/agent-lab'], rootScope: 'project', minimumScope: 'project',
+            resolvedScope: 'project', allowedScopes: ['project', 'user'],
+            assignmentSource: 'default', locked: false, affectsOtherProjects: false,
+            state: 'absent', action: 'install', order: index,
+          })),
+          {
+            pluginId: 'official/agent-lab', pluginName: 'Agent Lab', platform: 'codex',
+            relation: 'requested', depth: 0, requiredBy: [], rootScope: 'project',
+            minimumScope: 'project', resolvedScope: 'project', allowedScopes: ['project'],
+            assignmentSource: 'root', locked: true, affectsOtherProjects: false,
+            state: 'absent', action: 'install', order: 12,
+          },
+        ],
+      };
+      const value = controller({
+        loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+        previewDependencyPlacement: vi.fn().mockResolvedValue(plan),
+      });
+      await value.load();
+      value.beginInstallFlow('official/agent-lab', 'project');
+      value.setInstallPlatforms(['codex']);
+      await value.prepareInstallDependencyPlacement();
+      value.push({ name: 'dependencyPlacement', pluginId: 'official/agent-lab' });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      await nextTurn(2);
+
+      await input(instance, ...Array.from({ length: 12 }, () => '\u001B[B'));
+      let frame = instance.lastFrame() ?? '';
+      expect(frame).toContain('› 继续到确认');
+      expect(frame).toContain('↑↓ 移动');
+      expect(frame.match(/›/gu)).toHaveLength(1);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
+
+      await input(instance, '\u001B[A', '\r', 'b');
+      frame = instance.lastFrame() ?? '';
+      expect(value.snapshot.router.current.route.name).toBe('dependencyPlacement');
+      expect(frame).toContain('› Dependency 12 · Codex');
+      expect(frame).toContain('↑↓ 移动');
+      expect(frame.match(/›/gu)).toHaveLength(1);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
+    },
+  );
+
+  it.each([[60, 18], [80, 24]] as const)(
+    'mounts a user-to-project adjustment as desired-only guidance without automatic cleanup at %ix%i',
+    async (columns, rows) => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    for (const entry of loaded.payload.targets.filter((target) =>
+      target.pluginId === 'official/agent-lab')) {
+      entry.state = entry.platform === 'codex' && entry.scope === 'project' ? 'present' : 'absent';
+    }
+    const planFor = (intent: Extract<OperationIntent, { kind: 'pluginWrite' }>): DependencyOperationPlan => {
+      const selected = intent.dependencyScopeOverrides?.find((entry) =>
+        entry.pluginId === 'official/skill-toolkit' && entry.platform === 'codex')?.scope;
+      const resolvedScope = selected ?? 'user';
+      return {
+        dependencyPlanSchemaVersion: 2,
+        dependencyPlanDigest: `sha256:adjust-${resolvedScope}`,
+        requestedPluginIds: ['official/agent-lab'],
+        resolvedPluginIds: ['official/skill-toolkit', 'official/agent-lab'],
+        dependencyEdges: [{
+          from: 'official/agent-lab', to: 'official/skill-toolkit', platform: 'codex',
+        }],
+        scopeOverrides: intent.dependencyScopeOverrides ?? [],
+        claimRoots: [],
+        targets: [
+          {
+            pluginId: 'official/skill-toolkit', pluginName: 'Agent Skill Toolkit',
+            platform: 'codex', relation: 'dependency', depth: 1,
+            requiredBy: ['official/agent-lab'], rootScope: 'project', minimumScope: 'project',
+            resolvedScope, allowedScopes: ['project', 'user'],
+            assignmentSource: selected ? 'userOverride' : 'existingWiderTarget',
+            locked: selected !== undefined,
+            ...(selected ? { lockReason: 'dependencyScopeOverride' } : {}),
+            affectsOtherProjects: resolvedScope === 'user', state: 'present',
+            action: resolvedScope === 'project' ? 'move' : 'keep', order: 0,
+          },
+          {
+            pluginId: 'official/agent-lab', pluginName: 'Agent Lab', platform: 'codex',
+            relation: 'requested', depth: 0, requiredBy: [], rootScope: 'project',
+            minimumScope: 'project', resolvedScope: 'project', allowedScopes: ['project'],
+            assignmentSource: 'root', locked: true, affectsOtherProjects: false,
+            state: 'present', action: 'keep', order: 1,
+          },
+        ],
+      };
+    };
+    const executeIntent = vi.fn().mockResolvedValue({ desiredPlacementUpdated: true });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      previewDependencyPlacement: vi.fn(async (intent) => planFor(intent)),
+      captureEvidence: vi.fn(async (intent) => ({
+        ...evidence,
+        dependencyPlan: planFor(intent as Extract<OperationIntent, { kind: 'pluginWrite' }>),
+      })),
+      executeIntent,
+    });
+    await value.load();
+    value.push({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('› 调整依赖位置…');
+
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('dependencyPlacement');
+    expect(instance.lastFrame()).toContain('复用健康的所有项目安装');
+
+    await input(instance, '\r', '\r');
+    await nextTurn(3);
+    expect(value.snapshot.installPlacementDraft?.dependencyScopeOverrides).toContainEqual({
+      pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'project',
+    });
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(value.snapshot.activeReview).toMatchObject({
+      title: '调整依赖位置',
+      requiresConfirmation: false,
+    });
+    expect(instance.lastFrame()).toContain('后续第 1 步：显式 user cleanup');
+    expect(instance.lastFrame()).toContain('后续第 2 步：同步当前项目');
+    expect(instance.lastFrame()).toContain('不自动扫描/清理');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      dependencyPlacementOnly: 'desired',
+    }), expect.any(Object));
+    expect(executeIntent).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'cleanup' }), expect.anything());
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(instance.lastFrame()).toContain('第 1 步：AW 不会扫描未知项目或自动 cleanup');
+    expect(instance.lastFrame()).toContain('第 2 步：cleanup 完成后同步当前项目');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+  });
+
   it('groups a layered Review without giving its headings a separate focus and keeps the primary action reachable', async () => {
     const plan = dependencyPlan();
     const executeIntent = vi.fn();
@@ -4339,6 +4651,347 @@ describe('ConsoleAppV4', () => {
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     await input(instance, '\r');
     expect(executeIntent).toHaveBeenCalledOnce();
+  });
+
+  it.each([[60, 18], [80, 24]] as const)(
+    'requires the Phase4 shared impact confirmation before executing at %ix%i',
+    async (columns, rows) => {
+      const intent = {
+        kind: 'pluginWrite' as const,
+        action: 'install' as const,
+        pluginId: 'official/agent-lab',
+        platform: 'codex' as const,
+        scope: 'project' as const,
+        dependencyScopeOverrides: [{
+          pluginId: 'official/skill-toolkit', platform: 'codex' as const, scope: 'user' as const,
+        }],
+      };
+      const plan = placementPlanFor(intent);
+      const codexReconcilePlans = [{
+        sharedNativeActions: [{
+          pluginId: 'official/agent-lab', codexPluginId: 'agent-lab@aw-official',
+          action: 'replace', desiredVersion: '2.0.0', affectsOtherScopes: true,
+        }],
+        activationActions: {
+          user: [{
+            pluginId: 'official/skill-toolkit', codexPluginId: 'skill-toolkit@aw-official',
+            scope: 'user', action: 'enable', desired: true,
+          }],
+          project: [{
+            pluginId: 'official/agent-lab', codexPluginId: 'agent-lab@aw-official',
+            scope: 'project', action: 'enable', desired: true,
+          }],
+        },
+        extensionWrites: [{
+          pluginId: 'official/agent-lab', componentKey: 'extensions.instructions:guide',
+          kind: 'instruction', scope: 'project', action: 'write',
+        }],
+        extensionRemovals: [],
+        review: {
+          requiresConfirmation: true,
+          sharedImpact: {
+            pluginIds: ['agent-lab@aw-official'],
+            warning: '共享 native 内容会影响其他项目。',
+          },
+        },
+      }] as unknown as NonNullable<OperationEvidence['codexReconcilePlans']>;
+      const executeIntent = vi.fn().mockResolvedValue({
+        overallState: 'succeeded', dependencyPlan: plan, targetResults: [],
+      });
+      const value = controller({
+        loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+        captureEvidence: vi.fn().mockResolvedValue({
+          ...evidence, dependencyPlan: plan, codexReconcilePlans,
+        }),
+        executeIntent,
+      });
+      await value.load();
+      await value.buildOperationReview(intent);
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      await nextTurn(2);
+
+      const initial = instance.lastFrame() ?? '';
+      expect(initial).toContain('Shared impact 需要显式确认');
+      expect(initial).toContain('确认 shared impact');
+      expect(initial).toContain('请先显式确认 shared impact');
+      for (const layer of [
+        'Project intent', 'User intent', 'Shared Codex native',
+        'User activation', 'Project activation', 'AW extensions',
+      ]) expect(initial).toContain(layer);
+      expect(initial).toContain('↑↓ 移动');
+      expect(initial.split('\n').length).toBeLessThanOrEqual(rows);
+      await input(instance, '\r');
+      expect(executeIntent).not.toHaveBeenCalled();
+      expect(instance.lastFrame()).toContain('已确认 shared impact');
+      expect(instance.lastFrame()).toContain(`› 添加插件 ${plan.resolvedPluginIds.length} 个插件`);
+
+      await input(instance, '\r');
+      await nextTurn(3);
+      expect(executeIntent).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('enters the existing Review chain from a mounted needsSync platform action', async () => {
+    const loaded = loadResult();
+    loaded.payload.targets = loaded.payload.targets.filter((entry) =>
+      entry.pluginId !== 'official/agent-lab');
+    loaded.payload.targets.push({
+      pluginName: 'agent-lab',
+      pluginId: 'official/agent-lab',
+      sourceId: 'official',
+      sourceIdentity: 'identity:official',
+      version: '0.4.2',
+      platform: 'codex',
+      scope: 'project',
+      cwd: '/workspace',
+      desired: { enabled: true, scopes: ['project'], relation: 'root' },
+      actual: { state: 'needsSync' },
+      state: 'present',
+      components: [],
+      errors: [],
+      recovery: [{
+        command: 'sync',
+        scope: 'project',
+        description: '同步当前项目 desired intent',
+      }],
+      sharedNative: {
+        pluginId: 'agent-lab@aw-official',
+        state: 'present',
+        shared: true,
+      },
+      activation: {
+        user: false,
+        project: false,
+        effective: false,
+        evidence: 'observed',
+      },
+    });
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+    });
+    await value.load();
+    value.push({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    const initial = instance.lastFrame() ?? '';
+    expect(initial).toContain('需要同步');
+    expect(initial).toContain('Desired placement');
+    expect(initial).toContain('Actual scope 状态');
+    expect(initial).toContain('› 同步 desired intent…');
+    expect(initial.split('\n').length).toBeLessThanOrEqual(18);
+
+    await input(instance, '\r');
+    await nextTurn(3);
+
+    expect(captureEvidence).toHaveBeenCalledWith({
+      kind: 'pluginWrite',
+      action: 'sync',
+      pluginId: 'official/agent-lab',
+      platform: 'codex',
+      scope: 'project',
+    }, expect.any(AbortSignal));
+    expect(value.snapshot.router.current.route.name).toBe('review');
+  });
+
+  it.each([
+    ['user', 'project', '\u001B[B'],
+    ['project', 'user', ''],
+  ] as const)('adds a second pure-native scope from %s to %s without reinstalling shared native', async (
+    enabledScope,
+    addedScope,
+    scopeKey,
+  ) => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = [loaded.pluginSummaries[0]!];
+    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+    loaded.payload.targets = [{
+      pluginName: 'agent-lab',
+      pluginId: 'official/agent-lab',
+      sourceId: 'official',
+      sourceIdentity: 'identity:official',
+      version: '0.4.2',
+      platform: 'codex',
+      scope: enabledScope,
+      cwd: '/workspace',
+      desired: { enabled: true, scopes: [enabledScope], relation: 'root' },
+      actual: { state: 'ready' },
+      state: 'present',
+      components: [],
+      errors: [],
+      recovery: [],
+      sharedNative: {
+        pluginId: 'agent-lab@aw-official', state: 'present', shared: true,
+      },
+      activation: {
+        user: enabledScope === 'user',
+        project: enabledScope === 'project',
+        effective: true,
+        evidence: 'observed',
+      },
+    }];
+    const codexReconcilePlans = [{
+      sharedNativeActions: [{
+        pluginId: 'official/agent-lab',
+        codexPluginId: 'agent-lab@aw-official',
+        action: 'reuse',
+        desiredVersion: '0.4.2',
+        affectsOtherScopes: false,
+      }],
+      activationActions: {
+        user: [{
+          pluginId: 'official/agent-lab', codexPluginId: 'agent-lab@aw-official',
+          scope: 'user', action: addedScope === 'user' ? 'enable' : 'none',
+          desired: true,
+        }],
+        project: [{
+          pluginId: 'official/agent-lab', codexPluginId: 'agent-lab@aw-official',
+          scope: 'project', action: addedScope === 'project' ? 'enable' : 'none',
+          desired: true,
+        }],
+      },
+      extensionWrites: [],
+      extensionRemovals: [],
+      review: { requiresConfirmation: false, sharedImpact: { pluginIds: [] } },
+    }] as unknown as NonNullable<OperationEvidence['codexReconcilePlans']>;
+    const captureEvidence = vi.fn().mockResolvedValue({ ...evidence, codexReconcilePlans });
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded',
+      targetResults: [{
+        target: { pluginId: 'official/agent-lab', platform: 'codex', scope: addedScope },
+        state: 'completed',
+      }],
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+      executeIntent,
+    });
+    await value.load();
+    value.push({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain(`在${addedScope === 'user' ? '所有项目' : '当前项目'}中启用…`);
+    await input(instance, '\r', ...(scopeKey ? [scopeKey] : []), '\r');
+    expect(value.snapshot.router.current.route.name).toBe('installTargets');
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    expect(instance.lastFrame()).not.toContain('Space');
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(4);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab',
+      platform: 'codex', scope: addedScope,
+    }), expect.any(AbortSignal));
+    const reviewFrame = instance.lastFrame() ?? '';
+    expect(reviewFrame).toContain('Shared Codex native');
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        group: 'sharedCodexNative', kind: 'keep', description: 'reuse · shared',
+      }),
+      expect.objectContaining({
+        group: addedScope === 'user' ? 'userActivation' : 'projectActivation',
+        kind: 'change', description: 'desired=true · enable',
+      }),
+    ]));
+    expect(reviewFrame).not.toContain('install · shared');
+
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(executeIntent.mock.calls[0]?.[0]).toMatchObject({ scope: addedScope });
+  });
+
+  it('shows two real mixed-conflict recovery paths in detail, issue, and platform, then executes only the selected uninstall', async () => {
+    const recovery = [
+      {
+        command: 'uninstall' as const,
+        scope: 'user' as const,
+        description: '运行 aw uninstall official/agent-lab --platform codex --scope user，再运行 aw sync official/agent-lab --platform codex --scope project。',
+      },
+      {
+        command: 'uninstall' as const,
+        scope: 'project' as const,
+        description: '运行 aw uninstall official/agent-lab --platform codex --scope project，再运行 aw sync official/agent-lab --platform codex --scope user。',
+      },
+    ];
+    const loaded = loadResult();
+    loaded.pluginSummaries = [loaded.pluginSummaries[0]!];
+    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+    const conflictTarget: StatusV6Payload['targets'][number] = {
+      pluginName: 'agent-lab', pluginId: 'official/agent-lab', sourceId: 'official',
+      sourceIdentity: 'identity:official', version: '0.4.2', platform: 'codex',
+      scope: 'user', cwd: '/workspace',
+      desired: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+      actual: { state: 'conflict' }, state: 'present', components: [],
+      errors: [{
+        code: 'codexExtensionScopeConflict',
+        message: 'codexExtensionScopeConflict: mixed scope overlap',
+        severity: 'warning',
+      }],
+      recovery,
+      sharedNative: { pluginId: 'agent-lab@aw-official', state: 'present', shared: true },
+      activation: { user: true, project: true, effective: true, evidence: 'observed' },
+      extensions: { state: 'conflict', kinds: ['instruction'] },
+    };
+    loaded.payload.targets = [conflictTarget];
+    const resolved = structuredClone(loaded);
+    resolved.payload.targets = [{
+      ...conflictTarget,
+      desired: { enabled: true, scopes: ['project'], relation: 'root' },
+      actual: { state: 'ready' },
+      errors: [], recovery: [],
+      activation: { user: false, project: true, effective: true, evidence: 'observed' },
+      extensions: { state: 'ready', kinds: ['instruction'] },
+    }];
+    const loadStatus = vi.fn().mockResolvedValueOnce(loaded).mockResolvedValue(resolved);
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded',
+      targetResults: [{
+        target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'user' },
+        state: 'completed',
+      }],
+    });
+    const value = controller({ loadStatus, captureEvidence, executeIntent });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) => entry.category === 'scopeConflict')!;
+    expect(issue).toBeDefined();
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('保留当前项目，移除所有项目 root…');
+    expect(instance.lastFrame()).toContain('保留所有项目，移除当前项目 root…');
+
+    value.replace({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('保留当前项目，移除所有项目 root…');
+    expect(instance.lastFrame()).toContain('保留所有项目，移除当前项目 root…');
+
+    value.replace({ name: 'issueDetail', issueId: issue.issueId });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('保留当前项目');
+    expect(instance.lastFrame()).toContain('保留所有项目');
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(instance.lastFrame()).toContain('后续：当前项目 sync');
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ description: recovery[0].description }),
+    ]));
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'uninstall', pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    }), expect.any(AbortSignal));
+
+    await confirmReview(instance, value);
+    await nextTurn(5);
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(executeIntent.mock.calls[0]?.[0]).toMatchObject({ action: 'uninstall', scope: 'user' });
+    expect(instance.lastFrame()).toContain('后续：当前项目 sync');
   });
 
   it('renders kept, failed, and skipped dependency targets as target-level results', async () => {

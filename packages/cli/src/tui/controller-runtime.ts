@@ -65,6 +65,7 @@ import {
 import {
   buildConfigGroups,
   buildConfigPage,
+  isPureNativeCodexTarget,
   projectPlatformPlacement,
   type DependencyPlacementReferenceViewModel,
   type PlatformPlacementSummary,
@@ -102,6 +103,12 @@ import {
   MANAGED_CODEX_PACKAGE_NAME,
   MANAGED_CODEX_VERSION,
 } from '../utils/codex-manager.js';
+import {
+  calculatePluginIntentDigest,
+  canonicalizePluginIntentState,
+  readPluginIntentState,
+  writePluginIntentState,
+} from '../utils/plugin-intent-state.js';
 
 async function loadPortablePluginIds(options: {
   context: CliExecutionContext;
@@ -274,6 +281,10 @@ function assertIntentIsLegal(
     if (!selected || selected.errors.some((error) => error.code === 'unsupportedTarget')) {
       throw new TuiOperationBlockedError('unsupportedTarget', '所选插件不支持这个平台和使用位置。');
     }
+    if (intent.action === 'sync' && platform !== 'codex') {
+      throw new TuiOperationBlockedError('syncPlatformUnsupported', 'sync 只支持 Codex。');
+    }
+    if (intent.dependencyPlacementOnly === 'desired') continue;
     const otherScope = intent.scope === 'user' ? 'project' : 'user';
     const otherScopeInstalled = platform === 'codex'
       ? platformTargets.some((target) =>
@@ -283,7 +294,9 @@ function assertIntentIsLegal(
           target.platform === platform
           && target.scope !== intent.scope
           && (target.state === 'present' || target.state === 'partial'));
-    if (intent.action === 'install' && otherScopeInstalled) {
+    const pureNativeCodex = isPureNativeCodexTarget(selected);
+    if (intent.action === 'install' && otherScopeInstalled && !pureNativeCodex
+      && !intent.dependencyPlacementAdjustment) {
       throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
     }
     if ((intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')
@@ -293,8 +306,19 @@ function assertIntentIsLegal(
         '所选位置存在输出冲突。请先移除或迁移冲突内容。',
       );
     }
-    if (intent.action === 'install' && selected.state !== 'absent') {
+    const selectedScopeInstalled = platform === 'codex'
+      ? selected.desired.scopes.includes(intent.scope)
+        || selected.activation?.[intent.scope] === true
+      : selected.state !== 'absent';
+    if (intent.action === 'install' && selectedScopeInstalled
+      && !intent.dependencyPlacementAdjustment) {
       throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
+    }
+    if (intent.action === 'sync'
+      && selected.actual.state !== 'needsSync'
+      && selected.actual.state !== 'drifted'
+      && selected.actual.state !== 'conflict') {
+      throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不需要同步。');
     }
     const revision = revisions.find((entry) => entry.pluginId === intent.pluginId
       && entry.platform === platform && entry.scope === intent.scope)?.revision;
@@ -1161,11 +1185,15 @@ export function createTuiControllerDependencies(
         reinstall: reinstallWriteCommand,
         uninstall: uninstallWriteCommand,
         cleanup: cleanupWriteCommand,
+        sync: installWriteCommand,
       }[intent.action];
       const preview = await command([intent.pluginId], {
         cwd: context.cwd,
         platform: intent.platform,
         scope: intent.scope,
+        ...(intent.action === 'install' && intent.dependencyScopeOverrides
+          ? { dependencyScopeOverrides: intent.dependencyScopeOverrides }
+          : {}),
         ...(intent.action === 'cleanup' ? { force: intent.force === true } : {}),
       }, {
         ...context,
@@ -1176,17 +1204,21 @@ export function createTuiControllerDependencies(
           expectedGenerationSetDigest: catalogOperation.generationSetDigest,
         } : {}),
         previewDependencyPlanOnly: true,
+        ...(intent.action === 'sync' ? { reconcileIntentOnly: true } : {}),
         ...(preparation ? {
           onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
             stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
         } : {}),
       });
       signal?.throwIfAborted();
-      codexReconcilePlans = preview?.codexReconcilePlans;
+      codexReconcilePlans = intent.dependencyPlacementOnly === 'desired'
+        ? undefined
+        : preview?.codexReconcilePlans;
       if (hasDeclaredDependencies
         && (intent.action === 'install'
           || intent.action === 'upgrade'
-          || intent.action === 'reinstall')) {
+          || intent.action === 'reinstall'
+          || intent.action === 'sync')) {
         dependencyPlan = preview.dependencyPlan;
         if (!dependencyPlan) {
           throw new TuiOperationBlockedError('dependencyGraphInvalid', '无法建立可信的依赖安装计划。');
@@ -1200,7 +1232,7 @@ export function createTuiControllerDependencies(
         }
       }
       const managerPreview = preview?.codexManagerPreview;
-      if (managerPreview?.state === 'blocked') {
+      if (managerPreview?.state === 'blocked' && intent.dependencyPlacementOnly !== 'desired') {
         const message = managerPreview.code === 'codexSystemCliUnsupported'
           ? '系统 Codex CLI 版本不受支持。请升级官方 Codex CLI 后重试。'
           : 'AW-managed Codex runtime 当前不可用。请重试、升级 AW，或安装官方 Codex CLI。';
@@ -1209,7 +1241,8 @@ export function createTuiControllerDependencies(
           `${managerPreview.code}: ${message}`,
         );
       }
-      if (managerPreview) {
+      if (managerPreview && managerPreview.state !== 'blocked'
+        && intent.dependencyPlacementOnly !== 'desired') {
         codexManager = {
           state: managerPreview.state,
           packageName: MANAGED_CODEX_PACKAGE_NAME,
@@ -1221,6 +1254,21 @@ export function createTuiControllerDependencies(
     }
     await preparation?.reporter.emit('evidence');
     signal?.throwIfAborted();
+    let projectIntentDigest: string | undefined;
+    if (intent.kind === 'pluginWrite' && intent.dependencyPlacementOnly === 'desired') {
+      if (intent.scope !== 'project') {
+        throw new TuiOperationBlockedError(
+          'dependencyPlacementScopeInvalid',
+          '缩小依赖位置只能更新当前项目 desired intent。',
+        );
+      }
+      projectIntentDigest = calculatePluginIntentDigest(await readPluginIntentState({
+        scope: 'project',
+        cwd: context.cwd,
+        env: context.env,
+      }));
+      signal?.throwIfAborted();
+    }
     const evidenceTargets = intent.kind === 'configSave' || intent.kind === 'configReset'
       ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
       : status.payload.targets;
@@ -1241,6 +1289,7 @@ export function createTuiControllerDependencies(
       source: selected.source,
       ...(offlineCleanup ? { offlineCleanup } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
+      ...(projectIntentDigest ? { projectIntentDigest } : {}),
       ...(codexReconcilePlans ? { codexReconcilePlans } : {}),
       ...(codexManager ? { codexManager } : {}),
       targetFingerprint: statusTargetFingerprint(
@@ -1307,6 +1356,10 @@ export function createTuiControllerDependencies(
       } finally {
         await reporter.finish();
       }
+    },
+    async previewDependencyPlacement(intent, signal) {
+      const evidence = await captureEvidence(intent, signal);
+      return evidence.dependencyPlan;
     },
     async validateIntent(intent, signal) {
       if (intent.kind === 'catalogActivate') {
@@ -1732,10 +1785,36 @@ export function createTuiControllerDependencies(
           }
           await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
           if (intent.kind === 'pluginWrite') {
+            if (intent.dependencyPlacementOnly === 'desired') {
+              const plan = currentEvidence.dependencyPlan;
+              if (!plan || !expectedEvidence.projectIntentDigest) {
+                throw operationReviewStale('确认信息缺少依赖位置或 project intent 证据。');
+              }
+              const location = { scope: 'project' as const, cwd: context.cwd, env: context.env };
+              const currentIntent = await readPluginIntentState(location);
+              if (calculatePluginIntentDigest(currentIntent) !== expectedEvidence.projectIntentDigest) {
+                throw operationReviewStale('确认后 project desired intent 发生变化。');
+              }
+              const plannedKeys = new Set(plan.targets.map((target) =>
+                `${target.pluginId}\0${target.platform}`));
+              const nextIntent = canonicalizePluginIntentState({
+                ...currentIntent,
+                dependencyScopeOverrides: [
+                  ...currentIntent.dependencyScopeOverrides.filter((override) =>
+                    !plannedKeys.has(`${override.pluginId}\0${override.platform}`)),
+                  ...plan.scopeOverrides,
+                ],
+              });
+              await writePluginIntentState(location, nextIntent);
+              return { dependencyPlan: plan, desiredPlacementUpdated: true };
+            }
             const options = {
               cwd: context.cwd,
               platform: intent.platform,
               scope: intent.scope,
+              ...(intent.action === 'install' && intent.dependencyScopeOverrides
+                ? { dependencyScopeOverrides: intent.dependencyScopeOverrides }
+                : {}),
               ...(expectedEvidence.codexManager?.state === 'requires-install'
                 ? { allowManagedCodexInstall: true }
                 : {}),
@@ -1747,6 +1826,7 @@ export function createTuiControllerDependencies(
               reinstall: reinstallWriteCommand,
               uninstall: uninstallWriteCommand,
               cleanup: cleanupWriteCommand,
+              sync: installWriteCommand,
             }[intent.action];
             const currentSource = currentEvidence.source;
             const offlineCleanup = currentEvidence.offlineCleanup;
@@ -1763,6 +1843,7 @@ export function createTuiControllerDependencies(
               ...(currentEvidence.codexReconcilePlans
                 ? { expectedCodexReconcilePlans: currentEvidence.codexReconcilePlans }
                 : {}),
+              ...(intent.action === 'sync' ? { reconcileIntentOnly: true } : {}),
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
               ...(catalogOperation ? {
                 catalogOperationContext: catalogOperation,

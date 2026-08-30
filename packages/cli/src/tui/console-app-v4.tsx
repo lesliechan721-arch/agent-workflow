@@ -112,7 +112,11 @@ interface DynamicMenuFocus {
 function pluginMenuActionId(action: PluginMenuAction): string {
   return action.id === 'platform' || action.id === 'scopeConflict'
     ? `${action.id}:${action.platform}`
-    : action.id;
+    : action.id === 'addScope'
+      ? `${action.id}:${action.platform}:${action.scope}`
+      : action.id === 'resolveScopeConflict'
+        ? `${action.id}:${action.pluginId}:${action.platform}:${action.scope}`
+        : action.id;
 }
 
 interface PluginListRowViewModel {
@@ -243,9 +247,15 @@ function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
     if (placement.blockingReason === 'artifactCollision') {
       return `${label} · ${scopeLabel(placement.scope)} · 输出冲突`;
     }
-    const health = placement.health === 'ready' ? '可用'
-      : placement.health === 'incomplete' ? '需要处理' : '不可用';
-    return `${label} · ${scopeLabel(placement.scope)} · ${health}`;
+    const health = placement.actualState === 'needsSync' ? '需要同步'
+      : placement.actualState === 'drifted' ? '已漂移'
+        : placement.actualState === 'conflict' ? '位置冲突'
+          : placement.health === 'ready' ? '可用'
+            : placement.health === 'incomplete' ? '需要处理' : '不可用';
+    const desired = placement.desiredScopes?.length
+      ? placement.desiredScopes.map(scopeLabel).join('+')
+      : scopeLabel(placement.scope);
+    return `${label} · ${desired} · ${health}`;
   }).join('  |  ') || '没有可用平台';
 }
 
@@ -706,9 +716,12 @@ function placementStatus(placement: PlatformPlacementSummary): {
     return { value: '输出冲突', status: 'error', description: '只允许查看或安全移除受管内容' };
   }
   return {
-    value: `${scopeLabel(placement.scope)} · ${placement.health === 'ready' ? '可用' : placement.health === 'incomplete' ? '需要处理' : '不可用'}`,
-    status: placement.health === 'ready' ? 'success' : placement.health === 'incomplete' ? 'warning' : 'error',
-    description: placement.health === 'ready' ? '当前检查正常' : '查看影响和建议操作',
+    value: `${placement.desiredScopes?.map(scopeLabel).join('+') || scopeLabel(placement.scope)} · ${placement.actualState === 'needsSync' ? '需要同步' : placement.actualState === 'drifted' ? '已漂移' : placement.actualState === 'conflict' ? '位置冲突' : placement.health === 'ready' ? '可用' : placement.health === 'incomplete' ? '需要处理' : '不可用'}`,
+    status: placement.actualState === 'conflict' ? 'error' : placement.health === 'ready' ? 'success' : placement.health === 'incomplete' ? 'warning' : 'error',
+    description: placement.actualState === 'needsSync' ? 'desired intent 与现场不同；可安全同步'
+      : placement.actualState === 'drifted' ? '现场已漂移；查看同步计划'
+        : placement.actualState === 'conflict' ? 'mixed 或 AW-only 重叠；查看恢复路径'
+          : placement.health === 'ready' ? '当前检查正常' : '查看影响和建议操作',
   };
 }
 
@@ -724,8 +737,27 @@ function dependencyStatus(item: PluginDependencyItemViewModel): {
 
 function dependencyPlacementLabel(item: PluginDependencyItemViewModel): string {
   const aggregate = dependencyStatus(item);
+  const installed = item.placements.filter((entry) => entry.state === 'installed');
+  const modern = installed.filter((entry) => entry.state === 'installed'
+    && (entry.desiredScopes !== undefined || entry.actualState !== undefined));
+  if (modern.length > 0) {
+    return modern.map((entry) => {
+      if (entry.state !== 'installed') return '';
+      const desired = entry.desiredScopes?.map(scopeLabel).join('+') || scopeLabel(entry.scope);
+      const actualScopes = [
+        ...(entry.activation?.user ? ['所有项目'] : []),
+        ...(entry.activation?.project ? ['当前项目'] : []),
+      ];
+      const actual = actualScopes.join('+') || scopeLabel(entry.scope);
+      const state = entry.actualState === 'needsSync' ? '需同步'
+        : entry.actualState === 'drifted' ? '已漂移'
+          : entry.actualState === 'conflict' ? '冲突'
+            : entry.actualState === 'ready' ? '可用' : aggregate.value;
+      return `${platformLabel(entry.platform)} · desired ${desired} · actual ${actual} · ${state}`;
+    }).join(' | ');
+  }
   if (item.aggregateStatus !== 'ready') return aggregate.value;
-  const ready = item.placements.filter((entry) => entry.state === 'installed' && entry.health === 'ready');
+  const ready = installed.filter((entry) => entry.state === 'installed' && entry.health === 'ready');
   const scopes = new Set(ready.map((entry) => entry.state === 'installed' ? entry.scope : undefined));
   return scopes.size === 1 && ready[0]?.state === 'installed'
     ? `${scopeLabel(ready[0].scope)} · ${aggregate.value}`
@@ -813,6 +845,8 @@ export function resolveConsoleV4ScreenId(
     if (route.view === 'blocked') return 'D16';
     return controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D04' : 'P06';
   }
+  if (route.name === 'dependencyPlacement') return 'D03';
+  if (route.name === 'dependencyPlacementEditor') return 'D04';
   if (route.name === 'pluginDetail') {
     return controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D09' : 'P13';
   }
@@ -977,6 +1011,7 @@ export function ConsoleAppV4(props: {
   const [draftOwner, setDraftOwner] = useState<string>();
   const [pendingPresetId, setPendingPresetId] = useState<string>();
   const [pendingLayerFieldKey, setPendingLayerFieldKey] = useState<string>();
+  const [confirmedSharedReviewToken, setConfirmedSharedReviewToken] = useState<string>();
   const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
@@ -1222,17 +1257,6 @@ export function ConsoleAppV4(props: {
   const dependencyOverview = (candidate: PluginListItemViewModel | undefined): PluginDependencyOverviewViewModel | undefined =>
     candidate ? props.controller.getPluginDependencyOverview(candidate.pluginId) : undefined;
 
-  const installIntent = (
-    candidate: PluginListItemViewModel,
-    targets: PlatformName[] = selectedTargets,
-  ): OperationIntent => ({
-    kind: 'pluginWrite',
-    action: 'install',
-    pluginId: candidate.pluginId,
-    platform: targets.length === 2 ? 'both' : targets[0]!,
-    scope,
-  });
-
   let title = '管理你的 Agent 工作流插件';
   let description = '为 Codex 和 Claude Code 添加、设置或移除开发能力。';
   let breadcrumb = '首页';
@@ -1270,6 +1294,7 @@ export function ConsoleAppV4(props: {
     compact: policy.mode === 'compact',
     staticRows,
   });
+  const dependencyPlacementStaticRows = policy.mode === 'compact' ? 3 : 10;
   const responsiveBudget = (compactRows: number, standardRows: number): number => {
     const baseline = policy.mode === 'compact' ? 18 : 24;
     const base = policy.mode === 'compact' ? compactRows : standardRows;
@@ -1338,6 +1363,21 @@ export function ConsoleAppV4(props: {
     setFocus(0);
     setScrollOffset(0);
   };
+  const continueInstallAfterTargets = async (
+    candidate: PluginListItemViewModel,
+    targets: PlatformName[],
+  ): Promise<void> => {
+    if (props.controller.snapshot.installPlacementDraft?.pluginId !== candidate.pluginId) {
+      props.controller.beginInstallFlow(candidate.pluginId, scope);
+    }
+    props.controller.setInstallPlatforms(targets);
+    const hasConfigurableDependencies = await props.controller.prepareInstallDependencyPlacement();
+    if (hasConfigurableDependencies) {
+      go({ name: 'dependencyPlacement', pluginId: candidate.pluginId });
+      return;
+    }
+    beginReview(props.controller.installPlacementIntent());
+  };
   const beginPortable = async (pluginId: string): Promise<void> => {
     try {
       await props.controller.preparePortableInstall(
@@ -1404,6 +1444,30 @@ export function ConsoleAppV4(props: {
       scope: selectedScope,
     });
   };
+  const beginSecondScope = (
+    candidate: PluginListItemViewModel,
+    platform: PlatformName,
+    selectedScope: Scope,
+  ): void => {
+    setScope(selectedScope);
+    setSelectedTargets([]);
+    setTargetSelections({});
+    setPreferredTarget(platform);
+    props.controller.beginInstallFlow(candidate.pluginId, selectedScope);
+    go({ name: 'installPlacement', pluginId: candidate.pluginId });
+  };
+  const beginScopeConflictRecovery = (
+    action: Extract<PluginMenuAction, { id: 'resolveScopeConflict' }>,
+  ): void => {
+    void beginReview({
+      kind: 'pluginWrite',
+      action: 'uninstall',
+      pluginId: action.pluginId,
+      platform: action.platform,
+      scope: action.scope,
+      recoveryDescription: action.description,
+    });
+  };
   const beginAddSource = (): void => {
     const owner = `source-add:${Date.now()}`;
     setSourceDraft({ owner, mode: 'add', sourceId: '', type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '' });
@@ -1440,6 +1504,9 @@ export function ConsoleAppV4(props: {
       pluginId,
       platform: selectedPlatform,
       scope: selectedScope,
+      ...(selectedIssue.category === 'scopeConflict' && action.description
+        ? { recoveryDescription: action.description }
+        : {}),
       originIssue: {
         issueId: selectedIssue.issueId,
         issueKey: userIssueKey(selectedIssue),
@@ -1876,6 +1943,7 @@ export function ConsoleAppV4(props: {
       setSelectedTargets([]);
       setTargetSelections({});
       setPreferredTarget(undefined);
+      props.controller.beginInstallFlow(plugin.pluginId, initialScope);
       if (available.length > 0) go({ name: 'installPlacement', pluginId: plugin.pluginId });
       else go({ name: 'installTargets', pluginId: plugin.pluginId, view: 'blocked' });
     };
@@ -2225,8 +2293,30 @@ export function ConsoleAppV4(props: {
       breadcrumb = `${plugin.displayName} / 依赖关系`;
       context = overview ? `${overview.summary.totalCount + 1} 个插件` : '只读';
       title = hasInstalledPlacement(plugin) ? '依赖与被使用情况' : '安装所需插件';
-      description = '依赖从同一个来源快照解析；关系页不会修改安装。';
+      description = '依赖由同一来源快照解析；调整前会进入 Review。';
+      const installedTargets = plugin.installedPlacements.filter((placement): placement is Extract<PlatformPlacementSummary, { state: 'installed' }> =>
+        placement.state === 'installed');
       actions = [
+        ...(hasInstalledPlacement(plugin) && dependencyCount > 0 && installedTargets.length > 0 ? [{
+          label: '调整依赖位置…',
+          description: '按平台设置 project/user；不会自动清理所有项目内容',
+          run: async () => {
+            const rootScope: Scope = installedTargets.some((placement) =>
+              placement.desiredScopes?.includes('project') || placement.scope === 'project')
+              ? 'project' : 'user';
+            const platforms = [...new Set(installedTargets.map((placement) => placement.platform))];
+            setScope(rootScope);
+            setSelectedTargets(platforms);
+            props.controller.beginInstallFlow(plugin.pluginId, rootScope, { adjustingExisting: true });
+            props.controller.setInstallPlatforms(platforms);
+            const configurable = await props.controller.prepareInstallDependencyPlacement();
+            if (!configurable) {
+              setActionError('当前依赖位置都由约束固定，没有可调整项。');
+              return;
+            }
+            go({ name: 'dependencyPlacement', pluginId: plugin.pluginId });
+          },
+        }] : []),
         { label: '技术详情', description: '显示 canonical pluginId 和安全错误代码', run: () => setShowTechnical((value) => !value) },
       ];
       const rootStatus = plugin.aggregateStatus === 'installed' ? 'success' as const
@@ -2349,6 +2439,7 @@ export function ConsoleAppV4(props: {
           setScope(candidateScope);
           setSelectedTargets(next);
           setTargetSelections((current) => ({ ...current, [candidateScope]: next }));
+          props.controller.setInstallRootScope(candidateScope);
           go({
             name: 'installTargets',
             pluginId: plugin.pluginId,
@@ -2368,7 +2459,7 @@ export function ConsoleAppV4(props: {
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
       ? '只有根插件和所有依赖都支持所选位置的目标平台才可选择。'
-      : '同一插件、同一平台只能安装到一个位置。';
+      : '目标平台按所选位置验证；仅含 Codex native 的插件可同时启用两个位置。';
     const choices = props.controller.listInstallTargets(plugin.pluginId, scope);
     const validSelectedTargets = selectedTargets.filter((platform) =>
       choices.some((choice) => choice.platform === platform && choice.compatible));
@@ -2396,6 +2487,7 @@ export function ConsoleAppV4(props: {
               ? current.filter((platform) => platform !== choice.platform)
               : [...current, choice.platform];
             setTargetSelections((selections) => ({ ...selections, [scope]: next }));
+            props.controller.setInstallPlatforms(next);
             return next;
           });
         },
@@ -2408,7 +2500,15 @@ export function ConsoleAppV4(props: {
           disabled: validSelectedTargets.length === 0 ? '至少选择一个目标平台' : undefined,
           run: () => {
             setDirty(false);
-            void beginReview(installIntent(plugin, validSelectedTargets));
+            if (!hasDependencies) {
+              if (props.controller.snapshot.installPlacementDraft?.pluginId !== plugin.pluginId) {
+                props.controller.beginInstallFlow(plugin.pluginId, scope);
+              }
+              props.controller.setInstallPlatforms(validSelectedTargets);
+              beginReview(props.controller.installPlacementIntent());
+              return;
+            }
+            return continueInstallAfterTargets(plugin, validSelectedTargets);
           },
         },
         { label: '返回选择位置', run: back },
@@ -2432,6 +2532,114 @@ export function ConsoleAppV4(props: {
         />
       </Box>;
     }
+  } else if (route.name === 'dependencyPlacement' && plugin) {
+    const draft = snapshot.installPlacementDraft?.pluginId === plugin.pluginId
+      ? snapshot.installPlacementDraft : undefined;
+    breadcrumb = `${plugin.displayName} / 添加 / 依赖位置`;
+    context = '依赖位置';
+    title = '选择每个平台的依赖位置';
+    description = '每个直接或间接依赖都可独立设置。所有项目位置更宽，会影响其他项目和你的用户环境。';
+    const dependencyActions: ActionItem[] = (draft?.targets ?? []).map((target) => ({
+      label: `${target.displayName} · ${platformLabel(target.platform)}`,
+      description: `${target.relation === 'direct' ? '直接依赖' : '间接依赖'} · ${target.explanation}`,
+      meta: `${scopeLabel(target.scope)}${target.assignmentSource === 'consumerPromotion' ? ' · fixed-point 提升' : ''}`,
+      selected: true,
+      disabled: target.locked ? '位置由平台或上游约束固定' : undefined,
+      run: () => go({
+        name: 'dependencyPlacementEditor',
+        pluginId: plugin.pluginId,
+        dependencyPluginId: target.pluginId,
+        platform: target.platform,
+      }),
+    }));
+    actions = [
+      ...dependencyActions,
+      {
+        label: '继续到确认',
+        description: draft?.canContinue ? '使用这些最终位置准备 Review' : undefined,
+        disabled: !draft?.canContinue ? draft?.error?.message ?? '依赖位置尚未就绪' : undefined,
+        run: () => beginReview(props.controller.installPlacementIntent()),
+      },
+      {
+        label: '恢复推荐位置',
+        description: '恢复默认、健康 user 复用和 fixed-point 计算结果',
+        run: () => props.controller.resetDependencyScopes(),
+      },
+      { label: '返回目标平台', run: back },
+    ];
+    const placementViewport = actionViewport(
+      actions,
+      policy.mode === 'compact',
+      focus,
+      scrollOffset,
+      pageActionBudget(dependencyPlacementStaticRows),
+    );
+    const userCount = draft?.targets.filter((target) => target.scope === 'user').length ?? 0;
+    const defaultCount = draft?.targets.filter((target) =>
+      target.assignmentSource === 'default').length ?? 0;
+    const reusedCount = draft?.targets.filter((target) =>
+      target.assignmentSource === 'existingWiderTarget').length ?? 0;
+    const promotedCount = draft?.targets.filter((target) =>
+      target.assignmentSource === 'consumerPromotion').length ?? 0;
+    const reasonSummary = [
+      ...(defaultCount > 0 ? [`默认 project ${defaultCount} 项`] : []),
+      ...(reusedCount > 0 ? [`复用健康的所有项目安装 ${reusedCount} 项`] : []),
+      ...(promotedCount > 0 ? [`fixed-point 提升 ${promotedCount} 项`] : []),
+    ].join('；');
+    content = <Box flexDirection="column">
+      {policy.mode === 'compact'
+        ? <>
+            <StaticRow title={`根插件 · ${plugin.displayName}`} meta={draft ? scopeLabel(draft.rootScope) : '未就绪'} compact />
+            <StaticRow title={`位置原因 · ${reasonSummary || '由平台或上游约束固定'}`} status={userCount > 0 ? 'warning' : 'info'} compact />
+            <StaticRow title="范围提示 · 所有项目位置会影响其他项目和用户环境" status={userCount > 0 ? 'warning' : 'muted'} compact />
+          </>
+        : <>
+            <SectionCard title="根插件位置">
+              <StaticRow title={plugin.displayName} meta={draft ? scopeLabel(draft.rootScope) : '未就绪'} compact />
+            </SectionCard>
+            <Callout
+              status={userCount > 0 ? 'warning' : 'info'}
+              title={userCount > 0 ? `${userCount} 个依赖平台目标使用所有项目位置` : '位置计算原因'}
+              description={`${reasonSummary || '依赖位置由平台或上游约束固定'}${userCount > 0 ? '；所有项目位置对其他项目也可见，并会改变你的用户环境' : ''}。`}
+            />
+          </>}
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={placementViewport.offset} limit={placementViewport.limit} />
+    </Box>;
+    help = '↑↓ 移动 · Enter 打开/继续 · Esc 返回';
+  } else if (route.name === 'dependencyPlacementEditor' && plugin) {
+    const target = snapshot.installPlacementDraft?.targets.find((entry) =>
+      entry.pluginId === route.dependencyPluginId && entry.platform === route.platform);
+    breadcrumb = `${plugin.displayName} / 依赖位置 / ${target?.displayName ?? route.dependencyPluginId}`;
+    context = platformLabel(route.platform);
+    title = `设置 ${target?.displayName ?? route.dependencyPluginId} 的位置`;
+    description = target?.explanation ?? '依赖位置已变化。请返回重新检查。';
+    actions = (['project', 'user'] as const).map((candidateScope): ActionItem => {
+      const unavailable = !target?.allowedScopes.includes(candidateScope)
+        || target.minimumScope === 'user' && candidateScope === 'project';
+      return {
+        label: scopeLabel(candidateScope),
+        selected: target?.scope === candidateScope,
+        description: candidateScope === 'user'
+          ? '更宽：对其他项目可见，并会改变你的用户环境'
+          : '仅供当前项目使用；适合项目共享 intent',
+        disabled: unavailable ? '这个依赖或上游约束不允许此位置' : undefined,
+        run: async () => {
+          await props.controller.setDependencyScope(
+            route.dependencyPluginId,
+            route.platform,
+            candidateScope,
+          );
+          back();
+        },
+      };
+    });
+    content = <Box flexDirection="column">
+      {target?.assignmentSource === 'consumerPromotion'
+        ? <Callout status="warning" title="fixed-point 位置提升" description={`上游依赖需要至少使用${scopeLabel(target.minimumScope)}。`} />
+        : null}
+      <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
+    </Box>;
+    help = '↑↓ 移动 · Enter 选择 · Esc 返回';
   } else if (route.name === 'pluginDetail' && plugin) {
     breadcrumb = `我的插件 / ${plugin.displayName}`;
     context = `${plugin.sourceLabel}${plugin.version ? ` · ${plugin.version}` : ''}`;
@@ -2440,6 +2648,12 @@ export function ConsoleAppV4(props: {
     const dependencySummary = plugin.dependencySummary;
     const detailMenu = dynamicMenu!;
     actions = detailMenu.map((action): ActionItem => {
+      if (action.id === 'resolveScopeConflict') return {
+        label: `保留${scopeLabel(action.keepScope)}，移除${scopeLabel(action.scope)} root…`,
+        description: action.description,
+        status: 'error',
+        run: () => beginScopeConflictRecovery(action),
+      };
       if (action.id === 'platform' || action.id === 'scopeConflict') {
         const placement = plugin.installedPlacements.find((entry) => entry.platform === action.platform)!;
         const projected = placementStatus(placement);
@@ -2503,8 +2717,14 @@ export function ConsoleAppV4(props: {
         setSelectedTargets([]);
         setTargetSelections({});
         setPreferredTarget(route.platform);
+        props.controller.beginInstallFlow(plugin.pluginId, initialScope);
         go({ name: 'installPlacement', pluginId: plugin.pluginId });
       } };
+      if (action.id === 'addScope') return {
+        label: `在${scopeLabel(action.scope)}中启用…`,
+        description: '只增加该 scope 的 activation；shared native 保持复用',
+        run: () => beginSecondScope(plugin, action.platform, action.scope),
+      };
       if (action.id === 'about') return { label: '查看支持信息', description: 'manifest 与平台能力', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
       if (action.id === 'source') return { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
       if (action.id === 'outputCollision') return {
@@ -2516,7 +2736,23 @@ export function ConsoleAppV4(props: {
           : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
       };
       if (action.id === 'scopeConflict') return { label: '查看位置冲突问题', run: () => go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${route.platform}` }) };
+      if (action.id === 'resolveScopeConflict') return {
+        label: `保留${scopeLabel(action.keepScope)}，移除${scopeLabel(action.scope)} root…`,
+        description: action.description,
+        status: 'error',
+        run: () => beginScopeConflictRecovery(action),
+      };
       if (action.id === 'upgrade') return { label: `升级到 ${action.availableVersion}…`, description: '使用当前来源中的版本重建', run: () => beginReview({ kind: 'pluginWrite', action: 'upgrade', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'sync') return {
+        label: '同步 desired intent…',
+        description: placement?.state === 'installed'
+          ? placement.recovery?.find((entry) => entry.command === 'sync')?.description
+            ?? '进入现有 Review、进度和结果链修复 needsSync 或 drift'
+          : undefined,
+        run: () => placement?.state === 'installed'
+          ? beginReview({ kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId, platform: route.platform, scope: placement.scope })
+          : undefined,
+      };
       if (action.id === 'reinstall') return { label: placement?.state === 'installed' && placement.health === 'incomplete' ? '重新连接缺失内容…' : '重新安装…', description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'remove') return { label: `从${scopeLabel(action.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, action.platform, action.scope) };
       if (action.id === 'technical') return typedIssue
@@ -2525,6 +2761,13 @@ export function ConsoleAppV4(props: {
       return { label: '返回插件', run: back };
     };
     breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
+    const installedPlacementRows = placement?.state === 'installed' ? <>
+      <StaticRow title="Desired placement" meta={placement.desiredScopes?.map(scopeLabel).join('、') || scopeLabel(placement.scope)} compact />
+      <StaticRow title="Actual scope 状态" meta={placement.actualState ?? placement.health} status={placement.actualState === 'ready' ? 'success' : placement.actualState === 'conflict' ? 'error' : 'warning'} compact />
+      {placement.sharedNative ? <StaticRow title="Shared native" meta={placement.sharedNative.state} status={placement.sharedNative.state === 'present' ? 'success' : 'warning'} compact /> : null}
+      {placement.activation ? <StaticRow title="Activation" meta={`user ${placement.activation.user ? 'on' : 'off'} · project ${placement.activation.project ? 'on' : 'off'}`} compact /> : null}
+      {placement.extensions ? <StaticRow title="AW-only extensions" meta={`${placement.extensions.state} · ${placement.extensions.kinds.join('、') || '无'}`} status={placement.extensions.state === 'ready' ? 'success' : placement.extensions.state === 'conflict' ? 'error' : 'warning'} compact /> : null}
+    </> : null;
     if (plugin.aggregateStatus === 'unavailable') {
       const sourceOverview = props.controller.getSourceOverview(plugin.sourceId);
       const diagnostic = sourceIssue?.diagnostic ?? sourceDiagnostic(
@@ -2584,13 +2827,16 @@ export function ConsoleAppV4(props: {
       title = `${platformLabel(route.platform)} ${placement.health === 'incomplete' ? '安装不完整' : '暂时不可用'}`;
       description = '缺少一项必要内容，插件可能无法稳定启动。';
       actions = platformMenu.map(platformAction);
-      content = <Box flexDirection="column"><StatusCard status="warning" title="需要处理" description={`${scopeLabel(placement.scope)} · ${plugin.sourceLabel}`} /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      const actualTitle = placement.actualState === 'needsSync' ? '需要同步'
+        : placement.actualState === 'drifted' ? '现场已漂移'
+          : placement.actualState === 'conflict' ? '位置与扩展冲突' : '需要处理';
+      content = <Box flexDirection="column"><StatusCard status={placement.actualState === 'conflict' ? 'error' : 'warning'} title={actualTitle} description={`${scopeLabel(placement.scope)} · ${plugin.sourceLabel}`}>{installedPlacementRows}</StatusCard><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
       title = `已安装到${scopeLabel(placement.scope)}`;
       const installedVersion = placement.revision.installedVersion;
       description = `当前检查正常${installedVersion ? `；已安装版本 ${installedVersion}` : ''}。`;
       actions = platformMenu.map(platformAction);
-      content = <Box flexDirection="column"><StatusCard status="success" title="状态正常" description={`${scopeLabel(placement.scope)}${installedVersion ? ` · 已安装版本 ${installedVersion}` : ''}`} /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+      content = <Box flexDirection="column"><StatusCard status="success" title="状态正常" description={`${scopeLabel(placement.scope)}${installedVersion ? ` · 已安装版本 ${installedVersion}` : ''}`}>{installedPlacementRows}</StatusCard><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     }
   } else if (route.name === 'configLayer' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;
@@ -3250,7 +3496,8 @@ export function ConsoleAppV4(props: {
     const issueDiagnosticSummary = <DiagnosticSummary
       diagnostic={issue.diagnostic}
       technical={showTechnical}
-      compact={policy.mode === 'compact' || issue.category.startsWith('dependency')}
+      compact={policy.mode === 'compact' || issue.category.startsWith('dependency')
+        || issue.category === 'scopeConflict'}
     />;
     const issueActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(6));
     const compactTechnicalActionViewport = policy.mode === 'compact' && showTechnical
@@ -3303,12 +3550,15 @@ export function ConsoleAppV4(props: {
           setScope(issueScope);
           setSelectedTargets([entry.platform]);
           setTargetSelections((current) => ({ ...current, [issueScope]: [entry.platform] }));
+          props.controller.beginInstallFlow(issuePlugin.pluginId, issueScope);
+          props.controller.setInstallPlatforms([entry.platform]);
           go({ name: 'installTargets', pluginId: issuePlugin.pluginId });
         } })),
         { label: '返回调整目标平台', run: () => {
           setScope(issueScope);
           setSelectedTargets([]);
           setTargetSelections((current) => ({ ...current, [issueScope]: [] }));
+          props.controller.beginInstallFlow(issuePlugin.pluginId, issueScope);
           go({ name: 'installTargets', pluginId: issuePlugin.pluginId });
         } },
         { label: '查看依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: issuePlugin.pluginId }) },
@@ -3384,11 +3634,24 @@ export function ConsoleAppV4(props: {
     </Box>;
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
+    const sharedImpactConfirmed = !review.requiresConfirmation
+      || confirmedSharedReviewToken === review.reviewToken;
     breadcrumb = `${review.subject.name} / ${review.title}`;
     title = `${snapshot.result?.state === 'stale' ? '状态已变化 · ' : ''}${review.operationKind === 'portableInstall' ? review.title : `确认${review.title}`} ${review.subject.name}`;
-    description = snapshot.result?.state === 'stale' ? '当前状态已变化。请检查新的变化后再次确认。' : review.description;
+    description = snapshot.result?.state === 'stale'
+      ? '当前状态已变化。请检查新的变化后再次确认。'
+      : review.requiresConfirmation ? '' : review.description;
     actions = [
-      { label: review.primaryLabel, description: '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, run: () => {
+      ...(review.requiresConfirmation ? [{
+        label: sharedImpactConfirmed ? '已确认 shared impact' : '确认 shared impact',
+        description: review.sharedImpact.warning ?? '此操作会修改多个插件共享的 Codex native 内容',
+        selected: sharedImpactConfirmed,
+        run: () => {
+          setConfirmedSharedReviewToken(review.reviewToken);
+          setFocus(1);
+        },
+      }] : []),
+      { label: review.primaryLabel, description: '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, disabled: sharedImpactConfirmed ? undefined : '请先显式确认 shared impact', run: () => {
         if (operationBusy.current) return;
         operationBusy.current = true;
         return props.controller.executeOperation(review.reviewToken).then(() => {
@@ -3405,6 +3668,7 @@ export function ConsoleAppV4(props: {
         : back },
     ];
     const groupedChanges = review.changes.some((change) => change.group);
+    const compressedReview = policy.mode === 'compact' || review.requiresConfirmation;
     const groupTitle = {
       requested: review.operationKind === 'portableInstall' ? '已选择 Skills · 当前插件' : '你选择的插件',
       dependencies: review.operationKind === 'portableInstall' ? '已选择 Skills · 来自依赖插件' : '必需依赖',
@@ -3440,7 +3704,7 @@ export function ConsoleAppV4(props: {
           { key: 'changes', label: undefined, protectedCount: false, changes: review.changes.filter((change) => change.kind !== 'warning' && change.kind !== 'keep') },
         ];
     const visibleSpecs = groupedSpecs.filter((group) => group.changes.length > 0);
-    const headingLines = policy.mode === 'compact' ? 0 : visibleSpecs.filter((group) => group.label).length;
+    const headingLines = compressedReview ? 0 : visibleSpecs.filter((group) => group.label).length;
     const staticRowBudget = Math.max(visibleSpecs.length, responsiveBudget(7, 12) - headingLines);
     const allocations = new Map<string, number>(visibleSpecs.map((group) => [group.key, 1]));
     const targetGroup = visibleSpecs.find((group) => group.key === 'portableTarget');
@@ -3459,7 +3723,7 @@ export function ConsoleAppV4(props: {
       const visibleCount = allocations.get(group.key) ?? 1;
       const hiddenCount = group.changes.length - visibleCount;
       return <Box key={group.key} flexDirection="column">
-        {policy.mode !== 'compact' && group.label ? <Text bold color={tuiTheme.colors.muted}>{group.label}</Text> : null}
+        {!compressedReview && group.label ? <Text bold color={tuiTheme.colors.muted}>{group.label}</Text> : null}
         {group.changes.slice(0, visibleCount).map((change, index) => {
           const retainDescription = change.kind === 'warning' || group.key === 'portableTarget'
             || group.key === 'requested' || group.key === 'dependencies'
@@ -3468,7 +3732,7 @@ export function ConsoleAppV4(props: {
           const compactGroupLabel = group.key === 'requested' ? '根插件'
             : group.key === 'dependencies' ? '依赖'
               : group.key === 'preserved' ? '保持' : group.label;
-          const category = policy.mode === 'compact' && index === 0 && compactGroupLabel ? `${compactGroupLabel} · ` : '';
+          const category = compressedReview && index === 0 && compactGroupLabel ? `${compactGroupLabel} · ` : '';
           const count = index === visibleCount - 1 && (hiddenCount > 0 || group.protectedCount)
             ? hiddenCount > 0 ? `另有 ${hiddenCount} 项` : `共 ${group.changes.length} 项`
             : undefined;
@@ -3507,7 +3771,9 @@ export function ConsoleAppV4(props: {
         compact
       />;
     });
-    content = <Box flexDirection="column"><ReviewCard title={review.subject.name} meta={`${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={review.equivalentCommand ? review.description : undefined}>{review.equivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{policy.mode === 'compact' || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
+    const showEquivalentCommand = Boolean(review.equivalentCommand
+      && (!review.requiresConfirmation || showTechnical));
+    content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! Shared impact 需要显式确认" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const catalogActivation = snapshot.activeReview?.operationKind === 'catalogActivate';
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
@@ -3669,6 +3935,7 @@ export function ConsoleAppV4(props: {
       reinstall: '✓ 插件重新安装完成',
       uninstall: '✓ 插件移除完成',
       cleanup: '✓ 插件清理完成',
+      sync: '✓ 插件同步完成',
     }[action ?? 'install'];
     breadcrumb = catalogActivation ? '插件来源 / Catalog 更新 / 结果' : breadcrumb;
     title = catalogActivation
@@ -4033,7 +4300,8 @@ export function ConsoleAppV4(props: {
     if (!action || action.disabled) return;
     try {
       const pending = action.run?.();
-      if (pending) void pending.catch(() => {
+      if (pending) void pending.catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
         setActionError('操作未完成。请重新检查后重试。');
       });
     } catch {
@@ -4387,7 +4655,13 @@ export function ConsoleAppV4(props: {
                 + (portableVariantCandidates.length > 0 ? 3 : 0),
               ),
             )
-          : actionViewport(actions, policy.mode === 'compact', next, scrollOffset, pageActionBudget());
+          : actionViewport(
+              actions,
+              policy.mode === 'compact',
+              next,
+              scrollOffset,
+              pageActionBudget(route.name === 'dependencyPlacement' ? dependencyPlacementStaticRows : 0),
+            );
         setScrollOffset(viewport.offset);
         return next;
       });
@@ -4414,7 +4688,13 @@ export function ConsoleAppV4(props: {
                 + (portableVariantCandidates.length > 0 ? 3 : 0),
               ),
             )
-          : actionViewport(actions, policy.mode === 'compact', next, scrollOffset, pageActionBudget());
+          : actionViewport(
+              actions,
+              policy.mode === 'compact',
+              next,
+              scrollOffset,
+              pageActionBudget(route.name === 'dependencyPlacement' ? dependencyPlacementStaticRows : 0),
+            );
         setScrollOffset(viewport.offset);
         return next;
       });
