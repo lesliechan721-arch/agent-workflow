@@ -96,14 +96,14 @@ describe('AW capability CLI commands', () => {
     })
   })
 
-  it('keeps an unmapped inline Markdown command advisory during self check', async () => {
+  it('ignores inline and direct Markdown commands during self check', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-unmapped-'))
     tempDirs.push(root)
     const pluginRoot = path.join(root, 'plugin')
     await fs.copy(fixturePath('repo-template', 'plugins', 'git-commit'), pluginRoot)
     await fs.appendFile(
       path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'),
-      '\nRun `aw unknown command` when needed.\n',
+      '\nRun `aw unknown command` when needed.\naw unknown direct\n',
     )
 
     const result = await runCliEntry(['self', 'check', '--from', pluginRoot, '--json'], { cwd: root })
@@ -113,13 +113,7 @@ describe('AW capability CLI commands', () => {
       command: 'self:check',
       ok: true,
       missingCapabilities: [],
-      observations: expect.arrayContaining([
-        expect.objectContaining({
-          code: 'aw-command-unmapped',
-          blocking: false,
-          provenance: 'inline-code',
-        }),
-      ]),
+      observations: [],
     })
   })
 
@@ -156,7 +150,7 @@ describe('AW capability CLI commands', () => {
     expect(await fs.pathExists(path.join(pluginRoot, 'aw-plugin-requirements.json'))).toBe(false)
   })
 
-  it('projects an undeclared Hook AW command into effective requirements before the support gate', async () => {
+  it('keeps undeclared detected requirements advisory for third-party validate and catalog build', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-hook-requirements-'))
     tempDirs.push(root)
     await fs.copy(fixturePath('repo-template'), root)
@@ -165,6 +159,8 @@ describe('AW capability CLI commands', () => {
     const manifest = await fs.readJson(manifestPath)
     manifest.extensions.hooks[0].command = 'aw catalog publish'
     await fs.writeJson(manifestPath, manifest, { spaces: 2 })
+    await fs.outputFile(path.join(pluginRoot, 'README.md'), '# Git Commit\n')
+    await fs.outputFile(path.join(pluginRoot, 'skills', 'commit', 'README.md'), '# Commit\n')
 
     const requirements = await runCliEntry([
       'plugin', 'requirements', pluginRoot, '--workspace-root', root, '--json',
@@ -173,23 +169,27 @@ describe('AW capability CLI commands', () => {
     expect(requirements.parseJsonStdout()).toMatchObject({
       declared: [],
       detected: expect.arrayContaining(['aw.catalog-publication.v1']),
-      effective: expect.arrayContaining(['aw.catalog-publication.v1']),
+      effective: expect.not.arrayContaining(['aw.catalog-publication.v1']),
       unsupportedByCurrentAw: [],
     })
 
-    manifest.requires = { aw: { capabilities: ['aw.future-feature.v3'] } }
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 })
     const validation = await runCliEntry([
       'plugin', 'validate', pluginRoot, '--workspace-root', root, '--json',
     ], { cwd: root })
-    expect(validation.exitCode).toBe(1)
+    expect(validation.exitCode, validation.stdout).toBe(0)
     expect(validation.stderr).toBe('')
     expect(validation.parseJsonStdout()).toMatchObject({
-      ok: false,
-      errors: expect.arrayContaining([
-        expect.stringContaining('awCapabilityUnsupported'),
+      ok: true,
+      warnings: expect.arrayContaining([
+        expect.stringContaining('aw.catalog-publication.v1'),
       ]),
     })
+    const build = await runCliEntry([
+      'catalog', 'build', '--workspace-root', root, '--json',
+    ], { cwd: root })
+    expect(build.exitCode).toBe(0)
+    expect(build.stderr).toBe('')
+    expect(build.parseJsonStdout()).toMatchObject({ command: 'catalog:build', ok: true })
   })
 
   it('adds and removes a declared capability without changing the plugin version', async () => {
@@ -223,28 +223,6 @@ describe('AW capability CLI commands', () => {
       declared: [],
     })
     await expect(fs.readJson(manifestPath)).resolves.toMatchObject({ version: '0.1.0' })
-  })
-
-  it('emits one blocking plugin requirements JSON object with exit 1 and empty stderr', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-blocking-'))
-    tempDirs.push(root)
-    await fs.copy(fixturePath('repo-template'), root)
-    const pluginRoot = path.join(root, 'plugins', 'git-commit')
-    await fs.appendFile(
-      path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'),
-      '\naw unknown command\n',
-    )
-
-    const result = await runCliEntry(['plugin', 'requirements', pluginRoot, '--json'], { cwd: root })
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toBe('')
-    expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 1,
-      command: 'plugin:requirements',
-      observations: expect.arrayContaining([
-        expect.objectContaining({ code: 'aw-command-unmapped', blocking: true }),
-      ]),
-    })
   })
 
   it('emits one plugin requirements error JSON object with exit 1 and empty stderr', async () => {

@@ -59,9 +59,11 @@
         "representative",
         "aw-inventory"
       ],
-      "prompt": "审核 plugins/cycle-a 和 plugins/cycle-b 联合完成的交接工作流。用户结果：从 cycle-a 生成结果并由 cycle-b 消费；入口：cycle-a；参与插件：两个给定插件；代表路径：cycle-a → cycle-b；外部依赖：AW manifest dependency；明确排除：真实模型执行和插件修改；用户决策：是否必须先删除依赖环。两个插件互相声明 manifest dependency。",
+      "prompt": "Workspace root 已明确为当前 $PWD。审核 canonical targets $PWD/plugins/cycle-a 和 $PWD/plugins/cycle-b 联合完成的交接工作流。用户结果：从 cycle-a 生成结果并由 cycle-b 消费；入口：cycle-a；参与插件：两个给定插件；代表路径：cycle-a → cycle-b；外部依赖：AW manifest dependency；明确排除：真实模型执行和插件修改；用户决策：是否必须先删除依赖环。两个插件互相声明 manifest dependency。",
       "input": {
         "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"dependency-cycle-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Dependency Cycle Fixture\",\"url\":\"https://example.invalid/dependency-cycle\"},\"interface\":{\"displayName\":\"Dependency Cycle Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
           "plugins/cycle-a/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"cycle-a\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-b\"],\"skills\":\"./skills\"}\n",
           "plugins/cycle-a/skills/a/SKILL.md": "---\nname: cycle-a-skill\ndescription: Produce the cycle A result.\n---\n\nProduce A.\n",
           "plugins/cycle-b/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"cycle-b\",\"version\":\"0.1.0\",\"dependencies\":[\"cycle-a\"],\"skills\":\"./skills\"}\n",
@@ -73,6 +75,7 @@
         "workspaceUnchanged": true
       },
       "assertions": [
+        "确认两个 canonical plugin targets 都归于明确的 $PWD root 后才运行既有 inventory；不运行任何 aw catalog 命令",
         "区分 dependencyEdges cycle、空 buildImportEdges cycle 与语义判断"
       ]
     },

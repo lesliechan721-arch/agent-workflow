@@ -90,10 +90,11 @@
         "representative",
         "composite-mcp-app"
       ],
-      "prompt": "维护 plugins/support-console：新增 stdio MCP server support-data 和 Codex App support-panel，源码分别写到 .mcp.json 与 .app.json，并更新 manifest。只改这些能力并完成作者验证。",
+      "prompt": "Workspace root 已明确为当前 $PWD。维护 plugins/support-console：新增 stdio MCP server support-data 和 Codex App support-panel，源码分别写到 .mcp.json 与 .app.json，并更新 manifest。只改这些能力并完成作者验证。",
       "input": {
         "workspaceFiles": {
           ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"mcp-app-degraded-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Support Console Fixture\",\"url\":\"https://example.invalid/support-console\"},\"interface\":{\"displayName\":\"Support Console Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
           "plugins/support-console/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"support-console\",\"version\":\"0.2.0\",\"description\":\"Support tools\",\"marketplace\":{\"policy\":{\"products\":[\"CODEX\"]}}}\n",
           "plugins/support-console/README.md": "# Support Console\n",
           "AGENTS.md": "# Workspace rules\nOnly change plugins/support-console/.agents-plugin/plugin.json, plugins/support-console/.mcp.json, and plugins/support-console/.app.json.\n"
@@ -123,7 +124,7 @@
         ]
       },
       "assertions": [
-        "catalog context schema 3 报 workspace.found=true、workspace.health=degraded 和非阻断 workspace-content issue 后，仍使用 receipt root 修复 support-console",
+        "trace 把用户明确的 Workspace root $PWD 原样传给 prepare-aw-authoring-context.mjs 和所有需要 root 的公开 plugin 命令；不运行任何 aw catalog 命令",
         "AWAuthoringContext components 直接包含 manifest、mcp 和 app 三项，并保持 support-data 与 support-panel 的独立路径和 CODEX profile",
         "同时实现 MCP server 与 App 的源码真值及 manifest 引用，没有把其中一项降为 README 说明或遗漏",
         "trace 读取稳定 aw plugin validate 的帮助并调用该命令，不使用 npx 或旧作者脚本路径",

@@ -1,16 +1,16 @@
 ---
 name: publish-aw-catalog
 description: >-
-  当用户清晰要求发布某个 AW Catalog（包括“发布当前 Catalog”）时使用。先运行 publication preflight、展示 CLI 解析的精确身份并取得仅本次授权；普通修改、build、验证或只读 Review 不使用。
+  当用户清晰要求把一个 AW Catalog 发布到明确的 Workspace root、Git remote 和 branch 时使用。先生成 publication plan、展示稳定身份并取得该 planDigest 的一次授权，再 apply；普通维护、build、验证、development activation 或只读 Review 不使用。
 compatibility: 需要 Node.js 22+、可用的 aw CLI，以及合法 Catalog Workspace。
 user-invocable: true
 metadata:
-  short-description: 经精确授权后发布 AW Catalog
+  short-description: 对 planDigest 取得授权后发布 AW Catalog
 ---
 
 # Publish AW Catalog
 
-这是唯一拥有远端 Catalog publication 的 Skill。普通维护或“准备发布”不构成执行授权。
+这是唯一拥有远端 Catalog publication 的 Skill。最初的发布请求允许生成 plan，但不授权 apply。
 
 ## Runtime gate
 
@@ -24,40 +24,29 @@ aw self check --from <skill-root> --json
 
 ## 工作流
 
-1. 运行 `aw catalog context --json`。用户已明确给出的 root、remote 或 branch 必须分别作为 `--workspace-root <user.root>`、`--remote <user.remote>` 或 `--branch <user.branch>` 传入这一次 context。只使用 CLI JSON 的 `workspace.root`、`publication.remote` 和 `publication.branch`。合法 marker 使 `workspace.found` 为 true；`workspace.health` 为 `degraded` 时仍保留 CLI 定位的 root，但后续 preflight 必须证明可发布。
-2. Blocking workspace marker issue 立即停止。Workspace 找不到、remote unavailable、publication ambiguous，或存在 blocking publication issue 时，不进入 preflight；询问缺少或无效的选择。取得选择后必须运行新的 context：
+1. 要求用户明确提供 Workspace root、remote 和 branch。任一项缺失时停止并请求该值；不得从 cwd、Git current branch、remote defaults、旧 receipt 或其它 Skill 推断。不要用 `request_user_input` 收集这些目标值。
+2. 告知用户 plan 会读取远端 refs，并从已提交 source HEAD 执行插件 validator/build 和 Catalog build。随后运行：
 
    ```bash
-   aw catalog context --workspace-root <selected.workspaceRoot> \
-     --remote <selected.remote> --branch <selected.branch> --json
+   aw catalog publish plan --workspace-root <user.workspaceRoot> \
+     --remote <user.remote> --branch <user.branch> --json
    ```
 
-   丢弃先前 context receipt，只消费这个新 receipt 的 resolved root、remote 和 branch；新 receipt 仍有 blocking issue 时停止，不能复用旧值或进入 preflight。`workspace-content` 和 `development-source` 的非阻断 issue 不替代 preflight，也不改变 publication target。仍不从当前 Git branch 或本 Skill 推断目标。
-3. 告知用户 preflight 会从已提交 source HEAD 执行每个插件的公开 validator 和 build code。清晰的“发布当前 Catalog”请求可进入这一步，但不授权远端写。无歧义后运行：
+3. plan 失败时报告错误并停止；不请求授权，不运行 apply。plan 成功后，从同一 receipt 展示：绝对 `workspaceRoot`、`workspaceIdentity`、`sourceHead`、`catalogVersion`、`channel`、`pluginCount`、`remote`、安全的 `fetchUrl` 和 `pushUrl`、`descriptor.remote.identityDigest`、`branch`、`parent`、`tag`、`expectedCommit`、`snapshotDigest`、`state` 和完整 `planDigest`。任一授权身份字段缺失时停止，不猜测或重算。
+4. 只调用一次 `request_user_input`，问题只授权已展示的完整 `planDigest`，并提供“授权”和“拒绝”选择。最初发布请求、旧授权或只授权 remote 都不能代替该选择。用户拒绝时停止，不运行 apply。
+5. 用户授权后运行：
 
    ```bash
-   aw catalog status --workspace-root <context.workspace.root> \
-     --remote <context.publication.remote> \
-     --branch <context.publication.branch> --preflight --json
+   aw catalog publish apply --workspace-root <plan.workspaceRoot> \
+     --remote <plan.remote> --branch <plan.branch> \
+     --expected-plan-digest <plan.planDigest> --yes --json
    ```
 
-4. Preflight 必须成功。在请求授权前，直接从同一个 JSON receipt 展示以下全部字段：最终绝对 `workspace.root`、`workspace.identity`、`git.sourceHead`、`catalog.version`、`publication.remote`、安全的 `publication.fetchUrl`、安全的 `publication.pushUrl`、`publication.branch`、`publication.parent`、`publication.tag`、`publication.snapshotDigest`、`publication.planId` 和完整 `publication.descriptorDigest`。任一字段缺失时停止；不得猜测、重算或省略。
-5. 展示全部字段后，请求用户精确授权这一次完整 `publication.descriptorDigest`。其它展示字段是该 descriptor 的人类可读上下文，不是独立授权 token。旧授权、笼统的“发布最新版”或只授权 remote 不足以继续。
-6. 只有精确授权后才运行：
+6. 核对 apply receipt 的 `workspaceRoot`、`workspaceIdentity`、`sourceHead`、`remote`、`branch`、`snapshotDigest` 和 `planDigest` 与已授权 plan 一致。成功时报告 `state`、`commit` 和 `reconciliation`。
 
-   ```bash
-   aw catalog publish --workspace-root <preflight.workspace.root> \
-     --remote <preflight.publication.remote> \
-     --branch <preflight.publication.branch> \
-     --expected-descriptor-digest <preflight.publication.descriptorDigest> \
-     --yes --json
-   ```
+## 恢复与停止边界
 
-7. 核对 publish receipt 的 `workspaceRoot`、`remote`、`branch` 和 `descriptorDigest` 与 preflight 及已授权 digest；保留 receipt 的其它 CLI 证据。drift 或不一致时报告失败，不修改或删除 attempt。
-
-## 失败边界
-
-- 不自动 publish，不在授权前运行 publish。
-- 不删除、改写或绕过 version attempt。
-- 拒绝、preflight 失败、drift 或结果不确定时，报告现有 receipt/错误并停止。Catalog 不重试或 repair 同一 version；后续发布必须由 Catalog Author 选择新版本并重新 preflight。
-- 不实现或复制 CLI publication、ledger、tag 或 recovery 算法。
+- `prepared` 或 `uncertain` 的同一 journal plan 可以使用相同 `planDigest` 对账或重试 apply；不得要求新 plan 或自动提高版本。
+- plan identity 改变、授权 digest 不匹配、pending journal/repository 缺失或损坏、远端 ref 冲突，或 immutable tag 已占用时，停止并要求提高 Catalog version 后生成新 plan。
+- plan/apply 的结果不确定时，只按 CLI 指令用同一 `planDigest` 重试 apply；不删除或改写 publication journal/repository。
+- 不复制 CLI 的 journal、Git ref、tag 或 recovery 算法；只消费 plan/apply 的当前公开 receipt。

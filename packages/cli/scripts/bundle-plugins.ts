@@ -29,6 +29,7 @@ export interface BundlePluginsOptions {
   buildMode?: PluginBundleBuildMode;
   stagingRunner?: PluginStagingRunner;
   assertPackageVersions?: boolean;
+  strictRequirements?: boolean;
 }
 
 function resolveDefaultPaths(): { repoRoot: string; outputRoot: string } {
@@ -143,6 +144,7 @@ export async function bundlePlugins(
         buildMode,
         stagingRunner: options.stagingRunner,
         runtimeResolver,
+        strictRequirements: options.strictRequirements,
       },
     );
     await removeGeneratedEmptyDirectories(bundledPluginRoot);
@@ -177,7 +179,7 @@ export async function bundlePlugins(
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  bundlePlugins({ buildMode: 'staging' }).catch((error: unknown) => {
+  bundlePlugins({ buildMode: 'staging', strictRequirements: true }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);
     process.exitCode = 1;

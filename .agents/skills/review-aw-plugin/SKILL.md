@@ -20,7 +20,7 @@ metadata:
 ## 普通 Review
 
 1. 从平台 Skill locator 或当前加载的 `SKILL.md` 确定本 Skill 的真实 `<skill-root>`，不从 cwd 推断。首次 AW 命令必须是 `aw self check --from <skill-root> --json`。命令不可用时停止并报告 `aw` 缺失；receipt 的 `ok` 为 false 时停止并精确报告其 `missingCapabilities`。
-2. 先确定本次 context target：依次使用用户明确的 Workspace root、从 canonical `<root>/plugins/<name>` target 推导的 root、或上游 handoff 的 resolved root；只有任务明确指向 current Workspace 时才不传 root。首次运行 `aw catalog context [--workspace-root <target-root>] --json`，只读取单一 JSON receipt。receipt 的 `workspace.root` 必须与所选 target 一致，并在存在 canonical target 或 handoff path 时与其一致；不一致时停止，只在 root 缺失或歧义时询问。`workspace.found` 为 true 时使用其 root；Workspace 缺失时停止并报告 receipt，再在该 root 下解析用户给出的插件名或 path。
+2. 依次从用户明确的 Workspace root、canonical `<root>/plugins/<name>` target、或上游 handoff 的 resolved root 确定 `<workspace-root>`，再把插件名或 path 解析为该 root 下的 canonical `<plugin-root>`。canonical target 和 handoff path 必须与所选 root 一致；多个 target 推导出不同 root、root 缺失或定位有歧义时停止并询问。后续 `plugin validate`、`plugin status` 和其它现有只读流程都传同一 `--workspace-root <workspace-root>`；不得增加 Catalog 命令。
 3. 发现 source 和调用方提供的 materialized targets。发现器先运行 PATH 上的 `aw plugin validate <plugin-root> --workspace-root <workspace-root> --json`；失败时停止，不读取 manifest 派生的 collection：
 
    ```bash
@@ -67,6 +67,6 @@ release checker 只调用 `PATH` 上已安装的 `aw`，并只执行自身 bundl
 ## 边界
 
 - 不修改 Skill、Eval case、README、manifest 或 materialized final。
-- `aw catalog context --json` 是唯一允许的 Catalog 命令，且只读取 receipt。不得运行任何 Catalog mutation、`catalog build`、`catalog status`（含 `--preflight`）、`catalog validate` 或 `catalog publish`；也不得因 Review 运行 `plugin test` 或 `plugin build`。
+- 不得运行任何 Catalog 命令，包括 mutation、build、status、validate 或 publish；也不得因 Review 运行 `plugin test` 或 `plugin build`。
 - 不生成旧版结构化 handoff 或旧版插件摘要。
 - 不评审跨多个 AW 插件的完整用户工作流。

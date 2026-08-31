@@ -4,15 +4,14 @@
     "kind": "trigger",
     "unitUnderTest": "publish-aw-catalog",
     "participants": [
-      "author-aw-catalog",
-      "review-aw-catalog"
+      "author-aw-catalog"
     ],
     "defaultGrader": "mechanical",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",
-      "falsePositiveCost": "high",
-      "rationale": "清晰的远端 publication 意图应加载唯一 Publisher；prepare-only 和非发布请求必须保持 specificity。"
+      "falsePositiveCost": "critical",
+      "rationale": "清晰 publication 意图应加载 Publisher；准备和本地开发不应触发远端发布。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -25,14 +24,14 @@
   },
   "cases": [
     {
-      "id": "explicit_publish",
+      "id": "publish_explicit_target",
       "split": "validation",
       "tags": [
         "representative",
         "explicit-publication"
       ],
       "input": {
-        "query": "使用 $publish-aw-catalog 发布当前 Workspace 到 remote staging、branch catalogs/team。",
+        "query": "发布 Workspace ./catalog 到 remote staging、branch catalogs/team。",
         "expected": {
           "loadedSkills": [
             "publish-aw-catalog"
@@ -41,14 +40,14 @@
       }
     },
     {
-      "id": "implicit_publish_request",
+      "id": "publish_missing_target_details",
       "split": "validation",
       "tags": [
         "boundary",
-        "implicit-publication"
+        "publication-target-required"
       ],
       "input": {
-        "query": "把 Catalog 发出去。",
+        "query": "把这个 Catalog 发布出去。",
         "expected": {
           "loadedSkills": [
             "publish-aw-catalog"
@@ -56,21 +55,19 @@
         }
       },
       "audit": {
-        "rationale": "“把 Catalog 发出去”是清晰的 Catalog publication 请求，符合 description 的自然语言入口；加载 Skill 不等于授权远端写。",
-        "minimalCounterexample": "若用户只要求维护、build、验证或准备发布，并明确不要发布，则不应加载 Publisher。",
-        "errorCost": "high",
-        "allowedVariance": "应加载 Publisher，再由 context 解析或询问 target，并在 preflight 后取得 exact authorization；不得把原句当作远端写授权。"
+        "rationale": "发布意图应路由到 Publisher，但缺少 root、remote 或 branch 时不能运行 plan。",
+        "minimalCounterexample": "只要求 build 或准备验证结果且不要发布时使用 Catalog Author。"
       }
     },
     {
-      "id": "prepare_only",
-      "split": "train",
+      "id": "prepare_without_publication",
+      "split": "validation",
       "tags": [
         "boundary",
         "catalog-authoring"
       ],
       "input": {
-        "query": "维护 Catalog 并准备好验证结果，但不要发布。",
+        "query": "维护 Catalog 并准备好 build/validate 结果，但不要发布。",
         "expected": {
           "loadedSkills": [
             "author-aw-catalog"
@@ -78,10 +75,8 @@
         }
       },
       "audit": {
-        "rationale": "普通维护由 Catalog Author 拥有。",
-        "minimalCounterexample": "若用户清晰要求把当前 Catalog 发出去，即使未写 Skill 名，也应加载 Publisher；后续仍需独立 exact authorization。",
-        "errorCost": "high",
-        "allowedVariance": "不得把准备发布解释为远端授权。"
+        "rationale": "准备和验证由 Catalog Author 拥有。",
+        "minimalCounterexample": "明确要求远端 publication 时加载 Publisher。"
       }
     }
   ]

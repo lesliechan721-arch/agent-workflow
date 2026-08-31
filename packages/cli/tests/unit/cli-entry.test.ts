@@ -175,6 +175,14 @@ describe('CLI entry v4', () => {
     expect(status.stdout()).not.toContain('--remote');
     expect(status.stdout()).not.toContain('--branch');
 
+    const catalog = capture();
+    expect(await runCli(['catalog', '--help'], { io: catalog.io })).toBe(0);
+    expect(catalog.stdout()).not.toMatch(/^\s+context\b/mu);
+
+    const removedContext = capture();
+    expect(await runCli(['catalog', 'context'], { io: removedContext.io })).toBe(1);
+    expect(removedContext.stderr()).toContain("unknown command 'context'");
+
     const apply = capture();
     expect(await runCli(['catalog', 'publish', 'apply', '--help'], { io: apply.io })).toBe(0);
     expect(apply.stdout()).toContain('--expected-plan-digest <sha256>');

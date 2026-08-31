@@ -1087,6 +1087,45 @@ describe('local-plugin generator', () => {
     });
   });
 
+  it('rejects strict requirements introduced by a staging build', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot);
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'build.mjs'), 'export {};\n', 'utf8');
+    manifest.scripts = {
+      node: {
+        packageRoot: './scripts',
+        build: {
+          runner: 'node',
+          path: './scripts/build.mjs',
+        },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const stagingRunner = createFakeStagingRunner();
+    stagingRunner.runNodeBuild = async ({ pluginRoot: stagedPluginRoot }) => {
+      await fs.appendFile(
+        path.join(stagedPluginRoot, 'skills', 'commit', 'SKILL.md'),
+        '\n```bash\naw catalog publish plan --json\n```\n',
+        'utf8',
+      );
+    };
+
+    await expect(bundleLocalPlugin(
+      await readPluginManifest(pluginRoot),
+      path.join(repoRoot, 'out', 'git-commit'),
+      {
+        buildMode: 'staging',
+        stagingRunner,
+        strictRequirements: true,
+      },
+    )).rejects.toMatchObject({
+      code: 'awCapabilityStrictRequirements',
+    });
+  });
+
   it('rejects staging builds that change plugin name', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

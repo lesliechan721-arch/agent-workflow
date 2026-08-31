@@ -1,5 +1,7 @@
 # review-aw-catalog
 
-严格只读评审 AW Catalog Workspace 的 identity、metadata、inventory、依赖图、版本一致性和已有 snapshot/发布证据。
+严格只读评审 AW Catalog Workspace 的 identity、metadata、inventory、依赖图、版本一致性和已有 snapshot evidence。
 
-它先用 `aw catalog context --json` 定位 root；合法 marker 下的 degraded Workspace 仍可进行可得的只读检查，非阻断 workspace-content issue 会成为 finding。随后它只读取静态 status，明确报告 snapshot 是 absent、current、stale 或 invalid。需要时只读验证已存在 snapshot；不会运行 plugin test/build、Catalog build、preflight、publish 或任何 mutation。单插件内部质量交给 `review-aw-plugin`；跨插件业务 workflow 交给 `review-aw-workflow`。
+它使用静态 `catalog status --json`，并精确区分 `absent`、`current`、`stale` 和 `invalid`。需要时只验证已经存在的 snapshot；不会运行 plugin validate/test/build、Catalog build、development/source mutation、publish plan/apply 或网络操作。
+
+单插件内部质量只消费调用方已提供且可验证的 `review-aw-plugin` 摘要；没有该摘要时，只输出独立后续 Review target，不在当前 Catalog Review 中启动 Plugin Review。跨插件业务 workflow 交给 `review-aw-workflow`。

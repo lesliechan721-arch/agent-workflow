@@ -532,6 +532,73 @@ describe('build smoke', () => {
     expect(await fs.readdir(outputRoot)).not.toContain('plugin-release-ledger.json');
   });
 
+  it('uses strict requirements for the official compiled bundle entry', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const tempRoot = await createSmokeTempRoot(
+      'aw-smoke-strict-requirements-',
+      'build smoke strict requirements temp root',
+    );
+    const tempRepo = path.join(tempRoot, 'repo');
+    const outputRoot = path.join(tempRoot, 'plugins-dist');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+    const pluginRoot = path.join(tempRepo, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.config = {
+      schema: {
+        mode: { type: 'string', default: 'standard' },
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const skillPath = path.join(pluginRoot, 'skills', 'commit', 'SKILL.md');
+    await fs.appendFile(skillPath, '\n```bash\naw config list\n```\n', 'utf8');
+
+    const { bundlePlugins } = await importSmokeSnapshotModule<{
+      bundlePlugins: (options: {
+        repoRoot: string;
+        outputRoot: string;
+        strictRequirements: boolean;
+      }) => Promise<unknown>;
+    }>(path.join(snapshot.cliDistRoot, 'scripts', 'bundle-plugins.js'));
+    await expect(bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      strictRequirements: true,
+    })).resolves.toBeDefined();
+
+    await fs.appendFile(
+      skillPath,
+      '\n```bash\naw catalog publish plan --json\n```\n',
+      'utf8',
+    );
+    await expect(bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      strictRequirements: true,
+    })).rejects.toThrow(
+      /plugin="git-commit" path="skills\/commit\/SKILL\.md" command="aw catalog publish" capability="aw\.catalog-publication\.v1"/u,
+    );
+
+    manifest.requires = { aw: { capabilities: ['aw.catalog-publication.v1'] } };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.appendFile(
+      skillPath,
+      '\n```bash\naw future command\naw "$GROUP" status\n```\n',
+      'utf8',
+    );
+    const warningError = await bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      strictRequirements: true,
+    }).catch((cause: unknown) => cause) as Error & { code?: string };
+    expect(warningError.code).toBe('awCapabilityStrictRequirements');
+    expect(warningError.message).toContain(
+      'plugin="git-commit" path="skills/commit/SKILL.md" command="aw future command" capability="<unmapped>"',
+    );
+    expect(warningError.message).toContain('$GROUP');
+    expect(warningError.message).toContain('capability="<dynamic>"');
+  });
+
   it('reuses a warm build without changing key output mtimes', async () => {
     await requireBuildSnapshot();
     const keyOutputs = [

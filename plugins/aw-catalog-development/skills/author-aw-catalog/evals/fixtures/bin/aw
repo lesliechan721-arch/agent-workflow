@@ -1,17 +1,7 @@
 #!/usr/bin/env node
 
-import {
-  cpSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { appendFileSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -30,123 +20,17 @@ if (forwardedPath === '') {
 }
 
 const args = process.argv.slice(2);
-const scenario = readFileSync('fixtures/scenario.txt', 'utf8').trim().replace(/^scenario=/u, '');
-
-function fixtureFailure(message) {
-  process.stderr.write(`Author Eval fixture: ${message}\n`);
-  process.exit(9);
-}
-
-function runGit(args) {
-  const result = spawnSync('git', args, { encoding: 'utf8' });
-  if (result.status !== 0) {
-    process.stderr.write(result.stderr || result.stdout || `git ${args.join(' ')} failed\n`);
-    fixtureFailure('could not prepare the removal Git fixture.');
-  }
-  return result.stdout ?? '';
-}
-
-function removalStatePath(workspaceRoot) {
-  const key = createHash('sha256').update(workspaceRoot).digest('hex');
-  return path.join(tmpdir(), `aw-author-removal-fixture-${key}.json`);
-}
-
-function readRemovalState(statePath, workspaceRoot) {
-  if (!existsSync(statePath)) return null;
-  try {
-    const state = JSON.parse(readFileSync(statePath, 'utf8'));
-    if (
-      state.workspaceRoot !== workspaceRoot
-      || typeof state.backupGit !== 'string'
-      || !['prepared', 'removed', 'restored'].includes(state.phase)
-    ) {
-      fixtureFailure('removal Git state is invalid.');
-    }
-    return state;
-  } catch (error) {
-    if (error?.code === 9) throw error;
-    fixtureFailure('could not read removal Git state.');
-  }
-}
-
-function writeRemovalState(statePath, state) {
-  writeFileSync(statePath, `${JSON.stringify(state)}\n`, 'utf8');
-}
-
-function restoreOriginalGit(workspaceRoot, statePath, state) {
-  const gitPath = path.join(workspaceRoot, '.git');
-  try {
-    rmSync(gitPath, { recursive: true, force: true });
-    cpSync(state.backupGit, gitPath, { recursive: true, dereference: false });
-    writeRemovalState(statePath, { ...state, phase: 'restored' });
-  } catch (error) {
-    fixtureFailure(`could not restore the original Git control tree: ${error.message}`);
-  }
-}
-
-function prepareRemovalGitFixture() {
-  const workspaceRoot = realpathSync(process.cwd());
-  const statePath = removalStatePath(workspaceRoot);
-  const existing = readRemovalState(statePath, workspaceRoot);
-  if (existing) return { workspaceRoot, statePath, state: existing };
-
-  const gitPath = path.join(workspaceRoot, '.git');
-  if (!existsSync(gitPath)) fixtureFailure('expected the subject Git repository.');
-  const backupRoot = mkdtempSync(path.join(tmpdir(), 'aw-author-removal-git-'));
-  const state = { workspaceRoot, backupGit: path.join(backupRoot, 'git'), phase: 'prepared' };
-  try {
-    cpSync(gitPath, state.backupGit, { recursive: true, dereference: false });
-    runGit(['add', '--all']);
-    if (runGit(['status', '--porcelain=v1', '--untracked-files=all']) !== '') {
-      runGit([
-        '-c', 'user.name=AW Eval Fixture',
-        '-c', 'user.email=aw-eval@example.invalid',
-        'commit', '--no-verify', '-m', 'Materialize removal fixture',
-      ]);
-    }
-    writeRemovalState(statePath, state);
-  } catch (error) {
-    if (error?.code === 9) throw error;
-    fixtureFailure(`could not snapshot the original Git control tree: ${error.message}`);
-  }
-  return { workspaceRoot, statePath, state };
-}
-
-const isRemovalFixtureCommand = scenario === 'remove-plugin';
-const removalFixture = isRemovalFixtureCommand ? prepareRemovalGitFixture() : null;
-const isRealRemove = (
-  scenario === 'remove-plugin' &&
-  args[0] === 'plugin' &&
-  args[1] === 'remove' &&
-  args[2] === 'remove-me'
-);
-const isTerminalCatalogValidation = args[0] === 'catalog' && args[1] === 'validate';
+const commandLength = args[0] === 'catalog' && args[1] === 'dev' ? 3 : 2;
+const tracePath = path.join(process.cwd(), 'fixtures', 'author-trace.jsonl');
+appendFileSync(tracePath, `${JSON.stringify({
+  command: args.slice(0, commandLength).join(' '),
+  args,
+})}\n`, 'utf8');
 
 const result = spawnSync('aw', args, {
   env: { ...process.env, PATH: forwardedPath },
   stdio: 'inherit',
 });
-if (removalFixture && isRealRemove) {
-  if (result.status === 0) {
-    writeRemovalState(removalFixture.statePath, { ...removalFixture.state, phase: 'removed' });
-  } else {
-    restoreOriginalGit(
-      removalFixture.workspaceRoot,
-      removalFixture.statePath,
-      removalFixture.state,
-    );
-  }
-} else if (
-  removalFixture
-  && (removalFixture.state.phase === 'restored'
-    || (removalFixture.state.phase === 'removed' && isTerminalCatalogValidation))
-) {
-  restoreOriginalGit(
-    removalFixture.workspaceRoot,
-    removalFixture.statePath,
-    removalFixture.state,
-  );
-}
 if (result.error) {
   process.stderr.write(`${result.error.message}\n`);
   process.exit(9);

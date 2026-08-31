@@ -4,8 +4,6 @@
     "kind": "conversation",
     "unitUnderTest": "author-aw-catalog",
     "participants": [
-      "review-aw-catalog",
-      "publish-aw-catalog",
       "author-aw-plugin"
     ],
     "defaultGrader": "independent-llm",
@@ -13,7 +11,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "漏掉 Catalog composition 会留下无效聚合结果；误接单插件内部修改会破坏 owner 边界。"
+      "rationale": "Catalog composition 必须完成聚合验证，但插件内部源码仍由 Plugin Author 拥有。"
     },
     "runtime": {
       "isolation": "strict"
@@ -21,159 +19,39 @@
   },
   "cases": [
     {
-      "id": "initialize-current-git-project",
+      "id": "maintain-plugin-and-aggregate",
       "split": "validation",
       "tags": [
         "representative",
-        "catalog-workspace-initialization",
+        "catalog-maintenance",
         "platform-codex"
       ],
-      "prompt": "使用 $author-aw-catalog 把当前 Git 项目初始化为 AW Catalog Workspace。当前没有任何插件；完成空 inventory 的 Catalog build/validate，不要发布。",
+      "prompt": "使用 $author-aw-catalog 在当前 Workspace 新增 status-tools，使它依赖 shared-rules。插件内部修改交给 author-aw-plugin；返回后验证受影响闭包，并完成普通 Catalog build/validate。不要激活 development source，也不要发布。",
       "assertions": [
-        "run-owned 真实 CLI 的 self check 成功；首次 schema 3 context receipt 报 workspace.found=false 和非阻断 workspaceUnavailable 后，init 使用 initialization.suggestedRoot",
-        "真实 init 后重新运行 context，并保留 CLI 生成的 identity",
-        "empty inventory 不运行 plugin validate/test；真实 catalog build/validate receipt 成功且 snapshot 通过 schema 5 complete validation",
-        "没有 catalog publish"
+        "首次 AW 命令是 run-owned 真实 CLI 的 self check；随后用静态 catalog status 从 cwd 自动发现 Workspace",
+        "把 canonical status-tools target、依赖和验收条件交给 author-aw-plugin；返回后只对受影响插件和反向依赖闭包运行所需 plugin validate/test/build",
+        "普通维护最终运行 catalog build 和现有 snapshot validate，生成 schema 6 snapshot；没有 catalog dev activate 或 publication 命令"
       ],
       "input": {
         "workspaceFiles": {
-          "README.md": "# New Catalog project\n",
-          "fixtures/scenario.txt": "scenario=initialize\n"
-        },
-        "pathPrepend": [
-          "fixtures/bin"
-        ]
-      },
-      "expected": {
-        "output": "使用 context.suggestedRoot 初始化，重新读取 context，记录 empty inventory，完成 Catalog build/validate。",
-        "workspaceUnchanged": false,
-        "allowedWorkspaceChanges": [
-          ".aw-workspace.json",
-          ".gitignore",
-          "plugins/marketplace-source.json",
-          ".aw/**"
-        ],
-        "artifacts": [
-          {
-            "path": ".aw-workspace.json",
-            "exists": true,
-            "contains": [
-              "aw-catalog-workspace",
-              "workspaceIdentity"
-            ]
-          },
-          {
-            "path": ".aw/catalog/.aw-generated.json",
-            "exists": true,
-            "contains": [
-              "\"kind\": \"catalog\"",
-              "workspaceIdentity",
-              "sourceIdentity"
-            ]
-          },
-          {
-            "path": ".aw/catalog/catalog-manifest.json",
-            "exists": true,
-            "contains": [
-              "\"schemaVersion\": 5",
-              "\"entries\": []"
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "initialize-and-activate-development-source",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "catalog-development-source",
-        "platform-codex"
-      ],
-      "prompt": "使用 $author-aw-catalog 初始化当前 Git 项目，并把它作为当前 CLI 的 development source。完成 build/validate 和 dev activate，不要发布。",
-      "assertions": [
-        "run-owned 真实 CLI 的 self/context/init receipt 成功；随后完成真实 catalog build 和 complete validate，再运行 catalog dev activate",
-        "真实 dev receipt 使用 Workspace marker identity，并以公共 schema 报告 config commit、refresh 和 partial 状态",
-        "trace 没有 catalog source add/update，也没有 publish"
-      ],
-      "input": {
-        "workspaceFiles": {
-          "README.md": "# Development Catalog project\n",
-          "fixtures/scenario.txt": "scenario=initialize-dev\n"
-        },
-        "pathPrepend": [
-          "fixtures/bin"
-        ]
-      },
-      "expected": {
-        "output": "初始化、build/validate 后运行 catalog dev activate，并返回 managed source receipt。",
-        "workspaceUnchanged": false,
-        "allowedWorkspaceChanges": [
-          ".aw-workspace.json",
-          ".gitignore",
-          "plugins/marketplace-source.json",
-          ".aw/**"
-        ],
-        "artifacts": [
-          {
-            "path": ".aw/catalog/.aw-generated.json",
-            "exists": true,
-            "contains": [
-              "\"kind\": \"catalog\"",
-              "workspaceIdentity",
-              "sourceIdentity"
-            ]
-          },
-          {
-            "path": ".aw/catalog/catalog-manifest.json",
-            "exists": true,
-            "contains": [
-              "\"schemaVersion\": 5",
-              "\"entries\": []"
-            ]
-          }
-        ]
-      },
-      "audit": {
-        "rationale": "初始化与作为 CLI development source 是两个顺序步骤；真实 CLI activate 必须在真实 build/validate 后使用 Workspace identity 管理。",
-        "minimalCounterexample": "只要求初始化时，不应擅自 activate source。",
-        "errorCost": "high",
-        "allowedVariance": "可由 activate 复用刚构建 snapshot；不得调用低层 catalog source add/update。"
-      }
-    },
-    {
-      "id": "add-plugin-delegate-then-aggregate",
-      "split": "validation",
-      "tags": [
-        "representative",
-        "catalog-plugin-addition",
-        "platform-codex"
-      ],
-      "prompt": "使用 $author-aw-catalog 在现有合法 Catalog Workspace 中新增 plugins/status-tools。插件包含 status-report Skill，并依赖 shared-rules。把插件内部文件交给 author-aw-plugin；返回后完成受影响闭包的 validate/test 和 Catalog build/validate。不要发布。",
-      "assertions": [
-        "run-owned 真实 CLI 的 self/context/status receipt 成功；trace 把 canonical status-tools path、允许路径、依赖和验收条件交给 author-aw-plugin",
-        "依赖只从 status-tools 指向 shared-rules",
-        "handoff 后通过真实 status 重读 inventory，运行真实闭包验证和 catalog build/validate，并生成 complete schema 5 snapshot",
-        "没有 catalog publish"
-      ],
-      "input": {
-        "workspaceFiles": {
-          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"author-fixture\"}\n",
-          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Author Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"author-maintenance-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://catalog.example.com/owner\"},\"interface\":{\"displayName\":\"Author Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
           "plugins/shared-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"shared-rules\",\"version\":\"0.1.0\",\"description\":\"Shared rules.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"shared\",\"title\":\"Shared rules\",\"content\":\"Use shared rules.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
           "plugins/shared-rules/README.md": "# Shared rules\n",
-          "fixtures/scenario.txt": "scenario=add-plugin\n"
+          "fixtures/scenario.txt": "scenario=maintenance\n"
         },
         "pathPrepend": [
           "fixtures/bin"
         ]
       },
       "expected": {
-        "output": "插件内部修改由 author-aw-plugin 完成；Catalog Author 重读 inventory/依赖并完成闭包与聚合验证。",
+        "output": "Plugin Author 完成插件内部变更；Catalog Author 重读静态 status，验证受影响闭包并完成 schema 6 Catalog build/validate。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "plugins/status-tools/**",
-          ".aw/**"
+          ".gitignore",
+          ".aw/**",
+          "fixtures/author-trace.jsonl"
         ],
         "artifacts": [
           {
@@ -181,24 +59,14 @@
             "exists": true,
             "contains": [
               "status-tools",
-              "shared-rules",
-              "schemaVersion"
-            ]
-          },
-          {
-            "path": ".aw/catalog/.aw-generated.json",
-            "exists": true,
-            "contains": [
-              "\"kind\": \"catalog\"",
-              "workspaceIdentity",
-              "sourceIdentity"
+              "shared-rules"
             ]
           },
           {
             "path": ".aw/catalog/catalog-manifest.json",
             "exists": true,
             "contains": [
-              "\"schemaVersion\": 5",
+              "\"schemaVersion\": 6",
               "status-tools",
               "shared-rules"
             ]
@@ -207,73 +75,78 @@
       }
     },
     {
-      "id": "remove-canonical-plugin-through-handoff",
+      "id": "remove-last-plugin-safely",
       "split": "validation",
       "tags": [
-        "regression",
-        "catalog-plugin-removal",
+        "boundary",
+        "high-cost",
+        "catalog-safe-delete",
         "platform-codex"
       ],
-      "prompt": "使用 $author-aw-catalog 从当前 Catalog 删除 canonical 插件 remove-me。确认没有反向依赖后，把实际删除交给 author-aw-plugin；receipt 返回后只验证 survivor 和完整 Catalog。不要改版本，不要发布。",
+      "prompt": "使用 $author-aw-catalog 安全删除当前 Workspace 中唯一的插件 legacy-rules。先用静态 status 检查它的反向依赖，并把 canonical `plugins/legacy-rules` target、Workspace root、删除意图和验收条件交给 author-aw-plugin 的公开删除分支。返回后重新读取 status；inventory 已为空时不要运行任何 plugin validate/test/build。完成普通 Catalog build/validate；不要激活 development source 或发布。",
       "assertions": [
-        "run-owned 真实 CLI 的 self/context/status receipt 成功；删除前检查 inventory 和 reverse dependencies，并明确 handoff author-aw-plugin",
-        "Plugin Author 调用真实 plugin remove 并返回公共 schema 1 receipt 后，不再对 remove-me 运行 validate/test/build/status",
-        "只通过真实 CLI 验证 survivor 和完整 Catalog；schema 5 snapshot 合法且 marketplace catalog.version 保持 0.3.0",
-        "没有直接文件删除、force、tombstone、ledger 或 publish"
+        "首次 AW 命令是 self check；随后静态 catalog status 识别 canonical legacy-rules target、其空反向依赖闭包和合法 Workspace",
+        "交接给 author-aw-plugin 时包含同一 Workspace root、canonical `plugins/legacy-rules` target、删除意图和验收条件；Catalog Author 不直接删除目录",
+        "删除 receipt 返回后重新运行静态 status；真实 trace 不对已删除 legacy-rules 运行 plugin validate/test/build，空 inventory 后也不运行任何 plugin 命令",
+        "最终只运行普通 catalog build 和现有 snapshot validate，生成空 entries 的 schema 6 snapshot；没有 dev、source mutation 或 publication 命令"
       ],
       "input": {
         "workspaceFiles": {
-          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"remove-fixture\"}\n",
-          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/catalog-owner\"},\"interface\":{\"displayName\":\"Removal Fixture\"},\"catalog\":{\"version\":\"0.3.0\"}}\n",
-          "plugins/remove-me/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"remove-me\",\"version\":\"0.1.0\",\"description\":\"Remove fixture.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"remove\",\"title\":\"Remove\",\"content\":\"Remove fixture.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
-          "plugins/remove-me/README.md": "# Remove me\n",
-          "plugins/survivor/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"survivor\",\"version\":\"0.1.0\",\"description\":\"Survivor fixture.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"survivor\",\"title\":\"Survivor\",\"content\":\"Survivor fixture.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
-          "plugins/survivor/README.md": "# Survivor\n",
-          "fixtures/scenario.txt": "scenario=remove-plugin\n"
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"author-delete-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://catalog.example.com/owner\"},\"interface\":{\"displayName\":\"Author Delete Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+          "plugins/legacy-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"legacy-rules\",\"version\":\"0.1.0\",\"description\":\"Legacy rules.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"legacy\",\"title\":\"Legacy rules\",\"content\":\"Use legacy rules.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+          "plugins/legacy-rules/README.md": "# Legacy rules\n",
+          "fixtures/scenario.txt": "scenario=safe-delete-empty-inventory\n"
         },
         "pathPrepend": [
           "fixtures/bin"
         ]
       },
       "expected": {
-        "output": "通过 Plugin Author 删除 remove-me；不再验证删除目标；验证 survivor 和 Catalog，保持版本不变。",
+        "output": "检查 legacy-rules 的反向依赖并交接 canonical target；删除后确认空 inventory，不验证已删除目标，完成空 Catalog snapshot。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "plugins/remove-me/**",
-          ".aw/**"
+          "plugins/legacy-rules/**",
+          ".aw/**",
+          "fixtures/author-trace.jsonl"
         ],
         "artifacts": [
-          {
-            "path": "plugins/remove-me/.agents-plugin/plugin.json",
-            "exists": false
-          },
-          {
-            "path": ".aw/catalog/.aw-generated.json",
-            "exists": true,
-            "contains": [
-              "\"kind\": \"catalog\"",
-              "workspaceIdentity",
-              "sourceIdentity"
-            ]
-          },
           {
             "path": ".aw/catalog/catalog-manifest.json",
             "exists": true,
             "contains": [
-              "\"schemaVersion\": 5",
-              "survivor"
+              "\"schemaVersion\": 6",
+              "\"entries\": []",
+              "author-delete-fixture"
+            ]
+          },
+          {
+            "path": "fixtures/author-trace.jsonl",
+            "exists": true,
+            "contains": [
+              "\"command\":\"catalog status\"",
+              "\"command\":\"plugin remove\"",
+              "\"command\":\"catalog build\"",
+              "\"command\":\"catalog validate\""
             ],
             "notContains": [
-              "remove-me"
+              "plugin validate",
+              "plugin test",
+              "plugin build",
+              "catalog dev",
+              "catalog publish"
             ]
+          },
+          {
+            "path": "plugins/legacy-rules/.agents-plugin/plugin.json",
+            "exists": false
           }
         ]
       },
       "audit": {
-        "rationale": "删除意图由 Catalog Author 拥有，但实际删除由 Plugin Author 转发到真实公开 remove 命令；公共 receipt 成功后只验证真实剩余 inventory。",
-        "minimalCounterexample": "存在反向依赖时必须在删除前停止并列出依赖者。",
-        "errorCost": "high",
-        "allowedVariance": "可先摘要反向依赖检查；不得直接删除、验证已删除目标或修改 Catalog version。"
+        "rationale": "删除唯一 Plugin Source 后误验证已删除 target 或继续遍历空 inventory，会掩盖错误交接并扩大删除后的副作用。",
+        "minimalCounterexample": "删除前 status 显示存在反向依赖时，必须把该闭包和 canonical target 交接，而不能直接执行删除。",
+        "errorCost": "high"
       }
     }
   ]

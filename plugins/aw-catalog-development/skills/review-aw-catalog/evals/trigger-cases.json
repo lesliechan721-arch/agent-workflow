@@ -5,8 +5,6 @@
     "unitUnderTest": "review-aw-catalog",
     "participants": [
       "author-aw-catalog",
-      "publish-aw-catalog",
-      "author-aw-plugin",
       "review-aw-plugin",
       "review-aw-workflow"
     ],
@@ -14,8 +12,8 @@
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",
-      "falsePositiveCost": "high",
-      "rationale": "Catalog composition Review 必须与单插件和业务 workflow Review 分离。"
+      "falsePositiveCost": "critical",
+      "rationale": "Catalog composition Review 必须保持只读，并与单插件和业务 workflow Review 分离。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -28,14 +26,14 @@
   },
   "cases": [
     {
-      "id": "catalog_composition_review",
-      "split": "train",
+      "id": "review_catalog_composition",
+      "split": "validation",
       "tags": [
         "representative",
         "catalog-review"
       ],
       "input": {
-        "query": "只读评审这个 AW Catalog 的 Workspace identity、metadata、inventory、依赖图和版本一致性。",
+        "query": "只读评审当前 AW Catalog 的 identity、metadata、inventory、依赖图和已有 snapshot evidence。",
         "expected": {
           "loadedSkills": [
             "review-aw-catalog"
@@ -44,29 +42,7 @@
       }
     },
     {
-      "id": "catalog_dependency_consistency_review",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "catalog-review"
-      ],
-      "input": {
-        "query": "只读检查当前 Catalog 中所有插件的 inventory、版本约束和依赖图是否一致；不要评价单个 Skill 的 prompt。",
-        "expected": {
-          "loadedSkills": [
-            "review-aw-catalog"
-          ]
-        }
-      },
-      "audit": {
-        "rationale": "请求的评审对象是 Catalog 级 inventory、版本和跨插件依赖 composition。",
-        "minimalCounterexample": "若只评审一个插件的 Skill prompt 或 lifecycle，则不应加载 Catalog Reviewer。",
-        "errorCost": "high",
-        "allowedVariance": "必须保持只读，并把单插件内部质量留给 review-aw-plugin。"
-      }
-    },
-    {
-      "id": "single_plugin_review",
+      "id": "review_single_plugin",
       "split": "validation",
       "tags": [
         "boundary",
@@ -81,14 +57,12 @@
         }
       },
       "audit": {
-        "rationale": "单插件内部质量由 review-aw-plugin 拥有。",
-        "minimalCounterexample": "若请求同时核对整个 Catalog 的 inventory、版本和依赖 composition，则应加载 Catalog Reviewer。",
-        "errorCost": "high",
-        "allowedVariance": "不得把插件内部 finding 提升为 Catalog finding。"
+        "rationale": "单插件内部质量由 Plugin Reviewer 拥有。",
+        "minimalCounterexample": "核对整个 inventory 和 manifest dependency graph 时使用 Catalog Reviewer。"
       }
     },
     {
-      "id": "business_workflow_review",
+      "id": "review_business_workflow",
       "split": "validation",
       "tags": [
         "boundary",
@@ -103,21 +77,19 @@
         }
       },
       "audit": {
-        "rationale": "跨插件业务 workflow 由 review-aw-workflow 拥有。",
-        "minimalCounterexample": "若跨插件请求只核对 manifest dependency graph 和 Catalog composition，不评价业务 handoff，则应加载 Catalog Reviewer。",
-        "errorCost": "high",
-        "allowedVariance": "不得用 Catalog composition Review 替代业务 workflow Review。"
+        "rationale": "跨插件业务行为不是 Catalog composition。",
+        "minimalCounterexample": "只核对 manifest dependency graph 时使用 Catalog Reviewer。"
       }
     },
     {
-      "id": "write_catalog",
+      "id": "repair_catalog",
       "split": "validation",
       "tags": [
         "boundary",
         "catalog-authoring"
       ],
       "input": {
-        "query": "修复 Catalog inventory 和依赖环。",
+        "query": "修复当前 Catalog inventory 和依赖环，并重新生成 snapshot。",
         "expected": {
           "loadedSkills": [
             "author-aw-catalog"
@@ -125,10 +97,8 @@
         }
       },
       "audit": {
-        "rationale": "写请求由 author-aw-catalog 拥有。",
-        "minimalCounterexample": "若用户只要求识别并报告 inventory 或依赖环问题而不修改，则应加载 Catalog Reviewer。",
-        "errorCost": "high",
-        "allowedVariance": "Reviewer 必须保持只读。"
+        "rationale": "修复和重新生成是写操作。",
+        "minimalCounterexample": "只识别并报告问题时使用 Catalog Reviewer。"
       }
     }
   ]

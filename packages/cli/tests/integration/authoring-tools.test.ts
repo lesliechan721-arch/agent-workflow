@@ -2082,7 +2082,10 @@ describe('authoring tools', () => {
     const { pluginDir, manifestPath } = await writeSourcePlugin(
       path.join(tempRepo, 'plugins'),
       'historical-closure',
-      createBaseManifest('historical-closure', { skills: './skills' }),
+      createBaseManifest('historical-closure', {
+        skills: './skills',
+        requires: { aw: { capabilities: ['aw.catalog-context.v1'] } },
+      }),
       {
         'skills/historical/SKILL.md': [
           '---',
@@ -2112,6 +2115,10 @@ describe('authoring tools', () => {
       '-m',
       'historical invalid closure',
     ]);
+
+    const currentManifest = await fs.readJson(manifestPath);
+    delete currentManifest.requires;
+    await fs.writeJson(manifestPath, currentManifest, { spaces: 2 });
 
     const policyPath = path.join(pluginDir, 'skills', 'historical', 'POLICY.md');
     await fs.writeFile(policyPath, 'current policy\n', 'utf8');

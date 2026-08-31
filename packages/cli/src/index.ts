@@ -159,7 +159,6 @@ import {
   runCatalogPublishPlanCommand,
 } from './commands/catalog-publish.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
-import { getCatalogContext } from './commands/catalog-context.js';
 import {
   activateCatalogDevSource,
   catalogDevSourceError,
@@ -177,7 +176,6 @@ import {
   checkCurrentAw,
   describeCurrentAw,
   inspectPluginRequirements,
-  IMPLEMENTED_AW_CAPABILITIES,
 } from './commands/aw-capabilities.js';
 import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
@@ -1960,27 +1958,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeLine(io.stderr, message);
         commandExitState.exitCode = 1;
       }
-    });
-
-  catalog
-    .command('context')
-    .description('Inspect resolved Catalog Workspace and publication context without network access')
-    .option('--workspace-root <path>', 'explicit Catalog Workspace root')
-    .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
-    .option('--branch <name>', 'explicit Catalog publication branch')
-    .requiredOption('--json', 'emit one schema 3 JSON object')
-    .action(async (rawOptions: { workspaceRoot?: string; remote?: string; branch?: string }) => {
-      const receipt = await getCatalogContext({
-        cwd,
-        workspaceRoot: rawOptions.workspaceRoot,
-        remote: rawOptions.remote,
-        branch: rawOptions.branch,
-        env,
-        awVersion: resolveCliVersion(),
-        capabilities: IMPLEMENTED_AW_CAPABILITIES,
-      });
-      writeJsonReceipt(io.stdout, receipt);
-      if (receipt.issues.some((issue) => issue.blocking)) commandExitState.exitCode = 1;
     });
 
   catalog

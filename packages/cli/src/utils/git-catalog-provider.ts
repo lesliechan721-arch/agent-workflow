@@ -51,13 +51,6 @@ class CatalogGitPolicyError extends Error {
   }
 }
 
-class CatalogGitFatalCleanupError extends Error {
-  constructor(message: string, cause?: unknown) {
-    super(message, { cause });
-    this.name = 'CatalogGitFatalCleanupError';
-  }
-}
-
 interface CatalogGitDeadline {
   timeoutMs: number;
   signal?: AbortSignal;
@@ -124,41 +117,21 @@ function createDeadlineSignal(
   };
 }
 
-function resolveSafeSshCommand(): string {
-  if (process.platform === 'win32') {
-    const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
-    const executable = path.join(systemRoot, 'System32', 'OpenSSH', 'ssh.exe');
-    return `"${executable}" -oBatchMode=yes -oPermitLocalCommand=no -oProxyCommand=none`;
-  }
-  return '/usr/bin/ssh -oBatchMode=yes -oPermitLocalCommand=no -oProxyCommand=none';
-}
-
 function gitEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const output: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (!key.toUpperCase().startsWith('GIT_')) output[key] = value;
+  const output = { ...env };
+  const unsafeKeys = new Set([
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_NAMESPACE',
+  ]);
+  for (const key of Object.keys(output)) {
+    if (unsafeKeys.has(key.toUpperCase())) delete output[key];
   }
-  const sshCommand = resolveSafeSshCommand();
-  return {
-    ...output,
-    GIT_TERMINAL_PROMPT: '0',
-    GCM_INTERACTIVE: 'Never',
-    GIT_ASKPASS: '',
-    GIT_SSH_COMMAND: sshCommand,
-    GIT_SSH_VARIANT: 'ssh',
-    SSH_ASKPASS: '',
-    SSH_ASKPASS_REQUIRE: 'never',
-  };
-}
-
-function gitSafetyConfig(): string[] {
-  return [
-    '-c', 'protocol.allow=never',
-    '-c', 'protocol.https.allow=always',
-    '-c', 'protocol.ssh.allow=always',
-    '-c', 'protocol.file.allow=always',
-    '-c', `core.sshCommand=${resolveSafeSshCommand()}`,
-  ];
+  return output;
 }
 
 function tarEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -185,12 +158,6 @@ async function runCatalogProcess(options: {
       timeoutMs: options.timeoutMs,
     });
   } catch (error) {
-    if (error instanceof NativeCliError && error.cleanupError) {
-      throw new CatalogGitFatalCleanupError(
-        'Catalog Git process cleanup could not be confirmed.',
-        error,
-      );
-    }
     throwIfAborted(options.signal);
     throw error;
   }
@@ -206,7 +173,6 @@ async function runGit(options: {
     command: 'git',
     args: [
       ...(options.gitDir ? [`--git-dir=${options.gitDir}`] : []),
-      ...gitSafetyConfig(),
       ...options.args,
     ],
     env: gitEnvironment(options.env),
@@ -240,18 +206,15 @@ function createPublicGitError(
 ): Error {
   const cause = sanitizeErrorTree(error, transports);
   const message = `Cannot resolve catalog Git source "${sourceId}": ${cause.message}`;
-  return error instanceof CatalogGitFatalCleanupError
-    ? new CatalogGitFatalCleanupError(message, cause)
-    : new Error(message, { cause });
+  return new Error(message, { cause });
 }
 
-async function assertGitUrlIdentity(options: {
+async function resolveEffectiveGitUrl(options: {
   gitDir?: string;
   configuredTransport: string;
-  configuredIdentityUrl: string;
   env: NodeJS.ProcessEnv;
   deadline: CatalogGitDeadline;
-}): Promise<void> {
+}): Promise<string> {
   let actualTransport: string;
   try {
     actualTransport = (await runGit({
@@ -261,12 +224,10 @@ async function assertGitUrlIdentity(options: {
       deadline: options.deadline,
     })).stdout.trim();
   } catch (error) {
-    if (error instanceof CatalogGitFatalCleanupError) throw error;
     throw new CatalogGitPolicyError('Cannot verify the effective catalog Git URL.', error);
   }
-  let actualIdentityUrl: string;
   try {
-    actualIdentityUrl = canonicalizeCatalogGitUrl(actualTransport);
+    canonicalizeCatalogGitUrl(actualTransport);
   } catch (error) {
     throw new CatalogGitPolicyError(
       'Git URL rewrite selected a disallowed catalog transport.',
@@ -274,13 +235,7 @@ async function assertGitUrlIdentity(options: {
       [actualTransport],
     );
   }
-  if (actualIdentityUrl !== options.configuredIdentityUrl) {
-    throw new CatalogGitPolicyError(
-      'Git URL rewrite changed the catalog source identity; remove the matching insteadOf rule.',
-      undefined,
-      [actualTransport],
-    );
-  }
+  return actualTransport;
 }
 
 interface RemoteRef {
@@ -340,7 +295,6 @@ async function resolveFetchTarget(options: {
       deadline: options.deadline,
     })).stdout);
   } catch (error) {
-    if (error instanceof CatalogGitFatalCleanupError) throw error;
     throw new CatalogGitRemoteUnavailableError('Catalog Git remote ref listing failed.', error);
   }
   const selected = resolveAdvertisedRef(options.requestedRef, advertised);
@@ -377,9 +331,8 @@ async function fetchCommit(options: {
         deadline: options.deadline,
       });
     } catch (error) {
-      if (error instanceof CatalogGitFatalCleanupError) {
+      if (error instanceof NativeCliError && error.cleanupError) {
         cleanupConfirmed = false;
-        throw error;
       }
       throw new CatalogGitRemoteUnavailableError('Catalog Git fetch failed.', error);
     }
@@ -394,7 +347,7 @@ async function fetchCommit(options: {
     }
     return commit;
   } catch (error) {
-    if (error instanceof CatalogGitFatalCleanupError) cleanupConfirmed = false;
+    if (error instanceof NativeCliError && error.cleanupError) cleanupConfirmed = false;
     throw error;
   } finally {
     if (cleanupConfirmed && !options.deadline.signal?.aborted) {
@@ -404,7 +357,7 @@ async function fetchCommit(options: {
         env: options.env,
         deadline: options.deadline,
       }).catch((error: unknown) => {
-        if (error instanceof CatalogGitFatalCleanupError) throw error;
+        if (error instanceof NativeCliError && error.cleanupError) throw error;
       });
     }
   }
@@ -441,9 +394,8 @@ async function materializeCommit(options: {
       timeoutMs: options.deadline.remainingMs(),
     });
   } catch (error) {
-    if (error instanceof CatalogGitFatalCleanupError) {
+    if (error instanceof NativeCliError && error.cleanupError) {
       retainArchive = true;
-      throw error;
     }
     throwIfAborted(options.deadline.signal);
     throw new CatalogGitPolicyError('Catalog Git commit materialization failed.', error);
@@ -477,7 +429,7 @@ async function resolveGitCatalogSourceDirect(
       [source.url],
     );
   }
-  const configuredIdentityUrl = canonicalizeCatalogGitUrl(source.url);
+  canonicalizeCatalogGitUrl(source.url);
   const sourceIdentity = await calculateCatalogSourceIdentity(source);
   const requestedRef = resolveCatalogSourceRef(source.refPolicy, options.cliVersion);
   const deadline = createDeadlineSignal(options.signal, readRemoteTimeout(env));
@@ -490,10 +442,10 @@ async function resolveGitCatalogSourceDirect(
   const objectsDir = path.join(refreshRoot, 'objects.git');
   const stagingRoot = path.join(refreshRoot, 'snapshot');
   let returned = false;
+  let effectiveTransport: string | undefined;
   try {
-    await assertGitUrlIdentity({
+    effectiveTransport = await resolveEffectiveGitUrl({
       configuredTransport: source.url,
-      configuredIdentityUrl,
       env,
       deadline,
     });
@@ -505,13 +457,6 @@ async function resolveGitCatalogSourceDirect(
     });
     await runGit({
       args: ['-c', 'init.defaultRefFormat=files', 'init', '--bare', `--object-format=${target.objectFormat}`, objectsDir],
-      env,
-      deadline,
-    });
-    await assertGitUrlIdentity({
-      gitDir: objectsDir,
-      configuredTransport: source.url,
-      configuredIdentityUrl,
       env,
       deadline,
     });
@@ -567,6 +512,7 @@ async function resolveGitCatalogSourceDirect(
     if (failure instanceof CatalogProviderCompatibilityError) throw failure;
     const sensitiveTransports = [
       source.url,
+      effectiveTransport ?? '',
       ...(failure instanceof CatalogGitPolicyError ? failure.sensitiveTransports : []),
     ];
     throw createPublicGitError(source.id, failure, sensitiveTransports);
