@@ -23,11 +23,13 @@ async function testProviderManifestComposition() {
   assert.deepEqual(customProcessSuites.map((suite) => suite.id), [
     'model-selection',
     'workflow',
+    'output-contract',
     'liveness',
   ]);
   const commands = new Map([
     ['model-selection', ['node', 'run-model-selection-evals.mjs']],
     ['workflow', ['node', 'run-workflow-evals.mjs']],
+    ['output-contract', ['node', 'run-workflow-evals.mjs']],
     ['liveness', ['node', 'run-liveness-evals.mjs']],
   ]);
   for (const suite of customProcessSuites) {

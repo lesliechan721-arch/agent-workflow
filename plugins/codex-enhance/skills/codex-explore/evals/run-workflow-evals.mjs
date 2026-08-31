@@ -9,8 +9,10 @@ import path from 'node:path';
 import process from 'node:process';
 
 import {
+  collectFinalAgentResults,
   createProviderOutput,
   createEvalWorkspace,
+  inspectExploreRoleContract,
   PROVIDER_CREDENTIAL_ENVIRONMENT,
   runCodexOnce,
 } from './eval-harness.mjs';
@@ -37,6 +39,24 @@ function validateLifecycleContract(value, id) {
   ) {
     throw new Error(`${id}.expected.lifecycle does not define the lifecycle contract.`);
   }
+}
+
+function validateLeafOutputContract(value, id) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !['completed', 'blocked', 'insufficient'].includes(value.status) ||
+    !Array.isArray(value.kinds) ||
+    value.kinds.some((kind) => !['direct', 'inference', 'conflict'].includes(kind)) ||
+    new Set(value.kinds).size !== value.kinds.length ||
+    !nonEmptyStrings(value.includes_all) ||
+    !nonEmptyStrings(value.patterns) ||
+    !['absent', 'present'].includes(value.gaps)
+  ) {
+    throw new Error(`${id}.expected.leaf_output does not define the output contract.`);
+  }
+  for (const pattern of value.patterns) new RegExp(pattern, 'imu');
 }
 
 function validateCase(entry, index) {
@@ -69,6 +89,9 @@ function validateCase(entry, index) {
     throw new Error(`${entry.id}.expected does not define the outcome contract.`);
   }
   validateLifecycleContract(expected.lifecycle, entry.id);
+  if (expected.leaf_output !== undefined) {
+    validateLeafOutputContract(expected.leaf_output, entry.id);
+  }
   for (const pattern of expected.final_message_patterns) {
     new RegExp(pattern, 'iu');
   }
@@ -404,10 +427,77 @@ export function evaluateWorkflowRun(run, expected) {
   assertions.push(
     ...evaluateLifecycleTrace(run.collaboration_timeline, expected.lifecycle).assertions,
   );
+  if (expected.leaf_output) {
+    assertions.push({
+      name: 'leaf:role_contract',
+      passed:
+        /^sha256:[a-f0-9]{64}$/u.test(run.role_contract?.digest ?? '') &&
+        run.role_contract?.roles?.length === 4,
+      evidence: JSON.stringify(run.role_contract ?? null),
+    });
+    assertions.push(...evaluateLeafOutput(run.leaf_results, expected.leaf_output).assertions);
+  }
   return {
     passed: assertions.every((assertion) => assertion.passed),
     assertions,
   };
+}
+
+export function evaluateLeafOutput(results, contract) {
+  const observed = Array.isArray(results) ? results : [];
+  const output = observed[0]?.text ?? '';
+  const lines = output.split(/\r?\n/u);
+  const assertions = [];
+  const add = (name, passed, evidence) => {
+    assertions.push({ name: `leaf:${name}`, passed, evidence });
+  };
+
+  add('result_count', observed.length === 1, `count=${observed.length}`);
+  const expectedStatus = contract.status === 'completed'
+    ? 'Status: completed'
+    : new RegExp(`^Status: ${contract.status} — \\S.*$`, 'u');
+  add(
+    'status',
+    typeof expectedStatus === 'string'
+      ? lines[0] === expectedStatus
+      : expectedStatus.test(lines[0] ?? ''),
+    `first_line=${JSON.stringify(lines[0] ?? '')}`,
+  );
+  add(
+    'findings_heading',
+    lines.some((line) => line === '## Findings'),
+    'expected exact ## Findings heading',
+  );
+  for (const kind of contract.kinds) {
+    const pattern = new RegExp(`^- \\[${kind}\\] .+ — .+$`, 'mu');
+    add(`kind:${kind}`, pattern.test(output), `pattern=${JSON.stringify(pattern.source)}`);
+  }
+  for (const text of contract.includes_all) {
+    add(`includes:${text}`, output.includes(text), `required=${JSON.stringify(text)}`);
+  }
+  for (const pattern of contract.patterns) {
+    add(
+      `pattern:${pattern}`,
+      new RegExp(pattern, 'imu').test(output),
+      `pattern=${JSON.stringify(pattern)}`,
+    );
+  }
+  const gapsIndex = lines.findIndex((line) => line === '## Gaps');
+  add(
+    'gaps',
+    contract.gaps === 'absent'
+      ? gapsIndex === -1
+      : gapsIndex >= 0 && lines.slice(gapsIndex + 1).some((line) => line.trim() !== ''),
+    `expected=${contract.gaps} index=${gapsIndex}`,
+  );
+  const legacyFields = ['**kind:**', '**claim:**', '**evidence:**', '**locator:**', '**support:**'];
+  add(
+    'legacy_fields_absent',
+    legacyFields.every((field) => !output.includes(field)),
+    `legacy_fields=${JSON.stringify(legacyFields.filter((field) => output.includes(field)))}`,
+  );
+  add('characters', true, `characters=${[...output].length}`);
+  return { passed: assertions.every((assertion) => assertion.passed), assertions };
 }
 
 export function workflowEvalRunCase(entry) {
@@ -429,6 +519,7 @@ export async function runEvalProvider(input) {
   }
   const workspace = await createEvalWorkspace({ sourceRoot: input.workspacePath });
   try {
+    const roleContract = await inspectExploreRoleContract(workspace.root);
     const before = await captureWorkspaceSnapshot(workspace.root);
     const evidence = await runCodexOnce(workspace, workflowEvalRunCase(entry), {
       codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
@@ -440,6 +531,8 @@ export async function runEvalProvider(input) {
     const after = await captureWorkspaceSnapshot(workspace.root);
     const run = {
       ...evidence,
+      role_contract: roleContract,
+      leaf_results: collectFinalAgentResults(evidence.collaboration_timeline),
       workspace_changes: diffWorkspaceSnapshots(before, after),
     };
     const evaluation = evaluateWorkflowRun(run, entry.expected);
