@@ -31,6 +31,17 @@
         "不先基于隐藏 frame 连续提问",
         "推荐与该方向一致"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "把快速交付和数据可恢复性压缩成用户可见的 provisional frame，并与第一题一起呈现。",
         "workspaceUnchanged": true
@@ -58,6 +69,17 @@
         "让用户先选择或修改方向",
         "不直接替用户采用其中一个方向"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "先比较兼容优先与简化优先的主要收益和代价，再进入具体 API 问题。",
         "workspaceUnchanged": true
@@ -85,6 +107,17 @@
         "问题和推荐明确引用适用原则",
         "只有发现冲突时才请求校准"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "沿用安全优先和不兼容未发布接口的方向，直接帮助用户决定当前问题。",
         "workspaceUnchanged": true
@@ -105,6 +138,17 @@
         "推荐不以代码少为主要理由弱化安全",
         "提供问题所需上下文"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "采用安全优先的 Decision frame，并让推荐说明它如何满足该 frame。",
         "workspaceUnchanged": true
@@ -131,6 +175,17 @@
         "不推荐无必要兼容层",
         "说明主要收益和代价"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "采用简单优先 frame，问题和推荐不引入无需求兼容或扩展层。",
         "workspaceUnchanged": true
@@ -151,6 +206,17 @@
         "提供相关背景",
         "说明推荐依据和取舍"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "问题中说明为什么现在决定、相关事实、适用原则、有依据的推荐和主要代价。",
         "workspaceUnchanged": true
@@ -165,12 +231,30 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "只使用 decision-grill 帮我完成迁移范围决定，并在用户确认后返回完整决策记录。不要使用其它 Skill。",
+      "prompt": "只使用 decision-grill 帮我完成首批迁移范围决定，不要使用其它 Skill。已确认 Decision frame：优先降低生产风险并在四周内取得真实迁移证据；可以接受首批覆盖面较小；不能接受无法独立回滚。现有两个可行选项是先迁移一个低风险服务，或先迁移一个完整业务域。首批完成后都由平台负责人在两周内验证错误率、回滚耗时和运维负担，再决定是否扩大范围。请逐轮取得我的选择，并在我确认记录准确后返回完整决策记录。",
       "assertions": [
         "独立完成",
         "不依赖宏 Skill",
         "最终记录面向用户"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "首批只迁移一个低风险服务；由平台负责人在两周内验证错误率、回滚耗时和运维负担，再决定是否扩大范围。请生成最终记录供我确认。"
+            ],
+            "unexpectedQuestionAnswer": "只处理首批迁移范围；选择一个低风险服务，并保留已给出的验证委托。"
+          },
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "记录准确，我确认这是当前共享理解。请返回完整决策记录并停止，不要实施迁移。"
+            ],
+            "unexpectedQuestionAnswer": "记录尚未准确反映已给出的范围、方向和验证委托；请不要实施。"
+          }
+        ]
+      },
       "expected": {
         "output": "直接向用户交付完整、可独立理解的决策记录；完成任务不需要其它 Skill 提供输入或继续处理。",
         "workspaceUnchanged": true

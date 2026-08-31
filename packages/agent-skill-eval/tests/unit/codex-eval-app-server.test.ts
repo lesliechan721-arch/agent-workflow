@@ -15,9 +15,37 @@ import {
   type AwSkillEvalTriggerSuiteCaseContract,
   type CodexEvalRuntimeConfig,
 } from '../../dist/index.js'
+import { CodexEvalAttemptControl } from '../../dist/codex-eval-app-server.js'
 import { createDirectChildProcessMonitor } from '../../dist/index.js'
 
 describe('Codex provider app-server process boundary', () => {
+  it('uses the full evaluation budget while preserving RPC limits and shorter deadlines', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'))
+    const longAttempt = new CodexEvalAttemptControl({
+      label: 'long evaluation',
+      timeoutMs: 300_000,
+    })
+    const shortAttempt = new CodexEvalAttemptControl({
+      label: 'short evaluation',
+      timeoutMs: 5_000,
+    })
+    try {
+      expect(longAttempt.remaining('evaluation', 300_000)).toBe(300_000)
+      expect(longAttempt.remaining('initialize')).toBe(30_000)
+      expect(longAttempt.remaining('thread/start')).toBe(30_000)
+      expect(shortAttempt.remaining('evaluation', 300_000)).toBe(5_000)
+      expect(shortAttempt.remaining('initialize')).toBe(5_000)
+      vi.advanceTimersByTime(1_000)
+      expect(longAttempt.remaining('evaluation', 300_000)).toBe(299_000)
+      expect(shortAttempt.remaining('evaluation', 300_000)).toBe(4_000)
+    } finally {
+      longAttempt.dispose()
+      shortAttempt.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it('detects app-server config warnings for strict provider runs', () => {
     expect(inspectAppServerConfigWarning({
       method: 'configWarning',

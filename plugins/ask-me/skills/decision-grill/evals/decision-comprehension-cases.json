@@ -24,13 +24,24 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "用户不熟悉队列和 worker。现在要决定导入任务是在请求内完成还是在后台处理。请只问这一题，帮助用户快速作出决定。",
+      "prompt": "用户不熟悉队列和 worker。现在要决定导入任务是在请求内完成还是在后台处理。现有真实样本中，大批量导入需要 45–90 秒，而网关会在 30 秒终止请求；用户可以接受提交后离开页面，并要求稍后能查看成功、失败和重试状态。本轮必须定下来，因为提交后的页面流程和 API 响应合同都依赖这个选择。请只问这一题，帮助用户快速作出决定。",
       "assertions": [
         "首屏说明当前决定和现在决定的原因",
         "先说用户会看到的体验差异",
         "不给出大段队列实现教学",
         "给出推荐、主要代价和可直接回答的选项"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "用“提交后等待结果”与“提交后离开，稍后查看状态”的场景解释，而不是先讲内部架构。",
         "workspaceUnchanged": true
@@ -51,6 +62,17 @@
         "突出决定点和用户后果",
         "不展开内部调用链"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "用创建、过期、恢复窗口和最终失效的短流程帮助用户选择。",
         "workspaceUnchanged": true
@@ -71,6 +93,17 @@
         "只包含影响选择的事实",
         "明确推荐和代价"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "用 7 天和 30 天过渡窗口的风险与维护差异呈现。",
         "workspaceUnchanged": true
@@ -85,12 +118,23 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "仓库有 20 个模块，但当前只需要决定审计日志是否允许管理员删除。请只问当前问题。",
+      "prompt": "仓库有 20 个模块，但当前只需要决定审计日志是否允许管理员删除。审计日志是管理员权限变更的唯一留存记录；公司审计政策要求这些记录保留 365 天，并能证明未被事后篡改；误操作调查和恢复也依赖这些记录。请只问当前问题。",
       "assertions": [
         "不重复无关模块背景",
         "只给与删除决策相关的安全、恢复和合规后果",
         "问题保持一屏可理解"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "只呈现删除日志的直接后果和主要替代，不输出完整系统背景。",
         "workspaceUnchanged": true
@@ -111,22 +155,33 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "上一轮用户说：“我还是没看懂这两个缓存策略的区别，不要再给我更长的解释。”请继续 decision-grill。",
+      "prompt": "继续 decision-grill。上一轮的明确 frame 是：为商品详情 API 选择缓存失效策略；目标是在流量突增时保持快速响应，同时避免用户长期看到过期价格；本题只决定缓存如何失效。候选 A 是 cache-aside 加 10 分钟 TTL，价格更新后最久可能显示 10 分钟旧价格；候选 B 是 cache-aside 加 24 小时 TTL，并在价格更新时发送失效事件，事件失败时旧价格可能保留到 TTL 结束。上一轮原说明是一段术语密集的技术段落：“候选 A 采用被动 TTL eviction，cache miss 触发回源和 repopulation，consistency window 上限为 10 分钟；候选 B 使用 event-driven invalidation 缩短正常路径的 consistency window，但 invalidation event 丢失会退化到 24 小时 TTL。”用户回复：“我还是没看懂这两个缓存策略的区别，不要再给我更长的技术解释。”下一轮请只改用一个具体场景、3–5 步短流程或简表，保持同一 frame 和两个候选，不要替用户选择。",
       "assertions": [
-        "不重复或扩写原说明",
-        "改用具体场景、流程或简表",
-        "保持同一个决定和 frame",
-        "给出下一步选择"
+        "不重复或扩写上一轮术语密集的技术说明",
+        "改用一个具体场景、3–5 步短流程或简表",
+        "仍只比较商品详情 API 的两个既定缓存失效候选，不改变决定或 frame",
+        "说明用户可观察的旧价格与失效结果，给出可直接回答的选择，但不替用户选择"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
-        "output": "更换表现形式，让用户从具体请求和失效结果理解差异。",
+        "output": "换用一种更容易理解的表现形式说明两个既定候选的可观察结果，并让用户自己选择。",
         "workspaceUnchanged": true
       },
       "audit": {
-        "rationale": "理解失败应触发表现形式变化，不能继续堆叠上下文。",
+        "rationale": "用户已明确表示术语说明没有帮助；继续同一种说明会妨碍其判断过期价格与失效可靠性的高影响取舍。",
         "minimalCounterexample": "用户只指出缺少一个明确事实时，可以直接补充该事实。",
         "errorCost": "high",
-        "allowedVariance": "可以使用场景、流程或表格。"
+        "allowedVariance": "可以使用任一具体场景、3–5 步流程或简表；措辞和例子可以不同，但必须保留既定 frame、两个候选和用户选择权。"
       }
     }
   ]

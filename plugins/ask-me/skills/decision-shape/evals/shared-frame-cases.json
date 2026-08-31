@@ -35,6 +35,17 @@
         "与第一个材料问题同轮推进，或先处理真正的方向歧义",
         "不进入 Spec 或实现"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "形成可校准的共享方向，并选择适当叶子能力处理第一个问题。",
         "workspaceUnchanged": true
@@ -120,6 +131,15 @@
         "问题的推荐和后果对照能追溯到现有 frame"
       ],
       "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ],
         "workspaceFiles": {
           "planning/audit-retention-shape.md": "# Shape：审计日志保留\n\n## Shared decision direction（Decision frame）\n\n- 优先保证：安全、可恢复和合规。\n- 可以接受：增加有限存储成本。\n- 不优先：最低存储用量。\n- 不能接受：删除仍处于法定保留期的记录。\n\n## Confirmed decisions\n\n- 管理员不能直接删除审计日志。\n\n## Open decisions\n\n- 审计日志保留 30 天还是 90 天。\n"
         }

@@ -13,7 +13,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "宏流程必须让 Shape 先共享决策方向，并用用户可理解的结果差异开始材料决定；过早实现会固化错误前提。"
+      "rationale": "project-composed 体验必须先向用户展示可修正的共享方向，并用可理解的结果差异开始材料决定；过早讨论下游实现会固化错误前提。"
     },
     "runtime": {
       "isolation": "strict"
@@ -31,20 +31,31 @@
       ],
       "prompt": "使用 dev-workflow 设计并实现新的批量导入功能。没有 Shape、Spec 或验收；我只说希望尽快上线，但不能产生不可恢复的数据错误。请开始。本轮只展示共享方向和第一个材料问题，不写文件。",
       "assertions": [
-        "dev-workflow 不进入 Spec 或实现",
-        "trace 先进入 decision-shape，而不是直接进入叶子 Skill",
-        "用户在回答第一个材料问题前或同轮看见 provisional 共享方向",
-        "问题首屏给出推荐和可快速理解的结果差异"
+        "明确当前实现请求尚未 implementation-ready，本轮不进入 Spec、实现或文件修改",
+        "用户在回答第一个材料问题前或同轮看见 provisional 共享方向，并知道可以修正该方向",
+        "第一个材料问题停留在用户可观察结果或风险取舍，给出推荐和可快速理解的结果差异",
+        "共享方向未确定前，不提出队列、批次大小、存储或接口等下游实现选择，也不替用户决定"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
-        "output": "宏流程进入 Shape，让用户先校准方向并回答第一个材料问题。",
+        "output": "在 project-composed 上下文中先展示可修正的 provisional 共享方向，再提出一个用户可回答的材料问题；内部路由由既有 router-composed suite 验证。",
         "workspaceUnchanged": true
       },
       "audit": {
-        "rationale": "没有 Shape 的材料性新功能必须先建立共享方向；直接实现会把模型推断当成用户决定。",
+        "rationale": "本 case 只验证 project-composed 下用户可见的决策体验；内部 Skill 路由由既有 router-composed suite 负责。没有 Shape 的材料性新功能必须先让用户看见并校准共享方向；直接讨论下游实现会把模型推断当成用户决定。",
         "minimalCounterexample": "若用户可观察结果、范围、风险和验证均已明确，且没有材料决定或证据缺口，则低风险任务可以满足 Fast。",
         "errorCost": "high",
-        "allowedVariance": "保障等级措辞可以不同，但必须先进入 Shape，并让方向和第一个问题对用户可见。"
+        "allowedVariance": "保障等级、共享方向和第一个材料问题的措辞可以不同；可见顺序、可修正性和暂缓下游实现选择必须保持。"
       }
     }
   ]

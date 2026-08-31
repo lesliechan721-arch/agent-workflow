@@ -24,12 +24,23 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "为审批页的信息层级做一个轻量原型，使用 prototypes/approval-hierarchy/。我现在说不清样式，请先给少量候选让我选择，不要直接做生产实现。",
+      "prompt": "为审批页的信息层级做一个轻量原型，使用 prototypes/approval-hierarchy/。我现在说不清样式；本轮只需要少量可直接比较的静态线框候选，展示后用问题工具让我选择。不要启动网页 Review 或真实浏览器，也不要直接做生产实现。",
       "assertions": [
         "候选数量有限",
         "允许都不接受",
         "原型标记为临时"
       ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
       "expected": {
         "output": "提供少量可体验候选、都不接受和补充评论方式。",
         "workspaceUnchanged": false,
@@ -88,7 +99,7 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个 API consumer 示例，让我判断接口是否易用。不要使用其它 Skill。",
+      "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个可直接读取或运行的最小命令行 API consumer 示例，让我在聊天中判断接口是否易用。不要启动 Review Shell 或浏览器，也不要使用其它 Skill。",
       "assertions": [
         "独立完成",
         "不依赖 decision-shape",

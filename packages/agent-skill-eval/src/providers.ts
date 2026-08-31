@@ -103,6 +103,7 @@ export interface CodexEvalTransport {
 
 export interface BuiltinEvalProviderDependencies {
   transport?: CodexEvalTransport
+  runConversationProviderCase?: typeof runCodexConversationProviderCase
   sourceEnv?: NodeJS.ProcessEnv
   codexBin?: string
   model?: string
@@ -253,8 +254,60 @@ function combinedUsage(...values: unknown[]): EvalProviderUsage | null {
   }), { inputTokens: 0, outputTokens: 0 })
 }
 
-function modelOutputOf(evidence: AppServerRunEvidence): string {
-  return evidence.finalMessages.join('\n\n')
+function formattedQuestionsOf(request: AppServerRunEvidence['questions'][number]): string {
+  return [
+    `request_user_input step ${request.step + 1}:`,
+    ...request.questions.flatMap((question, index) => [
+      `Question ${index + 1}`,
+      `Header: ${question.header}`,
+      `Question: ${question.question}`,
+      ...(question.options === null
+        ? []
+        : [
+            'Options:',
+            ...question.options.map((option) =>
+              `- ${option.label}: ${option.description}`),
+          ]),
+    ]),
+  ].join('\n')
+}
+
+export function conversationModelOutputOf(evidence: AppServerRunEvidence): string {
+  const output: string[] = []
+  const consumedQuestions = new Set<number>()
+  const consumedFinalMessages = new Set<number>()
+  for (const event of evidence.eventTrace) {
+    if (!isRecord(event)) continue
+    if (event.method === 'item/tool/requestUserInput') {
+      const requestId = typeof event.id === 'string' || typeof event.id === 'number'
+        ? String(event.id)
+        : null
+      const questionIndex = evidence.questions.findIndex((request, index) =>
+        !consumedQuestions.has(index) && request.requestId === requestId)
+      if (questionIndex >= 0) {
+        output.push(formattedQuestionsOf(evidence.questions[questionIndex]!))
+        consumedQuestions.add(questionIndex)
+      }
+      continue
+    }
+    if (event.method !== 'item/completed') continue
+    const params = isRecord(event.params) ? event.params : {}
+    const item = isRecord(params.item) ? params.item : {}
+    if (item.type !== 'agentMessage' || typeof item.text !== 'string') continue
+    output.push(item.text)
+    if (item.phase === 'final_answer') {
+      const finalIndex = evidence.finalMessages.findIndex((message, index) =>
+        !consumedFinalMessages.has(index) && message === item.text)
+      if (finalIndex >= 0) consumedFinalMessages.add(finalIndex)
+    }
+  }
+  evidence.questions.forEach((request, index) => {
+    if (!consumedQuestions.has(index)) output.push(formattedQuestionsOf(request))
+  })
+  evidence.finalMessages.forEach((message, index) => {
+    if (!consumedFinalMessages.has(index)) output.push(message)
+  })
+  return output.join('\n\n')
 }
 
 function necessaryMechanicalEvidence(evidence: AppServerRunEvidence): Record<string, unknown> {
@@ -330,6 +383,8 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
   const runtime = cleanCodexEvalRuntimeConfig(sourceEnv, dependencies.model)
   const codexBin = dependencies.codexBin ?? sourceEnv.AW_SKILL_EVAL_CODEX_BIN ?? 'codex'
   const model = dependencies.model ?? runtime.model ?? undefined
+  const runConversationProviderCase = dependencies.runConversationProviderCase ??
+    runCodexConversationProviderCase
   const redact = <T>(value: T): T => redactCodexEvalValue(value, runtime)
   const runRedacted = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {
@@ -404,7 +459,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           control.throwIfStopped('host isolation')
           await inspectCodexEvalHostIsolation({ sourceEnv })
         }
-        const evidence = await runCodexConversationProviderCase({
+        const evidence = await runConversationProviderCase({
           evalCase,
           sourceProjectRoot: input.workspacePath,
           skillMode: input.variant === 'without-skill'
@@ -417,7 +472,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           codexBin,
           ...(model ? { model } : {}),
           codexRuntime: runtime,
-          timeoutMs: control.remaining('evaluation'),
+          timeoutMs: control.remaining('evaluation', input.timeoutMs),
           sourceEnv,
           isolation: input.case.isolation,
           forbiddenHostRoots: [input.fixturesPath, input.outputDir],
@@ -435,7 +490,11 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           manageTimeout: true,
           signal: control.signal,
         })
-        return { evidence, modelOutput: modelOutputOf(evidence), usage: evidence.usage }
+        return {
+          evidence,
+          modelOutput: conversationModelOutputOf(evidence),
+          usage: evidence.usage,
+        }
       } finally {
         control.dispose()
       }
@@ -444,7 +503,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
       const graderSourceRoot = path.join(input.outputDir, '.codex-grader-source')
       await fs.emptyDir(graderSourceRoot)
       try {
-        const evidence = await runCodexConversationProviderCase({
+        const evidence = await runConversationProviderCase({
           evalCase: graderCase(input.prompt),
           sourceProjectRoot: graderSourceRoot,
           skillMode: 'without-skill',
@@ -466,7 +525,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           throw new Error(`grader did not complete: ${evidence.diagnostics.join('; ')}`)
         }
         return {
-          output: modelOutputOf(evidence),
+          output: conversationModelOutputOf(evidence),
           usage: evidence.usage,
           mechanicalPassed: evidence.mechanicalPassed,
           diagnostics: evidence.diagnostics,
@@ -566,6 +625,12 @@ async function runConversationProvider(
       `codex-conversation execution failed: ${(error as Error).message}`,
     )
   }
+  let artifactWriteError: Error | null = null
+  try {
+    await writeEvaluationArtifacts(checkedInput, evaluation.evidence, evaluation.modelOutput)
+  } catch (error) {
+    artifactWriteError = error instanceof Error ? error : new Error(String(error))
+  }
   if (!evaluation.evidence.complete) {
     throw new EvalProviderExecutionError(
       'codex-conversation',
@@ -573,10 +638,12 @@ async function runConversationProvider(
       `codex-conversation execution did not complete: ${evaluation.evidence.diagnostics.join('; ')}`,
     )
   }
-  try {
-    await writeEvaluationArtifacts(checkedInput, evaluation.evidence, evaluation.modelOutput)
-  } catch (error) {
-    throw new EvalProviderExecutionError('codex-conversation', 'output', (error as Error).message)
+  if (artifactWriteError) {
+    throw new EvalProviderExecutionError(
+      'codex-conversation',
+      'output',
+      artifactWriteError.message,
+    )
   }
   const mechanicalEvidence = necessaryMechanicalEvidence(evaluation.evidence)
   const prompt = createConversationGraderPrompt({
