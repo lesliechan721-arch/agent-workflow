@@ -4,7 +4,7 @@
 
 原型可以是图片、交互网页、流程 walkthrough、API consumer 示例、状态模拟器或技术 spike。默认先用少量候选和补充评论取得反馈；只有需要精确定位或连续调整时才增加引导问题、标注或受控参数。
 
-需要标准网页反馈时，Skill 启动只绑定 `127.0.0.1` 的临时 Review 会话。Agent 打开返回的 URL 并等待页面提交；提交的 `feedback.json` 与准确的 Prototype ID 和 revision 绑定。临时服务器和会话文件位于系统临时目录，不复制到 Prototype 目录。
+需要标准网页反馈时，Skill 启动只绑定 `127.0.0.1` 的临时 Review 会话。页面先显示决定目标和比较重点，再用 tabs 展示单个大预览；用户可以按需并排比较、切换 HTML 宽度、缩放图片或在 drawer 中添加局部标注。页面只有一个反馈提交动作。提交成功后页面停止编辑，Agent 通过 `wait` 读取与准确 Prototype ID 和 revision 绑定的 `feedback.json`。临时服务器和会话文件位于系统临时目录，不复制到 Prototype 目录。
 
 ## 适合使用
 

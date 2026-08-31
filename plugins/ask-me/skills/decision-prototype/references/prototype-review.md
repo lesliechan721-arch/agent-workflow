@@ -30,11 +30,14 @@ node scripts/prototype-review.mjs stop --session <session.json>
 
 命令参数、receipt 和退出码以 `node scripts/prototype-review.mjs --help` 及各子命令 `--help` 为准。
 
+页面先显示当前问题、目标、比较重点和约束。多个候选默认通过 tabs 一次查看一个大预览，也可以主动开启并排比较；单个候选不显示无意义的切换或选择控件。用户完成候选选择、引导问题、可选标注和总体判断后，只通过“提交反馈”完成本轮。页面显示“Agent 已收到”后不再编辑。
+
 ## Artifact 和标注
 
 - 所有选项引用都必须位于 `artifact/`，并指向普通非符号链接文件。
 - 静态 HTML 的关键元素使用 `data-prototype-id`。文本块和流程节点可再设置 `data-prototype-kind="text"` 或 `data-prototype-kind="node"`。
-- 图片标注使用归一化坐标。
+- 点击静态 HTML 标记或图片位置会打开标注 drawer；每条标注包含类型、具体问题和可选期望结果。页面用编号 marker 和列表关联目标。
+- 图片标注使用归一化坐标；图片预览可以缩放。HTML 预览可以在桌面和手机宽度之间切换。
 - 脚本型 HTML 使用不带 same-origin 权限的 sandbox。它不能使用 DOM 标注或 CSS 变量控制。
 - 新 revision 不继承无法重新定位的旧标注。
 

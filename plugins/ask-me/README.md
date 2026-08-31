@@ -46,4 +46,4 @@ aw install ask-me -p both
 - 普通实施任务中的局部歧义不会自动进入完整决策访谈。
 - `decision-shape` 只在调用者提供路径、仓库有约定或跨会话确有价值时写入 Shape。
 - `decision-grill` 在最终记录确认前不修改文件。
-- `decision-prototype` 可以生成清楚标记的临时原型，并按需启动仅绑定本机的 Review 会话。Agent 打开 URL、等待页面提交并读取 revision-bound feedback；脚本不自动打开浏览器，也不会把原型当作生产实现。
+- `decision-prototype` 可以生成清楚标记的临时原型，并按需启动仅绑定本机的 Review 会话。页面用 tabs 展示单个大预览，可按需并排比较，并用 drawer 收集 DOM 或图片标注；用户只需选择总体判断并提交一次。Agent 打开 URL、等待页面提交并读取 revision-bound feedback；脚本不自动打开浏览器，也不会把原型当作生产实现。
