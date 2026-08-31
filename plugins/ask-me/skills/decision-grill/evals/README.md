@@ -29,6 +29,7 @@ aw skill eval prepare ask-me decision-grill --suite router --profile project-def
 aw skill eval prepare ask-me decision-grill --suite router --profile project-default --split sanity --runs 10 --output /tmp/aw-eval-specs/decision-grill-router-sanity --json
 aw skill eval prepare ask-me decision-grill --suite behavior --profile project-default --output /tmp/aw-eval-specs/decision-grill-behavior --json
 aw skill eval prepare ask-me decision-grill --suite decision-frame --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-frame --json
+aw skill eval prepare ask-me decision-grill --suite decision-comprehension --profile project-default --output /tmp/aw-eval-specs/decision-grill-decision-comprehension --json
 ```
 
 单 Skill trigger
@@ -49,3 +50,5 @@ corpus 有 25 条用例：train 与 validation 各 10 条，另有 5 条 sanity�
 和 `shared-understanding-confirmation` 使用低提示自然任务检查完整 Skill。它不是当前 manifest 注册的
 suite，不通过 `aw skill eval prepare` 运行。conversation baseline 只移除 owner Skill，并保留
 `decision-prototype`。
+
+`decision-frame-cases.json` 检查推断 frame 对用户可见、方向歧义先选择、调用方 frame 复用，以及叶子 Skill 的独立交付。`decision-comprehension-cases.json` 检查非技术场景、短流程、时间线、上下文压缩和理解失败后的表现形式切换。

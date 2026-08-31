@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-grill",
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "问题必须让用户快速、正确地作决定；过度技术说明和重复同类长文本会降低决策质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "nontechnical-user-gets-outcome-scenario",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "decision-comprehension",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "用户不熟悉队列和 worker。现在要决定导入任务是在请求内完成还是在后台处理。请只问这一题，帮助用户快速作出决定。",
+      "assertions": [
+        "首屏说明当前决定和现在决定的原因",
+        "先说用户会看到的体验差异",
+        "不给出大段队列实现教学",
+        "给出推荐、主要代价和可直接回答的选项"
+      ],
+      "expected": {
+        "output": "用“提交后等待结果”与“提交后离开，稍后查看状态”的场景解释，而不是先讲内部架构。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "lifecycle-question-uses-short-flow",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "flow",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "需要决定邀请过期后是否还能恢复。请用最快能看懂的方式呈现，不要做 Prototype。",
+      "assertions": [
+        "使用 3–5 步短流程或状态结果说明",
+        "突出决定点和用户后果",
+        "不展开内部调用链"
+      ],
+      "expected": {
+        "output": "用创建、过期、恢复窗口和最终失效的短流程帮助用户选择。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "transition-question-uses-timeline",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "timeline",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "我们需要决定旧 token 保留 7 天还是 30 天。用户关心迁移风险和维护成本，请提出这一题。",
+      "assertions": [
+        "使用时间线或时间结果对照",
+        "只包含影响选择的事实",
+        "明确推荐和代价"
+      ],
+      "expected": {
+        "output": "用 7 天和 30 天过渡窗口的风险与维护差异呈现。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "no-context-dump",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "context-minimization",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "仓库有 20 个模块，但当前只需要决定审计日志是否允许管理员删除。请只问当前问题。",
+      "assertions": [
+        "不重复无关模块背景",
+        "只给与删除决策相关的安全、恢复和合规后果",
+        "问题保持一屏可理解"
+      ],
+      "expected": {
+        "output": "只呈现删除日志的直接后果和主要替代，不输出完整系统背景。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "充分上下文不等于复制所有已知事实。",
+        "minimalCounterexample": "若模块关系会改变审计日志责任或删除后果，则应加入相关关系。",
+        "errorCost": "medium",
+        "allowedVariance": "长度可以不同，但无关背景不能成为主体。"
+      }
+    },
+    {
+      "id": "unclear-switches-representation",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "representation-switch",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "上一轮用户说：“我还是没看懂这两个缓存策略的区别，不要再给我更长的解释。”请继续 decision-grill。",
+      "assertions": [
+        "不重复或扩写原说明",
+        "改用具体场景、流程或简表",
+        "保持同一个决定和 frame",
+        "给出下一步选择"
+      ],
+      "expected": {
+        "output": "更换表现形式，让用户从具体请求和失效结果理解差异。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "理解失败应触发表现形式变化，不能继续堆叠上下文。",
+        "minimalCounterexample": "用户只指出缺少一个明确事实时，可以直接补充该事实。",
+        "errorCost": "high",
+        "allowedVariance": "可以使用场景、流程或表格。"
+      }
+    }
+  ]
+}

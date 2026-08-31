@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-workflow",
+    "participants": [
+      "decision-shape",
+      "decision-grill",
+      "decision-prototype"
+    ],
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "宏流程必须让 Shape 先共享决策方向，并用用户可理解的结果差异开始材料决定；过早实现会固化错误前提。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "new-feature-shares-direction-before-decision",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "composed-frame",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "使用 dev-workflow 设计并实现新的批量导入功能。没有 Shape、Spec 或验收；我只说希望尽快上线，但不能产生不可恢复的数据错误。请开始。本轮只展示共享方向和第一个材料问题，不写文件。",
+      "assertions": [
+        "dev-workflow 不进入 Spec 或实现",
+        "trace 先进入 decision-shape，而不是直接进入叶子 Skill",
+        "用户在回答第一个材料问题前或同轮看见 provisional 共享方向",
+        "问题首屏给出推荐和可快速理解的结果差异"
+      ],
+      "expected": {
+        "output": "宏流程进入 Shape，让用户先校准方向并回答第一个材料问题。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "没有 Shape 的材料性新功能必须先建立共享方向；直接实现会把模型推断当成用户决定。",
+        "minimalCounterexample": "若用户可观察结果、范围、风险和验证均已明确，且没有材料决定或证据缺口，则低风险任务可以满足 Fast。",
+        "errorCost": "high",
+        "allowedVariance": "保障等级措辞可以不同，但必须先进入 Shape，并让方向和第一个问题对用户可见。"
+      }
+    }
+  ]
+}

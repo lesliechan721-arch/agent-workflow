@@ -75,6 +75,14 @@ function assertCaseDocument(document, skillName, availableSkills) {
         assert.equal(Array.isArray(loadedSkills), true);
         assert.equal(loadedSkills.every((skill) => participants.has(skill)), true);
       }
+    } else if (document.suite.kind === 'conversation') {
+      assert.equal(typeof entry.prompt, 'string');
+      assert.equal(entry.prompt.trim().length > 0, true);
+      assert.equal(Array.isArray(entry.assertions), true);
+      assert.equal(entry.assertions.length > 0, true);
+      assert.equal(entry.assertions.every((assertion) => (
+        typeof assertion === 'string' && assertion.trim().length > 0
+      )), true);
     }
   }
   return document;
@@ -165,11 +173,25 @@ test('leaf behavior stays independent and decision-shape owns composition', asyn
     [...requiredSkills].sort(),
   );
   assert.equal(shapeRouterCorpus.suite.runtime.forbidMultipleSkillLoads, false);
-  const shapeBehavior = shapeManifest.suites.find((suite) => suite.id === 'behavior');
-  const shapeBehaviorCorpus = await readJson(path.join(shapeEvalRoot, shapeBehavior.cases));
+  for (const suite of shapeManifest.suites.filter((entry) => entry.kind === 'conversation')) {
+    const corpus = await readJson(path.join(shapeEvalRoot, suite.cases));
+    assert.deepEqual(
+      [corpus.suite.unitUnderTest, ...(corpus.suite.participants ?? [])].sort(),
+      [...requiredSkills].sort(),
+    );
+  }
+  const sharedFrameSuite = shapeManifest.suites.find((suite) => suite.id === 'shared-frame');
+  assert.ok(sharedFrameSuite);
+  assert.equal(sharedFrameSuite.cases, 'shared-frame-cases.json');
+  const sharedFrameCorpus = await readJson(path.join(shapeEvalRoot, sharedFrameSuite.cases));
   assert.deepEqual(
-    [shapeBehaviorCorpus.suite.unitUnderTest, ...(shapeBehaviorCorpus.suite.participants ?? [])].sort(),
-    [...requiredSkills].sort(),
+    sharedFrameCorpus.cases.map((entry) => entry.id),
+    [
+      'shape-shares-provisional-frame',
+      'shape-passes-frame-to-prototype',
+      'shape-passes-frame-to-grill',
+      'frame-change-reopens-affected-only',
+    ],
   );
 
   const prototypeRoot = path.join(context.sourceRoot, 'skills', 'decision-prototype', 'evals');
@@ -815,4 +837,13 @@ test('prepared bundle renders the three static Skills', async () => {
     assert.equal(skill.includes(otherTool), false);
     assert.equal(skill.includes('{{questionTool}}'), false);
   }
+
+  await access(path.join(
+    context.bundleRoot,
+    context.platform,
+    'skills',
+    'decision-grill',
+    'references',
+    'decision-presentation.md',
+  ));
 });
