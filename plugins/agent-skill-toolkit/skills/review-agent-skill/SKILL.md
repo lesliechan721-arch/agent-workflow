@@ -57,7 +57,10 @@ Quality Review 只评估设计、复杂度和 findings，不判断发布资格�
 
 只有静态证据不足以完成用户要求的判断、新运行证据会实质改变结论、用户允许成本、兼容 Runner 可用且 Skill/corpus 已固定时，才进入本分支。
 
-直接调用兼容 Runner，传入已固定的 Skill/corpus 或已有 plan。Runner 负责 prepare、全新上下文 preflight、成本与副作用授权、带 Audit 的执行、Bundle v4 validation 和全新上下文 result triage。任一 Audit 未通过时停止 Eval 分支；这不阻止静态 Review，也不把 Review 变成 Eval gate。只有验证后的 result-triage 证据才能影响 finding。
+直接调用兼容 Runner，传入已固定的 Skill/corpus 选择或已有 `EvalSpec v1`。Runner 负责 prepare 和验证 Spec、复用已精确绑定的单份 `EvalAudit v1` 或在全新上下文取得一份 Audit、完成成本与副作用授权、执行 `aw-skill-eval run <spec> --audit <audit>`，并验证生成的 `EvalResult v1`。Audit 未通过时停止 Eval 分支；这不阻止静态 Review，也不把 Review 变成 Eval gate。
+
+clean success 不要求 triage，只能支持已验证的执行事实。
+execution/grade 失败、混合结果或 baseline 回归在影响 finding 前必须由全新上下文完成 result-triage 归因；结果将驱动生产 Skill 修改时也必须 triage。triage 默认在聊天中返回，用户指定时可写 `triage.md`；它不是 Review 或 Release Check 的机器输入。
 
 ## Finding 纪律
 

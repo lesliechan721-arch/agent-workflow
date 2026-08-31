@@ -1,146 +1,116 @@
 {
-  "schemaVersion": 1,
-  "skill": "dev-review-code",
-  "policy": {
-    "optimization": "balanced",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏触发会跳过有价值的专业能力，误触发会增加流程和上下文成本。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-review-code",
+    "participants": [
+      "dev-workflow",
+      "dev-spec",
+      "dev-review-spec",
+      "dev-implement"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏触发会跳过有价值的专业能力，误触发会增加流程和上下文成本。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
   },
   "cases": [
     {
       "id": "positive_1",
       "split": "validation",
-      "query": "审查这个 PR，同时检查是否符合 Spec 和代码质量。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core-positive",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求的主要交付与该 Skill 的职责一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "表达方式可不同，但应加载目标 Skill。"
+      "tags": [
+        "representative",
+        "core-positive"
+      ],
+      "input": {
+        "query": "审查这个 PR，同时检查是否符合 Spec 和代码质量。",
+        "expectedLoad": true
       }
     },
     {
       "id": "positive_2",
       "split": "validation",
-      "query": "对当前 diff 做双轴审查：需求符合度和工程质量分开报告。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core-positive",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求的主要交付与该 Skill 的职责一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "表达方式可不同，但应加载目标 Skill。"
+      "tags": [
+        "representative",
+        "core-positive"
+      ],
+      "input": {
+        "query": "对当前 diff 做双轴审查：需求符合度和工程质量分开报告。",
+        "expectedLoad": true
       }
     },
     {
       "id": "positive_3",
       "split": "validation",
-      "query": "检查这个分支有没有 scope creep、安全问题和测试缺口，不要直接修复。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core-positive",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求的主要交付与该 Skill 的职责一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "表达方式可不同，但应加载目标 Skill。"
+      "tags": [
+        "representative",
+        "core-positive"
+      ],
+      "input": {
+        "query": "检查这个分支有没有 scope creep、安全问题和测试缺口，不要直接修复。",
+        "expectedLoad": true
       }
     },
     {
       "id": "negative_1",
       "split": "validation",
-      "query": "审查这份设计规格是否可以批准。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "near-miss-negative",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
+      "tags": [
+        "boundary",
+        "near-miss-negative"
+      ],
+      "audit": {
         "rationale": "请求属于相邻但不同的用户意图。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以加载相邻 Skill，但不应加载本 Skill。",
-        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "allowedVariance": "可以加载相邻 Skill，但不应加载本 Skill。",
+        "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      },
+      "input": {
+        "query": "审查这份设计规格是否可以批准。",
+        "expectedLoad": false
       }
     },
     {
       "id": "negative_2",
       "split": "validation",
-      "query": "修复当前测试失败并提交代码。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "near-miss-negative",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
+      "tags": [
+        "boundary",
+        "near-miss-negative"
+      ],
+      "audit": {
         "rationale": "请求属于相邻但不同的用户意图。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以加载相邻 Skill，但不应加载本 Skill。",
-        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "allowedVariance": "可以加载相邻 Skill，但不应加载本 Skill。",
+        "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      },
+      "input": {
+        "query": "修复当前测试失败并提交代码。",
+        "expectedLoad": false
       }
     },
     {
       "id": "negative_3",
       "split": "validation",
-      "query": "把已确认的产品决定整理成 Spec。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "near-miss-negative",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
+      "tags": [
+        "boundary",
+        "near-miss-negative"
+      ],
+      "audit": {
         "rationale": "请求属于相邻但不同的用户意图。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以加载相邻 Skill，但不应加载本 Skill。",
-        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "allowedVariance": "可以加载相邻 Skill，但不应加载本 Skill。",
+        "minimalCounterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      },
+      "input": {
+        "query": "把已确认的产品决定整理成 Spec。",
+        "expectedLoad": false
       }
     }
   ]

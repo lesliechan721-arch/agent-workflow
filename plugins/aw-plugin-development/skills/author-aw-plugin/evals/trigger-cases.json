@@ -1,237 +1,182 @@
 {
-  "schemaVersion": 1,
-  "skill": "author-aw-plugin",
-  "policy": {
-    "optimization": "balanced",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏触发或误触发会把任务交给错误权限或错误适配层。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "author-aw-plugin",
+    "participants": [
+      "review-aw-plugin",
+      "write-agent-content",
+      "review-agent-content",
+      "author-agent-skill",
+      "review-agent-skill",
+      "design-agent-skill-evals",
+      "audit-agent-skill-evals",
+      "run-aw-skill-evals"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏触发或误触发会把任务交给错误权限或错误适配层。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ]
+    }
   },
   "cases": [
     {
       "id": "create_plugin",
       "split": "train",
-      "query": "在 tools/demo 创建 AW 插件和两个 Skill。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "AW 插件作者意图。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "通用 Skill 可作为子阶段，但本 Skill 是顶层 owner。"
+      "tags": [
+        "representative",
+        "core"
+      ],
+      "input": {
+        "query": "在 tools/demo 创建 AW 插件和两个 Skill。",
+        "expectedLoad": true
       }
     },
     {
       "id": "extension",
       "split": "train",
-      "query": "给现有 AW 插件增加 extension、hooks 和权限配置。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "component",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "AW 插件组件变更。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "应读取 extension branch。"
+      "tags": [
+        "representative",
+        "component"
+      ],
+      "input": {
+        "query": "给现有 AW 插件增加 extension、hooks 和权限配置。",
+        "expectedLoad": true
       }
     },
     {
       "id": "mcp",
       "split": "train",
-      "query": "在 AW 插件中新增 MCP/App 并更新 manifest。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "component",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "AW 插件组件变更。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "应读取 MCP/App branch。"
+      "tags": [
+        "representative",
+        "component"
+      ],
+      "input": {
+        "query": "在 AW 插件中新增 MCP/App 并更新 manifest。",
+        "expectedLoad": true
       }
     },
     {
       "id": "slash",
       "split": "validation",
-      "query": "为 AW 插件新增 slash command 和 README 示例。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "component",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "AW 插件组件变更。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "应读取 slash/README branch。"
+      "tags": [
+        "representative",
+        "component"
+      ],
+      "input": {
+        "query": "为 AW 插件新增 slash command 和 README 示例。",
+        "expectedLoad": true
       }
     },
     {
       "id": "external",
       "split": "validation",
-      "query": "在另一个项目的既有合法 Catalog Workspace 中维护 canonical plugins/acme-aw 的 manifest、Skill、构建和物化。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "portable-workspace",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "portable-workspace"
+      ],
+      "input": {
+        "query": "在另一个项目的既有合法 Catalog Workspace 中维护 canonical plugins/acme-aw 的 manifest、Skill、构建和物化。",
+        "expectedLoad": true
       },
-      "oracle": {
+      "audit": {
         "rationale": "目录位置不改变 AW 插件作者职责。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "外部 workspace 仍应触发。",
-        "minimal_counterexample": "将目标改为不含 .agents-plugin/plugin.json 的普通目录或通用 Skill 后，不应加载本 AW Author Skill。"
+        "allowedVariance": "外部 workspace 仍应触发。",
+        "minimalCounterexample": "将目标改为不含 .agents-plugin/plugin.json 的普通目录或通用 Skill 后，不应加载本 AW Author Skill。"
       }
     },
     {
       "id": "review",
       "split": "train",
-      "query": "只读评审 AW 插件并给发布结论。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "author-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "author-review"
+      ],
+      "input": {
+        "query": "只读评审 AW 插件并给发布结论。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "只读评审由 review-aw-plugin 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以调用 Reviewer。",
-        "minimal_counterexample": "改为修改插件后标签翻转。"
+        "allowedVariance": "可以调用 Reviewer。",
+        "minimalCounterexample": "改为修改插件后标签翻转。"
       }
     },
     {
       "id": "portable_skill",
       "split": "train",
-      "query": "创建普通 portable Agent Skill，不涉及 AW manifest。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "generic-skill",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "generic-skill"
+      ],
+      "input": {
+        "query": "创建普通 portable Agent Skill，不涉及 AW manifest。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "通用 Skill 作者拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以调用 author-agent-skill。",
-        "minimal_counterexample": "加入 AW manifest/build 范围后翻转。"
+        "allowedVariance": "可以调用 author-agent-skill。",
+        "minimalCounterexample": "加入 AW manifest/build 范围后翻转。"
       }
     },
     {
       "id": "eval_only",
       "split": "validation",
-      "query": "只为一个 Skill 设计 Eval cases。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-design",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "eval-design"
+      ],
+      "input": {
+        "query": "只为一个 Skill 设计 Eval cases。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "Eval Designer 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "不应触发项目作者。",
-        "minimal_counterexample": "加入插件源码变更后翻转。"
+        "allowedVariance": "不应触发项目作者。",
+        "minimalCounterexample": "加入插件源码变更后翻转。"
       }
     },
     {
       "id": "run_only",
       "split": "validation",
-      "query": "只执行一份 Runner-specific Eval plan。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-runner",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "eval-runner"
+      ],
+      "input": {
+        "query": "只执行一份 Runner-specific Eval plan。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "runner 拥有执行。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "不应触发项目作者。",
-        "minimal_counterexample": "加入 AW 源码修改后翻转。"
+        "allowedVariance": "不应触发项目作者。",
+        "minimalCounterexample": "加入 AW 源码修改后翻转。"
       }
     },
     {
       "id": "install",
       "split": "validation",
-      "query": "安装并使用一个 AW 插件。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "runtime",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "runtime"
+      ],
+      "input": {
+        "query": "安装并使用一个 AW 插件。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "运行时使用不是插件开发。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "使用 runtime 能力。",
-        "minimal_counterexample": "改为维护插件源码后翻转。"
+        "allowedVariance": "使用 runtime 能力。",
+        "minimalCounterexample": "改为维护插件源码后翻转。"
       }
     }
   ]

@@ -1,6 +1,6 @@
 # AW Lifecycle
 
-字段、事件、runner 和 timeout 运行 `aw plugin capabilities --surface lifecycle --json` 查询。lifecycle 只处理安装、升级或卸载时必须发生的插件副作用；配置驱动的平台文件使用 dynamic artifact。
+先读取 `aw plugin capabilities --json` receipt；只有 receipt 含所需领域时，才查询该领域。lifecycle 只处理安装、升级或卸载时必须发生的插件副作用；配置驱动的平台文件使用 dynamic artifact。
 
 入口从 `AW_PLUGIN_CONTEXT` 读取事件、插件根、平台、scope、配置和允许路径。不要用 `process.cwd()`、真实 home 或固定仓库布局推断插件根。只访问 context 授权的路径。
 

@@ -1,216 +1,194 @@
 {
-  "schemaVersion": 1,
-  "skill": "run-aw-skill-evals",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏触发会跳过 aw-skill-eval 的授权和完整性检查；误触发会引入不相关的执行流程。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "run-aw-skill-evals",
+    "participants": [
+      "write-agent-content",
+      "review-agent-content",
+      "author-agent-skill",
+      "review-agent-skill",
+      "design-agent-skill-evals",
+      "audit-agent-skill-evals"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏触发会跳过 aw-skill-eval 的授权和完整性检查；误触发会引入不相关的执行流程。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
   },
   "cases": [
     {
       "id": "run_plan",
       "split": "train",
-      "query": "使用 aw-skill-eval 执行这份 AwSkillEvalExecutionPlan，并保存 EvalRunBundle。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
-        "rationale": "请求明确使用 aw-skill-eval 执行其专用 plan。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "可组合其它能力，但本 Skill 必须负责执行。"
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "使用 aw-skill-eval 执行这份 EvalSpec v1，并保存 EvalResult v1。",
+        "expectedLoad": true
       }
     },
     {
       "id": "comparative",
       "split": "train",
-      "query": "用 aw-skill-eval 的 with-skill 和 baseline 配置运行这组 Skill Eval。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
-        "rationale": "请求明确选择 aw-skill-eval 运行 comparative Eval。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "可以先补齐 plan，但必须加载本 Skill。"
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "用 aw-skill-eval 的 with-skill 和 baseline 配置运行这组 Skill Eval。",
+        "expectedLoad": true
       }
     },
     {
       "id": "explicit_invocation",
       "split": "validation",
-      "query": "使用 $run-aw-skill-evals 执行 plan.json。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
-        "rationale": "用户显式调用本 Skill。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "必须保留副作用授权检查。"
+      "tags": [
+        "representative",
+        "release-critical"
+      ],
+      "input": {
+        "query": "使用 $run-aw-skill-evals 执行 spec.json。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "errorCost": "high"
       }
     },
     {
       "id": "validate_plan",
       "split": "validation",
-      "query": "用 aw-skill-eval 验证这份 AwSkillEvalExecutionPlan，但先不运行。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "core",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
-        "rationale": "plan 验证属于本 Skill 的共享 CLI 合同。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "可以只验证，不得声称已执行。"
+      "tags": [
+        "representative",
+        "release-critical"
+      ],
+      "input": {
+        "query": "用 aw-skill-eval 验证这份 EvalSpec v1，但先不运行。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "errorCost": "high"
       }
     },
     {
       "id": "unaudited",
       "split": "validation",
-      "query": "这份 Agent Skill Eval 还没有 Oracle preflight。请用默认 AW 流程处理，但不要绕过 Audit。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "permission-safety",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "这份 Agent Skill Eval 还没有 Oracle preflight。请用默认 AW 流程处理，但不要绕过 Audit。",
+        "expectedLoad": true
+      },
+      "audit": {
         "rationale": "默认 Runner 是 Agent-facing 编排入口；它必须在执行前取得独立 passing Audit。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "可以只完成 plan validation 或停止；不得启动无 Audit 的模型运行。",
-        "minimal_counterexample": "只要求审核 Oracle 且不准备或执行 Eval 时，应由 Audit 能力处理。"
+        "minimalCounterexample": "只要求审核 Oracle 且不准备或执行 Eval 时，应由 Audit 能力处理。",
+        "errorCost": "high"
       }
     },
     {
       "id": "prepare_selection",
       "split": "validation",
-      "query": "为 agent-skill-toolkit 的 review-agent-skill 准备 behavior suite、project-default profile、validation split，然后通过默认 Runner 审核并执行。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "selection-entry",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
-        "rationale": "请求提供 plugin/skill/suite/profile/split 选择条件，并要求默认 AW Eval 全流程。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "必须由 Runner 调 prepare 并编排 Audit、授权、执行和 triage。",
-        "minimal_counterexample": "只设计 behavior cases 时由 Eval Designer 负责。"
+      "tags": [
+        "representative",
+        "release-critical"
+      ],
+      "input": {
+        "query": "为 agent-skill-toolkit 的 review-agent-skill 准备 behavior suite、project-default profile、validation split，然后通过默认 Runner 审核并执行。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "errorCost": "high"
       }
     },
     {
       "id": "other_runner",
       "split": "validation",
-      "query": "使用 another-eval-engine 执行它自己的 Eval plan。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "runner-boundary",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "使用 another-eval-engine 执行它自己的 Eval plan。",
+        "expectedLoad": false
+      },
+      "audit": {
         "rationale": "本 Skill 只适配 aw-skill-eval。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "应由其它兼容 Runner 处理。",
-        "minimal_counterexample": "改为使用 aw-skill-eval 后标签翻转。"
+        "minimalCounterexample": "改为使用 aw-skill-eval 后标签翻转。",
+        "errorCost": "high"
       }
     },
     {
       "id": "design",
       "split": "train",
-      "query": "为 Skill 设计一组 Eval cases。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-design",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "为 Skill 设计一组 Eval cases。",
+        "expectedLoad": false
+      },
+      "audit": {
         "rationale": "请求是设计，不是执行。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "应由 Eval 设计能力处理。",
-        "minimal_counterexample": "改为执行 aw-skill-eval plan 后标签翻转。"
+        "minimalCounterexample": "改为执行 aw-skill-eval EvalSpec 后标签翻转。"
       }
     },
     {
       "id": "audit",
       "split": "train",
-      "query": "审核 Eval Oracle 是否有效。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-audit",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "审核 Eval Oracle 是否有效。",
+        "expectedLoad": false
+      },
+      "audit": {
         "rationale": "请求是 Audit，不是执行。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "应由 Audit 能力处理。",
-        "minimal_counterexample": "改为执行 aw-skill-eval plan 后标签翻转。"
+        "minimalCounterexample": "改为执行 aw-skill-eval EvalSpec 后标签翻转。"
       }
     },
     {
       "id": "review",
       "split": "train",
-      "query": "评审 Skill 的设计质量，并决定是否可以发布。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "review-routing-boundary",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "评审 Skill 的设计质量，并决定是否可以发布。",
+        "expectedLoad": false
+      },
+      "audit": {
         "rationale": "请求是 Review，不是执行。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "Review 可按需调用兼容 Runner，但不能由本 Skill拥有最终结论。",
-        "minimal_counterexample": "改为只执行 aw-skill-eval plan 后标签翻转。"
+        "minimalCounterexample": "改为只执行 aw-skill-eval EvalSpec 后标签翻转。"
       }
     },
     {
       "id": "normal_command",
       "split": "validation",
-      "query": "运行普通单元测试命令，不是 Agent Skill Eval。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "generic-execution",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "oracle": {
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "运行普通单元测试命令，不是 Agent Skill Eval。",
+        "expectedLoad": false
+      },
+      "audit": {
         "rationale": "请求不属于 Agent Skill Eval。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "应由普通执行能力处理。",
-        "minimal_counterexample": "改为运行 aw-skill-eval 后标签翻转。"
+        "minimalCounterexample": "改为运行 aw-skill-eval 后标签翻转。",
+        "errorCost": "high"
       }
     }
   ]

@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-skill-eval.invalid/schemas/eval-result.schema.json",
+  "title": "EvalResult",
+  "type": "object",
+  "required": ["version", "specDigest", "auditDigest", "targetDigest", "caseDigest", "provider", "startedAt", "finishedAt", "runs", "summary"],
+  "properties": {
+    "version": { "const": 1 },
+    "specDigest": { "$ref": "#/$defs/digest" },
+    "auditDigest": { "$ref": "#/$defs/digest" },
+    "targetDigest": { "$ref": "#/$defs/digest" },
+    "caseDigest": { "$ref": "#/$defs/digest" },
+    "provider": { "$ref": "#/$defs/provider" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "runs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["caseId", "variant", "attempt", "status", "durationMs", "outputDir", "usage", "grade", "error"],
+        "properties": {
+          "caseId": { "type": "string", "minLength": 1 },
+          "variant": { "enum": ["current", "without-skill", "previous-version"] },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "status": { "enum": ["completed", "failed", "timeout"] },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "outputDir": { "$ref": "#/$defs/relativePath" },
+          "usage": { "type": ["object", "null"] },
+          "grade": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "required": ["passed", "score"],
+                "properties": {
+                  "passed": { "type": "boolean" },
+                  "score": { "type": ["number", "null"] },
+                  "details": { "type": "object" }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "error": {
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "required": ["message"],
+                "properties": {
+                  "message": { "type": "string", "minLength": 1 }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["passed", "failed", "timeout", "error"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "timeout": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![\\\\/])(?![A-Za-z]:[\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+"
+    },
+    "provider": {
+      "oneOf": [
+        { "enum": ["codex-trigger", "codex-conversation"] },
+        {
+          "type": "object",
+          "required": ["type", "command"],
+          "properties": {
+            "type": { "const": "custom-process" },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,31 +1,18 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
-import { execFile } from 'node:child_process'
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { compareStrictSemVer, parseStrictSemVer } from '../packages/cli/authoring/scripts/lib/semver.mjs'
 
-const execFileAsync = promisify(execFile)
 const scriptPath = fileURLToPath(import.meta.url)
 const repositoryRoot = path.resolve(path.dirname(scriptPath), '..')
-const expectedProvider = 'aw-skill-eval-process'
-const canonicalSchemaNames = [
-  'aw-skill-eval-execution-plan',
-  'eval-run-bundle',
-  'eval-audit-result',
-  'eval-provider-capabilities',
-  'eval-provider-output',
+const canonicalSchemas = [
+  { name: 'eval-spec', version: 1 },
+  { name: 'eval-audit', version: 1 },
+  { name: 'eval-result', version: 1 },
 ]
-const canonicalSchemaVersions = new Map([
-  ['aw-skill-eval-execution-plan', 4],
-  ['eval-run-bundle', 4],
-  ['eval-audit-result', 3],
-  ['eval-provider-capabilities', 2],
-  ['eval-provider-output', 1],
-])
 const runnerSkillFiles = new Set([
   'README.md',
   'SKILL.md',
@@ -35,18 +22,16 @@ const runnerSkillFiles = new Set([
 const runnerSkillDirectories = new Set(['agents'])
 const allowedAwCommands = [
   /^aw skill eval prepare --help$/u,
-  /^aw skill eval prepare <plugin> --skill <skill> --suite <suite> --profile <profile> --output <new-plan-directory> --json$/u,
+  /^aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json$/u,
+  /^aw skill eval doctor --json$/u,
 ]
 const allowedEvalCommands = [
-  /^aw-skill-eval capabilities --json$/u,
-  /^aw-skill-eval schema print (?:aw-skill-eval-execution-plan|eval-run-bundle|eval-audit-result|eval-provider-capabilities|eval-provider-output)$/u,
-  /^aw-skill-eval digest skill <skill-dir>$/u,
-  /^aw-skill-eval plan validate <plan\.json>$/u,
-  /^aw-skill-eval run <plan\.json>(?: --audit <audit\.json>)+$/u,
-  /^aw-skill-eval bundle validate <bundle\.json>$/u,
-  /^aw-skill-eval audit validate <audit\.json>$/u,
-  /^aw-skill-eval provider-capabilities validate <capabilities\.json>$/u,
-  /^aw-skill-eval provider-output validate <output\.json>$/u,
+  /^aw-skill-eval spec validate <spec\.json>$/u,
+  /^aw-skill-eval audit validate <audit\.json> --spec <spec\.json>$/u,
+  /^aw-skill-eval run <spec\.json> --audit <audit\.json>$/u,
+  /^aw-skill-eval result validate <result\.json> --spec <spec\.json> --audit <audit\.json>$/u,
+  /^aw-skill-eval inspect-result <result\.json> --spec <spec\.json> --audit <audit\.json>$/u,
+  /^aw-skill-eval doctor --json$/u,
 ]
 
 function fail(message) {
@@ -55,11 +40,6 @@ function fail(message) {
 
 function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`
-}
-
-function assertRecord(value, label) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} must be an object.`)
-  return value
 }
 
 function parseMinimumPackageVersion(skill) {
@@ -125,7 +105,6 @@ const shellFenceLanguages = new Set([
 function looksLikeInlineShellCommand(candidate) {
   const normalized = candidate.trim()
   if (normalized === '' || /^[{[]/u.test(normalized)) return false
-  if (normalized === 'assets/aw-skill-eval-execution-plan.template.json') return false
   if (/^(?:aw|aw-skill-eval)\s/u.test(normalized)) return true
   if (/^(?:bash|bun|deno|node|npm|npx|pnpm|pwsh|sh|zsh)\s/u.test(normalized)) return true
   if (/^(?:\.\/)?(?:assets|providers|schemas|scripts)\/[A-Za-z0-9._/-]+$/u.test(normalized)) {
@@ -249,44 +228,19 @@ export async function assertRunnerSkillBundle(skillRoot) {
   }
 }
 
-export function assertCompatibleRuntimeIdentity({
-  capabilities,
+export function assertCompatibleRuntimeVersion({
   packageVersion,
   minimumPackageVersion,
 }) {
-  const runtime = assertRecord(capabilities, 'aw-skill-eval capabilities')
-  if (runtime.schemaVersion !== 2) fail('aw-skill-eval capabilities schemaVersion must be 2.')
-  if (runtime.provider !== expectedProvider) {
-    fail(`aw-skill-eval provider must be ${expectedProvider}, got ${JSON.stringify(runtime.provider)}.`)
-  }
-  parseStrictSemVer(runtime.providerVersion, 'aw-skill-eval providerVersion')
   parseStrictSemVer(packageVersion, 'agent-skill-eval package version')
   parseStrictSemVer(minimumPackageVersion, 'Runner agent-skill-eval minimum version')
-  if (runtime.providerVersion !== packageVersion) {
-    fail('aw-skill-eval providerVersion does not match its built package version.')
-  }
   if (compareStrictSemVer(packageVersion, minimumPackageVersion) < 0) {
     fail(`agent-skill-eval ${packageVersion} does not satisfy Runner >= ${minimumPackageVersion}.`)
   }
 }
 
-async function runJson(command, args, label) {
-  const result = await execFileAsync(command, args, {
-    cwd: repositoryRoot,
-    env: process.env,
-    maxBuffer: 10 * 1024 * 1024,
-  })
-  if (result.stderr !== '') fail(`${label} wrote to stderr: ${result.stderr.trim()}`)
-  try {
-    return JSON.parse(result.stdout)
-  } catch (error) {
-    fail(`${label} did not return one JSON value: ${error.message}`)
-  }
-}
-
 export async function verifyEvalRuntimeOwner() {
   const evalRoot = path.join(repositoryRoot, 'packages', 'agent-skill-eval')
-  const evalBin = path.join(evalRoot, 'dist', 'bin.js')
   const evalApiPath = path.join(evalRoot, 'dist', 'index.js')
   const closureValidatorPath = path.join(
     repositoryRoot,
@@ -309,36 +263,18 @@ export async function verifyEvalRuntimeOwner() {
   if (packageJson.name !== '@lesliechan721/agent-skill-eval') {
     fail('Built Eval runtime package identity must be @lesliechan721/agent-skill-eval.')
   }
-  const capabilities = await runJson(
-    process.execPath,
-    [evalBin, 'capabilities', '--json'],
-    'built aw-skill-eval capabilities',
-  )
   const evalApi = await import(pathToFileURL(evalApiPath).href)
-  const capabilityValidation = await evalApi.validateRuntimeCapabilities(capabilities)
-  if (!capabilityValidation.valid) {
-    fail(`aw-skill-eval capabilities do not satisfy canonical schema v2:\n${capabilityValidation.errors.join('\n')}`)
-  }
 
   const schemas = []
-  for (const name of canonicalSchemaNames) {
-    const printed = await runJson(
-      process.execPath,
-      [evalBin, 'schema', 'print', name],
-      `built aw-skill-eval schema ${name}`,
-    )
+  for (const { name, version } of canonicalSchemas) {
     const canonical = await evalApi.getSchema(name)
-    if (JSON.stringify(printed) !== JSON.stringify(canonical)) {
-      fail(`aw-skill-eval schema print ${name} does not match the canonical package schema.`)
-    }
-    const expectedSchemaVersion = canonicalSchemaVersions.get(name)
-    if (printed?.properties?.schemaVersion?.const !== expectedSchemaVersion) {
-      fail(`${name} canonical schemaVersion must be ${expectedSchemaVersion}.`)
+    if (canonical?.properties?.version?.const !== version) {
+      fail(`${name} canonical version must be ${version}.`)
     }
     const digest = await evalApi.getSchemaDigest(name)
     if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) fail(`${name} canonical schema digest is unreadable.`)
     if (digest !== sha256(JSON.stringify(canonical))) fail(`${name} canonical schema digest does not match its bytes.`)
-    schemas.push({ name, schemaVersion: expectedSchemaVersion, digest })
+    schemas.push({ name, version, digest })
   }
 
   const closureValidator = await import(pathToFileURL(closureValidatorPath).href)
@@ -358,8 +294,7 @@ export async function verifyEvalRuntimeOwner() {
     fail('Claude and Codex Runner bundles declare different agent-skill-eval dependency ranges.')
   }
 
-  assertCompatibleRuntimeIdentity({
-    capabilities,
+  assertCompatibleRuntimeVersion({
     packageVersion: packageJson.version,
     minimumPackageVersion: runnerBundles[0].minimumPackageVersion,
   })
@@ -368,10 +303,8 @@ export async function verifyEvalRuntimeOwner() {
     schemaVersion: 1,
     invariant: 'awSkillEvalExecutionOwner',
     awSkillEvalExecutionOwner: {
-      provider: capabilities.provider,
-      version: capabilities.providerVersion,
       package: packageJson.name,
-      capabilitySchemaVersion: capabilities.schemaVersion,
+      version: packageJson.version,
     },
     schemas,
     runnerBundles,

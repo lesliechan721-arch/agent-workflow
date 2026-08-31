@@ -1,79 +1,41 @@
 {
-  "schemaVersion": 1,
-  "plugin": "agent-skill-toolkit",
-  "skill": "author-agent-skill",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "agent-content-toolkit",
-          "config": {}
-        },
-        {
-          "name": "agent-skill-toolkit",
-          "config": {}
-        },
-        {
-          "name": "aw-skill-eval-runner",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "agent-content-toolkit": {},
+        "agent-skill-toolkit": {},
+        "aw-skill-eval-runner": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "write-agent-content",
-        "review-agent-content",
-        "author-agent-skill",
-        "review-agent-skill",
-        "design-agent-skill-evals",
-        "audit-agent-skill-evals",
-        "run-aw-skill-evals"
-      ],
-      "cases": "./trigger-cases.json",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation"
-      ],
-      "forbidMultipleSkillLoads": false,
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "behavior",
       "kind": "conversation",
-      "skills": [
-        "write-agent-content",
-        "review-agent-content",
-        "author-agent-skill",
-        "review-agent-skill",
-        "design-agent-skill-evals",
-        "audit-agent-skill-evals",
-        "run-aw-skill-evals"
-      ],
-      "cases": "./behavior-cases.json",
-      "isolation": "strict",
+      "cases": "behavior-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": true
     }
   ]
 }

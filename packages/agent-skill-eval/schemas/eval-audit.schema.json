@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-skill-eval.invalid/schemas/eval-audit.schema.json",
+  "title": "EvalAudit",
+  "type": "object",
+  "required": ["version", "targets", "caseDigest", "status", "approvedCaseIds", "blockedCases", "issues"],
+  "properties": {
+    "version": { "const": 1 },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["role", "digest"],
+        "properties": {
+          "role": { "enum": ["current", "previous-version"] },
+          "digest": { "$ref": "#/$defs/digest" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "caseDigest": { "$ref": "#/$defs/digest" },
+    "status": { "enum": ["pass", "fail", "unknown"] },
+    "approvedCaseIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "blockedCases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["caseId", "reason"],
+        "properties": {
+          "caseId": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 },
+          "caseId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

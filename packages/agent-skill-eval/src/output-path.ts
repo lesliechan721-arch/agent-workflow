@@ -10,7 +10,7 @@ export async function assertSafeOutputPath(base: string, target: string): Promis
   const canonicalBase = await realpath(base)
   const resolvedTarget = path.resolve(canonicalBase, target)
   if (!isPathInside(canonicalBase, resolvedTarget) || resolvedTarget === canonicalBase)
-    throw new Error('output path must be a non-root child inside the plan directory')
+    throw new Error('output path must be a non-root child inside the spec directory')
 
   const relative = path.relative(canonicalBase, resolvedTarget)
   let candidate = canonicalBase
@@ -26,6 +26,6 @@ export async function assertSafeOutputPath(base: string, target: string): Promis
     if (info.isSymbolicLink()) throw new Error(`output path component cannot be a symlink: ${candidate}`)
     if (!info.isDirectory()) throw new Error(`output path component must be a directory: ${candidate}`)
     const actual = await realpath(candidate)
-    if (!isPathInside(canonicalBase, actual)) throw new Error('output path leaves the plan directory')
+    if (!isPathInside(canonicalBase, actual)) throw new Error('output path leaves the spec directory')
   }
 }

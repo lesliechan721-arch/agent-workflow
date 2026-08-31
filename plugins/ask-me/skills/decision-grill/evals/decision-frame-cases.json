@@ -1,156 +1,110 @@
 {
-  "skill_name": "decision-grill",
-  "policy": {
-    "optimization": "balanced",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "忽略 Decision frame 会让推荐切换优化方向；无依据地扩大问题或强加 frame 会增加访谈负担。"
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-grill",
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "忽略 Decision frame 会让推荐切换优化方向；无依据地扩大问题或强加 frame 会增加访谈负担。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "security-first-frame",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "decision-frame",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "priority_is_explicit": true
-      },
-      "oracle": {
-        "rationale": "安全优先时，不应以减少代码为由弱化边界。",
-        "rule_refs": [
-          "SKILL.md#建立决策框架"
-        ],
-        "confidence": "high",
-        "allowed_variance": "推荐方案可不同，但必须遵守安全优先。",
-        "minimal_counterexample": "如果用户明确把简单和快速交付置于优先位置，且接口未发布、没有安全边界风险，则推荐可以优先减少代码和兼容层。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression",
+        "decision-frame",
+        "platform-codex",
+        "platform-claude"
+      ],
       "prompt": "围绕新的权限边界逐轮讨论。大前提是安全和正确性优先，可以接受更多代码；不要为了兼容未发布接口增加风险。本轮请提出第一个上游问题并给出推荐。",
-      "scripted_replies": [],
-      "expected_output": "采用安全优先的 Decision frame，并让推荐说明它如何满足该 frame。",
-      "files": [],
-      "review": {
-        "platforms": [
-          "codex",
-          "claude"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "明确采用安全优先",
-          "推荐不以代码少为主要理由弱化安全",
-          "提供问题所需上下文"
-        ]
+      "assertions": [
+        "明确采用安全优先",
+        "推荐不以代码少为主要理由弱化安全",
+        "提供问题所需上下文"
+      ],
+      "expected": {
+        "output": "采用安全优先的 Decision frame，并让推荐说明它如何满足该 frame。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "安全优先时，不应以减少代码为由弱化边界。",
+        "minimalCounterexample": "如果用户明确把简单和快速交付置于优先位置，且接口未发布、没有安全边界风险，则推荐可以优先减少代码和兼容层。",
+        "errorCost": "high",
+        "allowedVariance": "推荐方案可不同，但必须遵守安全优先。"
       }
     },
     {
       "id": "simplicity-first-frame",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "decision-frame",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "unpublished_interface": true
-      },
-      "oracle": {
-        "rationale": "简单优先且接口未发布时，不应默认加入兼容层。",
-        "rule_refs": [
-          "SKILL.md#建立决策框架"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可提出不同实现，但不能为未发布接口无条件保留兼容。"
-      },
+      "split": "validation",
+      "tags": [
+        "representative",
+        "decision-frame",
+        "platform-codex",
+        "platform-claude"
+      ],
       "prompt": "逐轮讨论这个内部工具。优先级是正确、简单、快速交付；接口未发布，不需要兼容；不为假设未来做扩展。先提出最重要的一题。",
-      "scripted_replies": [],
-      "expected_output": "采用简单优先 frame，问题和推荐不引入无需求兼容或扩展层。",
-      "files": [],
-      "review": {
-        "platforms": [
-          "codex",
-          "claude"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "使用给定优先级",
-          "不推荐无必要兼容层",
-          "说明主要收益和代价"
-        ]
+      "assertions": [
+        "使用给定优先级",
+        "不推荐无必要兼容层",
+        "说明主要收益和代价"
+      ],
+      "expected": {
+        "output": "采用简单优先 frame，问题和推荐不引入无需求兼容或扩展层。",
+        "workspaceUnchanged": true
       }
     },
     {
       "id": "question-has-context",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "question-context",
-      "unit_under_test": "instructions",
-      "preconditions": {
-        "relevant_facts_are_known": true
-      },
-      "oracle": {
-        "rationale": "用户应能在当前问题中获得足够上下文。",
-        "rule_refs": [
-          "SKILL.md#推进当前前沿"
-        ],
-        "confidence": "high",
-        "allowed_variance": "不要求固定字段，但必须包含事实、原则、推荐和取舍。"
-      },
+      "split": "validation",
+      "tags": [
+        "representative",
+        "question-context",
+        "platform-codex",
+        "platform-claude"
+      ],
       "prompt": "我们决定日志保留 30 天，数据不能离开公司环境。现在要决定搜索索引放在现有数据库还是独立服务。请只问这一题，并提供足够上下文。",
-      "scripted_replies": [],
-      "expected_output": "问题中说明为什么现在决定、相关事实、适用原则、有依据的推荐和主要代价。",
-      "files": [],
-      "review": {
-        "platforms": [
-          "codex",
-          "claude"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "不重问已知事实",
-          "提供相关背景",
-          "说明推荐依据和取舍"
-        ]
+      "assertions": [
+        "不重问已知事实",
+        "提供相关背景",
+        "说明推荐依据和取舍"
+      ],
+      "expected": {
+        "output": "问题中说明为什么现在决定、相关事实、适用原则、有依据的推荐和主要代价。",
+        "workspaceUnchanged": true
       }
     },
     {
       "id": "standalone-record",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "standalone",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "decision_shape_not_loaded": true
-      },
-      "oracle": {
-        "rationale": "叶子 Skill 必须独立完成任务。",
-        "rule_refs": [
-          "SKILL.md#收尾"
-        ],
-        "confidence": "high",
-        "allowed_variance": "记录结构可不同，但本次任务必须直接向用户交付完整、可独立理解的决定记录。",
-        "minimal_counterexample": "如果用户明确要求塑形多个相互依赖的决定，并允许在访谈和 Prototype 之间选择，则该任务超出单一 decision-grill 访谈。"
-      },
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "standalone",
+        "platform-codex",
+        "platform-claude"
+      ],
       "prompt": "只使用 decision-grill 帮我完成迁移范围决定，并在用户确认后返回完整决策记录。不要使用其它 Skill。",
-      "scripted_replies": [],
-      "expected_output": "直接向用户交付完整、可独立理解的决策记录；完成任务不需要其它 Skill 提供输入或继续处理。",
-      "files": [],
-      "review": {
-        "platforms": [
-          "codex",
-          "claude"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "独立完成",
-          "不依赖宏 Skill",
-          "最终记录面向用户"
-        ]
+      "assertions": [
+        "独立完成",
+        "不依赖宏 Skill",
+        "最终记录面向用户"
+      ],
+      "expected": {
+        "output": "直接向用户交付完整、可独立理解的决策记录；完成任务不需要其它 Skill 提供输入或继续处理。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "叶子 Skill 必须独立完成任务。",
+        "minimalCounterexample": "如果用户明确要求塑形多个相互依赖的决定，并允许在访谈和 Prototype 之间选择，则该任务超出单一 decision-grill 访谈。",
+        "errorCost": "high",
+        "allowedVariance": "记录结构可不同，但本次任务必须直接向用户交付完整、可独立理解的决定记录。"
       }
     }
   ]

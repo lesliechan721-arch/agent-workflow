@@ -1,12 +1,9 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pluginContext = process.env.AW_PLUGIN_CONTEXT
   ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
@@ -23,13 +20,7 @@ async function exists(relativePath) {
   return access(path.join(runtimeSkillRoot, relativePath)).then(() => true, () => false);
 }
 
-async function runInjectedBin(bin, args) {
-  return bin.endsWith('.js')
-    ? execFileAsync(process.execPath, [bin, ...args], { encoding: 'utf8' })
-    : execFileAsync(bin, args, { encoding: 'utf8' });
-}
-
-test('Runner declares the Auditor dependency and no copied engine contract', async () => {
+test('Runner declares the Auditor dependency and v2 runtime capability', async () => {
   const manifest = JSON.parse(await readFile(
     path.join(sourceRoot, '.agents-plugin', 'plugin.json'),
     'utf8',
@@ -38,70 +29,91 @@ test('Runner declares the Auditor dependency and no copied engine contract', asy
   assert.deepEqual(manifest.dependencies, ['agent-skill-toolkit']);
   assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.buildConfig, undefined);
-  assert.deepEqual(manifest.requires.aw.capabilities, ['aw.skill-eval.v1']);
-  for (const relativePath of [
-    'assets/aw-skill-eval-execution-plan.template.json',
-    'schemas',
-    'providers',
-    'scripts',
-  ]) {
+  assert.deepEqual(manifest.requires.aw.capabilities, ['aw.skill-eval.v2']);
+  for (const relativePath of ['schemas', 'providers', 'scripts']) {
     assert.equal(await exists(relativePath), false, relativePath);
   }
 });
 
-test('Runner exposes prepare, Audit, authorization, execution, and triage boundaries', async () => {
+test('Runner exposes exactly five public workflow steps', async () => {
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
-  assert.match(skill, /^user-invocable: true$/mu);
   assert.match(openai, /^\s*allow_implicit_invocation: true$/mu);
+
+  // Static contract exception: an installed Agent reads these five headings as the executable workflow; behavior test is not suitable because the contract is consumed as instructions rather than code.
+  assert.deepEqual(
+    [...skill.matchAll(/^## ([1-5])\. /gmu)].map((match) => Number(match[1])),
+    [1, 2, 3, 4, 5],
+  );
   for (const command of [
-    'aw skill eval prepare <plugin> --skill <skill> --suite <suite> --profile <profile> --output <new-plan-directory> --json',
-    'aw-skill-eval capabilities --json',
-    'aw-skill-eval schema print aw-skill-eval-execution-plan',
-    'aw-skill-eval schema print eval-run-bundle',
-    'aw-skill-eval schema print eval-audit-result',
-    'aw-skill-eval plan validate <plan.json>',
-    'aw-skill-eval audit validate <audit.json>',
-    'aw-skill-eval run <plan.json> --audit <audit.json>',
-    'aw-skill-eval bundle validate <bundle.json>',
+    'aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json',
+    'aw-skill-eval spec validate <spec.json>',
+    'aw-skill-eval audit validate <audit.json> --spec <spec.json>',
+    'aw-skill-eval run <spec.json> --audit <audit.json>',
+    'aw-skill-eval result validate <result.json> --spec <spec.json> --audit <audit.json>',
   ]) {
     assert.ok(skill.includes(command), command);
   }
-  assert.match(skill, /无 passing preflight Audit 不得启动 provider/u);
-  assert.match(skill, /只有全部 preflight Audit 通过后/u);
-  assert.match(skill, /新的全新上下文/u);
+  assert.match(skill, /预计调用数 `<=10`/u);
+  assert.match(skill, /预计调用数 `>10`/u);
+  assert.match(skill, /`custom-process` 因调用数和外部影响未知/u);
+  // Static contract exception: an installed Runner must disclose that custom-process is cooperative containment, not a sandbox; behavior test is not suitable because this safety boundary is direct Agent instruction.
+  assert.match(skill, /可信、协作式 provider，不是任意外部程序 sandbox/u);
+  assert.match(skill, /Engine 只在 macOS\/Linux 启动它/u);
+  assert.match(skill, /违反或检查失效会 fail closed、丢弃 grade 并停止 batch/u);
+  assert.match(skill, /Runner 只披露并调用 Engine，不重复该运行期检查/u);
+  assert.match(skill, /clean success 直接结束，不要求 triage/u);
+  assert.match(skill, /只有出现 execution\/grade 失败、current 结果混合、current 相对 baseline 回归/u);
+
+  const diagnosticsStart = skill.indexOf('## 高级诊断');
+  assert.ok(diagnosticsStart > 0, 'advanced diagnostics pointer');
+  const publicWorkflow = skill.slice(skill.indexOf('## 1. '), diagnosticsStart);
+  assert.doesNotMatch(publicWorkflow, /\bdoctor\b|capabilit(?:y|ies)|\bdescribe\b|\bsmoke\b/u);
+  assert.match(publicWorkflow, /run 失败.*高级诊断/u);
+  assert.ok(skill.indexOf('aw skill eval doctor --json') > diagnosticsStart);
+  assert.match(skill.slice(diagnosticsStart), /安装或版本升级.*用户显式请求.*run 失败/u);
+
+  // Static contract exception: obsolete commands can start unapproved model paths or bind stale contracts; behavior test is not suitable because absence from the installed instructions is the safety property.
+  for (const forbidden of [
+    /capabilities --json/u,
+    /schema print/u,
+    /provider describe/u,
+    /provider smoke/u,
+    /plan validate/u,
+    /bundle validate/u,
+    /EvalRunBundle/u,
+    /EvalAuditResult/u,
+    /Plan v4/u,
+    /Bundle v4/u,
+    /逐.*digest/u,
+    /强制.*triage/u,
+  ]) {
+    assert.doesNotMatch(skill, forbidden);
+  }
   assert.doesNotMatch(skill, /\bnpx\b/u);
 });
 
-test('trigger cases route direct selection and reject unaudited execution', async () => {
+test('Runner user-facing summaries agree on EvalSpec, EvalAudit, EvalResult, and conditional triage', async () => {
+  const [skillReadme, pluginReadme, openai] = await Promise.all([
+    readRuntime('README.md'),
+    readFile(path.join(sourceRoot, 'README.md'), 'utf8'),
+    readRuntime('agents/openai.yaml'),
+  ]);
+  // Static contract exception: conflicting installed summaries cause users to authorize the wrong workflow; behavior test is not suitable because these are direct user and Agent instructions.
+  for (const text of [skillReadme, pluginReadme, openai]) {
+    assert.match(text, /EvalSpec/u);
+    assert.match(text, /EvalAudit|Audit/u);
+    assert.match(text, /EvalResult/u);
+    assert.match(text, /triage/u);
+  }
+});
+
+test('trigger cases route direct selection and reject Audit-only requests', async () => {
   const cases = JSON.parse(await readFile(
     path.join(sourceRoot, 'skills/run-aw-skill-evals/evals/trigger-cases.json'),
     'utf8',
   )).cases;
-  assert.equal(cases.find((entry) => entry.id === 'prepare_selection')?.should_load_skill, true);
-  assert.equal(cases.find((entry) => entry.id === 'unaudited')?.should_load_skill, true);
-  assert.equal(cases.find((entry) => entry.id === 'audit')?.should_load_skill, false);
+  assert.equal(cases.find((entry) => entry.id === 'prepare_selection')?.input.expectedLoad, true);
+  assert.equal(cases.find((entry) => entry.id === 'unaudited')?.input.expectedLoad, true);
+  assert.equal(cases.find((entry) => entry.id === 'audit')?.input.expectedLoad, false);
 });
-
-test(
-  'an injected canonical CLI reports capabilities v2 and Plan/Bundle v4',
-  { skip: !process.env.AW_SKILL_EVAL_TEST_BIN },
-  async () => {
-    const bin = process.env.AW_SKILL_EVAL_TEST_BIN;
-    const capabilities = JSON.parse(
-      (await runInjectedBin(bin, ['capabilities', '--json'])).stdout,
-    );
-    assert.equal(capabilities.schemaVersion, 2);
-
-    for (const [schemaName, version] of [
-      ['aw-skill-eval-execution-plan', 4],
-      ['eval-run-bundle', 4],
-      ['eval-audit-result', 3],
-    ]) {
-      const schema = JSON.parse(
-        (await runInjectedBin(bin, ['schema', 'print', schemaName])).stdout,
-      );
-      assert.equal(schema.properties.schemaVersion.const, version);
-    }
-  },
-);

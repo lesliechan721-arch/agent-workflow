@@ -38,7 +38,7 @@ node scripts/validate-json-contract.mjs \
 | references、assets 或信息层级变化 | `references/package-and-disclosure.md` |
 | 本地脚本变化 | `references/script-authoring.md` |
 | 完整创建或重大变更交付前 | `references/completion-and-validation.md` |
-| 需要判断是否拆分一个 Skill | `references/composition-audit.md` |
+| 需要判断是否拆分一个 Skill；新增或修改跨 Skill handoff、固定机器输出字段、状态枚举或 handoff schema；引用其它 Skill 的目录、阶段、状态或后续能力 | `references/composition-audit.md` |
 
 详细通用规则见 `references/author-standard.md`；只读取与当前变更面相关的部分。
 

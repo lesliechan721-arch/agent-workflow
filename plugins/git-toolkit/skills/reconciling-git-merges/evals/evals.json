@@ -1,112 +1,86 @@
 {
-  "skill_name": "reconciling-git-merges",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "错误完成冲突或语义交互会改变产品行为和 Git 历史；错误执行 analysis-only 场景会破坏用户本地状态。"
+  "version": 1,
+  "suite": {
+    "kind": "custom-process",
+    "unitUnderTest": "reconciling-git-merges",
+    "participants": [
+      "git-commit"
+    ],
+    "defaultGrader": "provider",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "错误完成冲突或语义交互会改变产品行为和 Git 历史；错误执行 analysis-only 场景会破坏用户本地状态。"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "ambiguous_retention",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "ambiguous_product_policy",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "main 已检出，origin/feature 与 main 对 retention.py 有冲突",
-        "decision_evidence": "仓库只提供 7 天和 90 天两个不兼容目标，没有优先级"
-      },
-      "prompt": "将附件 `ambiguous-retention.bundle` 克隆到临时仓库，保持 `main` 已检出，然后合并 `origin/feature`。只解决仓库证据能够支持的内容；不要发明新的数据保留策略。",
-      "expected_output": "Agent 找出七天隐私保留与九十天审计保留这两个不兼容意图，不自行选择或发明折中方案，不提交合并，并结合证据明确指出尚待决定的产品问题。",
-      "files": [
-        "evals/files/ambiguous-retention.bundle"
+      "split": "validation",
+      "tags": [
+        "boundary"
       ],
-      "oracle": {
+      "input": {
+        "prompt": "将附件 `ambiguous-retention.bundle` 克隆到临时仓库，保持 `main` 已检出，然后合并 `origin/feature`。只解决仓库证据能够支持的内容；不要发明新的数据保留策略。",
+        "files": [
+          "evals/files/ambiguous-retention.bundle"
+        ]
+      },
+      "expected": {
+        "outcome": "Agent 找出七天隐私保留与九十天审计保留这两个不兼容意图，不自行选择或发明折中方案，不提交合并，并结合证据明确指出尚待决定的产品问题。"
+      },
+      "audit": {
         "rationale": "Skill 要求证据不足时保留待决冲突，不发明产品行为，也不完成 merge。",
-        "rule_refs": [
-          "SKILL.md:8-14"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同调查顺序和决策请求措辞；必须保留未解决状态、双方值和未提交历史。",
-        "minimal_counterexample": "仅增加一项明确且有权威依据的 retention 优先级后，应解决冲突、验证并完成 merge。"
+        "minimalCounterexample": "仅增加一项明确且有权威依据的 retention 优先级后，应解决冲突、验证并完成 merge。"
       }
     },
     {
       "id": "semantic_same_file",
-      "eval_type": "outcome",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "semantic_same_file_interaction",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "main 已检出，Git 可以 clean merge",
-        "semantic_interaction": "基础类 fast path 与子类 hook 修改位于同一文件"
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "将附件 `semantic-same-file.bundle` 克隆到临时仓库，保持 `main` 已检出，然后合并 `origin/feature`。Git 应能 clean merge。保留 main 中基础 Logger 的批量 fast path，以及 feature 中 FilteredLogger hook 的语义；运行测试并完成合并。",
+        "files": [
+          "evals/files/semantic-same-file.bundle"
+        ]
       },
-      "prompt": "将附件 `semantic-same-file.bundle` 克隆到临时仓库，保持 `main` 已检出，然后合并 `origin/feature`。Git 应能 clean merge。保留 main 中基础 Logger 的批量 fast path，以及 feature 中 FilteredLogger hook 的语义；运行测试并完成合并。",
-      "expected_output": "Agent 识别 clean merge 中的同文件语义冲突，进行聚焦的集成修改，同时保留基础类 fast path 与子类动态派发语义；全部测试通过后提交一个双父 merge commit。",
-      "files": [
-        "evals/files/semantic-same-file.bundle"
-      ],
-      "oracle": {
-        "rationale": "Skill 要求 clean merge 仍检查相关行为，保留双方意图并验证组合结果。",
-        "rule_refs": [
-          "SKILL.md:8-14"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同等价实现；必须保留 fast path、动态派发、通过测试并只创建一个双父 merge commit。"
+      "expected": {
+        "outcome": "Agent 识别 clean merge 中的同文件语义冲突，进行聚焦的集成修改，同时保留基础类 fast path 与子类动态派发语义；全部测试通过后提交一个双父 merge commit。"
       }
     },
     {
       "id": "semantic_cross_file",
-      "eval_type": "outcome",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "semantic_cross_file_contract",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "main 已检出，producer 与 consumer 位于不同文件",
-        "semantic_interaction": "subtotal 返回分值，invoice 仍按元格式化"
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "prompt": "将附件 `semantic-cross-file.bundle` 克隆到临时仓库，保持 `main` 已检出，然后合并 `origin/feature`。Main 已把 `subtotal` 改为返回整数分值，feature 新增的 invoice renderer 仍按元处理。保留双方意图，验证并完成合并。",
+        "files": [
+          "evals/files/semantic-cross-file.bundle"
+        ]
       },
-      "prompt": "将附件 `semantic-cross-file.bundle` 克隆到临时仓库，保持 `main` 已检出，然后合并 `origin/feature`。Main 已把 `subtotal` 改为返回整数分值，feature 新增的 invoice renderer 仍按元处理。保留双方意图，验证并完成合并。",
-      "expected_output": "Agent 跨文件追踪 producer-consumer 契约，在 invoice 边界做最小适配，不进行无关重构；全部测试通过后提交合并。",
-      "files": [
-        "evals/files/semantic-cross-file.bundle"
-      ],
-      "oracle": {
-        "rationale": "Skill 明确要求跨文件追踪契约，并只做该交互需要的集成修改。",
-        "rule_refs": [
-          "SKILL.md:8-14"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许在等价边界转换；必须修复分值与元的契约、通过测试并完成 merge。"
+      "expected": {
+        "outcome": "Agent 跨文件追踪 producer-consumer 契约，在 invoice 边界做最小适配，不进行无关重构；全部测试通过后提交合并。"
       }
     },
     {
       "id": "analysis_only_dirty_worktree",
-      "eval_type": "outcome",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "analysis_only_dirty_workspace",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "repository_state": "main 已检出，README.md 有无关未提交修改",
-        "authorization": "只分析，不执行 merge 或编辑文件"
-      },
-      "prompt": "解压附件 `analysis-only-dirty-worktree.tar.gz`。其中 `main` 已检出，`README.md` 含有与本次 merge 无关且尚未提交的本地修改。只分析将 `origin/feature` 合并到 `main` 的文本和语义风险；不要执行 merge，也不要改变 refs、暂存区或工作树内容。报告发现的契约交互、建议的最小修复和验证方案。",
-      "expected_output": "Agent 识别 subtotal 的分值返回与 invoice 按元格式化之间的跨文件契约问题，提出聚焦修复与验证方案；不执行 merge、stash、reset、commit 或文件编辑，并使 HEAD、refs、index、worktree 以及 README.md 的本地修改保持不变。",
-      "files": [
-        "evals/files/analysis-only-dirty-worktree.tar.gz"
+      "split": "validation",
+      "tags": [
+        "boundary"
       ],
-      "oracle": {
+      "input": {
+        "prompt": "解压附件 `analysis-only-dirty-worktree.tar.gz`。其中 `main` 已检出，`README.md` 含有与本次 merge 无关且尚未提交的本地修改。只分析将 `origin/feature` 合并到 `main` 的文本和语义风险；不要执行 merge，也不要改变 refs、暂存区或工作树内容。报告发现的契约交互、建议的最小修复和验证方案。",
+        "files": [
+          "evals/files/analysis-only-dirty-worktree.tar.gz"
+        ]
+      },
+      "expected": {
+        "outcome": "Agent 识别 subtotal 的分值返回与 invoice 按元格式化之间的跨文件契约问题，提出聚焦修复与验证方案；不执行 merge、stash、reset、commit 或文件编辑，并使 HEAD、refs、index、worktree 以及 README.md 的本地修改保持不变。"
+      },
+      "audit": {
         "rationale": "Skill 要求 analysis-only 场景不改变 refs、index 或 worktree，同时仍识别跨文件契约风险。",
-        "rule_refs": [
-          "SKILL.md:6-12"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同分析结构；仓库状态必须逐字节保持，且报告必须识别分值与元的契约。",
-        "minimal_counterexample": "仅将授权改为执行 merge 后，允许在保护无关本地修改的前提下完成聚焦集成。"
+        "minimalCounterexample": "仅将授权改为执行 merge 后，允许在保护无关本地修改的前提下完成聚焦集成。"
       }
     }
   ]

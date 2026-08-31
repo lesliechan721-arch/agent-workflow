@@ -18,23 +18,6 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)))
 })
 
-async function addReservedEvalImport(pluginRoot: string): Promise<void> {
-  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
-  const manifest = await fs.readJson(manifestPath)
-  manifest.buildConfig = {
-    buildImports: [{
-      plugin: '@aw/agent-skill-eval',
-      export: 'case-corpus-digest',
-      env: 'AW_PLUGIN_IMPORT_CASE_CORPUS_DIGEST',
-    }],
-  }
-  manifest.scripts = {
-    node: { build: { runner: 'node', path: './scripts/build.mjs' } },
-  }
-  await fs.outputFile(path.join(pluginRoot, 'scripts', 'build.mjs'), 'export {}\n')
-  await fs.writeJson(manifestPath, manifest, { spaces: 2 })
-}
-
 describe('AW capability CLI commands', () => {
   it('emits one self describe JSON object', async () => {
     const result = await runCliEntry(['self', 'describe', '--json'])
@@ -45,7 +28,7 @@ describe('AW capability CLI commands', () => {
       command: 'self:describe',
       awVersion: expect.any(String),
       coreVersion: expect.any(String),
-      capabilities: expect.arrayContaining(['aw.self-check.v1', 'aw.skill-eval.v1']),
+      capabilities: expect.arrayContaining(['aw.self-check.v1', 'aw.skill-eval.v2']),
       capabilitySetDigest: expect.stringMatching(/^sha256:/u),
     })
   })
@@ -140,26 +123,6 @@ describe('AW capability CLI commands', () => {
     })
   })
 
-  it('uses CLI reserved imports when self check falls back to a manifest', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-self-check-reserved-import-'))
-    tempDirs.push(root)
-    const pluginRoot = path.join(root, 'plugin')
-    await fs.copy(fixturePath('repo-template', 'plugins', 'git-commit'), pluginRoot)
-    await addReservedEvalImport(pluginRoot)
-
-    const result = await runCliEntry(['self', 'check', '--from', pluginRoot, '--json'], { cwd: root })
-    expect(result.exitCode).toBe(0)
-    expect(result.stderr).toBe('')
-    expect(result.parseJsonStdout()).toMatchObject({
-      command: 'self:check',
-      ok: true,
-      requiredCapabilities: expect.arrayContaining([
-        'aw.plugin-build-config.v1',
-        'aw.runtime-imports.v1',
-      ]),
-    })
-  })
-
   it('inspects source requirements without changing plugin files', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-cli-'))
     tempDirs.push(root)
@@ -224,27 +187,6 @@ describe('AW capability CLI commands', () => {
       declared: [],
     })
     await expect(fs.readJson(manifestPath)).resolves.toMatchObject({ version: '0.1.0' })
-  })
-
-  it('uses CLI reserved imports for plugin requirements', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-requirements-reserved-'))
-    tempDirs.push(root)
-    await fs.copy(fixturePath('repo-template'), root)
-    const pluginRoot = path.join(root, 'plugins', 'git-commit')
-    await addReservedEvalImport(pluginRoot)
-
-    const result = await runCliEntry([
-      'plugin', 'requirements', pluginRoot, '--workspace-root', root, '--json',
-    ], { cwd: root })
-    expect(result.exitCode).toBe(0)
-    expect(result.stderr).toBe('')
-    expect(result.parseJsonStdout()).toMatchObject({
-      command: 'plugin:requirements',
-      derived: expect.arrayContaining([
-        'aw.plugin-build-config.v1',
-        'aw.runtime-imports.v1',
-      ]),
-    })
   })
 
   it('emits one blocking plugin requirements JSON object with exit 1 and empty stderr', async () => {

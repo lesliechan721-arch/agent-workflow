@@ -1,110 +1,59 @@
 {
-  "schemaVersion": 1,
-  "plugin": "aw-plugin-development",
-  "skill": "author-aw-plugin",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "agent-content-toolkit",
-          "config": {}
-        },
-        {
-          "name": "agent-skill-toolkit",
-          "config": {}
-        },
-        {
-          "name": "aw-skill-eval-runner",
-          "config": {}
-        },
-        {
-          "name": "aw-plugin-development",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "agent-content-toolkit": {},
+        "agent-skill-toolkit": {},
+        "aw-skill-eval-runner": {},
+        "aw-plugin-development": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "author-aw-plugin",
-        "review-aw-plugin",
-        "write-agent-content",
-        "review-agent-content",
-        "author-agent-skill",
-        "review-agent-skill",
-        "design-agent-skill-evals",
-        "audit-agent-skill-evals",
-        "run-aw-skill-evals"
-      ],
-      "cases": "./trigger-cases.json",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation"
-      ],
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "behavior",
       "kind": "conversation",
-      "skills": [
-        "author-aw-plugin",
-        "review-aw-plugin",
-        "write-agent-content",
-        "review-agent-content",
-        "author-agent-skill",
-        "review-agent-skill",
-        "design-agent-skill-evals",
-        "audit-agent-skill-evals",
-        "run-aw-skill-evals"
-      ],
-      "cases": "./behavior-cases.json",
-      "isolation": "strict",
+      "cases": "behavior-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 420000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 420000
+      "releaseSplits": [
+        "validation"
+      ]
     },
     {
       "id": "lightweight-delta",
       "kind": "conversation",
-      "skills": [
-        "author-aw-plugin",
-        "review-aw-plugin",
-        "write-agent-content",
-        "review-agent-content",
-        "author-agent-skill",
-        "review-agent-skill",
-        "design-agent-skill-evals",
-        "audit-agent-skill-evals",
-        "run-aw-skill-evals"
-      ],
-      "cases": "./lightweight-delta-cases.json",
-      "isolation": "strict",
+      "cases": "lightweight-delta-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 180000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

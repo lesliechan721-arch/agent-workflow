@@ -1,146 +1,134 @@
 {
-  "schemaVersion": 1,
-  "skill": "author-aw-catalog",
-  "audit_status": "not assessed",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "Catalog composition 与单插件源码有不同 owner。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "author-aw-catalog",
+    "participants": [
+      "review-aw-catalog",
+      "publish-aw-catalog",
+      "author-aw-plugin",
+      "review-aw-plugin",
+      "review-aw-workflow"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "Catalog composition 与单插件源码有不同 owner。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": true
+    }
   },
   "cases": [
     {
       "id": "catalog_maintenance",
       "split": "train",
-      "query": "在这个 AW Catalog Workspace 中新增一个插件，更新 inventory 和依赖，并完成整个 Catalog 验证。",
-      "expected_loaded_skills": ["author-aw-catalog"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "catalog-authoring",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "common",
-        "impact": "high",
-        "false_negative_cost": "high",
-        "false_positive_cost": "high",
-        "rationale": "漏接会遗漏 inventory 与聚合验证；误接会侵占 Plugin Author。"
-      },
-      "oracle": {
-        "rationale": "请求主要交付是 Catalog composition 和聚合验证。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "必须把插件内部写入交给 author-aw-plugin。"
+      "tags": [
+        "representative",
+        "catalog-authoring"
+      ],
+      "input": {
+        "query": "在这个 AW Catalog Workspace 中新增一个插件，更新 inventory 和依赖，并完成整个 Catalog 验证。",
+        "expected": {
+          "loadedSkills": [
+            "author-aw-catalog"
+          ]
+        }
       }
     },
     {
       "id": "catalog_dependency_update_requires_aggregation",
       "split": "validation",
-      "query": "把 plugins/search-tools 加入当前 Catalog inventory，让它依赖 shared-rules，并重新验证全部插件和 Catalog 聚合结果。",
-      "expected_loaded_skills": ["author-aw-catalog"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "catalog-authoring",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "occasional",
-        "impact": "high",
-        "false_negative_cost": "high",
-        "false_positive_cost": "high",
-        "rationale": "依赖和 inventory 是 Catalog composition 边界。"
+      "tags": [
+        "boundary",
+        "catalog-authoring"
+      ],
+      "input": {
+        "query": "把 plugins/search-tools 加入当前 Catalog inventory，让它依赖 shared-rules，并重新验证全部插件和 Catalog 聚合结果。",
+        "expected": {
+          "loadedSkills": [
+            "author-aw-catalog"
+          ]
+        }
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求改变 Catalog inventory 和跨插件依赖，并要求聚合验证，因此由 Catalog Author 拥有。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "插件内部文件仍应交给 author-aw-plugin；Catalog Author 必须保留 composition 和聚合验证责任。",
-        "minimal_counterexample": "若只修改 search-tools 内部 lifecycle 且不改变 inventory、依赖或聚合结果，则不应加载 Catalog Author。"
+        "minimalCounterexample": "若只修改 search-tools 内部 lifecycle 且不改变 inventory、依赖或聚合结果，则不应加载 Catalog Author。",
+        "errorCost": "high",
+        "allowedVariance": "插件内部文件仍应交给 author-aw-plugin；Catalog Author 必须保留 composition 和聚合验证责任。"
       }
     },
     {
       "id": "lifecycle_change_routes_to_plugin_author",
       "split": "validation",
-      "query": "只修改已有 plugins/cache-tools 的 uninstall lifecycle，不改 Catalog metadata、inventory、依赖或 Catalog 版本。",
-      "expected_loaded_skills": ["author-aw-plugin"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "plugin-only-change",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "common",
-        "impact": "high",
-        "false_negative_cost": "high",
-        "false_positive_cost": "high",
-        "rationale": "这是新增或删除插件 handoff 的最小反例：单插件内部修改不改变 Catalog composition。"
+      "tags": [
+        "boundary",
+        "plugin-only-change"
+      ],
+      "input": {
+        "query": "只修改已有 plugins/cache-tools 的 uninstall lifecycle，不改 Catalog metadata、inventory、依赖或 Catalog 版本。",
+        "expected": {
+          "loadedSkills": [
+            "author-aw-plugin"
+          ]
+        }
       },
-      "oracle": {
+      "audit": {
         "rationale": "单插件 lifecycle 内容由 author-aw-plugin 直接拥有。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "不得仅因插件位于 Catalog Workspace 就加载 Catalog Author。",
-        "minimal_counterexample": "若新增或删除插件改变 inventory，或要求全 Catalog 聚合验证，则应加载 Catalog Author；只改单插件内部 lifecycle 时不加载。"
+        "minimalCounterexample": "若新增或删除插件改变 inventory，或要求全 Catalog 聚合验证，则应加载 Catalog Author；只改单插件内部 lifecycle 时不加载。",
+        "errorCost": "high",
+        "allowedVariance": "不得仅因插件位于 Catalog Workspace 就加载 Catalog Author。"
       }
     },
     {
       "id": "catalog_review",
       "split": "validation",
-      "query": "只读评审 Catalog 的 inventory、依赖图和版本一致性。",
-      "expected_loaded_skills": ["review-aw-catalog"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "catalog-review",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "common",
-        "impact": "high",
-        "false_negative_cost": "high",
-        "false_positive_cost": "high",
-        "rationale": "只读 Review 与写入 Author 必须分流。"
+      "tags": [
+        "boundary",
+        "catalog-review"
+      ],
+      "input": {
+        "query": "只读评审 Catalog 的 inventory、依赖图和版本一致性。",
+        "expected": {
+          "loadedSkills": [
+            "review-aw-catalog"
+          ]
+        }
       },
-      "oracle": {
+      "audit": {
         "rationale": "只读 composition Review 由 review-aw-catalog 拥有。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "不得执行写入。",
-        "minimal_counterexample": "若用户要求修复 inventory、依赖或版本并完成聚合验证，则应加载 Catalog Author。"
+        "minimalCounterexample": "若用户要求修复 inventory、依赖或版本并完成聚合验证，则应加载 Catalog Author。",
+        "errorCost": "high",
+        "allowedVariance": "不得执行写入。"
       }
     },
     {
       "id": "catalog_publish",
       "split": "validation",
-      "query": "把这个 Catalog 发布到 origin 的 catalog 分支。",
-      "expected_loaded_skills": ["publish-aw-catalog"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "catalog-publication",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "rare",
-        "impact": "critical",
-        "false_negative_cost": "high",
-        "false_positive_cost": "critical",
-        "rationale": "误路由会使 Author 越过远端写授权边界。"
+      "tags": [
+        "boundary",
+        "catalog-publication"
+      ],
+      "input": {
+        "query": "把这个 Catalog 发布到 origin 的 catalog 分支。",
+        "expected": {
+          "loadedSkills": [
+            "publish-aw-catalog"
+          ]
+        }
       },
-      "oracle": {
+      "audit": {
         "rationale": "远端发布只由 publish-aw-catalog 拥有；Catalog Author 绝不发布。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "可以说明需要 Publisher；不得由 Author 发布。",
-        "minimal_counterexample": "若用户只要求维护、build、validate 或 development source activation 且不发布，则应加载 Catalog Author。"
+        "minimalCounterexample": "若用户只要求维护、build、validate 或 development source activation 且不发布，则应加载 Catalog Author。",
+        "errorCost": "high",
+        "allowedVariance": "可以说明需要 Publisher；不得由 Author 发布。"
       }
     }
   ]

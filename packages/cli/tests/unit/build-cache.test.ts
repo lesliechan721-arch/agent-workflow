@@ -213,11 +213,11 @@ describe('build cache input and environment identity', () => {
       'packages',
       'agent-skill-eval',
       'schemas',
-      'eval-run-bundle.schema.json',
+      'eval-result.schema.json',
     );
-    await fs.writeFile(schemaPath, '{"schemaVersion":4}\n');
+    await fs.writeFile(schemaPath, '{"version":1}\n');
     const initialDigest = await computeBuildInputDigest(repoRoot);
-    await fs.writeFile(schemaPath, '{"schemaVersion":4,"title":"changed"}\n');
+    await fs.writeFile(schemaPath, '{"version":1,"title":"changed"}\n');
     await expect(computeBuildInputDigest(repoRoot)).resolves.not.toBe(initialDigest);
   });
 

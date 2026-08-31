@@ -1,40 +1,33 @@
 {
-  "skill_name": "codex-subagent-guide",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "critical",
-    "false_positive_cost": "high",
-    "rationale": "提前完成、短等待或过早清理会丢失真实结果；正常终态路径被误拒会增加成本，因此 lifecycle 不变量使用关键失败门禁。"
+  "version": 1,
+  "suite": {
+    "kind": "custom-process",
+    "unitUnderTest": "codex-subagent-guide",
+    "defaultGrader": "provider",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "critical",
+      "falsePositiveCost": "high",
+      "rationale": "提前完成、短等待或过早清理会丢失真实结果；正常终态路径被误拒会增加成本，因此 lifecycle 不变量使用关键失败门禁。"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "wait_for_terminal_result",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "terminal-wait-lifecycle",
-      "unit_under_test": "full-skill",
-      "profiles": [
-        "project-default"
-      ],
-      "preconditions": {
-        "runtime_profile": "V2",
-        "child_task": "simple 子代理只读读取单个已知文件，预期在首次 10 分钟等待内完成",
-        "timeout_coverage": "当前 release case 不强制制造 runtime timeout"
-      },
-      "oracle": {
-        "rationale": "父代理必须启动一次、使用不少于 10 分钟的首次等待并观察真实终态；如果实际发生 timeout，则必须再次等待，清理只能位于结果之后。",
-        "rule_refs": [
-          "../SKILL.md#等待与清理"
+      "split": "validation",
+      "tags": [],
+      "input": {
+        "profiles": [
+          "project-default"
         ],
-        "confidence": "high",
-        "allowed_variance": "子代理可以在首次 wait 内完成，因此不要求 timeout；spawn 次数、最小等待、终态顺序和条件性清理顺序必须满足 expected。"
+        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，只读读取 src/simple.ts 并报告 retryLimit 的值。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；超时不等于失败。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。"
       },
-      "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，只读读取 src/simple.ts 并报告 retryLimit 的值。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；超时不等于失败。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。",
       "expected": {
-        "minimum_initial_wait_timeout_ms": 600000,
-        "spawn_count": 1,
-        "require_timeout": false
+        "criteria": {
+          "minimum_initial_wait_timeout_ms": 600000,
+          "spawn_count": 1,
+          "require_timeout": false
+        }
       }
     }
   ]

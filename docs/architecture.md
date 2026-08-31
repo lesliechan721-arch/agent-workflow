@@ -255,18 +255,21 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 
 独立入口 `pnpm qualification:codex-project-native` 只用于 rollout qualification。它使用临时 Codex home、临时项目和临时本地 marketplace，且不进入普通 test、build 或 release 默认链。机器报告只说明该次 CLI/OS 的 qualification 结果，不授权或记录任何用户安装。
 
-## Agent Skill Eval Plan 与 Runner 边界
+## Agent Skill Eval v1 与 Runner 边界
 
-- Skill-local `evals/manifest.json` 的准备合同是 CLI 拥有的 `AwSkillEvalManifest v1`。`aw skill eval prepare` 通过 Catalog Workspace 解析 canonical plugin，复用真实 bundle、依赖、profile config 和平台 materialization，输出一个 profile 的输入完整 `AwSkillEvalExecutionPlan v4` 目录。Plan 输入只引用目录内的 target、可选 previous target、筛选后的 cases、provider capability 文档、suite metadata/fixture 和移除目标 Skill 后的完整 subject base；最终目录在 staging 完整验证后原子发布，已有、过宽或含符号链接的目标 fail closed。profile 不得把 sensitive config 值带入 Plan。
-- `aw skill eval check` 只读取 Manifest 注册的 document/schema，并用 Draft 2020-12 `json-schema` checker 输出 CLI 拥有的 `AwSkillEvalCheckResult v1`。它不 build 或 materialize plugin，不运行 renderer、provider、任意脚本或模型，不生成 `EvalRunBundle`，也不消费 provider/model 凭据；结果只绑定 document 和 schema 摘要。
-- `aw` 的 Eval 子命令只有 `aw skill eval prepare|check|provider`。`prepare` 和 `check` 是确定性操作，不启动模型；`provider` 是 Plan 记录的低层 provider 进程入口，不是第二个运行编排器。
-- Eval 执行的唯一机器 owner 是 npm package `@lesliechan721/agent-skill-eval` 的 `aw-skill-eval` bin。当前合同固定为 Plan v4、`EvalRunBundle v4`、`EvalAuditResult v3`、provider capabilities v2 和 provider output v1。兼容 bundle 使用 `runner.id` 和 `runner.version` 标识实际执行器，Audit 是独立输入和结果，不嵌入 bundle。
-- 默认适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。任何会启动模型的执行都必须先取得覆盖当前 Plan 的 passing preflight Audit，再调用 `aw-skill-eval run <plan.json> --audit <audit.json>`；CLI 不提供第二个 `run` wrapper。
-- Plan、bundle 和运行输出都是可删除、可重建的弱状态。准备或执行中断后，删除本次不完整输出并重新 `prepare`、Audit 和 `run`；不维护 batch checkpoint 或续跑 ledger。
+- Skill-local `evals/manifest.json` 的准备合同是 CLI 拥有的 Manifest v1。`aw skill eval prepare` 通过 Catalog Workspace 解析 canonical plugin，并按一个 plugin、Skill、suite、profile 和可选 case/split 选择生成输入完整的 `EvalSpec v1` 目录。该目录包含 runtime target、可选 previous target、筛选后的 cases、Eval-owned fixture，以及移除被测 Skill 后的完整 subject workspace。profile 的 sensitive config 值不得进入 Spec。
+- `prepare` 复用真实 bundle、依赖、profile config 和平台 materialization，但不启动 provider 或模型。它先在 staging 中验证路径、摘要和最终输入，再原子发布到 Workspace 外尚不存在的窄目录；已有、过宽或含符号链接的目标 fail closed。
+- Eval 执行的唯一机器 owner 是 npm package `@lesliechan721/agent-skill-eval` 的 `aw-skill-eval` bin。公开机器合同只包括 `EvalSpec v1`、`EvalAudit v1` 和 `EvalResult v1`。Engine 提供 `spec validate`、绑定 Spec 的 `audit validate`、绑定 Spec 与 Audit 的 `result validate`，以及唯一执行入口 `aw-skill-eval run <spec.json> --audit <audit.json>`；CLI 不提供第二个 `run` wrapper。
+- 单份 `EvalAudit v1` 必须与当前 Spec 的 target、可选 previous target、case digest 和全部 selected case 精确绑定，且状态为 `pass`、没有 blocked case，才准许执行。`EvalResult v1` 绑定 Spec、Audit、target、case 和 provider 选择，并保存每次运行的状态、耗时、usage、grade 和错误。
+- Engine 的内置 provider registry 只有 `codex-trigger` 和 `codex-conversation`。Manifest 的 trigger 和 conversation suite 选择对应内置 provider；`custom-process` 是显式的、可信且协作式外部 provider escape hatch，不是任意外部程序 sandbox。其命令和本地资产在 prepare 时做边界检查，执行前必须单独披露未知调用成本、credential 和网络影响。
+  - Engine 只在 macOS/Linux 的进程检查可用时启动 `custom-process`。安全 containment 实现前，Windows 不启动它。
+  - provider 及全部后代必须保留 Engine marker，并始终留在 Engine 创建的初始进程组。它们不得使用 `setsid`、`setpgid`、detached、daemonize 或 double-fork；不得遗留后台任务，且必须在输出最终 JSON 和退出前等待全部后代退出。
+  - Engine 在运行期观察该合同；发现违反即失败。检查失效时 Engine fail closed：丢弃 grade 并停止 batch。用户态 macOS/Linux 无法对已逃逸且又失去检查的后代保证清理，因此不得盲杀 foreign 进程。
+- 默认 Agent-facing 适配器插件是 `aw-skill-eval-runner`，Skill 是 `run-aw-skill-evals`。Runner 负责准备或验证 Spec、复用或取得独立 passing Audit、披露模型调用与副作用、取得所需授权、调用一次 Engine，并验证 Result。`aw skill eval doctor --json` 只用于安装或升级、用户明确请求 provider 环境诊断，或 run 失败后的高级诊断。`aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>` 只在异常结果需要按 case、attempt 和 variant 分组检查时使用；普通成功路径不运行这两个命令。
+- Spec 目录和运行输出都是可删除、可重建的弱状态。准备或执行中断后，删除本次不完整输出并重新 `prepare`、Audit 和 `run`；不自动重试，也不维护 batch checkpoint 或续跑 ledger。
 - Conversation suite 或 case 可用最小 `environment.pathPrepend` 声明 Eval-owned PATH fixture。路径相对声明它的 Eval 根解析，必须是根内的普通文件或目录树，且不能包含符号链接。Runner 只复制已声明 fixture 到本次隔离 workspace，并只在那里设置 executable mode 和前置 PATH；Oracle 不依赖仓库私有 CLI 路径。声明 `workspace_valid: true` 的确定性 fixture 必须 materialize 后通过公开 `aw catalog status --json`，并让每个预期有效插件通过 `aw plugin validate --json`。该 preflight 不运行模型，也不代替 Oracle Audit。
 - `hostSourceAccessAbsent` 只按 app-server 事件中的显式命令、审批和文件访问输入归因。命令输出、Agent 消息、reasoning 和 diff 中的宿主路径文本不是访问证据。
-- Plan 可用可选的 `minimumEvidenceLevel` 固定最低证据要求。省略时为 `executed`；要求 `comparative` 时，默认 runner 只在 macOS/Linux 的 Full Access verified observation 或更强 external containment 下接受 grading。verified observation 必须在 bundle 中保留非 OS 强隔离限制，不能记录后代清理保证。
-- Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。运行前没有 passing Audit 时不得启动模型；没有 result triage 的 bundle 只能作为原始诊断证据，不得影响 Review finding、生产 Skill 修改或发布结论。
+- Oracle preflight 和 result triage 属于独立 Auditor，而不是 Engine。运行前没有 passing Audit 时不得启动模型。clean success 不要求 triage；只有 execution/grade 失败、current 结果混合、相对 baseline 回归，或结果将驱动生产 Skill 修改时，才在全新上下文做 result-triage。triage 默认返回聊天结论，且不是 Release Check 的机器输入。
 
 ## Quality Review、Release Check 与 Review Publication
 

@@ -1,288 +1,141 @@
 {
-  "schemaVersion": 1,
-  "plugin": "codex-enhance",
-  "skill": "codex-subagent-guide",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {
+    "profile": "project-default"
+  },
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "codex-enhance": {}
+      }
     },
-    {
-      "id": "project-timeout",
+    "project-timeout": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {
-            "subagentMinimumInitialWaitMinutes": 1
-          }
+      "plugins": {
+        "codex-enhance": {
+          "subagentMinimumInitialWaitMinutes": 1
         }
-      ],
-      "requiredForRelease": true
+      }
     },
-    {
-      "id": "user-default",
+    "user-default": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "codex-enhance": {}
+      }
     },
-    {
-      "id": "project-nondefault",
+    "project-nondefault": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {
-            "simpleTaskModel": "eval-simple-model",
-            "simpleTaskReasoningEffort": "high",
-            "generalTaskModel": "eval-general-model",
-            "generalTaskReasoningEffort": "xhigh",
-            "complexTaskModel": "eval-complex-model",
-            "complexTaskReasoningEffort": "max",
-            "advancedTaskModel": "eval-advanced-model",
-            "advancedTaskReasoningEffort": "high",
-            "subagentMinimumInitialWaitMinutes": 2
-          }
+      "plugins": {
+        "codex-enhance": {
+          "simpleTaskModel": "eval-simple-model",
+          "simpleTaskReasoningEffort": "high",
+          "generalTaskModel": "eval-general-model",
+          "generalTaskReasoningEffort": "xhigh",
+          "complexTaskModel": "eval-complex-model",
+          "complexTaskReasoningEffort": "max",
+          "advancedTaskModel": "eval-advanced-model",
+          "advancedTaskReasoningEffort": "high",
+          "subagentMinimumInitialWaitMinutes": 2
         }
-      ],
-      "requiredForRelease": true
+      }
     },
-    {
-      "id": "user-nondefault",
+    "user-nondefault": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {
-            "simpleTaskModel": "eval-simple-model",
-            "simpleTaskReasoningEffort": "high",
-            "generalTaskModel": "eval-general-model",
-            "generalTaskReasoningEffort": "xhigh",
-            "complexTaskModel": "eval-complex-model",
-            "complexTaskReasoningEffort": "max",
-            "advancedTaskModel": "eval-advanced-model",
-            "advancedTaskReasoningEffort": "high",
-            "subagentMinimumInitialWaitMinutes": 2
-          }
+      "plugins": {
+        "codex-enhance": {
+          "simpleTaskModel": "eval-simple-model",
+          "simpleTaskReasoningEffort": "high",
+          "generalTaskModel": "eval-general-model",
+          "generalTaskReasoningEffort": "xhigh",
+          "complexTaskModel": "eval-complex-model",
+          "complexTaskReasoningEffort": "max",
+          "advancedTaskModel": "eval-advanced-model",
+          "advancedTaskReasoningEffort": "high",
+          "subagentMinimumInitialWaitMinutes": 2
         }
-      ],
-      "requiredForRelease": true
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "codex-subagent-guide"
-      ],
-      "cases": "./trigger-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": true,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation",
-        "sanity"
-      ],
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "trigger-composition",
       "kind": "trigger",
-      "skills": [
-        "codex-subagent-guide",
-        "codex-explore"
-      ],
-      "cases": "./trigger-composition-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": true,
-      "isolation": "standard",
-      "strictNegativeSplits": [
-        "validation",
-        "sanity"
-      ],
-      "minimumPassRate": 1,
-      "forbidMultipleSkillLoads": true,
+      "cases": "trigger-composition-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
-      "releaseSplits": [],
-      "requiredForRelease": false,
-      "perRunTimeoutMs": 180000
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
     },
     {
       "id": "routing",
-      "kind": "provider",
-      "skills": [
-        "codex-subagent-guide"
-      ],
-      "cases": "./provider-evals.json",
+      "kind": "custom-process",
+      "cases": "provider-evals.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
-      "releaseSplits": [],
+      "runs": 3,
+      "timeoutMs": 180000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 180000,
       "provider": {
-        "id": "codex-subagent-routing",
-        "entry": "run-routing-evals.mjs",
-        "assets": [
-          "eval-harness.mjs",
-          "trigger-fixture.mjs"
-        ],
-        "credentialEnvironment": [
-          "ALL_PROXY",
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "NO_PROXY",
-          "OPENAI_API_KEY",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-routing-evals.mjs"
+        ]
       }
     },
     {
       "id": "lifecycle",
-      "kind": "provider",
-      "skills": [
-        "codex-subagent-guide"
-      ],
-      "cases": "./lifecycle-evals.json",
+      "kind": "custom-process",
+      "cases": "lifecycle-evals.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 900000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 900000,
       "provider": {
-        "id": "codex-subagent-lifecycle",
-        "entry": "run-lifecycle-evals.mjs",
-        "assets": [
-          "eval-harness.mjs",
-          "trigger-fixture.mjs"
-        ],
-        "credentialEnvironment": [
-          "ALL_PROXY",
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "NO_PROXY",
-          "OPENAI_API_KEY",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-lifecycle-evals.mjs"
+        ]
       }
     },
     {
       "id": "lifecycle-timeout",
-      "kind": "provider",
-      "skills": [
-        "codex-subagent-guide"
-      ],
-      "cases": "./lifecycle-timeout-evals.json",
+      "kind": "custom-process",
+      "cases": "lifecycle-timeout-evals.json",
       "profiles": [
         "project-timeout"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 900000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 900000,
       "provider": {
-        "id": "codex-subagent-lifecycle",
-        "entry": "run-lifecycle-evals.mjs",
-        "assets": [
-          "eval-harness.mjs",
-          "trigger-fixture.mjs"
-        ],
-        "credentialEnvironment": [
-          "ALL_PROXY",
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "NO_PROXY",
-          "OPENAI_API_KEY",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-lifecycle-evals.mjs"
+        ]
       }
     }
   ]

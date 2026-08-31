@@ -1,630 +1,364 @@
 {
-  "schemaVersion": 1,
-  "skill": "reconciling-git-merges",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏加载可能让冲突或语义交互未经协调即完成；误加载会劫持普通 merge、其它 Git 操作或非 Git 任务。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "reconciling-git-merges",
+    "participants": [
+      "git-commit"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏加载可能让冲突或语义交互未经协调即完成；误加载会劫持普通 merge、其它 Git 操作或非 Git 任务。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": true,
+      "fixture": "trigger-fixture.mjs"
+    }
   },
   "cases": [
     {
       "id": "source_01",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "ambiguous_retention",
-        "invocation": "model-discovery"
-      },
-      "query": "A merge is already stopped with MERGE_HEAD and a conflict in retention.py. Use the commits and repository evidence to reconcile it without inventing policy.",
-      "workspace_fixture": "ambiguous_retention",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "A merge is already stopped with MERGE_HEAD and a conflict in retention.py. Use the commits and repository evidence to reconcile it without inventing policy.",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "ambiguous_retention"
       }
     },
     {
       "id": "source_02",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "semantic_retry",
-        "invocation": "model-discovery"
-      },
-      "query": "The current merge combined a larger retry budget with request-key idempotency in another file. Check that the composed behavior preserves both intents before committing.",
-      "workspace_fixture": "semantic_retry",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "The current merge combined a larger retry budget with request-key idempotency in another file. Check that the composed behavior preserves both intents before committing.",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
       }
     },
     {
       "id": "source_03",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "semantic_permissions",
-        "invocation": "model-discovery"
-      },
-      "query": "把 feature 合并进 main：main 把权限角色改成 member，feature 的消费者仍加入 auditor；冲突文件之外还有跨文件契约要协调。",
-      "workspace_fixture": "semantic_permissions",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "把 feature 合并进 main：main 把权限角色改成 member，feature 的消费者仍加入 auditor；冲突文件之外还有跨文件契约要协调。",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "semantic_permissions"
       }
     },
     {
       "id": "source_04",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "semantic_retry",
-        "invocation": "model-discovery"
-      },
-      "query": "Main changed retry.py while feature changed idempotency.py. The current merge is textually clean, but the behaviors interact; reconcile them before committing.",
-      "workspace_fixture": "semantic_retry",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "Main changed retry.py while feature changed idempotency.py. The current merge is textually clean, but the behaviors interact; reconcile them before committing.",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
       }
     },
     {
       "id": "source_05",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "ambiguous_retention",
-        "invocation": "model-discovery"
-      },
-      "query": "retention.py conflicts between seven-day privacy retention and ninety-day audit retention. Use repository evidence, and do not invent a compromise.",
-      "workspace_fixture": "ambiguous_retention",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "retention.py conflicts between seven-day privacy retention and ninety-day audit retention. Use repository evidence, and do not invent a compromise.",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "ambiguous_retention"
       }
     },
     {
       "id": "source_06",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "semantic_retry",
-        "invocation": "model-discovery"
-      },
-      "query": "The current clean merge combines a larger retry budget with new request-key idempotency. Validate the interaction and fix the merge rather than either branch alone.",
-      "workspace_fixture": "semantic_retry",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "The current clean merge combines a larger retry budget with new request-key idempotency. Validate the interaction and fix the merge rather than either branch alone.",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
       }
     },
     {
       "id": "source_07",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "semantic_permissions",
-        "invocation": "model-discovery"
-      },
-      "query": "当前 merge 有 conflict.txt 冲突，双方还分别修改了权限生产者和消费者。协调双方意图并验证组合结果。",
-      "workspace_fixture": "semantic_permissions",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "当前 merge 有 conflict.txt 冲突，双方还分别修改了权限生产者和消费者。协调双方意图并验证组合结果。",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "semantic_permissions"
       }
     },
     {
       "id": "source_08",
       "split": "validation",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "ambiguous_retention",
-        "invocation": "model-discovery"
-      },
-      "query": "The merge conflict represents incompatible seven-day privacy retention and ninety-day audit retention, with no stated priority. Handle it from repository evidence without inventing a compromise.",
-      "workspace_fixture": "ambiguous_retention",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "The merge conflict represents incompatible seven-day privacy retention and ninety-day audit retention, with no stated priority. Handle it from repository evidence without inventing a compromise.",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "ambiguous_retention"
       }
     },
     {
       "id": "source_09",
       "split": "validation",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "semantic_retry",
-        "invocation": "model-discovery"
-      },
-      "query": "git auto-mergd the files, but one side changed transaction retry semantics and the other changed idempotency handling. Validate their composition before committing.",
-      "workspace_fixture": "semantic_retry",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "git auto-mergd the files, but one side changed transaction retry semantics and the other changed idempotency handling. Validate their composition before committing.",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "semantic_retry"
       }
     },
     {
       "id": "source_10",
       "split": "validation",
-      "eval_type": "routing",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "merge_intent_reconciliation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "semantic_permissions",
-        "invocation": "model-discovery"
-      },
-      "query": "请继续当前 merge。冲突文件之外，双方还分别修改了同一个权限契约的生产者和消费者，需要一起验证。",
-      "workspace_fixture": "semantic_permissions",
-      "expected_loaded_skills": [
-        "reconciling-git-merges"
-      ],
-      "oracle": {
-        "rationale": "用户目标符合 reconciling-git-merges description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "请继续当前 merge。冲突文件之外，双方还分别修改了同一个权限契约的生产者和消费者，需要一起验证。",
+        "expected": {
+          "loadedSkills": [
+            "reconciling-git-merges"
+          ]
+        },
+        "workspaceFixture": "semantic_permissions"
       }
     },
     {
       "id": "source_11",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "ordinary_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "fast_forward",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "feature is strictly ahead of main; fast-forward main with --ff-only.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "fast_forward"
       },
-      "query": "feature is strictly ahead of main; fast-forward main with --ff-only.",
-      "workspace_fixture": "fast_forward",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_12",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "ordinary_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "up_to_date",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "git merge feature reports Already up to date. Confirm it and make no changes.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "up_to_date"
       },
-      "query": "git merge feature reports Already up to date. Confirm it and make no changes.",
-      "workspace_fixture": "up_to_date",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_13",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "ordinary_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "independent_clean_merge",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Merge feature into main. Main only changed README.md and feature only changed change.txt; use the repository's normal Git workflow.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "independent_clean_merge"
       },
-      "query": "Merge feature into main. Main only changed README.md and feature only changed change.txt; use the repository's normal Git workflow.",
-      "workspace_fixture": "independent_clean_merge",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_14",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "ordinary_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "independent_clean_merge",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "两个分支已经分叉，但 main 只改 README.md，feature 只改独立的 change.txt，Git 可以 clean merge。按普通流程合并。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "independent_clean_merge"
       },
-      "query": "两个分支已经分叉，但 main 只改 README.md，feature 只改独立的 change.txt，Git 可以 clean merge。按普通流程合并。",
-      "workspace_fixture": "independent_clean_merge",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_15",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "ordinary_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "same_file_independent_merge",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Both branches touched utils.py: main fixes the top comment and feature changes the unrelated helper fixture. The merge is clean and the changes are independent.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "same_file_independent_merge"
       },
-      "query": "Both branches touched utils.py: main fixes the top comment and feature changes the unrelated helper fixture. The merge is clean and the changes are independent.",
-      "workspace_fixture": "same_file_independent_merge",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_16",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "other_git_operation_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "rebase_conflict",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Resolve the conflicts while rebasing my feature branch onto main.",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "rebase_conflict"
       },
-      "query": "Resolve the conflicts while rebasing my feature branch onto main.",
-      "workspace_fixture": "rebase_conflict",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_17",
       "split": "train",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "other_git_operation_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "cherry_pick_conflict",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "cherry-pick 这个提交时冲突了，帮我继续 cherry-pick。",
+        "expected": {
+          "loadedSkills": []
+        },
+        "workspaceFixture": "cherry_pick_conflict"
       },
-      "query": "cherry-pick 这个提交时冲突了，帮我继续 cherry-pick。",
-      "workspace_fixture": "cherry_pick_conflict",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_18",
       "split": "validation",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "other_git_operation_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Run git pull --ff-only to synchronize my local main branch.",
+        "expected": {
+          "loadedSkills": []
+        }
       },
-      "query": "Run git pull --ff-only to synchronize my local main branch.",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_19",
       "split": "validation",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "non_executing_or_non_git_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Write a SQL MERGE statement that upserts customer rows.",
+        "expected": {
+          "loadedSkills": []
+        }
       },
-      "query": "Write a SQL MERGE statement that upserts customer rows.",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "source_20",
       "split": "validation",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "non_executing_or_non_git_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Explain when to use git merge instead of rebase; do not change my repository.",
+        "expected": {
+          "loadedSkills": []
+        }
       },
-      "query": "Explain when to use git merge instead of rebase; do not change my repository.",
-      "expected_loaded_skills": [],
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅增加 merge 冲突或相关行为、契约、依赖交互，标签应翻转为加载 merge Skill。"
       }
     },
     {
       "id": "ordinary_local_commit",
       "split": "validation",
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "local_commit_routing",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "commit_ready",
-        "invocation": "model-discovery"
-      },
-      "query": "当前改动已经完成。请核对暂存范围并创建一个新的本地 Git commit。",
-      "workspace_fixture": "commit_ready",
-      "expected_loaded_skills": [
-        "git-commit"
+      "tags": [
+        "boundary"
       ],
-      "oracle": {
+      "input": {
+        "query": "当前改动已经完成。请核对暂存范围并创建一个新的本地 Git commit。",
+        "expected": {
+          "loadedSkills": [
+            "git-commit"
+          ]
+        },
+        "workspaceFixture": "commit_ready"
+      },
+      "audit": {
         "rationale": "用户目标属于相邻 Skill git-commit，不属于 reconciling-git-merges。",
-        "rule_refs": [
-          "SKILL.md:3",
-          "skills/git-commit/SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为协调 Git merge 的冲突或相关语义交互，标签应翻转为加载 merge Skill。"
+        "minimalCounterexample": "仅将目标改为协调 Git merge 的冲突或相关语义交互，标签应翻转为加载 merge Skill。"
       }
     }
   ]

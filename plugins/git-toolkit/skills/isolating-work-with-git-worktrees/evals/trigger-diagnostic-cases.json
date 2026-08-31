@@ -1,69 +1,52 @@
 {
-  "schemaVersion": 1,
-  "skill": "isolating-work-with-git-worktrees",
-  "policy": {
-    "optimization": "recall-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "low",
-    "rationale": "该 suite 只记录完整仓库隔离请求的额外加载成本。若加载后仍正确选择独立 clone，则归为 expected-tradeoff，不得降低核心 linked-worktree 请求的召回。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "isolating-work-with-git-worktrees",
+    "participants": [
+      "reconciling-git-merges",
+      "git-commit"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "recall-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "low",
+      "rationale": "该 suite 只记录完整仓库隔离请求的额外加载成本。若加载后仍正确选择独立 clone，则归为 expected-tradeoff，不得降低核心 linked-worktree 请求的召回。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": true,
+      "fixture": "trigger-fixture.mjs"
+    }
   },
   "cases": [
     {
       "id": "source_15",
       "split": "sanity",
-      "eval_type": "routing",
-      "case_role": "diagnostic",
-      "provenance": "boundary",
-      "scenario_family": "repository_isolation_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "isolating-work-with-git-worktrees",
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "这个实验会重写 shared refs、删除 tags 并运行 aggressive gc；给我一个完全独立的仓库副本。",
-      "expected_loaded_skills": [],
-      "oracle": {
-        "rationale": "用户明确要求仓库级隔离，description 将该任务排除。空加载集合只测量路由 specificity；若本 Skill 被加载后仍正确选择独立 clone，失败归为 expected-tradeoff，不能单独驱动 description 收窄或阻断发布。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "medium",
-        "allowed_variance": "机械路由仍记录实际加载集合。若加载本 Skill 后没有创建 linked worktree，并正确选择或说明仓库级隔离，则将 mismatch 解释为 expected-tradeoff 诊断结果。",
-        "minimal_counterexample": "仅将所需隔离层级从完整仓库副本改为可共享对象库和 refs 的 linked worktree 时，标签应翻转为加载 worktree Skill。"
+      "tags": [
+        "diagnostic"
+      ],
+      "input": {
+        "query": "这个实验会重写 shared refs、删除 tags 并运行 aggressive gc；给我一个完全独立的仓库副本。",
+        "expected": {
+          "loadedSkills": []
+        }
       }
     },
     {
       "id": "sanity_full_clone",
       "split": "sanity",
-      "eval_type": "routing",
-      "case_role": "diagnostic",
-      "provenance": "boundary",
-      "scenario_family": "repository_isolation_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "isolating-work-with-git-worktrees",
-          "reconciling-git-merges",
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "我需要独立的 refs、对象库和 hooks 来做破坏性实验，请准备一个完整 clone。",
-      "expected_loaded_skills": [],
-      "oracle": {
-        "rationale": "用户明确要求仓库级隔离，description 将该任务排除。该同族改写只保留为 specificity 诊断；若加载本 Skill 后正确选择独立 clone，则归为 expected-tradeoff。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "medium",
-        "allowed_variance": "机械路由仍记录实际加载集合；安全结果由 repository_isolation_boundary behavior case 独立验证。",
-        "minimal_counterexample": "仅将所需隔离层级从完整 clone 改为可共享对象库和 refs 的 linked worktree 时，标签应翻转为加载 worktree Skill。"
+      "tags": [
+        "diagnostic"
+      ],
+      "input": {
+        "query": "我需要独立的 refs、对象库和 hooks 来做破坏性实验，请准备一个完整 clone。",
+        "expected": {
+          "loadedSkills": []
+        }
       }
     }
   ]

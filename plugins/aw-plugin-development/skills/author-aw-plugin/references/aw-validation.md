@@ -20,4 +20,4 @@ aw plugin remove <plugin-name> --workspace-root <workspace-root> --yes --json
 
 Catalog Workspace 初始化、marketplace-source metadata、inventory、依赖聚合、Catalog version、Catalog build/validate/status 和 publication 不属于本 Skill。把它们交回 `author-aw-catalog` 或显式 `publish-aw-catalog`，不要从 Plugin Author 反向委托并形成依赖循环。
 
-Author 的完成条件不依赖独立 Review 或模型 Eval。用户明确要求 Eval 资产时交给对应设计能力。用户明确要求真实模型执行时，直接交给 `run-aw-skill-evals`，传递 plugin/Skill/suite/profile 和可选 case/split 条件；不先增加 Reviewer gate。Runner 负责 `aw skill eval prepare`、独立 preflight Audit、本次授权、EvalRunBundle v4 validation 和独立 result-triage；Audit fail 时停止 Eval 分支，不修改生产 Skill。
+Author 的完成条件不依赖独立 Review 或模型 Eval。用户明确要求 Eval 资产时交给对应设计能力。用户明确要求真实模型执行时，直接交给 `run-aw-skill-evals`，传递 plugin/Skill/suite/profile 和可选 case/split 条件；不先增加 Reviewer gate。Runner 负责 `aw skill eval prepare`、独立 preflight Audit、本次授权和 `EvalResult v1` validation；只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时才做 result-triage。Audit fail 时停止 Eval 分支，不修改生产 Skill。

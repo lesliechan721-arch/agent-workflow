@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skills = ['dev-workflow', 'dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code'];
-const decisionSkills = ['decision-shape'];
+const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype'];
 const allParticipants = new Set([...skills, ...decisionSkills]);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
@@ -26,20 +26,31 @@ function assertSkill(text, name) {
   assert.doesNotMatch(text, /\[TODO:/);
 }
 
-function caseEntries(document) {
-  if (Array.isArray(document.cases)) return document.cases;
-  if (Array.isArray(document.evals)) return document.evals;
-  return [];
-}
-
 function assertCaseDocument(document) {
-  const entries = caseEntries(document);
+  assert.equal(document.version, 1);
+  assert.equal(typeof document.suite?.unitUnderTest, 'string');
+  assert.equal(Array.isArray(document.suite?.participants ?? []), true);
+  const participants = new Set([
+    document.suite.unitUnderTest,
+    ...(document.suite.participants ?? []),
+  ]);
+  assert.equal([...participants].every((participant) => allParticipants.has(participant)), true);
+  const entries = document.cases;
+  assert.equal(Array.isArray(entries), true);
   assert.equal(entries.length > 0, true);
   assert.equal(new Set(entries.map((entry) => entry.id)).size, entries.length);
   for (const entry of entries) {
     assert.equal(typeof entry.id, 'string');
-    if (entry.expected_loaded_skills !== undefined) {
-      assert.equal(entry.expected_loaded_skills.every((participant) => allParticipants.has(participant)), true);
+    if (document.suite.kind === 'trigger') {
+      assert.equal(typeof entry.input?.query, 'string');
+      const expectedLoad = entry.input?.expectedLoad;
+      const loadedSkills = entry.input?.expected?.loadedSkills;
+      assert.equal(expectedLoad !== undefined || loadedSkills !== undefined, true);
+      if (expectedLoad !== undefined) assert.equal(typeof expectedLoad, 'boolean');
+      if (loadedSkills !== undefined) {
+        assert.equal(Array.isArray(loadedSkills), true);
+        assert.equal(loadedSkills.every((participant) => participants.has(participant)), true);
+      }
     }
   }
   return entries;
@@ -90,9 +101,11 @@ test('review behavior suites remain structurally valid', async () => {
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
     const behavior = manifest.suites.find((suite) => suite.id === 'behavior');
     assert.ok(behavior);
-    assert.deepEqual(behavior.skills, [name]);
-    assert.equal('observeSpawnAgent' in behavior, false);
-    assertCaseDocument(await readJson(path.join(evalRoot, behavior.cases)));
+    const corpus = await readJson(path.join(evalRoot, behavior.cases));
+    assert.equal(corpus.suite.unitUnderTest, name);
+    assert.deepEqual(corpus.suite.participants ?? [], []);
+    assert.equal('observeSpawnAgent' in corpus.suite.runtime, false);
+    assertCaseDocument(corpus);
   }
 });
 
@@ -101,11 +114,13 @@ test('workflow routing eval observes leaf candidates but routes Shape through de
   const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
   const router = manifest.suites.find((suite) => suite.id === 'router-composed');
   assert.ok(router);
-  assert.equal(router.skills.includes('decision-shape'), true);
-  assert.equal(router.skills.includes('decision-grill'), true);
-  assert.equal(router.skills.includes('decision-prototype'), true);
+  const routingCorpus = await readJson(path.join(evalRoot, router.cases));
+  assert.equal(routingCorpus.suite.unitUnderTest, 'dev-workflow');
+  assert.equal(routingCorpus.suite.participants.includes('decision-shape'), true);
+  assert.equal(routingCorpus.suite.participants.includes('decision-grill'), true);
+  assert.equal(routingCorpus.suite.participants.includes('decision-prototype'), true);
 
-  const cases = assertCaseDocument(await readJson(path.join(evalRoot, 'cross-plugin-routing-cases.json')));
+  const cases = assertCaseDocument(routingCorpus);
   for (const id of [
     'route_new_feature_intent_is_not_ready',
     'route_fast_to_implement',
@@ -123,10 +138,10 @@ test('workflow routing eval observes leaf candidates but routes Shape through de
     'route_shape_evidence_branch_stays_in_shape',
   ]) {
     const entry = cases.find((candidate) => candidate.id === id);
-    assert.deepEqual(entry.expected_loaded_skills, ['dev-workflow', 'decision-shape']);
+    assert.deepEqual(entry.input.expected.loadedSkills, ['dev-workflow', 'decision-shape']);
   }
   assert.deepEqual(
-    cases.find((entry) => entry.id === 'route_fast_verified_to_code_review').expected_loaded_skills,
+    cases.find((entry) => entry.id === 'route_fast_verified_to_code_review').input.expected.loadedSkills,
     ['dev-workflow', 'dev-review-code'],
   );
   const composition = assertCaseDocument(

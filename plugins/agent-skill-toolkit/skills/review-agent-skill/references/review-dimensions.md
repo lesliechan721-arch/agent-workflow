@@ -178,7 +178,7 @@
 
 ## 10. Eval 设计、Oracle 有效性与修改安全（9）
 
-存在 eval，或 eval 结果被用于评分、发布或修改 Skill 时，先消费 `audit-agent-skill-evals` 产生的 `EvalAuditResult`。先审核 suite，再使用其结果评价 Skill。
+存在 eval，或 eval 结果被用于评分、发布或修改 Skill 时，先消费 `audit-agent-skill-evals` 产生的 `EvalAudit v1`。先审核 suite，再使用其结果评价 Skill。
 
 本维度只评四组内容：
 

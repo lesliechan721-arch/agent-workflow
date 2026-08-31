@@ -77,3 +77,15 @@ test('authoring and Eval design do not force Review, Audit, or model execution',
   assert.match(author, /不自动审核 Oracle、不自动运行 Eval、不自动触发独立 Review/u);
   assert.match(designer, /Audit status: not assessed/u);
 });
+
+test('custom-process case guidance reserves containment to the Engine', async () => {
+  // Static contract exception: a case author directly reads this reference before selecting a custom provider; behavior test is not suitable because the safety boundary is the final Agent instruction.
+  const contract = await readFile(
+    path.join(runtimeRoot, 'skills', 'design-agent-skill-evals', 'references', 'case-contract.md'),
+    'utf8',
+  );
+  assert.match(contract, /可信、协作式 provider，不是 sandbox/u);
+  assert.match(contract, /保留 Engine marker、留在初始进程组、不 detach/u);
+  assert.match(contract, /Engine 在运行期观察；违反或检查失效时 fail closed/u);
+  assert.match(contract, /不要在每个 case 重复 containment 检查/u);
+});

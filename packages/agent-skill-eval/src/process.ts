@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import process from 'node:process'
 import {
+  acquireProcessTreeInspectionLease,
   observeProcessTree,
   terminateProcessTree,
   type ProcessTreeDependencies,
@@ -24,7 +25,6 @@ const OBSERVED_CONTAINMENT_LIMITATION =
   'Observed process management is non-portable and does not guarantee descendant cleanup.'
 const VERIFIED_OBSERVED_CONTAINMENT_LIMITATION =
   'Verified process observation is not OS-enforced containment and does not guarantee descendant cleanup.'
-const CORE_PROCESS_RECEIPT = Symbol('core-process-receipt')
 
 export interface ProviderProcessDependencies {
   containment?: 'managed' | 'verified-observed' | 'observed' | 'unmanaged-confirmed'
@@ -36,21 +36,6 @@ export class ProviderProcessCleanupError extends Error {
     super(message, { cause })
     this.name = 'ProviderProcessCleanupError'
   }
-}
-
-function issueCoreProcessReceipt(result: ProcessResult): ProcessResult {
-  Object.defineProperty(result, CORE_PROCESS_RECEIPT, { value: true })
-  return result
-}
-
-export function hasCoreProcessReceipt(result: ProcessResult): boolean {
-  return (result as ProcessResult & { [CORE_PROCESS_RECEIPT]?: true })[
-    CORE_PROCESS_RECEIPT
-  ] === true
-}
-
-export function hasCoreManagedProcessReceipt(result: ProcessResult): boolean {
-  return result.descendantCleanupGuaranteed && hasCoreProcessReceipt(result)
 }
 
 function scrubProcessMarker(value: string, marker: string, truncated: boolean = false): string {
@@ -114,7 +99,7 @@ export async function runProviderProcess(
       ? VERIFIED_OBSERVED_CONTAINMENT_LIMITATION
       : undefined
   if (request.signal?.aborted) {
-    return issueCoreProcessReceipt({
+    return {
       stdout: '',
       stderr: '',
       exitCode: null,
@@ -129,25 +114,37 @@ export async function runProviderProcess(
       gradingEvidenceAccepted,
       containmentMode: containment,
       ...(containmentLimitation ? { containmentLimitation } : {}),
-    })
+    }
   }
 
-  const marker = containment === 'unmanaged-confirmed' ? '' : randomUUID()
+  const verifiedProcessTree = containment === 'verified-observed'
+    ? {
+        ...dependencies.processTree,
+        markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+        enforceCooperativeProcessGroup: true,
+      }
+    : dependencies.processTree
+  const inspectionLease = containment === 'verified-observed'
+    ? await acquireProcessTreeInspectionLease(verifiedProcessTree)
+    : undefined
+  const marker = inspectionLease?.marker ??
+    (containment === 'unmanaged-confirmed' ? '' : randomUUID())
   const childEnvironment = { ...request.env }
   if (marker) childEnvironment[PROVIDER_PROCESS_MARKER_ENV] = marker
   else delete childEnvironment[PROVIDER_PROCESS_MARKER_ENV]
 
-  return await new Promise<ProcessResult>((resolve, reject) => {
+  const running = new Promise<ProcessResult>((resolve, reject) => {
     const child = spawn(request.executable, request.args, {
       cwd: request.cwd,
       env: childEnvironment,
+      shell: false,
       detached: platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [request.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     })
     const handle = child.pid === undefined ? null : { pid: child.pid }
     const verifiedObservation: ProcessTreeObservation | undefined =
       containment === 'verified-observed' && handle
-        ? observeProcessTree(handle.pid, marker, dependencies.processTree)
+        ? observeProcessTree(handle.pid, marker, verifiedProcessTree, inspectionLease)
         : undefined
     let stdout = Buffer.alloc(0)
     let stderr = Buffer.alloc(0)
@@ -157,6 +154,7 @@ export async function runProviderProcess(
     let cleanupFailure: unknown = null
     let timer: NodeJS.Timeout | null = null
     let cleanupCloseTimer: NodeJS.Timeout | null = null
+    let stopFailureListener: (() => void) | undefined
     let stdoutTruncated = false
     let stderrTruncated = false
 
@@ -189,11 +187,15 @@ export async function runProviderProcess(
                   try {
                     child.kill(signal)
                   } catch {
-                    // The direct child can already be closed.
+                    // The direct provider process can already be closed.
                   }
                 },
-                dependencies.processTree,
-                { observation: verifiedObservation, requireConfirmedCleanup: true },
+                verifiedProcessTree,
+                {
+                  observation: verifiedObservation,
+                  requireConfirmedCleanup: true,
+                  requireDescendantsExitedBeforeCompletion: reason === 'complete',
+                },
               ).then(() => ({ confirmed: true as const }))
             : hooks.terminateProcessTree!(handle, reason),
           timeoutMs,
@@ -256,13 +258,23 @@ export async function runProviderProcess(
     const clearObservation = (): void => {
       if (timer) clearTimeout(timer)
       if (cleanupCloseTimer) clearTimeout(cleanupCloseTimer)
+      stopFailureListener?.()
       request.signal?.removeEventListener('abort', abort)
     }
     const output = (buffer: Buffer, truncated: boolean): string =>
       scrubProcessMarker(buffer.toString('utf8'), marker, truncated)
+    stopFailureListener = verifiedObservation?.onFailure(() => {
+      void startCleanup('abort')
+    })
 
-    child.stdout.on('data', (chunk: Buffer) => append('stdout', chunk))
-    child.stderr.on('data', (chunk: Buffer) => append('stderr', chunk))
+    child.stdout!.on('data', (chunk: Buffer) => append('stdout', chunk))
+    child.stderr!.on('data', (chunk: Buffer) => append('stderr', chunk))
+    if (request.stdin !== undefined) {
+      child.stdin?.on('error', () => {
+        // Process exit remains authoritative for a closed stdin pipe.
+      })
+      child.stdin?.end(request.stdin)
+    }
 
     let spawnHookError: unknown = null
     let spawnError: unknown = null
@@ -282,7 +294,7 @@ export async function runProviderProcess(
       void (async () => {
         await spawnReady
         await (cleanupStarted ?? startCleanup('complete'))
-        const result = issueCoreProcessReceipt({
+        const result: ProcessResult = {
           stdout: output(stdout, stdoutTruncated),
           stderr: output(stderr, stderrTruncated),
           exitCode: spawnError ? null : exitCode,
@@ -297,17 +309,16 @@ export async function runProviderProcess(
           gradingEvidenceAccepted,
           containmentMode: containment,
           ...(containmentLimitation ? { containmentLimitation } : {}),
-        })
+        }
         if (cleanupFailure) {
           throw new ProviderProcessCleanupError(
             errorMessage(cleanupFailure, marker),
             safeErrorCause(cleanupFailure, marker),
-            issueCoreProcessReceipt({
+            {
               ...result,
-              stderr: `${result.stderr}${result.stderr && !result.stderr.endsWith('\n') ? '\n' : ''}${errorMessage(cleanupFailure, marker)}\n`,
               descendantCleanupGuaranteed: false,
               gradingEvidenceAccepted: false,
-            }),
+            },
           )
         }
         if (spawnHookError) {
@@ -326,6 +337,43 @@ export async function runProviderProcess(
       await startCleanup('abort')
     })
   })
+  let result: ProcessResult | undefined
+  let runningError: unknown
+  try {
+    result = await running
+  } catch (error) {
+    runningError = error
+  }
+  let releaseError: unknown
+  try {
+    await inspectionLease?.release()
+  } catch (error) {
+    releaseError = error
+  }
+  if (releaseError) {
+    const retainedResult = runningError instanceof ProviderProcessCleanupError
+      ? runningError.result
+      : result
+    const messages = [
+      ...(runningError
+        ? [errorMessage(runningError, marker)]
+        : []),
+      `Provider inspection lease release failed: ${errorMessage(releaseError, marker)}`,
+    ]
+    throw new ProviderProcessCleanupError(
+      messages.join(' '),
+      safeErrorCause(releaseError, marker),
+      retainedResult
+        ? {
+            ...retainedResult,
+            descendantCleanupGuaranteed: false,
+            gradingEvidenceAccepted: false,
+          }
+        : undefined,
+    )
+  }
+  if (runningError) throw runningError
+  return result!
 }
 
 export function assertProviderProcessSupported(

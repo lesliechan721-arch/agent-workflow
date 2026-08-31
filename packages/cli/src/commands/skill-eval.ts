@@ -1,19 +1,17 @@
-import { createHash, randomBytes } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 
 import {
   computeCanonicalDirectoryDigest,
-  computeCaseCorpusDigest,
-  computeSkillDigest,
+  computeEvalFileDigest,
   createRuntimeSkillSnapshot,
-  validateExecutionPlan,
-  type AwSkillEvalExecutionPlan,
-  type EvalCase,
-  type RuntimeCapabilities,
+  validateEvalSpecFile,
+  validateSelectedCasesFile,
+  type EvalProvider,
+  type EvalSpec,
+  type SelectedCasesDocument,
 } from '@lesliechan721/agent-skill-eval'
 import { readCatalogWorkspace } from '@lesliechan721/aw-plugin-core'
-import { Ajv2020, type ErrorObject, type ValidateFunction } from 'ajv/dist/2020.js'
 import fs from 'fs-extra'
 
 import {
@@ -25,21 +23,10 @@ import type { CatalogWorkspaceResolvedFrom } from './catalog-workspace-resolutio
 import {
   assertNoSensitiveProfileConfig,
   readAwSkillEvalManifest,
-  type AwSkillEvalCheckSuite,
-  type AwSkillEvalManifest,
-  type AwSkillEvalProfile,
-  type AwSkillEvalSuite,
-} from '../eval/manifest.js'
-import {
-  validateAwSkillEvalCheckResult,
-  type AwSkillEvalCheckResult,
-} from '../eval/check-result.js'
-import {
-  builtInEvalProviderCapabilities,
-  CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST,
-  CUSTOM_EVAL_PROVIDER_VERSION,
-  encodeCustomProviderCapabilities,
-} from '../eval/provider.js'
+  resolveAwSkillEvalCustomCommand,
+  type AwSkillEvalManifestV1Profile,
+  type AwSkillEvalManifestV1Suite,
+} from '../eval/manifest-v1.js'
 import type { PluginMeta } from '../types.js'
 import { validateSkillDirectory } from '../utils/dynamic-skill-tree.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
@@ -52,8 +39,8 @@ export interface SkillEvalSelection {
   workspaceRootResolvedFrom: CatalogWorkspaceResolvedFrom
   pluginName: string
   skillName: string
-  suiteId: string
-  profileId: string
+  suiteId?: string
+  profileId?: string
 }
 
 export interface PrepareSkillEvalOptions extends SkillEvalSelection {
@@ -65,52 +52,32 @@ export interface PrepareSkillEvalOptions extends SkillEvalSelection {
   runs?: number
   baseline?: 'without-skill'
   previousVersion?: string
+  timeoutMs?: number
+  keepWorkspace?: boolean
 }
 
 export interface PrepareSkillEvalReceipt {
   schemaVersion: 1
   command: 'skill:eval:prepare'
   ok: true
-  plans: Array<{
-    suite: string
-    profile: string
-    planPath: string
-    targetDigest: string
-    corpusDigest: string
-  }>
-}
-
-export interface CheckSkillEvalOptions extends SkillEvalSelection {
-  output: string
-  cwd: string
-  env?: NodeJS.ProcessEnv
+  suite: string
+  profile: string
+  specPath: string
+  targetDigest: string
+  corpusDigest: string
+  workspacePath?: string
 }
 
 interface ResolvedSelection {
   workspaceRoot: string
   plugin: PluginMeta
   plugins: PluginMeta[]
-  manifest: AwSkillEvalManifest
   evalRoot: string
-  cases: EvalCase[]
-  suite: AwSkillEvalSuite
-  profile: AwSkillEvalProfile
-}
-
-interface MaterializedInputs {
-  targetRoot: string
-  targetDigest: string
-  subjectBaseRoot: string
-  subjectBaseDigest: string
-}
-
-interface MaterializedSuiteInput {
-  root: string
-  digest: string
-}
-
-function sha256(content: string | Buffer): `sha256:${string}` {
-  return `sha256:${createHash('sha256').update(content).digest('hex')}`
+  suite: AwSkillEvalManifestV1Suite
+  profile: AwSkillEvalManifestV1Profile
+  cases: SelectedCasesDocument
+  defaults: { runs?: number; timeoutMs?: number }
+  corpusPaths: string[]
 }
 
 function prettyJson(value: unknown): string {
@@ -161,7 +128,7 @@ async function assertAbsentSafeOutputDirectory(options: {
     if (error.code === 'ENOENT') return null
     throw error
   })
-  if (existing) throw new Error('Eval Plan output already exists; refusing to replace foreign or existing content.')
+  if (existing) throw new Error('EvalSpec output already exists; refusing to replace foreign or existing content.')
   const blocked = [
     path.parse(target).root,
     path.resolve(options.cwd),
@@ -171,35 +138,10 @@ async function assertAbsentSafeOutputDirectory(options: {
   ]
   if (
     blocked.some((entry) => isPathInsideOrEqual(target, entry))
+    || isPathInsideOrEqual(path.resolve(options.workspaceRoot), target)
     || options.pluginRoots.some((root) => isPathInsideOrEqual(path.resolve(root), target))
   ) {
-    throw new Error('Eval Plan output target is too broad or overlaps source content.')
-  }
-  await fs.ensureDir(path.dirname(target))
-  await assertNoSymlinkOutputPath(target)
-  return target
-}
-
-async function assertAbsentSafeOutputFile(options: {
-  target: string
-  cwd: string
-  workspaceRoot: string
-  pluginRoots: string[]
-}): Promise<string> {
-  const target = await assertNoSymlinkOutputPath(options.target)
-  const existing = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null
-    throw error
-  })
-  if (existing) throw new Error('Eval check output already exists; refusing to replace foreign or existing content.')
-  const blocked = [
-    path.parse(target).root,
-    path.resolve(options.workspaceRoot),
-    ...options.pluginRoots.map((root) => path.resolve(root)),
-  ]
-  if (blocked.includes(target)) throw new Error('Eval check output target is too broad.')
-  if (options.pluginRoots.some((root) => isPathInsideOrEqual(path.resolve(root), target))) {
-    throw new Error('Eval check output must not modify plugin source.')
+    throw new Error('EvalSpec output target is too broad or overlaps source content.')
   }
   await fs.ensureDir(path.dirname(target))
   await assertNoSymlinkOutputPath(target)
@@ -211,11 +153,23 @@ async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSe
   const plugin = workspace.plugins.find((entry) => entry.manifest.name === options.pluginName)
   if (!plugin) throw new Error(`Plugin "${options.pluginName}" is not a canonical plugin in this Catalog Workspace.`)
   const loaded = await readAwSkillEvalManifest({ plugin, skill: options.skillName })
-  const suite = loaded.manifest.suites.find((entry) => entry.id === options.suiteId)
-  if (!suite) throw new Error(`Eval suite "${options.suiteId}" does not exist.`)
-  const profile = loaded.manifest.profiles.find((entry) => entry.id === options.profileId)
-  if (!profile) throw new Error(`Eval profile "${options.profileId}" does not exist.`)
-  if (!suite.profiles.includes(profile.id)) {
+  const suite = options.suiteId
+    ? loaded.manifest.suites.find((entry) => entry.id === options.suiteId)
+    : loaded.manifest.suites.length === 1
+      ? loaded.manifest.suites[0]
+      : undefined
+  if (!suite) {
+    throw new Error(options.suiteId
+      ? `Eval suite "${options.suiteId}" does not exist.`
+      : 'Eval manifest has multiple suites; --suite is required.')
+  }
+  const profileId = options.profileId ?? loaded.manifest.defaults.profile ?? (
+    loaded.manifest.profiles.length === 1 ? loaded.manifest.profiles[0]!.id : undefined
+  )
+  if (!profileId) throw new Error('Eval profile is ambiguous; use --profile or defaults.profile.')
+  const profile = loaded.manifest.profiles.find((entry) => entry.id === profileId)
+  if (!profile) throw new Error(`Eval profile "${profileId}" does not exist.`)
+  if (suite.profiles && !suite.profiles.includes(profile.id)) {
     throw new Error(`Eval suite "${suite.id}" does not support profile "${profile.id}".`)
   }
   assertNoSensitiveProfileConfig(profile, workspace.plugins)
@@ -223,19 +177,20 @@ async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSe
     workspaceRoot: workspace.workspaceRoot,
     plugin,
     plugins: workspace.plugins,
-    manifest: loaded.manifest,
     evalRoot: loaded.evalRoot,
-    cases: loaded.casesBySuite.get(suite.id) ?? [],
     suite,
     profile,
+    cases: loaded.casesBySuite.get(suite.id)!,
+    defaults: loaded.manifest.defaults,
+    corpusPaths: loaded.manifest.suites.map((entry) => entry.cases),
   }
 }
 
 function materializationProfile(selection: ResolvedSelection): AwSkillEvalMaterializationProfile {
-  const explicitConfig = new Map(selection.profile.plugins.map((plugin) => [plugin.name, plugin.config]))
+  const explicitConfig = new Map(selection.profile.plugins.map((entry) => [entry.name, entry.config]))
   const closure = resolvePluginMetaDependencyClosure(
     selection.plugins,
-    selection.profile.plugins.map((plugin) => plugin.name),
+    selection.profile.plugins.map((entry) => entry.name),
   )
   const plugins = closure.map((plugin) => ({
     name: plugin.manifest.name,
@@ -252,469 +207,195 @@ function materializationProfile(selection: ResolvedSelection): AwSkillEvalMateri
       }
     }
   }
-  return { ...selection.profile, plugins }
+  return { id: selection.profile.id, scope: selection.profile.scope, plugins }
 }
 
-async function materializeInputs(options: {
-  selection: ResolvedSelection
-  operationRoot: string
-  destinationRoot: string
-  env?: NodeJS.ProcessEnv
-}): Promise<MaterializedInputs> {
-  const materializedRoot = path.join(options.operationRoot, 'materialized')
-  const workRoot = path.join(options.operationRoot, 'work')
-  await fs.ensureDir(materializedRoot)
-  await fs.ensureDir(workRoot)
-  const subject = await materializeAwSkillEvalSubject({
-    plugin: options.selection.plugin,
-    plugins: options.selection.plugins,
-    profile: materializationProfile(options.selection),
-    requiredSkills: new Set(options.selection.suite.skills),
-    initializeGitRepository: options.selection.suite.kind === 'conversation',
-    outputRoot: materializedRoot,
-    workRoot,
-    env: options.env,
-  })
-  const subjectRoot = resolveMaterializedSubjectRoot(materializedRoot, subject)
-  const runtimeTarget = path.join(subjectRoot, '.agents', 'skills', options.selection.manifest.skill)
-  await validateSkillDirectory(runtimeTarget, 'codex.skill', {
-    ownerMarkerPolicy: 'ignore',
-    requirementsReceiptPolicy: 'allow',
-  })
-  const targetRoot = path.join(options.destinationRoot, 'targets', 'current')
-  const subjectBaseRoot = path.join(options.destinationRoot, 'runtime', 'aw-subject-base')
-  await createRuntimeSkillSnapshot(runtimeTarget, targetRoot)
-  await fs.copy(subjectRoot, subjectBaseRoot, { dereference: false, errorOnExist: true })
-  await fs.remove(path.join(subjectBaseRoot, '.agents', 'skills', options.selection.manifest.skill))
-  for (const participant of options.selection.suite.skills) {
-    if (participant === options.selection.manifest.skill) continue
-    const participantRoot = path.join(subjectBaseRoot, '.agents', 'skills', participant)
-    const info = await fs.lstat(participantRoot).catch(() => null)
-    if (!info?.isDirectory() || info.isSymbolicLink()) {
-      throw new Error(`Materialized subject lost participant Skill "${participant}".`)
-    }
-  }
-  return {
-    targetRoot,
-    targetDigest: await computeSkillDigest(targetRoot),
-    subjectBaseRoot,
-    subjectBaseDigest: await computeCanonicalDirectoryDigest(subjectBaseRoot),
-  }
-}
-
-async function materializeSuiteInput(options: {
-  selection: ResolvedSelection
-  destinationRoot: string
-  selectedCases: EvalCase[]
-}): Promise<MaterializedSuiteInput> {
-  if (options.selection.suite.kind === 'check') throw new Error('Check suites do not have provider suite inputs.')
-  const root = path.join(options.destinationRoot, 'runtime', 'eval-suite')
-  const evalAssetsRoot = path.join(root, 'eval-root')
-  await fs.ensureDir(evalAssetsRoot)
-  const assets: string[] = []
-  if (options.selection.suite.kind === 'trigger' && options.selection.suite.fixtureModule) {
-    assets.push(options.selection.suite.fixtureModule)
-  }
-  if (options.selection.suite.kind === 'conversation') {
-    assets.push(...(options.selection.suite.environment?.pathPrepend ?? []))
-    for (const [index, evalCase] of options.selectedCases.entries()) {
-      const environment = evalCase.environment
-      if (!environment || typeof environment !== 'object' || Array.isArray(environment)) continue
-      const pathPrepend = (environment as { pathPrepend?: unknown }).pathPrepend
-      if (!Array.isArray(pathPrepend) || pathPrepend.some((entry) => typeof entry !== 'string')) {
-        throw new Error(`Selected conversation case ${index + 1} has invalid environment.pathPrepend.`)
-      }
-      assets.push(...pathPrepend as string[])
-    }
-  }
-  if (options.selection.suite.kind === 'provider') {
-    assets.push(
-      options.selection.suite.provider.entry,
-      ...options.selection.suite.provider.assets,
-    )
-  }
-  const normalizedAssets = [...new Set(assets.map((relative) => {
-    const normalized = relative.replace(/^\.\//u, '')
-    if (
-      normalized === ''
-      || normalized.includes('\0')
-      || normalized.includes('\\')
-      || path.posix.isAbsolute(normalized)
-      || path.win32.isAbsolute(normalized)
-      || path.posix.normalize(normalized) !== normalized
-      || normalized.split('/').includes('..')
-    ) throw new Error(`Eval runtime asset must stay inside the Eval root: ${relative}`)
-    return normalized
-  }))].filter((relative, _index, all) =>
-    !all.some((other) => relative !== other && relative.startsWith(`${other}/`)))
-  for (const relative of normalizedAssets) {
-    await fs.copy(
-      path.join(options.selection.evalRoot, ...relative.split('/')),
-      path.join(evalAssetsRoot, ...relative.split('/')),
-      { dereference: false, errorOnExist: true },
-    )
-  }
-  const suite = {
-    ...options.selection.suite,
-    skill: options.selection.manifest.skill,
-    cases: 'AGENT_EVAL_CASE_PATH',
-    ...(options.selection.suite.kind === 'trigger' && options.selection.suite.fixtureModule
-      ? { fixtureModule: `eval-root/${options.selection.suite.fixtureModule}` }
-      : {}),
-    ...(options.selection.suite.kind === 'conversation' && options.selection.suite.environment
-      ? {
-          environment: {
-            pathPrepend: options.selection.suite.environment.pathPrepend
-              .map((entry) => `eval-root/${entry}`),
-          },
-        }
-      : {}),
-    ...(options.selection.suite.kind === 'provider'
-      ? {
-          provider: {
-            ...options.selection.suite.provider,
-            entry: `eval-root/${options.selection.suite.provider.entry}`,
-            assets: options.selection.suite.provider.assets.map((entry) => `eval-root/${entry}`),
-          },
-        }
-      : {}),
-  }
-  await fs.writeFile(path.join(root, 'suite.json'), prettyJson(suite), { flag: 'wx' })
-  return { root, digest: await computeCanonicalDirectoryDigest(root) }
-}
-
-function casesFrom(value: unknown): EvalCase[] {
-  if (Array.isArray(value)) return value as EvalCase[]
-  if (value && typeof value === 'object') {
-    const row = value as { cases?: unknown; evals?: unknown }
-    if (Array.isArray(row.cases)) return row.cases as EvalCase[]
-    if (Array.isArray(row.evals)) return row.evals as EvalCase[]
-  }
-  throw new Error('Case document must be an array or contain cases/evals.')
-}
-
-function selectCases(value: unknown, split?: string, caseId?: string): EvalCase[] {
+function selectedCases(
+  document: SelectedCasesDocument,
+  split?: string,
+  caseId?: string,
+): SelectedCasesDocument {
   if (split !== undefined && split !== 'all' && !safeSegmentPattern.test(split)) {
     throw new Error('Eval split must be a safe path segment or all.')
   }
   if (caseId !== undefined && !safeSegmentPattern.test(caseId)) {
     throw new Error('Eval case id must be a safe path segment.')
   }
-  const cases = casesFrom(value)
-  const seen = new Set<string>()
-  for (const entry of cases) {
-    const id = typeof entry.id === 'string' ? entry.id : ''
-    if (!safeSegmentPattern.test(id)) throw new Error('Eval case ids must be safe path segments.')
-    if (seen.has(id)) throw new Error(`Eval case document contains duplicate id "${id}".`)
-    seen.add(id)
-  }
   const splitCases = split === undefined || split === 'all'
-    ? cases
-    : cases.filter((entry) => entry.split === split)
-  const selected = caseId === undefined
+    ? document.cases
+    : document.cases.filter((entry) => entry.split === split)
+  const cases = caseId === undefined
     ? splitCases
     : splitCases.filter((entry) => entry.id === caseId)
-  if (selected.length === 0) throw new Error('Eval case selection matched no cases.')
-  return selected
+  if (cases.length === 0) throw new Error('Eval case selection matched no cases.')
+  return { ...document, cases }
 }
 
-function builtInProvider(kind: 'trigger' | 'conversation'): {
-  id: string
-  command: string[]
-  describeCommand: string[]
-  runtimeCapabilities: RuntimeCapabilities
-  environmentAllowlist: string[]
-} {
-  const name = kind === 'trigger' ? 'codex-trigger' : 'codex-conversation'
-  const base = ['aw', 'skill', 'eval', 'provider', name]
-  return {
-    id: name,
-    command: base,
-    describeCommand: [...base, '--describe'],
-    runtimeCapabilities: builtInEvalProviderCapabilities(name),
-    environmentAllowlist: [...CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST],
-  }
-}
-
-function suiteProvider(suite: Exclude<AwSkillEvalSuite, AwSkillEvalCheckSuite>): {
-  id: string
-  command: string[]
-  describeCommand: string[]
-  runtimeCapabilities: RuntimeCapabilities
-  environmentAllowlist: string[]
-} {
-  if (suite.kind === 'provider') {
-    const runtimeCapabilities: RuntimeCapabilities = {
-      schemaVersion: 2,
-      provider: suite.provider.id,
-      providerVersion: CUSTOM_EVAL_PROVIDER_VERSION,
-      capabilities: suite.provider.capabilities,
-      limitations: [],
-    }
-    const base = ['aw', 'skill', 'eval', 'provider', 'custom']
-    return {
-      id: suite.provider.id,
-      command: base,
-      describeCommand: [
-        ...base,
-        '--describe',
-        '--capabilities',
-        encodeCustomProviderCapabilities(runtimeCapabilities),
-      ],
-      runtimeCapabilities,
-      environmentAllowlist: suite.provider.credentialEnvironment,
-    }
-  }
-  return builtInProvider(suite.kind)
-}
-
-async function copyPreviousVersion(options: {
-  previousVersion: string
-  finalOutput: string
-  staging: string
-}): Promise<{ id: string; root: string; digest: string }> {
-  const requested = path.resolve(options.previousVersion)
-  const info = await fs.lstat(requested).catch(() => null)
-  if (!info?.isDirectory() || info.isSymbolicLink()) {
-    throw new Error('Previous version must be a regular non-symbolic-link runtime Skill directory.')
-  }
-  const actual = await fs.realpath(requested)
-  if (pathsOverlap(actual, options.finalOutput) || pathsOverlap(actual, path.join(options.staging, 'output'))) {
-    throw new Error('Previous version must be outside the Plan and output directories.')
-  }
-  await validateSkillDirectory(actual, 'codex.skill', {
-    ownerMarkerPolicy: 'ignore',
-    requirementsReceiptPolicy: 'allow',
+async function copyEvalWorkspace(
+  selection: ResolvedSelection,
+  destination: string,
+): Promise<void> {
+  const excluded = new Set([
+    'manifest.json',
+    ...selection.corpusPaths,
+  ])
+  await fs.copy(selection.evalRoot, destination, {
+    dereference: false,
+    overwrite: false,
+    errorOnExist: true,
+    filter: (source) => {
+      const relative = path.relative(selection.evalRoot, source).split(path.sep).join('/')
+      return relative === '' || !excluded.has(relative)
+    },
   })
-  const id = 'previous-version'
-  const root = path.join(options.staging, 'targets', 'previous', id)
-  const snapshot = await createRuntimeSkillSnapshot(actual, root)
-  return { id, root, digest: snapshot.digest }
+  await fs.ensureDir(destination)
+  await computeCanonicalDirectoryDigest(destination)
 }
 
-async function writeExclusiveValidatedResult(target: string, result: AwSkillEvalCheckResult): Promise<void> {
-  const errors = validateAwSkillEvalCheckResult(result)
-  if (errors.length > 0) throw new Error(`AwSkillEvalCheckResult is invalid: ${errors.join('; ')}`)
-  const temporary = path.join(
-    path.dirname(target),
-    `.${path.basename(target)}.aw-eval-${randomBytes(8).toString('hex')}.tmp`,
-  )
-  let linked = false
-  try {
-    await fs.writeFile(temporary, prettyJson(result), { flag: 'wx' })
-    if (await fs.pathExists(target)) throw new Error('Eval check output appeared before commit.')
-    await fs.link(temporary, target)
-    linked = true
-  } finally {
-    if (linked) await fs.remove(temporary).catch(() => undefined)
-    else await fs.remove(temporary)
+async function resolveProvider(
+  selection: ResolvedSelection,
+  preparedEvalRoot: string,
+): Promise<EvalProvider> {
+  if (selection.suite.kind === 'trigger') return 'codex-trigger'
+  if (selection.suite.kind === 'conversation') return 'codex-conversation'
+  const resolved = await resolveAwSkillEvalCustomCommand(selection.evalRoot, selection.suite.provider!)
+  const command = [...resolved.command]
+  for (const [index, { prefix, relative }] of resolved.localArguments) {
+    if (!await fs.pathExists(path.join(preparedEvalRoot, relative))) {
+      throw new Error(`Prepared custom provider asset is missing: ${relative}`)
+    }
+    command[index] = `${prefix}workspace/eval/${relative}`
   }
+  return { type: 'custom-process', command }
 }
 
 export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promise<PrepareSkillEvalReceipt> {
-  if (options.runs !== undefined && (!Number.isInteger(options.runs) || options.runs <= 0)) {
-    throw new Error('--runs must be a positive integer.')
+  if (options.runs !== undefined && (!Number.isSafeInteger(options.runs) || options.runs < 1)) {
+    throw new Error('--runs must be a positive safe integer.')
+  }
+  if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)) {
+    throw new Error('--timeout-ms must be a positive safe integer.')
   }
   if (options.baseline !== undefined && options.baseline !== 'without-skill') {
     throw new Error('--baseline only accepts without-skill.')
   }
+  if (options.baseline && options.previousVersion) {
+    throw new Error('--baseline and --previous-version are mutually exclusive.')
+  }
   const selection = await resolveSelection(options)
-  if (selection.suite.kind === 'check') throw new Error('Check suites must use aw skill eval check.')
   const finalOutput = await assertAbsentSafeOutputDirectory({
     target: path.resolve(options.cwd, options.output),
     cwd: options.cwd,
     workspaceRoot: selection.workspaceRoot,
     pluginRoots: selection.plugins.map((plugin) => plugin.rootDir),
   })
-  const operationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-eval-prepare-'))
+  const operationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-eval-prepare-v1-'))
   const staging = await fs.mkdtemp(path.join(path.dirname(finalOutput), `.${path.basename(finalOutput)}.aw-eval-stage-`))
   let committed = false
-  let operationCleaned = false
+  let keepOperationRoot = false
   try {
-    const selectedCases = selectCases(selection.cases, options.split, options.caseId)
-    await fs.ensureDir(path.join(staging, 'cases'))
-    const selectedCasesPath = path.join(staging, 'cases', 'selected-cases.json')
-    await fs.writeFile(selectedCasesPath, prettyJson(selectedCases), { flag: 'wx' })
-    const corpusDigest = await computeCaseCorpusDigest([selectedCasesPath])
-    const inputs = await materializeInputs({
-      selection,
-      operationRoot,
-      destinationRoot: staging,
+    const selected = selectedCases(selection.cases, options.split, options.caseId)
+    const selectedCasesPath = path.join(staging, 'cases.json')
+    await fs.writeFile(selectedCasesPath, prettyJson(selected), { flag: 'wx' })
+    const targetSourceRoot = path.join(operationRoot, 'materialized')
+    const workRoot = path.join(operationRoot, 'work')
+    await Promise.all([fs.ensureDir(targetSourceRoot), fs.ensureDir(workRoot)])
+    const requiredSkills = new Set([
+      selection.cases.suite.unitUnderTest,
+      ...(selection.cases.suite.participants ?? []),
+    ])
+    const materialized = await materializeAwSkillEvalSubject({
+      plugin: selection.plugin,
+      plugins: selection.plugins,
+      profile: materializationProfile(selection),
+      requiredSkills,
+      initializeGitRepository: selection.suite.kind === 'conversation',
+      outputRoot: targetSourceRoot,
+      workRoot,
       env: options.env,
     })
-    const suiteInput = await materializeSuiteInput({
-      selection,
-      destinationRoot: staging,
-      selectedCases,
+    const subjectSource = resolveMaterializedSubjectRoot(targetSourceRoot, materialized)
+    const runtimeTarget = path.join(subjectSource, '.agents', 'skills', options.skillName)
+    await validateSkillDirectory(runtimeTarget, 'codex.skill', {
+      ownerMarkerPolicy: 'ignore',
+      requirementsReceiptPolicy: 'allow',
     })
-    const provider = suiteProvider(selection.suite)
-    const capabilities = provider.runtimeCapabilities
-    await fs.ensureDir(path.join(staging, 'provider', 'work'))
-    const capabilitiesPath = path.join(staging, 'provider', 'capabilities.json')
-    await fs.writeFile(capabilitiesPath, prettyJson(capabilities), { flag: 'wx' })
-    const capabilitiesDigest = sha256(await fs.readFile(capabilitiesPath))
-
-    const comparison = options.baseline || options.previousVersion ? 'comparison' : null
-    const configurations: AwSkillEvalExecutionPlan['configurations'] = [{
-      id: 'with-skill',
-      skillMode: 'with-skill',
-      comparisonId: comparison,
-    }]
-    if (options.baseline) configurations.push({
-      id: 'without-skill',
-      skillMode: 'without-skill',
-      comparisonId: comparison,
-    })
+    const targetRoot = path.join(staging, 'targets', 'current')
+    const target = await createRuntimeSkillSnapshot(runtimeTarget, targetRoot)
+    const subjectRoot = path.join(staging, 'workspace', 'subject')
+    await fs.copy(subjectSource, subjectRoot, { dereference: false, errorOnExist: true })
+    await fs.remove(path.join(subjectRoot, '.agents', 'skills', options.skillName))
+    await computeCanonicalDirectoryDigest(subjectRoot)
+    await copyEvalWorkspace(selection, path.join(staging, 'workspace', 'eval'))
+    let baseline: EvalSpec['baseline'] = options.baseline
+      ? { type: 'without-skill' }
+      : { type: 'none' }
     if (options.previousVersion) {
-      const previous = await copyPreviousVersion({
-        previousVersion: path.resolve(options.cwd, options.previousVersion),
-        finalOutput,
-        staging,
+      const source = path.resolve(options.cwd, options.previousVersion)
+      const info = await fs.lstat(source).catch(() => null)
+      if (!info?.isDirectory() || info.isSymbolicLink()) {
+        throw new Error('Previous version must be a regular non-symbolic-link runtime Skill directory.')
+      }
+      const actualSource = await fs.realpath(source)
+      if (pathsOverlap(actualSource, finalOutput)) throw new Error('Previous version must not overlap prepared output.')
+      await validateSkillDirectory(actualSource, 'codex.skill', {
+        ownerMarkerPolicy: 'ignore',
+        requirementsReceiptPolicy: 'allow',
       })
-      configurations.push({
-        id: previous.id,
-        skillMode: 'previous-version',
-        comparisonId: comparison,
-        skillPath: `targets/previous/${previous.id}`,
-        skillDigest: previous.digest as `sha256:${string}`,
-      })
+      const previous = await createRuntimeSkillSnapshot(actualSource, path.join(staging, 'targets', 'previous'))
+      baseline = {
+        type: 'previous-version',
+        target: { path: 'targets/previous', digest: previous.digest },
+      }
     }
-    const plan: AwSkillEvalExecutionPlan = {
-      schemaVersion: 4,
-      planId: `${selection.manifest.plugin}-${selection.manifest.skill}-${selection.suite.id}-${selection.profile.id}`,
-      target: {
-        name: selection.manifest.skill,
-        path: 'targets/current',
-        digest: inputs.targetDigest as `sha256:${string}`,
+    const runs = options.runs ?? selection.suite.runs ?? selection.defaults.runs ?? 1
+    const timeoutMs = options.timeoutMs ?? selection.suite.timeoutMs ?? selection.defaults.timeoutMs ?? 120_000
+    const spec: EvalSpec = {
+      version: 1,
+      source: {
+        plugin: selection.plugin.manifest.name,
+        skill: options.skillName,
+        suite: selection.suite.id,
+        profile: selection.profile.id,
       },
-      cases: {
-        paths: ['cases/selected-cases.json'],
-        corpusDigest,
-      },
-      provider: {
-        id: provider.id,
-        command: provider.command,
-        describeCommand: provider.describeCommand,
-        cwd: 'provider/work',
-        capabilitiesPath: 'provider/capabilities.json',
-        capabilitiesDigest,
-        inheritEnvironment: false,
-        environmentAllowlist: provider.environmentAllowlist,
-      },
-      runtimeInputs: [{
-        id: 'aw-subject-base',
-        kind: 'directory',
-        path: 'runtime/aw-subject-base',
-        digest: inputs.subjectBaseDigest as `sha256:${string}`,
-      }, {
-        id: 'eval-suite',
-        kind: 'directory',
-        path: 'runtime/eval-suite',
-        digest: suiteInput.digest as `sha256:${string}`,
-      }],
-      configurations,
-      runsPerCase: options.runs ?? selection.suite.defaultRuns,
-      timeoutMs: selection.suite.perRunTimeoutMs,
-      outputRoot: 'output',
-      capture: {
-        outputs: true,
-        trace: capabilities.capabilities.toolTrace,
-        timing: true,
-        usage: capabilities.capabilities.tokenUsage,
-      },
+      workspace: 'workspace',
+      target: { path: 'targets/current', digest: target.digest },
+      cases: { path: 'cases.json', digest: await computeEvalFileDigest(selectedCasesPath) },
+      provider: await resolveProvider(selection, path.join(staging, 'workspace', 'eval')),
+      runs,
+      timeoutMs,
+      baseline,
+      outputDir: 'output',
     }
-    const planPath = path.join(staging, 'plan.json')
-    await fs.writeFile(planPath, prettyJson(plan), { flag: 'wx' })
-    const preparation = {
-      schemaVersion: 1,
-      command: 'skill:eval:prepare',
-      plugin: selection.manifest.plugin,
-      skill: selection.manifest.skill,
-      suite: selection.suite.id,
-      profile: selection.profile.id,
-      planPath: 'plan.json',
-      targetDigest: inputs.targetDigest,
-      corpusDigest,
-      runtimeInputs: [
-        { id: 'aw-subject-base', digest: inputs.subjectBaseDigest },
-        { id: 'eval-suite', digest: suiteInput.digest },
-      ],
+    const specPath = path.join(staging, 'spec.json')
+    await fs.writeFile(specPath, prettyJson(spec), { flag: 'wx' })
+    const [specValidation, caseValidation] = await Promise.all([
+      validateEvalSpecFile(specPath),
+      validateSelectedCasesFile(selectedCasesPath),
+    ])
+    if (!specValidation.valid || !specValidation.calculated) {
+      throw new Error(`Prepared EvalSpec is invalid: ${specValidation.errors.join('; ')}`)
     }
-    await fs.writeFile(path.join(staging, 'preparation.json'), prettyJson(preparation), { flag: 'wx' })
-    const validation = await validateExecutionPlan(planPath)
-    if (!validation.valid) throw new Error(`Prepared Eval Plan is invalid: ${validation.errors.join('; ')}`)
-    if (!validation.calculated) throw new Error('Prepared Eval Plan did not return calculated digests.')
-    if (validation.calculated.targetSkillDigest !== inputs.targetDigest) throw new Error('Prepared target digest changed during validation.')
-    if (validation.calculated.caseCorpusDigest !== corpusDigest) throw new Error('Prepared case digest changed during validation.')
-    await fs.remove(operationRoot)
-    operationCleaned = true
-    if (await fs.pathExists(finalOutput)) throw new Error('Eval Plan output appeared before commit.')
+    if (!caseValidation.valid) {
+      throw new Error(`Prepared selected cases are invalid: ${caseValidation.errors.join('; ')}`)
+    }
+    if (await fs.pathExists(finalOutput)) throw new Error('EvalSpec output appeared before commit.')
     await fs.rename(staging, finalOutput)
     committed = true
+    keepOperationRoot = options.keepWorkspace === true
+    if (!keepOperationRoot) await fs.remove(operationRoot)
     return {
       schemaVersion: 1,
       command: 'skill:eval:prepare',
       ok: true,
-      plans: [{
-        suite: selection.suite.id,
-        profile: selection.profile.id,
-        planPath: path.join(finalOutput, 'plan.json'),
-        targetDigest: inputs.targetDigest,
-        corpusDigest,
-      }],
+      suite: selection.suite.id,
+      profile: selection.profile.id,
+      specPath: path.join(finalOutput, 'spec.json'),
+      targetDigest: target.digest,
+      corpusDigest: spec.cases.digest,
+      ...(keepOperationRoot ? { workspacePath: operationRoot } : {}),
     }
   } finally {
-    if (!committed) {
-      await Promise.allSettled([
-        ...(operationCleaned ? [] : [fs.remove(operationRoot)]),
-        fs.remove(staging),
-      ])
-    }
+    if (!committed) await Promise.allSettled([fs.remove(operationRoot), fs.remove(staging)])
   }
-}
-
-export async function checkSkillEval(options: CheckSkillEvalOptions): Promise<AwSkillEvalCheckResult> {
-  const selection = await resolveSelection(options)
-  if (selection.suite.kind !== 'check') throw new Error('aw skill eval check only accepts check suites.')
-  const suite = selection.suite as AwSkillEvalCheckSuite
-  const finalOutput = await assertAbsentSafeOutputFile({
-    target: path.resolve(options.cwd, options.output),
-    cwd: options.cwd,
-    workspaceRoot: selection.workspaceRoot,
-    pluginRoots: selection.plugins.map((plugin) => plugin.rootDir),
-  })
-  const documentPath = path.join(selection.evalRoot, suite.document)
-  const schemaPath = path.join(selection.evalRoot, suite.schema)
-  const [documentBytes, schemaBytes] = await Promise.all([
-    fs.readFile(documentPath),
-    fs.readFile(schemaPath),
-  ])
-  const schema = JSON.parse(schemaBytes.toString('utf8')) as Record<string, unknown>
-  const ajv = new Ajv2020({ allErrors: true, strict: true })
-  let validate: ValidateFunction<unknown>
-  try {
-    validate = ajv.compile(schema)
-  } catch (error) {
-    throw new Error(`Eval json-schema checker could not compile schema: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  const document = JSON.parse(documentBytes.toString('utf8')) as unknown
-  const passed = validate(document)
-  const errors = passed
-    ? []
-    : (validate.errors ?? []).map((error: ErrorObject) =>
-        `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`)
-  const result: AwSkillEvalCheckResult = {
-    schemaVersion: 1,
-    checker: { id: 'json-schema', version: '1' },
-    plugin: selection.manifest.plugin,
-    skill: selection.manifest.skill,
-    suite: suite.id,
-    profile: selection.profile.id,
-    document: { path: suite.document, digest: sha256(documentBytes) },
-    schema: { path: suite.schema, digest: sha256(schemaBytes) },
-    passed,
-    errors,
-  }
-  await writeExclusiveValidatedResult(finalOutput, result)
-  return result
 }

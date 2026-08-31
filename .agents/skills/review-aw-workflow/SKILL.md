@@ -24,21 +24,23 @@ Workflow 是跨插件完成一个用户结果的行为路径，不是 Catalog Wo
 
 ## 工作流
 
-1. 运行确定性 inventory：
+1. 从平台 Skill locator 或当前加载的 `SKILL.md` 确定本 Skill 的真实 `<skill-root>`，不从 cwd 推断。首次 AW 命令必须是 `aw self check --from <skill-root> --json`。命令不可用时停止并报告 `aw` 缺失；receipt 的 `ok` 为 false 时停止并精确报告其 `missingCapabilities`。
+2. 先确定本次 context target：依次使用用户明确的 Workspace root、从任一 canonical `<root>/plugins/<name>` target 推导的 root、或上游 handoff 的 resolved root；只有任务明确指向 current Workspace 时才不传 root。首次运行 `aw catalog context [--workspace-root <target-root>] --json`，只读取单一 JSON receipt。receipt 的 `workspace.root` 必须与所选 target 一致，并与所有 canonical targets 或 handoff paths 一致；不一致时停止，只在 root 缺失或歧义时询问。`workspace.found` 为 true 时使用其 root；Workspace 缺失时停止并报告 receipt，再把用户指定的插件名解析为 `<workspace-root>/plugins/<plugin-name>`。
+3. 单个 canonical Plugin Source 的请求路由 `review-aw-plugin`。已准入的跨插件 scope 才运行确定性 inventory：
 
    ```bash
    node scripts/discover-aw-workflow.mjs \
      --entry <plugin-or-skill> \
-     --plugin <plugin-root> \
-     [--plugin <another-plugin-root>]... \
+     --plugin <workspace-root>/plugins/<plugin-name> \
+     [--plugin <workspace-root>/plugins/<another-plugin-name>]... \
      [--materialized <plugin=profile=skills-root>]... \
      --format json
    ```
 
-2. 分别检查 `dependencyEdges`、`buildImportEdges`、`skillRuntimeFileImportEdges` 和 `artifactRuntimeImportEdges`，以及每类 `unresolved`、每类 `cycles`、products、runtime exports 和 materialized targets。不要把不同边合成一个依赖图。
-3. 使用 `review-agent-workflow` 评审一个有界用户结果；传入 inventory、代表性 common path 和明确排除。
-4. 只有 workflow finding 需要插件或 Skill 内部证据时，才调用 `review-aw-plugin` 或 `review-agent-skill`。父级负责跨插件 owner、blast radius 和最终 verdict。
-5. 读取 `references/aw-workflow-review.md`，检查 AW 特有的 source/final、projection 和依赖问题。
+4. 分别检查 `dependencyEdges`、`buildImportEdges`、`skillRuntimeFileImportEdges` 和 `artifactRuntimeImportEdges`，以及每类 `unresolved`、每类 `cycles`、products、runtime exports 和 materialized targets。不要把不同边合成一个依赖图。
+5. 使用 `review-agent-workflow` 评审一个有界用户结果；传入 inventory、代表性 common path 和明确排除。
+6. 只有 workflow finding 需要插件或 Skill 内部证据时，才调用 `review-aw-plugin` 或 `review-agent-skill`。父级负责跨插件 owner、blast radius 和最终 verdict。
+7. 读取 `references/aw-workflow-review.md`，检查 AW 特有的 source/final、projection 和依赖问题。
 
 ## 输出
 
@@ -47,3 +49,7 @@ Workflow 是跨插件完成一个用户结果的行为路径，不是 Catalog Wo
 ## 可选报告归档
 
 默认只在聊天中交付。用户明确要求归档且本 Skill 是本次请求的顶层 Reviewer 时，读取 [Review Publication](references/review-publication.md)；下层 workflow、plugin 和 leaf Reviewer 只返回材料，不归档。
+
+## 边界
+
+- 不运行会写入、构建或测试的 AW 命令；不得因 Review 调用 Catalog mutation、build 或 test。

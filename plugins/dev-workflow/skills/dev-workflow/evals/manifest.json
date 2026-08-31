@@ -1,115 +1,61 @@
 {
-  "schemaVersion": 1,
-  "plugin": "dev-workflow",
-  "skill": "dev-workflow",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "dev-workflow",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "dev-workflow": {}
+      }
     },
-    {
-      "id": "project-composed",
+    "project-composed": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "dev-workflow",
-          "config": {}
-        },
-        {
-          "name": "ask-me",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "dev-workflow": {},
+        "ask-me": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "dev-workflow",
-        "dev-spec",
-        "dev-review-spec",
-        "dev-implement",
-        "dev-review-code"
-      ],
-      "cases": "./trigger-cases.json",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation"
-      ],
-      "forbidMultipleSkillLoads": false,
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "router-composed",
       "kind": "trigger",
-      "skills": [
-        "dev-workflow",
-        "dev-spec",
-        "dev-review-spec",
-        "dev-implement",
-        "dev-review-code",
-        "decision-shape",
-        "decision-grill",
-        "decision-prototype"
-      ],
-      "cases": "./cross-plugin-routing-cases.json",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [],
-      "forbidMultipleSkillLoads": false,
+      "cases": "cross-plugin-routing-cases.json",
       "profiles": [
         "project-composed"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "minimumPassRate": 0.9,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "composition-composed",
       "kind": "conversation",
-      "skills": [
-        "dev-workflow",
-        "dev-spec",
-        "dev-review-spec",
-        "dev-implement",
-        "dev-review-code",
-        "decision-shape",
-        "decision-grill",
-        "decision-prototype"
-      ],
-      "cases": "./composition-behavior-cases.json",
-      "isolation": "strict",
+      "cases": "composition-behavior-cases.json",
       "profiles": [
         "project-composed"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": true
     }
   ]
 }

@@ -80,43 +80,29 @@ function runResult(finalMessage, timeline) {
 
 function testCorpusShape() {
   const spec = livenessCorpusDocument;
-  assert.equal(spec.skill_name, 'codex-explore');
-  assert.equal(spec.authority, 'diagnostic-only');
-  assert.deepEqual(
-    Object.keys(spec.policy).sort(),
-    ['false_negative_cost', 'false_positive_cost', 'optimization', 'rationale'],
-  );
-  assert.equal(spec.policy.optimization, 'balanced');
-  assert.equal(spec.evals.length > 0, true);
-  assert.equal(spec.evals.every((entry) => (
+  assert.equal(spec.version, 1);
+  assert.equal(spec.suite.kind, 'custom-process');
+  assert.equal(spec.suite.unitUnderTest, 'codex-explore');
+  assert.equal(spec.suite.policy.optimization, 'balanced');
+  assert.equal(spec.cases.length > 0, true);
+  assert.equal(spec.cases.every((entry) => (
     typeof entry.id === 'string' &&
     entry.id.length > 0 &&
-    entry.eval_type === 'behavior' &&
-    entry.case_role === 'diagnostic' &&
-    entry.provenance === 'mechanism-probe' &&
-    entry.scenario_family === 'long-responsive-wait-without-probe' &&
-    entry.unit_under_test === 'waiting-and-liveness-policy' &&
-    typeof entry.preconditions === 'object' &&
-    entry.preconditions.release_relevance === 'diagnostic-only' &&
-    typeof entry.oracle?.rationale === 'string' &&
-    nonEmptyStrings(entry.oracle?.rule_refs) &&
-    entry.oracle.confidence === 'high' &&
-    typeof entry.oracle.allowed_variance === 'string' &&
-    entry.oracle.allowed_variance.length > 0 &&
-    typeof entry.prompt === 'string' &&
-    entry.prompt.length > 0 &&
-    (entry.parent_model === undefined || typeof entry.parent_model === 'string') &&
-    (entry.codex_config === undefined || typeof entry.codex_config === 'object') &&
-    typeof entry.expected?.agent_type === 'string' &&
-    entry.expected.agent_type.length > 0 &&
-    nonEmptyStrings(entry.expected?.final_message_includes_all) &&
-    nonEmptyStrings(entry.expected?.delegated_source_prefixes) &&
-    typeof entry.expected?.workspace_unchanged === 'boolean' &&
-    Number.isInteger(entry.expected?.lifecycle?.minimum_initial_wait_timeout_ms) &&
-    typeof entry.expected?.lifecycle?.allow_liveness_probe === 'boolean' &&
-    Number.isInteger(entry.expected?.lifecycle?.max_recoveries)
+    entry.tags.includes('diagnostic') &&
+    typeof entry.input?.prompt === 'string' &&
+    entry.input.prompt.length > 0 &&
+    (entry.input.parent_model === undefined || typeof entry.input.parent_model === 'string') &&
+    (entry.input.codex_config === undefined || typeof entry.input.codex_config === 'object') &&
+    typeof entry.expected?.criteria?.agent_type === 'string' &&
+    entry.expected.criteria.agent_type.length > 0 &&
+    nonEmptyStrings(entry.expected?.criteria?.final_message_includes_all) &&
+    nonEmptyStrings(entry.expected?.criteria?.delegated_source_prefixes) &&
+    typeof entry.expected?.criteria?.workspace_unchanged === 'boolean' &&
+    Number.isInteger(entry.expected?.criteria?.lifecycle?.minimum_initial_wait_timeout_ms) &&
+    typeof entry.expected?.criteria?.lifecycle?.allow_liveness_probe === 'boolean' &&
+    Number.isInteger(entry.expected?.criteria?.lifecycle?.max_recoveries)
   )), true);
-  assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
+  assert.equal(new Set(spec.cases.map((entry) => entry.id)).size, spec.cases.length);
 }
 
 function testEvaluation() {

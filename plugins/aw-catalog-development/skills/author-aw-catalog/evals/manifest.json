@@ -1,50 +1,45 @@
 {
-  "schemaVersion": 1,
-  "plugin": "aw-catalog-development",
-  "skill": "author-aw-catalog",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        { "name": "agent-content-toolkit", "config": {} },
-        { "name": "agent-skill-toolkit", "config": {} },
-        { "name": "aw-plugin-development", "config": {} },
-        { "name": "aw-catalog-development", "config": {} }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "agent-content-toolkit": {},
+        "agent-skill-toolkit": {},
+        "aw-plugin-development": {},
+        "aw-catalog-development": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": ["author-aw-catalog", "review-aw-catalog", "publish-aw-catalog", "author-aw-plugin", "review-aw-plugin", "review-aw-workflow"],
-      "cases": "./trigger-cases.json",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": ["validation"],
-      "forbidMultipleSkillLoads": true,
-      "profiles": ["project-default"],
-      "defaultRuns": 3,
-      "releaseSplits": ["validation"],
+      "cases": "trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      "releaseSplits": [
+        "validation"
+      ]
     },
     {
       "id": "behavior",
       "kind": "conversation",
-      "skills": ["author-aw-catalog", "review-aw-catalog", "publish-aw-catalog", "author-aw-plugin"],
-      "cases": "./behavior-cases.json",
-      "isolation": "strict",
-      "profiles": ["project-default"],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "cases": "behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000,
-      "environment": {
-        "pathPrepend": ["fixtures/bin"]
-      }
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

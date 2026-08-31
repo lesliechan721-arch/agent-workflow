@@ -74,11 +74,19 @@ Evidence: official-guidance; sources: agent-skills.optimizing-descriptions
 
 ## `skill.composition-fitness`
 
-一个 Agent Skill 应承接一个可独立解释和触发的工作单元；单 Skill 内部的独立意图、权限或证据生命周期不得靠更多分支维持。
+一个 Agent Skill 应承接一个可独立解释和触发的工作单元；单 Skill 内部的独立意图、权限或证据生命周期不得靠更多分支维持。可复用 standalone/leaf 不反向依赖已知 caller 的目录、生命周期、阶段、状态名或后续能力；caller 或 orchestrator 负责适配这些上下文。
 
-- **check：** 只评价当前 Skill 内部 composition；跨多个 Skill、插件或 runner 的 common path 交给 workflow Reviewer。
+- **check：** 检查当前 Skill 内部 composition 和依赖方向；caller/orchestrator → leaf 可以，leaf → caller-specific 目录、生命周期、阶段、状态名或后续能力默认是错误 owner。跨多个 Skill、插件或 runner 的 common path 交给 workflow Reviewer。
 
 Evidence: heuristic; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
+
+## `skill.output-boundary`
+
+固定输出字段或机器结构只用于真实 consumer boundary；同一 Agent 在同一上下文连续使用多个 Skill 不自动形成该边界。
+
+- **check：** 逐字段枚举 consumer；没有 parser、持久 artifact、独立 actor 或明确人类决策用途时分类为 relax/delete；存在真实边界时检查字段最小性、schema owner 和 validator owner。
+
+Evidence: normative; sources: agent-skill-toolkit.output-boundary
 
 ## `skill.package-resources`
 
