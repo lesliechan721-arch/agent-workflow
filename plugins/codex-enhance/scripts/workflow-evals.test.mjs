@@ -4,8 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  captureWorkspaceSnapshot,
-  diffWorkspaceSnapshots,
   evaluateLeafOutput,
   evaluateLifecycleTrace,
   evaluateParentScopeIsolation,
@@ -13,10 +11,9 @@ import {
   workflowEvalRunCase,
 } from '../skills/codex-explore/evals/run-workflow-evals.mjs';
 import {
-  buildCollaborationTimeline,
   collectFinalAgentResults,
-  inspectExploreRoleContract,
 } from '../skills/codex-explore/evals/eval-harness.mjs';
+import { inspectExploreRoleContract } from '../skills/codex-explore/evals/codex-workflow-adapter.mjs';
 import workflowCorpusDocument from '../skills/codex-explore/evals/workflow-evals.json' with { type: 'json' };
 import outputContractCorpusDocument from '../skills/codex-explore/evals/output-contract-evals.json' with { type: 'json' };
 
@@ -83,6 +80,7 @@ function runResult(finalMessage, collaborationTimeline = passingTimeline()) {
     execution_error: false,
     termination: 'completed',
     exit_code: 0,
+    cleanup_confirmed: true,
     spawn_calls: [spawnEvent()],
     collaboration_timeline: collaborationTimeline,
     final_message: finalMessage,
@@ -97,7 +95,7 @@ function runResult(finalMessage, collaborationTimeline = passingTimeline()) {
 function testCorpusAndAssertions() {
   const spec = workflowCorpusDocument;
   assert.equal(spec.version, 1);
-  assert.equal(spec.suite.kind, 'custom-process');
+  assert.equal(spec.suite.kind, 'codex-workflow');
   assert.equal(spec.suite.unitUnderTest, 'codex-explore');
   assert.equal(spec.cases.length > 0, true);
   assert.equal(spec.cases.every((entry) => (
@@ -547,24 +545,6 @@ function testLifecycleAssertions() {
   assertLifecycleFailure(earlyCleanup, 'cleanup_after_result');
 }
 
-async function testWorkspaceSnapshots() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-workflow-smoke-'));
-  try {
-    await writeFile(path.join(root, 'known.txt'), 'before\n', 'utf8');
-    const before = await captureWorkspaceSnapshot(root);
-    await writeFile(path.join(root, 'known.txt'), 'after\n', 'utf8');
-    await writeFile(path.join(root, 'added.txt'), 'new\n', 'utf8');
-    const after = await captureWorkspaceSnapshot(root);
-    assert.deepEqual(diffWorkspaceSnapshots(before, after), {
-      added: ['added.txt'],
-      removed: [],
-      modified: ['known.txt'],
-    });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
-
 async function testRoleContractDigest() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-role-contract-'));
   const agentsRoot = path.join(root, '.codex', 'agents');
@@ -578,7 +558,7 @@ async function testRoleContractDigest() {
     ]) {
       await writeFile(
         path.join(agentsRoot, `${name}.toml`),
-        `name = ${JSON.stringify(name)}\ndeveloper_instructions = "Inspect evidence."\n`,
+        `name = ${JSON.stringify(name)}\ndescription = ${JSON.stringify(`${name} role`)}\ndeveloper_instructions = "Inspect evidence."\n`,
         'utf8',
       );
     }
@@ -592,7 +572,7 @@ async function testRoleContractDigest() {
     ]);
     await writeFile(
       path.join(agentsRoot, 'codex-explore-standard.toml'),
-      'name = "codex-explore-standard"\ndeveloper_instructions = "Changed."\n',
+      'name = "codex-explore-standard"\ndescription = "standard role"\ndeveloper_instructions = "Changed."\n',
       'utf8',
     );
     assert.notEqual((await inspectExploreRoleContract(root)).digest, initial.digest);
@@ -603,11 +583,8 @@ async function testRoleContractDigest() {
 
 async function main() {
   testCorpusAndAssertions();
-  testRolloutTimeline();
-  testCodeModeRolloutTimeline();
   testLeafOutputAssertions();
   testLifecycleAssertions();
-  await testWorkspaceSnapshots();
   await testRoleContractDigest();
   console.log('workflow eval tests passed');
 }

@@ -71,7 +71,7 @@
     },
     {
       "id": "model-selection",
-      "kind": "custom-process",
+      "kind": "codex-workflow",
       "cases": "evals.json",
       "profiles": [
         "project-default"
@@ -80,16 +80,20 @@
       "timeoutMs": 900000,
       "requiredForRelease": true,
       "provider": {
-        "type": "custom-process",
+        "type": "codex-workflow",
         "command": [
           "node",
           "run-model-selection-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-5.6-luna",
+          "gpt-5.6-sol"
         ]
       }
     },
     {
       "id": "workflow",
-      "kind": "custom-process",
+      "kind": "codex-workflow",
       "cases": "workflow-evals.json",
       "profiles": [
         "project-default"
@@ -98,16 +102,19 @@
       "timeoutMs": 900000,
       "requiredForRelease": true,
       "provider": {
-        "type": "custom-process",
+        "type": "codex-workflow",
         "command": [
           "node",
           "run-workflow-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-5.5"
         ]
       }
     },
     {
       "id": "output-contract",
-      "kind": "custom-process",
+      "kind": "codex-workflow",
       "cases": "output-contract-evals.json",
       "profiles": [
         "project-default"
@@ -116,16 +123,17 @@
       "timeoutMs": 900000,
       "requiredForRelease": true,
       "provider": {
-        "type": "custom-process",
+        "type": "codex-workflow",
         "command": [
           "node",
           "run-workflow-evals.mjs"
-        ]
+        ],
+        "allowedModels": []
       }
     },
     {
       "id": "liveness",
-      "kind": "custom-process",
+      "kind": "codex-workflow",
       "cases": "liveness-evals.json",
       "profiles": [
         "project-short-wait"
@@ -134,10 +142,13 @@
       "timeoutMs": 300000,
       "requiredForRelease": false,
       "provider": {
-        "type": "custom-process",
+        "type": "codex-workflow",
         "command": [
           "node",
           "run-liveness-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-5.5"
         ]
       }
     }

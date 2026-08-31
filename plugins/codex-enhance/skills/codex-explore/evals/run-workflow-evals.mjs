@@ -1,22 +1,18 @@
-import { createHash } from 'node:crypto';
 import {
   readFile,
-  readdir,
-  readlink,
-  rm,
 } from 'node:fs/promises';
-import path from 'node:path';
-import process from 'node:process';
 
 import {
-  collectFinalAgentResults,
-  createProviderOutput,
-  createEvalWorkspace,
+  EXPLORE_DEVELOPER_INSTRUCTIONS,
+  evidenceRun,
   inspectExploreRoleContract,
-  PROVIDER_CREDENTIAL_ENVIRONMENT,
-  runCodexOnce,
-} from './eval-harness.mjs';
-import { runCustomProcessMain } from './custom-process-protocol.mjs';
+  legacyCase,
+  readWorkflowEvidence,
+  runCodexWorkflowAdapterMain,
+  workflowProfile,
+  workflowRoles,
+} from './codex-workflow-adapter.mjs';
+import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 function nonEmptyStrings(value) {
   return (
@@ -98,44 +94,6 @@ function validateCase(entry, index) {
   return entry;
 }
 
-async function collectFiles(root, relativeDir, snapshot) {
-  const entries = await readdir(path.join(root, relativeDir), {
-    withFileTypes: true,
-  });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const relativePath = path.join(relativeDir, entry.name);
-    const absolutePath = path.join(root, relativePath);
-    if (entry.isDirectory()) {
-      await collectFiles(root, relativePath, snapshot);
-    } else if (entry.isSymbolicLink()) {
-      snapshot[relativePath] = `symlink:${await readlink(absolutePath)}`;
-    } else if (entry.isFile()) {
-      snapshot[relativePath] = createHash('sha256')
-        .update(await readFile(absolutePath))
-        .digest('hex');
-    }
-  }
-}
-
-export async function captureWorkspaceSnapshot(root) {
-  const snapshot = {};
-  await collectFiles(root, '', snapshot);
-  return snapshot;
-}
-
-export function diffWorkspaceSnapshots(before, after) {
-  const beforePaths = new Set(Object.keys(before));
-  const afterPaths = new Set(Object.keys(after));
-  return {
-    added: [...afterPaths].filter((entry) => !beforePaths.has(entry)).sort(),
-    removed: [...beforePaths].filter((entry) => !afterPaths.has(entry)).sort(),
-    modified: [...beforePaths]
-      .filter((entry) => afterPaths.has(entry) && before[entry] !== after[entry])
-      .sort(),
-  };
-}
-
 function unchanged(changes) {
   return ['added', 'removed', 'modified'].every(
     (field) => Array.isArray(changes?.[field]) && changes[field].length === 0,
@@ -144,7 +102,10 @@ function unchanged(changes) {
 
 function waitTimedOut(call) {
   if (call?.output && typeof call.output === 'object') {
-    return call.output.timed_out === true;
+    return call.output.timed_out === true ||
+      call.output.timedOut === true ||
+      call.output.status === 'timeout' ||
+      call.output.status === 'timed_out';
   }
   return typeof call?.output === 'string' && /timed[ _-]?out/i.test(call.output);
 }
@@ -396,6 +357,11 @@ export function evaluateWorkflowRun(run, expected) {
       passed: finalMessage.trim() !== '',
       evidence: `characters=${[...finalMessage].length}`,
     },
+    {
+      name: 'engine_cleanup_confirmed',
+      passed: run.cleanup_confirmed === true,
+      evidence: `confirmed=${run.cleanup_confirmed === true}`,
+    },
   ];
   for (const text of expected.final_message_includes_all) {
     assertions.push({
@@ -512,46 +478,45 @@ export function workflowEvalRunCase(entry) {
   };
 }
 
-export async function runEvalProvider(input) {
-  const entry = validateCase(input.case, 0);
-  if (entry.id !== input.caseId) {
-    throw new Error('Provider case id does not match input.caseId.');
-  }
-  const workspace = await createEvalWorkspace({ sourceRoot: input.workspacePath });
-  try {
-    const roleContract = await inspectExploreRoleContract(workspace.root);
-    const before = await captureWorkspaceSnapshot(workspace.root);
-    const evidence = await runCodexOnce(workspace, workflowEvalRunCase(entry), {
-      codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
-      model: process.env.AW_SKILL_EVAL_CODEX_MODEL,
-      sandboxMode: 'workspace-write',
-      captureTrace: true,
-      sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
-    });
-    const after = await captureWorkspaceSnapshot(workspace.root);
-    const run = {
-      ...evidence,
-      role_contract: roleContract,
-      leaf_results: collectFinalAgentResults(evidence.collaboration_timeline),
-      workspace_changes: diffWorkspaceSnapshots(before, after),
-    };
-    const evaluation = evaluateWorkflowRun(run, entry.expected);
-    return createProviderOutput({
-      providerId: 'codex-explore-workflow',
-      graderId: 'codex-explore-workflow-mechanical',
-      run,
-      result: {
-        caseId: input.caseId,
-        configuration: input.configuration,
-        skillMode: input.skillMode,
-        complete: !run.execution_error,
-        ...evaluation,
-      },
-      outputDir: input.outputDir,
-    });
-  } finally {
-    await rm(workspace.root, { recursive: true, force: true });
-  }
+export async function prepareWorkflow(input) {
+  const entry = validateCase(legacyCase(input.case), 0);
+  await setupTriggerWorkspace({ workspaceRoot: input.paths.workspace });
+  return {
+    version: 1,
+    prompt: entry.prompt,
+    sandbox: 'workspace-write',
+    model: entry.parent_model ?? null,
+    developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
+    roles: await workflowRoles(input.paths.workspace),
+    multiAgent: workflowProfile(entry),
+  };
 }
 
-await runCustomProcessMain(import.meta.url, runEvalProvider);
+export async function gradeWorkflow(input) {
+  const entry = validateCase(legacyCase(input.case), 0);
+  const [evidence, modelOutput, roleContract] = await Promise.all([
+    readWorkflowEvidence(input.paths.evidence),
+    readFile(input.paths.modelOutput, 'utf8'),
+    inspectExploreRoleContract(input.paths.workspace),
+  ]);
+  if (modelOutput.trim() === '') throw new Error('model-output.txt must not be empty.');
+  const run = evidenceRun(evidence);
+  run.final_message = modelOutput.trimEnd();
+  run.role_contract = roleContract;
+  const evaluation = evaluateWorkflowRun(run, entry.expected);
+  return {
+    passed: evaluation.passed,
+    score: evaluation.passed ? 1 : 0,
+    details: {
+      caseId: entry.id,
+      variant: input.variant,
+      complete: !run.execution_error,
+      ...evaluation,
+    },
+  };
+}
+
+await runCodexWorkflowAdapterMain(import.meta.url, {
+  prepare: prepareWorkflow,
+  grade: gradeWorkflow,
+});

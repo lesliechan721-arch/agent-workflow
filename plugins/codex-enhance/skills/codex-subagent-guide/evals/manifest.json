@@ -86,7 +86,7 @@
     },
     {
       "id": "routing",
-      "kind": "custom-process",
+      "kind": "codex-workflow",
       "cases": "provider-evals.json",
       "profiles": [
         "project-default"
@@ -95,16 +95,19 @@
       "timeoutMs": 180000,
       "requiredForRelease": true,
       "provider": {
-        "type": "custom-process",
+        "type": "codex-workflow",
         "command": [
           "node",
           "run-routing-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-5.6-luna"
         ]
       }
     },
     {
       "id": "lifecycle",
-      "kind": "custom-process",
+      "kind": "codex-workflow",
       "cases": "lifecycle-evals.json",
       "profiles": [
         "project-default"
@@ -113,16 +116,19 @@
       "timeoutMs": 900000,
       "requiredForRelease": true,
       "provider": {
-        "type": "custom-process",
+        "type": "codex-workflow",
         "command": [
           "node",
           "run-lifecycle-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-5.6-luna"
         ]
       }
     },
     {
       "id": "lifecycle-timeout",
-      "kind": "custom-process",
+      "kind": "codex-workflow",
       "cases": "lifecycle-timeout-evals.json",
       "profiles": [
         "project-timeout"
@@ -131,10 +137,13 @@
       "timeoutMs": 900000,
       "requiredForRelease": true,
       "provider": {
-        "type": "custom-process",
+        "type": "codex-workflow",
         "command": [
           "node",
           "run-lifecycle-evals.mjs"
+        ],
+        "allowedModels": [
+          "gpt-5.6-luna"
         ]
       }
     }

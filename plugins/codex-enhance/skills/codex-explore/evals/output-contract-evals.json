@@ -1,9 +1,8 @@
 {
   "version": 1,
   "suite": {
-    "kind": "custom-process",
+    "kind": "codex-workflow",
     "unitUnderTest": "codex-explore",
-    "defaultGrader": "provider",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

@@ -43,9 +43,10 @@ aw-skill-eval audit validate <audit.json> --spec <spec.json>
 
 - `codex-trigger`：`cases × runs × variants`。
 - `codex-conversation`：上述 provider attempt 的 2 倍，因为每次包含 conversation 和独立 grader。
+- `codex-workflow`：`cases × runs × variants` 个 Engine attempt；每个 attempt 只有一个 Engine-owned app-server root，后代模型 turn 取决于该 workflow 的真实委派行为。
 - `custom-process`：调用数标为未知。
 
-只从 validated spec/cases 显示 provider 进程类别、可能使用现有 credential 环境、模型网络和 validator 解析出的 `outputDir`。`codex-trigger` 和 `codex-conversation` 属于内置 Codex provider 进程，会访问模型网络，并可能使用当前 credential 环境；不读取或显示 credential 值。`custom-process` 属于自定义外部进程，其实际 credential 和网络行为未知。它是可信、协作式 provider，不是任意外部程序 sandbox。Engine 只在 macOS/Linux 启动它，并在运行期观察；违反或检查失效会 fail closed、丢弃 grade 并停止 batch。Runner 只披露并调用 Engine，不重复该运行期检查。
+只从 validated spec/cases 显示 provider 进程类别、可能使用现有 credential 环境、模型网络和 validator 解析出的 `outputDir`。`codex-trigger` 和 `codex-conversation` 属于内置 Codex provider 进程，会访问模型网络，并可能使用当前 credential 环境；不读取或显示 credential 值。`codex-workflow` 只在 macOS/Linux 运行，真实模型网络、credential 使用和 app-server 生命周期由 Engine 拥有；adapter 的 prepare/grade 不接收 credential 或 proxy。Engine 每个 attempt 建立一个 app-server root，采集脱敏 trace、normalized evidence 和 model output；attempt 失败会停止 batch，不 retry。`custom-process` 属于自定义外部进程，其实际调用数、credential、网络行为和副作用未知。它是可信、协作式 provider，不是任意外部程序 sandbox。Engine 只在 macOS/Linux 启动它，并在运行期观察；违反或检查失效会 fail closed、丢弃 grade 并停止 batch。Runner 只披露并调用 Engine，不重复该运行期检查。
 
 用户已明确请求执行且预计调用数 `<=10` 时直接进入下一步。预计调用数 `>10` 时先取得本次确认。`custom-process` 因调用数和外部影响未知，任何执行都先确认。确认只绑定当前 spec、Audit 和已披露副作用。
 

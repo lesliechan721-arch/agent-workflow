@@ -133,6 +133,7 @@ export interface CodexWorkflowEvidence {
       sha256: string | null
       hasMultiAgentModeGate: boolean
       hasNestedAgentCapability: boolean
+      hasCodexExploreDeveloperAuthorization: boolean
     }
   }>
   collaborationCalls: CodexWorkflowCall[]
@@ -754,6 +755,10 @@ function appServerCollaborationCalls(
   descendants: ReadonlySet<string>,
 ): Array<Omit<CodexWorkflowCall, 'ordinal'> & { order: string }> {
   const parentByThread = new Map(records.map((record) => [record.threadId, record.parentThreadId]))
+  const recordByThread = new Map(records.map((record) => [record.threadId, record]))
+  const rolloutCallById = new Map(records.flatMap((record) => record.calls)
+    .filter((call): call is typeof call & { callId: string } => call.callId !== null)
+    .map((call) => [call.callId, call]))
   const calls: Array<Omit<CodexWorkflowCall, 'ordinal'> & { order: string }> = []
   for (const [index, value] of frames.entries()) {
     if (!isRecord(value) || value.method !== 'item/completed') continue
@@ -796,23 +801,108 @@ function appServerCollaborationCalls(
     if (!callId || !tool || !status || !receiverThreadIds || agentsStates === undefined) {
       throw new Error('Codex app-server collaboration item is missing required terminal evidence.')
     }
+    const rolloutCall = rolloutCallById.get(callId)
+    const rolloutArguments = isRecord(rolloutCall?.arguments) ? rolloutCall.arguments : {}
+    const normalizedTool = tool === 'wait' ? 'wait_agent' : tool
+    let callArguments: unknown = rolloutCall?.arguments ?? null
+    let callOutput: unknown = {
+      agentsStates,
+      ...(item.result !== undefined ? { result: item.result } : {}),
+      ...(item.error !== undefined ? { error: item.error } : {}),
+    }
+    if (normalizedTool === 'spawn_agent') {
+      if (receiverThreadIds.length !== 1) {
+        throw new Error('Codex V1 spawn evidence must identify exactly one receiver thread.')
+      }
+      const receiverThreadId = receiverThreadIds[0]!
+      const receiver = recordByThread.get(receiverThreadId)
+      if (
+        !receiver
+        || receiver.parentThreadId !== threadId
+        || !receiver.agentRole
+        || !receiver.initialUserMessage
+      ) throw new Error('Codex V1 spawn evidence is not linked to a plaintext child thread.')
+      if (item.prompt !== undefined && item.prompt !== null && item.prompt !== receiver.initialUserMessage) {
+        throw new Error('Codex V1 spawn prompt does not match the linked child thread.')
+      }
+      if (
+        Object.hasOwn(rolloutArguments, 'agent_type')
+        && rolloutArguments.agent_type !== receiver.agentRole
+      ) throw new Error('Codex V1 spawn role does not match the linked child thread.')
+      if (
+        Object.hasOwn(rolloutArguments, 'message')
+        && rolloutArguments.message !== receiver.initialUserMessage
+      ) throw new Error('Codex V1 spawn message does not match the linked child thread.')
+      const stateRecord = isRecord(agentsStates) ? agentsStates : null
+      if (!stateRecord || !Object.hasOwn(stateRecord, receiverThreadId)) {
+        throw new Error('Codex V1 spawn evidence is missing the linked child state.')
+      }
+      const explicitForkContext = Object.hasOwn(rolloutArguments, 'fork_context')
+        ? rolloutArguments.fork_context
+        : item.forkContext ?? item.fork_context
+      if (explicitForkContext !== undefined && typeof explicitForkContext !== 'boolean') {
+        throw new Error('Codex V1 spawn fork_context evidence must be boolean when present.')
+      }
+      const model = item.model ?? rolloutArguments.model
+      const reasoningEffort = item.reasoningEffort
+        ?? item.reasoning_effort
+        ?? rolloutArguments.reasoning_effort
+      callArguments = {
+        agent_type: receiver.agentRole,
+        message: receiver.initialUserMessage,
+        ...(typeof model === 'string' && model !== '' ? { model } : {}),
+        ...(typeof reasoningEffort === 'string' && reasoningEffort !== ''
+          ? { reasoning_effort: reasoningEffort }
+          : {}),
+        ...(explicitForkContext !== undefined ? { fork_context: explicitForkContext } : {}),
+      }
+      callOutput = {
+        agent_id: receiverThreadId,
+        status: stateRecord[receiverThreadId],
+      }
+    } else if (normalizedTool === 'wait_agent') {
+      if (!isRecord(agentsStates)) {
+        throw new Error('Codex V1 wait evidence agentsStates must be an object.')
+      }
+      if (receiverThreadIds.some((receiver) =>
+        !descendants.has(receiver)
+        || !recordByThread.has(receiver)
+        || !Object.hasOwn(agentsStates, receiver))) {
+        throw new Error('Codex V1 wait evidence is missing a linked receiver state.')
+      }
+      const timeoutMs = rolloutArguments.timeout_ms
+      if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 0)) {
+        throw new Error('Codex V1 wait timeout_ms evidence must be a non-negative integer.')
+      }
+      callArguments = timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }
+      const rawOutput = isRecord(rolloutCall?.output) ? rolloutCall.output : null
+      const rawTimedOut = rawOutput?.timed_out === true
+        || rawOutput?.timedOut === true
+        || rawOutput?.status === 'timeout'
+        || rawOutput?.status === 'timed_out'
+      const result = isRecord(item.result) ? item.result : null
+      const statusByReceiver: Record<string, unknown> = {}
+      for (const receiver of receiverThreadIds) {
+        const receiverResult = isRecord(result?.[receiver]) ? result[receiver] : result
+        statusByReceiver[receiver] = receiverResult && typeof receiverResult.completed === 'string'
+          ? { completed: receiverResult.completed }
+          : agentsStates[receiver]
+      }
+      const inferredTimedOut = status === 'completed'
+        && receiverThreadIds.every((receiver) => agentsStates[receiver] === 'running')
+      callOutput = {
+        ...(rawTimedOut || inferredTimedOut ? { timed_out: true } : {}),
+        status: statusByReceiver,
+      }
+    }
     calls.push({
       threadId,
       parentThreadId: parentByThread.get(threadId) ?? null,
       callId,
       namespace: 'collaboration',
-      tool,
-      arguments: {
-        receiverThreadIds,
-        prompt: item.prompt ?? null,
-        model: item.model ?? null,
-        reasoningEffort: item.reasoningEffort ?? item.reasoning_effort ?? null,
-      },
-      output: {
-        agentsStates,
-        ...(item.result !== undefined ? { result: item.result } : {}),
-        ...(item.error !== undefined ? { error: item.error } : {}),
-      },
+      tool: normalizedTool,
+      arguments: callArguments,
+      output: callOutput,
       status,
       order: `0000-app-server\0${String(index).padStart(8, '0')}`,
     })
@@ -1114,6 +1204,9 @@ export async function normalizeCodexWorkflowRollouts(options: {
         hasMultiAgentModeGate: record.developerText.includes('<multi_agent_mode>'),
         hasNestedAgentCapability: record.developerText.includes(
           'Child agents can also spawn their own sub-agents',
+        ),
+        hasCodexExploreDeveloperAuthorization: record.developerText.includes(
+          '### Codex Explore 子代理授权',
         ),
       },
     }

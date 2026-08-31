@@ -9,18 +9,12 @@ import {
 } from '../skills/codex-explore/evals/run-model-selection-evals.mjs';
 import modelManifestDocument from '../skills/codex-explore/evals/manifest.json' with { type: 'json' };
 import modelCorpusDocument from '../skills/codex-explore/evals/evals.json' with { type: 'json' };
-import {
-  readRolloutEvidenceFromRollouts,
-  readSpawnCallsFromRollouts,
-  recoverV1SpawnCallsFromExecEvents,
-  shouldStopEarly,
-} from '../skills/codex-explore/evals/eval-harness.mjs';
 
 async function testProviderManifestComposition() {
   const manifest = modelManifestDocument;
   assert.equal(manifest.version, 1);
-  const customProcessSuites = manifest.suites.filter((suite) => suite.kind === 'custom-process');
-  assert.deepEqual(customProcessSuites.map((suite) => suite.id), [
+  const workflowSuites = manifest.suites.filter((suite) => suite.kind === 'codex-workflow');
+  assert.deepEqual(workflowSuites.map((suite) => suite.id), [
     'model-selection',
     'workflow',
     'output-contract',
@@ -32,8 +26,14 @@ async function testProviderManifestComposition() {
     ['output-contract', ['node', 'run-workflow-evals.mjs']],
     ['liveness', ['node', 'run-liveness-evals.mjs']],
   ]);
-  for (const suite of customProcessSuites) {
-    assert.equal(suite.kind, 'custom-process');
+  const allowedModels = new Map([
+    ['model-selection', ['gpt-5.6-luna', 'gpt-5.6-sol']],
+    ['workflow', ['gpt-5.5']],
+    ['output-contract', []],
+    ['liveness', ['gpt-5.5']],
+  ]);
+  for (const suite of workflowSuites) {
+    assert.equal(suite.kind, 'codex-workflow');
     assert.equal(Object.hasOwn(suite, 'entry'), false);
     assert.equal(Object.hasOwn(suite, 'supports'), false);
     assert.equal(Object.hasOwn(suite, 'suiteTimeoutMs'), false);
@@ -43,14 +43,16 @@ async function testProviderManifestComposition() {
     assert.equal(suite.cases.startsWith('./'), false);
     const provider = suite.provider;
     assert.ok(provider && typeof provider === 'object');
-    assert.equal(provider.type, 'custom-process');
+    assert.equal(provider.type, 'codex-workflow');
     assert.deepEqual(provider.command, commands.get(suite.id));
+    assert.deepEqual(provider.allowedModels, allowedModels.get(suite.id));
+    assert.equal(new Set(provider.allowedModels).size, provider.allowedModels.length);
     for (const field of ['id', 'entry', 'assets', 'credentialEnvironment', 'capabilities', 'describe']) {
       assert.equal(Object.hasOwn(provider, field), false);
     }
   }
   assert.equal(modelCorpusDocument.version, 1);
-  assert.equal(modelCorpusDocument.suite.kind, 'custom-process');
+  assert.equal(modelCorpusDocument.suite.kind, 'codex-workflow');
   assert.equal(modelCorpusDocument.suite.unitUnderTest, 'codex-explore');
   assert.ok(Array.isArray(modelCorpusDocument.cases));
   assert.equal(modelCorpusDocument.cases.length > 0, true);
@@ -496,16 +498,20 @@ function testMechanicalAssertions() {
 
   const nestedRun = {
       execution_error: false,
-      termination: 'expected_nested_outcome_observed',
+      termination: 'completed',
       exit_code: 0,
       descendant_cleanup_confirmed: true,
+      final_message: 'nested delegation observed',
       spawn_calls: [{
+        call_id: 'spawn-plan',
+        status: 'completed',
         arguments: {
           agent_type: 'codex-subagent-advanced',
           message: 'plan with nested delegation authorized',
           task_name: 'plan',
           fork_turns: 'none',
         },
+        output: { agent_id: 'plan-thread' },
       }],
       collaboration_timeline: [{
         tool: 'exec',
@@ -520,8 +526,9 @@ function testMechanicalAssertions() {
         {
           thread_id: 'plan-thread',
           tool: 'spawn_agent',
+          status: 'completed',
           arguments: { agent_type: 'codex-explore-deep' },
-          output: { task_name: '/root/plan/trace' },
+          output: { agent_id: 'grandchild-thread' },
         },
         {
           thread_id: 'plan-thread',
@@ -573,10 +580,39 @@ function testMechanicalAssertions() {
   const nested = evaluateModelSelectionRun(nestedRun, nestedExpected);
   assert.equal(nested.passed, true);
 
+  const developerAuthorizedRun = structuredClone(nestedRun);
+  developerAuthorizedRun.leaf_trace.child_threads[0]
+    .developer_context.has_codex_explore_developer_authorization = true;
+  assert.equal(
+    evaluateModelSelectionRun(developerAuthorizedRun, nestedExpected).passed,
+    false,
+  );
+  const unknownDeveloperAuthorizationRun = structuredClone(nestedRun);
+  delete unknownDeveloperAuthorizationRun.leaf_trace.child_threads[0]
+    .developer_context.has_codex_explore_developer_authorization;
+  assert.equal(
+    evaluateModelSelectionRun(unknownDeveloperAuthorizationRun, nestedExpected).passed,
+    false,
+  );
+  const nonTerminalNestedRun = structuredClone(nestedRun);
+  nonTerminalNestedRun.leaf_tool_calls[1].status = null;
+  assert.equal(
+    evaluateModelSelectionRun(nonTerminalNestedRun, nestedExpected).passed,
+    false,
+  );
+
   const encryptedNestedRun = structuredClone(nestedRun);
-  encryptedNestedRun.spawn_calls[0].arguments.message = 'enc-plan';
+  encryptedNestedRun.spawn_calls[0].call_id = 'spawn-plan';
+  encryptedNestedRun.spawn_calls[0].arguments.message = {
+    kind: 'opaque',
+    sha256: 'sha256:encrypted-plan',
+  };
   encryptedNestedRun.leaf_trace.child_threads[0].initial_user_message = null;
-  encryptedNestedRun.leaf_trace.child_threads[0].initial_encrypted_message = 'enc-plan';
+  encryptedNestedRun.leaf_trace.child_threads[0].initial_opaque_link = {
+    kind: 'opaque-link',
+    sha256: 'sha256:encrypted-plan',
+    linkedCallId: 'spawn-plan',
+  };
   const encryptedNestedExpected = structuredClone(nestedExpected);
   delete encryptedNestedExpected.nested_delegation.child_initial_message;
   encryptedNestedExpected.nested_delegation.child_initial_encrypted_link = true;
@@ -584,17 +620,6 @@ function testMechanicalAssertions() {
     evaluateModelSelectionRun(encryptedNestedRun, encryptedNestedExpected).passed,
     true,
   );
-  assert.equal(shouldStopEarly({
-    wait_for_completion: false,
-    stop_after_nested_evidence: true,
-    expected: encryptedNestedExpected,
-  }, {
-    spawnCalls: encryptedNestedRun.spawn_calls,
-    collaborationTimeline: encryptedNestedRun.collaboration_timeline,
-    leafToolCalls: encryptedNestedRun.leaf_tool_calls,
-    leafTrace: encryptedNestedRun.leaf_trace,
-  }), 'expected_nested_outcome_observed');
-
   const pollutedAuthorizationRun = structuredClone(nestedRun);
   pollutedAuthorizationRun.leaf_trace.child_threads[0].initial_user_message =
     'plan with nested delegation authorized';
@@ -610,16 +635,6 @@ function testMechanicalAssertions() {
     false,
   );
 
-  assert.equal(shouldStopEarly({
-    wait_for_completion: false,
-    stop_after_nested_evidence: true,
-    expected: nestedExpected,
-  }, {
-    spawnCalls: nestedRun.spawn_calls,
-    leafToolCalls: nestedRun.leaf_tool_calls,
-    leafTrace: nestedRun.leaf_trace,
-  }), 'expected_nested_outcome_observed');
-
   const followupPollutionRun = structuredClone(nestedRun);
   followupPollutionRun.collaboration_timeline.push({
     tool: 'send_message',
@@ -630,17 +645,6 @@ function testMechanicalAssertions() {
     nestedExpected,
   );
   assert.equal(followupPollution.passed, false);
-  assert.equal(shouldStopEarly({
-    wait_for_completion: false,
-    stop_after_nested_evidence: true,
-    expected: nestedExpected,
-  }, {
-    spawnCalls: followupPollutionRun.spawn_calls,
-    collaborationTimeline: followupPollutionRun.collaboration_timeline,
-    leafToolCalls: followupPollutionRun.leaf_tool_calls,
-    leafTrace: followupPollutionRun.leaf_trace,
-  }), null);
-
   const explicitRootSkillRun = structuredClone(nestedRun);
   explicitRootSkillRun.collaboration_timeline = [];
   assert.equal(
@@ -851,8 +855,6 @@ function testMechanicalAssertions() {
 
 async function main() {
   await testProviderManifestComposition();
-  await testRolloutArgumentEvidence();
-  await testV1RolloutLineageEvidence();
   testMechanicalAssertions();
   console.log('model selection eval tests passed');
 }

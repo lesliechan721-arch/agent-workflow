@@ -65,6 +65,7 @@ function runResult(finalMessage, timeline) {
     exit_code: 0,
     duration_ms: 90_000,
     usage: { input_tokens: 100, output_tokens: 50 },
+    cleanup_confirmed: true,
     spawn_calls: [timeline[0]],
     collaboration_timeline: timeline,
     leaf_trace_available: true,
@@ -81,7 +82,7 @@ function runResult(finalMessage, timeline) {
 function testCorpusShape() {
   const spec = livenessCorpusDocument;
   assert.equal(spec.version, 1);
-  assert.equal(spec.suite.kind, 'custom-process');
+  assert.equal(spec.suite.kind, 'codex-workflow');
   assert.equal(spec.suite.unitUnderTest, 'codex-explore');
   assert.equal(spec.suite.policy.optimization, 'balanced');
   assert.equal(spec.cases.length > 0, true);

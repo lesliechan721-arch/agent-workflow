@@ -434,10 +434,18 @@ describe('codex-workflow raw rollout normalization', () => {
     await writeRollout(root, 'root', [session('root'), developer(), {
       type: 'response_item',
       payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'root prompt' }] },
+    }, {
+      type: 'response_item',
+      payload: {
+        type: 'function_call', namespace: 'collaboration', name: 'spawn_agent', call_id: 'spawn-1',
+        arguments: JSON.stringify({
+          agent_type: 'explorer', message: 'child prompt', fork_context: false,
+        }),
+      },
     }])
     await writeRollout(root, 'child', [
       session('child', 'root'),
-      developer('child developer full text'),
+      developer('child developer full text ### Codex Explore 子代理授权'),
       {
         type: 'response_item',
         payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'child prompt' }] },
@@ -462,6 +470,7 @@ describe('codex-workflow raw rollout normalization', () => {
           item: {
             type: 'collab_tool_call', id: 'spawn-1', tool: 'spawn_agent', status: 'completed',
             sender_thread_id: 'root', receiver_thread_id: 'child', prompt: 'child prompt',
+            model: 'gpt-test', reasoningEffort: 'high',
             agent_status: { child: 'running' },
           },
         },
@@ -488,13 +497,16 @@ describe('codex-workflow raw rollout normalization', () => {
     expect(normalized.collaborationCalls).toEqual([
       expect.objectContaining({
         ordinal: 1, threadId: 'root', callId: 'spawn-1', tool: 'spawn_agent',
-        arguments: expect.objectContaining({ receiverThreadIds: ['child'], prompt: 'child prompt' }),
-        output: { agentsStates: { child: 'running' } }, status: 'completed',
+        arguments: {
+          agent_type: 'explorer', message: 'child prompt', model: 'gpt-test',
+          reasoning_effort: 'high', fork_context: false,
+        },
+        output: { agent_id: 'child', status: 'running' }, status: 'completed',
       }),
       expect.objectContaining({
-        ordinal: 2, threadId: 'child', parentThreadId: 'root', callId: 'wait-1', tool: 'wait',
-        arguments: expect.objectContaining({ receiverThreadIds: ['child'] }),
-        output: { agentsStates: { child: 'completed' }, result: { completed: 'done' } },
+        ordinal: 2, threadId: 'child', parentThreadId: 'root', callId: 'wait-1', tool: 'wait_agent',
+        arguments: {},
+        output: { status: { child: { completed: 'done' } } },
         status: 'completed',
       }),
       expect.objectContaining({
@@ -502,7 +514,15 @@ describe('codex-workflow raw rollout normalization', () => {
         output: expect.objectContaining({ messageType: 'FINAL_ANSWER', payload: 'done' }),
       }),
     ])
-    expect(normalized.leafCalls.map((call) => call.tool)).toEqual(['wait', 'agent_message'])
+    expect(normalized.leafCalls.map((call) => call.tool)).toEqual(['wait_agent', 'agent_message'])
+    expect(normalized.threadGraph).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        threadId: 'child',
+        developerContext: expect.objectContaining({
+          hasCodexExploreDeveloperAuthorization: true,
+        }),
+      }),
+    ]))
   })
 
   it('normalizes V1 plaintext lineage, calls, skill loads, and safe developer summaries', async () => {
@@ -592,7 +612,11 @@ describe('codex-workflow raw rollout normalization', () => {
         threadId: 'child',
         parentThreadId: 'root',
         initialMessage: { kind: 'plaintext', text: 'child prompt' },
-        developerContext: expect.objectContaining({ present: true, messageCount: 1 }),
+        developerContext: expect.objectContaining({
+          present: true,
+          messageCount: 1,
+          hasCodexExploreDeveloperAuthorization: false,
+        }),
       }),
     ]))
     expect(normalized.collaborationCalls.map((call) => call.ordinal)).toEqual([1, 2, 3, 4, 5])
