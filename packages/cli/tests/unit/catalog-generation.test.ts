@@ -9,6 +9,10 @@ import {
   syncCatalogSourceGeneration,
 } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import {
+  createCatalogStoreKey,
+  resolveCatalogStoreLocation,
+} from '../../src/utils/catalog-generation-store.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import {
   calculateCatalogSourcesConfigDigest,
@@ -34,6 +38,56 @@ async function configurePathSource(sourcePath: string): Promise<void> {
 }
 
 describe('Catalog Active store and state', () => {
+  it('maps dot identities to stable store segments without changing ordinary identities', () => {
+    const digest = `sha256:${'a'.repeat(64)}`;
+
+    expect(createCatalogStoreKey('.', digest)).toBe(`%2E/${'a'.repeat(64)}`);
+    expect(createCatalogStoreKey('..', digest)).toBe(`%2E%2E/${'a'.repeat(64)}`);
+    expect(createCatalogStoreKey('团队/https://例.example/a?b=c', digest))
+      .toBe(`${encodeURIComponent('团队/https://例.example/a?b=c')}/${'a'.repeat(64)}`);
+  });
+
+  it.each(['.', '..'])('syncs logical identity %j only into its two-level store entry', async (logicalIdentity) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath(`dot-identity-${logicalIdentity.length}`);
+    await createCatalogSnapshotFixture(sourceRoot);
+    const markerPath = path.join(sourceRoot, '.aw-generated.json');
+    const marker = await fs.readJson(markerPath) as Record<string, unknown>;
+    await fs.writeJson(markerPath, { ...marker, workspaceIdentity: logicalIdentity }, { spaces: 2 });
+    await configurePathSource(sourceRoot);
+
+    const result = await syncCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity,
+      snapshotDigest: result.active!.snapshotDigest,
+      env: isolation.env,
+    });
+    const relativeEntry = path.relative(location.storeRootDir, location.entryDir);
+    const status = await readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env });
+
+    expect(relativeEntry.split(path.sep)).toEqual([
+      logicalIdentity === '.' ? '%2E' : '%2E%2E',
+      result.active!.snapshotDigest.slice('sha256:'.length),
+    ]);
+    expect(status.sources[0]).toMatchObject({
+      active: result.active,
+      storeKey: location.storeKey,
+      activeReady: true,
+      configMatchesActive: true,
+    });
+    expect(location.storeKey.split('/')).not.toContain('.');
+    expect(location.storeKey.split('/')).not.toContain('..');
+    await expect(fs.pathExists(location.metadataPath)).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      isolation.env.AW_HOME!,
+      result.active!.snapshotDigest.slice('sha256:'.length),
+    ))).resolves.toBe(false);
+  });
+
   it('checks a provider snapshot without writing store or Active', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('check-only');

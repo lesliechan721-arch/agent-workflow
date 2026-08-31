@@ -219,6 +219,31 @@ describe('AW capability contracts', () => {
     ]))
   })
 
+  it('reports removed catalog status preflight shell commands as unmapped advisory observations', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-preflight-'))
+    tempDirs.push(pluginRoot)
+    await fs.outputFile(
+      path.join(pluginRoot, 'skills', 'one', 'SKILL.md'),
+      '```bash\naw catalog status --preflight --json\n```\n',
+    )
+
+    const result = await scanPluginAwCliRequirements({
+      pluginRoot,
+      manifest: manifest({ skills: './skills' }),
+    })
+
+    expect(result.detected).not.toContain('aw.catalog-authoring.v1')
+    expect(result.observations).toEqual([
+      expect.objectContaining({
+        code: 'aw-command-unmapped',
+        blocking: false,
+        path: 'skills/one/SKILL.md',
+        provenance: 'shell-fence',
+        command: 'aw catalog status',
+      }),
+    ])
+  })
+
   it('keeps detected observations out of effective compatibility truth and its digest', async () => {
     const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-requirements-truth-'))
     tempDirs.push(pluginRoot)

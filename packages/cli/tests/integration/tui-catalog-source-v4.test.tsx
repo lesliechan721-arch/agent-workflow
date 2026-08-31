@@ -63,7 +63,7 @@ async function confirmReview(
   await nextTurn(3);
 }
 
-async function configuredController(): Promise<{
+async function configuredController(logicalIdentity?: string): Promise<{
   controller: TuiController;
   firstRoot: string;
   secondRoot: string;
@@ -75,6 +75,11 @@ async function configuredController(): Promise<{
     createCatalogSnapshotFixture(firstRoot, 'one'),
     createCatalogSnapshotFixture(secondRoot, 'two'),
   ]);
+  if (logicalIdentity) {
+    const markerPath = path.join(firstRoot, '.aw-generated.json');
+    const marker = await fs.readJson(markerPath) as Record<string, unknown>;
+    await fs.writeJson(markerPath, { ...marker, workspaceIdentity: logicalIdentity }, { spaces: 2 });
+  }
   const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: {
@@ -186,9 +191,10 @@ describe('TUI v4 real catalog source boundary', () => {
 
   it('shows the exact damaged Active entry before sync instead of repeating sync alone', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const { controller } = await configuredController();
+    const { controller } = await configuredController('..');
     const active = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
     const storeKey = createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest);
+    expect(storeKey.startsWith('%2E%2E/')).toBe(true);
     const recoveryEntryPath = `catalog-store/${storeKey}`;
     await fs.writeFile(
       path.join(isolation.env.AW_HOME!, recoveryEntryPath, 'metadata.json'),

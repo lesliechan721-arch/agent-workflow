@@ -2179,7 +2179,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--source-id <id>', 'explicit managed source ID')
     .option('--primary', 'make the development source primary', false)
     .option('--force-build', 'rebuild a current snapshot', false)
-    .requiredOption('--json', 'emit one schema 1 JSON receipt')
+    .requiredOption('--json', 'emit one schema 2 JSON receipt')
     .action(async (rawOptions: {
       workspaceRoot?: string;
       sourceId?: string;
@@ -2211,7 +2211,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogDev
     .command('status')
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
-    .requiredOption('--json', 'emit one schema 2 JSON receipt')
+    .requiredOption('--json', 'emit one schema 3 JSON receipt')
     .action(async (rawOptions: { workspaceRoot?: string }) => {
       const receipt = await getCatalogDevSourceStatus({
         cwd,
@@ -2229,7 +2229,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--source-id <id>', 'recover one managed source by exact ID')
     .option('--replacement-primary <id>', 'replacement when the target source is primary')
     .option('-y, --yes', 'confirm recovery by source ID', false)
-    .requiredOption('--json', 'emit one schema 1 JSON receipt')
+    .requiredOption('--json', 'emit one schema 2 JSON receipt')
     .action(async (rawOptions: {
       workspaceRoot?: string;
       sourceId?: string;

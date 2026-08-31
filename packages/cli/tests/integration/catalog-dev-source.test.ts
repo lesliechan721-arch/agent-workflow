@@ -58,6 +58,19 @@ afterEach(async () => {
 });
 
 describe('Catalog Workspace development source', () => {
+  it.each([
+    ['activate', 2],
+    ['status', 3],
+    ['deactivate', 2],
+  ] as const)('reports the current receipt schema in %s help', async (command, schemaVersion) => {
+    const output = capture();
+    const exitCode = await runCli(['catalog', 'dev', command, '--help'], { io: output.io });
+
+    expect(exitCode).toBe(0);
+    expect(output.stdout()).toContain(`emit one schema ${schemaVersion} JSON receipt`);
+    expect(output.stderr()).toBe('');
+  });
+
   it('builds, registers, syncs, reports Active readiness, and deactivates without deleting snapshot or store', async () => {
     const { workspaceRoot, env } = await fixture();
     const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);

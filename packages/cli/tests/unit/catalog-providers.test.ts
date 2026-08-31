@@ -22,7 +22,7 @@ function fixturePath(name: string): string {
 }
 
 describe('Catalog providers', () => {
-  it('removes foreign repository namespaces and keeps the user Git environment', () => {
+  it('removes foreign repository namespaces and keeps user connection settings without prompts', () => {
     const env = catalogGitProviderInternal.gitEnvironment({
       HOME: '/isolated-home',
       SSH_AUTH_SOCK: '/auth/socket',
@@ -33,28 +33,25 @@ describe('Catalog providers', () => {
       GIT_ALTERNATE_OBJECT_DIRECTORIES: '/foreign/alternates',
       GIT_COMMON_DIR: '/foreign/common',
       gIt_NaMeSpAcE: 'foreign',
-      GIT_TERMINAL_PROMPT: '1',
-      GIT_ASKPASS: '/user/git-askpass',
+      gIt_TeRmInAl_PrOmPt: '1',
+      GiT_AsKpAsS: '/user/git-askpass-secret',
       GIT_SSH_COMMAND: 'ssh -F /user/ssh-config',
       GIT_SSH_VARIANT: 'plink',
       GIT_CONFIG_GLOBAL: '/user/gitconfig',
-      GCM_INTERACTIVE: 'Always',
-      SSH_ASKPASS: '/user/ssh-askpass',
-      SSH_ASKPASS_REQUIRE: 'prefer',
+      gCm_InTeRaCtIvE: 'Always',
+      SsH_AsKpAsS: '/user/ssh-askpass-secret',
+      SsH_AsKpAsS_ReQuIrE: 'prefer',
       HTTPS_PROXY: 'http://proxy.example.invalid',
     });
 
     expect(env).toMatchObject({
       HOME: '/isolated-home',
       SSH_AUTH_SOCK: '/auth/socket',
-      GIT_TERMINAL_PROMPT: '1',
-      GIT_ASKPASS: '/user/git-askpass',
+      GIT_TERMINAL_PROMPT: '0',
       GIT_SSH_COMMAND: 'ssh -F /user/ssh-config',
       GIT_SSH_VARIANT: 'plink',
       GIT_CONFIG_GLOBAL: '/user/gitconfig',
-      GCM_INTERACTIVE: 'Always',
-      SSH_ASKPASS: '/user/ssh-askpass',
-      SSH_ASKPASS_REQUIRE: 'prefer',
+      GCM_INTERACTIVE: 'Never',
       HTTPS_PROXY: 'http://proxy.example.invalid',
     });
     expect(env.GIT_DIR).toBeUndefined();
@@ -64,7 +61,15 @@ describe('Catalog providers', () => {
     expect(env.GIT_ALTERNATE_OBJECT_DIRECTORIES).toBeUndefined();
     expect(env.GIT_COMMON_DIR).toBeUndefined();
     expect(env.gIt_NaMeSpAcE).toBeUndefined();
-    expect(catalogGitProviderInternal.gitEnvironment({}).GIT_TERMINAL_PROMPT).toBeUndefined();
+    expect(env.GiT_AsKpAsS).toBeUndefined();
+    expect(env.SsH_AsKpAsS).toBeUndefined();
+    expect(env.SsH_AsKpAsS_ReQuIrE).toBeUndefined();
+    expect(Object.values(env)).not.toContain('/user/git-askpass-secret');
+    expect(Object.values(env)).not.toContain('/user/ssh-askpass-secret');
+    expect(catalogGitProviderInternal.gitEnvironment({})).toMatchObject({
+      GIT_TERMINAL_PROMPT: '0',
+      GCM_INTERACTIVE: 'Never',
+    });
   });
 
   it('returns a transport-validated Path staging snapshot and removes it on cleanup', async () => {

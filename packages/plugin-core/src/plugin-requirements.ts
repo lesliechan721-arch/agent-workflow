@@ -85,8 +85,6 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, RegisteredAwCapabilityId>> =
 const CONFIG_CAPABILITY = 'aw.plugin-config.v1' satisfies RegisteredAwCapabilityId
 const CATALOG_SOURCE_CAPABILITY = 'aw.catalog-source.v2' satisfies RegisteredAwCapabilityId
 const CATALOG_DEV_SOURCE_CAPABILITY = 'aw.catalog-dev-source.v1' satisfies RegisteredAwCapabilityId
-const CATALOG_AUTHORING_CAPABILITY = 'aw.catalog-authoring.v1' satisfies RegisteredAwCapabilityId
-const CATALOG_PUBLICATION_CAPABILITY = 'aw.catalog-publication.v1' satisfies RegisteredAwCapabilityId
 
 function commandCapabilities(group: string, command: string | undefined, tail: string): AwCapabilityId[] {
   if (command === undefined) return []
@@ -94,7 +92,7 @@ function commandCapabilities(group: string, command: string | undefined, tail: s
   if (group === 'catalog' && command === 'source') return [CATALOG_SOURCE_CAPABILITY]
   if (group === 'catalog' && command === 'dev') return [CATALOG_DEV_SOURCE_CAPABILITY]
   if (group === 'catalog' && command === 'status' && /(?:^|\s)--preflight(?:\s|$)/u.test(tail)) {
-    return [CATALOG_AUTHORING_CAPABILITY, CATALOG_PUBLICATION_CAPABILITY]
+    return []
   }
   const capability = COMMAND_CAPABILITIES[`${group} ${command}`]
   return capability ? [capability] : []

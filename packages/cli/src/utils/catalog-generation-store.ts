@@ -56,7 +56,30 @@ function logicalIdentitySegment(value: string): string {
   if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
     throw metadataError('Invalid Catalog logical identity.');
   }
-  return encodeURIComponent(value);
+  try {
+    if (value === '.') return '%2E';
+    if (value === '..') return '%2E%2E';
+    const segment = encodeURIComponent(value);
+    if (segment === '.' || segment === '..' || /[\\/]/u.test(segment)) {
+      throw metadataError('Invalid Catalog logical identity.');
+    }
+    return segment;
+  } catch (error) {
+    if (error instanceof CatalogGenerationError) throw error;
+    throw metadataError('Invalid Catalog logical identity.', error);
+  }
+}
+
+function resolveStrictStoreDescendant(storeRootDir: string, ...segments: string[]): string {
+  const candidate = path.resolve(storeRootDir, ...segments);
+  const relative = path.relative(storeRootDir, candidate);
+  if (
+    relative === ''
+    || path.isAbsolute(relative)
+    || relative === '..'
+    || relative.startsWith(`..${path.sep}`)
+  ) throw metadataError('Invalid Catalog store path.');
+  return candidate;
 }
 
 export function createCatalogStoreKey(logicalIdentity: string, snapshotDigest: string): string {
@@ -72,10 +95,11 @@ export function resolveCatalogStoreLocation(options: {
     resolveAwHome(options.env ?? process.env),
   );
   const storeRootDir = path.join(awHomeDir, CATALOG_STORE_DIRECTORY);
-  const storeKey = createCatalogStoreKey(options.logicalIdentity, options.snapshotDigest);
-  const [logicalIdentity, digest] = storeKey.split('/');
-  const logicalIdentityDirectory = path.join(storeRootDir, logicalIdentity!);
-  const entryDir = path.join(logicalIdentityDirectory, digest!);
+  const logicalIdentity = logicalIdentitySegment(options.logicalIdentity);
+  const digest = digestHex(options.snapshotDigest, 'snapshot digest');
+  const storeKey = `${logicalIdentity}/${digest}`;
+  const logicalIdentityDirectory = resolveStrictStoreDescendant(storeRootDir, logicalIdentity);
+  const entryDir = resolveStrictStoreDescendant(storeRootDir, logicalIdentity, digest);
   return {
     awHomeDir,
     storeRootDir,
@@ -206,7 +230,11 @@ export async function publishCatalogStoreEntry(options: {
   await ensureRegularDirectoryPath(location.logicalIdentityDirectory, 'Catalog logical identity store');
   if (await fs.pathExists(location.entryDir)) return validateEntry({ location });
 
-  const stagingDir = path.join(location.logicalIdentityDirectory, `.staging-${crypto.randomUUID()}.tmp`);
+  const stagingDir = resolveStrictStoreDescendant(
+    location.storeRootDir,
+    path.basename(location.logicalIdentityDirectory),
+    `.staging-${crypto.randomUUID()}.tmp`,
+  );
   try {
     await fs.mkdir(stagingDir);
     const snapshotRoot = path.join(stagingDir, 'snapshot');

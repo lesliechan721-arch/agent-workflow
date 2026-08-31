@@ -119,7 +119,7 @@ function createDeadlineSignal(
 
 function gitEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const output = { ...env };
-  const unsafeKeys = new Set([
+  const removedKeys = new Set([
     'GIT_DIR',
     'GIT_WORK_TREE',
     'GIT_INDEX_FILE',
@@ -127,10 +127,17 @@ function gitEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     'GIT_ALTERNATE_OBJECT_DIRECTORIES',
     'GIT_COMMON_DIR',
     'GIT_NAMESPACE',
+    'GIT_TERMINAL_PROMPT',
+    'GCM_INTERACTIVE',
+    'GIT_ASKPASS',
+    'SSH_ASKPASS',
+    'SSH_ASKPASS_REQUIRE',
   ]);
   for (const key of Object.keys(output)) {
-    if (unsafeKeys.has(key.toUpperCase())) delete output[key];
+    if (removedKeys.has(key.toUpperCase())) delete output[key];
   }
+  output.GIT_TERMINAL_PROMPT = '0';
+  output.GCM_INTERACTIVE = 'Never';
   return output;
 }
 

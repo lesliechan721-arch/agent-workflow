@@ -150,15 +150,15 @@ describe('AW capability CLI commands', () => {
     expect(await fs.pathExists(path.join(pluginRoot, 'aw-plugin-requirements.json'))).toBe(false)
   })
 
-  it('keeps undeclared detected requirements advisory for third-party validate and catalog build', async () => {
+  it('keeps removed catalog status preflight requirements advisory for third-party validate and catalog build', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-hook-requirements-'))
     tempDirs.push(root)
     await fs.copy(fixturePath('repo-template'), root)
     const pluginRoot = path.join(root, 'plugins', 'git-commit')
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json')
-    const manifest = await fs.readJson(manifestPath)
-    manifest.extensions.hooks[0].command = 'aw catalog publish'
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 })
+    await fs.appendFile(
+      path.join(pluginRoot, 'skills', 'commit', 'SKILL.md'),
+      '\n```bash\naw catalog status --preflight --json\n```\n',
+    )
     await fs.outputFile(path.join(pluginRoot, 'README.md'), '# Git Commit\n')
     await fs.outputFile(path.join(pluginRoot, 'skills', 'commit', 'README.md'), '# Commit\n')
 
@@ -168,9 +168,18 @@ describe('AW capability CLI commands', () => {
     expect(requirements.exitCode).toBe(0)
     expect(requirements.parseJsonStdout()).toMatchObject({
       declared: [],
-      detected: expect.arrayContaining(['aw.catalog-publication.v1']),
-      effective: expect.not.arrayContaining(['aw.catalog-publication.v1']),
+      detected: expect.not.arrayContaining(['aw.catalog-authoring.v1']),
+      effective: expect.not.arrayContaining(['aw.catalog-authoring.v1']),
       unsupportedByCurrentAw: [],
+      observations: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'aw-command-unmapped',
+          blocking: false,
+          path: 'skills/commit/SKILL.md',
+          provenance: 'shell-fence',
+          command: 'aw catalog status',
+        }),
+      ]),
     })
 
     const validation = await runCliEntry([
@@ -181,7 +190,7 @@ describe('AW capability CLI commands', () => {
     expect(validation.parseJsonStdout()).toMatchObject({
       ok: true,
       warnings: expect.arrayContaining([
-        expect.stringContaining('aw.catalog-publication.v1'),
+        expect.stringContaining('AW CLI command has no capability mapping: aw catalog status.'),
       ]),
     })
     const build = await runCliEntry([

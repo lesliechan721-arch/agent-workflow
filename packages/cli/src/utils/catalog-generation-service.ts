@@ -9,6 +9,7 @@ import type {
 import { CatalogGenerationError, catalogGenerationErrorCode } from './catalog-generation-error.js';
 import { readCatalogGenerationControlSnapshot } from './catalog-generation-control-snapshot.js';
 import {
+  createCatalogStoreKey,
   publishCatalogStoreEntry,
   readCatalogSnapshotLogicalIdentity,
   readCatalogStoreEntry,
@@ -370,7 +371,7 @@ export async function readCatalogGenerationStatus(options: {
         configMatchesActive,
         catalogVersion: entry.metadata.catalogVersion,
         channel: entry.metadata.channel,
-        storeKey: `${encodeURIComponent(active.logicalIdentity)}/${active.snapshotDigest.slice('sha256:'.length)}`,
+        storeKey: createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest),
         lastSync: sourceState?.lastSync,
       };
     } catch (error) {

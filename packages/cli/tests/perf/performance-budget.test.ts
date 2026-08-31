@@ -376,7 +376,7 @@ describe('multi-source performance budgets', () => {
         controller.dispose();
       }
       const contextStages = events.filter((event) =>
-        event.type === 'performance:stage' && event.data?.name === 'catalog.context');
+        event.type === 'performance:stage' && event.data?.name === 'catalog.load');
       const validationStages = events.filter((event) =>
         event.type === 'performance:stage' && event.data?.name === 'catalog.validation');
       expect(contextStages).toHaveLength(1);
@@ -428,7 +428,7 @@ describe('multi-source performance budgets', () => {
       expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
       const stageEvents = events.filter((event) => event.type === 'performance:stage');
       expect(new Set(stageEvents.map((event) => event.data?.name))).toEqual(new Set([
-        'catalog.context',
+        'catalog.load',
         'catalog.validation',
         'inventory',
         'dependency.plan',

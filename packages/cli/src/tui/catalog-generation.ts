@@ -27,7 +27,7 @@ export interface CatalogSourceGenerationViewModel {
 
 export type CatalogGenerationLoadStageEvent =
   | {
-      name: 'catalog.context';
+      name: 'catalog.load';
       durationMs: number;
       sourceCount: number;
     }
@@ -61,7 +61,7 @@ export async function loadCatalogGenerationViewModels(options: {
   const sources = [...config.config.sources]
     .sort((left, right) => left.id.localeCompare(right.id, 'en'));
   await reportStage({
-    name: 'catalog.context',
+    name: 'catalog.load',
     durationMs: Math.max(0, now() - contextStartedAt),
     sourceCount: sources.length,
   });

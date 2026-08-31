@@ -1087,7 +1087,7 @@ describe('local-plugin generator', () => {
     });
   });
 
-  it('rejects strict requirements introduced by a staging build', async () => {
+  it('rejects removed catalog status preflight requirements introduced by a staging build', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
@@ -1108,7 +1108,7 @@ describe('local-plugin generator', () => {
     stagingRunner.runNodeBuild = async ({ pluginRoot: stagedPluginRoot }) => {
       await fs.appendFile(
         path.join(stagedPluginRoot, 'skills', 'commit', 'SKILL.md'),
-        '\n```bash\naw catalog publish plan --json\n```\n',
+        '\n```bash\naw catalog status --preflight --json\n```\n',
         'utf8',
       );
     };
@@ -1123,6 +1123,7 @@ describe('local-plugin generator', () => {
       },
     )).rejects.toMatchObject({
       code: 'awCapabilityStrictRequirements',
+      message: expect.stringContaining('capability="<unmapped>"'),
     });
   });
 
