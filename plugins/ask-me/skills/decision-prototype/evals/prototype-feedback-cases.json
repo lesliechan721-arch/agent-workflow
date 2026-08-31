@@ -24,11 +24,12 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "为审批页的信息层级做一个轻量原型，使用 prototypes/approval-hierarchy/。我现在说不清样式；本轮只需要少量可直接比较的静态线框候选，展示后用问题工具让我选择。不要启动网页 Review 或真实浏览器，也不要直接做生产实现。",
+      "prompt": "为审批页的信息层级做一个轻量原型，使用 prototypes/approval-hierarchy/。我现在说不清样式；请创建 brief.md、prototype.json，以及两个可直接读取比较的临时静态线框 artifact/compact.html 和 artifact/risk-first.html。brief.md 要标明这是临时原型。prototype.json 使用 v2、revision 1 和单选模式；问题是审批页应采用哪个信息层级，目标是比较审批页信息层级，优先保证风险摘要可见和审批操作清楚，约束是只制作静态线框且本轮不作最终决定；两个完整 option 分别用 id compact、label 审批操作优先、kind html 和 id risk-first、label 风险摘要优先、kind html，并指向对应 artifact；停止条件是用户选择一个候选、都不接受或补充评论。两个 HTML 都使用包含 doctype、title 和 main 的最小可读文档结构，并可见地标为“临时原型”；compact 以“审批操作优先”为标题，risk-first 以“风险摘要优先”为标题，两者都应包含审批操作和风险摘要。展示后用问题工具让我选择，并允许都不接受或补充评论；如果我暂不决定，不要生成 verdict.md 或 feedback.json。本用例只做静态文件和聊天反馈，不启动 Review 会话，也不要直接做生产实现。",
       "assertions": [
-        "候选数量有限",
-        "允许都不接受",
-        "原型标记为临时"
+        "prototype.json 是完整 v2 配置，并准确引用 compact 和 risk-first 两个有限静态候选",
+        "两个 HTML 是可直接读取比较的最小文档；compact 突出审批操作，risk-first 突出风险摘要，brief 和候选明确其临时原型性质",
+        "选择问题允许都不接受和补充评论",
+        "用户暂不决定后保留首轮候选和问题，不伪造 verdict 或 feedback"
       ],
       "input": {
         "scriptedReplies": [
@@ -42,7 +43,7 @@
         ]
       },
       "expected": {
-        "output": "提供少量可体验候选、都不接受和补充评论方式。",
+        "output": "创建并展示两个可直接比较的临时静态线框，提供两个候选、都不接受和补充评论方式；用户暂不决定后保留原型和首轮问题，不形成 verdict。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "prototypes/approval-hierarchy/**"
@@ -52,10 +53,88 @@
             "path": "prototypes/approval-hierarchy/brief.md",
             "exists": true,
             "contains": [
-              "审批页"
+              "审批页",
+              "临时"
             ]
+          },
+          {
+            "path": "prototypes/approval-hierarchy/prototype.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 2,
+              "id": "approval-hierarchy",
+              "revision": 1,
+              "question": "审批页应采用哪个信息层级？",
+              "decisionContext": {
+                "goal": "比较审批页信息层级",
+                "priorities": [
+                  "风险摘要可见",
+                  "审批操作清楚"
+                ],
+                "constraints": [
+                  "只制作静态线框",
+                  "本轮不作最终决定"
+                ]
+              },
+              "selectionMode": "single",
+              "options": [
+                {
+                  "id": "compact",
+                  "label": "审批操作优先",
+                  "kind": "html",
+                  "artifact": "artifact/compact.html"
+                },
+                {
+                  "id": "risk-first",
+                  "label": "风险摘要优先",
+                  "kind": "html",
+                  "artifact": "artifact/risk-first.html"
+                }
+              ],
+              "stopCondition": "用户选择一个候选、都不接受或补充评论"
+            }
+          },
+          {
+            "path": "prototypes/approval-hierarchy/artifact/compact.html",
+            "exists": true,
+            "contains": [
+              "<!doctype html>",
+              "<title>审批操作优先</title>",
+              "<main",
+              "<h1>审批操作优先</h1>",
+              "临时原型",
+              "审批操作优先",
+              "审批操作",
+              "风险摘要"
+            ]
+          },
+          {
+            "path": "prototypes/approval-hierarchy/artifact/risk-first.html",
+            "exists": true,
+            "contains": [
+              "<!doctype html>",
+              "<title>风险摘要优先</title>",
+              "<main",
+              "<h1>风险摘要优先</h1>",
+              "临时原型",
+              "风险摘要优先",
+              "风险摘要",
+              "审批操作"
+            ]
+          },
+          {
+            "path": "prototypes/approval-hierarchy/verdict.md",
+            "exists": false
+          },
+          {
+            "path": "prototypes/approval-hierarchy/feedback.json",
+            "exists": false
           }
         ]
+      },
+      "audit": {
+        "rationale": "本 conversation case 只验证 Skill 产生的有限候选、完整 Prototype v2 配置和首轮反馈呈现；server、browser 和 wait 的真实生命周期由 scripts/prototype-review.test.mjs 与 Playwright ask-me Prototype Review smoke 确定性覆盖，不从本 case 推断。",
+        "allowedVariance": "HTML 的样式和非关键文案可以不同，但必须保留最小文档结构、两个可区分层级、完整 v2 字段、都不接受与评论入口，以及暂不决定时没有 verdict 和 feedback。"
       }
     },
     {
@@ -99,11 +178,11 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个可直接读取或运行的最小命令行 API consumer 示例，让我在聊天中判断接口是否易用。不要启动 Review Shell 或浏览器，也不要使用其它 Skill。",
+      "prompt": "只使用 decision-prototype 在 prototypes/api-consumer/ 做一个可直接读取和离线运行的最小命令行 API consumer 示例，让我在聊天中判断接口是否易用。请创建 brief.md、prototype.json 和 artifact/consumer.mjs。prototype.json 使用 v2、revision 1 和单选模式；问题是当前 API 是否易用，目标是判断当前 API consumer 是否易用，优先保证调用顺序清楚和错误处理容易发现，约束是离线运行且不访问真实网络；唯一完整 option 使用 id current-api、label 当前 API consumer、kind text，并指向 artifact/consumer.mjs；停止条件是用户接受、拒绝或要求修改当前接口。consumer.mjs 使用最小可执行的 console、try/catch 和模拟错误，依次输出“1. 构造请求”“2. 调用客户端”“3. 处理结果”，并输出“模拟错误已捕获”。请运行 `node prototypes/api-consumer/artifact/consumer.mjs > prototypes/api-consumer/artifact/consumer-output.txt`。收到我的反馈后，把当前问题的独立决定记录写入 verdict.md，其中明确写出“当前结论：接受当前接口”“支持证据”“调用顺序清楚”和“错误处理容易发现”。本用例只做离线文件、命令输出和聊天反馈，不启动 Review 会话。",
       "assertions": [
-        "独立完成",
-        "不依赖 decision-shape",
-        "向用户交付当前问题的独立决定记录"
+        "prototype.json 是完整 v2 配置；brief、Prototype、离线 CLI、运行输出和 verdict 无需 Shape 输入即可形成完整证据链",
+        "consumer.mjs 使用最小可执行结构按顺序展示三个调用步骤，并捕获模拟错误；consumer-output.txt 保存准确运行结果",
+        "用户接受后，独立 verdict.md 明确记录当前结论和调用顺序、错误处理两项支持证据"
       ],
       "input": {
         "scriptedReplies": [
@@ -117,7 +196,7 @@
         ]
       },
       "expected": {
-        "output": "用户能看到或操作 Prototype，反馈形成当前问题的独立决定记录；本次任务不需要其它 Skill 才能完成。",
+        "output": "创建并离线运行最小 CLI consumer，保存有序 stdout；用户接受后形成包含明确结论和支持证据的独立决定记录。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "prototypes/api-consumer/**"
@@ -127,16 +206,84 @@
             "path": "prototypes/api-consumer/brief.md",
             "exists": true,
             "contains": [
-              "API"
+              "API",
+              "易用"
             ]
+          },
+          {
+            "path": "prototypes/api-consumer/prototype.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 2,
+              "id": "api-consumer",
+              "revision": 1,
+              "question": "当前 API 是否易用？",
+              "decisionContext": {
+                "goal": "判断当前 API consumer 是否易用",
+                "priorities": [
+                  "调用顺序清楚",
+                  "错误处理容易发现"
+                ],
+                "constraints": [
+                  "离线运行",
+                  "不访问真实网络"
+                ]
+              },
+              "selectionMode": "single",
+              "options": [
+                {
+                  "id": "current-api",
+                  "label": "当前 API consumer",
+                  "kind": "text",
+                  "artifact": "artifact/consumer.mjs"
+                }
+              ],
+              "stopCondition": "用户接受、拒绝或要求修改当前接口"
+            }
+          },
+          {
+            "path": "prototypes/api-consumer/artifact/consumer.mjs",
+            "exists": true,
+            "contains": [
+              "console.log",
+              "try {",
+              "catch",
+              "throw new Error",
+              "1. 构造请求",
+              "2. 调用客户端",
+              "3. 处理结果",
+              "模拟错误已捕获"
+            ]
+          },
+          {
+            "path": "prototypes/api-consumer/artifact/consumer-output.txt",
+            "exists": true,
+            "contains": [
+              "1. 构造请求\n2. 调用客户端\n3. 处理结果",
+              "模拟错误已捕获"
+            ]
+          },
+          {
+            "path": "prototypes/api-consumer/verdict.md",
+            "exists": true,
+            "contains": [
+              "当前结论：接受当前接口",
+              "支持证据",
+              "调用顺序清楚",
+              "错误处理容易发现"
+            ]
+          },
+          {
+            "path": "prototypes/api-consumer/feedback.json",
+            "exists": false
           }
         ]
       },
       "audit": {
-        "rationale": "Prototype Skill 必须独立完成用户任务。",
+        "rationale": "本 conversation case 验证 Skill 产生的完整 Prototype v2、可运行 CLI、真实 stdout 和独立 verdict 证据；server、browser 和 wait 的真实生命周期由 scripts/prototype-review.test.mjs 与 Playwright ask-me Prototype Review smoke 确定性覆盖，Leaf Skill 的加载独立性由 plugins/ask-me/scripts/contract.test.mjs 覆盖，不从本 case 推断。",
         "minimalCounterexample": "如果用户要求对多个相互依赖的决定进行完整塑形，并由宏能力选择访谈或 Prototype，则不应只使用 decision-prototype。",
         "errorCost": "high",
-        "allowedVariance": "可以使用直接反馈或 Review Shell；用户必须能体验 Prototype，并得到本问题的独立决定记录。"
+        "allowedVariance": "实现细节可以不同，但必须保留完整 v2 字段、离线可执行结构、有序 stdout、模拟错误被捕获，以及包含明确结论和两项支持证据的独立 verdict。"
       }
     },
     {
