@@ -257,7 +257,7 @@ function findReverseDependencies(plugins, targetName) {
   return plugins
     .filter((plugin) => (
       plugin.manifest.name !== targetName
-      && plugin.manifest.dependencies.includes(targetName)
+      && (plugin.manifest.dependencies ?? []).includes(targetName)
     ))
     .map((plugin) => plugin.manifest.name)
     .sort();

@@ -193,7 +193,7 @@ test('materialized audit validator runs with its projected dependency closure', 
   }
 });
 
-test('Eval case validator admits exact trigger routes only at the trigger layer', async () => {
+test('Eval case validator admits exact first trigger routes only at the trigger layer', async () => {
   const validator = path.join(
     runtimeRoot,
     'skills/audit-agent-skill-evals/scripts/validate-eval-cases.mjs',
@@ -209,7 +209,7 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
     scenario_family: 'catalog-routing',
     unit_under_test: 'Catalog trigger description',
     preconditions: { target_available: true },
-    expected_loaded_skills: ['review-aw-catalog'],
+    expected_first_loaded_skill: 'review-aw-catalog',
     oracle: {
       rationale: 'A Catalog composition review has one exact owner.',
       rule_refs: ['SKILL.md description'],
@@ -237,6 +237,27 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
     assert.equal(triggerResult.valid, true);
     assert.equal(triggerResult.summary.errors, 0);
     assert.equal(triggerResult.summary.warnings, 0);
+
+    for (const [name, expectedFirstLoadedSkill] of [
+      ['empty', ''],
+      ['non-string', ['review-aw-catalog']],
+    ]) {
+      const invalidPath = path.join(temporary, `first-route-${name}.json`);
+      await writeFile(invalidPath, JSON.stringify({
+        ...document,
+        cases: [{ ...routeCase, expected_first_loaded_skill: expectedFirstLoadedSkill }],
+      }));
+      await assert.rejects(
+        execFileAsync(process.execPath, [
+          validator, invalidPath, '--strict', '--format', 'json',
+        ], { encoding: 'utf8' }),
+        (error) => {
+          const result = JSON.parse(error.stdout);
+          return result.diagnostics.some((entry) =>
+            entry.code === 'case.first-route-expectation-type' && entry.level === 'error');
+        },
+      );
+    }
 
     const behaviorPath = path.join(temporary, 'behavior.json');
     await writeFile(behaviorPath, JSON.stringify({

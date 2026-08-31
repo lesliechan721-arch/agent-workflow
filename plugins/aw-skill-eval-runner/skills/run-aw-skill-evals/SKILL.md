@@ -17,7 +17,7 @@ metadata:
 - `aw` 只准备真实 plugin/profile 输入；`aw-skill-eval` 是 plan validation、provider、执行和 bundle 的唯一机器 owner。
 - `audit-agent-skill-evals` 独立审核 Oracle 和结果；Runner 不代替 Auditor，也不解释失败归因。
 - 不隐式安装依赖，不复制 provider、snapshot、进程、timeout、采集、schema 或 digest 实现。
-- 无 passing preflight Audit 不得启动 provider、产生模型诊断或调用 run。`prepare`、plan validate、capabilities、provider describe/smoke 可在无 Audit 时运行。
+- 无 passing preflight Audit 不得启动 provider、产生模型诊断或调用 run。`prepare`、plan/schema/capabilities/Audit validation 可在无 Audit 时运行；这些只读检查不得调用 Plan 的 provider。
 
 ## 1. 选择入口
 
@@ -36,12 +36,21 @@ aw skill eval prepare <plugin> --skill <skill> --suite <suite> --profile <profil
 
 ## 2. 无副作用的合同检查
 
-1. 运行 `aw-skill-eval capabilities --json`，要求 RuntimeCapabilities v2。
-2. 运行 `aw-skill-eval schema print aw-skill-eval-execution-plan`、`aw-skill-eval schema print eval-run-bundle` 和 `aw-skill-eval schema print eval-audit-result`，分别要求 Plan v4、Bundle v4、Audit v3。
-3. 运行 `aw-skill-eval plan validate <plan.json>`，要求 `valid=true` 且 calculated target、corpus、capabilities 和 configuration Skill digests 完整。
+1. 先运行 `aw-skill-eval plan validate <plan.json>`。只有 `valid=true` 且 calculated target、corpus、provider capabilities 和 configuration Skill digests 完整时，才读取其它 target、case 或 Audit 输入。
+2. 运行 `aw-skill-eval capabilities --json`，要求 `EvalProviderCapabilities v2`。它只描述 runner 的进程能力，不启动 Plan 中的 provider。Plan validation 已核验 Plan 绑定的 provider capabilities 文件和 digest。
+3. 从当前 executable 运行以下 schema 查询，要求 Plan v4、Audit v3、Bundle v4、provider capabilities v2 和 provider output v1；不复制 schema：
+
+```bash
+aw-skill-eval schema print aw-skill-eval-execution-plan
+aw-skill-eval schema print eval-audit-result
+aw-skill-eval schema print eval-run-bundle
+aw-skill-eval schema print eval-provider-capabilities
+aw-skill-eval schema print eval-provider-output
+```
+
 4. 已有 Audit 时，对每份运行 `aw-skill-eval audit validate <audit.json>`。随后仍须由 Auditor 的 bundled validator 用当前 plan 检查 exact target/corpus/case binding；Audit 数量和 distinct Skill digest 的最终机器门禁由 run 再检查。
 
-只要求 prepare 或 validate 时在此停止。不得请求执行授权，不得启动 provider，也不得创建 EvalRunBundle。
+只要求 prepare 时，输出仅限新 Plan 目录并在此停止。只要求 validate 时不得创建任何输出。两种请求都不得请求执行授权、启动 provider 或创建 EvalRunBundle。
 
 ## 3. 独立 preflight
 
@@ -57,7 +66,7 @@ aw-skill-eval audit validate <audit.json>
 
 ## 4. 本次执行授权
 
-只有全部 preflight Audit 通过后，才根据 validated plan 和 capabilities 展示：模型与重复运行成本、provider 外部进程、凭据环境、网络访问、输出目录、最低 evidence level、进程管理限制和其它 `limitations`。
+只有全部 preflight Audit 通过后，才根据 validated plan 和 capabilities 明确列出：模型及重复运行成本、provider 外部进程、将读取的凭据环境变量、网络访问、临时输出、持久输出与最终输出目录、最低 evidence level、进程管理限制和其它 `limitations`。列出凭据名称时不得读取凭据值。
 
 必须取得用户对本次运行的明确授权。授权只适用于当前 plan、Audit 集和已展示副作用；缺少授权时停止。不得读取模型凭据或启动 provider。
 
@@ -71,7 +80,9 @@ aw-skill-eval audit validate <audit.json>
 aw-skill-eval run <plan.json> --audit <audit.json>
 ```
 
-要求结果包含 `requirementsMet=true`、`bundlePath` 和 `bundleDigest`。非零退出或 `requirementsMet=false` 时停止，不称为满足计划。若失败返回诊断 bundle，仍可验证并报告，但不得升级 evidence level。
+公开 run receipt 必须包含 `valid=true`、`bundlePath`、`bundleDigest`、`evidenceLevel` 和 `requirementsMet`。非零退出或 `requirementsMet=false` 时停止，不称为满足计划。若失败返回诊断 bundle，仍可验证并报告，但不得升级 evidence level。
+
+run 只接受 provider output v1；该验证、进程执行和输出采集由 `aw-skill-eval` 负责，Runner 不单独实现或修复 provider output。
 
 随后运行：
 
@@ -80,6 +91,8 @@ aw-skill-eval bundle validate <bundle.json>
 ```
 
 要求 Bundle v4 有效，calculated bundle digest 与 run 返回值一致。
+
+prepare 或 run 中断后，删除本次不完整输出，并从新的 `prepare`、独立 preflight Audit、本次授权和 `run` 重新开始。不得续跑旧 Plan/Audit，也不得创建 checkpoint、batch ledger 或其它恢复状态。
 
 ## 6. 独立 result triage
 

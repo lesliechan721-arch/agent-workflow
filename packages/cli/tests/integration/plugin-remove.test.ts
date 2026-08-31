@@ -195,6 +195,29 @@ describe('aw plugin remove', () => {
     ]));
   });
 
+  it('removes a target when a surviving plugin omits optional dependencies', async () => {
+    const fixture = await createWorkspace();
+    expect(await runCli([
+      'plugin', 'init', 'survivor', '--description', 'Surviving plugin without dependencies.',
+      '--no-skills', '--workspace-root', fixture.workspaceRoot,
+    ], { cwd: fixture.workspaceRoot, io: capture().io })).toBe(0);
+    const survivorRoot = path.join(fixture.workspaceRoot, 'plugins', 'survivor');
+    expect((await fs.readJson(path.join(survivorRoot, '.agents-plugin', 'plugin.json'))).dependencies).toBeUndefined();
+    await commitAll(fixture.repoRoot, 'survivor fixture');
+
+    const result = await removeJson(fixture.workspaceRoot);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.receipt).toMatchObject({
+      ok: true,
+      plugin: { name: 'remove-me' },
+      removed: true,
+      errors: [],
+    });
+    await expect(fs.pathExists(fixture.pluginRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(survivorRoot)).resolves.toBe(true);
+  });
+
   it('treats a pathspec-magic Workspace directory as a literal Git target path', async () => {
     const fixture = await createWorkspace({ workspaceDirectory: ':(exclude)catalog' });
 

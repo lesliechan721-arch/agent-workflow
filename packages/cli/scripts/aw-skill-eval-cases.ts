@@ -7,11 +7,13 @@ import type { AwSkillEvalTriggerSuite } from '../src/eval/manifest.js'
 export const AW_SKILL_EVAL_CASE_SCHEMA_VERSION = 1 as const
 
 export interface AwSkillEvalTriggerCase {
+  [metadata: string]: unknown
   id: string
   split: 'train' | 'validation' | 'sanity'
   query: string
   should_load_skill?: boolean
   expected_loaded_skills?: string[]
+  expected_first_loaded_skill?: string
   should_spawn_agent?: boolean
   workspace_fixture?: string
   use_project_rules?: boolean
@@ -341,9 +343,12 @@ export function normalizeAwSkillEvalTriggerCase(
   const tags = row.tags === undefined ? undefined : strings(row.tags, `trigger cases[${index}].tags`)
   const usesLoadExpectation = row.should_load_skill !== undefined
   const usesRouteExpectation = row.expected_loaded_skills !== undefined
-  if (usesLoadExpectation === usesRouteExpectation) {
+  const usesFirstRouteExpectation = row.expected_first_loaded_skill !== undefined
+  if ([usesLoadExpectation, usesRouteExpectation, usesFirstRouteExpectation]
+    .filter(Boolean).length !== 1) {
     throw new Error(
-      `trigger cases[${index}] must declare exactly one of should_load_skill or expected_loaded_skills.`,
+      `trigger cases[${index}] must declare exactly one of should_load_skill, `
+      + 'expected_loaded_skills, or expected_first_loaded_skill.',
     )
   }
   let expectedLoadedSkills: string[] | undefined
@@ -370,13 +375,29 @@ export function normalizeAwSkillEvalTriggerCase(
       )
     }
   }
+  const expectedFirstLoadedSkill = usesFirstRouteExpectation
+    ? string(
+      row.expected_first_loaded_skill,
+      `trigger cases[${index}].expected_first_loaded_skill`,
+    )
+    : undefined
+  if (expectedFirstLoadedSkill && !suite.skills.includes(expectedFirstLoadedSkill)) {
+    throw new Error(
+      `trigger cases[${index}].expected_first_loaded_skill contains non-participant Skill `
+      + `"${expectedFirstLoadedSkill}".`,
+    )
+  }
+  const query = string(row.query, `trigger cases[${index}].query`)
   return {
+    ...row,
     id,
     split,
-    query: string(row.query, `trigger cases[${index}].query`),
+    query,
     ...(usesLoadExpectation
       ? { should_load_skill: boolean(row.should_load_skill, `trigger cases[${index}].should_load_skill`) }
-      : { expected_loaded_skills: expectedLoadedSkills! }),
+      : usesRouteExpectation
+        ? { expected_loaded_skills: expectedLoadedSkills! }
+        : { expected_first_loaded_skill: expectedFirstLoadedSkill! }),
     ...(shouldSpawnAgent === undefined ? {} : { should_spawn_agent: shouldSpawnAgent }),
     ...(workspaceFixture ? { workspace_fixture: workspaceFixture } : {}),
     ...(useProjectRules === undefined ? {} : { use_project_rules: useProjectRules }),

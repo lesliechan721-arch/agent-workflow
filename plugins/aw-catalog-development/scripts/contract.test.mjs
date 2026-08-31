@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import {
+  chmod, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +50,28 @@ async function materializeWorkspaceFiles(root, workspaceFiles) {
   }
 }
 
+async function snapshotTree(root) {
+  const snapshot = {};
+  async function visit(current, prefix = '') {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        snapshot[`${relativePath}/`] = 'directory';
+        await visit(absolutePath, relativePath);
+      } else if (entry.isFile()) {
+        snapshot[relativePath] = createHash('sha256').update(await readFile(absolutePath)).digest('hex');
+      } else if (entry.isSymbolicLink()) {
+        snapshot[relativePath] = `symlink:${await readlink(absolutePath)}`;
+      } else {
+        snapshot[relativePath] = 'other';
+      }
+    }
+  }
+  await visit(root);
+  return snapshot;
+}
+
 function parseSingleJson(stdout, label) {
   const trimmed = stdout.trim();
   assert.notEqual(trimmed, '', `${label} must return JSON`);
@@ -54,16 +79,34 @@ function parseSingleJson(stdout, label) {
 }
 
 async function runEvalFixture(options) {
+  const runOwnedBin = await mkdtemp(path.join(os.tmpdir(), 'aw-eval-run-owned-bin-'));
+  const runOwnedAw = path.join(runOwnedBin, 'aw');
+  const fixtureHome = options.fixtureHome ?? path.join(options.cwd, '.fixture-home');
+  await writeFile(runOwnedAw, `#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+const result = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(options.cliEntry)}, ...process.argv.slice(2)], {
+  env: process.env,
+  stdio: 'inherit',
+});
+if (result.error) {
+  process.stderr.write(\`${'${result.error.message}'}\\n\`);
+  process.exit(9);
+}
+process.exit(result.status ?? 9);
+`, 'utf8');
+  await chmod(runOwnedAw, 0o755);
   try {
     const result = await execFileAsync(process.execPath, [options.fixture, ...options.args], {
       cwd: options.cwd,
       env: {
         ...process.env,
-        AW_PLUGIN_EVAL_CLI_NODE: process.execPath,
-        AW_PLUGIN_EVAL_CLI_ENTRY: options.cliEntry,
-        AW_HOME: path.join(options.cwd, '.fixture-home', 'aw'),
-        AW_CODEX_HOME: path.join(options.cwd, '.fixture-home', 'codex'),
-        AW_CLAUDE_HOME: path.join(options.cwd, '.fixture-home', 'claude'),
+        PATH: [path.dirname(options.fixture), runOwnedBin, process.env.PATH ?? '']
+          .join(path.delimiter),
+        AW_HOME: path.join(fixtureHome, 'aw'),
+        AW_CODEX_HOME: path.join(fixtureHome, 'codex'),
+        AW_CLAUDE_HOME: path.join(fixtureHome, 'claude'),
+        ...(options.tmpDir ? { TMPDIR: options.tmpDir, TMP: options.tmpDir, TEMP: options.tmpDir } : {}),
+        GIT_OPTIONAL_LOCKS: '0',
       },
       maxBuffer: 10 * 1024 * 1024,
     });
@@ -75,8 +118,43 @@ async function runEvalFixture(options) {
       stdout: error.stdout ?? '',
       stderr: error.stderr ?? '',
     };
+  } finally {
+    await rm(runOwnedBin, { recursive: true, force: true });
   }
 }
+
+test('Eval wrappers forward through PATH without private host CLI entry variables', async () => {
+  const wrappers = await Promise.all([
+    'author-aw-catalog',
+    'publish-aw-catalog',
+  ].map((skill) => readFile(path.join(
+    sourceRoot,
+    'skills',
+    skill,
+    'evals',
+    'fixtures',
+    'bin',
+    'aw',
+  ), 'utf8')));
+  for (const wrapper of wrappers) {
+    assert.doesNotMatch(wrapper, /AW_PLUGIN_EVAL_CLI_/u);
+    assert.match(wrapper, /spawnSync\('aw', args/u);
+    assert.match(wrapper, /PATH: forwardedPath/u);
+  }
+});
+
+test('dependency aggregation trigger allows the required Plugin Author handoff', async () => {
+  const evalRoot = path.join(sourceRoot, 'skills', 'author-aw-catalog', 'evals');
+  const cases = JSON.parse(await readFile(path.join(evalRoot, 'trigger-cases.json'), 'utf8')).cases;
+  const manifest = JSON.parse(await readFile(path.join(evalRoot, 'manifest.json'), 'utf8'));
+  const evalCase = cases.find((entry) => entry.id === 'catalog_dependency_update_requires_aggregation');
+  const suite = manifest.suites.find((entry) => entry.id === 'trigger');
+  assert.ok(evalCase);
+  assert.ok(suite);
+  assert.equal(evalCase.expected_first_loaded_skill, 'author-aw-catalog');
+  assert.equal(evalCase.expected_loaded_skills, undefined);
+  assert.equal(suite.forbidMultipleSkillLoads, true);
+});
 
 function assertNoPrivatePublisherFields(receipt, label) {
   const serialized = JSON.stringify(receipt);
@@ -164,6 +242,10 @@ test('Catalog author uses context and Catalog development-source commands', asyn
   assert.match(author, /用户明确的 Workspace root.*canonical.*上游 handoff.*current Workspace/su);
   assert.match(author, /receipt 的 `workspace\.root` 必须与 target 或 handoff path 一致/u);
   assert.match(author, /只在 root 缺失或歧义时询问/u);
+  assert.match(author, /合法 marker 使 `workspace\.found` 为 true/u);
+  assert.match(author, /`workspace\.health` 为 `degraded` 时也保留该 root 和 identity 并进入修复/u);
+  assert.match(author, /非阻断的 `workspace-content` 或 `development-source` issue/u);
+  assert.match(author, /无关 publication issue 不阻止普通作者流程/u);
   assert.match(author, /initialization\.suggestedRoot/u);
   assert.match(author, /aw catalog dev activate --workspace-root <workspace\.root> --json/u);
   assert.match(author, /aw catalog dev status --workspace-root <workspace\.root> --json/u);
@@ -186,6 +268,9 @@ test('Catalog reviewer only consumes static context, status, and an existing sna
   assert.match(reviewer, /用户明确的 Workspace root.*canonical.*上游 handoff.*current Workspace/su);
   assert.match(reviewer, /receipt 的 `workspace\.root` 必须与 target 或 handoff path 一致/u);
   assert.match(reviewer, /只在 root 缺失或歧义时询问/u);
+  assert.match(reviewer, /`workspace\.health` 为 `degraded` 时仍在该 root 完成可得的只读检查/u);
+  assert.match(reviewer, /非阻断 `workspace-content` issue 作为 finding/u);
+  assert.match(reviewer, /`development-source` 或无关 publication issue 不阻止/u);
   assert.match(reviewer, /aw catalog status --workspace-root <workspace\.root> --json/u);
   assert.match(reviewer, /absent.*current.*stale.*invalid/u);
   assert.match(reviewer, /aw catalog validate <snapshot\.path> --json/u);
@@ -236,10 +321,37 @@ test('explicit-target behavior fixture keeps context and status on Workspace B i
   }
 });
 
+test('degraded Review fixture keeps the legal Workspace identity in Context v3', async () => {
+  const repoRoot = path.resolve(sourceRoot, '..', '..');
+  const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+  const evalCase = (await readBehaviorCases('review-aw-catalog'))
+    .find((entry) => entry.id === 'degraded-workspace-remains-locatable');
+  assert.ok(evalCase);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'aw-catalog-degraded-review-'));
+  try {
+    await materializeWorkspaceFiles(root, evalCase.workspace_files);
+    const context = await execFileAsync(process.execPath, [
+      cliEntry, 'catalog', 'context', '--workspace-root', root, '--json',
+    ], { cwd: root, maxBuffer: 10 * 1024 * 1024 });
+    const receipt = parseSingleJson(context.stdout, 'degraded review context');
+    assert.equal(receipt.schemaVersion, 3);
+    assert.equal(receipt.workspace.found, true);
+    assert.equal(receipt.workspace.root, path.resolve(root));
+    assert.equal(receipt.workspace.identity, 'degraded-review-fixture');
+    assert.equal(receipt.workspace.health, 'degraded');
+    assert.deepEqual(receipt.issues.map((issue) => [issue.scope, issue.blocking]), [
+      ['workspace-content', false],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Catalog publisher preflights and binds the user authorization to the receipt', async () => {
-  const [publisher, metadata] = await Promise.all([
+  const [publisher, metadata, behaviorCases] = await Promise.all([
     readRuntimeSkill('publish-aw-catalog'),
     readRuntimeSkill('publish-aw-catalog', 'agents/openai.yaml'),
+    readBehaviorCases('publish-aw-catalog'),
   ]);
 
   // Static contract exception: the final publication command and receipt fields are user-facing authorization controls; behavior test is not suitable because it would perform remote publication.
@@ -253,6 +365,8 @@ test('Catalog publisher preflights and binds the user authorization to the recei
   assert.match(publisher, /aw catalog context --workspace-root <selected\.workspaceRoot>/u);
   assert.match(publisher, /--remote <selected\.remote> --branch <selected\.branch> --json/u);
   assert.match(publisher, /丢弃先前 context receipt，只消费这个新 receipt/u);
+  assert.match(publisher, /存在 blocking publication issue 时，不进入 preflight/u);
+  assert.match(publisher, /新 receipt 仍有 blocking issue 时停止/u);
   assert.match(publisher, /--workspace-root <context\.workspace\.root>/u);
   assert.match(publisher, /--remote <context\.publication\.remote>/u);
   assert.match(publisher, /--branch <context\.publication\.branch> --preflight --json/u);
@@ -272,6 +386,16 @@ test('Catalog publisher preflights and binds the user authorization to the recei
   assert.match(publisher, /--expected-descriptor-digest <preflight\.publication\.descriptorDigest>/u);
   assert.match(publisher, /Catalog 不重试或 repair 同一 version/u);
   assert.doesNotMatch(publisher, /--branch catalog/u);
+
+  const invalidRemote = behaviorCases.find((entry) => (
+    entry.id === 'invalid-explicit-remote-requires-fresh-context'
+  ));
+  assert.ok(invalidRemote);
+  assert.deepEqual(
+    invalidRemote.scripted_replies.map((reply) => reply.answers_by_index),
+    [['remote 名称改为 staging。'], ['拒绝，这次不要发布。']],
+    'remote correction and publication refusal must be separate conversation turns',
+  );
 });
 
 test('Author Eval fixture forwards local work to the run-owned AW CLI', async () => {
@@ -350,6 +474,103 @@ test('Author Eval fixture forwards local work to the run-owned AW CLI', async ()
   }
 });
 
+test('Author removal Eval fixture creates a clean Git precondition and restores the provider Git snapshot', async () => {
+  const repoRoot = path.resolve(sourceRoot, '..', '..');
+  const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+  const fixture = path.join(sourceRoot, 'skills', 'author-aw-catalog', 'evals', 'fixtures', 'bin', 'aw');
+  const removalCase = (await readBehaviorCases('author-aw-catalog'))
+    .find((entry) => entry.id === 'remove-canonical-plugin-through-handoff');
+  assert.ok(removalCase);
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'aw-author-remove-eval-real-cli-')));
+  const fixtureHome = await mkdtemp(path.join(os.tmpdir(), 'aw-author-remove-eval-home-'));
+  const fixtureOptions = { fixture, cliEntry, cwd: root, fixtureHome, tmpDir: fixtureHome };
+  try {
+    await execFileAsync('git', ['init'], { cwd: root });
+    await materializeWorkspaceFiles(root, removalCase.workspace_files);
+    const initialGit = await snapshotTree(path.join(root, '.git'));
+
+    const self = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['self', 'check', '--from', path.join(sourceRoot, 'skills', 'author-aw-catalog'), '--json'],
+    });
+    assert.equal(self.exitCode, 0, self.stderr);
+    assert.equal(parseSingleJson(self.stdout, 'author removal self check').command, 'self:check');
+    const cleanAfterSelf = await execFileAsync('git', [
+      'status', '--porcelain=v1', '--untracked-files=all',
+    ], { cwd: root, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
+    assert.equal(cleanAfterSelf.stdout, '', 'self check leaves the prepared fixture clean');
+
+    const context = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['catalog', 'context', '--workspace-root', root, '--json'],
+    });
+    assert.equal(context.exitCode, 0, context.stderr);
+    assert.equal(parseSingleJson(context.stdout, 'author removal context').git.clean, true);
+
+    const initialStatus = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['catalog', 'status', '--workspace-root', root, '--json'],
+    });
+    assert.equal(initialStatus.exitCode, 0, initialStatus.stderr);
+    const initialStatusReceipt = parseSingleJson(initialStatus.stdout, 'author removal initial status');
+    assert.equal(initialStatusReceipt.ok, true);
+    assert.equal(initialStatusReceipt.git.clean, true);
+    assert.deepEqual(initialStatusReceipt.plugins.map((plugin) => plugin.name).sort(), [
+      'remove-me', 'survivor',
+    ]);
+
+    const remove = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['plugin', 'remove', 'remove-me', '--workspace-root', root, '--yes', '--json'],
+    });
+    assert.equal(remove.exitCode, 0, remove.stderr);
+    const removeReceipt = parseSingleJson(remove.stdout, 'author removal receipt');
+    assert.equal(removeReceipt.schemaVersion, 1);
+    assert.equal(removeReceipt.command, 'plugin:remove');
+    assert.equal(removeReceipt.ok, true);
+    assert.equal(removeReceipt.removed, true);
+    assert.equal(removeReceipt.plugin.name, 'remove-me');
+    assert.deepEqual(removeReceipt.errors, []);
+    await assert.rejects(readFile(path.join(root, 'plugins', 'remove-me', 'README.md'), 'utf8'));
+
+    const finalStatus = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['catalog', 'status', '--workspace-root', root, '--json'],
+    });
+    assert.equal(finalStatus.exitCode, 0, finalStatus.stderr);
+    const finalStatusReceipt = parseSingleJson(finalStatus.stdout, 'author removal final status');
+    assert.equal(finalStatusReceipt.ok, true);
+    assert.deepEqual(finalStatusReceipt.plugins.map((plugin) => plugin.name), ['survivor']);
+
+    const survivor = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['plugin', 'validate', path.join(root, 'plugins', 'survivor'), '--workspace-root', root, '--json'],
+    });
+    assert.equal(survivor.exitCode, 0, `${survivor.stderr}\n${survivor.stdout}`);
+    assert.equal(parseSingleJson(survivor.stdout, 'author removal survivor validation').ok, true);
+    const build = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['catalog', 'build', '--workspace-root', root, '--json'],
+    });
+    assert.equal(build.exitCode, 0, build.stderr);
+    assert.equal(parseSingleJson(build.stdout, 'author removal Catalog build').ok, true);
+    const validate = await runEvalFixture({
+      ...fixtureOptions,
+      args: ['catalog', 'validate', path.join(root, '.aw', 'catalog'), '--json'],
+    });
+    assert.equal(validate.exitCode, 0, validate.stderr);
+    assert.equal(parseSingleJson(validate.stdout, 'author removal Catalog validation').ok, true);
+    assert.equal(JSON.parse(await readFile(path.join(root, 'plugins', 'marketplace-source.json'), 'utf8')).catalog.version, '0.3.0');
+    assert.doesNotMatch(await readFile(path.join(root, '.aw', 'catalog', 'catalog-manifest.json'), 'utf8'), /remove-me/u);
+    assert.deepEqual(await snapshotTree(path.join(root, '.git')), initialGit);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(fixtureHome, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test('Publisher Eval fixture separates public receipts from private remote evidence', async () => {
   const repoRoot = path.resolve(sourceRoot, '..', '..');
   const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
@@ -387,13 +608,31 @@ test('Publisher Eval fixture separates public receipts from private remote evide
       assert.equal(selfReceipt.command, 'self:check');
       assertNoPrivatePublisherFields(selfReceipt, `${evalCase.id}: self check`);
 
+      const invalidPublicationTarget = scenario === 'invalid-publication-target';
       const contextArgs = isDefault
         ? ['catalog', 'context', '--json']
-        : ['catalog', 'context', '--remote', remote, '--branch', branch, '--json'];
-      const context = await runEvalFixture({ fixture, cliEntry, cwd: root, args: contextArgs });
+        : ['catalog', 'context', '--remote', invalidPublicationTarget ? 'missing' : remote, '--branch', branch, '--json'];
+      let context = await runEvalFixture({ fixture, cliEntry, cwd: root, args: contextArgs });
       assert.equal(context.exitCode, 0, context.stderr);
-      const contextReceipt = parseSingleJson(context.stdout, `${evalCase.id}: context`);
-      assert.equal(contextReceipt.schemaVersion, 2);
+      let contextReceipt = parseSingleJson(context.stdout, `${evalCase.id}: context`);
+      assert.equal(contextReceipt.schemaVersion, 3);
+      assert.equal(contextReceipt.workspace.health, 'healthy');
+      if (invalidPublicationTarget) {
+        assert.equal(contextReceipt.workspace.found, true);
+        assert.equal(contextReceipt.publication.remote, null);
+        assert.deepEqual(contextReceipt.issues.map((issue) => [issue.scope, issue.blocking]), [
+          ['publication', true],
+        ]);
+        context = await runEvalFixture({
+          fixture,
+          cliEntry,
+          cwd: root,
+          args: ['catalog', 'context', '--workspace-root', root, '--remote', remote, '--branch', branch, '--json'],
+        });
+        assert.equal(context.exitCode, 0, context.stderr);
+        contextReceipt = parseSingleJson(context.stdout, `${evalCase.id}: corrected context`);
+        assert.deepEqual(contextReceipt.issues, []);
+      }
       assert.equal(contextReceipt.developmentSource.configured, false);
       assert.deepEqual(Object.keys(contextReceipt.developmentSource).sort(), [
         'configured', 'existingSourceId', 'snapshotPath', 'suggestedSourceId',

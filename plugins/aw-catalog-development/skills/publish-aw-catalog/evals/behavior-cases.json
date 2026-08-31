@@ -62,7 +62,7 @@
         ],
         "checks": [
           "trace 按顺序调用 aw self check、无 target override 的 catalog context、显式 root/remote/branch 的 catalog status --preflight",
-          "公共 self check receipt 来自 run-owned 真实 CLI；context/status 均符合 schema 2，且不含 fixture 私有 evidence 字段",
+          "公共 self check receipt 来自 run-owned 真实 CLI；context 符合 schema 3、status 符合 schema 2，且都不含 fixture 私有 evidence 字段",
           "授权问题在任何 publish 前展示 preflight 的绝对 Workspace root、Workspace identity、source HEAD、Catalog version、origin、安全 fetch/push URL、catalog branch、parent、tag、snapshot digest、plan ID 和完整 descriptor digest；用户只授权 descriptor digest；拒绝后私有 trace 无 publish 且 state 不存在"
         ]
       }
@@ -123,6 +123,72 @@
           "context 接收用户给出的 --remote staging 和 --branch catalogs/team",
           "preflight 命令显式传递 receipt 的绝对 root、staging 和 catalogs/team；公共 status receipt 符合 schema 2；授权问题先展示 root、Workspace identity、source HEAD、Catalog version、remote、安全 fetch/push URL、branch、parent、tag、snapshot digest、plan ID 和 descriptor digest，并只请求 digest 授权",
           "拒绝后私有 trace 无 catalog publish 且 state 不存在；公共 receipt 不含 remoteWrites 或 attemptWritten"
+        ]
+      }
+    },
+    {
+      "id": "invalid-explicit-remote-requires-fresh-context",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "publication-context-blocking-issue",
+      "unit_under_test": "publish-aw-catalog Context v3 publication gate",
+      "preconditions": { "workspace_valid": true, "explicit_remote_invalid": true },
+      "oracle": {
+        "rationale": "Context v3 可在合法 Workspace 上报告 publication-scoped blocking issue；Publisher 必须在 preflight 前取得更正选择并重新读取 context。",
+        "rule_refs": ["SKILL.md#工作流-1", "SKILL.md#工作流-2"],
+        "confidence": "high",
+        "allowed_variance": "可用不同措辞说明 remote 无效；必须保留 workspace.found=true 的 root/identity，不能用旧 remote、不能跳过新 context。更正后可进入 preflight，但精确授权仍是独立问题。",
+        "minimal_counterexample": "非阻断 workspace-content 或 development-source issue 不要求用户重新选择 publication target，但 preflight 仍必须成功。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "critical",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "忽略无效显式 remote 会错发或把空 target 传入发布；把非阻断 issue 当作同类 blocker 会无谓停止。"
+      },
+      "prompt": "使用 $publish-aw-catalog 发布当前 Catalog 到 remote misspelled、branch catalogs/team。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["remote 名称改为 staging。"],
+          "unexpected_question_answer": "只更正 remote；远端写仍未授权。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["拒绝，这次不要发布。"],
+          "unexpected_question_answer": "不授权任何远端写入。"
+        }
+      ],
+      "expected_output": "首次 Context v3 的 blocking publication issue 阻止 preflight；更正 remote 后重新取得 context，再 preflight 并单独请求精确授权；用户拒绝后不 publish。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"publisher-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://catalog.example.com/owner\"},\"interface\":{\"displayName\":\"Publisher Fixture\"},\"catalog\":{\"version\":\"0.4.0\"}}\n",
+        "plugins/fixture-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-plugin\",\"version\":\"0.1.0\",\"description\":\"Publisher fixture plugin.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"fixture\",\"title\":\"Fixture\",\"content\":\"Fixture instruction.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-plugin/README.md": "# Publisher fixture plugin\n",
+        "fixtures/scenario.txt": "scenario=invalid-publication-target\n"
+      },
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["fixtures/publisher-trace.jsonl", "fixtures/publisher-state.json"],
+        "artifacts": [
+          {
+            "path": "fixtures/publisher-trace.jsonl",
+            "exists": true,
+            "contains": ["\"command\":\"catalog context\"", "misspelled", "staging", "\"command\":\"catalog status\""],
+            "not_contains": ["\"command\":\"catalog publish\""]
+          },
+          { "path": "fixtures/publisher-state.json", "exists": false }
+        ],
+        "checks": [
+          "首次 context receipt 符合 schema 3，保留 workspace.found=true 和 identity，并报告 publicationRemoteInvalid、scope=publication、blocking=true",
+          "blocking receipt 后没有 status --preflight；用户更正后以完整 root、staging 和 catalogs/team 重新运行 context，并丢弃旧 receipt",
+          "新 context 无 blocking issue 后才运行 preflight；精确授权仍单独询问，拒绝后没有 catalog publish"
         ]
       }
     },

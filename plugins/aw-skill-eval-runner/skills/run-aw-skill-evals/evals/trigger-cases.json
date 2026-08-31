@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "skill": "run-aw-skill-evals",
+  "audit_status": "not assessed",
   "policy": {
     "optimization": "precision-first",
     "false_negative_cost": "high",

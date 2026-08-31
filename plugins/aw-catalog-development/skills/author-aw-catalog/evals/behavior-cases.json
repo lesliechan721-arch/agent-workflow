@@ -18,10 +18,10 @@
       "unit_under_test": "author-aw-catalog initialization path",
       "preconditions": { "git_project": true, "workspace_missing": true },
       "oracle": {
-        "rationale": "明确初始化当前项目时，Author 必须消费真实 CLI context 的 suggestedRoot 建立新 identity，再以真实 build/validate receipt 和合法 snapshot 完成空 inventory。",
+        "rationale": "明确初始化当前项目时，Author 必须消费 Context v3 的非阻断 workspaceUnavailable 与 suggestedRoot 建立新 identity，再以真实 build/validate receipt 和合法 snapshot 完成空 inventory。",
         "rule_refs": ["SKILL.md#工作流-1", "SKILL.md#工作流-5", "SKILL.md#工作流-6"],
         "confidence": "high",
-        "allowed_variance": "可先说明空 inventory；必须重新读取 context，不得自行生成或替换 identity。",
+        "allowed_variance": "可先说明空 inventory；首次 receipt 必须是 schema 3 且 marker 缺失不能被误作 invalid marker，初始化后必须重新读取 context，不得自行生成或替换 identity。",
         "minimal_counterexample": "若已有合法 Workspace，则只维护现有 identity，不能再次 init。"
       },
       "decision_context": {
@@ -49,7 +49,7 @@
           { "path": ".aw/catalog/catalog-manifest.json", "exists": true, "contains": ["\"schemaVersion\": 5", "\"entries\": []"] }
         ],
         "checks": [
-          "run-owned 真实 CLI 的 self check 成功；首次完整 context receipt 报 workspace.found=false 后，init 使用 initialization.suggestedRoot",
+          "run-owned 真实 CLI 的 self check 成功；首次 schema 3 context receipt 报 workspace.found=false 和非阻断 workspaceUnavailable 后，init 使用 initialization.suggestedRoot",
           "真实 init 后重新运行 context，并保留 CLI 生成的 identity",
           "empty inventory 不运行 plugin validate/test；真实 catalog build/validate receipt 成功且 snapshot 通过 schema 5 complete validation",
           "没有 catalog publish"

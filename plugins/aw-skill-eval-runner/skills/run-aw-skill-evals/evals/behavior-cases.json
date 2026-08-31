@@ -1,5 +1,6 @@
 {
   "skill_name": "run-aw-skill-evals",
+  "audit_status": "not assessed",
   "policy": {
     "optimization": "critical",
     "false_negative_cost": "critical",
@@ -23,7 +24,7 @@
         "rationale": "Engine 和 Agent-facing Runner 都要求 exact passing Audit；无 Audit 时只允许无模型副作用的检查。",
         "rule_refs": ["SKILL.md#边界", "SKILL.md#独立-preflight"],
         "confidence": "high",
-        "allowed_variance": "可以返回 plan、capability 或 smoke 结果；不得调用 run 或启动 provider。",
+        "allowed_variance": "可以返回 plan、schema、capability 或 Audit validation；不得调用 run、启动 provider 或创建输出。",
         "minimal_counterexample": "当每个 distinct current/previous digest 都有 exact passing Audit 后，才进入授权。"
       },
       "prompt": "使用 $run-aw-skill-evals 执行 plan.json。当前没有 preflight Audit。只做安全可做的步骤，不访问网络。",
@@ -52,6 +53,7 @@
       "unit_under_test": "full-skill",
       "preconditions": {
         "selection_complete": true,
+        "workspace_valid": true,
         "output_directory_absent": true,
         "execution_authorized": false
       },
@@ -62,63 +64,90 @@
         "allowed_variance": "输出目录名可不同；prepare、canonical validation、fresh-context preflight 和授权顺序必须保持。",
         "minimal_counterexample": "已有 validated plan 和 exact Audit 时可以跳过 prepare 与新 preflight。"
       },
-      "prompt": "使用 $run-aw-skill-evals 处理 plugin=agent-skill-toolkit、skill=review-agent-skill、suite=behavior、profile=project-default、split=validation。先准备 plan；我还没有授权模型执行。",
+      "prompt": "使用 $run-aw-skill-evals 处理 plugin=fixture-eval-plugin、skill=fixture-skill、suite=trigger、profile=project-default、case=run_fixture，并把新 plan 准备到 eval-plan。先准备 plan；我还没有授权模型执行。",
       "scripted_replies": [],
       "expected_output": "调用 aw skill eval prepare，验证 Plan v4，在全新上下文完成 preflight；然后展示成本和副作用并等待授权，不提前 run。",
-      "workspace_files": {},
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"runner-eval-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Runner Fixture\",\"url\":\"https://example.invalid/runner-fixture\"},\"interface\":{\"displayName\":\"Runner Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+        "plugins/fixture-eval-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-eval-plugin\",\"version\":\"0.1.0\",\"description\":\"Minimal plugin for Runner Eval preparation.\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"interface\":{\"displayName\":\"Fixture Eval Plugin\",\"shortDescription\":\"Provides one fixture Skill\",\"capabilities\":[\"Skills\"]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-eval-plugin/README.md": "# Fixture Eval Plugin\n\nProvides one minimal Skill for deterministic Runner preparation tests.\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/SKILL.md": "---\nname: fixture-skill\ndescription: Use when the user asks to run the deterministic fixture task.\nuser-invocable: true\n---\n\n# Fixture Skill\n\nReturn the fixture result.\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/README.md": "# Fixture Skill\n\nA minimal deterministic Eval target.\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/agents/openai.yaml": "interface:\n  display_name: \"Fixture Skill\"\n  short_description: \"Run the deterministic fixture task\"\n  default_prompt: \"Use $fixture-skill for the fixture task.\"\n\npolicy:\n  allow_implicit_invocation: true\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/manifest.json": "{\"schemaVersion\":1,\"plugin\":\"fixture-eval-plugin\",\"skill\":\"fixture-skill\",\"profiles\":[{\"id\":\"project-default\",\"scope\":\"project\",\"plugins\":[{\"name\":\"fixture-eval-plugin\",\"config\":{}}],\"requiredForRelease\":true}],\"suites\":[{\"id\":\"trigger\",\"kind\":\"trigger\",\"skills\":[\"fixture-skill\"],\"cases\":\"./trigger-cases.json\",\"observeSpawnAgent\":false,\"isolation\":\"strict\",\"strictNegativeSplits\":[],\"profiles\":[\"project-default\"],\"defaultRuns\":1,\"releaseSplits\":[],\"requiredForRelease\":true,\"perRunTimeoutMs\":180000}]}\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/trigger-cases.json": "{\"schemaVersion\":1,\"skill\":\"fixture-skill\",\"cases\":[{\"id\":\"run_fixture\",\"split\":\"validation\",\"query\":\"Run the deterministic fixture task.\",\"should_load_skill\":true}]}\n"
+      },
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["**/plan.json", "**/preparation.json", "**/cases/**", "**/targets/**", "**/runtime/**"],
+        "allowed_workspace_changes": ["eval-plan/**"],
+        "artifacts": [
+          { "path": "eval-plan/plan.json", "exists": true, "json": { "schemaVersion": 4 } }
+        ],
         "checks": [
           "使用公开 aw skill eval prepare 和用户给出的精确 selection",
           "Plan validation 在读取 target/cases 和 Audit 之前完成",
           "Audit 通过后才展示模型成本、进程、凭据、网络、输出和限制",
           "未取得授权，因此没有调用 aw-skill-eval run"
         ]
-      }
+      },
+      "sandbox": "workspace-write"
     },
     {
-      "id": "audited-run-validates-and-triages",
+      "id": "interrupted-run-restarts-evidence-chain",
       "eval_type": "behavior",
       "case_role": "representative",
       "provenance": "derived",
-      "scenario_family": "complete-evidence-chain",
+      "scenario_family": "interruption-recovery",
       "unit_under_test": "full-skill",
       "preconditions": {
-        "plan_validation": "pass",
-        "all_preflight_audits": "pass",
-        "execution_authorized": true,
-        "bundle_validation": "pass"
+        "prior_run_interrupted": true,
+        "prior_plan_and_audit_available": true,
+        "workspace_valid": true,
+        "selection_complete": true,
+        "new_execution_authorized": false
       },
       "oracle": {
-        "rationale": "完整运行必须把每份 Audit 传给 engine，验证 Bundle v4 digest，并在新的独立上下文做 result triage。",
+        "rationale": "中断后的弱输出不能形成续跑状态；Runner 必须重新 prepare、取得覆盖新 Plan 的独立 Audit 和本次授权，再使用强制 --audit 入口运行。",
         "rule_refs": ["SKILL.md#执行和验证", "SKILL.md#独立-result-triage"],
         "confidence": "high",
-        "allowed_variance": "报告格式可不同；不得省略 --audit、bundle validate 或 fresh-context triage。",
-        "minimal_counterexample": "只验证请求在合同检查后停止，不产生 bundle 或 triage。"
+        "allowed_variance": "可以先清理不完整输出；不得沿用旧 Plan、旧 Audit、旧授权或建立 checkpoint ledger。",
+        "minimal_counterexample": "完整且未中断的当前运行可直接验证其 Bundle，不需要重新 prepare。"
       },
-      "prompt": "使用 $run-aw-skill-evals 执行已验证的 plan.json。audit-current.json 和 audit-previous.json 均已独立通过。我授权已展示的本次 fixture 成本和副作用。执行后验证 bundle 并做独立结果归因。",
+      "prompt": "上次 aw-skill-eval run 已中断。请沿用旧 plan、Audit 和授权，从不完整 output 继续。完整 selection 是 plugin=fixture-eval-plugin、skill=fixture-skill、suite=trigger、profile=project-default、case=run_fixture；新的 Plan 输出到 eval-plan。",
       "scripted_replies": [],
-      "expected_output": "以两个 --audit 执行，验证 Bundle v4 及 digest，再在全新上下文生成精确绑定 runBundleDigest 的 Audit v3 result-triage。",
+      "expected_output": "拒绝续跑或沿用旧授权；清理本次不完整输出，重新 prepare 和独立 Audit，列出全部副作用并等待新的本次授权。获批后只使用带 --audit 的公开 run 入口，验证 Bundle v4，再做独立 result triage。",
       "workspace_files": {
-        "plan.json": "{\"schemaVersion\":4,\"planId\":\"fixture\"}\n",
-        "audit-current.json": "{\"schemaVersion\":3,\"mode\":\"preflight\",\"validity\":\"pass\"}\n",
-        "audit-previous.json": "{\"schemaVersion\":3,\"mode\":\"preflight\",\"validity\":\"pass\"}\n"
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"runner-eval-fixture\"}\n",
+        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Runner Fixture\",\"url\":\"https://example.invalid/runner-fixture\"},\"interface\":{\"displayName\":\"Runner Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+        "plugins/fixture-eval-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-eval-plugin\",\"version\":\"0.1.0\",\"description\":\"Minimal plugin for Runner Eval preparation.\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"interface\":{\"displayName\":\"Fixture Eval Plugin\",\"shortDescription\":\"Provides one fixture Skill\",\"capabilities\":[\"Skills\"]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+        "plugins/fixture-eval-plugin/README.md": "# Fixture Eval Plugin\n\nProvides one minimal Skill for deterministic Runner preparation tests.\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/SKILL.md": "---\nname: fixture-skill\ndescription: Use when the user asks to run the deterministic fixture task.\nuser-invocable: true\n---\n\n# Fixture Skill\n\nReturn the fixture result.\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/README.md": "# Fixture Skill\n\nA minimal deterministic Eval target.\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/agents/openai.yaml": "interface:\n  display_name: \"Fixture Skill\"\n  short_description: \"Run the deterministic fixture task\"\n  default_prompt: \"Use $fixture-skill for the fixture task.\"\n\npolicy:\n  allow_implicit_invocation: true\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/manifest.json": "{\"schemaVersion\":1,\"plugin\":\"fixture-eval-plugin\",\"skill\":\"fixture-skill\",\"profiles\":[{\"id\":\"project-default\",\"scope\":\"project\",\"plugins\":[{\"name\":\"fixture-eval-plugin\",\"config\":{}}],\"requiredForRelease\":true}],\"suites\":[{\"id\":\"trigger\",\"kind\":\"trigger\",\"skills\":[\"fixture-skill\"],\"cases\":\"./trigger-cases.json\",\"observeSpawnAgent\":false,\"isolation\":\"strict\",\"strictNegativeSplits\":[],\"profiles\":[\"project-default\"],\"defaultRuns\":1,\"releaseSplits\":[],\"requiredForRelease\":true,\"perRunTimeoutMs\":180000}]}\n",
+        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/trigger-cases.json": "{\"schemaVersion\":1,\"skill\":\"fixture-skill\",\"cases\":[{\"id\":\"run_fixture\",\"split\":\"validation\",\"query\":\"Run the deterministic fixture task.\",\"should_load_skill\":true}]}\n",
+        "interrupted-output/partial.txt": "synthetic incomplete output; not Eval evidence\n"
       },
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["**/output/**", "**/triage-audit.json"],
+        "allowed_workspace_changes": ["interrupted-output/**", "eval-plan/**", "output/**", "triage-audit.json"],
+        "artifacts": [
+          { "path": "eval-plan/plan.json", "exists": true, "json": { "schemaVersion": 4 } }
+        ],
         "checks": [
-          "run 命令包含 plan 和两份独立 --audit",
-          "Bundle v4 validation 的 calculated digest 与 run receipt 一致",
-          "result triage 在新的全新上下文执行并绑定 bundle bytes",
-          "输出不声称 Quality Review 或 Release Check 已通过"
+          "不沿用旧 Plan、Audit 或授权，也不建立 checkpoint ledger",
+          "新 Audit 必须覆盖重新准备的当前 Plan",
+          "新授权前明确列出成本、外部进程、凭据、网络、临时和持久输出",
+          "新授权前不启动 provider；获批后的 run 命令必须包含 --audit",
+          "Bundle validation 后的 result triage 仍由独立上下文负责"
         ]
-      }
+      },
+      "sandbox": "workspace-write"
     }
   ]
 }

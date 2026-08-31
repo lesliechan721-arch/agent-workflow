@@ -106,8 +106,15 @@ async function createWorkspace(): Promise<{
         id: 'validation_case',
         split: 'validation',
         query: 'Validation query.',
-        should_load_skill: false,
-        oracle: { note: 'author-only metadata is removed by normalization' },
+        expected_first_loaded_skill: 'owner-skill',
+        eval_type: 'trigger',
+        case_role: 'representative',
+        scenario_family: 'plan-metadata',
+        provenance: 'synthetic',
+        unit_under_test: 'description',
+        preconditions: { target_available: true },
+        decision_context: { plan_is_audited_independently: true },
+        oracle: { expected_first_loaded_skill: 'owner-skill' },
       },
     ],
   }, { spaces: 2 })
@@ -316,6 +323,23 @@ describe('aw skill eval commands', () => {
     triggerCases.cases[0].should_load_skill = true
     await fs.writeJson(triggerCasesPath, triggerCases, { spaces: 2 })
 
+    triggerCases.cases[1].expected_first_loaded_skill = 'non-participant-skill'
+    await fs.writeJson(triggerCasesPath, triggerCases, { spaces: 2 })
+    const invalidFirstLoadedSkill = capture()
+    expect(await runCli([
+      'plugin', 'validate', fixture.ownerRoot,
+      '--workspace-root', fixture.root,
+      '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: invalidFirstLoadedSkill.io })).toBe(1)
+    expect(JSON.parse(invalidFirstLoadedSkill.stdout())).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining([
+        expect.stringContaining('expected_first_loaded_skill contains non-participant Skill'),
+      ]),
+    })
+    triggerCases.cases[1].expected_first_loaded_skill = 'owner-skill'
+    await fs.writeJson(triggerCasesPath, triggerCases, { spaces: 2 })
+
     const conversationCasesPath = path.join(fixture.evalRoot, 'conversation-cases.json')
     const conversationCases = await fs.readJson(conversationCasesPath)
     conversationCases.evals[0].scripted_replies = 'invalid'
@@ -410,7 +434,15 @@ describe('aw skill eval commands', () => {
       id: 'validation_case',
       split: 'validation',
       query: 'Validation query.',
-      should_load_skill: false,
+      expected_first_loaded_skill: 'owner-skill',
+      eval_type: 'trigger',
+      case_role: 'representative',
+      scenario_family: 'plan-metadata',
+      provenance: 'synthetic',
+      unit_under_test: 'description',
+      preconditions: { target_available: true },
+      decision_context: { plan_is_audited_independently: true },
+      oracle: { expected_first_loaded_skill: 'owner-skill' },
     }])
     await expect(fs.pathExists(path.join(output, 'targets', 'current', 'SKILL.md'))).resolves.toBe(true)
     await expect(fs.pathExists(path.join(output, 'targets', 'previous', 'previous-version', 'SKILL.md'))).resolves.toBe(true)

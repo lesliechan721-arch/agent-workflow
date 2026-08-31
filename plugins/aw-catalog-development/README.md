@@ -10,7 +10,7 @@ aw install aw-catalog-development -p both
 
 安装会解析其对 `aw-plugin-development` 的依赖。
 
-当前 CLI 合同是 Plugin Manifest v2、Catalog snapshot schema 5 和 Catalog Sources Config schema 2。三个 Skill 都先消费 materialized runtime requirements receipt 并运行 `aw self check`；它们通过 `aw catalog context` 与 status schema v2 使用 CLI 的 root、publication 默认值和 snapshot evidence。
+当前 CLI 合同是 Plugin Manifest v2、Catalog snapshot schema 5、Catalog Sources Config schema 2、Catalog context schema v3 和 status schema v2。三个 Skill 都先消费 materialized runtime requirements receipt 并运行 `aw self check`；它们通过 context 使用 CLI 解析的 root 和 publication target，并通过 status 使用 snapshot evidence。
 
 ## 包含的 Skill
 

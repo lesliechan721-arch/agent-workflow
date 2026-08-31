@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const node = process.env.AW_PLUGIN_EVAL_CLI_NODE;
-const entry = process.env.AW_PLUGIN_EVAL_CLI_ENTRY;
-if (!node || !entry) {
-  process.stderr.write('Publisher Eval fixture requires the run-owned AW CLI entry.\n');
+const fixtureBin = realpathSync(path.dirname(fileURLToPath(import.meta.url)));
+const forwardedPath = (process.env.PATH ?? '').split(path.delimiter).filter((entry) => {
+  if (entry === '') return true;
+  try {
+    return realpathSync(entry) !== fixtureBin;
+  } catch {
+    return path.resolve(entry) !== fixtureBin;
+  }
+}).join(path.delimiter);
+if (forwardedPath === '') {
+  process.stderr.write('Publisher Eval fixture could not find the next aw on PATH.\n');
   process.exit(9);
 }
 
@@ -149,7 +157,10 @@ function failPublish(message, attemptState, remoteResult) {
 }
 
 if (command === 'self check') {
-  const result = spawnSync(node, [entry, ...args], { env: process.env, stdio: 'inherit' });
+  const result = spawnSync('aw', args, {
+    env: { ...process.env, PATH: forwardedPath },
+    stdio: 'inherit',
+  });
   if (result.error) {
     process.stderr.write(`${result.error.message}\n`);
     process.exit(9);
@@ -158,8 +169,10 @@ if (command === 'self check') {
 }
 
 if (command === 'catalog context') {
+  const invalidPublicationTarget = scenario === 'invalid-publication-target' &&
+    optionValue('--remote') !== 'staging';
   emit({
-    schemaVersion: 2,
+    schemaVersion: 3,
     command: 'catalog:context',
     toolchain: { ...toolchain, digest: toolchainDigest },
     workspace: {
@@ -167,6 +180,7 @@ if (command === 'catalog context') {
       root,
       identity: 'publisher-fixture',
       resolvedFrom: 'workspace-marker',
+      health: 'healthy',
     },
     initialization: { suggestedRoot: root, resolvedFrom: 'workspace-marker' },
     git: {
@@ -176,8 +190,8 @@ if (command === 'catalog context') {
       remotes: [remote],
     },
     publication: {
-      remote,
-      remoteResolvedFrom,
+      remote: invalidPublicationTarget ? null : remote,
+      remoteResolvedFrom: invalidPublicationTarget ? 'invalid-explicit' : remoteResolvedFrom,
       branch,
       branchResolvedFrom,
       ambiguous: false,
@@ -188,7 +202,12 @@ if (command === 'catalog context') {
       existingSourceId: null,
       configured: false,
     },
-    issues: [],
+    issues: invalidPublicationTarget ? [{
+      code: 'publicationRemoteInvalid',
+      scope: 'publication',
+      message: 'Explicit Catalog publication remote must name an existing Git remote exactly.',
+      blocking: true,
+    }] : [],
   });
   process.exit(0);
 }

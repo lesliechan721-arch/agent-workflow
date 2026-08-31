@@ -20,7 +20,13 @@ const VALID_OPTIMIZATION = new Set(['recall-first', 'precision-first', 'balanced
 const VALID_COST = new Set(['low', 'medium', 'high', 'critical']);
 const RELEASE_RELEVANT_ROLES = new Set(['representative', 'regression', 'boundary']);
 const RELEASE_RELEVANT_SPLITS = new Set(['train', 'validation', 'sanity']);
-const TRIGGER_KEYS = new Set(['load_skill', 'should_load_skill', 'triggered', 'should_trigger']);
+const TRIGGER_KEYS = new Set([
+  'expected_first_loaded_skill',
+  'load_skill',
+  'should_load_skill',
+  'triggered',
+  'should_trigger',
+]);
 const NON_TRIGGER_HINTS = new Set([
   'spawn_agent',
   'should_spawn_agent',
@@ -130,6 +136,7 @@ function hasObservableAssertion(evalCase) {
   if (isRecord(evalCase.expected) && Object.keys(evalCase.expected).length > 0) return true;
   if (typeof evalCase.should_load_skill === 'boolean') return true;
   if (Array.isArray(evalCase.expected_loaded_skills)) return true;
+  if (hasText(evalCase.expected_first_loaded_skill)) return true;
   if (hasText(evalCase.expected_output)) return true;
   if (isRecord(evalCase.review)) {
     if (Array.isArray(evalCase.review.checks) && evalCase.review.checks.length > 0) return true;
@@ -184,7 +191,23 @@ function validateTriggerLayer(evalCase, caseId, diagnostics) {
       caseId,
     ));
   }
+  if (evalCase.eval_type !== 'trigger' && Object.hasOwn(evalCase, 'expected_first_loaded_skill')) {
+    diagnostics.push(diagnostic(
+      'error',
+      'case.route-expectation-type',
+      'expected_first_loaded_skill is only valid for trigger cases.',
+      caseId,
+    ));
+  }
   if (evalCase.eval_type !== 'trigger') return;
+  if (Object.hasOwn(evalCase, 'expected_first_loaded_skill') && !hasText(evalCase.expected_first_loaded_skill)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'case.first-route-expectation-type',
+      'expected_first_loaded_skill must be a non-empty string.',
+      caseId,
+    ));
+  }
   const topLevelSuspicious = [...NON_TRIGGER_HINTS].filter((key) => Object.hasOwn(evalCase, key));
   if (topLevelSuspicious.length > 0) {
     diagnostics.push(diagnostic(

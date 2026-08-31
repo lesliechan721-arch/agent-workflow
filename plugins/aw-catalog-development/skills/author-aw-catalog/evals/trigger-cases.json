@@ -39,7 +39,7 @@
       "id": "catalog_dependency_update_requires_aggregation",
       "split": "validation",
       "query": "把 plugins/search-tools 加入当前 Catalog inventory，让它依赖 shared-rules，并重新验证全部插件和 Catalog 聚合结果。",
-      "expected_loaded_skills": ["author-aw-catalog"],
+      "expected_first_loaded_skill": "author-aw-catalog",
       "eval_type": "trigger",
       "test_layer": "trigger",
       "case_role": "boundary",
@@ -55,10 +55,10 @@
         "rationale": "依赖和 inventory 是 Catalog composition 边界。"
       },
       "oracle": {
-        "rationale": "请求改变 Catalog inventory 和跨插件依赖，并要求聚合验证，因此由 Catalog Author 拥有。",
+        "rationale": "请求改变 Catalog inventory 和跨插件依赖，并要求聚合验证，因此首个顶层路由由 Catalog Author 拥有；后续可按规范交接 Plugin Author。",
         "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "插件内部文件仍应交给 author-aw-plugin；Catalog Author 必须保留 composition 和聚合验证责任。",
+        "allowed_variance": "只要求首个顶层路由加载 author-aw-catalog；插件内部文件应继续交给 author-aw-plugin，Catalog Author 保留 composition 和聚合验证责任。不得因这个规范 handoff 把 case 判为多 Skill 误路由。",
         "minimal_counterexample": "若只修改 search-tools 内部 lifecycle 且不改变 inventory、依赖或聚合结果，则不应加载 Catalog Author。"
       }
     },

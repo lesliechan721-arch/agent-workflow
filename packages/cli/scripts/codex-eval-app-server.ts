@@ -138,8 +138,14 @@ export interface AppServerRunEvidence {
   diagnostics: string[];
   eventTrace: unknown[];
   isolation: CodexEvalRpcIsolationEvidence | null;
+  limitations: string[];
   stderr?: string;
 }
+
+export const CODEX_CONVERSATION_NETWORK_LIMITATION =
+  'Conversation app-server and tool execution network remains enabled because macOS Seatbelt cannot be nested reliably.';
+export const CODEX_CONVERSATION_FINAL_ANSWER_FALLBACK_LIMITATION =
+  'For final-answer fallback turns, expected_question_count is checked against answers_by_index length because structured questions are not observable.';
 
 interface PendingRequest {
   method: string;
@@ -182,7 +188,22 @@ const PASSTHROUGH_ENV = new Set([
 ]);
 const CODEX_EVAL_APP_SERVER_OVERRIDES = [
   'features.default_mode_request_user_input=true',
+  'shell_environment_policy.set.GIT_OPTIONAL_LOCKS="0"',
 ] as const;
+const DARWIN_SANDBOX_EXEC = '/usr/bin/sandbox-exec';
+
+export type CodexConversationProviderStage =
+  | 'workspace-materialization-started'
+  | 'workspace-materialized'
+  | 'containment-admission-started'
+  | 'containment-admitted'
+  | 'session-started'
+  | 'session-initialized'
+  | 'thread-started'
+  | 'turn-started'
+  | 'turn-completed';
+
+class HostReadContainmentError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -282,6 +303,57 @@ async function canonicalForbiddenHostRoots(roots: string[]): Promise<string[]> {
   return [...new Set(values.flat())];
 }
 
+function seatbeltPath(value: string): string {
+  return JSON.stringify(value);
+}
+
+function hostReadContainmentProfile(options: {
+  forbiddenHostRoots: string[];
+  writableRoots: string[];
+  unwritableRoots: string[];
+}): string {
+  return [
+    '(version 1)',
+    '(allow default)',
+    '(deny file-write*)',
+    `(allow file-write* (literal ${seatbeltPath('/dev/null')}))`,
+    ...options.writableRoots.map((root) =>
+      `(allow file-write* (subpath ${seatbeltPath(root)}))`),
+    ...options.unwritableRoots.map((root) =>
+      `(deny file-write* (subpath ${seatbeltPath(root)}))`),
+    ...options.forbiddenHostRoots.map((root) =>
+      `(deny file-read* (subpath ${seatbeltPath(root)}))`),
+  ].join('\n');
+}
+
+async function assertHostReadContainmentAvailable(profile: string): Promise<void> {
+  if (process.platform !== 'darwin') {
+    throw new HostReadContainmentError(
+      `Codex conversation provider cannot start: OS-enforced host read containment is unavailable on ${process.platform}.`,
+    );
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(DARWIN_SANDBOX_EXEC, ['-p', profile, '/usr/bin/true'], {
+      shell: false,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (chunk: string | Buffer) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-4_000);
+    });
+    child.once('error', (error) => reject(new HostReadContainmentError(
+      `Codex conversation provider cannot start OS-enforced host read containment: ${error.message}`,
+    )));
+    child.once('close', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new HostReadContainmentError(
+        'Codex conversation provider cannot start OS-enforced host read containment' +
+        ` (code=${String(code)}, signal=${String(signal)}): ${stderr.trim() || 'no diagnostic'}`,
+      ));
+    });
+  });
+}
+
 function requestId(value: unknown): string | undefined {
   const rawId = appServerRequestId(value);
   return rawId === undefined ? undefined : String(rawId);
@@ -327,6 +399,7 @@ function buildIsolatedEnv(
     TEMP: temp,
     TMP: temp,
     NO_COLOR: '1',
+    GIT_OPTIONAL_LOCKS: '0',
   }, runtime);
 }
 
@@ -523,6 +596,7 @@ export class EvalAppServerSession {
     isolation: AwSkillEvalIsolation;
     processManagement?: CodexEvalProcessManagementEvidence;
     configOverrides?: readonly string[];
+    hostReadContainmentProfile?: string;
   }) {
     assertCodexEvalCanStartWork();
     const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
@@ -554,7 +628,13 @@ export class EvalAppServerSession {
     for (const override of options.configOverrides ?? []) {
       args.push('--config', override);
     }
-    this.process = spawn(options.codexBin, args, {
+    const executable = options.hostReadContainmentProfile
+      ? DARWIN_SANDBOX_EXEC
+      : options.codexBin;
+    const executableArgs = options.hostReadContainmentProfile
+      ? ['-p', options.hostReadContainmentProfile, options.codexBin, ...args]
+      : args;
+    this.process = spawn(executable, executableArgs, {
       cwd: options.cwd,
       env: managed
         ? { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: this.processTreeId }
@@ -1021,6 +1101,13 @@ export function extractAppServerThreadId(result: unknown): string {
   return result.thread.id;
 }
 
+function finalAnswerReplyText(scripted: ScriptedReply): string {
+  return [
+    'Scripted user reply (answers_by_index order):',
+    ...scripted.answersByIndex.map((answer, index) => `${index + 1}. ${answer}`),
+  ].join('\n');
+}
+
 async function runConversationOnce(options: {
   sourceProjectRoot: string;
   evalCase: ConversationEvalCase;
@@ -1038,13 +1125,14 @@ async function runConversationOnce(options: {
   workRoot?: string;
   environmentFixtures: Array<{ fixtureRoot: string; relativePath: string }>;
   manageTimeout?: boolean;
+  onStage?: (stage: CodexConversationProviderStage) => void;
 }): Promise<AppServerRunEvidence> {
   assertCodexEvalCanStartWork();
   const temporaryRoot = await createEvalTemporaryRoot(
     'conversation-',
     options.forbiddenHostRoots.length > 0 ? undefined : options.workRoot,
   );
-  const runRoot = temporaryRoot.root;
+  const runRoot = await fs.realpath(temporaryRoot.root);
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
   const diagnostics: string[] = [];
@@ -1060,6 +1148,15 @@ async function runConversationOnce(options: {
   let turnTimer: ReturnType<typeof setTimeout> | undefined;
   const startedAt = Date.now();
   try {
+    options.onStage?.('workspace-materialization-started');
+    const containmentProfile = hostReadContainmentProfile({
+      forbiddenHostRoots: options.forbiddenHostRoots,
+      writableRoots: [runRoot],
+      unwritableRoots: options.evalCase.sandbox === 'read-only' ? [workspaceRoot] : [],
+    });
+    options.onStage?.('containment-admission-started');
+    await assertHostReadContainmentAvailable(containmentProfile);
+    options.onStage?.('containment-admitted');
     await fs.copy(options.sourceProjectRoot, workspaceRoot, { dereference: false });
     const environmentPathEntries = await materializeConversationEnvironment({
       workspaceRoot,
@@ -1092,6 +1189,7 @@ async function runConversationOnce(options: {
         trustedProject: workspaceRoot,
       }),
     ]);
+    options.onStage?.('workspace-materialized');
     const before = await snapshotWorkspace(workspaceRoot);
     if (
       options.processManagement.mode === 'managed' ||
@@ -1108,21 +1206,15 @@ async function runConversationOnce(options: {
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
       isolation: options.isolation,
       processManagement: options.processManagement,
+      hostReadContainmentProfile: containmentProfile,
     });
+    options.onStage?.('session-started');
     let replyStep = 0;
     let turnResolve: ((value: { complete: boolean }) => void) | undefined;
     let turnReject: ((error: Error) => void) | undefined;
-    const turnDone = new Promise<{ complete: boolean }>((resolve, reject) => {
-      turnResolve = resolve;
-      turnReject = reject;
-    });
-    void turnDone.catch(() => undefined);
+    let turnUsedRequestUserInput = false;
+    let turnProducedFinalAnswer = false;
     removeFailureHandler = session.onFailure((error) => turnReject?.(error));
-    if (options.manageTimeout !== false) {
-      turnTimer = setTimeout(() => {
-        turnReject?.(new Error(`conversation turn timed out after ${options.timeoutMs}ms.`));
-      }, options.timeoutMs);
-    }
 
     removeHandler = session.onFrame(async (frame) => {
       const method = typeof frame.method === 'string' ? frame.method : '';
@@ -1135,6 +1227,7 @@ async function runConversationOnce(options: {
         throw new Error(`Strict Codex eval received a config warning: ${configWarning}`);
       }
       if (method === 'item/tool/requestUserInput') {
+        turnUsedRequestUserInput = true;
         const responseId = appServerRequestId(frame.id);
         const id = requestId(responseId);
         if (!id || responseId === undefined || !Array.isArray(params.questions)) {
@@ -1192,6 +1285,7 @@ async function runConversationOnce(options: {
           item.phase === 'final_answer' &&
           typeof item.text === 'string'
         ) {
+          turnProducedFinalAnswer = true;
           finalMessages.push(item.text);
         }
       }
@@ -1208,6 +1302,7 @@ async function runConversationOnce(options: {
     });
 
     await session.initialize();
+    options.onStage?.('session-initialized');
     if (options.isolation === 'strict') {
       isolationEvidence = await collectStrictIsolationEvidence({
         session,
@@ -1216,15 +1311,6 @@ async function runConversationOnce(options: {
         allowedSkillRoots,
       });
     }
-    const sandboxPolicy = options.evalCase.sandbox === 'workspace-write'
-      ? {
-          type: 'workspaceWrite' as const,
-          writableRoots: [workspaceRoot],
-          networkAccess: false,
-          excludeTmpdirEnvVar: false,
-          excludeSlashTmp: true,
-        }
-      : { type: 'readOnly' as const, networkAccess: true };
     const threadResult = await session.sendRequest('thread/start', {
       cwd: workspaceRoot,
       approvalPolicy: 'never',
@@ -1233,17 +1319,60 @@ async function runConversationOnce(options: {
       ...(options.model ? { model: options.model } : {}),
     });
     const threadId = extractAppServerThreadId(threadResult);
-    await session.sendRequest('turn/start', {
-      threadId,
-      input: [{ type: 'text', text: options.evalCase.prompt, text_elements: [] }],
-      cwd: workspaceRoot,
-      approvalPolicy: 'never',
-      sandboxPolicy,
-      ...(options.model ? { model: options.model } : {}),
-    });
-    const completed = await turnDone;
-    clearTimeout(turnTimer);
-    turnTimer = undefined;
+    options.onStage?.('thread-started');
+    let nextTurnText = options.evalCase.prompt;
+    let completed = { complete: false };
+    while (true) {
+      turnUsedRequestUserInput = false;
+      turnProducedFinalAnswer = false;
+      const turnDone = new Promise<{ complete: boolean }>((resolve, reject) => {
+        turnResolve = resolve;
+        turnReject = reject;
+      });
+      void turnDone.catch(() => undefined);
+      if (options.manageTimeout !== false) {
+        turnTimer = setTimeout(() => {
+          turnReject?.(new Error(`conversation turn timed out after ${options.timeoutMs}ms.`));
+        }, options.timeoutMs);
+      }
+      await session.sendRequest('turn/start', {
+        threadId,
+        input: [{ type: 'text', text: nextTurnText, text_elements: [] }],
+        cwd: workspaceRoot,
+        approvalPolicy: 'never',
+        sandboxPolicy: {
+          type: 'externalSandbox' as const,
+          networkAccess: 'enabled' as const,
+        },
+        ...(options.model ? { model: options.model } : {}),
+      });
+      options.onStage?.('turn-started');
+      completed = await turnDone;
+      options.onStage?.('turn-completed');
+      clearTimeout(turnTimer);
+      turnTimer = undefined;
+      turnResolve = undefined;
+      turnReject = undefined;
+      const scripted = options.evalCase.scriptedReplies[replyStep];
+      if (
+        !completed.complete ||
+        !scripted ||
+        turnUsedRequestUserInput ||
+        !turnProducedFinalAnswer
+      ) {
+        break;
+      }
+      if (
+        scripted.expectedQuestionCount !== undefined &&
+        scripted.expectedQuestionCount !== scripted.answersByIndex.length
+      ) {
+        scriptedReplyMismatches.push(
+          `Final-answer fallback step ${replyStep + 1} cannot observe structured questions: expected_question_count=${scripted.expectedQuestionCount}, but answers_by_index contains ${scripted.answersByIndex.length} answer(s).`,
+        );
+      }
+      replyStep += 1;
+      nextTurnText = finalAnswerReplyText(scripted);
+    }
     removeHandler();
     removeHandler = undefined;
     removeFailureHandler();
@@ -1296,9 +1425,14 @@ async function runConversationOnce(options: {
       diagnostics,
       eventTrace,
       isolation: isolationEvidence,
+      limitations: [
+        CODEX_CONVERSATION_NETWORK_LIMITATION,
+        CODEX_CONVERSATION_FINAL_ANSWER_FALLBACK_LIMITATION,
+      ],
       ...(session.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
     });
   } catch (error) {
+    if (error instanceof HostReadContainmentError) throw error;
     const hostSourceAccessAbsent = options.forbiddenHostRoots.length > 0 &&
       eventTraceContainsForbiddenHostSourceInput(eventTrace, options.forbiddenHostRoots)
       ? false
@@ -1318,6 +1452,10 @@ async function runConversationOnce(options: {
       diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
       eventTrace,
       isolation: isolationEvidence,
+      limitations: [
+        CODEX_CONVERSATION_NETWORK_LIMITATION,
+        CODEX_CONVERSATION_FINAL_ANSWER_FALLBACK_LIMITATION,
+      ],
       ...(session?.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
     };
     return session ? session.scrub(evidence) : evidence;
@@ -1349,6 +1487,7 @@ export async function runCodexConversationProviderCase(options: {
   isolation: AwSkillEvalIsolation;
   forbiddenHostRoots?: string[];
   environmentFixtures: Array<{ fixtureRoot: string; relativePath: string }>;
+  onStage?: (stage: CodexConversationProviderStage) => void;
 }): Promise<AppServerRunEvidence> {
   return runConversationOnce({
     sourceProjectRoot: options.sourceProjectRoot,
@@ -1374,6 +1513,7 @@ export async function runCodexConversationProviderCase(options: {
     ),
     environmentFixtures: options.environmentFixtures,
     manageTimeout: false,
+    ...(options.onStage ? { onStage: options.onStage } : {}),
   });
 }
 

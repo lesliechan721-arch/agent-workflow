@@ -10,10 +10,13 @@ import {
 import fs from 'fs-extra'
 
 import {
+  CODEX_CONVERSATION_FINAL_ANSWER_FALLBACK_LIMITATION,
+  CODEX_CONVERSATION_NETWORK_LIMITATION,
   normalizeConversationProviderCase,
   runCodexEvalIsolationProbe,
   runCodexConversationProviderCase,
   type AppServerRunEvidence,
+  type CodexConversationProviderStage,
 } from '../../scripts/codex-eval-app-server.js'
 import {
   runCodexTriggerProviderCase,
@@ -80,7 +83,13 @@ export function builtInEvalProviderCapabilities(
       conversation: kind === 'codex-conversation',
     },
     limitations: [
-      'Codex app-server isolation is configuration isolation, not OS-level containment.',
+      kind === 'codex-conversation'
+        ? 'Conversation host-read isolation uses macOS sandbox-exec and fails closed when OS containment is unavailable.'
+        : 'Codex app-server isolation is configuration isolation, not OS-level containment.',
+      ...(kind === 'codex-conversation' ? [CODEX_CONVERSATION_NETWORK_LIMITATION] : []),
+      ...(kind === 'codex-conversation'
+        ? [CODEX_CONVERSATION_FINAL_ANSWER_FALLBACK_LIMITATION]
+        : []),
       'Usage is null when Codex does not emit token usage for the run.',
     ],
   }
@@ -112,6 +121,7 @@ interface ProviderInvocation {
   skillPath: string | null
   outputDir: string
   runtimeInputs: Record<string, string>
+  boundHostRoots: string[]
 }
 
 interface ProviderSuiteBase {
@@ -181,6 +191,19 @@ function requiredEnvironment(env: NodeJS.ProcessEnv, name: string): string {
   return value
 }
 
+function commonPathRoot(paths: string[]): string {
+  let common = path.resolve(paths[0]!)
+  for (const candidate of paths.slice(1)) {
+    const resolved = path.resolve(candidate)
+    while (common !== path.parse(common).root) {
+      const relative = path.relative(common, resolved)
+      if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..')) break
+      common = path.dirname(common)
+    }
+  }
+  return common
+}
+
 async function readProviderInvocation(env: NodeJS.ProcessEnv): Promise<ProviderInvocation> {
   const casePath = requiredEnvironment(env, 'AGENT_EVAL_CASE_PATH')
   const caseValue = record(await fs.readJson(casePath), 'provider case')
@@ -208,6 +231,13 @@ async function readProviderInvocation(env: NodeJS.ProcessEnv): Promise<ProviderI
   if (skillMode !== 'without-skill' && skillPath === null) {
     throw new Error(`${skillMode} provider invocation requires AGENT_EVAL_SKILL_PATH.`)
   }
+  const runtimeInputPaths = runtimeInputs as Record<string, string>
+  const boundPaths = [
+    casePath,
+    outputDir,
+    ...Object.values(runtimeInputPaths),
+    ...(skillPath ? [skillPath] : []),
+  ]
   return {
     caseValue,
     caseId,
@@ -215,8 +245,25 @@ async function readProviderInvocation(env: NodeJS.ProcessEnv): Promise<ProviderI
     skillMode: skillMode as ProviderInvocation['skillMode'],
     skillPath,
     outputDir,
-    runtimeInputs: runtimeInputs as Record<string, string>,
+    runtimeInputs: runtimeInputPaths,
+    boundHostRoots: [
+      process.cwd(),
+      commonPathRoot(boundPaths),
+      ...boundPaths,
+    ],
   }
+}
+
+export function conversationProviderStageLine(stage: string): string {
+  return `AW_SKILL_EVAL_STAGE ${JSON.stringify({
+    schemaVersion: 1,
+    provider: 'codex-conversation',
+    stage,
+  })}\n`
+}
+
+function writeConversationProviderStage(stage: string): void {
+  process.stderr.write(conversationProviderStageLine(stage))
 }
 
 async function readSuite(invocation: ProviderInvocation): Promise<{
@@ -381,7 +428,10 @@ async function runCodexConversationProvider(
   }
   const suite = suiteRoot.suite as unknown as AwSkillEvalConversationSuite & { skill: string }
   const runtime = cleanCodexEvalRuntimeConfig(env, env.AW_SKILL_EVAL_CODEX_MODEL)
+  writeConversationProviderStage('provider-started')
+  writeConversationProviderStage('subject-materialization-started')
   const subjectRoot = await materializeSubject({ invocation, skillName: suite.skill })
+  writeConversationProviderStage('subject-materialized')
   try {
     const suitePathPrepend = suite.environment?.pathPrepend ?? []
     const evalCase = normalizeConversationProviderCase({
@@ -403,7 +453,8 @@ async function runCodexConversationProvider(
       timeoutMs: suite.perRunTimeoutMs,
       sourceEnv: env,
       isolation: suite.isolation,
-      forbiddenHostRoots: Object.values(invocation.runtimeInputs),
+      forbiddenHostRoots: invocation.boundHostRoots,
+      onStage: (stage: CodexConversationProviderStage) => writeConversationProviderStage(stage),
       environmentFixtures: [
         ...suitePathPrepend.map((relativePath) => ({
           fixtureRoot: suiteRoot.root,

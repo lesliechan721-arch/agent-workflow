@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -15,6 +15,7 @@ const context = process.env.AW_PLUGIN_CONTEXT
 const sourceRoot = context?.sourceRoot ?? localRoot;
 const runtimeRoot = context?.platform ? path.join(localRoot, context.platform) : localRoot;
 const skillValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'cli', 'dist', 'index.js');
+const evalValidatorBin = path.resolve(sourceRoot, '..', '..', 'packages', 'agent-skill-eval', 'dist', 'bin.js');
 const temps = [];
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
 const reviewSkillRoot = path.join(runtimeRoot, 'skills/review-aw-plugin');
@@ -46,6 +47,31 @@ async function runJson(file, args = []) {
   }
 }
 
+async function runPublicJson(args, options = {}) {
+  try {
+    return JSON.parse((await execFileAsync(process.execPath, [skillValidatorBin, ...args], {
+      cwd: options.cwd ?? runtimeRoot,
+      encoding: 'utf8',
+      maxBuffer: 20 * 1024 * 1024,
+      env: {
+        ...process.env,
+        ...(options.env ?? {}),
+      },
+    })).stdout);
+  } catch (error) {
+    if (typeof error?.stdout === 'string' && error.stdout.trim()) return JSON.parse(error.stdout);
+    throw error;
+  }
+}
+
+async function materializeWorkspaceFiles(root, workspaceFiles) {
+  for (const [relativePath, content] of Object.entries(workspaceFiles)) {
+    const target = path.join(root, relativePath);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, 'utf8');
+  }
+}
+
 test('non-Publisher Skills preserve an explicit Workspace target across context and commands', async () => {
   const skills = await Promise.all([
     'author-aw-plugin',
@@ -65,6 +91,201 @@ test('non-Publisher Skills preserve an explicit Workspace target across context 
       skill,
       /--workspace-root <workspace-root>|--plugin <workspace-root>\/plugins/u,
     );
+  }
+});
+
+test('Plugin Author keeps a legal degraded Workspace repairable', async () => {
+  const author = await readFile(
+    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'SKILL.md'),
+    'utf8',
+  );
+
+  // Static contract exception: stopping on a non-blocking Context v3 issue would prevent repair of an already located plugin; behavior execution depends on model routing while this test only receives final instruction text.
+  assert.match(author, /合法 marker 使 `workspace\.found` 为 true/u);
+  assert.match(author, /`workspace\.health` 为 `degraded`/u);
+  assert.match(author, /非阻断的 `workspace-content` 或 `development-source` issue 不阻止插件修复/u);
+  assert.match(author, /只有 blocking 的 workspace marker issue 才阻止定位/u);
+});
+
+test('Author Eval fixtures report their intended Context v3 Workspace health', async () => {
+  const evalRoot = path.join(sourceRoot, 'skills', 'author-aw-plugin', 'evals');
+  const behaviorCases = JSON.parse(await readFile(
+    path.join(evalRoot, 'behavior-cases.json'),
+    'utf8',
+  )).evals;
+  const lightweightCases = JSON.parse(await readFile(
+    path.join(evalRoot, 'lightweight-delta-cases.json'),
+    'utf8',
+  )).evals;
+  const expectedContexts = new Map([
+    ['new-plugin-with-two-skills', { identity: 'team-status-new-fixture', health: 'healthy' }],
+    ['mcp-and-app-composition', { identity: 'mcp-app-degraded-fixture', health: 'degraded' }],
+    ['slash-command-and-readme', { identity: 'release-helper-slash-fixture', health: 'degraded' }],
+    ['config-driven-instructions-artifact', { identity: 'incident-policy-artifact-fixture', health: 'degraded' }],
+    ['manifest-version-and-build-repair', { identity: 'runtime-card-build-fixture', health: 'degraded' }],
+    ['skill-and-eval-assets-handoff', { identity: 'query-tools-skill-eval-fixture', health: 'healthy' }],
+    ['portable-static-projection-and-dynamic-skill', { identity: 'portable-observer-projection-fixture', health: 'degraded' }],
+    ['existing-skill-small-delta-skips-aw-authoring-context', { identity: 'notes-lightweight-delta-fixture', health: 'healthy' }],
+  ]);
+  const evalCases = [...behaviorCases, ...lightweightCases]
+    .filter((entry) => expectedContexts.has(entry.id));
+  assert.equal(evalCases.length, expectedContexts.size);
+
+  for (const evalCase of evalCases) {
+    const temp = await mkdtemp(path.join(tmpdir(), `aw-author-context-${evalCase.id}-`));
+    temps.push(temp);
+    await materializeWorkspaceFiles(temp, evalCase.workspace_files);
+    const result = await execFileAsync(process.execPath, [
+      skillValidatorBin,
+      'catalog',
+      'context',
+      '--workspace-root', temp,
+      '--json',
+    ], {
+      cwd: temp,
+      encoding: 'utf8',
+      maxBuffer: 20 * 1024 * 1024,
+      env: {
+        ...process.env,
+        AW_HOME: path.join(temp, '.aw-home'),
+      },
+    });
+    const receipt = JSON.parse(result.stdout);
+    assert.equal(receipt.schemaVersion, 3, evalCase.id);
+    assert.equal(receipt.workspace.found, true, evalCase.id);
+    assert.equal(receipt.workspace.root, path.resolve(temp), evalCase.id);
+    const expected = expectedContexts.get(evalCase.id);
+    assert.equal(receipt.workspace.identity, expected.identity, evalCase.id);
+    assert.equal(receipt.workspace.health, expected.health, evalCase.id);
+    assert.deepEqual(receipt.issues.map((issue) => [issue.scope, issue.blocking]), expected.health === 'degraded'
+      ? [['workspace-content', false]]
+      : [], evalCase.id);
+  }
+});
+
+test('new-plugin Eval fixture allows only its source and real build output', async () => {
+  const behaviorCases = JSON.parse(await readFile(
+    path.join(sourceRoot, 'skills', 'author-aw-plugin', 'evals', 'behavior-cases.json'),
+    'utf8',
+  )).evals;
+  const evalCase = behaviorCases.find((entry) => entry.id === 'new-plugin-with-two-skills');
+  assert.ok(evalCase);
+  assert.deepEqual(evalCase.review.allowed_workspace_changes, [
+    'plugins/team-status/**',
+    '.aw/plugins/team-status/**',
+  ]);
+  assert.ok(evalCase.review.artifacts.every((artifact) => artifact.path.startsWith('plugins/team-status/')));
+  const changeIsAllowed = (relativePath) => evalCase.review.allowed_workspace_changes.some((pattern) => (
+    pattern.endsWith('/**')
+      ? relativePath === pattern.slice(0, -3) || relativePath.startsWith(pattern.slice(0, -2))
+      : relativePath === pattern
+  ));
+
+  const temp = await realpath(await mkdtemp(path.join(tmpdir(), 'aw-author-new-plugin-fixture-')));
+  temps.push(temp);
+  await materializeWorkspaceFiles(temp, evalCase.workspace_files);
+  const env = { AW_HOME: path.join(temp, '.aw-home') };
+
+  const status = await runPublicJson([
+    'catalog', 'status', '--workspace-root', temp, '--json',
+  ], { cwd: temp, env });
+  assert.equal(status.schemaVersion, 2);
+  assert.equal(status.command, 'catalog:status');
+  assert.equal(status.ok, true);
+
+  await execFileAsync(process.execPath, [skillValidatorBin,
+    'plugin', 'init', 'team-status', '--description', 'Team status fixture.',
+    '--no-skills', '--workspace-root', temp,
+  ], {
+    cwd: temp,
+    encoding: 'utf8',
+    maxBuffer: 20 * 1024 * 1024,
+    env: { ...process.env, ...env },
+  });
+  const manifest = JSON.parse(await readFile(
+    path.join(temp, 'plugins', 'team-status', '.agents-plugin', 'plugin.json'),
+    'utf8',
+  ));
+  assert.equal(manifest.name, 'team-status');
+
+  const build = await runPublicJson([
+    'plugin', 'build', 'plugins/team-status', '--workspace-root', temp, '--json',
+  ], { cwd: temp, env });
+  const outputPath = path.relative(temp, build.outputRoot).split(path.sep).join('/');
+  assert.equal(build.command, 'plugin:build');
+  assert.equal(build.pluginName, 'team-status');
+  assert.equal(outputPath, '.aw/plugins/team-status');
+  assert.equal(changeIsAllowed(outputPath), true);
+  assert.equal(changeIsAllowed('.aw/catalog/catalog-manifest.json'), false);
+  assert.equal(changeIsAllowed('.aw/plugins/other-plugin/.aw-generated.json'), false);
+  assert.equal(changeIsAllowed('plugins/other-plugin/.agents-plugin/plugin.json'), false);
+});
+
+test('Author Eval repairs and handoffs prepare and validate Plan v4 from public commands', async () => {
+  const evalRoot = path.join(sourceRoot, 'skills', 'author-aw-plugin', 'evals');
+  const behaviorCases = JSON.parse(await readFile(path.join(evalRoot, 'behavior-cases.json'), 'utf8')).evals;
+  const lightweightCases = JSON.parse(await readFile(path.join(evalRoot, 'lightweight-delta-cases.json'), 'utf8')).evals;
+  const lightweight = lightweightCases.find((entry) => entry.id === 'existing-skill-small-delta-skips-aw-authoring-context');
+  const buildRepair = behaviorCases.find((entry) => entry.id === 'manifest-version-and-build-repair');
+  const handoff = behaviorCases.find((entry) => entry.id === 'skill-and-eval-assets-handoff');
+  assert.ok(lightweight);
+  assert.ok(buildRepair);
+  assert.ok(handoff);
+  assert.match(lightweight.prompt, /\$author-aw-plugin/u);
+  assert.ok(lightweight.review.checks.some((entry) => entry.includes('先进入被评的 $author-aw-plugin，再 handoff 给 author-agent-skill')));
+  assert.equal('package.json' in buildRepair.workspace_files, false);
+  assert.match(buildRepair.prompt, /node plugins\/runtime-card\/scripts\/build-runtime-assets\.mjs/u);
+  assert.doesNotMatch(buildRepair.prompt, /pnpm|Corepack/u);
+  assert.match(buildRepair.workspace_files['AGENTS.md'], /offline: do not use pnpm, Corepack/u);
+  assert.match(handoff.prompt, /现有 explain-query Skill/u);
+  assert.ok(handoff.review.checks.some((entry) => entry.includes('最小 trigger suite')));
+  assert.ok(handoff.review.checks.some((entry) => entry.includes('不修改 manifest、不创建第二个 Skill')));
+  // Static contract exception: fixed filenames in the input would reject valid Eval Designer output; behavior test is not suitable because model-generated filenames and contents have allowed variance and this deterministic suite does not run a model Eval.
+  assert.deepEqual(handoff.review.artifacts, [
+    { path: 'plugins/query-tools/skills/explain-query/SKILL.md', exists: true },
+  ]);
+  assert.equal(handoff.review.artifacts.some((artifact) => (
+    artifact.path.endsWith('/manifest.json') || artifact.path.endsWith('/trigger-cases.json')
+  )), false);
+  assert.ok(handoff.review.checks.some((entry) => (
+    entry.includes('suite metadata')
+      && entry.includes('正例、反例')
+      && entry.includes('文件名可按 Eval Designer 合同不同')
+      && entry.includes('schema 校验')
+  )));
+
+  const workspaceRoot = path.resolve(sourceRoot, '..', '..');
+  const temp = await realpath(await mkdtemp(path.join(tmpdir(), 'aw-author-eval-plan-')));
+  temps.push(temp);
+  const cases = [
+    { suite: 'behavior', id: buildRepair.id },
+    { suite: 'behavior', id: handoff.id },
+    { suite: 'lightweight-delta', id: lightweight.id },
+  ];
+  for (const entry of cases) {
+    const output = path.join(temp, entry.id);
+    const preparation = await runPublicJson([
+      'skill', 'eval', 'prepare', 'aw-plugin-development',
+      '--skill', 'author-aw-plugin',
+      '--suite', entry.suite,
+      '--profile', 'project-default',
+      '--case', entry.id,
+      '--workspace-root', workspaceRoot,
+      '--output', output,
+      '--json',
+    ], {
+      cwd: workspaceRoot,
+      env: { AW_HOME: path.join(temp, `.aw-home-${entry.id}`) },
+    });
+    assert.ok(preparation.ok, `${entry.id}: ${JSON.stringify(preparation.errors)}`);
+    assert.equal(preparation.plans.length, 1, entry.id);
+    const validation = JSON.parse((await execFileAsync(process.execPath, [
+      evalValidatorBin,
+      'plan', 'validate', preparation.plans[0].planPath,
+    ], { encoding: 'utf8' })).stdout);
+    assert.equal(validation.valid, true, entry.id);
+    const selectedCases = JSON.parse(await readFile(path.join(output, 'cases', 'selected-cases.json'), 'utf8'));
+    assert.deepEqual(selectedCases.map((caseEntry) => caseEntry.id), [entry.id], entry.id);
   }
 });
 

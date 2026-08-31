@@ -239,6 +239,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - Plan、bundle 和运行输出都是可删除、可重建的弱状态。准备或执行中断后，删除本次不完整输出并重新 `prepare`、Audit 和 `run`；不维护 batch checkpoint 或续跑 ledger。
 - Conversation suite 或 case 可用最小 `environment.pathPrepend` 声明 Eval-owned PATH fixture。路径相对声明它的 Eval 根解析，必须是根内的普通文件或目录树，且不能包含符号链接。Runner 只复制已声明 fixture 到本次隔离 workspace，并只在那里设置 executable mode 和前置 PATH；Oracle 不依赖仓库私有 CLI 路径。声明 `workspace_valid: true` 的确定性 fixture 必须 materialize 后通过公开 `aw catalog status --json`，并让每个预期有效插件通过 `aw plugin validate --json`。该 preflight 不运行模型，也不代替 Oracle Audit。
 - `hostSourceAccessAbsent` 只按 app-server 事件中的显式命令、审批和文件访问输入归因。命令输出、Agent 消息、reasoning 和 diff 中的宿主路径文本不是访问证据。
+- macOS conversation provider 只使用一层 outer Seatbelt。它阻止宿主源码读取，并按 case 精确实施 workspace 只读或可写边界；turn 使用 `externalSandbox`，因为嵌套 Seatbelt 不可靠。app-server control-plane 和工具执行网络都保持可用，provider capabilities 和每次 evidence 必须公开这个限制。
 - Plan 可用可选的 `minimumEvidenceLevel` 固定最低证据要求。省略时为 `executed`；要求 `comparative` 时，默认 runner 只在 macOS/Linux 的 Full Access verified observation 或更强 external containment 下接受 grading。verified observation 必须在 bundle 中保留非 OS 强隔离限制，不能记录后代清理保证。
 - Oracle preflight、result triage 和证据准入属于 `review-agent-skill` 或发布消费侧。运行前没有 passing Audit 时不得启动模型；没有 result triage 的 bundle 只能作为原始诊断证据，不得影响 Review finding、生产 Skill 修改或发布结论。
 

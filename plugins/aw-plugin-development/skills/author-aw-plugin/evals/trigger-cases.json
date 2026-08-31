@@ -21,6 +21,13 @@
       "preconditions": {
         "target_available": true
       },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "新建 Plugin 同时涉及 AW manifest 与内部 Skill；漏接会交给无权处理 AW 组件的 owner，误接会侵占 Catalog 或通用 Skill 作者职责。"
+      },
       "oracle": {
         "rationale": "AW 插件作者意图。",
         "rule_refs": [
@@ -42,6 +49,13 @@
       "unit_under_test": "description",
       "preconditions": {
         "target_available": true
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "extension、hooks 和权限是单 Plugin 的 AW 组件；两类误路由都会跳过正确的 manifest 与适配层。"
       },
       "oracle": {
         "rationale": "AW 插件组件变更。",
@@ -65,6 +79,13 @@
       "preconditions": {
         "target_available": true
       },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "MCP/App 与 manifest 共同定义单 Plugin 组件；漏接或误接都会使 AW 特有能力落到错误 owner。"
+      },
       "oracle": {
         "rationale": "AW 插件组件变更。",
         "rule_refs": [
@@ -87,6 +108,13 @@
       "preconditions": {
         "target_available": true
       },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "slash command 与其用户文档仍是单 Plugin 变更；错误路由会遗漏组件合同或侵占相邻作者职责。"
+      },
       "oracle": {
         "rationale": "AW 插件组件变更。",
         "rule_refs": [
@@ -108,6 +136,13 @@
       "unit_under_test": "description",
       "preconditions": {
         "target_available": true
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "合法外部 Catalog Workspace 中的单 Plugin 维护与仓库位置无关；错误路由会丢失 portable 作者职责或越过 Catalog composition。"
       },
       "oracle": {
         "rationale": "目录位置不改变 AW 插件作者职责。",
@@ -132,6 +167,13 @@
       "preconditions": {
         "target_available": true
       },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "只读评审必须由 Plugin Reviewer 保持只读；误触发 Author 会把评审请求带入写入职责边界。"
+      },
       "oracle": {
         "rationale": "只读评审由 review-aw-plugin 拥有。",
         "rule_refs": [
@@ -154,6 +196,13 @@
       "unit_under_test": "description",
       "preconditions": {
         "target_available": true
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "medium",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "普通 portable Skill 不含 AW manifest；误触发 Author 会施加不适用的插件作者流程，正确 owner 是通用 Skill 作者。"
       },
       "oracle": {
         "rationale": "通用 Skill 作者拥有。",
@@ -178,6 +227,13 @@
       "preconditions": {
         "target_available": true
       },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "medium",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "仅设计 Eval 的请求由 Eval Designer 拥有；误触发 Plugin Author 会混入未授权的插件源码修改职责。"
+      },
       "oracle": {
         "rationale": "Eval Designer 拥有。",
         "rule_refs": [
@@ -201,6 +257,13 @@
       "preconditions": {
         "target_available": true
       },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "仅执行 Eval plan 是 Runner 的职责；误触发 Plugin Author 会混淆运行授权与源码维护边界。"
+      },
       "oracle": {
         "rationale": "runner 拥有执行。",
         "rule_refs": [
@@ -223,6 +286,13 @@
       "unit_under_test": "description",
       "preconditions": {
         "target_available": true
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "medium",
+        "false_negative_cost": "low",
+        "false_positive_cost": "high",
+        "rationale": "安装和使用插件属于 runtime；误触发 Plugin Author 会把消费请求错误带入源码维护流程。"
       },
       "oracle": {
         "rationale": "运行时使用不是插件开发。",

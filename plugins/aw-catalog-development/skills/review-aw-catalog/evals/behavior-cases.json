@@ -155,6 +155,54 @@
       }
     },
     {
+      "id": "degraded-workspace-remains-locatable",
+      "eval_type": "behavior",
+      "test_layer": "conversation",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "catalog-degraded-context-review",
+      "unit_under_test": "review-aw-catalog Context v3 degraded Workspace branch",
+      "preconditions": {
+        "workspace_marker_valid": true,
+        "context_health": "degraded",
+        "workspace_content_invalid": true
+      },
+      "oracle": {
+        "rationale": "Context v3 用合法 marker 定位 root 和 identity；workspace content 损坏只产生非阻断 issue，Reviewer 应在该 root 完成可得的只读检查并报告 finding。",
+        "rule_refs": [
+          "SKILL.md#工作流-1",
+          "SKILL.md#边界"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可因静态 status 失败而减少 composition 结论；必须保留 context 给出的 root/identity、报告 workspace-content finding，并保持只读。",
+        "minimal_counterexample": "若 marker 本身非法并产生 blocking workspace marker issue，则必须停止定位，不能把 suggestedRoot 当作已存在 Workspace。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "critical",
+        "rationale": "把内容损坏误作 marker 无效会丢失可用身份；把无效内容误报健康会产生错误 Review 结论。"
+      },
+      "prompt": "使用 $review-aw-catalog 只读评审当前 Catalog。Workspace marker 合法，但 metadata 损坏。使用 Context v3 已解析的 root 和 identity，报告可得证据与 workspace-content finding；不要修复、build、preflight 或修改文件。",
+      "scripted_replies": [],
+      "expected_output": "保留合法 Workspace 的 root 和 identity，报告 degraded workspace-content finding；静态 status 不可用的结论标为 unknown，并保持只读。",
+      "workspace_files": {
+        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"degraded-review-fixture\"}\n",
+        "plugins/marketplace-source.json": "{}\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "catalog context receipt 符合 schema 3，workspace.found=true、workspace.health=degraded，且 workspace-content issue 为非阻断",
+          "继续使用 receipt 的绝对 root 和 identity 做可得的只读检查，并把 metadata/status 无法证明的结论标为 unknown",
+          "没有 init、修复、plugin test/build、catalog build、status --preflight、publish 或文件修改"
+        ]
+      }
+    },
+    {
       "id": "explicit-plugin-target-keeps-workspace-b",
       "eval_type": "behavior",
       "test_layer": "conversation",
