@@ -161,7 +161,7 @@ Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在�
 
 TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 
-依赖执行顺序只在本次命令内存在。Receipt v5 与 Review 使用相同的六个插件层。它保留 requested/resolved plugin ID、dependency edge、relation、requiredBy、desired intent、target state 和恢复建议；partial 或 failed 结果不能丢失 desired intent。receipt 不公开持久计划、摘要、锁或来源内部证据。
+依赖执行顺序只在本次命令内存在。Receipt v5 与 Review 使用相同的六个插件层。它保留 requested/resolved plugin ID、dependency edge、relation、requiredBy、desired intent、target state 和恢复建议；partial 或 failed 结果不能丢失 desired intent。精确匹配的现有 shared native 公开为 `reuse`，并明确不建立 ownership ledger。receipt 不公开持久计划、摘要、锁或来源内部证据。
 
 - `install`：按当前 Catalog 安装请求插件和缺失依赖；已存在且完整的依赖使用 `keep`，不重复安装。
 - `upgrade`：按当前 Catalog 重建选择的目标和完整依赖闭包；`--all` 从 live owner 发现目标。依赖按稳定的依赖优先顺序重建。

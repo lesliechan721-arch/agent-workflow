@@ -888,19 +888,6 @@ async function executeUninstall(options: {
     );
   }
 
-  const live = inspection.components.filter((component) =>
-    component.state === 'present'
-    && isUninstallLiveOwnershipComponent(component.component));
-  if (live.length === 0) {
-    return failed(
-      'uninstall',
-      target,
-      accumulator,
-      'preflight.inspect',
-      'liveOwnershipRequired: uninstall requires at least one live owned or native component. Run cleanup to remove orphan lifecycle metadata.',
-    );
-  }
-
   const historical = restoreLifecycleActiveScriptInputs(snapshot);
   let lifecycleError: unknown;
   try {

@@ -61,6 +61,7 @@ import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
+import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -1525,8 +1526,10 @@ describe('rebuild adapter integration', () => {
     });
     const skillPaths = target.ownedComponents.flatMap((component) =>
       component.kind === 'skill-directory' && 'path' in component ? [component.path] : []);
+    const canonicalMarketplaceRoot = await canonicalizePathThroughExistingAncestor(marketplaceRoot);
     expect(skillPaths.length).toBeGreaterThan(0);
-    expect(skillPaths.every((entry) => entry.startsWith(`${marketplaceRoot}${path.sep}`))).toBe(true);
+    expect(skillPaths.every((entry) => entry.startsWith(`${canonicalMarketplaceRoot}${path.sep}`)))
+      .toBe(true);
   });
 
   it('writes platform-specific product enums to namespaced marketplace manifests', async () => {

@@ -990,20 +990,19 @@ describe('uninstall safety and dependency boundary', () => {
     expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
   });
 
-  it('does not consume a valid snapshot when no owned or native component is live', async () => {
+  it('uses a valid snapshot as live lifecycle evidence when owned components are absent', async () => {
     const fixture = createFixture();
     fixture.setActive('valid');
     const result = await executeRebuildOperation({
       command: 'uninstall', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
     });
 
-    expect(result.status).toBe('failed');
-    if (result.status === 'failed') expect(result.error.message).toContain('liveOwnershipRequired');
-    expect(fixture.log.some((entry) => entry.startsWith('lifecycle.uninstall'))).toBe(false);
-    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+    expect(result.status).toBe('succeeded');
+    expect(fixture.log).toContain('lifecycle.uninstall:1.0.0:/old/active-plugin.md');
+    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 1 });
   });
 
-  it('does not treat an empty shared marketplace cleanup component as live ownership', async () => {
+  it('preserves the snapshot when cleanup after a snapshot lifecycle leaves a residual', async () => {
     const fixture = createFixture({ requiresNative: false });
     fixture.target.ownedComponents = [{
       kind: 'shared-config',
@@ -1026,10 +1025,10 @@ describe('uninstall safety and dependency boundary', () => {
 
     expect(result).toMatchObject({
       status: 'failed',
-      error: { message: expect.stringContaining('liveOwnershipRequired') },
+      error: { message: expect.stringContaining('Ownership cleanup left residual components') },
     });
-    expect(fixture.log.some((entry) => entry.startsWith('lifecycle.uninstall'))).toBe(false);
-    expect(fixture.log).not.toContain('marketplace.remove');
+    expect(fixture.log).toContain('lifecycle.uninstall:1.0.0:/old/active-plugin.md');
+    expect(fixture.log).toContain('marketplace.remove');
     expect(fixture.log).not.toContain('active.remove');
   });
 

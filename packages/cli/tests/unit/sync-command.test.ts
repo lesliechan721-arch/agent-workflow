@@ -114,10 +114,21 @@ describe('public Codex sync command', () => {
       scope: 'project',
       all: true,
       interactive: false,
+    }, {
+      inventoryCatalogSourceReferences: vi.fn(async () => ({
+        inventorySchemaVersion: 1,
+        references: [{
+          kind: 'namespacedMarketplace',
+          location: '/aw/marketplaces/official/config.json',
+          sourceId: 'official',
+          marketplaceName: 'aw',
+        }],
+        errors: [],
+      })),
     });
 
     expect(mockedInstall).toHaveBeenCalledWith(
-      ['leaf', 'root'],
+      ['official/leaf', 'official/root'],
       expect.objectContaining({ platform: 'codex', scope: 'project' }),
       expect.objectContaining({ reconcileIntentOnly: true }),
     );
@@ -154,5 +165,126 @@ describe('public Codex sync command', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).resolves.toEqual(intent);
+  });
+
+  it('uses the current primary name only when no live canonical mapping exists', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'official/demo',
+      platforms: ['codex'],
+    });
+    intent = widenPluginIntentManagedCodexOwnership(intent, ['demo@aw']);
+    await writePluginIntentState({
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }, intent);
+
+    await syncCommand([], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      all: true,
+      interactive: false,
+    }, {
+      inventoryCatalogSourceReferences: vi.fn(async () => ({
+        inventorySchemaVersion: 1,
+        references: [],
+        errors: [],
+      })),
+    });
+
+    expect(mockedInstall).toHaveBeenCalledWith(
+      ['official/demo'],
+      expect.objectContaining({ platform: 'codex', scope: 'project' }),
+      expect.objectContaining({ reconcileIntentOnly: true }),
+    );
+  });
+
+  it('rejects a rootless managed identity with an ambiguous canonical marketplace source mapping', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    await writePluginIntentState({
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }, widenPluginIntentManagedCodexOwnership(
+      createEmptyPluginIntentState(),
+      ['demo@unknown'],
+    ));
+
+    await expect(syncCommand([], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      all: true,
+      interactive: false,
+    }, {
+      inventoryCatalogSourceReferences: vi.fn(async () => ({
+        inventorySchemaVersion: 1,
+        references: [
+          {
+            kind: 'namespacedMarketplace',
+            location: '/aw/marketplaces/first/config.json',
+            sourceId: 'first',
+            marketplaceName: 'unknown',
+          },
+          {
+            kind: 'namespacedMarketplace',
+            location: '/aw/marketplaces/second/config.json',
+            sourceId: 'second',
+            marketplaceName: 'unknown',
+          },
+        ],
+        errors: [],
+      })),
+    })).rejects.toMatchObject({ code: 'syncManagedIdentityUnresolved' });
+
+    expect(mockedInstall).not.toHaveBeenCalled();
+  });
+
+  it('rejects multiple live marketplace identities for one desired source', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'official/demo',
+      platforms: ['codex'],
+    });
+    intent = widenPluginIntentManagedCodexOwnership(intent, ['demo@aw']);
+    await writePluginIntentState({
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }, intent);
+
+    await expect(syncCommand([], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      all: true,
+      interactive: false,
+    }, {
+      inventoryCatalogSourceReferences: vi.fn(async () => ({
+        inventorySchemaVersion: 1,
+        references: [
+          {
+            kind: 'namespacedMarketplace',
+            location: '/aw/marketplaces/official/config.json',
+            sourceId: 'official',
+            marketplaceName: 'aw',
+          },
+          {
+            kind: 'namespacedMarketplace',
+            location: '/aw/marketplaces/official/config.json',
+            sourceId: 'official',
+            marketplaceName: 'aw-official',
+          },
+        ],
+        errors: [],
+      })),
+    })).rejects.toMatchObject({ code: 'syncManagedIdentityUnresolved' });
+
+    expect(mockedInstall).not.toHaveBeenCalled();
   });
 });

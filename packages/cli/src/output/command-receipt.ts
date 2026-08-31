@@ -89,6 +89,8 @@ export interface RebuildReceiptSharedNativeEntry {
   desiredVersion: string;
   shared: true;
   sharedImpact: boolean;
+  reusedExistingExactNative?: true;
+  ownershipLedgerCreated?: false;
   warning?: string;
 }
 
@@ -105,6 +107,14 @@ export interface RebuildReceiptExtensionEntry {
   kind: string;
   scope: Scope;
   action: 'write' | 'remove';
+}
+
+export function requestedIntentAction(
+  command: RebuildReceiptJson['command'],
+): 'add' | 'remove' | 'keep' {
+  if (command === 'install') return 'add';
+  if (command === 'uninstall') return 'remove';
+  return 'keep';
 }
 
 function receiptLayers(
@@ -127,7 +137,7 @@ function receiptLayers(
         platform: target.platform,
         scope: target.resolvedScope,
         relation: target.relation,
-        action: target.action,
+        action: requestedIntentAction(command),
         requiredBy: target.requiredBy,
       }))
     : directTargets.map((target): RebuildReceiptIntentEntry => ({
@@ -135,7 +145,7 @@ function receiptLayers(
         platform: target.platform,
         scope: target.scope,
         relation: 'requested',
-        action: command,
+        action: requestedIntentAction(command),
         requiredBy: [],
       }));
   const codexPlans = result.codexReconcilePlans ?? [];
@@ -145,10 +155,14 @@ function receiptLayers(
     sharedCodexNative: codexPlans.flatMap((plan) => plan.sharedNativeActions.map((entry) => ({
       pluginId: entry.pluginId,
       codexPluginId: entry.codexPluginId,
-      action: entry.action,
+      action: entry.action === 'claim' ? 'reuse' : entry.action,
       desiredVersion: entry.desiredVersion,
       shared: true as const,
       sharedImpact: entry.affectsOtherScopes,
+      ...(entry.action === 'claim' ? {
+        reusedExistingExactNative: true as const,
+        ownershipLedgerCreated: false as const,
+      } : {}),
       ...(entry.affectsOtherScopes ? {
         warning: plan.review.sharedImpact.warning
           ?? 'This shared Codex native action can affect other projects.',
@@ -175,6 +189,11 @@ function receiptLayers(
 
 function recoveryForTarget(status: RebuildResult['status'], errorCode?: string): string[] {
   if (status === 'succeeded') return [];
+  if (errorCode === 'codexProjectPluginVersionTooLow'
+    || errorCode === 'codexProjectPluginUnsupported'
+    || errorCode === 'codexSystemCliUnsupported') {
+    return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
+  }
   if (errorCode === 'sourceMissing' || errorCode === 'catalogSourceUnavailable'
     || errorCode === 'codexIntentSourceUnavailable') {
     return ['refresh the Catalog source and run sync', 'run cleanup for AW-owned residue'];
@@ -210,6 +229,11 @@ function rebuildErrorCode(message: string): string {
 }
 
 function earlyFailureRecovery(command: RebuildReceiptJson['command'], errorCode?: string): string[] {
+  if (errorCode === 'codexProjectPluginVersionTooLow'
+    || errorCode === 'codexProjectPluginUnsupported'
+    || errorCode === 'codexSystemCliUnsupported') {
+    return ['upgrade or repair the official system Codex CLI, then retry the original operation'];
+  }
   if (errorCode === 'syncSelectorConflict') {
     return ['remove either plugin selectors or --all, then rerun sync'];
   }
@@ -333,6 +357,9 @@ export function renderRebuildReceipt(
     `User activation：${receipt.layers.userActivation.length} 项。`,
     `Project activation：${receipt.layers.projectActivation.length} 项。`,
     `AW extensions：${receipt.layers.awExtensions.length} 项。`,
+    ...receipt.layers.sharedCodexNative.flatMap((entry) => entry.reusedExistingExactNative
+      ? [`${entry.codexPluginId}：复用已存在的精确 shared native；不建立 ownership ledger。`]
+      : []),
     ...receipt.layers.sharedCodexNative.flatMap((entry) => entry.warning
       ? [`警告：${entry.codexPluginId}：${entry.warning}`]
       : []),

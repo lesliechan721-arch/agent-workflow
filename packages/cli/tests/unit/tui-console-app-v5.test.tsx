@@ -3,7 +3,10 @@ import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
-import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
+import {
+  createDependencyPlacementPlan,
+  type DependencyOperationPlan,
+} from '../../src/commands/dependency-operation-plan.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   CONSOLE_V4_SCREEN_IDS,
@@ -1426,6 +1429,7 @@ describe('ConsoleAppV4', () => {
       expect(frame).toMatch(/› ● (所有项目|当前项目)/u);
       expect(frame).not.toContain('继续');
       expect(frame).not.toContain('调整目标平台');
+      expect(frame).not.toContain('根插件和缺失依赖使用同一个位置');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame).toContain('↑↓ 移动');
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
@@ -2464,7 +2468,12 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview).toMatchObject({
       pluginAction: 'install',
       subject: { sourceLabel: 'official' },
-      changes: [{ title: 'Claude Code · 所有项目' }],
+      changes: expect.arrayContaining([
+        expect.objectContaining({
+          group: 'userIntent', pluginId: 'official/agent-lab', kind: 'add',
+        }),
+        expect.objectContaining({ group: 'requested', title: 'Claude Code · 所有项目' }),
+      ]),
     });
   });
 
@@ -4346,8 +4355,11 @@ describe('ConsoleAppV4', () => {
     const placement = render(<ConsoleAppV4 controller={available} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => availableScreens.add(screen)} />);
     await nextTurn(2);
     expect(availableScreens).toContain('D03');
-    expect(placement.lastFrame()).toContain('依赖处理');
-    expect(placement.lastFrame()).toContain('依赖会复用现有安装');
+    expect(placement.lastFrame()).toContain('依赖位置');
+    expect(placement.lastFrame()).toContain('依赖将在下一步单独确认');
+    expect(placement.lastFrame()).toContain('这里只选择根插件位置');
+    expect(placement.lastFrame()).toContain('依赖可以在下一步单独调整');
+    expect(placement.lastFrame()).not.toContain('缺失依赖使用同一个位置');
     expect(placement.lastFrame()?.match(/›/gu)).toHaveLength(1);
     placement.unmount();
 
@@ -4463,6 +4475,89 @@ describe('ConsoleAppV4', () => {
     });
   });
 
+  it('mounts a legal user install when a dependency currently exists only in project scope', async () => {
+    const loaded = dependencyLoadResult();
+    for (const entry of loaded.payload.targets.filter((target) =>
+      target.pluginId === 'official/skill-toolkit' && target.platform === 'codex')) {
+      entry.state = entry.scope === 'project' ? 'present' : 'absent';
+    }
+    const rootOverview = loaded.dependencyOverviews?.find((entry) =>
+      entry.pluginId === 'official/agent-lab');
+    const installedDependency = rootOverview?.dependencies.find((entry) =>
+      entry.pluginId === 'official/skill-toolkit');
+    if (installedDependency) {
+      installedDependency.placements = [{
+        platform: 'codex', state: 'installed', scope: 'project', health: 'ready',
+      }];
+      installedDependency.aggregateStatus = 'ready';
+    }
+    const planFor = (intent: Extract<OperationIntent, { kind: 'pluginWrite' }>) =>
+      createDependencyPlacementPlan({
+        requestedPluginIds: ['official/agent-lab'],
+        operation: 'install',
+        roots: [{ pluginId: 'official/agent-lab', platform: 'codex', scope: intent.scope }],
+        dependencyEdges: [
+          { from: 'official/agent-lab', to: 'official/skill-toolkit', platform: 'codex' },
+          { from: 'official/skill-toolkit', to: 'official/content-toolkit', platform: 'codex' },
+        ],
+        scopeOverrides: intent.dependencyScopeOverrides,
+        nodes: [
+          {
+            pluginId: 'official/agent-lab', pluginName: 'Agent Lab', platform: 'codex',
+            relation: 'requested', depth: 0, allowedScopes: ['project', 'user'],
+            current: { project: 'absent', user: 'absent' },
+          },
+          {
+            pluginId: 'official/skill-toolkit', pluginName: 'Agent Skill Toolkit', platform: 'codex',
+            relation: 'dependency', depth: 1, allowedScopes: ['project', 'user'],
+            current: { project: 'present', user: 'absent' },
+          },
+          {
+            pluginId: 'official/content-toolkit', pluginName: 'Agent Content Toolkit', platform: 'codex',
+            relation: 'dependency', depth: 2, allowedScopes: ['project', 'user'],
+            current: { project: 'absent', user: 'present' },
+          },
+        ],
+      });
+    const previewDependencyPlacement = vi.fn(async (intent: Extract<OperationIntent, { kind: 'pluginWrite' }>) =>
+      planFor(intent));
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      previewDependencyPlacement,
+      captureEvidence: vi.fn(async (intent) => ({
+        ...evidence,
+        dependencyPlan: planFor(intent as Extract<OperationIntent, { kind: 'pluginWrite' }>),
+      })),
+    });
+    await value.load();
+    value.beginInstallFlow('official/agent-lab', 'user');
+    value.push({ name: 'installTargets', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(value.listInstallTargets('official/agent-lab', 'user')).toContainEqual({
+      platform: 'codex', compatible: true,
+    });
+    expect(instance.lastFrame()).toContain('› ◇ Codex');
+    expect(instance.lastFrame()).not.toContain('只在当前项目可用');
+    await input(instance, '\r', '\u001B[B', '\r');
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(planFor({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab',
+      platform: 'codex', scope: 'user',
+    }).targets).toContainEqual(expect.objectContaining({
+      pluginId: 'official/skill-toolkit',
+      resolvedScope: 'user',
+      action: 'move',
+    }));
+    expect(value.snapshot.activeReview?.changes).toContainEqual(expect.objectContaining({
+      pluginId: 'official/skill-toolkit', group: 'userIntent', kind: 'add',
+    }));
+    expect(instance.lastFrame()).toContain('skill-toolkit');
+  });
+
   it.each([[60, 18], [80, 24]] as const)(
     'keeps a long dependency placement list, current focus, actions, and HelpBar visible at %ix%i',
     async (columns, rows) => {
@@ -4537,6 +4632,14 @@ describe('ConsoleAppV4', () => {
       target.pluginId === 'official/agent-lab')) {
       entry.state = entry.platform === 'codex' && entry.scope === 'project' ? 'present' : 'absent';
     }
+    for (const entry of loaded.payload.targets.filter((target) =>
+      target.pluginId === 'official/skill-toolkit' && target.platform === 'codex')) {
+      entry.state = 'present';
+      entry.desired = { enabled: true, scopes: ['user'], relation: 'dependency' };
+      entry.actual = { state: 'ready' };
+      entry.sharedNative = { pluginId: 'skill-toolkit@aw-official', state: 'present', shared: true };
+      entry.activation = { user: true, project: true, effective: true, evidence: 'observed' };
+    }
     const planFor = (intent: Extract<OperationIntent, { kind: 'pluginWrite' }>): DependencyOperationPlan => {
       const selected = intent.dependencyScopeOverrides?.find((entry) =>
         entry.pluginId === 'official/skill-toolkit' && entry.platform === 'codex')?.scope;
@@ -4561,7 +4664,7 @@ describe('ConsoleAppV4', () => {
             locked: selected !== undefined,
             ...(selected ? { lockReason: 'dependencyScopeOverride' } : {}),
             affectsOtherProjects: resolvedScope === 'user', state: 'present',
-            action: resolvedScope === 'project' ? 'move' : 'keep', order: 0,
+            action: 'keep', order: 0,
           },
           {
             pluginId: 'official/agent-lab', pluginName: 'Agent Lab', platform: 'codex',
@@ -4651,6 +4754,39 @@ describe('ConsoleAppV4', () => {
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     await input(instance, '\r');
     expect(executeIntent).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['install', 'keep', 'add'],
+    ['uninstall', 'keep', 'remove'],
+    ['upgrade', 'move', 'keep'],
+    ['reinstall', 'move', 'keep'],
+    ['sync', 'move', 'keep'],
+  ] as const)('mounts %s Review intent rows from the command desired action when targets %s', async (
+    action,
+    targetAction,
+    expectedKind,
+  ) => {
+    const plan = placementPlanFor({ platform: 'codex', scope: 'project' });
+    plan.targets = plan.targets.map((entry) => ({ ...entry, action: targetAction }));
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+      captureEvidence: vi.fn().mockResolvedValue({ ...evidence, dependencyPlan: plan }),
+    });
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'pluginWrite', action, pluginId: 'official/agent-lab',
+      platform: 'codex', scope: 'project',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    const intentRows = value.snapshot.activeReview?.changes.filter((change) =>
+      change.group === 'projectIntent' || change.group === 'userIntent') ?? [];
+
+    expect(intentRows.length).toBeGreaterThan(0);
+    expect(intentRows.every((change) => change.kind === expectedKind)).toBe(true);
+    expect(instance.lastFrame()).toContain(action === 'uninstall' ? '移除插件' : 'Project intent');
+    instance.unmount();
   });
 
   it.each([[60, 18], [80, 24]] as const)(
@@ -4799,13 +4935,14 @@ describe('ConsoleAppV4', () => {
   it.each([
     ['user', 'project', '\u001B[B'],
     ['project', 'user', ''],
-  ] as const)('adds a second pure-native scope from %s to %s without reinstalling shared native', async (
+  ] as const)('adds a second pure-native scope from %s to %s by reusing exact shared native', async (
     enabledScope,
     addedScope,
     scopeKey,
   ) => {
     const loaded = loadResult();
     loaded.pluginSummaries = [loaded.pluginSummaries[0]!];
+    loaded.pluginSummaries[0]!.supportedTargets = { codex: ['user', 'project'], claude: [] };
     loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
     loaded.payload.targets = [{
       pluginName: 'agent-lab',
@@ -4836,7 +4973,7 @@ describe('ConsoleAppV4', () => {
       sharedNativeActions: [{
         pluginId: 'official/agent-lab',
         codexPluginId: 'agent-lab@aw-official',
-        action: 'reuse',
+        action: 'claim',
         desiredVersion: '0.4.2',
         affectsOtherScopes: false,
       }],
@@ -4891,13 +5028,16 @@ describe('ConsoleAppV4', () => {
     expect(reviewFrame).toContain('Shared Codex native');
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        group: 'sharedCodexNative', kind: 'keep', description: 'reuse · shared',
+        group: 'sharedCodexNative', kind: 'keep',
+        description: '复用已存在的精确 shared native；不建立 ownership ledger',
       }),
       expect.objectContaining({
         group: addedScope === 'user' ? 'userActivation' : 'projectActivation',
         kind: 'change', description: 'desired=true · enable',
       }),
     ]));
+    expect(reviewFrame).toContain('复用精确现有 shared native（不建立 ledger）');
+    expect(reviewFrame).not.toContain('claim');
     expect(reviewFrame).not.toContain('install · shared');
 
     await confirmReview(instance, value);
@@ -5175,10 +5315,9 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
 
     await input(instance, 'd');
-    const technicalIndex = category === 'dependencyStillRequired' ? 2
-      : category === 'dependencyTargetUnsupported' ? 2
-        : issue.actions.findIndex((action) => action.id === 'viewTechnical');
-    for (let index = 0; index < technicalIndex; index += 1) await input(instance, '\u001B[B');
+    for (let index = 0; index < 8 && !instance.lastFrame()?.includes('› 技术详情'); index += 1) {
+      await input(instance, '\u001B[B');
+    }
     expect(instance.lastFrame()).toContain('› 技术详情');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain(category);
@@ -5348,7 +5487,7 @@ describe('ConsoleAppV4', () => {
     }), expect.any(AbortSignal));
   });
 
-  it('recomputes target availability after status refresh changes the selected scope support', async () => {
+  it('keeps a target available when refresh requires promoting a dependency to user scope', async () => {
     const permissive = dependencyLoadResult();
     const restricted = structuredClone(permissive);
     restricted.payload.targets = restricted.payload.targets.filter((target) => !(
@@ -5372,8 +5511,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
 
     expect(screens).toContain('D04');
-    expect(instance.lastFrame()).toContain('所选目标平台不可用');
-    expect(instance.lastFrame()).toContain('Agent Skill Toolkit 不支持所选位置');
+    expect(instance.lastFrame()).toContain('◆ Codex');
+    expect(instance.lastFrame()).not.toContain('所选目标平台不可用');
+    expect(instance.lastFrame()).not.toContain('Agent Skill Toolkit 不支持所选位置');
     expect(captureEvidence).not.toHaveBeenCalled();
   });
 

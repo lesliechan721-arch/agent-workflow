@@ -472,14 +472,12 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
   const relatedBeforeIds = canonicalStrings(
     input.relatedIntentBefore?.managed.codexPluginIds ?? [],
   );
-  const nativeReconciledPluginNames = new Set(sortedTargets.flatMap((target) =>
-    target.surface.nativeKinds.length > 0 ? [target.pluginName] : []));
-  const reconciledPluginNames = new Set(sortedTargets.map((target) => target.pluginName));
-  const managedPluginName = (codexPluginId: string): string =>
-    codexPluginId.slice(0, codexPluginId.lastIndexOf('@'));
+  const nativeReconciledPluginIds = new Set(sortedTargets.flatMap((target) =>
+    target.surface.nativeKinds.length > 0 ? [target.codexPluginId] : []));
+  const reconciledPluginIds = new Set(sortedTargets.map((target) => target.codexPluginId));
   const staleActivationRemovals = canonicalStrings(
     [...beforeIds, ...relatedBeforeIds].filter((pluginId) =>
-      nativeReconciledPluginNames.has(managedPluginName(pluginId))
+      nativeReconciledPluginIds.has(pluginId)
       && !actualDesiredIds.includes(pluginId)),
   ).flatMap((codexPluginId) => [
     { scope: 'user' as const, codexPluginId },
@@ -498,13 +496,13 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
   const ownershipSuperset = canonicalStrings([...beforeIds, ...desiredIds]);
   const convergedIds = canonicalStrings([
     ...beforeIds.filter((pluginId) =>
-      !reconciledPluginNames.has(managedPluginName(pluginId))),
+      !reconciledPluginIds.has(pluginId)),
     ...desiredIds,
   ]);
   const relatedOwnershipSuperset = canonicalStrings([...relatedBeforeIds, ...relatedDesiredIds]);
   const relatedConvergedIds = canonicalStrings([
     ...relatedBeforeIds.filter((pluginId) =>
-      !reconciledPluginNames.has(managedPluginName(pluginId))),
+      !reconciledPluginIds.has(pluginId)),
     ...relatedDesiredIds,
   ]);
   const evidenceDescriptor = {

@@ -859,8 +859,11 @@ export function resolveConsoleV4ScreenId(
     return 'P16';
   }
   if (route.name === 'reviewPreparing') return snapshot.reviewPreparation?.intent.kind === 'catalogActivate' ? 'K03' : 'P07';
+  if (route.name === 'review' && snapshot.activeReview?.originIssue) return 'I10';
   const dependencyOperation = snapshot.activeReview?.operationKind === 'pluginWrite'
-    && Boolean(snapshot.activeReview.changes.some((change) => change.group));
+    && Boolean(snapshot.activeReview.changes.some((change) =>
+      change.relation === 'direct' || change.relation === 'transitive'
+      || change.group === 'dependencies'));
   if (route.name === 'review' && dependencyOperation) {
     return snapshot.activeReview?.pluginAction === 'uninstall' || snapshot.activeReview?.pluginAction === 'cleanup'
       ? 'D11' : 'D05';
@@ -875,7 +878,6 @@ export function resolveConsoleV4ScreenId(
       return snapshot.result.state === 'succeeded' ? 'D07' : 'D08';
     }
   }
-  if (route.name === 'review' && snapshot.activeReview?.originIssue) return 'I10';
   if (route.name === 'progress' && snapshot.activeReview?.originIssue) return 'I11';
   if (route.name === 'result' && snapshot.result?.originIssue) {
     return snapshot.result.state === 'succeeded' ? 'I12' : 'I13';
@@ -2407,25 +2409,20 @@ export function ConsoleAppV4(props: {
     breadcrumb = `${plugin.displayName} / 添加`;
     context = '第 1 步，共 2 步';
     title = `你希望在哪里使用 ${plugin.displayName}？`;
-    const overview = dependencyOverview(plugin);
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
-      ? '根插件和缺失依赖使用同一个位置；健康的所有项目依赖可在当前项目复用。'
+      ? '这里只选择根插件位置。依赖可以在下一步单独调整；依赖不能比根插件位置更窄。'
       : '选择位置后，再选择一个或多个目标平台。';
     const availableScopes = (['user', 'project'] as const).filter((candidateScope) =>
       props.controller.listInstallTargets(plugin.pluginId, candidateScope)
         .some((entry) => entry.compatible));
-    const reusableDependencies = overview?.dependencies.filter((dependency) => dependency.placements.some((placement) =>
-      placement.state === 'installed' && placement.health === 'ready'
-        && (scope === 'project' || placement.scope === 'user'))).length ?? 0;
-    const missingDependencies = Math.max(0, (overview?.summary.totalCount ?? 0) - reusableDependencies);
     actions = [
       ...availableScopes.map((candidateScope) => ({
         label: scopeLabel(candidateScope),
         selected: candidateScope === scope,
         description: candidateScope === 'user'
-          ? hasDependencies ? '根插件和缺失依赖都可在任意项目中使用' : '在任意项目中可使用，适合个人常用能力'
-          : hasDependencies ? '缺失依赖添加到当前项目；已有所有项目依赖会复用' : '仅在当前项目中使用，适合团队共享',
+          ? hasDependencies ? '根插件在任意项目中可用；依赖位置下一步确认' : '在任意项目中可使用，适合个人常用能力'
+          : hasDependencies ? '根插件只在当前项目使用；依赖可单独调整为所有项目' : '仅在当前项目中使用，适合团队共享',
         meta: candidateScope === 'user' ? '推荐' : undefined,
         run: () => {
           const choices = props.controller.listInstallTargets(plugin.pluginId, candidateScope);
@@ -2450,7 +2447,7 @@ export function ConsoleAppV4(props: {
     ];
     content = <Box flexDirection="column">
       <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
-      {hasDependencies ? <SectionCard title="依赖处理"><StaticRow title={`${reusableDependencies} 个依赖会复用现有安装`} status={reusableDependencies > 0 ? 'success' : 'muted'} /><StaticRow title={`${missingDependencies} 个依赖将安装到所选位置`} status={missingDependencies > 0 ? 'info' : 'muted'} /></SectionCard> : null}
+      {hasDependencies ? <SectionCard title="依赖位置"><StaticRow title={`${plugin.dependencySummary?.totalCount ?? 0} 个依赖将在下一步单独确认`} status="info" /></SectionCard> : null}
     </Box>;
   } else if (route.name === 'installTargets' && plugin) {
     breadcrumb = `${plugin.displayName} / 添加 / 目标平台`;
@@ -2458,7 +2455,7 @@ export function ConsoleAppV4(props: {
     title = '选择目标平台';
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
-      ? '只有根插件和所有依赖都支持所选位置的目标平台才可选择。'
+      ? '根插件必须支持所选位置；每个依赖必须至少有一个合法位置。'
       : '目标平台按所选位置验证；仅含 Codex native 的插件可同时启用两个位置。';
     const choices = props.controller.listInstallTargets(plugin.pluginId, scope);
     const validSelectedTargets = selectedTargets.filter((platform) =>

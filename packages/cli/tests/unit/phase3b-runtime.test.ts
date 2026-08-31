@@ -204,6 +204,85 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: nestedSkillMarker }));
   });
 
+  it('limits ordinary Codex residue inventory to exact source and plugin identities', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const marketplacesRoot = path.join(isolation.env.AW_HOME!, 'marketplaces');
+    const roots = {
+      team: path.join(marketplacesRoot, 'team'),
+      unrelated: path.join(marketplacesRoot, 'unrelated'),
+    };
+    await Promise.all(Object.entries(roots).flatMap(([sourceId, root]) => {
+      const marketplaceName = `aw-${sourceId}`;
+      return [
+        fs.outputJson(path.join(root, 'config.json'), {
+          schemaVersion: 2,
+          sourceId,
+          sourceIdentity: SOURCE_IDENTITY,
+          marketplaceName,
+        }),
+        fs.outputJson(path.join(root, '.agents', 'plugins', 'marketplace.json'), {
+          name: marketplaceName,
+          plugins: [],
+        }),
+        fs.outputJson(path.join(root, '.claude-plugin', 'marketplace.json'), {
+          name: marketplaceName,
+          plugins: [],
+        }),
+      ];
+    }));
+    await fs.outputFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
+      '[marketplaces.aw-team]',
+      `source = ${JSON.stringify(roots.team)}`,
+      'source_type = "local"',
+      '[marketplaces.aw-unrelated]',
+      `source = ${JSON.stringify(roots.unrelated)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    await fs.outputJson(path.join(
+      isolation.env.AW_CODEX_HOME!,
+      'plugins',
+      'cache',
+      'aw-team',
+      'demo',
+      '1.0.0',
+      'plugin.json',
+    ), { name: 'demo', version: '1.0.0' });
+    const outside = path.join(isolation.layout.rootDir, 'unrelated-cache-outside');
+    await fs.ensureDir(outside);
+    await fs.ensureDir(path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache'));
+    await fs.symlink(
+      outside,
+      path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw-unrelated'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const ordinary = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      codexNativeResidueTargets: [{ sourceId: 'team', pluginName: 'demo' }],
+    });
+    expect(ordinary.errors).toEqual([]);
+    expect(ordinary.references).toContainEqual(expect.objectContaining({
+      kind: 'namespacedMarketplace',
+      sourceId: 'team',
+      pluginName: 'demo',
+      marketplaceName: 'aw-team',
+      platform: 'codex',
+      scope: 'user',
+    }));
+
+    const orphanCleanup = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      includeOrphanedCodexNativeResidue: true,
+    });
+    expect(orphanCleanup.errors).toContainEqual(expect.objectContaining({
+      kind: 'nativeStateRead',
+      relevance: expect.objectContaining({ sourceId: 'unrelated', platform: 'codex' }),
+    }));
+  });
+
   it('stores config below separate source/plugin segments and validates source identity', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const options = {
@@ -649,10 +728,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(1);
     expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
-      targets: expect.arrayContaining([expect.objectContaining({
-        pluginId: 'team/demo',
-        errors: [expect.objectContaining({ code: 'sourceMissing' })],
-      })]),
+      targets: [],
     });
     const calls: string[] = [];
     const result = await cleanupWriteCommand(['team/demo'], {
@@ -784,9 +860,7 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
     });
     expect(inventory.references).toEqual([]);
-    expect(inventory.errors).toEqual([
-      expect.objectContaining({ kind: 'ownerHeaderParse' }),
-    ]);
+    expect(inventory.errors).toEqual([]);
     expect(JSON.stringify(inventory.errors)).not.toContain(isolation.layout.fixtureCwd);
   });
 
@@ -1348,6 +1422,27 @@ describe('phase 3B namespaced runtime stores', () => {
         platform: 'codex',
         scope: 'project',
       }),
+      ...[
+        path.join(isolation.layout.fixtureCwd, '.codex', 'rules', 'aw-demo-rule.md'),
+        path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-demo-role.toml'),
+        path.join(isolation.layout.fixtureCwd, '.agents', 'rules', 'demo-rule.md'),
+        path.join(isolation.layout.fixtureCwd, '.agents', 'agents', 'demo-role.md'),
+        path.join(isolation.layout.fixtureCwd, '.codex', 'AGENTS.md'),
+      ].map((filePath) => fs.outputFile(filePath, renderOwnedTextFile('legacy project output\n', {
+        owner: 'agent-workflows',
+        plugin: 'demo',
+        artifactKey: path.basename(filePath, path.extname(filePath)).toLowerCase(),
+        platform: 'codex',
+        scope: 'project',
+      }))),
+      fs.outputFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'), [
+        'developer_instructions = """',
+        '[[aw-managed:start plugin="demo" kind="developer_instructions"]]',
+        'Legacy project instructions.',
+        '[[aw-managed:end plugin="demo"]]',
+        '"""',
+        '',
+      ].join('\n')),
     ]);
     const claudeOutput = createCapturedCliIo();
     expect(await runCli([

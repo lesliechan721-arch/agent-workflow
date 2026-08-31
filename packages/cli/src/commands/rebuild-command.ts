@@ -90,6 +90,7 @@ import {
   resolveRepoRootSync,
 } from '../utils/state-paths.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import {
   canonicalizePluginIntentState,
   convergePluginIntentManagedCodexOwnership,
@@ -228,6 +229,7 @@ export interface RebuildCommandResult {
   dependencyPlan?: DependencyOperationPlan;
   codexReconcilePlans?: CodexReconcilePlan[];
   codexManagerPreview?: CodexManagerPreview;
+  offlineCleanupPlans?: OfflineCleanupTargetEvidence[];
 }
 
 export interface RebuildCommandTestHooks {
@@ -736,6 +738,9 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
     ...(results.find((result) => result.codexManagerPreview)?.codexManagerPreview
       ? { codexManagerPreview: results.find((result) => result.codexManagerPreview)!.codexManagerPreview }
       : {}),
+    ...(results.some((result) => result.offlineCleanupPlans !== undefined)
+      ? { offlineCleanupPlans: results.flatMap((result) => result.offlineCleanupPlans ?? []) }
+      : {}),
   };
 }
 
@@ -1017,6 +1022,7 @@ async function discoverDamagedExclusiveCleanupTargets(options: {
 
 async function cleanupOfflineOwnedComponents(options: {
   targets: LiveCleanupTarget[];
+  evidence?: OfflineCleanupTargetEvidence[];
   cwd: string;
   env: NodeJS.ProcessEnv;
   force: boolean;
@@ -1048,6 +1054,28 @@ async function cleanupOfflineOwnedComponents(options: {
     loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
   });
   for (const target of options.targets) {
+    const evidence = options.evidence?.find((candidate) =>
+      candidate.pluginId === target.pluginId
+      && candidate.sourceIdentity === target.sourceIdentity
+      && candidate.platform === target.platform
+      && candidate.scope === target.scope);
+    const activationAction = target.platform === 'codex'
+      ? evidence?.plan.actions.find((action) =>
+          action.action === 'removeNativeRegistration'
+          && action.activationScope === target.scope)
+      : undefined;
+    let activationDisposition: 'remove' | 'disable' = 'remove';
+    if (activationAction && target.scope === 'user') {
+      const projectIntent = await readPluginIntentState({
+        scope: 'project',
+        cwd: options.cwd,
+        env: options.env,
+      });
+      const remainsDesired = projectIntent.roots.some((root) =>
+        root.pluginId === target.pluginId && root.platforms.includes('codex'))
+        || projectIntent.managed.codexPluginIds.includes(activationAction.target);
+      if (remainsDesired) activationDisposition = 'disable';
+    }
     const exclusiveRecovery: CleanupResult = {
       removed: [], absent: [], residual: [], quarantined: [], failures: [],
     };
@@ -1127,6 +1155,16 @@ async function cleanupOfflineOwnedComponents(options: {
           }
         : {}),
       includeNativeCleanupCandidate: target.nativeRegistration === true,
+      ...(activationAction
+        ? {
+            codexActivationCleanup: [{
+              codexPluginId: activationAction.target,
+              scope: activationAction.activationScope!,
+              disposition: activationDisposition,
+            }],
+            preserveCodexSharedNativePayload: true,
+          }
+        : {}),
     });
     let result = await executeRebuildOperation({
       command: 'cleanup',
@@ -1147,7 +1185,13 @@ async function cleanupOfflineOwnedComponents(options: {
       .filter((entry) => !removed.includes(entry));
     result = {
       ...result,
-      removed,
+      removed: result.status === 'succeeded' && evidence
+        ? [...new Set([
+            ...removed,
+            ...evidence.plan.actions.flatMap((action) =>
+              action.action === 'removeLifecycleSnapshot' ? [action.target] : []),
+          ])]
+        : removed,
       absent,
       residual: [...new Set([...result.residual, ...exclusiveResidual])],
       quarantined: [...new Set([...result.quarantined, ...exclusiveQuarantined])],
@@ -1189,11 +1233,13 @@ async function cleanupOfflineOwnedComponents(options: {
       platform: result.target.platform,
       scope: result.target.scope,
     })),
+    ...(options.evidence ? { offlineCleanupPlans: options.evidence } : {}),
   });
 }
 
 async function previewOfflineOwnedComponents(options: {
   targets: LiveCleanupTarget[];
+  evidence?: OfflineCleanupTargetEvidence[];
   cwd: string;
   env: NodeJS.ProcessEnv;
   nativeCliRunner?: NativeCliRunner;
@@ -1208,6 +1254,7 @@ async function previewOfflineOwnedComponents(options: {
   }
   await options.onPreviewStage?.('inventory');
   const preview = mergeRebuildCommandResults([]);
+  if (options.evidence) preview.offlineCleanupPlans = options.evidence;
   await options.onPreviewStage?.('dependencyPlan');
   return preview;
 }
@@ -1272,6 +1319,20 @@ export async function runRebuildCommand(options: {
       () => readInventory({
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
+        ...(options.command === 'cleanup' && options.all
+          ? { includeOrphanedCodexNativeResidue: true }
+          : {}),
+        ...(options.command === 'cleanup' && !options.all
+          ? {
+              codexNativeResidueTargets: options.pluginNames.map((selector) => {
+                const parsed = parsePluginId(selector);
+                return {
+                  pluginName: parsed.pluginName,
+                  ...(parsed.sourceId ? { sourceId: parsed.sourceId } : {}),
+                };
+              }),
+            }
+          : {}),
       }),
     );
     return ordinaryInventory;
@@ -2113,6 +2174,7 @@ export async function runRebuildCommand(options: {
       };
       const createCodexPlans = async (
         plan: DependencyOperationPlan,
+        activationSupport: 'observed' | 'assumed' = 'observed',
       ): Promise<CodexReconcilePlan[]> => {
         const codexTargets = plan.targets.filter((target) => target.platform === 'codex');
         const selectedRoots = selectedRootsForPlan(plan);
@@ -2344,6 +2406,7 @@ export async function runRebuildCommand(options: {
           relatedIntentAfter: afterByScope[otherScope],
           catalogClosure,
           liveEvidence,
+          activationSupport,
         })];
       };
       const operationNeedsNativeCli = async (
@@ -2411,7 +2474,30 @@ export async function runRebuildCommand(options: {
               () => createPlan(stateInventory),
             )
           : undefined;
-        const initialCodexPlans = initialPlan ? await createCodexPlans(initialPlan) : [];
+        const provisionalCodexPlans = initialPlan ? await createCodexPlans(initialPlan) : [];
+        const previewNeedsNativeMaterialization = provisionalCodexPlans.some((plan) =>
+          plan.sharedNativeActions.some((action) =>
+            action.action === 'install'
+            || action.action === 'replace'
+            || action.action === 'repair'));
+        const previewActivationOnlyProject = !previewNeedsNativeMaterialization
+          && provisionalCodexPlans.some((plan) =>
+            plan.requirement.requiresProjectPluginContract
+            && plan.postcheck.plugins.length > 0);
+        const previewConsumer = previewActivationOnlyProject
+          ? await (
+              options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
+            )({
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+              runner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+              operationRequirement: getCodexOperationRequirement('project'),
+              requiresNativeMaterialization: false,
+            })
+          : undefined;
+        const initialCodexPlans = initialPlan && previewConsumer?.support === 'assumed'
+          ? await createCodexPlans(initialPlan, 'assumed')
+          : provisionalCodexPlans;
         const preview = mergeRebuildCommandResults([]);
         if (initialPlan) preview.dependencyPlan = initialPlan;
         if (initialCodexPlans.length > 0) preview.codexReconcilePlans = initialCodexPlans;
@@ -2461,7 +2547,33 @@ export async function runRebuildCommand(options: {
           'dependency.plan',
           () => createPlan(stateInventory),
         );
-        const lockedCodexPlans = await createCodexPlans(lockedPlan);
+        const provisionalLockedCodexPlans = await createCodexPlans(lockedPlan);
+        const codexManagerRequired = provisionalLockedCodexPlans.some((plan) =>
+          plan.sharedNativeActions.some((action) =>
+            action.action === 'install'
+            || action.action === 'replace'
+            || action.action === 'repair'));
+        const activationOnlyProjectOperation = !codexManagerRequired
+          && provisionalLockedCodexPlans.some((plan) =>
+            plan.requirement.requiresProjectPluginContract
+            && plan.postcheck.plugins.length > 0);
+        const activationConsumer = activationOnlyProjectOperation
+          ? await (
+              options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
+            )({
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+              runner: executionContext.nativeCliRunner,
+              operationRequirement: getCodexOperationRequirement('project'),
+              requiresNativeMaterialization: false,
+            })
+          : undefined;
+        const lockedCodexPlans = activationConsumer?.support === 'assumed'
+          ? await createCodexPlans(lockedPlan, 'assumed')
+          : provisionalLockedCodexPlans;
+        if (activationConsumer?.support === 'observed') {
+          executionContext.codexManager = activationConsumer.manager;
+        }
         if (options.runtime?.expectedOperationDependencyPlan
           && JSON.stringify(lockedPlan) !== JSON.stringify(options.runtime.expectedOperationDependencyPlan)) {
           throw namespacedPreflightError(
@@ -2518,21 +2630,14 @@ export async function runRebuildCommand(options: {
             env: runtimeEnv,
           });
         }
-        const codexManagerRequired = lockedCodexPlans.some((plan) =>
-          plan.sharedNativeActions.some((action) =>
-            action.action === 'install'
-            || action.action === 'replace'
-            || action.action === 'repair'));
         const claudeCliRequired = await operationNeedsNativeCli('claude', lockedPlan);
         const codexUserActivationDesired = new Set(lockedCodexPlans.flatMap((plan) =>
           plan.activationActions.user.flatMap((action) =>
             action.desired ? [action.codexPluginId] : [])));
         executionContext.codexUserActivationDesired = codexUserActivationDesired;
-        const codexProjectOperation = lockedCodexPlans.some((plan) =>
-          plan.requirement.requiresProjectPluginContract
-          && plan.sharedNativeActions.length > 0);
-        if (codexManagerRequired || codexProjectOperation) {
-          const codexRequirementScope: Scope = codexProjectOperation
+        if (codexManagerRequired) {
+          const codexRequirementScope: Scope = lockedCodexPlans.some((plan) =>
+            plan.requirement.requiresProjectPluginContract)
             ? 'project'
             : 'user';
           if (options.runtime?.codexManagerResolver && codexManagerRequired) {
@@ -2554,7 +2659,10 @@ export async function runRebuildCommand(options: {
               operationRequirement: getCodexOperationRequirement(codexRequirementScope),
               requiresNativeMaterialization: codexManagerRequired,
             });
-            if (consumer.support === 'observed') executionContext.codexManager = consumer.manager;
+            if (consumer.support !== 'observed') {
+              throw new Error('Codex native materialization requires an observed CLI consumer.');
+            }
+            executionContext.codexManager = consumer.manager;
           }
         }
         await assertClaudeVersion({
@@ -2860,7 +2968,8 @@ export async function runRebuildCommand(options: {
           && (plannedNativeAction.action === 'reuse'
             || plannedNativeAction.action === 'claim'
             || plannedNativeAction.action === 'none')
-          && !hasCodexExtensionMutation;
+          && !hasCodexExtensionMutation
+          && entry.plugin.manifest.scripts?.lifecycle?.uninstall === undefined;
         if (failedDependency || failedConsumer || planned.action === 'block') {
           const code = failedConsumer
             ? 'dependencyStillRequired'
@@ -3207,9 +3316,27 @@ export async function runRebuildCommand(options: {
           readInventory,
         });
       }
+      const configuredSources = new Set(
+        (await readCatalogSourcesConfigSnapshot(runtimeEnv)).config.sources.map((source) => source.id),
+      );
+      const evidence = cleanupLiveTargets.flatMap((target) => {
+        const value = offlineCleanupEvidenceFromInventory({
+          reason: expectedOfflineCleanup?.reason
+            ?? (configuredSources.has(target.sourceId) ? 'bundleUnavailable' : 'sourceMissing'),
+          pluginId: target.pluginId,
+          pluginName: target.pluginName,
+          sourceId: target.sourceId,
+          sourceIdentity: target.sourceIdentity,
+          platform: target.platform,
+          scope: target.scope,
+          inventory: cleanupInventory,
+        });
+        return value ? [value] : [];
+      });
       if (options.runtime?.previewDependencyPlanOnly) {
         return previewOfflineOwnedComponents({
           targets: cleanupLiveTargets,
+          evidence,
           cwd: options.commandOptions.cwd,
           env: runtimeEnv,
           nativeCliRunner: options.runtime.nativeCliRunner,
@@ -3219,6 +3346,7 @@ export async function runRebuildCommand(options: {
       }
       return cleanupOfflineOwnedComponents({
         targets: cleanupLiveTargets,
+        evidence,
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
         force: cleanupForce && !expectedOfflineCleanup,

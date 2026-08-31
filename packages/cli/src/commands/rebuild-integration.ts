@@ -35,6 +35,7 @@ import {
   type CodexAgentRegistrationSnapshot,
   type CodexMcpServerSnapshot,
 } from '../utils/codex-config.js';
+import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
 import {
   createCodexSkillExpectedTree,
   createCodexSkillStagingTreeContentDigest,
@@ -171,6 +172,12 @@ export interface RebuildIntegration {
     expectedLifecycleMetadataIntegrityDigest?: string;
     readOnlyInspectionPlan?: boolean;
     includeNativeCleanupCandidate?: boolean;
+    codexActivationCleanup?: Array<{
+      codexPluginId: string;
+      scope: Scope;
+      disposition: 'remove' | 'disable';
+    }>;
+    preserveCodexSharedNativePayload?: boolean;
   }): Promise<DesiredTarget>;
 }
 
@@ -569,6 +576,39 @@ function createCodexActivationComponent(options: {
     remove: async () => {
       await applyCodexConfigTransactionFile(options.configPath, {
         removePluginActivations: [options.codexPluginId],
+      });
+    },
+  };
+}
+
+function createCodexActivationCleanupComponent(options: {
+  identity: OwnerIdentity;
+  configPath: string;
+  codexPluginId: string;
+  disposition: 'remove' | 'disable';
+}): OwnedComponent {
+  return {
+    kind: 'shared-config',
+    identity: options.identity,
+    label: `${options.configPath}#plugins.${options.codexPluginId}.enabled`,
+    inspect: async () => {
+      const actual = (await readCodexConfigFile(options.configPath))
+        .snapshot.plugins[options.codexPluginId]?.enabled;
+      return options.disposition === 'remove'
+        ? actual === undefined ? 'absent' : 'present'
+        : actual === true ? 'present' : 'absent';
+    },
+    remove: async () => {
+      await applyConditionalCodexConfigTransactionFile(options.configPath, (snapshot) => {
+        const actual = snapshot.plugins[options.codexPluginId]?.enabled;
+        if (options.disposition === 'remove') {
+          return actual === undefined
+            ? null
+            : { removePluginActivations: [options.codexPluginId] };
+        }
+        return actual === true
+          ? { upsertPluginActivations: { [options.codexPluginId]: false } }
+          : null;
       });
     },
   };
@@ -1262,12 +1302,12 @@ async function buildBundledCodexSkillWrites(options: {
       .filter((target) => target.target === 'codex.skill' && target.skillKey)
       .map((target) => target.skillKey!),
   );
-  const targetRoot = path.join(
+  const targetRoot = await canonicalizePathThroughExistingAncestor(path.join(
     options.marketplaceRoot ?? resolveAwHome(options.env),
     'plugins',
     options.plugin.manifest.name,
     ...relativeRoot.split('/'),
-  );
+  ));
   const writes: PlannedWrite[] = [];
   for (const entry of await fs.readdir(sourceRoot, { withFileTypes: true })) {
     if (entry.isSymbolicLink()) {
@@ -1287,7 +1327,8 @@ async function buildBundledCodexSkillWrites(options: {
       sourceRequirementsReceiptPolicy: 'allow',
     });
     const skillPath = path.join(targetRoot, entry.name);
-    const canRecoverPristine = path.resolve(skillSource) !== path.resolve(skillPath);
+    const canRecoverPristine = await canonicalizePathThroughExistingAncestor(skillSource)
+      !== path.resolve(skillPath);
     const identity = ownerIdentity(
       options.plugin.manifest.name,
       entry.name,
@@ -1963,6 +2004,16 @@ async function buildHistoricalComponents(options: {
   for (const artifact of options.artifacts) {
     if (artifact.platform !== options.platform) continue;
     if (artifact.state === 'disabled') continue;
+    if (
+      options.platform === 'codex'
+      && artifact.artifactKey !== undefined
+      && new Set([
+        internalArtifactKey('activation', 'user'),
+        internalArtifactKey('activation', 'project'),
+      ]).has(artifact.artifactKey)
+    ) {
+      continue;
+    }
     if (
       options.command === 'cleanup'
       && artifact.kind === 'hook'
@@ -3703,11 +3754,11 @@ function createNativeDriver(options: {
           const marketplaceRoot = mirrored.rootDir;
           const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
           if (target.identity.platform === 'codex') {
-          const nativePluginRoot = path.join(
+          const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
             marketplaceRoot,
             'plugins',
             target.identity.pluginName,
-          );
+          ));
           const requiredSkillWrites = plan.writes.filter((entry) =>
             !entry.optional
             && entry.component?.kind === 'skill-directory'
@@ -3718,19 +3769,13 @@ function createNativeDriver(options: {
           for (const write of requiredSkillWrites) {
             await write.write();
           }
-          const skillsRelativeRoot = target.identity.scope === 'project'
-            ? target.plugin.manifest.skills
-              ? await resolveCodexSkillsRelativeRoot(target.plugin, path.join(
-                  marketplaceRoot,
-                  'plugins',
-                  target.identity.pluginName,
-                ))
-              : null
-            : await ensureCodexActiveSkillsManifest({
-                plugin: target.plugin,
-                marketplaceRoot,
-                hasRequiredSkills: requiredSkillWrites.length > 0,
-              });
+          const skillsRelativeRoot = await ensureCodexActiveSkillsManifest({
+            plugin: target.plugin,
+            marketplaceRoot,
+            hasRequiredSkills: target.identity.scope === 'project'
+              ? target.plugin.manifest.skills !== undefined
+              : requiredSkillWrites.length > 0,
+          });
           const config = await readCodexConfigFile(
             resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
           );
@@ -4000,11 +4045,13 @@ export function createRebuildIntegration(options: {
           ? []
           : [
               path.join(getCodexHome(options.context.env), 'skills'),
-              path.join(
-                input.marketplaceRoot ?? resolveAwHome(options.context.env),
-                'plugins',
-                input.plugin.manifest.name,
-              ),
+              ...(input.preserveCodexSharedNativePayload
+                ? []
+                : [await canonicalizePathThroughExistingAncestor(path.join(
+                    input.marketplaceRoot ?? resolveAwHome(options.context.env),
+                    'plugins',
+                    input.plugin.manifest.name,
+                  ))]),
             ]
         : [path.join(configDir, 'skills')];
       const scanSkills = () => Promise.all(skillRoots.map((root) => scanOwnedSkills({
@@ -4016,7 +4063,7 @@ export function createRebuildIntegration(options: {
         scope: input.scope,
       })));
       const scannedSkills = (await scanSkills()).flat();
-      const historicalComponents = await buildHistoricalComponents({
+      let historicalComponents = await buildHistoricalComponents({
         sourceId: input.sourceId,
         sourceIdentity: input.sourceIdentity,
         pluginId: input.pluginId,
@@ -4028,6 +4075,31 @@ export function createRebuildIntegration(options: {
         artifacts: historicalArtifacts,
         command: input.command,
       });
+      if (input.preserveCodexSharedNativePayload) {
+        const nativePluginRoots = await Promise.all([
+          path.join(
+            input.marketplaceRoot ?? resolveAwHome(options.context.env),
+            'plugins',
+            input.plugin.manifest.name,
+          ),
+          path.join(
+            getCodexHome(options.context.env),
+            'plugins',
+            'cache',
+            input.marketplaceName ?? MARKETPLACE_NAME,
+            input.plugin.manifest.name,
+          ),
+        ].map((root) => canonicalizePathThroughExistingAncestor(root)));
+        historicalComponents = historicalComponents.filter((component) => {
+          if (!('path' in component)) return true;
+          return nativePluginRoots.every((nativePluginRoot) => {
+            const relative = path.relative(nativePluginRoot, path.resolve(component.path));
+            return relative === '..'
+              || relative.startsWith(`..${path.sep}`)
+              || path.isAbsolute(relative);
+          });
+        });
+      }
       const sharedComponents = input.platform === 'codex'
         ? await scanCodexSharedComponents({
             sourceId: input.sourceId,
@@ -4128,6 +4200,24 @@ export function createRebuildIntegration(options: {
                 desired: true,
               })])
         : [];
+      const explicitActivationCleanup = input.platform === 'codex'
+        ? (input.codexActivationCleanup ?? []).map((activation) =>
+            createCodexActivationCleanupComponent({
+              identity: ownerIdentity(
+                input.plugin.manifest.name,
+                internalArtifactKey('activation', activation.scope),
+                'codex',
+                input.scope,
+              ),
+              configPath: resolveCodexPaths(
+                input.cwd,
+                activation.scope,
+                options.context.env,
+              ).configTomlPath,
+              codexPluginId: activation.codexPluginId,
+              disposition: activation.disposition,
+            }))
+        : [];
       const allComponents = dedupeComponents([
         ...desiredComponents,
         ...optionalComponents,
@@ -4140,6 +4230,7 @@ export function createRebuildIntegration(options: {
         ...nativePlugin,
         ...marketplace,
         ...activationCleanup,
+        ...explicitActivationCleanup,
       ]);
       bindNamespacedOwnerIdentity(allComponents, input);
       const desiredKeys = new Set(desiredComponents.map(componentIdentityKey));

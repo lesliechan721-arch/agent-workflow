@@ -60,7 +60,7 @@ describe('CLI entry v4', () => {
       layers: {
         projectIntent: [{
           pluginId: 'official/demo', platform: 'codex', scope: 'project',
-          relation: 'requested', action: 'sync', requiredBy: [],
+          relation: 'requested', action: 'keep', requiredBy: [],
         }],
         userIntent: [],
         sharedCodexNative: [],
@@ -71,6 +71,7 @@ describe('CLI entry v4', () => {
       targets: [{
         pluginName: 'demo',
         pluginId: 'official/demo',
+        sourceId: 'official',
         platform: 'codex',
         scope: 'project',
         status: 'failed',
@@ -266,13 +267,24 @@ describe('CLI entry v4', () => {
   });
 
   it.each([
-    { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install' },
-    { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set' },
-  ])('does not start a TUI for incomplete $command', async ({ argv, usage }) => {
+    { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install', jsonReceipt: true },
+    { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set', jsonReceipt: false },
+  ])('does not start a TUI for incomplete $command', async ({ argv, usage, jsonReceipt }) => {
     const output = capture();
     expect(await runCli(argv, { interactive: true, io: output.io })).toBe(1);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain(usage);
+    if (jsonReceipt) {
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        ok: false,
+        command: 'install',
+        receiptSchemaVersion: 5,
+        overallState: 'failed',
+        errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
+      });
+      expect(output.stderr()).toBe('');
+    } else {
+      expect(output.stdout()).toBe('');
+      expect(output.stderr()).toContain(usage);
+    }
   });
 
   it.each([

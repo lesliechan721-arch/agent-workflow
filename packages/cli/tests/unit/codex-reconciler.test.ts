@@ -286,19 +286,43 @@ describe('Codex desired-state reconciliation planner', () => {
     expect(plan.staleActivationRemovals).toEqual([]);
   });
 
-  it('removes stale managed activation after the marketplace name changes', () => {
+  it('preserves a managed activation whose marketplace identity is outside the reconciled target', () => {
     const before = widenPluginIntentManagedCodexOwnership(
       createEmptyPluginIntentState(),
       ['demo@legacy'],
     );
     const plan = createCodexReconcilePlan({ ...input('sync'), intentBefore: before });
-    expect(plan.staleActivationRemovals).toEqual([
-      { scope: 'user', codexPluginId: 'demo@legacy' },
-      { scope: 'project', codexPluginId: 'demo@legacy' },
-    ]);
+    expect(plan.staleActivationRemovals).toEqual([]);
     expect(plan.managedInventory).toMatchObject({
       ownershipSuperset: ['demo@aw', 'demo@legacy'],
-      converged: ['demo@aw'],
+      converged: ['demo@aw', 'demo@legacy'],
+    });
+  });
+
+  it('removes and converges only the source-qualified native identity for same-name plugins', () => {
+    const before = widenPluginIntentManagedCodexOwnership(
+      createEmptyPluginIntentState(),
+      ['demo@aw-first', 'demo@aw-second'],
+    );
+    const first = target({
+      pluginId: 'first/demo',
+      codexPluginId: 'demo@aw-first',
+      desiredScopes: [],
+      intentScopes: [],
+    });
+    const plan = createCodexReconcilePlan({
+      ...input('sync', first, live(
+        { state: 'present', version: '1.0.0', nativeAction: 'none' },
+        { codexPluginId: 'demo@aw-first', activations: { user: true, project: true } },
+      )),
+      intentBefore: before,
+    });
+    expect(plan.staleActivationRemovals).toEqual([
+      { scope: 'user', codexPluginId: 'demo@aw-first' },
+      { scope: 'project', codexPluginId: 'demo@aw-first' },
+    ]);
+    expect(plan.managedInventory).toMatchObject({
+      converged: ['demo@aw-second'],
     });
   });
 

@@ -702,11 +702,22 @@ describe('TUI controller runtime scope conflict validation', () => {
           sources: [],
         },
         filters: { plugins: ['team/demo'], platform: 'codex', cwd: isolation.layout.fixtureCwd },
-        targets: [{
-          ...target('project', 'absent'),
-          pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
-          cwd: isolation.layout.fixtureCwd,
-        }],
+        targets: [
+          {
+            ...target('project', 'absent'),
+            pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
+            cwd: isolation.layout.fixtureCwd,
+          },
+          {
+            ...target('user', 'present'),
+            pluginName: 'dependency', pluginId: 'team/dependency',
+            sourceId: 'team', sourceIdentity: 'identity:team', cwd: isolation.layout.fixtureCwd,
+            desired: { enabled: true, scopes: ['user'], relation: 'dependency' },
+            actual: { state: 'ready' },
+            sharedNative: { pluginId: 'dependency@team', state: 'present', shared: true },
+            activation: { user: true, project: true, effective: true, evidence: 'observed' },
+          },
+        ],
         errors: [],
       },
       pluginSummaries: [{
@@ -771,7 +782,7 @@ describe('TUI controller runtime scope conflict validation', () => {
             resolvedScope: 'project',
             assignmentSource: 'userOverride',
             affectsOtherProjects: false,
-            action: 'move',
+            action: 'keep',
           }
         : entry),
     };
@@ -812,8 +823,12 @@ describe('TUI controller runtime scope conflict validation', () => {
     await expect(dependencies.executeIntent(desiredOnlyIntent, desiredOnlyEvidence))
       .resolves.toEqual({ dependencyPlan: projectPlan, desiredPlacementUpdated: true });
     expect(runtimeMocks.installWriteCommand).toHaveBeenCalledTimes(2);
+    expect(runtimeMocks.installWriteCommand.mock.calls.every((call) =>
+      call[2]?.previewDependencyPlanOnly === true)).toBe(true);
     expect(runtimeMocks.cleanupWriteCommand).not.toHaveBeenCalled();
+    expect(runtimeMocks.reinstallWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
+    expect(runtimeMocks.upgradeWriteCommand).not.toHaveBeenCalled();
     await expect(readPluginIntentState({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toEqual(canonicalizePluginIntentState({

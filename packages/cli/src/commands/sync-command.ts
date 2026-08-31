@@ -1,7 +1,13 @@
 import type { PlatformName, Scope } from '../types.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
+import {
+  canonicalMarketplaceRegistrationNames,
+  inventoryCatalogSourceReferences,
+  type CatalogSourceReferenceInventory,
+} from '../utils/catalog-source-references.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readPluginIntentState } from '../utils/plugin-intent-state.js';
+import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import type { CliPrompt } from './runtime.js';
 import {
   installWriteCommand,
@@ -30,7 +36,8 @@ export class SyncCommandError extends Error {
     | 'syncSelectionRequired'
     | 'syncSelectionCancelled'
     | 'syncPlatformUnsupported'
-    | 'syncPluginNotDesired';
+    | 'syncPluginNotDesired'
+    | 'syncManagedIdentityUnresolved';
 
   constructor(code: SyncCommandError['code'], detail: string) {
     super(`${code}: ${detail}`);
@@ -42,22 +49,94 @@ export class SyncCommandError extends Error {
 function selectedIntentRoots(options: {
   roots: Awaited<ReturnType<typeof readPluginIntentState>>['roots'];
   managedCodexPluginIds: string[];
+  inventory: CatalogSourceReferenceInventory;
+  configuredSources: Array<{ id: string; primary: boolean }>;
   selectors: string[];
   all: boolean;
   platform: PlatformName;
-}): string[] {
+}): { selectors: string[]; preservedManagedIds: string[] } {
   const eligible = options.roots.filter((root) => root.platforms.includes(options.platform));
   if (options.all) {
-    const rootedNames = new Set(eligible.map((root) => parsePluginId(root.pluginId).pluginName));
-    const managedNames = options.managedCodexPluginIds.flatMap((pluginId) => {
+    const marketplaceSources = new Map<string, Set<string>>();
+    const configuredSourceById = new Map(options.configuredSources.map((source) => [source.id, source]));
+    for (const reference of options.inventory.references) {
+      if (reference.kind !== 'namespacedMarketplace'
+        || reference.pluginName !== undefined
+        || !reference.sourceId
+        || !reference.marketplaceName) continue;
+      const sources = marketplaceSources.get(reference.marketplaceName) ?? new Set<string>();
+      sources.add(reference.sourceId);
+      marketplaceSources.set(reference.marketplaceName, sources);
+    }
+    for (const source of options.configuredSources) {
+      if (canonicalMarketplaceRegistrationNames(options.inventory.references, source.id).length > 0) {
+        continue;
+      }
+      const marketplaceName = source.primary ? 'aw' : `aw-${source.id}`;
+      if (!marketplaceSources.has(marketplaceName)) {
+        marketplaceSources.set(marketplaceName, new Set([source.id]));
+      }
+    }
+    const desiredNativeIds = new Set(eligible.flatMap((root) => {
+      const parsed = parsePluginId(root.pluginId);
+      if (!parsed.sourceId) return [];
+      const source = configuredSourceById.get(parsed.sourceId);
+      if (!source) return [];
+      const registeredNames = canonicalMarketplaceRegistrationNames(
+        options.inventory.references,
+        source.id,
+      );
+      if (registeredNames.length > 1) {
+        throw new SyncCommandError(
+          'syncManagedIdentityUnresolved',
+          `Catalog source ${source.id} has multiple canonical native marketplace registrations.`,
+        );
+      }
+      const marketplaceName = registeredNames[0]
+        ?? (source.primary ? 'aw' : `aw-${source.id}`);
+      const mappedSources = marketplaceSources.get(marketplaceName);
+      return mappedSources?.size === 1 && mappedSources.has(source.id)
+        ? [`${parsed.pluginName}@${marketplaceName}`]
+        : [];
+    }));
+    const preservedManagedIds: string[] = [];
+    const managedSelectors = options.managedCodexPluginIds.flatMap((pluginId) => {
+      if (desiredNativeIds.has(pluginId)) return [];
       const separator = pluginId.lastIndexOf('@');
-      if (separator <= 0) return [];
+      if (separator <= 0 || separator === pluginId.length - 1) {
+        throw new SyncCommandError(
+          'syncManagedIdentityUnresolved',
+          `Managed Codex plugin ID ${pluginId} is invalid.`,
+        );
+      }
       const pluginName = pluginId.slice(0, separator);
-      return rootedNames.has(pluginName) ? [] : [pluginName];
+      const marketplaceName = pluginId.slice(separator + 1);
+      const sources = marketplaceSources.get(marketplaceName);
+      if (sources && sources.size > 1) {
+        throw new SyncCommandError(
+          'syncManagedIdentityUnresolved',
+          `Managed Codex plugin ID ${pluginId} does not map to one canonical Catalog source.`,
+        );
+      }
+      if (!sources || sources.size === 0) {
+        preservedManagedIds.push(pluginId);
+        return [];
+      }
+      return [`${[...sources][0]!}/${pluginName}`];
     });
-    return [...eligible.map((root) => root.pluginId), ...managedNames];
+    const desiredSelectors = eligible.map((root) => root.pluginId);
+    const duplicateSelector = managedSelectors.find((selector, index) =>
+      managedSelectors.indexOf(selector) !== index || desiredSelectors.includes(selector));
+    if (duplicateSelector) {
+      throw new SyncCommandError(
+        'syncManagedIdentityUnresolved',
+        `Multiple native identities map to ${duplicateSelector}; exact reconciliation is unavailable.`,
+      );
+    }
+    return { selectors: [...managedSelectors, ...desiredSelectors], preservedManagedIds };
   }
-  return options.selectors.map((selector) => {
+  return {
+    selectors: options.selectors.map((selector) => {
     const parsed = parsePluginId(selector);
     const matches = eligible.filter((root) => {
       const rootParsed = parsePluginId(root.pluginId);
@@ -73,7 +152,9 @@ function selectedIntentRoots(options: {
       );
     }
     return matches[0]!.pluginId;
-  });
+    }),
+    preservedManagedIds: [],
+  };
 }
 
 async function selectInteractively(options: {
@@ -142,26 +223,53 @@ export async function syncCommand(
         cwd: options.cwd,
         env,
       });
-      const requested = selectors.length > 0 || options.all
+      const inventory = options.all
+        ? await (runtime.inventoryCatalogSourceReferences
+          ?? inventoryCatalogSourceReferences)({ cwd: options.cwd, env })
+        : { inventorySchemaVersion: 1 as const, references: [], errors: [] };
+      const configuredSources = options.all
+        ? (await readCatalogSourcesConfigSnapshot(env)).config.sources
+        : [];
+      const selection = selectors.length > 0 || options.all
         ? selectedIntentRoots({
             roots: intent.roots,
             managedCodexPluginIds: intent.managed.codexPluginIds,
+            inventory,
+            configuredSources,
             selectors,
             all: options.all === true,
             platform: options.platform,
           })
-        : await selectInteractively({
-            roots: intent.roots,
-            platform: options.platform,
-            prompt: options.prompt,
-          });
+        : {
+            selectors: await selectInteractively({
+              roots: intent.roots,
+              platform: options.platform,
+              prompt: options.prompt,
+            }),
+            preservedManagedIds: [],
+          };
+      const requested = selection.selectors;
+      const preservedWarning = selection.preservedManagedIds.length > 0
+        ? `syncManagedIdentityPreserved: ${selection.preservedManagedIds.join(', ')} does not map to a canonical Catalog source.`
+        : undefined;
       if (requested.length === 0) {
+        if (options.all && intent.managed.codexPluginIds.length > 0) {
+          return {
+            platforms: [options.platform],
+            plugins: [],
+            warnings: preservedWarning ? [preservedWarning] : [],
+            rebuildResults: [],
+            targetResults: [],
+            overallState: 'succeeded',
+            receiptTargets: [],
+          };
+        }
         throw new SyncCommandError(
           'syncSelectionRequired',
           `No desired ${options.platform} plugins exist in ${options.scope} scope.`,
         );
       }
-      return installWriteCommand(requested, {
+      const result = await installWriteCommand(requested, {
         cwd: options.cwd,
         scope: options.scope,
         platform: options.platform,
@@ -174,6 +282,9 @@ export async function syncCommand(
         reconcileIntentOnly: true,
         directCli: true,
       });
+      return preservedWarning
+        ? { ...result, warnings: [...result.warnings, preservedWarning] }
+        : result;
     },
   });
 }

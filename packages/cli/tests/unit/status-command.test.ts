@@ -40,7 +40,7 @@ async function configurePathSource(
     env: isolation.env,
   });
   return {
-    env: isolation.env,
+    env: { ...isolation.env, PATH: '' },
     sourceIdentity: await calculateCatalogSourceIdentity(source),
   };
 }
@@ -105,6 +105,40 @@ async function writeCodexNativeResidue(options: {
   ), { name: 'demo', version: options.version });
 }
 
+async function writeSystemCodexPackage(options: {
+  root: string;
+  version: string;
+  packageName?: string;
+}): Promise<string> {
+  const binRoot = process.platform === 'win32'
+    ? options.root
+    : path.join(options.root, 'bin');
+  const packageRoot = process.platform === 'win32'
+    ? path.join(binRoot, 'node_modules', '@openai', 'codex')
+    : path.join(options.root, 'lib', 'node_modules', '@openai', 'codex');
+  const launcher = path.join(packageRoot, 'bin', 'codex.js');
+  await Promise.all([
+    fs.outputJson(path.join(packageRoot, 'package.json'), {
+      name: options.packageName ?? '@openai/codex',
+      version: options.version,
+      bin: { codex: 'bin/codex.js' },
+    }),
+    fs.outputFile(launcher, [
+      '#!/usr/bin/env node',
+      "require('node:fs').writeFileSync(require('node:path').join(process.env.CODEX_HOME, 'status-executed'), 'executed');",
+      '',
+    ].join('\n')),
+  ]);
+  await fs.chmod(launcher, 0o755);
+  await fs.ensureDir(binRoot);
+  if (process.platform === 'win32') {
+    await fs.outputFile(path.join(binRoot, 'codex.CMD'), '@echo off\r\n');
+  } else {
+    await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
+  }
+  return binRoot;
+}
+
 describe('status v6 current behavior', () => {
   it('reports a qualified pure-native Codex project target without scoped materialization', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -129,7 +163,10 @@ describe('status v6 current behavior', () => {
         desired: { enabled: false, scopes: [], relation: 'none' },
         actual: { state: 'absent' },
         sharedNative: expect.objectContaining({ state: 'missing', shared: true }),
-        activation: { evidence: 'assumed' },
+        activation: {
+          evidence: 'assumed',
+          systemConsumer: { state: 'missing', requiredMinVersion: '0.151.0' },
+        },
       }),
     ]);
   });
@@ -160,7 +197,10 @@ describe('status v6 current behavior', () => {
       desired: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
       actual: { state: 'needsSync' },
       sharedNative: { state: 'missing', shared: true },
-      activation: { evidence: 'assumed' },
+      activation: {
+        evidence: 'assumed',
+        systemConsumer: { state: 'missing', requiredMinVersion: '0.151.0' },
+      },
       recovery: [expect.objectContaining({ command: 'sync' })],
     });
   });
@@ -256,6 +296,32 @@ describe('status v6 current behavior', () => {
       desired: { enabled: false, scopes: [], relation: 'managed' },
       actual: { state: 'orphaned' },
       recovery: [expect.objectContaining({ command: 'cleanup' })],
+    })]);
+  });
+
+  it('does not apply managed intent from another same-name Codex marketplace', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'source-qualified-managed-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      managed: { codexPluginIds: ['demo@aw-second'] },
+    });
+
+    const result = await statusCommandV6({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      pluginId: 'local/demo',
+      desired: { enabled: false, scopes: [], relation: 'none' },
+      actual: { state: 'absent' },
     })]);
   });
 
@@ -577,6 +643,255 @@ describe('status v6 current behavior', () => {
       expect.objectContaining({ pluginId: 'local/demo', state: 'absent' }),
     ]);
     expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
+    expect(nativeRunner).not.toHaveBeenCalled();
+  });
+
+  it('uses compatible filesystem evidence without executing Codex or changing isolation state', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'read-only-codex-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'system-prefix'),
+      version: '0.151.0',
+    });
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'sentinel'), 'unchanged\n');
+    const nativeRunner = vi.fn(async () => {
+      throw new Error('status must not execute Codex');
+    });
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+    const before = await filesystemSnapshot(isolation.layout.rootDir);
+    const codexHomeBefore = await filesystemSnapshot(isolation.layout.codexHomeDir);
+
+    let result;
+    try {
+      result = await statusCommandV6({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
+      });
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
+
+    expect(result.payload.targets).toEqual([
+      expect.objectContaining({
+        activation: expect.objectContaining({
+          evidence: 'unobserved',
+          systemConsumer: {
+            state: 'compatible',
+            detectedVersion: '0.151.0',
+            requiredMinVersion: '0.151.0',
+          },
+        }),
+      }),
+    ]);
+    expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
+    expect(await filesystemSnapshot(isolation.layout.codexHomeDir)).toEqual(codexHomeBefore);
+    expect(nativeRunner).not.toHaveBeenCalled();
+  });
+
+  it('reports a filesystem-validated Codex 0.150 consumer as unresolved', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'low-codex-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'low-system-prefix'),
+      version: '0.150.0',
+    });
+    const nativeRunner = vi.fn(async () => {
+      throw new Error('status must not execute Codex');
+    });
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+
+    let result;
+    try {
+      result = await statusCommandV6({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
+      });
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      actual: { state: 'unresolved' },
+      activation: expect.objectContaining({
+        evidence: 'unobserved',
+        systemConsumer: expect.objectContaining({
+          state: 'incompatible',
+          code: 'codexProjectPluginVersionTooLow',
+          detectedVersion: '0.150.0',
+        }),
+      }),
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'codexProjectPluginVersionTooLow' }),
+      ]),
+      recovery: [{
+        command: 'manual',
+        description: '升级或修复官方 system Codex CLI 后重试原操作。',
+      }],
+    })]);
+    expect(nativeRunner).not.toHaveBeenCalled();
+  });
+
+  it('uses the user requirement for default-scope status with only user desired intent', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-low-codex-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'user-low-system-prefix'),
+      version: '0.150.0',
+    });
+    const nativeRunner = vi.fn(async () => {
+      throw new Error('status must not execute Codex');
+    });
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+
+    let result;
+    try {
+      result = await statusCommandV6({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot }, platform: 'codex', json: true,
+      });
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      desired: { enabled: true, scopes: ['user'], relation: 'root' },
+      actual: { state: 'needsSync' },
+      activation: expect.objectContaining({
+        evidence: 'unobserved',
+        systemConsumer: {
+          state: 'compatible',
+          detectedVersion: '0.150.0',
+          requiredMinVersion: '0.145.0',
+        },
+      }),
+    })]);
+    expect(nativeRunner).not.toHaveBeenCalled();
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'keeps an ordinary POSIX shim unobserved and non-blocking without executing it',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unobserved-codex-source');
+      await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.apps = './.app.json';
+      });
+      const { env } = await configurePathSource(sourceRoot);
+      await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+        ...createEmptyPluginIntentState(),
+        roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+      });
+      const binRoot = path.join(isolation.layout.fixtureCwd, 'unobserved-system-bin');
+      const launcher = path.join(binRoot, 'codex');
+      await fs.outputFile(launcher, '#!/bin/sh\nexit 0\n');
+      await fs.chmod(launcher, 0o755);
+      const nativeRunner = vi.fn(async () => {
+        throw new Error('status must not execute Codex');
+      });
+      setNativeCliRunnerOverrideForTests(nativeRunner);
+
+      let result;
+      try {
+        result = await statusCommandV6({
+          plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+          env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
+        });
+      } finally {
+        setNativeCliRunnerOverrideForTests(null);
+      }
+
+      expect(result.payload.targets).toEqual([expect.objectContaining({
+        actual: { state: 'needsSync' },
+        activation: expect.objectContaining({
+          evidence: 'unobserved',
+          systemConsumer: { state: 'unobserved', requiredMinVersion: '0.151.0' },
+        }),
+      })]);
+      expect(result.payload.targets[0]?.errors).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'codexProjectPluginUnsupported' }),
+      ]));
+      expect(nativeRunner).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reports an invalid npm package identity as typed unresolved evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-codex-source-identity');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'invalid-system-prefix'),
+      version: '0.151.0',
+      packageName: 'foreign/codex',
+    });
+    const nativeRunner = vi.fn(async () => {
+      throw new Error('status must not execute Codex');
+    });
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+
+    let result;
+    try {
+      result = await statusCommandV6({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
+      });
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      actual: { state: 'unresolved' },
+      activation: expect.objectContaining({
+        evidence: 'unobserved',
+        systemConsumer: expect.objectContaining({
+          state: 'unresolved',
+          code: 'codexProjectPluginUnsupported',
+        }),
+      }),
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'codexProjectPluginUnsupported' }),
+      ]),
+      recovery: [{
+        command: 'manual',
+        description: '升级或修复官方 system Codex CLI 后重试原操作。',
+      }],
+    })]);
     expect(nativeRunner).not.toHaveBeenCalled();
   });
 

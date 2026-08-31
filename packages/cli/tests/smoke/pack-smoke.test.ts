@@ -266,6 +266,17 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "  }",
     "  return false;",
     "};",
+    "const projectTrusted = (file, cwd) => {",
+    "  if (!fs.existsSync(file)) return false;",
+    "  const lines = fs.readFileSync(file, 'utf8').split(/\\r?\\n/u);",
+    "  const header = `[projects.${JSON.stringify(fs.realpathSync(cwd))}]`;",
+    "  const start = lines.indexOf(header);",
+    "  if (start < 0) return false;",
+    "  for (let index = start + 1; index < lines.length && !lines[index].startsWith('['); index += 1) {",
+    "    if (/^trust_level\\s*=\\s*\"trusted\"\\s*$/u.test(lines[index])) return true;",
+    "  }",
+    "  return false;",
+    "};",
     "if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {",
     "  const marketplaceRoot = args[3];",
     "  const metadata = readJson(path.join(marketplaceRoot, 'config.json'), {});",
@@ -308,7 +319,8 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     "  const projectConfig = path.join(process.cwd(), '.codex', 'config.toml');",
     "  const installed = Object.entries(state.plugins).map(([pluginId, plugin]) => ({",
     "    pluginId, installed: true,",
-    "    enabled: tableEnabled(configPath, pluginId) || tableEnabled(projectConfig, pluginId),",
+    "    enabled: tableEnabled(configPath, pluginId)",
+    "      || (tableEnabled(projectConfig, pluginId) && projectTrusted(configPath, process.cwd())),",
     "    version: plugin.version, source: { source: 'local', path: plugin.path },",
     "  }));",
     "  console.log(JSON.stringify({ installed, available: [] }));",
@@ -696,6 +708,37 @@ describe('pack smoke', () => {
       source: { action: 'added', primary: true },
     });
     const developmentSourceId = developmentSourceReceipt.source.id as string;
+    const untrustedInstallFailure = await execFileAsync(awBin, [
+      'install', `${developmentSourceId}/packed-build`, '-p', 'codex', '--scope', 'project', '--json',
+    ], {
+      cwd: standaloneWorkspace,
+      env: externalAuthoringEnv,
+      maxBuffer: 10 * 1024 * 1024,
+    }).then(
+      () => null,
+      (error: unknown) => error as { stdout?: string },
+    );
+    expect(untrustedInstallFailure).not.toBeNull();
+    expect(JSON.parse(untrustedInstallFailure?.stdout ?? '{}')).toMatchObject({
+      ok: false,
+      overallState: 'failed',
+      targets: expect.arrayContaining([expect.objectContaining({
+        pluginId: `${developmentSourceId}/packed-build`,
+        platform: 'codex',
+        scope: 'project',
+        errorCode: 'writeFailed',
+        failures: expect.arrayContaining([expect.objectContaining({
+          phase: 'postcheck.inspect',
+          message: expect.stringContaining('codexProjectConfigNotEffective'),
+        })]),
+      })]),
+    });
+    await fs.appendFile(path.join(externalAuthoringEnv.AW_CODEX_HOME, 'config.toml'), [
+      '',
+      `[projects.${JSON.stringify(await fs.realpath(standaloneWorkspace))}]`,
+      'trust_level = "trusted"',
+      '',
+    ].join('\n'));
     const externalInstall = await execFileAsync(awBin, [
       'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch((error: unknown) => {
