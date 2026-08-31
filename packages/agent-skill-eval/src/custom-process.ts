@@ -39,6 +39,7 @@ export interface EvalProviderRunResult {
   usage: EvalProviderUsage | null
   grade: EvalProviderGrade
   diagnostics?: string[]
+  artifacts?: Array<{ path: string; role: string }>
 }
 
 export interface CustomProcessInput {

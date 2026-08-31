@@ -555,6 +555,116 @@ describe('EvalSpec v1 execution', () => {
     await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
   })
 
+  it('rejects old and unknown object providers before any provider can start', async () => {
+    for (const provider of [
+      { type: 'codex-workflow', command: ['node', 'workspace/eval/provider.mjs'] },
+      { type: 'unknown-provider', command: ['node'] },
+    ]) {
+      const data = await fixture()
+      data.spec.provider = provider as EvalSpec['provider']
+      await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+      const runBuiltinProvider = vi.fn()
+      const executeCustomProvider = vi.fn()
+      const executeCodexWorkflowProvider = vi.fn()
+      await expect(runEvalSpec(data.specPath, {
+        auditPath: data.auditPath,
+        runBuiltinProvider,
+        executeCustomProvider,
+        executeCodexWorkflowProvider,
+      })).rejects.toThrow('EvalSpec is invalid')
+      expect(runBuiltinProvider).not.toHaveBeenCalled()
+      expect(executeCustomProvider).not.toHaveBeenCalled()
+      expect(executeCodexWorkflowProvider).not.toHaveBeenCalled()
+      await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
+    }
+  })
+
+  it('dispatches codex-workflow separately from custom-process and preserves its result kind', async () => {
+    const data = await fixture()
+    const casesPath = path.join(data.root, 'cases.json')
+    const cases = JSON.parse(await readFile(casesPath, 'utf8'))
+    cases.suite.kind = 'codex-workflow'
+    await writeFile(casesPath, `${JSON.stringify(cases, null, 2)}\n`)
+    data.spec.cases.digest = await computeEvalFileDigest(casesPath)
+    data.spec.provider = {
+      type: 'codex-workflow',
+      command: ['node', 'workspace/eval/provider.mjs'],
+      allowedModels: [],
+    }
+    data.audit.caseDigest = data.spec.cases.digest
+    data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
+    await Promise.all([
+      writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`),
+      writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`),
+    ])
+    const executeCustomProvider = vi.fn(async () => ({
+      usage: null,
+      grade: { passed: true, score: 1 },
+    }))
+    const executeCodexWorkflowProvider = vi.fn(async () => ({
+      usage: { inputTokens: 3, outputTokens: 2 },
+      grade: { passed: true, score: 1 },
+      artifacts: [
+        { path: 'workflow-evidence.json', role: 'evidence' },
+        { path: 'workflow-trace.json', role: 'trace' },
+        { path: 'model-output.txt', role: 'output' },
+      ],
+    }))
+
+    const result = await runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      executeCustomProvider,
+      executeCodexWorkflowProvider,
+    })
+
+    expect(executeCustomProvider).not.toHaveBeenCalled()
+    expect(executeCodexWorkflowProvider).toHaveBeenCalledOnce()
+    expect(result.result.provider).toEqual(data.spec.provider)
+    expect(result.result.runs[0]).toMatchObject({
+      status: 'completed',
+      usage: { inputTokens: 3, outputTokens: 2 },
+      artifacts: [
+        { path: 'workflow-evidence.json', role: 'evidence' },
+        { path: 'workflow-trace.json', role: 'trace' },
+        { path: 'model-output.txt', role: 'output' },
+        { path: 'provider-result.json', role: 'result' },
+      ],
+    })
+
+    const failed = await fixture({ runs: 3 })
+    const failedCasesPath = path.join(failed.root, 'cases.json')
+    const failedCases = JSON.parse(await readFile(failedCasesPath, 'utf8'))
+    failedCases.suite.kind = 'codex-workflow'
+    await writeFile(failedCasesPath, `${JSON.stringify(failedCases, null, 2)}\n`)
+    failed.spec.cases.digest = await computeEvalFileDigest(failedCasesPath)
+    failed.spec.provider = {
+      type: 'codex-workflow',
+      command: ['node', 'workspace/eval/provider.mjs'],
+      allowedModels: [],
+    }
+    failed.audit.caseDigest = failed.spec.cases.digest
+    failed.audit.providerDigest = computeEvalProviderDigest(failed.spec.provider)
+    await Promise.all([
+      writeFile(failed.specPath, `${JSON.stringify(failed.spec, null, 2)}\n`),
+      writeFile(failed.auditPath, `${JSON.stringify(failed.audit, null, 2)}\n`),
+    ])
+    const failClosed = vi.fn(async () => { throw new Error('prepare failed') })
+    const failedResult = await runEvalSpec(failed.specPath, {
+      auditPath: failed.auditPath,
+      executeCodexWorkflowProvider: failClosed,
+    })
+    expect(failClosed).toHaveBeenCalledOnce()
+    expect(failedResult.result.runs).toEqual([
+      expect.objectContaining({
+        attempt: 1,
+        status: 'failed',
+        usage: null,
+        grade: null,
+        error: { message: 'prepare failed' },
+      }),
+    ])
+  })
+
   it('passes the parser-approved trigger Oracle to the built-in provider unchanged', async () => {
     const data = await fixture()
     const casesPath = path.join(data.root, 'cases.json')

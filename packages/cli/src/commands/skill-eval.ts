@@ -306,7 +306,13 @@ async function resolveProvider(
     }
     command[index] = `${prefix}workspace/eval/${relative}`
   }
-  return { type: 'custom-process', command }
+  return selection.suite.provider!.type === 'custom-process'
+    ? { type: 'custom-process', command }
+    : {
+        type: 'codex-workflow',
+        command,
+        allowedModels: selection.suite.provider!.allowedModels,
+      }
 }
 
 export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promise<PrepareSkillEvalReceipt> {

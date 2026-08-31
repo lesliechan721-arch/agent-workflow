@@ -418,6 +418,52 @@ describe('aw skill eval commands', () => {
     })
     await expect(fs.pathExists(path.join(customOutput, 'workspace', 'eval', 'provider.mjs')))
       .resolves.toBe(true)
+
+    await fs.writeJson(path.join(fixture.evalRoot, 'workflow-cases.json'), {
+      version: 1,
+      suite: { kind: 'codex-workflow', unitUnderTest: 'owner-skill' },
+      cases: [{
+        id: 'workflow_case',
+        split: 'validation',
+        tags: ['workflow'],
+        input: { prompt: 'Run Codex workflow.' },
+        expected: { ok: true },
+        assertions: ['Returns ok.'],
+      }],
+    }, { spaces: 2 })
+    const workflowManifest = {
+      ...v1Manifest,
+      suites: [{
+        id: 'workflow-suite',
+        kind: 'codex-workflow',
+        cases: 'workflow-cases.json',
+        provider: {
+          type: 'codex-workflow',
+          command: ['node', 'provider.mjs'],
+          allowedModels: ['gpt-approved'],
+        },
+      }],
+    }
+    await fs.writeJson(manifestPath, workflowManifest, { spaces: 2 })
+    const workflowOutput = path.join(fixture.outputRoot, 'workflow-v1')
+    const workflow = capture()
+    expect(await runCli([
+      'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+      '--workspace-root', fixture.root, '--output', workflowOutput, '--json',
+    ], { cwd: fixture.root, env: fixture.env, io: workflow.io }), workflow.stdout()).toBe(0)
+    await expect(fs.readJson(path.join(workflowOutput, 'spec.json'))).resolves.toMatchObject({
+      provider: {
+        type: 'codex-workflow',
+        command: ['node', 'workspace/eval/provider.mjs'],
+        allowedModels: ['gpt-approved'],
+      },
+    })
+    await expect(validateEvalSpecFile(path.join(workflowOutput, 'spec.json')))
+      .resolves.toMatchObject({ valid: true })
+    await expect(fs.pathExists(path.join(workflowOutput, 'workspace', 'eval', 'provider.mjs')))
+      .resolves.toBe(true)
+
+    await fs.writeJson(manifestPath, customManifest, { spaces: 2 })
     for (const [index, unsafeCommand] of [
       [process.execPath, 'provider.mjs'],
       ['node', '../provider.mjs'],
