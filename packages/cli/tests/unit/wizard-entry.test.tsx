@@ -20,7 +20,7 @@ vi.mock('../../src/commands/write-commands.js', async () => ({
 }));
 
 describe('write command runtime entry', () => {
-  it('uses the status v5 plugin summary for namespaced config candidates', () => {
+  it('uses the Status v6 plugin summary for namespaced config candidates', () => {
     expect(toWizardCandidates([{
       pluginName: 'team/demo',
       pluginSummary: {
@@ -53,8 +53,6 @@ describe('write command runtime entry', () => {
       rebuildResults: [],
       targetResults: [],
       overallState: 'succeeded',
-      nativePlugins: {},
-      repoManagedArtifacts: [],
       receiptTargets: [],
     });
     const exitCode = await runCli([command, ...args, '--json'], {
@@ -65,7 +63,7 @@ describe('write command runtime entry', () => {
 
     expect(exitCode).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       command,
       ok: true,
       overallState: 'succeeded',

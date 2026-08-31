@@ -63,6 +63,7 @@ function createFixture(options: {
   name?: string;
   initial?: OwnedProbeResult;
   requiresNative?: boolean;
+  platform?: 'codex' | 'claude';
 } = {}): Fixture {
   const currentPlugin = plugin(options.name);
   const historicalPlugin = plugin(options.name, '1.0.0');
@@ -81,7 +82,7 @@ function createFixture(options: {
     owner: 'agent-workflows' as const,
     plugin: currentPlugin.manifest.name,
     artifactKey,
-    platform: 'codex' as const,
+    platform: options.platform ?? 'codex',
     scope: 'user' as const,
   });
   const native: OwnedComponent = {
@@ -115,7 +116,7 @@ function createFixture(options: {
   const artifactDescriptor: GeneratedArtifact = {
     kind: 'instruction',
     path: `/outputs/${currentPlugin.manifest.name}.md`,
-    platform: 'codex',
+    platform: options.platform ?? 'codex',
     artifactKey: 'artifact',
   };
   const target: DesiredTarget = {
@@ -123,7 +124,7 @@ function createFixture(options: {
     identity: {
       pluginName: currentPlugin.manifest.name,
       pluginVersion: currentPlugin.manifest.version,
-      platform: 'codex',
+      platform: options.platform ?? 'codex',
       scope: 'user',
       cwd: '/repo',
     },
@@ -247,7 +248,7 @@ describe('rebuild operation happy paths', () => {
     )).toBe(true);
   });
 
-  it('emits a safe failure before preserving recovery cleanup semantics', async () => {
+  it('emits a safe failure and preserves shared native state for reconciliation', async () => {
     const fixture = createFixture();
     const events: RebuildActionEvent[] = [];
     fixture.driver.writeNative = async () => {
@@ -277,7 +278,8 @@ describe('rebuild operation happy paths', () => {
     expect(JSON.stringify(events)).not.toContain('C:\\Users');
     expect(JSON.stringify(events)).not.toContain('codex plugin add');
     expect(events.some((event) => event.data.name === 'recovery.cleanup')).toBe(true);
-    expect(fixture.cleanupCalls.native).toBe(1);
+    expect(fixture.cleanupCalls.native).toBe(0);
+    expect(fixture.states.native).toBe('present');
     for (const name of new Set(events.map((event) => event.data.name))) {
       expect(events.filter((event) => event.data.name === name).map((event) => event.data.phase))
         .toEqual(['start', expect.stringMatching(/^(?:success|failure)$/)]);
@@ -573,7 +575,7 @@ describe('rebuild operation happy paths', () => {
     expect(result.status).toBe('failed');
     if (result.status === 'failed') expect(result.error.phase).toBe('active.prepare');
     expect(loaderCalls).toBeGreaterThan(0);
-    expect(state).toBe('absent');
+    expect(state).toBe('present');
   });
 });
 
@@ -749,7 +751,7 @@ describe('rebuild operation failures', () => {
     'lifecycle.install',
     'active.promote',
     'postcheck.inspect',
-  ])('rolls the materialize transaction back after recovery for %s failure', async (failure) => {
+  ])('keeps the materialize superset for reconciliation after %s failure', async (failure) => {
     const fixture = createFixture();
     if (failure === 'postcheck.inspect') fixture.postcheckAbsent = true;
     else fixture.fail.add(failure);
@@ -761,12 +763,28 @@ describe('rebuild operation failures', () => {
     });
 
     expect(result.status).toBe('failed');
-    expect(fixture.log).not.toContain('marketplace.commit');
-    expect(fixture.log.filter((entry) => entry === 'marketplace.rollback')).toHaveLength(1);
-    expect(fixture.log.indexOf('marketplace.rollback')).toBeGreaterThan(fixture.log.indexOf('active.remove'));
+    expect(fixture.log.filter((entry) => entry === 'marketplace.commit')).toHaveLength(1);
+    expect(fixture.log).not.toContain('marketplace.rollback');
+    expect(fixture.log.indexOf('marketplace.commit')).toBeGreaterThan(fixture.log.indexOf('active.remove'));
   });
 
-  it('promotes before postcheck, then removes active and outputs when postcheck fails', async () => {
+  it('keeps the existing Claude rollback behavior after a materialize failure', async () => {
+    const fixture = createFixture({ platform: 'claude' });
+    fixture.fail.add('artifacts.write');
+    fixture.driver.commitMaterialize = async () => { fixture.log.push('marketplace.commit'); };
+    fixture.driver.rollbackMaterialize = async () => { fixture.log.push('marketplace.rollback'); };
+
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(fixture.log).not.toContain('marketplace.commit');
+    expect(fixture.log).toContain('marketplace.rollback');
+    expect(fixture.states.native).toBe('absent');
+  });
+
+  it('promotes before postcheck and keeps shared native/config state when postcheck fails', async () => {
     const fixture = createFixture();
     fixture.postcheckAbsent = true;
     const result = await executeRebuildOperation({
@@ -777,7 +795,7 @@ describe('rebuild operation failures', () => {
     expect(result.actions).toContainEqual({ name: 'active.discard', status: 'succeeded' });
     expect(result.failures.some((failure) => failure.phase === 'active.discard')).toBe(false);
     expect(fixture.log.indexOf('active.promote')).toBeLessThan(fixture.log.indexOf('active.remove'));
-    expect(fixture.states.native).toBe('absent');
+    expect(fixture.states.native).toBe('present');
     expect(fixture.states.artifact).toBe('absent');
   });
 
@@ -792,7 +810,7 @@ describe('rebuild operation failures', () => {
     expect(result.residual).toContain('active-plugin:artifact');
   });
 
-  it('discards a prepared stage before one recovery cleanup and keeps discard failure secondary', async () => {
+  it('discards a prepared stage before recovery and keeps discard failure secondary', async () => {
     const fixture = createFixture();
     fixture.fail.add('lifecycle.install');
     fixture.fail.add('active.discard');
@@ -801,14 +819,15 @@ describe('rebuild operation failures', () => {
     });
     expect(result.status).toBe('failed');
     if (result.status === 'failed') expect(result.error.message).toBe('install lifecycle failed');
-    expect(fixture.log.indexOf('active.discard')).toBeLessThan(fixture.log.indexOf('remove.native'));
+    expect(fixture.log).not.toContain('remove.native');
+    expect(fixture.log.indexOf('active.discard')).toBeLessThan(fixture.log.indexOf('active.remove'));
     expect(result.actions.filter((entry) => entry.name === 'recovery.cleanup')).toHaveLength(1);
     expect(result.failures).toContainEqual({
       phase: 'active.discard', message: 'active discard failed',
     });
   });
 
-  it('attempts recovery cleanup once, keeps the write error primary, and appends cleanup failures', async () => {
+  it('keeps a write error primary without rolling back shared native/config state', async () => {
     const fixture = createFixture();
     fixture.fail.add('artifacts.write');
     fixture.fail.add('cleanup');
@@ -817,10 +836,10 @@ describe('rebuild operation failures', () => {
     });
     expect(result.status).toBe('failed');
     if (result.status === 'failed') expect(result.error.message).toBe('artifact write failed');
-    expect(fixture.cleanupCalls.native).toBe(1);
-    expect(fixture.cleanupCalls.artifact).toBe(1);
-    expect(fixture.cleanupCalls.active).toBe(0);
-    expect(result.failures.some((failure) => failure.message === 'cleanup failed')).toBe(true);
+    expect(fixture.cleanupCalls.native).toBe(0);
+    expect(fixture.cleanupCalls.artifact).toBe(0);
+    expect(fixture.cleanupCalls.active).toBe(1);
+    expect(result.failures.some((failure) => failure.message === 'cleanup failed')).toBe(false);
   });
 
   it('retains active when cleanup has an owner removal failure', async () => {
@@ -873,7 +892,7 @@ describe('rebuild operation failures', () => {
     }
   });
 
-  it('retains promoted active when postcheck recovery cleanup fails', async () => {
+  it('removes the promoted snapshot without rolling back shared state after postcheck failure', async () => {
     const fixture = createFixture();
     fixture.postcheckAbsent = true;
     fixture.fail.add('cleanup');
@@ -883,9 +902,9 @@ describe('rebuild operation failures', () => {
     expect(result.status).toBe('failed');
     if (result.status === 'failed') expect(result.error.phase).toBe('postcheck.inspect');
     expect(result.actions.filter((entry) => entry.name === 'recovery.cleanup')).toHaveLength(1);
-    expect(fixture.cleanupCalls.native).toBe(1);
-    expect(fixture.cleanupCalls.active).toBe(0);
-    expect(fixture.log).not.toContain('active.remove');
+    expect(fixture.cleanupCalls.native).toBe(0);
+    expect(fixture.cleanupCalls.active).toBe(1);
+    expect(fixture.log).toContain('active.remove');
   });
 
   it('reports active snapshot removal failure without retrying ownership cleanup', async () => {
@@ -971,20 +990,19 @@ describe('uninstall safety and dependency boundary', () => {
     expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
   });
 
-  it('does not consume a valid snapshot when no owned or native component is live', async () => {
+  it('uses a valid snapshot as live lifecycle evidence when owned components are absent', async () => {
     const fixture = createFixture();
     fixture.setActive('valid');
     const result = await executeRebuildOperation({
       command: 'uninstall', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
     });
 
-    expect(result.status).toBe('failed');
-    if (result.status === 'failed') expect(result.error.message).toContain('liveOwnershipRequired');
-    expect(fixture.log.some((entry) => entry.startsWith('lifecycle.uninstall'))).toBe(false);
-    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+    expect(result.status).toBe('succeeded');
+    expect(fixture.log).toContain('lifecycle.uninstall:1.0.0:/old/active-plugin.md');
+    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 1 });
   });
 
-  it('does not treat an empty shared marketplace cleanup component as live ownership', async () => {
+  it('preserves the snapshot when cleanup after a snapshot lifecycle leaves a residual', async () => {
     const fixture = createFixture({ requiresNative: false });
     fixture.target.ownedComponents = [{
       kind: 'shared-config',
@@ -1007,10 +1025,10 @@ describe('uninstall safety and dependency boundary', () => {
 
     expect(result).toMatchObject({
       status: 'failed',
-      error: { message: expect.stringContaining('liveOwnershipRequired') },
+      error: { message: expect.stringContaining('Ownership cleanup left residual components') },
     });
-    expect(fixture.log.some((entry) => entry.startsWith('lifecycle.uninstall'))).toBe(false);
-    expect(fixture.log).not.toContain('marketplace.remove');
+    expect(fixture.log).toContain('lifecycle.uninstall:1.0.0:/old/active-plugin.md');
+    expect(fixture.log).toContain('marketplace.remove');
     expect(fixture.log).not.toContain('active.remove');
   });
 

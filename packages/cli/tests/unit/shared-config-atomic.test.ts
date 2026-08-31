@@ -34,7 +34,7 @@ describe('shared config atomic updates', () => {
     await fs.symlink(externalTarget, configPath);
 
     await expect(applyCodexConfigTransactionFile(configPath, {
-      upsertManagedInstructionBlock: { pluginName: 'blocked', value: 'blocked' },
+      upsertPluginActivations: { 'blocked@aw': true },
     })).rejects.toThrow('symbolic link');
     await expect(fs.readFile(externalTarget, 'utf8')).resolves.toBe('title = "external"\n');
 

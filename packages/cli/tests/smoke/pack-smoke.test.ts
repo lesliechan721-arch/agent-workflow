@@ -229,9 +229,105 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     'process.exit(2);',
   ].join('\n');
   const codexScript = [
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
     "const args = process.argv.slice(2);",
-    "if (args[0] === '--version') { console.log('0.145.0'); process.exit(0); }",
-    'process.exit(0);',
+    "if (args[0] === '--version') { console.log('codex-cli 0.151.0'); process.exit(0); }",
+    "if (args[0] === 'plugin' && args[1] === '--help') { console.log('plugin help'); process.exit(0); }",
+    "const home = process.env.CODEX_HOME;",
+    "if (!home) { console.error('CODEX_HOME is required'); process.exit(2); }",
+    "const configPath = path.join(home, 'config.toml');",
+    "const statePath = path.join(home, 'fake-plugin-state.json');",
+    "const readJson = (file, fallback) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } };",
+    "const writeJson = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\\n'); };",
+    "const writeTable = (file, header, body) => {",
+    "  const content = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';",
+    "  const lines = content.trimEnd() ? content.trimEnd().split(/\\r?\\n/u) : [];",
+    "  const start = lines.indexOf(header);",
+    "  if (start >= 0) {",
+    "    let end = start + 1;",
+    "    while (end < lines.length && !lines[end].startsWith('[')) end += 1;",
+    "    lines.splice(start, end - start, header, ...body);",
+    "  } else {",
+    "    if (lines.length > 0) lines.push('');",
+    "    lines.push(header, ...body);",
+    "  }",
+    "  fs.mkdirSync(path.dirname(file), { recursive: true });",
+    "  fs.writeFileSync(file, lines.join('\\n') + '\\n');",
+    "};",
+    "const tableEnabled = (file, pluginId) => {",
+    "  if (!fs.existsSync(file)) return false;",
+    "  const lines = fs.readFileSync(file, 'utf8').split(/\\r?\\n/u);",
+    "  const start = lines.indexOf(`[plugins.${JSON.stringify(pluginId)}]`);",
+    "  if (start < 0) return false;",
+    "  for (let index = start + 1; index < lines.length && !lines[index].startsWith('['); index += 1) {",
+    "    if (/^enabled\\s*=\\s*true\\s*$/u.test(lines[index])) return true;",
+    "    if (/^enabled\\s*=\\s*false\\s*$/u.test(lines[index])) return false;",
+    "  }",
+    "  return false;",
+    "};",
+    "const projectTrusted = (file, cwd) => {",
+    "  if (!fs.existsSync(file)) return false;",
+    "  const lines = fs.readFileSync(file, 'utf8').split(/\\r?\\n/u);",
+    "  const header = `[projects.${JSON.stringify(fs.realpathSync(cwd))}]`;",
+    "  const start = lines.indexOf(header);",
+    "  if (start < 0) return false;",
+    "  for (let index = start + 1; index < lines.length && !lines[index].startsWith('['); index += 1) {",
+    "    if (/^trust_level\\s*=\\s*\"trusted\"\\s*$/u.test(lines[index])) return true;",
+    "  }",
+    "  return false;",
+    "};",
+    "if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'add') {",
+    "  const marketplaceRoot = args[3];",
+    "  const metadata = readJson(path.join(marketplaceRoot, 'config.json'), {});",
+    "  const marketplaceName = metadata.marketplaceName;",
+    "  if (typeof marketplaceName !== 'string') { console.error('marketplace name missing'); process.exit(2); }",
+    "  const state = readJson(statePath, { marketplaces: {}, plugins: {} });",
+    "  state.marketplaces[marketplaceName] = marketplaceRoot;",
+    "  writeJson(statePath, state);",
+    "  writeTable(configPath, `[marketplaces.${JSON.stringify(marketplaceName)}]`, [",
+    "    'source_type = \\\"local\\\"',",
+    "    `source = ${JSON.stringify(marketplaceRoot)}` ,",
+    "  ]);",
+    "  process.exit(0);",
+    "}",
+    "if (args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'list') {",
+    "  console.log(JSON.stringify(readJson(statePath, { marketplaces: {} }).marketplaces));",
+    "  process.exit(0);",
+    "}",
+    "if (args[0] === 'plugin' && args[1] === 'add') {",
+    "  const pluginId = args[2];",
+    "  const at = pluginId.lastIndexOf('@');",
+    "  const pluginName = pluginId.slice(0, at);",
+    "  const marketplaceName = pluginId.slice(at + 1);",
+    "  const state = readJson(statePath, { marketplaces: {}, plugins: {} });",
+    "  const marketplaceRoot = state.marketplaces[marketplaceName];",
+    "  const sourceRoot = path.join(marketplaceRoot, 'plugins', pluginName);",
+    "  const manifest = readJson(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), {});",
+    "  const cacheRoot = path.join(home, 'plugins', 'cache', marketplaceName, pluginName, manifest.version);",
+    "  fs.rmSync(cacheRoot, { recursive: true, force: true });",
+    "  fs.mkdirSync(path.dirname(cacheRoot), { recursive: true });",
+    "  fs.cpSync(sourceRoot, cacheRoot, { recursive: true });",
+    "  state.plugins[pluginId] = { pluginName, marketplaceName, version: manifest.version, path: sourceRoot };",
+    "  writeJson(statePath, state);",
+    "  writeTable(configPath, `[plugins.${JSON.stringify(pluginId)}]`, ['enabled = true']);",
+    "  process.exit(0);",
+    "}",
+    "if (args[0] === 'plugin' && args[1] === 'list') {",
+    "  if (!args.includes('--json')) { console.log('[]'); process.exit(0); }",
+    "  const state = readJson(statePath, { marketplaces: {}, plugins: {} });",
+    "  const projectConfig = path.join(process.cwd(), '.codex', 'config.toml');",
+    "  const installed = Object.entries(state.plugins).map(([pluginId, plugin]) => ({",
+    "    pluginId, installed: true,",
+    "    enabled: tableEnabled(configPath, pluginId)",
+    "      || (tableEnabled(projectConfig, pluginId) && projectTrusted(configPath, process.cwd())),",
+    "    version: plugin.version, source: { source: 'local', path: plugin.path },",
+    "  }));",
+    "  console.log(JSON.stringify({ installed, available: [] }));",
+    "  process.exit(0);",
+    "}",
+    "console.error(`Unsupported fake codex command: ${args.join(' ')}`);",
+    'process.exit(2);',
   ].join('\n');
 
   if (process.platform === 'win32') {
@@ -241,10 +337,14 @@ async function createExternalNativeCliFixture(tempRoot: string): Promise<string>
     await Promise.all([
       fs.writeFile(path.join(nativeBin, 'claude.cjs'), claudeScript, 'utf8'),
       fs.writeFile(path.join(nativeBin, 'claude.cmd'), '@node "%~dp0\\claude.cjs" %*\r\n', 'utf8'),
-      fs.writeFile(path.join(nativeBin, 'codex.cmd'), '@echo off\r\n', 'utf8'),
+      fs.writeFile(
+        path.join(nativeBin, 'codex.cmd'),
+        '@node "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n',
+        'utf8',
+      ),
       fs.writeJson(path.join(codexPackageRoot, 'package.json'), {
         name: '@openai/codex',
-        version: '0.145.0',
+        version: '0.151.0',
         bin: { codex: 'bin/codex.js' },
       }),
       fs.writeFile(codexLauncher, `${codexScript}\n`, 'utf8'),
@@ -413,12 +513,12 @@ describe('pack smoke', () => {
       }),
       fs.outputJson(path.join(localCodexFixture, 'package.json'), {
         name: '@openai/codex',
-        version: '0.150.1',
+        version: '0.151.0',
         bin: { codex: 'bin/codex.js' },
       }),
       fs.outputFile(path.join(localCodexFixture, 'bin', 'codex.js'), [
         "const args = process.argv.slice(2);",
-        "if (args.length === 1 && args[0] === '--version') { console.log('codex-cli 0.150.1'); process.exit(0); }",
+        "if (args.length === 1 && args[0] === '--version') { console.log('codex-cli 0.151.0'); process.exit(0); }",
         "if (args[0] === 'plugin' && args[1] === '--help') { console.log('plugin help'); process.exit(0); }",
         'process.exit(2);',
       ].join('\n')),
@@ -470,7 +570,7 @@ describe('pack smoke', () => {
           '    pnpmEntry = invocation.args[0];',
           "    const packageJsonPath = path.join(invocation.cwd, 'package.json');",
           "    const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));",
-          "    if (packageJson.dependencies?.['@openai/codex'] !== '0.150.1') throw new Error('Unexpected managed Codex dependency.');",
+          "    if (packageJson.dependencies?.['@openai/codex'] !== '0.151.0') throw new Error('Unexpected managed Codex dependency.');",
           "    packageJson.dependencies['@openai/codex'] = `file:${fixtureTarball}`;",
           "    await fs.writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\\n`);",
           '  }',
@@ -511,7 +611,7 @@ describe('pack smoke', () => {
       managedRuntimeHome,
       'runtimes',
       'codex',
-      '0.150.1',
+      '0.151.0',
       `${process.platform}-${process.arch}`,
     );
     expect(managedRuntime).toEqual({
@@ -527,7 +627,7 @@ describe('pack smoke', () => {
       '@openai',
       'codex',
       'package.json',
-    ))).resolves.toMatchObject({ name: '@openai/codex', version: '0.150.1' });
+    ))).resolves.toMatchObject({ name: '@openai/codex', version: '0.151.0' });
     await expect(fs.readFile(parentLockfile, 'utf8')).resolves.toBe(parentLockfileBefore);
     await expect(fs.readFile(parentMarker, 'utf8')).resolves.toBe(parentMarkerBefore);
     await expect(listFilesRecursively(parentNodeModules)).resolves.toEqual(parentNodeModulesBefore);
@@ -608,9 +708,43 @@ describe('pack smoke', () => {
       source: { action: 'added', primary: true },
     });
     const developmentSourceId = developmentSourceReceipt.source.id as string;
+    const untrustedInstallFailure = await execFileAsync(awBin, [
+      'install', `${developmentSourceId}/packed-build`, '-p', 'codex', '--scope', 'project', '--json',
+    ], {
+      cwd: standaloneWorkspace,
+      env: externalAuthoringEnv,
+      maxBuffer: 10 * 1024 * 1024,
+    }).then(
+      () => null,
+      (error: unknown) => error as { stdout?: string },
+    );
+    expect(untrustedInstallFailure).not.toBeNull();
+    expect(JSON.parse(untrustedInstallFailure?.stdout ?? '{}')).toMatchObject({
+      ok: false,
+      overallState: 'failed',
+      targets: expect.arrayContaining([expect.objectContaining({
+        pluginId: `${developmentSourceId}/packed-build`,
+        platform: 'codex',
+        scope: 'project',
+        errorCode: 'writeFailed',
+        failures: expect.arrayContaining([expect.objectContaining({
+          phase: 'postcheck.inspect',
+          message: expect.stringContaining('codexProjectConfigNotEffective'),
+        })]),
+      })]),
+    });
+    await fs.appendFile(path.join(externalAuthoringEnv.AW_CODEX_HOME, 'config.toml'), [
+      '',
+      `[projects.${JSON.stringify(await fs.realpath(standaloneWorkspace))}]`,
+      'trust_level = "trusted"',
+      '',
+    ].join('\n'));
     const externalInstall = await execFileAsync(awBin, [
       'install', `${developmentSourceId}/packed-build`, '-p', 'both', '--scope', 'project', '--json',
-    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 });
+    ], { cwd: standaloneWorkspace, env: externalAuthoringEnv, maxBuffer: 10 * 1024 * 1024 }).catch((error: unknown) => {
+      const failure = error as { stdout?: string; stderr?: string };
+      throw new Error(`Packed project install failed. stdout=${failure.stdout ?? ''} stderr=${failure.stderr ?? ''}`);
+    });
     expect(JSON.parse(externalInstall.stdout)).toMatchObject({
       ok: true,
       command: 'install',
@@ -620,6 +754,24 @@ describe('pack smoke', () => {
         expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project' }),
       ]),
     });
+    const projectCodexConfig = await fs.readFile(
+      path.join(standaloneWorkspace, '.codex', 'config.toml'),
+      'utf8',
+    );
+    expect(projectCodexConfig).toContain('[plugins."packed-build@aw"]');
+    expect(projectCodexConfig).not.toContain('mcp_servers');
+    await expect(fs.pathExists(path.join(standaloneWorkspace, '.codex', 'hooks.json')))
+      .resolves.toBe(false);
+    await expect(fs.pathExists(path.join(
+      externalAuthoringEnv.AW_CODEX_HOME,
+      'plugins',
+      'cache',
+      'aw',
+      'packed-build',
+      '0.1.0',
+      '.codex-plugin',
+      'plugin.json',
+    ))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.claude', 'settings.json'))).resolves.toBe(true);
     await expect(fs.readJson(path.join(externalAuthoringEnv.AW_HOME, 'catalog-sources.json')))
       .resolves.toMatchObject({

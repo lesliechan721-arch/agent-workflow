@@ -3,7 +3,8 @@ import fs from 'fs-extra';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV5Payload } from '../../src/commands/status-v5.js';
+import type { StatusV6Payload } from '../../src/commands/status-v6.js';
+import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import {
   configAffectedStatusTargets,
@@ -12,17 +13,25 @@ import {
 } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  createDependencyCatalogSnapshotFixture,
+} from '../helpers/catalog-source-fixture.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import {
+  canonicalizePluginIntentState,
+  readPluginIntentState,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
 const runtimeMocks = vi.hoisted(() => ({
-  statusCommandV5: vi.fn(),
+  statusCommandV6: vi.fn(),
   cleanupWriteCommand: vi.fn(),
   installWriteCommand: vi.fn(),
   reinstallWriteCommand: vi.fn(),
@@ -34,9 +43,9 @@ const runtimeMocks = vi.hoisted(() => ({
   resetPluginConfigWithHelper: vi.fn(),
 }));
 
-vi.mock('../../src/commands/status-v5.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/commands/status-v5.js')>(),
-  statusCommandV5: runtimeMocks.statusCommandV5,
+vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
+  statusCommandV6: runtimeMocks.statusCommandV6,
 }));
 
 vi.mock('../../src/commands/write-commands.js', () => ({
@@ -65,7 +74,8 @@ vi.mock('../../src/utils/plugin-config-write.js', () => ({
 function target(
   scope: 'user' | 'project',
   state: 'absent' | 'present' | 'partial' | 'error',
-): StatusV5Payload['targets'][number] {
+): StatusV6Payload['targets'][number] {
+  const enabled = state === 'present' || state === 'partial';
   return {
     pluginName: 'demo',
     pluginId: 'official/demo',
@@ -75,22 +85,33 @@ function target(
     platform: 'codex',
     scope,
     cwd: '/workspace',
+    desired: {
+      enabled,
+      scopes: enabled ? [scope] : [],
+      relation: enabled ? 'managed' : 'none',
+    },
+    actual: {
+      state: state === 'absent' ? 'absent'
+        : state === 'present' ? 'ready' : 'drifted',
+    },
     state,
     components: [],
     errors: state === 'error'
       ? [{ code: 'targetError', message: 'safe failure', severity: 'blocking' }]
       : [],
+    recovery: [],
+    activation: { [scope]: enabled, evidence: 'assumed' },
   };
 }
 
 function bundleUnavailableStatus(
   configDigest = 'sha256:config',
-): Awaited<ReturnType<typeof runtimeMocks.statusCommandV5>> {
+): Awaited<ReturnType<typeof runtimeMocks.statusCommandV6>> {
   const orphan = target('user', 'error');
   orphan.errors = [{ code: 'bundleUnavailable', message: 'safe failure', severity: 'blocking' }];
   return {
     payload: {
-      schemaVersion: 5,
+      schemaVersion: 6,
       catalog: {
         primarySourceId: 'official',
         configDigest,
@@ -139,7 +160,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     ['present', 'error'],
     ['error', 'present'],
   ] as const)('fails closed for forged %s + %s scope origin before any write', async (userState, projectState) => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', userState), target('project', projectState)] },
     });
     const isolation = getCurrentSourceTestIsolation();
@@ -173,7 +194,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   });
 
   it.each(['partial', 'present'] as const)('keeps present + %s scope conflict validation valid', async (projectState) => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', 'present'), target('project', projectState)] },
     });
     const isolation = getCurrentSourceTestIsolation();
@@ -199,6 +220,74 @@ describe('TUI controller runtime scope conflict validation', () => {
     }, new AbortController().signal)).resolves.toBeUndefined();
   });
 
+  it('validates sync from needsSync and rejects it after the target becomes ready', async () => {
+    const selected = target('project', 'present');
+    selected.actual.state = 'needsSync';
+    runtimeMocks.statusCommandV6.mockResolvedValue({ payload: { targets: [selected] } });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'sync' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'project' as const,
+    };
+
+    await expect(dependencies.validateIntent!(intent, new AbortController().signal))
+      .resolves.toBeUndefined();
+    selected.actual.state = 'ready';
+    await expect(dependencies.validateIntent!(intent, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'targetStateChanged' });
+    selected.platform = 'claude';
+    selected.actual.state = 'needsSync';
+    await expect(dependencies.validateIntent!({ ...intent, platform: 'claude' }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'syncPlatformUnsupported' });
+  });
+
+  it('allows pure-native user/project overlap but rejects mixed extension overlap', async () => {
+    const selected = target('project', 'present');
+    selected.desired = { enabled: true, scopes: ['user'], relation: 'root' };
+    selected.activation = { user: true, project: false, effective: true, evidence: 'observed' };
+    selected.sharedNative = {
+      pluginId: 'demo@aw-official', state: 'present', shared: true,
+    };
+    runtimeMocks.statusCommandV6.mockResolvedValue({ payload: { targets: [selected] } });
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'install' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'project' as const,
+    };
+
+    await expect(dependencies.validateIntent!(intent, new AbortController().signal))
+      .resolves.toBeUndefined();
+
+    delete selected.sharedNative;
+    await expect(dependencies.validateIntent!(intent, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'scopeConflict' });
+
+    selected.sharedNative = {
+      pluginId: 'demo@aw-official', state: 'present', shared: true,
+    };
+    selected.extensions = { state: 'conflict', kinds: ['instruction'] };
+    await expect(dependencies.validateIntent!(intent, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'scopeConflict' });
+  });
+
   it('includes the private revision sidecar in the target review fingerprint', () => {
     const targets = [target('user', 'present')];
     const current = [{
@@ -219,7 +308,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     ['unknown', 'present'],
     ['upgradeAvailable', 'partial'],
   ] as const)('rejects upgrade when revision is %s and placement is %s', async (revisionState, placementState) => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', placementState)] },
       targetRevisions: [{
         pluginId: 'official/demo', platform: 'codex', scope: 'user',
@@ -245,7 +334,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   });
 
   it('accepts upgrade only for a present placement with upgradeAvailable evidence', async () => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [target('user', 'present')] },
       targetRevisions: [{
         pluginId: 'official/demo', platform: 'codex', scope: 'user',
@@ -280,9 +369,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         catalog: {
           configDigest: configured.digest,
           compositeDigest: 'sha256:composite',
@@ -342,7 +431,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       },
     });
 
-    expect(runtimeMocks.statusCommandV5).toHaveBeenCalledOnce();
+    expect(runtimeMocks.statusCommandV6).toHaveBeenCalledOnce();
     expect(stages).toEqual(['config', 'evidence']);
     expect(debugLog.mock.calls.map(([event]) => event)
       .filter((event) => event.type.startsWith('review.prepare.'))).toEqual([
@@ -369,9 +458,9 @@ describe('TUI controller runtime scope conflict validation', () => {
     const projectTarget = {
       ...target('project', 'partial'), pluginId: 'team/demo', sourceId: 'team', platform: 'claude' as const,
     };
-    const statusResult = (targets: StatusV5Payload['targets']) => ({
+    const statusResult = (targets: StatusV6Payload['targets']) => ({
       payload: {
-        schemaVersion: 5 as const,
+        schemaVersion: 6 as const,
         catalog: {
           configDigest: configured.digest,
           compositeDigest: 'sha256:composite',
@@ -395,8 +484,8 @@ describe('TUI controller runtime scope conflict validation', () => {
       overallState: 'succeeded',
       targetResults: options.applyTargets.map((entry) => ({ target: entry, action: 'reinstall', state: 'completed' })),
     }));
-    const createController = async (targets: StatusV5Payload['targets']) => {
-      runtimeMocks.statusCommandV5.mockResolvedValue(statusResult(targets));
+    const createController = async (targets: StatusV6Payload['targets']) => {
+      runtimeMocks.statusCommandV6.mockResolvedValue(statusResult(targets));
       const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
@@ -444,7 +533,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       changes: [{ key: 'mode', title: 'Mode', before: 'old', after: 'stale' }],
     });
     const writesBeforeDrift = runtimeMocks.applyPluginConfigWrite.mock.calls.length;
-    runtimeMocks.statusCommandV5.mockResolvedValue(statusResult([userTarget]));
+    runtimeMocks.statusCommandV6.mockResolvedValue(statusResult([userTarget]));
     const stale = await drifting.executeOperation(driftReview.reviewToken);
     expect(stale).toMatchObject({ state: 'stale' });
     if (stale.state === 'stale') {
@@ -455,7 +544,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   });
 
   it('rejects config Review preparation without a loaded TUI session', async () => {
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
         catalog: {
           configDigest: 'sha256:stale-config',
@@ -482,7 +571,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     }, new AbortController().signal, (stage) => { stages.push(stage); }))
       .rejects.toMatchObject({ code: 'operationReviewStale' });
 
-    expect(runtimeMocks.statusCommandV5).not.toHaveBeenCalled();
+    expect(runtimeMocks.statusCommandV6).not.toHaveBeenCalled();
     expect(stages).toEqual([]);
   });
 
@@ -506,24 +595,19 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
         catalog: {
           configDigest: configured.digest,
           compositeDigest: 'sha256:composite',
         },
         targets: [{
-          pluginName: 'demo',
+          ...target('user', state),
           pluginId: 'team/demo',
           sourceId: 'team',
           sourceIdentity: 'identity:team',
           version: '0.0.0',
-          platform: 'codex',
-          scope: 'user',
           cwd: isolation.layout.fixtureCwd,
-          state,
-          components: [],
-          errors: [],
         }],
       },
       pluginSummaries: [{
@@ -562,8 +646,271 @@ describe('TUI controller runtime scope conflict validation', () => {
       source: { sourceId: 'team' },
     });
 
-    expect(runtimeMocks.statusCommandV5).toHaveBeenCalledOnce();
+    expect(runtimeMocks.statusCommandV6).toHaveBeenCalledOnce();
     expect(stages).toEqual(['status', 'catalog', 'evidence']);
+  });
+
+  it('passes overrides through Phase3 and persists a user-to-project adjustment without cleanup', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-placement-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'demo', dependencies: ['dependency'] },
+      { name: 'dependency' },
+    ]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const plan: DependencyOperationPlan = {
+      dependencyPlanSchemaVersion: 2,
+      dependencyPlanDigest: 'sha256:placement',
+      requestedPluginIds: ['team/demo'],
+      resolvedPluginIds: ['team/dependency', 'team/demo'],
+      dependencyEdges: [{ from: 'team/demo', to: 'team/dependency', platform: 'codex' }],
+      scopeOverrides: [{ pluginId: 'team/dependency', platform: 'codex', scope: 'user' }],
+      targets: [
+        {
+          pluginId: 'team/dependency', pluginName: 'dependency', platform: 'codex',
+          relation: 'dependency', depth: 1, requiredBy: ['team/demo'], rootScope: 'project',
+          minimumScope: 'project', resolvedScope: 'user', allowedScopes: ['project', 'user'],
+          assignmentSource: 'userOverride', locked: false, affectsOtherProjects: true,
+          state: 'present', action: 'keep', order: 0,
+        },
+        {
+          pluginId: 'team/demo', pluginName: 'demo', platform: 'codex',
+          relation: 'requested', depth: 0, requiredBy: [], rootScope: 'project',
+          minimumScope: 'project', resolvedScope: 'project', allowedScopes: ['project'],
+          assignmentSource: 'root', locked: true, affectsOtherProjects: false,
+          state: 'absent', action: 'install', order: 1,
+        },
+      ],
+      claimRoots: [{ pluginId: 'team/demo', platform: 'codex' }],
+    };
+    runtimeMocks.statusCommandV6.mockResolvedValue({
+      payload: {
+        schemaVersion: 6,
+        catalog: {
+          configDigest: configured.digest,
+          compositeDigest: 'sha256:composite',
+          primarySourceId: 'team',
+          sources: [],
+        },
+        filters: { plugins: ['team/demo'], platform: 'codex', cwd: isolation.layout.fixtureCwd },
+        targets: [
+          {
+            ...target('project', 'absent'),
+            pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
+            cwd: isolation.layout.fixtureCwd,
+          },
+          {
+            ...target('user', 'present'),
+            pluginName: 'dependency', pluginId: 'team/dependency',
+            sourceId: 'team', sourceIdentity: 'identity:team', cwd: isolation.layout.fixtureCwd,
+            desired: { enabled: true, scopes: ['user'], relation: 'dependency' },
+            actual: { state: 'ready' },
+            sharedNative: { pluginId: 'dependency@team', state: 'present', shared: true },
+            activation: { user: true, project: true, effective: true, evidence: 'observed' },
+          },
+        ],
+        errors: [],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team', sourceIdentity: 'identity:team',
+        dependencyDirectCount: 1, dependencyTotalCount: 1,
+      }],
+      targetRevisions: [],
+    });
+    runtimeMocks.installWriteCommand.mockResolvedValue({
+      dependencyPlan: plan,
+      targetResults: [],
+      overallState: 'succeeded',
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'install' as const,
+      pluginId: 'team/demo',
+      platform: 'codex' as const,
+      scope: 'project' as const,
+      dependencyScopeOverrides: [{
+        pluginId: 'team/dependency', platform: 'codex' as const, scope: 'user' as const,
+      }],
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(evidence.dependencyPlan).toEqual(plan);
+    expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
+      ['team/demo'],
+      expect.objectContaining({
+        platform: 'codex', scope: 'project',
+        dependencyScopeOverrides: intent.dependencyScopeOverrides,
+      }),
+      expect.objectContaining({ previewDependencyPlanOnly: true }),
+    );
+
+    await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
+      overallState: 'succeeded',
+    });
+    expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
+      ['team/demo'],
+      expect.objectContaining({
+        platform: 'codex', scope: 'project',
+        dependencyScopeOverrides: intent.dependencyScopeOverrides,
+      }),
+      expect.objectContaining({
+        expectedOperationDependencyPlan: plan,
+      }),
+    );
+
+    const projectPlan: DependencyOperationPlan = {
+      ...plan,
+      dependencyPlanDigest: 'sha256:project-placement',
+      scopeOverrides: [{ pluginId: 'team/dependency', platform: 'codex', scope: 'project' }],
+      targets: plan.targets.map((entry) => entry.pluginId === 'team/dependency'
+        ? {
+            ...entry,
+            resolvedScope: 'project',
+            assignmentSource: 'userOverride',
+            affectsOtherProjects: false,
+            action: 'keep',
+          }
+        : entry),
+    };
+    const projectIntent = canonicalizePluginIntentState({
+      schemaVersion: 1,
+      kind: 'aw-plugin-intents',
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/dependency', platform: 'codex', scope: 'user' },
+        { pluginId: 'team/unrelated', platform: 'claude', scope: 'user' },
+      ],
+      managed: { codexPluginIds: ['demo@team'] },
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, projectIntent);
+    runtimeMocks.installWriteCommand.mockClear();
+    runtimeMocks.installWriteCommand.mockResolvedValue({
+      dependencyPlan: projectPlan,
+      targetResults: [],
+      overallState: 'succeeded',
+    });
+    const desiredOnlyIntent = {
+      ...intent,
+      dependencyScopeOverrides: projectPlan.scopeOverrides,
+      dependencyPlacementAdjustment: true as const,
+      dependencyPlacementOnly: 'desired' as const,
+    };
+
+    const desiredOnlyEvidence = await dependencies.captureEvidence(
+      desiredOnlyIntent,
+      new AbortController().signal,
+    );
+    expect(desiredOnlyEvidence).toMatchObject({
+      dependencyPlan: projectPlan,
+      projectIntentDigest: expect.stringMatching(/^sha256:/u),
+    });
+    await expect(dependencies.executeIntent(desiredOnlyIntent, desiredOnlyEvidence))
+      .resolves.toEqual({ dependencyPlan: projectPlan, desiredPlacementUpdated: true });
+    expect(runtimeMocks.installWriteCommand).toHaveBeenCalledTimes(2);
+    expect(runtimeMocks.installWriteCommand.mock.calls.every((call) =>
+      call[2]?.previewDependencyPlanOnly === true)).toBe(true);
+    expect(runtimeMocks.cleanupWriteCommand).not.toHaveBeenCalled();
+    expect(runtimeMocks.reinstallWriteCommand).not.toHaveBeenCalled();
+    expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
+    expect(runtimeMocks.upgradeWriteCommand).not.toHaveBeenCalled();
+    await expect(readPluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toEqual(canonicalizePluginIntentState({
+      ...projectIntent,
+      dependencyScopeOverrides: [
+        { pluginId: 'team/dependency', platform: 'codex', scope: 'project' },
+        { pluginId: 'team/unrelated', platform: 'claude', scope: 'user' },
+      ],
+    }));
+  });
+
+  it('executes sync with reconcileIntentOnly through the reviewed write chain', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-sync-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const selected = {
+      ...target('project', 'present'),
+      pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
+      cwd: isolation.layout.fixtureCwd,
+      actual: { state: 'needsSync' as const },
+    };
+    runtimeMocks.statusCommandV6.mockResolvedValue({
+      payload: {
+        schemaVersion: 6,
+        catalog: {
+          configDigest: configured.digest,
+          compositeDigest: 'sha256:composite',
+          primarySourceId: 'team',
+          sources: [],
+        },
+        filters: { plugins: ['team/demo'], platform: 'codex', cwd: isolation.layout.fixtureCwd },
+        targets: [selected],
+        errors: [],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team', sourceIdentity: 'identity:team',
+        dependencyDirectCount: 0, dependencyTotalCount: 0,
+      }],
+      targetRevisions: [],
+    });
+    runtimeMocks.installWriteCommand.mockResolvedValue({
+      targetResults: [],
+      overallState: 'succeeded',
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'sync' as const,
+      pluginId: 'team/demo',
+      platform: 'codex' as const,
+      scope: 'project' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
+      ['team/demo'],
+      expect.objectContaining({ platform: 'codex', scope: 'project' }),
+      expect.objectContaining({ previewDependencyPlanOnly: true, reconcileIntentOnly: true }),
+    );
+    await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
+      overallState: 'succeeded',
+    });
+    expect(runtimeMocks.installWriteCommand).toHaveBeenCalledTimes(3);
+    expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
+      ['team/demo'],
+      expect.objectContaining({ platform: 'codex', scope: 'project' }),
+      expect.objectContaining({ reconcileIntentOnly: true }),
+    );
   });
 
   it('rejects an absent collision before install Review preparation', async () => {
@@ -580,13 +927,13 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: {
         catalog: { configDigest: configured.digest, compositeDigest: 'sha256:composite' },
         targets: [{
-          pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
-          version: '0.0.0', platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
-          state: 'absent', components: [],
+          ...target('user', 'absent'),
+          pluginId: 'team/demo', sourceId: 'team', sourceIdentity: 'identity:team',
+          version: '0.0.0', cwd: isolation.layout.fixtureCwd,
           errors: [{ code: 'artifactCollision', message: 'safe collision', severity: 'blocking' }],
         }],
       },
@@ -628,7 +975,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       message: 'safe collision',
       severity: 'blocking',
     }];
-    runtimeMocks.statusCommandV5.mockResolvedValue({
+    runtimeMocks.statusCommandV6.mockResolvedValue({
       payload: { targets: [collisionTarget] },
       targetRevisions: revisionState ? [{
         pluginId: 'official/demo',
@@ -676,7 +1023,7 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
     expect(stages).toEqual(['validate', 'evidence']);
-    expect(runtimeMocks.statusCommandV5).not.toHaveBeenCalled();
+    expect(runtimeMocks.statusCommandV6).not.toHaveBeenCalled();
   });
 
   it('stops a managed source mutation when public preflight rejects it', async () => {
@@ -763,7 +1110,7 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     expect(runtimeMocks.preparePortableInstall).toHaveBeenCalledOnce();
     expect(stages).toEqual(['portable', 'evidence']);
-    expect(runtimeMocks.statusCommandV5).not.toHaveBeenCalled();
+    expect(runtimeMocks.statusCommandV6).not.toHaveBeenCalled();
   });
 
   it('uses status ownership evidence to run ordinary cleanup when the current Catalog bundle is absent', async () => {
@@ -785,7 +1132,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       },
     });
     const configSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV5.mockResolvedValue(bundleUnavailableStatus(configSnapshot.digest));
+    runtimeMocks.statusCommandV6.mockResolvedValue(bundleUnavailableStatus(configSnapshot.digest));
     runtimeMocks.cleanupWriteCommand.mockResolvedValue({
       platforms: ['codex'],
       plugins: ['demo'],
@@ -804,8 +1151,6 @@ describe('TUI controller runtime scope conflict validation', () => {
         state: 'completed',
       }],
       overallState: 'succeeded',
-      nativePlugins: {},
-      repoManagedArtifacts: [],
       receiptTargets: [],
       codexManagerPreview: { state: 'requires-install' },
     });
@@ -842,7 +1187,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       codexManager: {
         state: 'requires-install',
         packageName: '@openai/codex',
-        version: '0.150.1',
+        version: '0.151.0',
       },
       targetFingerprint: expect.stringMatching(/^sha256:/u),
     });

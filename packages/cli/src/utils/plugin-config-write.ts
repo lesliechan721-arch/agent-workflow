@@ -20,7 +20,6 @@ import type {
 } from '../types.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js';
 import { resolveAwHome } from './paths.js';
-import { hasCodexProjectManagedArtifacts } from './codex-project-surface.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
@@ -161,11 +160,6 @@ async function discoverVisibleTargets(options: {
   for (const platform of ['codex', 'claude'] as const) {
     for (const scope of scopes) {
       if (!supportsPlatform(options.plugin.manifest, platform)) continue;
-      if (
-        platform === 'codex'
-        && scope === 'project'
-        && !hasCodexProjectManagedArtifacts(options.plugin)
-      ) continue;
       const target = await createCandidateTarget({
         pluginName: options.pluginName,
         platform,

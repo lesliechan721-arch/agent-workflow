@@ -1,11 +1,11 @@
-import type { StatusV5Target } from '../commands/status-v5.js';
+import type { StatusV6Target } from '../commands/status-v6.js';
 import type {
   CommandWizardCommand,
   CommandWizardPluginCandidate,
   CommandWizardSelection,
 } from '../commands/wizard.js';
 
-export function targetCanBeUninstalled(state: StatusV5Target['state']): boolean {
+export function targetCanBeUninstalled(state: StatusV6Target['state']): boolean {
   return state === 'present' || state === 'partial';
 }
 

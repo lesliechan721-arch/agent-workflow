@@ -172,6 +172,6 @@ describe('project key paths', () => {
     const paths = resolveCodexPaths(nestedDir, 'project');
 
     expect(paths.configDir).toBe(path.join(repoRoot, '.codex'));
-    expect(paths.hooksPath).toBe(path.join(repoRoot, '.codex', 'hooks.json'));
+    expect(paths.configTomlPath).toBe(path.join(repoRoot, '.codex', 'config.toml'));
   });
 });

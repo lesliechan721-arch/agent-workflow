@@ -5,12 +5,15 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { AgentVersionProbeResult } from '../types.js';
+import type {
+  AgentVersionProbeResult,
+  CodexOperationRequirement,
+} from '../types.js';
 import {
   extractStrictSemVerTokenFromVersionOutput,
   probeAgentVersion,
 } from './agent-version.js';
-import { tryParseStrictSemVer } from './manifest.js';
+import { compareStrictSemVer, tryParseStrictSemVer } from './manifest.js';
 import {
   getDefaultNativeCliRunner,
   runNativeCli,
@@ -20,12 +23,14 @@ import {
 import { getCodexHome, resolveAwHome } from './state-paths.js';
 
 export const MANAGED_CODEX_PACKAGE_NAME = '@openai/codex';
-export const MANAGED_CODEX_VERSION = '0.150.1';
+export const MANAGED_CODEX_VERSION = '0.151.0';
 export const MANAGED_CODEX_REGISTRY = 'https://registry.npmjs.org/';
 export const MANAGED_CODEX_MARKER_FILE = '.aw-managed-runtime.json';
 
 export type CodexManagerErrorCode =
   | 'codexSystemCliUnsupported'
+  | 'codexProjectPluginVersionTooLow'
+  | 'codexProjectPluginUnsupported'
   | 'managedCodexAuthorizationRequired'
   | 'managedCodexUnavailable';
 
@@ -47,10 +52,62 @@ export interface CodexManagerOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   execPath?: string;
+  operationRequirement?: CodexOperationRequirement;
   platform?: NodeJS.Platform;
   pnpmEntry?: string;
   runner?: NativeCliRunner;
 }
+
+export type CodexOperationConsumer =
+  | {
+      support: 'observed';
+      manager: CodexManager;
+      requirement: CodexOperationRequirement;
+    }
+  | {
+      support: 'assumed';
+      requirement: CodexOperationRequirement;
+    };
+
+export interface ResolveCodexOperationConsumerOptions extends CodexManagerOptions {
+  operationRequirement: CodexOperationRequirement;
+  requiresNativeMaterialization: boolean;
+}
+
+export interface InspectSystemCodexFilesystemOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  operationRequirement: CodexOperationRequirement;
+  platform?: NodeJS.Platform;
+}
+
+export type SystemCodexFilesystemInspection =
+  | {
+      state: 'missing';
+      requiredMinVersion: string;
+    }
+  | {
+      state: 'unobserved';
+      requiredMinVersion: string;
+    }
+  | {
+      state: 'compatible';
+      detectedVersion: string;
+      requiredMinVersion: string;
+    }
+  | {
+      state: 'incompatible';
+      code: 'codexProjectPluginVersionTooLow' | 'codexSystemCliUnsupported';
+      detectedVersion: string;
+      diagnostic: string;
+      requiredMinVersion: string;
+    }
+  | {
+      state: 'unresolved';
+      code: 'codexProjectPluginUnsupported' | 'codexSystemCliUnsupported';
+      diagnostic: string;
+      requiredMinVersion: string;
+    };
 
 export type CodexManagerPreview =
   | { state: 'system' | 'cached'; manager: CodexManager }
@@ -572,7 +629,11 @@ type SystemCommandManagerResolution =
   | { state: 'supported'; manager: CodexManager; expectedVersion?: string }
   | { state: 'unsupported'; diagnostic: string };
 
-function unsupportedSystemResolution(reason: string): SystemCommandManagerResolution {
+type PosixSystemCommandManagerResolution = SystemCommandManagerResolution | { state: 'unobserved' };
+
+function unsupportedSystemResolution(
+  reason: string,
+): Extract<SystemCommandManagerResolution, { state: 'unsupported' }> {
   return {
     state: 'unsupported',
     diagnostic: `The installed system Codex CLI is not supported. ${reason} Install or upgrade the official Codex CLI, or remove the invalid shim and retry; AW does not use managed fallback for this installation.`,
@@ -651,6 +712,129 @@ async function resolveWindowsNpmCodexManager(
   }
 }
 
+async function resolvePosixNpmCodexManager(
+  launcherPath: string,
+): Promise<PosixSystemCommandManagerResolution> {
+  try {
+    if (
+      path.basename(launcherPath) !== 'codex.js'
+      || path.basename(path.dirname(launcherPath)) !== 'bin'
+    ) {
+      return { state: 'unobserved' };
+    }
+    const launcherStats = await fs.lstat(launcherPath);
+    if (!launcherStats.isFile() || launcherStats.isSymbolicLink()) {
+      return unsupportedSystemResolution('The npm package launcher is not a regular file.');
+    }
+    const packageRoot = path.dirname(path.dirname(launcherPath));
+    const packageJsonPath = path.join(packageRoot, 'package.json');
+    const looksLikeOfficialPackagePath = path.basename(packageRoot) === 'codex'
+      && path.basename(path.dirname(packageRoot)) === '@openai';
+    if (!looksLikeOfficialPackagePath && !await fs.pathExists(packageJsonPath)) {
+      return { state: 'unobserved' };
+    }
+    const [packageStats, packageJsonStats, canonicalPackageRoot, canonicalPackageJson] = await Promise.all([
+      fs.lstat(packageRoot),
+      fs.lstat(packageJsonPath),
+      fs.realpath(packageRoot),
+      fs.realpath(packageJsonPath),
+    ]);
+    if (
+      !packageStats.isDirectory()
+      || packageStats.isSymbolicLink()
+      || !packageJsonStats.isFile()
+      || packageJsonStats.isSymbolicLink()
+      || !isPathWithin(canonicalPackageRoot, launcherPath)
+      || !isPathWithin(canonicalPackageRoot, canonicalPackageJson)
+    ) {
+      return unsupportedSystemResolution('The npm package or launcher is not a regular file tree.');
+    }
+    const packageJson = await fs.readJson(canonicalPackageJson).catch(() => undefined) as
+      | { name?: unknown; version?: unknown; bin?: unknown }
+      | undefined;
+    const bin = packageJson?.bin;
+    if (
+      packageJson?.name !== MANAGED_CODEX_PACKAGE_NAME
+      || typeof packageJson.version !== 'string'
+      || !tryParseStrictSemVer(packageJson.version)
+      || !bin
+      || typeof bin !== 'object'
+      || Array.isArray(bin)
+      || (bin as Record<string, unknown>).codex !== 'bin/codex.js'
+    ) {
+      return unsupportedSystemResolution('The npm package identity, version, or launcher contract is invalid.');
+    }
+    return {
+      state: 'supported',
+      expectedVersion: packageJson.version,
+      manager: {
+        kind: 'system',
+        version: packageJson.version,
+        command: process.execPath,
+        argsPrefix: [launcherPath],
+      },
+    };
+  } catch {
+    return unsupportedSystemResolution('The npm package identity or launcher is missing or unreadable.');
+  }
+}
+
+/**
+ * Reads only PATH and the canonical npm package tree. It never starts Codex or
+ * inspects managed runtime state.
+ */
+export async function inspectSystemCodexFilesystem(
+  options: InspectSystemCodexFilesystemOptions,
+): Promise<SystemCodexFilesystemInspection> {
+  const requiredMinVersion = options.operationRequirement.minimumVersion;
+  let command: string | undefined;
+  try {
+    command = await resolvePathExecutable('codex', options);
+  } catch {
+    return {
+      state: 'unresolved',
+      code: options.operationRequirement.requiresProjectPluginContract
+        ? 'codexProjectPluginUnsupported'
+        : 'codexSystemCliUnsupported',
+      diagnostic: 'The installed system Codex CLI is not supported. The PATH launcher is unreadable. Install or upgrade the official Codex CLI, or remove the invalid shim and retry.',
+      requiredMinVersion,
+    };
+  }
+  if (!command) return { state: 'missing', requiredMinVersion };
+  const platform = options.platform ?? process.platform;
+  const resolution = platform === 'win32'
+    ? await resolveWindowsNpmCodexManager(command)
+    : await resolvePosixNpmCodexManager(command);
+  if (resolution.state === 'unobserved') {
+    return { state: 'unobserved', requiredMinVersion };
+  }
+  if (resolution.state === 'unsupported' || !resolution.expectedVersion) {
+    return {
+      state: 'unresolved',
+      code: options.operationRequirement.requiresProjectPluginContract
+        ? 'codexProjectPluginUnsupported'
+        : 'codexSystemCliUnsupported',
+      diagnostic: resolution.state === 'unsupported'
+        ? resolution.diagnostic
+        : unsupportedSystemResolution('The npm package version is unavailable.').diagnostic,
+      requiredMinVersion,
+    };
+  }
+  const detectedVersion = resolution.expectedVersion;
+  if (compareStrictSemVer(detectedVersion, requiredMinVersion) < 0) {
+    return {
+      state: 'incompatible',
+      code: options.operationRequirement.requiresProjectPluginContract
+        ? 'codexProjectPluginVersionTooLow'
+        : 'codexSystemCliUnsupported',
+      detectedVersion,
+      diagnostic: `The installed system Codex CLI is not supported. Detected ${detectedVersion}. Required minimum: ${requiredMinVersion}. Upgrade the official Codex CLI and retry.`,
+      requiredMinVersion,
+    };
+  }
+  return { state: 'compatible', detectedVersion, requiredMinVersion };
+}
+
 async function resolveSystemCommandManager(
   command: string,
   options: CodexManagerOptions,
@@ -721,6 +905,7 @@ async function probeSystemCodex(options: CodexManagerOptions): Promise<SystemCod
     command: manager.command,
     cwd: options.cwd,
     env: options.env,
+    minimumVersion: options.operationRequirement?.minimumVersion,
     runner: options.runner,
   });
   if (
@@ -741,6 +926,18 @@ function unsupportedSystemDiagnostic(
 ): string {
   const detected = system.detectedVersion ? ` Detected ${system.detectedVersion}.` : '';
   return `The installed system Codex CLI is not supported.${detected} Required minimum: ${system.requiredMinVersion}. Upgrade the official Codex CLI and retry; AW does not bypass an installed but unsupported system CLI.`;
+}
+
+function unsupportedSystemCode(
+  options: Pick<CodexManagerOptions, 'operationRequirement'>,
+  result?: AgentVersionProbeResult,
+): CodexManagerErrorCode {
+  if (!options.operationRequirement?.requiresProjectPluginContract) {
+    return 'codexSystemCliUnsupported';
+  }
+  return result?.status === 'tooOld'
+    ? 'codexProjectPluginVersionTooLow'
+    : 'codexProjectPluginUnsupported';
 }
 
 const MANAGED_AUTHORIZATION_DIAGNOSTIC =
@@ -765,14 +962,14 @@ export async function previewCodexManager(
   if (system.state === 'unsupported') {
     return {
       state: 'blocked',
-      code: 'codexSystemCliUnsupported',
+      code: unsupportedSystemCode(options),
       diagnostic: system.diagnostic,
     };
   }
   if (system.state === 'probed') {
     return {
       state: 'blocked',
-      code: 'codexSystemCliUnsupported',
+      code: unsupportedSystemCode(options, system.result),
       diagnostic: unsupportedSystemDiagnostic(system.result),
     };
   }
@@ -799,15 +996,21 @@ export async function resolveCodexManager(
     };
   }
   if (system.state === 'unsupported') {
-    throw new CodexManagerError('codexSystemCliUnsupported', system.diagnostic);
+    throw new CodexManagerError(unsupportedSystemCode(options), system.diagnostic);
   }
   if (system.state === 'probed') {
     throw new CodexManagerError(
-      'codexSystemCliUnsupported',
+      unsupportedSystemCode(options, system.result),
       unsupportedSystemDiagnostic(system.result),
     );
   }
 
+  return resolveManagedCodexAfterMissingSystem(options);
+}
+
+async function resolveManagedCodexAfterMissingSystem(
+  options: CodexManagerOptions,
+): Promise<CodexManager> {
   const managed = await inspectManagedCodexRuntime(options);
   if (managed.state === 'valid') return managed.manager;
   if (managed.state === 'blocked') {
@@ -842,4 +1045,40 @@ export async function resolveCodexManager(
       MANAGED_UNAVAILABLE_DIAGNOSTIC,
     );
   }
+}
+
+export async function resolveCodexOperationConsumer(
+  options: ResolveCodexOperationConsumerOptions,
+): Promise<CodexOperationConsumer> {
+  const system = await probeSystemCodex(options);
+  if (system.state === 'probed' && system.result.status === 'supported') {
+    return {
+      support: 'observed',
+      manager: {
+        ...system.manager,
+        version: system.result.detectedVersion!,
+      },
+      requirement: options.operationRequirement,
+    };
+  }
+  if (system.state === 'unsupported') {
+    throw new CodexManagerError(unsupportedSystemCode(options), system.diagnostic);
+  }
+  if (system.state === 'probed') {
+    throw new CodexManagerError(
+      unsupportedSystemCode(options, system.result),
+      unsupportedSystemDiagnostic(system.result),
+    );
+  }
+  if (!options.requiresNativeMaterialization) {
+    return {
+      support: 'assumed',
+      requirement: options.operationRequirement,
+    };
+  }
+  return {
+    support: 'observed',
+    manager: await resolveManagedCodexAfterMissingSystem(options),
+    requirement: options.operationRequirement,
+  };
 }

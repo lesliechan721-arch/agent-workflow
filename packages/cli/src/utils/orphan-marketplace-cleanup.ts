@@ -172,6 +172,7 @@ export async function cleanupOrphanNamespacedMarketplaceRoot(options: {
     cwd: options.cwd,
     env: options.env,
     includeHistoricalProjects: true,
+    includeOrphanedCodexNativeResidue: true,
   });
   try {
     assertCatalogSourceInventoryComplete(inventory);

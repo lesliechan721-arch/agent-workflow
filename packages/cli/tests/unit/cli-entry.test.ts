@@ -16,7 +16,7 @@ function capture() {
 }
 
 describe('CLI entry v4', () => {
-  it('publishes the five write commands plus status and config', async () => {
+  it('publishes the write commands plus sync, status, and config', async () => {
     const output = capture();
     expect(await runCli(['--help'], { io: output.io })).toBe(0);
     for (const command of [
@@ -25,6 +25,7 @@ describe('CLI entry v4', () => {
       'reinstall',
       'uninstall',
       'cleanup',
+      'sync',
       'status',
       'config',
       'plugin',
@@ -35,6 +36,68 @@ describe('CLI entry v4', () => {
     }
   });
 
+  it('publishes Codex sync selection and stable non-interactive failure', async () => {
+    const help = capture();
+    expect(await runCli(['sync', '--help'], { io: help.io })).toBe(0);
+    expect(help.stdout()).toContain('--all');
+    expect(help.stdout()).toContain('--yes');
+    expect(help.stdout()).toContain('--allow-managed-codex-install');
+
+    const conflict = capture();
+    expect(await runCli([
+      'sync', 'official/demo', '--all', '--platform', 'codex', '--scope', 'project', '--json',
+    ], { interactive: false, io: conflict.io })).toBe(1);
+    expect(JSON.parse(conflict.stdout())).toEqual({
+      ok: false,
+      command: 'sync',
+      receiptSchemaVersion: 5,
+      overallState: 'failed',
+      warnings: [],
+      errors: [{
+        code: 'syncSelectorConflict',
+        message: 'syncSelectorConflict: Plugin selectors and --all are mutually exclusive.',
+      }],
+      layers: {
+        projectIntent: [{
+          pluginId: 'official/demo', platform: 'codex', scope: 'project',
+          relation: 'requested', action: 'keep', requiredBy: [],
+        }],
+        userIntent: [],
+        sharedCodexNative: [],
+        userActivation: [],
+        projectActivation: [],
+        awExtensions: [],
+      },
+      targets: [{
+        pluginName: 'demo',
+        pluginId: 'official/demo',
+        sourceId: 'official',
+        platform: 'codex',
+        scope: 'project',
+        status: 'failed',
+        cleanupAttempted: false,
+        actions: [],
+        removed: [],
+        absent: [],
+        residual: [],
+        quarantined: [],
+        failures: [],
+        desired: { scope: 'project', relation: 'requested' },
+        recovery: ['remove either plugin selectors or --all, then rerun sync'],
+      }],
+    });
+
+    const missing = capture();
+    expect(await runCli([
+      'sync', '--platform', 'codex', '--scope', 'project', '--json',
+    ], { interactive: false, io: missing.io })).toBe(1);
+    expect(JSON.parse(missing.stdout())).toMatchObject({
+      ok: false,
+      command: 'sync',
+      errors: [{ code: 'syncSelectionRequired' }],
+    });
+  });
+
   it.each(['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'])(
     'publishes managed Codex authorization on %s',
     async (command) => {
@@ -43,6 +106,16 @@ describe('CLI entry v4', () => {
       expect(output.stdout()).toContain('--allow-managed-codex-install');
     },
   );
+
+  it('publishes repeatable dependency placement on install only', async () => {
+    const install = capture();
+    expect(await runCli(['install', '--help'], { io: install.io })).toBe(0);
+    expect(install.stdout()).toContain('--dependency-scope');
+
+    const uninstall = capture();
+    expect(await runCli(['uninstall', '--help'], { io: uninstall.io })).toBe(0);
+    expect(uninstall.stdout()).not.toContain('--dependency-scope');
+  });
 
   it('asks once at the first interactive managed Codex acquisition', async () => {
     const confirm = vi.fn().mockResolvedValue({ cancelled: false, value: true });
@@ -194,13 +267,24 @@ describe('CLI entry v4', () => {
   });
 
   it.each([
-    { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install' },
-    { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set' },
-  ])('does not start a TUI for incomplete $command', async ({ argv, usage }) => {
+    { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install', jsonReceipt: true },
+    { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set', jsonReceipt: false },
+  ])('does not start a TUI for incomplete $command', async ({ argv, usage, jsonReceipt }) => {
     const output = capture();
     expect(await runCli(argv, { interactive: true, io: output.io })).toBe(1);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain(usage);
+    if (jsonReceipt) {
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        ok: false,
+        command: 'install',
+        receiptSchemaVersion: 5,
+        overallState: 'failed',
+        errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
+      });
+      expect(output.stderr()).toBe('');
+    } else {
+      expect(output.stdout()).toBe('');
+      expect(output.stderr()).toContain(usage);
+    }
   });
 
   it.each([

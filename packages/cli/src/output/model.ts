@@ -1,5 +1,4 @@
 import type {
-  CodexProjectManagedKind,
   CommandAction,
   PlatformName,
   RebuildActionEvent as SharedRebuildActionEvent,
@@ -55,15 +54,6 @@ export interface NativePostCheckEventData {
   suggestion?: string;
 }
 
-export interface NativeSkippedEventData {
-  platform: PlatformName;
-  scope: Scope;
-  plugin: string;
-  reason: string;
-  requiresNativeRuntime: boolean;
-  repoManagedArtifactKinds: CodexProjectManagedKind[];
-}
-
 export type RebuildActionEventData = SharedRebuildActionEventData;
 export type RebuildActionEvent = SharedRebuildActionEvent;
 
@@ -71,7 +61,6 @@ export type CommandEventType =
   | 'native:marketplace'
   | 'native:rpc'
   | 'native:post-check'
-  | 'native:skipped'
   | string;
 
 export type CommandEventData =
@@ -79,8 +68,7 @@ export type CommandEventData =
   | RebuildActionEventData
   | NativeMarketplaceEventData
   | NativeRpcEventData
-  | NativePostCheckEventData
-  | NativeSkippedEventData;
+  | NativePostCheckEventData;
 
 export interface CommandOutputSource {
   platform?: PlatformName;
