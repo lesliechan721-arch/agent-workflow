@@ -94,6 +94,12 @@ function isPathInsideOrEqual(root: string, candidate: string): boolean {
   )
 }
 
+function isStrictPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate)
+  return relative !== '' && relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
 function pathsOverlap(left: string, right: string): boolean {
   return isPathInsideOrEqual(left, right) || isPathInsideOrEqual(right, left)
 }
@@ -118,35 +124,68 @@ async function assertNoSymlinkOutputPath(target: string): Promise<string> {
   return resolved
 }
 
+async function resolvePhysicalPath(target: string): Promise<string> {
+  let current = path.resolve(target)
+  const suffix: string[] = []
+  while (true) {
+    const info = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (info) {
+      if (!info.isDirectory()) throw new Error('Output parent must be a regular directory.')
+      return path.join(await fs.realpath(current), ...suffix)
+    }
+    const parent = path.dirname(current)
+    if (parent === current) throw new Error('Output path has no existing directory ancestor.')
+    suffix.unshift(path.basename(current))
+    current = parent
+  }
+}
+
+async function resolvePhysicalOutputPath(target: string): Promise<string> {
+  await assertNoSymlinkOutputPath(target)
+  return resolvePhysicalPath(target)
+}
+
 async function assertAbsentSafeOutputDirectory(options: {
   target: string
   cwd: string
   workspaceRoot: string
   pluginRoots: string[]
 }): Promise<string> {
-  const target = await assertNoSymlinkOutputPath(options.target)
+  const target = await resolvePhysicalOutputPath(options.target)
   const existing = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return null
     throw error
   })
   if (existing) throw new Error('EvalSpec output already exists; refusing to replace foreign or existing content.')
+  const [workspaceRoot, cwd, home, ...pluginRoots] = await Promise.all([
+    fs.realpath(options.workspaceRoot),
+    fs.realpath(options.cwd),
+    resolvePhysicalPath(os.homedir()),
+    ...options.pluginRoots.map((root) => fs.realpath(root)),
+  ])
+  const workspaceEvalRoot = path.join(workspaceRoot, '.aw', 'evals')
+  const allowedWorkspaceOutput = isStrictPathInside(workspaceEvalRoot, target)
   const blocked = [
     path.parse(target).root,
-    path.resolve(options.cwd),
-    path.resolve(options.workspaceRoot),
-    ...options.pluginRoots.map((root) => path.resolve(root)),
-    path.resolve(os.homedir()),
+    cwd,
+    workspaceRoot,
+    ...pluginRoots,
+    home,
   ]
   if (
     blocked.some((entry) => isPathInsideOrEqual(target, entry))
-    || isPathInsideOrEqual(path.resolve(options.workspaceRoot), target)
-    || options.pluginRoots.some((root) => isPathInsideOrEqual(path.resolve(root), target))
+    || (!allowedWorkspaceOutput && isPathInsideOrEqual(workspaceRoot, target))
+    || pluginRoots.some((root) => isPathInsideOrEqual(root, target))
   ) {
     throw new Error('EvalSpec output target is too broad or overlaps source content.')
   }
   await fs.ensureDir(path.dirname(target))
-  await assertNoSymlinkOutputPath(target)
-  return target
+  const rechecked = await resolvePhysicalOutputPath(target)
+  if (rechecked !== target) throw new Error('EvalSpec output path changed while it was being prepared.')
+  return rechecked
 }
 
 async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSelection> {
@@ -284,12 +323,13 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     throw new Error('--baseline and --previous-version are mutually exclusive.')
   }
   const selection = await resolveSelection(options)
-  const finalOutput = await assertAbsentSafeOutputDirectory({
+  const outputBoundary = {
     target: path.resolve(options.cwd, options.output),
     cwd: options.cwd,
     workspaceRoot: selection.workspaceRoot,
     pluginRoots: selection.plugins.map((plugin) => plugin.rootDir),
-  })
+  }
+  const finalOutput = await assertAbsentSafeOutputDirectory(outputBoundary)
   const operationRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-eval-prepare-v1-'))
   const staging = await fs.mkdtemp(path.join(path.dirname(finalOutput), `.${path.basename(finalOutput)}.aw-eval-stage-`))
   let committed = false
@@ -383,7 +423,10 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     if (!caseValidation.valid) {
       throw new Error(`Prepared selected cases are invalid: ${caseValidation.errors.join('; ')}`)
     }
-    if (await fs.pathExists(finalOutput)) throw new Error('EvalSpec output appeared before commit.')
+    const recheckedOutput = await assertAbsentSafeOutputDirectory(outputBoundary)
+    if (recheckedOutput !== finalOutput) {
+      throw new Error('EvalSpec output path changed before commit.')
+    }
     await fs.rename(staging, finalOutput)
     committed = true
     keepOperationRoot = options.keepWorkspace === true

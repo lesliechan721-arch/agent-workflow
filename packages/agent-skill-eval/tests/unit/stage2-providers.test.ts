@@ -635,6 +635,7 @@ describe('custom process provider', () => {
   it('stages auth and Codex runtime variables outside the isolated HOME', async () => {
     const paths = await runRoot()
     const sourceCodexHome = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-auth-only-'))
+    const artifactPath = path.join(paths.outputDir, 'runtime-secret.txt')
     roots.push(sourceCodexHome)
     await writeFile(path.join(sourceCodexHome, 'auth.json'), JSON.stringify({
       tokens: { access_token: 'fake-auth-token' },
@@ -660,6 +661,7 @@ describe('custom process provider', () => {
       "if (process.env.AW_CODEX_EVAL_SENSITIVE_ENV_NAMES === undefined) throw new Error('sensitive names missing')",
       "const auth = JSON.parse(fs.readFileSync(path.join(runtimeHome, 'auth.json'), 'utf8'))",
       "if (auth.tokens.access_token !== 'fake-auth-token') throw new Error('staged auth mismatch')",
+      `fs.writeFileSync(${JSON.stringify(artifactPath)}, auth.tokens.access_token)`,
       "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
     ].join(';')
 
@@ -678,6 +680,7 @@ describe('custom process provider', () => {
       usage: null,
       grade: { passed: true, score: 1 },
     })
+    await expect(readFile(artifactPath, 'utf8')).resolves.toBe('[redacted]')
     await expect(access(path.join(paths.root, '.custom-provider-runtime')))
       .rejects.toMatchObject({ code: 'ENOENT' })
     await expect(access(path.join(paths.root, '.custom-provider-home')))
@@ -1125,17 +1128,47 @@ describe('custom process provider', () => {
     expect(after.nlink).toBe(before.nlink - 1)
   })
 
-  it('removes sensitive filenames, directory names, and symlink targets without reporting paths', async () => {
+  it('unlinks an output symlink without credentials or changes to its workspace target', async () => {
+    const paths = await runRoot()
+    const workspacePath = path.join(paths.workspacePath, 'input.txt')
+    const artifactPath = path.join(paths.outputDir, 'ordinary-link')
+    await writeFile(workspacePath, 'keep workspace bytes\n')
+    await symlink(workspacePath, artifactPath)
+
+    const result = await executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        'process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))',
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH },
+      processTree: availableProcessTree,
+    })
+
+    expect(result.diagnostics).toEqual([
+      'custom process credential cleanup removed an unredactable artifact.',
+    ])
+    await expect(lstat(artifactPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(workspacePath, 'utf8')).resolves.toBe('keep workspace bytes\n')
+  })
+
+  it('removes sensitive names and every output symlink without changing its workspace target', async () => {
     const paths = await runRoot()
     const secret = 'metadata-"\\\n\t-secret'
     const encoded = JSON.stringify(secret).slice(1, -1)
     const sensitiveFile = path.join(paths.outputDir, `file-${encoded}`)
     const sensitiveDirectory = path.join(paths.outputDir, `directory-${secret}`)
     const sensitiveLink = path.join(paths.outputDir, 'safe-link')
+    const workspaceSecret = path.join(paths.workspacePath, 'credential.txt')
+    const ordinaryLink = path.join(paths.outputDir, 'ordinary-link')
     await writeFile(sensitiveFile, 'safe content')
     await mkdir(sensitiveDirectory)
     await writeFile(path.join(sensitiveDirectory, 'safe.txt'), 'safe content')
     await symlink(`missing-${encoded}`, sensitiveLink)
+    await writeFile(workspaceSecret, secret)
+    await symlink(workspaceSecret, ordinaryLink)
 
     const result = await executeCustomProcessProvider({
       command: [
@@ -1149,7 +1182,7 @@ describe('custom process provider', () => {
       processTree: availableProcessTree,
     })
 
-    expect(result.diagnostics).toHaveLength(3)
+    expect(result.diagnostics).toHaveLength(4)
     expect(new Set(result.diagnostics)).toEqual(new Set([
       'custom process credential cleanup removed an unredactable artifact.',
     ]))
@@ -1159,6 +1192,8 @@ describe('custom process provider', () => {
     await expect(lstat(sensitiveFile)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(lstat(sensitiveDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(lstat(sensitiveLink)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(lstat(ordinaryLink)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(workspaceSecret, 'utf8')).resolves.toBe(secret)
   })
 
   it.each([
@@ -1221,13 +1256,13 @@ describe('custom process provider', () => {
     }
     expect(JSON.stringify(result ?? null)).not.toContain(secret)
     await expect(readFile(path.join(paths.workspacePath, 'workspace-secret.txt'), 'utf8'))
-      .resolves.toBe('[redacted]')
+      .resolves.toBe(secret)
     await expect(readFile(path.join(paths.fixturesPath, 'fixture-secret.txt'), 'utf8'))
-      .resolves.toBe('[redacted]')
+      .resolves.toBe(secret)
     await expect(readFile(path.join(paths.outputDir, 'output-secret.txt'), 'utf8'))
       .resolves.toBe('[redacted]')
     await expect(readFile(path.join(paths.root, 'cwd-secret.txt'), 'utf8'))
-      .resolves.toBe('[redacted]')
+      .resolves.toBe(secret)
     await expect(access(path.join(paths.outputDir, 'readonly-secret.txt')))
       .rejects.toMatchObject({ code: 'ENOENT' })
     await expect(access(path.join(paths.root, '.custom-provider-home')))
@@ -1236,19 +1271,26 @@ describe('custom process provider', () => {
       .rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  it('preserves provider failure diagnostics when credential cleanup removes the owned attempt', async () => {
+  it('preserves attempt inputs when credential cleanup removes only a failed output directory', async () => {
     const paths = await runRoot()
     const secret = 'cleanup-"\\\n\t-secret'
+    const inputPath = path.join(paths.workspacePath, 'input.txt')
+    await writeFile(inputPath, 'keep input bytes\n')
     const script = [
       "const fs = require('node:fs')",
       "const path = require('node:path')",
-      "const target = path.join(process.cwd(), 'locked')",
+      "let input = ''",
+      "process.stdin.setEncoding('utf8')",
+      "process.stdin.on('data', (chunk) => { input += chunk })",
+      "process.stdin.on('end', () => {",
+      "const target = path.join(JSON.parse(input).outputDir, 'locked')",
       'fs.mkdirSync(target)',
       "fs.writeFileSync(path.join(target, 'secret.txt'), process.env.OPENAI_API_KEY)",
       "fs.chmodSync(path.join(target, 'secret.txt'), 0o400)",
       'fs.chmodSync(target, 0o500)',
       "process.stderr.write(`provider stderr ${JSON.stringify(process.env.OPENAI_API_KEY).slice(1, -1)}`)",
       'process.exitCode = 7',
+      '})',
     ].join(';')
     let error: unknown
     try {
@@ -1264,10 +1306,13 @@ describe('custom process provider', () => {
     }
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toContain('failed with exit code 7')
-    expect((error as Error).message).toContain('credential cleanup removed the attempt')
+    expect((error as Error).message).toContain('credential cleanup removed the output directory')
     expect((error as Error).message).not.toContain(secret)
     expect((error as Error).message).not.toContain(JSON.stringify(secret).slice(1, -1))
-    await expect(access(paths.root)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(paths.outputDir)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(inputPath, 'utf8')).resolves.toBe('keep input bytes\n')
+    await expect(access(paths.fixturesPath)).resolves.toBeUndefined()
+    await expect(access(paths.root)).resolves.toBeUndefined()
   })
 
   it('merges provider, process release, and credential cleanup failures without losing exit details', async () => {

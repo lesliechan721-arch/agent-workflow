@@ -953,9 +953,11 @@ describe('EvalSpec v1 execution', () => {
     expect(resultBytes).not.toContain(secret)
     expect(resultBytes).not.toContain(JSON.stringify(secret).slice(1, -1))
     expect(resultBytes).toContain(control)
-    expect(await readFile(path.join(
+    const providerResultBytes = await readFile(path.join(
       without.root, first.result.runs[0]!.outputDir, 'provider-result.json',
-    ), 'utf8')).not.toContain(JSON.stringify(secret).slice(1, -1))
+    ), 'utf8')
+    expect(providerResultBytes).not.toContain(secret)
+    expect(providerResultBytes).not.toContain(JSON.stringify(secret).slice(1, -1))
 
     const previous = await fixture({ baseline: 'previous-version' })
     const previousObserved: string[] = []
