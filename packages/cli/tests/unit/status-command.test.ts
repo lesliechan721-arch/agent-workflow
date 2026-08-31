@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { statusCommandV6 } from '../../src/commands/status-v6.js';
-import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -34,7 +34,7 @@ async function configurePathSource(
     expectedDigest: current.digest,
     env: isolation.env,
   });
-  await refreshCatalogSourceGeneration({
+  await syncCatalogSourceGeneration({
     sourceId,
     cliVersion: '1.0.0',
     env: isolation.env,
@@ -508,7 +508,7 @@ describe('status v6 current behavior', () => {
       expectedDigest: current.digest,
       env: isolation.env,
     });
-    await refreshCatalogSourceGeneration({
+    await syncCatalogSourceGeneration({
       sourceId: 'good',
       cliVersion: '1.0.0',
       env: isolation.env,

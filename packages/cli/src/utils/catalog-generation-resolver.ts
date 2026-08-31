@@ -1,137 +1,132 @@
 import crypto from 'node:crypto';
 
 import type {
-  CatalogGenerationPointerV1,
+  CatalogGenerationActiveV1,
   CatalogGenerationSet,
   CatalogGenerationSetSource,
-  CatalogGenerationStateFileV1,
   CatalogSource,
   SourceIdentity,
 } from '../types.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
-import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import {
   readCatalogGenerationControlSnapshot,
   type CatalogGenerationControlSnapshot,
 } from './catalog-generation-control-snapshot.js';
+import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import {
-  readCatalogGeneration,
-  type PublishedCatalogGeneration,
+  createCatalogStoreKey,
+  readCatalogStoreEntry,
+  type CatalogStoreEntry,
 } from './catalog-generation-store.js';
+import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
 import { checkAwCapabilitySupport } from './manifest.js';
 
 export interface ResolvedActiveCatalogGeneration extends CatalogGenerationSetSource {
-  pointer: CatalogGenerationPointerV1;
+  active: CatalogGenerationActiveV1;
 }
 
 async function resolveFromState(options: {
   source: CatalogSource;
   sourceIdentity: SourceIdentity;
-  state: CatalogGenerationStateFileV1;
+  active?: CatalogGenerationActiveV1;
   env: NodeJS.ProcessEnv;
-  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
-  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
+  validatedStoreEntries?: Map<string, CatalogStoreEntry>;
+  validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
 }): Promise<ResolvedActiveCatalogGeneration> {
-  const selected = options.state.sources[options.source.id];
-  if (!selected?.active) {
+  if (!options.active) {
     throw new CatalogGenerationError({
       code: 'catalogGenerationUnavailable',
       sourceId: options.source.id,
-      message: `Catalog source "${options.source.id}" has no Active generation. Run aw catalog source refresh ${options.source.id}.`,
+      message: `Catalog source "${options.source.id}" has no Active snapshot. Run aw catalog source sync ${options.source.id}.`,
     });
   }
-  if (selected.active.sourceIdentity !== options.sourceIdentity) {
-    throw new CatalogGenerationError({
-      code: 'catalogGenerationIdentityMismatch',
-      sourceId: options.source.id,
-      message: `Active Catalog generation for source "${options.source.id}" does not match the current source identity. Confirm the configured location, run aw catalog source refresh ${options.source.id}, then reload and retry.`,
-    });
-  }
-  let generation = options.validatedGenerations?.get(selected.active.generationKey);
-  if (!generation) {
-    let pending = options.validatingGenerations?.get(selected.active.generationKey);
+  const fingerprint = calculateCatalogSourceConfigFingerprint(options.source);
+  if (
+    options.active.sourceIdentity !== options.sourceIdentity
+    || options.active.sourceConfigFingerprint !== fingerprint
+  ) throw new CatalogGenerationError({
+    code: 'catalogGenerationIdentityMismatch',
+    sourceId: options.source.id,
+    message: `Active Catalog snapshot for source "${options.source.id}" does not match the current source configuration. Run aw catalog source sync ${options.source.id}.`,
+  });
+  const storeKey = createCatalogStoreKey(options.active.logicalIdentity, options.active.snapshotDigest);
+  let entry = options.validatedStoreEntries?.get(storeKey);
+  if (!entry) {
+    let pending = options.validatingStoreEntries?.get(storeKey);
     if (!pending) {
-      pending = readCatalogGeneration({
-        logicalIdentity: selected.logicalIdentity!,
-        snapshotDigest: selected.active.snapshotDigest,
+      pending = readCatalogStoreEntry({
+        logicalIdentity: options.active.logicalIdentity,
+        snapshotDigest: options.active.snapshotDigest,
         env: options.env,
       });
-      options.validatingGenerations?.set(selected.active.generationKey, pending);
+      options.validatingStoreEntries?.set(storeKey, pending);
     }
     try {
-      generation = await pending;
-      options.validatedGenerations?.set(selected.active.generationKey, generation);
+      entry = await pending;
+      options.validatedStoreEntries?.set(storeKey, entry);
     } finally {
-      if (options.validatingGenerations?.get(selected.active.generationKey) === pending) {
-        options.validatingGenerations.delete(selected.active.generationKey);
+      if (options.validatingStoreEntries?.get(storeKey) === pending) {
+        options.validatingStoreEntries.delete(storeKey);
       }
     }
   }
-  const requiredCapabilities = generation.metadata.requiredAwCapabilities;
-  const support = checkAwCapabilitySupport(requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
+  if (entry.metadata.manifestDigest !== options.active.manifestDigest) {
+    throw new CatalogGenerationError({
+      code: 'catalogGenerationIdentityMismatch',
+      sourceId: options.source.id,
+      message: `Active Catalog snapshot for source "${options.source.id}" does not match store metadata. Run aw catalog source sync ${options.source.id}.`,
+    });
+  }
+  const support = checkAwCapabilitySupport(
+    entry.metadata.requiredAwCapabilities,
+    IMPLEMENTED_AW_CAPABILITIES,
+  );
   if (!support.supported) {
     throw new CatalogProviderCompatibilityError({
       sourceId: options.source.id,
-      requiredCapabilities,
+      requiredCapabilities: entry.metadata.requiredAwCapabilities,
       missingCapabilities: support.missing,
       availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
     });
   }
-  if (
-    generation.metadata.logicalIdentity !== selected.logicalIdentity
-    || generation.metadata.catalogVersion !== selected.active.catalogVersion
-    || generation.metadata.channel !== selected.active.channel
-    || generation.metadata.manifestDigest !== selected.active.manifestDigest
-    || generation.metadata.snapshotDigest !== selected.active.snapshotDigest
-    || generation.metadata.generationKey !== selected.active.generationKey
-  ) {
-    throw new CatalogGenerationError({
-      code: 'catalogGenerationIdentityMismatch',
-      sourceId: options.source.id,
-      message: `Active Catalog generation for source "${options.source.id}" does not match its immutable metadata. Refresh the source after repairing catalog-generations.json.`,
-    });
-  }
   return {
     sourceId: options.source.id,
-    sourceConfigFingerprint: selected.active.sourceConfigFingerprint,
-    sourceIdentity: selected.active.sourceIdentity,
-    logicalIdentity: selected.logicalIdentity!,
-    catalogVersion: selected.active.catalogVersion,
-    resolvedCommit: selected.active.resolvedCommit,
-    manifestDigest: selected.active.manifestDigest,
-    snapshotDigest: selected.active.snapshotDigest,
-    generationKey: selected.active.generationKey,
-    snapshotPath: generation.snapshotRoot,
-    manifest: generation.manifest,
-    pointer: selected.active,
+    sourceConfigFingerprint: options.active.sourceConfigFingerprint,
+    sourceIdentity: options.active.sourceIdentity,
+    logicalIdentity: options.active.logicalIdentity,
+    catalogVersion: entry.metadata.catalogVersion,
+    resolvedCommit: options.active.resolvedCommit,
+    manifestDigest: options.active.manifestDigest,
+    snapshotDigest: options.active.snapshotDigest,
+    storeKey,
+    snapshotPath: entry.snapshotRoot,
+    manifest: entry.manifest,
+    active: options.active,
   };
 }
 
 export async function resolveActiveCatalogGeneration(options: {
   sourceId: string;
   env?: NodeJS.ProcessEnv;
-  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
-  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
+  validatedStoreEntries?: Map<string, CatalogStoreEntry>;
+  validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
 }): Promise<ResolvedActiveCatalogGeneration> {
   const env = options.env ?? process.env;
-  const controlSnapshot = await readCatalogGenerationControlSnapshot({ env });
-  const source = controlSnapshot.configSnapshot.config.sources
-    .find((entry) => entry.id === options.sourceId);
-  if (!source) {
-    throw new CatalogGenerationError({
-      code: 'catalogGenerationSourceMissing',
-      sourceId: options.sourceId,
-      message: `Catalog source "${options.sourceId}" is not configured.`,
-    });
-  }
+  const control = await readCatalogGenerationControlSnapshot({ env });
+  const source = control.configSnapshot.config.sources.find((entry) => entry.id === options.sourceId);
+  if (!source) throw new CatalogGenerationError({
+    code: 'catalogGenerationSourceMissing',
+    sourceId: options.sourceId,
+    message: `Catalog source "${options.sourceId}" is not configured.`,
+  });
   return resolveFromState({
     source,
-    sourceIdentity: controlSnapshot.sourceIdentities[source.id]!,
-    state: controlSnapshot.generationState,
+    sourceIdentity: control.sourceIdentities[source.id]!,
+    active: control.generationState.sources[source.id]?.active,
     env,
-    validatedGenerations: options.validatedGenerations,
-    validatingGenerations: options.validatingGenerations,
+    validatedStoreEntries: options.validatedStoreEntries,
+    validatingStoreEntries: options.validatingStoreEntries,
   });
 }
 
@@ -140,72 +135,60 @@ export function calculateCatalogGenerationSetDigest(
   primarySourceId: string,
   sources: CatalogGenerationSetSource[],
 ): string {
-  const input = {
+  const identity = sources.map((source) => ({
+    sourceId: source.sourceId,
+    sourceConfigFingerprint: source.sourceConfigFingerprint,
+    logicalIdentity: source.logicalIdentity,
+    snapshotDigest: source.snapshotDigest,
+    storeKey: source.storeKey,
+  }));
+  return `sha256:${crypto.createHash('sha256').update(JSON.stringify({
     configDigest,
     primarySourceId,
-    sources: sources.map((source) => ({
-      sourceId: source.sourceId,
-      sourceConfigFingerprint: source.sourceConfigFingerprint,
-      sourceIdentity: source.sourceIdentity,
-      logicalIdentity: source.logicalIdentity,
-      catalogVersion: source.catalogVersion,
-      resolvedCommit: source.resolvedCommit,
-      manifestDigest: source.manifestDigest,
-      snapshotDigest: source.snapshotDigest,
-      generationKey: source.generationKey,
-    })),
-  };
-  return `sha256:${crypto.createHash('sha256').update(JSON.stringify(input)).digest('hex')}`;
+    sources: identity,
+  })).digest('hex')}`;
 }
 
 export async function resolveCatalogGenerationSet(options: {
   sourceIds?: string[];
   env?: NodeJS.ProcessEnv;
   controlSnapshot?: CatalogGenerationControlSnapshot;
-  validatedGenerations?: Map<string, PublishedCatalogGeneration>;
-  validatingGenerations?: Map<string, Promise<PublishedCatalogGeneration>>;
+  validatedStoreEntries?: Map<string, CatalogStoreEntry>;
+  validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
 } = {}): Promise<CatalogGenerationSet> {
   const env = options.env ?? process.env;
-  const controlSnapshot = options.controlSnapshot
-    ?? await readCatalogGenerationControlSnapshot({ env });
-  const validatedGenerations = options.validatedGenerations ?? new Map();
-  const validatingGenerations = options.validatingGenerations ?? new Map();
-  const config = controlSnapshot.configSnapshot;
-  const state = controlSnapshot.generationState;
-  const requested = options.sourceIds ? new Set(options.sourceIds) : null;
+  const control = options.controlSnapshot ?? await readCatalogGenerationControlSnapshot({ env });
+  const requested = options.sourceIds ? new Set(options.sourceIds) : undefined;
   if (requested) {
-    const configured = new Set(config.config.sources.map((source) => source.id));
-    const missing = [...requested].find((sourceId) => !configured.has(sourceId));
-    if (missing) {
-      throw new CatalogGenerationError({
-        code: 'catalogGenerationSourceMissing',
-        sourceId: missing,
-        message: `Catalog source "${missing}" is not configured.`,
-      });
-    }
+    const configured = new Set(control.configSnapshot.config.sources.map((source) => source.id));
+    const missing = options.sourceIds!.find((sourceId) => !configured.has(sourceId));
+    if (missing) throw new CatalogGenerationError({
+      code: 'catalogGenerationSourceMissing',
+      sourceId: missing,
+      message: `Catalog source "${missing}" is not configured.`,
+    });
   }
-  const configuredSources = config.config.sources
-    .filter((source) => !requested || requested.has(source.id))
-    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-  const resolved = await Promise.all(configuredSources.map((source) =>
-    resolveFromState({
-      source,
-      sourceIdentity: controlSnapshot.sourceIdentities[source.id]!,
-      state,
-      env,
-      validatedGenerations,
-      validatingGenerations,
-    })));
-  const sources: CatalogGenerationSetSource[] = resolved.map(({ pointer: _pointer, ...source }) => source);
-  const primarySourceId = config.config.sources.find((source) => source.primary)!.id;
+  const selected = control.configSnapshot.config.sources.filter(
+    (source) => !requested || requested.has(source.id),
+  );
+  const resolved = await Promise.all(selected.map((source) => resolveFromState({
+    source,
+    sourceIdentity: control.sourceIdentities[source.id]!,
+    active: control.generationState.sources[source.id]?.active,
+    env,
+    validatedStoreEntries: options.validatedStoreEntries,
+    validatingStoreEntries: options.validatingStoreEntries,
+  })));
+  const sources = resolved.map(({ active: _active, ...source }) => source);
+  const primarySourceId = control.configSnapshot.config.sources.find((source) => source.primary)!.id;
   return {
+    configDigest: control.configSnapshot.digest,
+    primarySourceId,
+    sources,
     generationSetDigest: calculateCatalogGenerationSetDigest(
-      config.digest,
+      control.configSnapshot.digest,
       primarySourceId,
       sources,
     ),
-    configDigest: config.digest,
-    primarySourceId,
-    sources,
   };
 }

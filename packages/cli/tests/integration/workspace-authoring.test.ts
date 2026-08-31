@@ -484,19 +484,20 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
     expect(await runCli([
       'catalog', 'validate', path.join(root, '.aw', 'catalog'),
     ], { cwd: root })).toBe(0);
-    await expect(catalogPathProviderInternal.resolve({
+    const resolution = await catalogPathProviderInternal.resolve({
       id: 'private-workspace',
       type: 'path',
       primary: true,
       path: path.join(root, '.aw', 'catalog'),
     }, {
       cliVersion: '99.0.0',
-      freshnessPolicy: 'forceRemote',
       env: { ...process.env, AW_HOME: path.join(root, 'aw-home') },
-    })).resolves.toMatchObject({
-      source: 'path',
+    });
+    expect(resolution).toMatchObject({
+      transport: 'path',
       manifest: { catalogVersion: '0.1.0' },
     });
+    await resolution.cleanup();
   });
 
   it('publishes immutable Git Catalog history without changing the source worktree', async () => {

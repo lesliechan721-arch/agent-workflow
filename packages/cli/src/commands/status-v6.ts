@@ -1009,13 +1009,11 @@ export async function statusCommandV6(options: {
   const identities = new Map(identityEntries);
   const catalog = await withResolvedMultiSourceCatalog({
     cliVersion,
-    freshnessPolicy: 'cacheFirst',
     configSnapshot: snapshot,
     ...(plannedSourceIds === undefined ? {} : { sourceIds: plannedSourceIds }),
     ...(options.catalogOperationContext
       ? { operationContext: options.catalogOperationContext }
       : {}),
-    bootstrapMissingActive: false,
     env,
     consume: async (resolution) => ({
       primarySourceId: resolution.primarySourceId,
@@ -1642,7 +1640,7 @@ export async function statusCommandV6(options: {
             resolvedCommit: item.resolution!.resolvedCommit,
             catalogVersion: item.resolution!.manifest.catalogVersion,
             channel: item.resolution!.manifest.channel,
-            freshness: item.resolution!.source,
+            freshness: 'active' as const,
             plugins,
           };
         } catch (error) {

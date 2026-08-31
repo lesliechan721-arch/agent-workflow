@@ -374,27 +374,26 @@ export function renderRebuildReceipt(
 
 export interface CliInitReceipt {
   ok: boolean;
-  changed: boolean;
-  warnings: string[];
   primarySourceId: string;
   configDigest: string;
   compositeDigest: string;
   sources: InitCommandResult['sources'];
+  recovery: string[];
 }
 
 export function buildInitReceiptJson(result: CliInitReceipt) {
   return {
     command: 'init' as const,
-    receiptSchemaVersion: 5 as const,
-    receiptKind: 'catalogCacheWarmup' as const,
+    receiptSchemaVersion: 6 as const,
+    receiptKind: 'catalogReadiness' as const,
     ...result,
   };
 }
 
 export function renderInitReceipt(result: CliInitReceipt): string[] {
   return [
-    `Catalog sources ${result.ok ? result.changed ? 'updated' : 'ready' : 'partially failed'}.`,
-    ...result.sources.map((source) => `- ${source.id}: ${source.ok ? source.freshness : source.error}`),
-    ...result.warnings,
+    `Catalog Active sources ${result.ok ? 'ready' : 'not ready'}.`,
+    ...result.sources.map((source) => `- ${source.id}: ${source.activeReady ? 'ready' : source.error}`),
+    ...result.recovery.map((recovery) => `Recovery: ${recovery}`),
   ];
 }

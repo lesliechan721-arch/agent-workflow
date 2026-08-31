@@ -12,113 +12,99 @@ import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-describe('Catalog generation CLI', () => {
-  it('refreshes and reports a Path Active generation through single-object JSON output', async () => {
+async function configurePathSource(root: string): Promise<NodeJS.ProcessEnv> {
+  const isolation = getCurrentSourceTestIsolation();
+  await createCatalogSnapshotFixture(root);
+  await fs.writeJson(path.join(root, '.aw-generated.json'), {
+    schemaVersion: 1,
+    kind: 'catalog',
+    workspaceIdentity: 'workspace:cli-source-sync',
+    sourceIdentity: `sha256:${crypto.createHash('sha256').update('cli-source-sync').digest('hex')}`,
+  }, { spaces: 2 });
+  const current = await readCatalogSourcesConfigSnapshot(isolation.env);
+  await replaceCatalogSourcesConfig({
+    config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
+    expectedDigest: current.digest,
+    env: isolation.env,
+  });
+  return isolation.env;
+}
+
+describe('Catalog source sync CLI', () => {
+  it('checks without creating Active, then syncs and reports ready offline status', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const root = path.join(isolation.layout.fixtureCwd, 'catalog-generation-cli');
-    await createCatalogSnapshotFixture(root);
-    await fs.writeJson(path.join(root, '.aw-generated.json'), {
-      schemaVersion: 1,
-      kind: 'catalog',
-      workspaceIdentity: 'workspace:cli-generation',
-      sourceIdentity: `sha256:${crypto.createHash('sha256').update('cli-generation').digest('hex')}`,
-    }, { spaces: 2 });
-    const current = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-      schemaVersion: 2,
-        sources: [{ id: 'local', type: 'path', primary: true, path: root }],
-      },
-      expectedDigest: current.digest,
-      env: isolation.env,
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-sync-cli');
+    const env = await configurePathSource(root);
+
+    const checked = await runCliEntry(['catalog', 'source', 'sync', 'local', '--check', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(checked.exitCode, checked.stderr).toBe(0);
+    expect(checked.parseJsonStdout()).toMatchObject({
+      command: 'catalog:source:sync', ok: true, sourceId: 'local', mode: 'check', outcome: 'checked',
+      activeChanged: false,
+    });
+    await expect(fs.pathExists(path.join(env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
+
+    const beforeStatus = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(beforeStatus.exitCode).toBe(0);
+    expect(beforeStatus.parseJsonStdout()).toMatchObject({
+      sources: [{ sourceId: 'local', activeReady: false }],
     });
 
-    const refreshed = await runCliEntry([
-      'catalog', 'source', 'refresh', 'local', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      interactive: false,
+    const synced = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
-    expect(refreshed.exitCode).toBe(0);
-    expect(refreshed.stderr).toBe('');
-    expect(refreshed.parseJsonStdout()).toMatchObject({
-      catalogGenerationSchemaVersion: 1,
-      command: 'catalog:source:refresh',
-      ok: true,
-      sourceId: 'local',
-      logicalIdentity: 'workspace:cli-generation',
-      outcome: 'activeReady',
+    expect(synced.exitCode, synced.stderr).toBe(0);
+    const syncReceipt = synced.parseJsonStdout();
+    expect(syncReceipt).toMatchObject({
+      command: 'catalog:source:sync', ok: true, sourceId: 'local', mode: 'sync', outcome: 'activated',
       activeChanged: true,
-      activeGenerationKey: expect.any(String),
-      active: { catalogVersion: '1.0.0' },
+      active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
     });
 
-    const status = await runCliEntry([
-      'catalog', 'source', 'generation-status', 'local', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      interactive: false,
+    const status = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
-    expect(status.exitCode).toBe(0);
-    expect(status.stderr).toBe('');
+    expect(status.exitCode, status.stderr).toBe(0);
     expect(status.parseJsonStdout()).toMatchObject({
-      catalogGenerationStatusSchemaVersion: 1,
       sources: [{
-        sourceId: 'local',
-        sourceType: 'path',
-        refreshPolicy: 'manual',
-        active: { catalogVersion: '1.0.0' },
+        sourceId: 'local', activeReady: true,
+        active: { snapshotDigest: syncReceipt.active.snapshotDigest },
+        lastSync: { mode: 'sync' },
       }],
     });
+  });
 
-    const manualPolicy = await runCliEntry([
-      'catalog', 'source', 'refresh-policy', 'local', 'manual', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      interactive: false,
+  it('does not expose removed rollout commands and keeps the old Active after sync fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-sync-failure');
+    const env = await configurePathSource(root);
+    const first = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
-    expect(manualPolicy.exitCode).toBe(0);
-    expect(manualPolicy.stderr).toBe('');
-    expect(manualPolicy.parseJsonStdout()).toMatchObject({
-      catalogGenerationSchemaVersion: 1,
-      command: 'catalog:source:refresh-policy',
-      ok: true,
-      sourceId: 'local',
-      refreshPolicy: 'manual',
-    });
+    expect(first.exitCode).toBe(0);
+    const activeDigest = first.parseJsonStdout().active.snapshotDigest;
+    await fs.remove(root);
 
-    const invalidPolicy = await runCliEntry([
-      'catalog', 'source', 'refresh-policy', 'local', 'startup', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      interactive: false,
+    const failed = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
     });
-    expect(invalidPolicy.exitCode).toBe(1);
-    expect(invalidPolicy.parseJsonStdout()).toMatchObject({
-      catalogGenerationSchemaVersion: 1,
-      command: 'catalog:source:refresh-policy',
-      ok: false,
-      errors: [{ code: 'catalogGenerationRefreshPolicyInvalid' }],
+    expect(failed.exitCode).toBe(1);
+    const status = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(status.parseJsonStdout()).toMatchObject({
+      sources: [{ activeReady: true, active: { snapshotDigest: activeDigest } }],
     });
 
-    const activation = await runCliEntry([
-      'catalog', 'source', 'activate-candidate', 'local', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      interactive: false,
-    });
-    expect(activation.exitCode).toBe(1);
-    expect(activation.parseJsonStdout()).toMatchObject({
-      catalogGenerationSchemaVersion: 1,
-      command: 'catalog:source:activate-candidate',
-      ok: false,
-      errors: [{ code: 'catalogGenerationCandidateUnavailable' }],
-    });
-    expect(activation.stderr).toContain('has no Candidate generation');
+    for (const command of ['refresh', 'activate-candidate', 'generation-status', 'refresh-policy']) {
+      const removed = await runCliEntry(['catalog', 'source', command, 'local'], {
+        cwd: isolation.layout.fixtureCwd, env, interactive: false,
+      });
+      expect(removed.exitCode).toBe(1);
+    }
   });
 });

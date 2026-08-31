@@ -40,7 +40,7 @@ import {
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import {
   resetPluginConfigWithHelper,
@@ -53,13 +53,13 @@ async function replaceCatalogSourcesConfig(
   options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
 ) {
   const replaced = await replaceCatalogSourcesConfigWithoutActive(options);
-  await Promise.all(options.config.sources.filter((source) => source.type === 'path').map(
-    async (source) => refreshCatalogSourceGeneration({
+  for (const source of options.config.sources.filter((entry) => entry.type === 'path')) {
+    await syncCatalogSourceGeneration({
       sourceId: source.id,
       cliVersion: '1.0.0',
       env: options.env,
-    }).catch(() => undefined),
-  ));
+    }).catch(() => undefined);
+  }
   return replaced;
 }
 

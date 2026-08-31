@@ -27,6 +27,7 @@ import {
   atomicReplaceConfigFile,
   withConfigFileMutation,
 } from './plugin-config.js';
+import { CatalogGenerationError } from './catalog-generation-error.js';
 import { resolveAwHome } from './state-paths.js';
 
 export const CATALOG_SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -362,15 +363,30 @@ async function readConfigAt(filePath: string): Promise<CatalogSourcesConfigSnaps
     rawConfig = await fs.readJson(filePath);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') throw error;
-    const config = createDefaultCatalogSourcesConfig();
-    return {
-      config,
-      digest: calculateCatalogSourcesConfigDigest(config),
-      materialized: false,
-    };
+    if (code === 'ENOENT') {
+      const config = createDefaultCatalogSourcesConfig();
+      return {
+        config,
+        digest: calculateCatalogSourcesConfigDigest(config),
+        materialized: false,
+      };
+    }
+    throw new CatalogGenerationError({
+      code: 'catalogSourcesConfigInvalid',
+      message: 'Catalog sources config is unreadable or invalid. Repair or remove catalog-sources.json, then run aw catalog source sync.',
+      cause: error,
+    });
   }
-  const config = validateCatalogSourcesConfig(rawConfig);
+  let config: CatalogSourcesConfig;
+  try {
+    config = validateCatalogSourcesConfig(rawConfig);
+  } catch (error) {
+    throw new CatalogGenerationError({
+      code: 'catalogSourcesConfigInvalid',
+      message: 'Catalog sources config is unreadable or invalid. Repair or remove catalog-sources.json, then run aw catalog source sync.',
+      cause: error,
+    });
+  }
   return {
     config,
     digest: calculateCatalogSourcesConfigDigest(config),

@@ -92,6 +92,10 @@ import {
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import {
+  catalogGenerationErrorCode,
+  isOfflineCleanupCatalogGenerationError,
+} from '../utils/catalog-generation-error.js';
+import {
   canonicalizePluginIntentState,
   convergePluginIntentManagedCodexOwnership,
   createEmptyPluginIntentState,
@@ -815,38 +819,17 @@ type LiveCleanupTarget = {
   lifecyclePluginVersion?: string;
 };
 
-function desiredCleanupNoopResult(
-  targets: LiveCleanupTarget[],
-  cwd: string,
-): RebuildCommandResult {
+function desiredCleanupNoopResult(targets: LiveCleanupTarget[], cwd: string): RebuildCommandResult {
   const rebuildResults: RebuildResult[] = targets.map((target) => ({
-    status: 'succeeded',
-    command: 'cleanup',
-    target: {
-      ...target,
-      pluginVersion: 'unavailable',
-      cwd,
-    },
-    actions: [],
-    cleanupAttempted: false,
-    removed: [],
-    absent: [],
-    residual: [],
-    quarantined: [],
-    failures: [],
+    status: 'succeeded', command: 'cleanup', target: { ...target, pluginVersion: 'unavailable', cwd },
+    actions: [], cleanupAttempted: false, removed: [], absent: [], residual: [], quarantined: [], failures: [],
   }));
   return {
     platforms: [...new Set(targets.map((target) => target.platform))],
     plugins: [...new Set(targets.map((target) => target.pluginName))],
-    warnings: [],
-    rebuildResults,
-    targetResults: rebuildResults.map((result) => ({
-      target: result.target,
-      action: 'keep',
-      state: 'completed',
-    })),
-    overallState: 'succeeded',
-    receiptTargets: targets,
+    warnings: [], rebuildResults,
+    targetResults: rebuildResults.map((result) => ({ target: result.target, action: 'keep', state: 'completed' })),
+    overallState: 'succeeded', receiptTargets: targets,
   };
 }
 
@@ -1266,9 +1249,7 @@ async function assertOfflineCleanupDependents(options: {
   readInventory: typeof inventoryCatalogSourceReferences;
 }): Promise<void> {
   const inventory = await options.readInventory({
-    cwd: options.cwd,
-    env: options.env,
-    includeHistoricalProjects: true,
+    cwd: options.cwd, env: options.env, includeHistoricalProjects: true,
   });
   const currentProjectKey = await resolveCanonicalRepoProjectKey(options.cwd);
   for (const target of options.targets) {
@@ -1288,12 +1269,9 @@ async function assertOfflineCleanupDependents(options: {
         && reference.platform === target.platform
         && (target.scope === 'user' || reference.scope === 'project')
         && (target.scope === 'user' || reference.projectKey === currentProjectKey));
-      if (live) {
-        throw namespacedPreflightError(
-          `dependencyStillRequired: ${target.pluginId} is required by ${consumerId}.`,
-          options.targets,
-        );
-      }
+      if (live) throw namespacedPreflightError(
+        `dependencyStillRequired: ${target.pluginId} is required by ${consumerId}.`, options.targets,
+      );
     }
   }
 }
@@ -1511,35 +1489,22 @@ export async function runRebuildCommand(options: {
       throw options.runtime.catalogBootstrapError;
     }
     const catalogOperation = options.runtime?.catalogOperationContext
-      ?? (options.command === 'cleanup'
-        ? undefined
-        : await measureCommandPerformanceStage(
-            options.runtime,
-            'catalog.context',
-            () => resolveCatalogOperationContext({
-              cliVersion: resolveRuntimeCliVersion(),
+      ?? await measureCommandPerformanceStage(
+          options.runtime,
+          'catalog.context',
+          () => resolveCatalogOperationContext({
               ...(sourceIds ? { sourceIds } : {}),
               env: runtimeEnv,
-              ...(options.runtime?.catalogGenerationRuntime
-                ? { runtime: options.runtime.catalogGenerationRuntime }
-                : {}),
-              ...(options.runtime?.awHomeMutationToken
-                ? { bootstrapMissingActive: false }
-                : {}),
-            }),
-          ));
+          }),
+        );
     if (options.runtime?.expectedGenerationSetDigest
       && catalogOperation?.generationSetDigest !== options.runtime.expectedGenerationSetDigest) {
       throw new Error('operationReviewStale: Active Catalog generation changed before mutation.');
     }
     const resolvedResult = await withResolvedMultiSourceCatalog({
       cliVersion: resolveRuntimeCliVersion(),
-      freshnessPolicy: 'cacheFirst',
       ...(sourceIds ? { sourceIds } : {}),
       ...(catalogOperation ? { operationContext: catalogOperation } : {}),
-      ...(options.command === 'cleanup' || options.runtime?.awHomeMutationToken
-        ? { bootstrapMissingActive: false }
-        : {}),
       env: runtimeEnv,
       consume: async (catalog) => {
       const failedSources = catalog.sources.filter((source) => source.error);
@@ -3284,12 +3249,9 @@ export async function runRebuildCommand(options: {
     }
     if (options.command !== 'cleanup' && options.command !== 'uninstall') throw error;
     const message = error instanceof Error ? error.message : String(error);
-    const catalogUnavailable = message.startsWith('Cannot resolve required catalog sources:')
-      || message.includes('does not exist in the required catalog source set')
-      || (message.includes('Catalog source')
-        && (message.includes('does not exist')
-          || message.includes('is not configured')
-          || message.includes('has no Active generation')));
+    const catalogUnavailable = isOfflineCleanupCatalogGenerationError(error)
+      || message.startsWith('Cannot resolve required catalog sources:')
+      || message.includes('does not exist in the required catalog source set');
     if (options.command === 'cleanup'
       && (catalogUnavailable || message.includes('sourceChanged'))
       && cleanupInventory
@@ -3299,10 +3261,8 @@ export async function runRebuildCommand(options: {
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
       });
-      const allTargetsRemainDesired = cleanupLiveTargets.every((target) =>
-        desiredIntent.roots.some((root) =>
-          root.pluginId === target.pluginId && root.platforms.includes(target.platform)));
-      if (allTargetsRemainDesired) {
+      if (cleanupLiveTargets.every((target) => desiredIntent.roots.some((root) =>
+        root.pluginId === target.pluginId && root.platforms.includes(target.platform)))) {
         return leaseSafeRebuildResult(desiredCleanupNoopResult(
           cleanupLiveTargets,
           options.commandOptions.cwd,
@@ -3316,23 +3276,24 @@ export async function runRebuildCommand(options: {
           readInventory,
         });
       }
-      const configuredSources = new Set(
-        (await readCatalogSourcesConfigSnapshot(runtimeEnv)).config.sources.map((source) => source.id),
-      );
-      const evidence = cleanupLiveTargets.flatMap((target) => {
-        const value = offlineCleanupEvidenceFromInventory({
-          reason: expectedOfflineCleanup?.reason
-            ?? (configuredSources.has(target.sourceId) ? 'bundleUnavailable' : 'sourceMissing'),
-          pluginId: target.pluginId,
-          pluginName: target.pluginName,
-          sourceId: target.sourceId,
-          sourceIdentity: target.sourceIdentity,
-          platform: target.platform,
-          scope: target.scope,
-          inventory: cleanupInventory,
-        });
-        return value ? [value] : [];
-      });
+      const configuredSources = await readCatalogSourcesConfigSnapshot(runtimeEnv)
+        .then((snapshot) => new Set(snapshot.config.sources.map((source) => source.id)))
+        .catch(() => new Set<string>());
+      const evidence = expectedOfflineCleanup
+        ? [expectedOfflineCleanup]
+        : cleanupLiveTargets.flatMap((target) => {
+            const value = offlineCleanupEvidenceFromInventory({
+              reason: configuredSources.has(target.sourceId) ? 'bundleUnavailable' : 'sourceMissing',
+              pluginId: target.pluginId,
+              pluginName: target.pluginName,
+              sourceId: target.sourceId,
+              sourceIdentity: target.sourceIdentity,
+              platform: target.platform,
+              scope: target.scope,
+              inventory: cleanupInventory,
+            });
+            return value ? [value] : [];
+          });
       if (options.runtime?.previewDependencyPlanOnly) {
         return previewOfflineOwnedComponents({
           targets: cleanupLiveTargets,
@@ -3363,7 +3324,7 @@ export async function runRebuildCommand(options: {
         legacyLiveTargets,
       );
     }
-    if ((message.includes('Catalog source') && message.includes('does not exist'))
+    if (catalogGenerationErrorCode(error) === 'catalogGenerationSourceMissing'
       || message.includes('does not exist in the required catalog source set')) {
       throw namespacedPreflightError(
         `sourceMissing: ${message} Run cleanup for owner recovery, or cleanup --force for an exclusively owned damaged target.`,

@@ -12,24 +12,20 @@ import {
   calculateCatalogSourceIdentity,
   canonicalizeCatalogGitUrl,
 } from './catalog-source-identity.js';
-import {
-  catalogSourceCacheInternal,
-} from './catalog-source-cache.js';
 import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
 import { resolveCatalogSourceRef } from './catalog-sources.js';
 import { checkAwCapabilitySupport } from './manifest.js';
 import { NativeCliError, runNativeCli } from './native-cli.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
+import {
+  canonicalizePathThroughExistingAncestorSync,
+  ensureRegularDirectoryPath,
+  resolveAwHome,
+} from './state-paths.js';
 
 const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DEFAULT_REMOTE_TIMEOUT_MS = 180_000;
-const {
-  ensureCatalogSourceCacheLocation,
-  publishCatalogSourceCacheEntry,
-  readCatalogSourceCache,
-  resolveCatalogSourceCacheLocation,
-} = catalogSourceCacheInternal;
 
 class CatalogGitDeadlineError extends Error {
   constructor(timeoutMs: number) {
@@ -456,28 +452,6 @@ async function materializeCommit(options: {
   }
 }
 
-function fromCacheEntry(
-  entry: Awaited<ReturnType<typeof readCatalogSourceCache>> & {},
-  source: 'remote' | 'cache',
-  cacheFallback: boolean,
-  remoteFailure?: string,
-): CatalogSourceResolution {
-  return {
-    sourceId: entry.metadata.sourceId,
-    sourceIdentity: entry.metadata.sourceIdentity,
-    requestedRef: entry.metadata.requestedRef,
-    resolvedCommit: entry.metadata.resolvedCommit,
-    rootDir: entry.snapshotRoot,
-    manifest: entry.validation.manifest,
-    manifestDigest: entry.validation.manifestDigest,
-    snapshotDigest: entry.validation.snapshotDigest,
-    cacheEntryKey: entry.metadata.entryKey,
-    source,
-    cacheFallback,
-    ...(remoteFailure ? { remoteFailure } : {}),
-  };
-}
-
 async function resolveGitCatalogSource(
   source: GitCatalogSource,
   options: CatalogProviderRuntimeOptions,
@@ -506,25 +480,17 @@ async function resolveGitCatalogSourceDirect(
   const configuredIdentityUrl = canonicalizeCatalogGitUrl(source.url);
   const sourceIdentity = await calculateCatalogSourceIdentity(source);
   const requestedRef = resolveCatalogSourceRef(source.refPolicy, options.cliVersion);
-  const location = resolveCatalogSourceCacheLocation({ sourceId: source.id, sourceIdentity, env });
-  if (options.freshnessPolicy === 'cacheFirst') {
-    const cached = await readCatalogSourceCache({
-      location,
-      sourceId: source.id,
-      sourceIdentity,
-      requestedRef,
-      cliVersion: options.cliVersion,
-      signal: options.signal,
-    });
-    if (cached) return fromCacheEntry(cached, 'cache', false);
-  }
-
   const deadline = createDeadlineSignal(options.signal, readRemoteTimeout(env));
-  const refreshRoot = path.join(location.rootDir, `.refresh-${crypto.randomUUID()}.tmp`);
+  const temporaryRoot = path.join(
+    canonicalizePathThroughExistingAncestorSync(resolveAwHome(env)),
+    'tmp',
+  );
+  await ensureRegularDirectoryPath(temporaryRoot, 'Catalog provider temporary directory');
+  const refreshRoot = await fs.mkdtemp(path.join(temporaryRoot, 'catalog-git-'));
   const objectsDir = path.join(refreshRoot, 'objects.git');
   const stagingRoot = path.join(refreshRoot, 'snapshot');
+  let returned = false;
   try {
-    await ensureCatalogSourceCacheLocation(location);
     await assertGitUrlIdentity({
       configuredTransport: source.url,
       configuredIdentityUrl,
@@ -537,7 +503,6 @@ async function resolveGitCatalogSourceDirect(
       env,
       deadline,
     });
-    await fs.mkdir(refreshRoot);
     await runGit({
       args: ['-c', 'init.defaultRefFormat=files', 'init', '--bare', `--object-format=${target.objectFormat}`, objectsDir],
       env,
@@ -577,18 +542,24 @@ async function resolveGitCatalogSourceDirect(
         availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
       });
     }
-    const entry = await publishCatalogSourceCacheEntry({
-      location,
+    returned = true;
+    let cleaned = false;
+    return {
       sourceId: source.id,
       sourceIdentity,
       requestedRef,
-      cliVersion: options.cliVersion,
       resolvedCommit: commit,
-      snapshotRoot: stagingRoot,
-      validation,
-      signal: deadline.signal,
-    });
-    return fromCacheEntry(entry, 'remote', false);
+      rootDir: stagingRoot,
+      manifest: validation.manifest,
+      manifestDigest: validation.manifestDigest,
+      snapshotDigest: validation.snapshotDigest,
+      transport: 'git',
+      async cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        await fs.remove(refreshRoot);
+      },
+    };
   } catch (error) {
     const failure: unknown = deadline.signal?.aborted && deadline.signal.reason instanceof Error
       ? deadline.signal.reason
@@ -601,6 +572,6 @@ async function resolveGitCatalogSourceDirect(
     throw createPublicGitError(source.id, failure, sensitiveTransports);
   } finally {
     deadline.dispose();
-    await fs.remove(refreshRoot).catch(() => undefined);
+    if (!returned) await fs.remove(refreshRoot).catch(() => undefined);
   }
 }

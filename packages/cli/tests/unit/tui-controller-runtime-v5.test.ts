@@ -19,8 +19,9 @@ import {
 } from '../helpers/catalog-source-fixture.js';
 import {
   readCatalogSourcesConfigSnapshot,
-  replaceCatalogSourcesConfig,
+  replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import {
   canonicalizePluginIntentState,
@@ -29,6 +30,18 @@ import {
 } from '../../src/utils/plugin-intent-state.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
+
+async function replaceCatalogSourcesConfig(
+  options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
+) {
+  const result = await replaceCatalogSourcesConfigWithoutActive(options);
+  for (const source of options.config.sources) {
+    await syncCatalogSourceGeneration({
+      sourceId: source.id, cliVersion: '1.0.0', env: options.env,
+    });
+  }
+  return result;
+}
 
 const runtimeMocks = vi.hoisted(() => ({
   statusCommandV6: vi.fn(),
@@ -1001,7 +1014,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('uses one source mutation preflight for review validation and evidence', async () => {
     runtimeMocks.preflightCatalogSourceMutation.mockResolvedValue({
       configDigest: 'sha256:before',
-      candidateDigest: 'sha256:after',
+      proposedConfigDigest: 'sha256:after',
       sourceIdentity: 'sha256:source',
       references: { references: [], errors: [] },
     });
@@ -1018,7 +1031,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       action: 'setPrimary',
       sourceId: 'team',
     }, new AbortController().signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
-      sourceWrite: { configDigest: 'sha256:before', candidateDigest: 'sha256:after' },
+      sourceWrite: { configDigest: 'sha256:before', proposedConfigDigest: 'sha256:after' },
     });
 
     expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
@@ -1051,7 +1064,7 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('does not return source evidence after cancellation during an unsupported preflight boundary', async () => {
     let resolvePreflight!: (value: {
       configDigest: string;
-      candidateDigest: string;
+      proposedConfigDigest: string;
       references: { references: never[]; errors: never[] };
     }) => void;
     runtimeMocks.preflightCatalogSourceMutation.mockReturnValue(new Promise((resolve) => {
@@ -1075,7 +1088,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     abort.abort();
     resolvePreflight({
       configDigest: 'sha256:before',
-      candidateDigest: 'sha256:after',
+      proposedConfigDigest: 'sha256:after',
       references: { references: [], errors: [] },
     });
 

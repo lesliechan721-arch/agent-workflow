@@ -2,31 +2,25 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import {
-  CATALOG_GENERATIONS_FILE,
-  CATALOG_GENERATIONS_SCHEMA_VERSION,
-} from '../constants.js';
+import { CATALOG_STATE_FILE, CATALOG_STATE_SCHEMA_VERSION } from '../constants.js';
 import type {
-  CatalogGenerationCandidateV1,
-  CatalogGenerationLastCheckV1,
-  CatalogGenerationPointerV1,
+  CatalogGenerationActiveV1,
+  CatalogGenerationLastSyncV1,
   CatalogGenerationStateFileV1,
   CatalogSourceGenerationStateV1,
 } from '../types.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
-import { createCatalogGenerationKey } from './catalog-generation-store.js';
 import { CATALOG_SOURCE_ID_PATTERN } from './catalog-sources.js';
-import { parseStrictSemVer } from './manifest.js';
 import { atomicReplaceConfigFile } from './plugin-config.js';
 import { resolveAwHome } from './state-paths.js';
 
-const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
-const RESOLVED_COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|path:sha256:[0-9a-f]{64})$/u;
+const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|path:sha256:[0-9a-f]{64})$/u;
 
 function stateError(message: string, cause?: unknown): CatalogGenerationError {
   return new CatalogGenerationError({
     code: 'catalogGenerationStateInvalid',
-    message: `${message} Repair or remove catalog-generations.json, then refresh configured sources. This state never authorizes plugin deletion.`,
+    message: `${message} Repair or remove catalog-state.json, then run aw catalog source sync. This state never authorizes plugin deletion.`,
     cause,
   });
 }
@@ -35,176 +29,97 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function assertAllowedKeys(
-  value: Record<string, unknown>,
-  fieldName: string,
-  allowed: readonly string[],
-): void {
+function assertKeys(value: Record<string, unknown>, name: string, allowed: readonly string[]): void {
   const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
-  if (unexpected) throw stateError(`Invalid ${fieldName}: unknown field "${unexpected}".`);
+  if (unexpected) throw stateError(`Invalid ${name}: unknown field "${unexpected}".`);
 }
 
-function parseDate(value: unknown, fieldName: string): string {
+function parseDate(value: unknown, name: string): string {
   if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
-    throw stateError(`Invalid ${fieldName}: expected an ISO date.`);
+    throw stateError(`Invalid ${name}: expected an ISO date.`);
   }
   return value;
 }
 
-function parsePointer(
-  value: unknown,
-  fieldName: string,
-  candidate: false,
-): CatalogGenerationPointerV1;
-function parsePointer(
-  value: unknown,
-  fieldName: string,
-  candidate: true,
-): CatalogGenerationCandidateV1;
-function parsePointer(
-  value: unknown,
-  fieldName: string,
-  candidate: boolean,
-): CatalogGenerationPointerV1 | CatalogGenerationCandidateV1 {
-  if (!isRecord(value)) throw stateError(`Invalid ${fieldName}: expected an object.`);
-  const baseKeys = [
-    'sourceConfigFingerprint', 'sourceIdentity', 'catalogVersion', 'channel', 'requestedRef',
-    'resolvedCommit', 'manifestDigest', 'snapshotDigest', 'generationKey', 'activatedAt',
-  ];
-  assertAllowedKeys(
-    value,
-    fieldName,
-    candidate ? [...baseKeys, 'candidateKind', 'downloadedAt'] : baseKeys,
-  );
+function parseActive(value: unknown, name: string): CatalogGenerationActiveV1 {
+  if (!isRecord(value)) throw stateError(`Invalid ${name}: expected an object.`);
+  assertKeys(value, name, [
+    'sourceConfigFingerprint', 'sourceIdentity', 'requestedRef', 'resolvedCommit',
+    'logicalIdentity', 'manifestDigest', 'snapshotDigest', 'activatedAt',
+  ]);
   if (
     typeof value.sourceConfigFingerprint !== 'string'
-    || !SHA256_DIGEST_PATTERN.test(value.sourceConfigFingerprint)
+    || !DIGEST_PATTERN.test(value.sourceConfigFingerprint)
     || typeof value.sourceIdentity !== 'string'
-    || !SHA256_DIGEST_PATTERN.test(value.sourceIdentity)
-    || typeof value.catalogVersion !== 'string'
-    || (value.channel !== 'latest' && value.channel !== 'beta')
+    || !DIGEST_PATTERN.test(value.sourceIdentity)
     || typeof value.requestedRef !== 'string'
     || value.requestedRef.length === 0
     || typeof value.resolvedCommit !== 'string'
-    || !RESOLVED_COMMIT_PATTERN.test(value.resolvedCommit)
+    || !COMMIT_PATTERN.test(value.resolvedCommit)
+    || typeof value.logicalIdentity !== 'string'
+    || value.logicalIdentity.trim() === ''
+    || value.logicalIdentity !== value.logicalIdentity.trim()
     || typeof value.manifestDigest !== 'string'
-    || !SHA256_DIGEST_PATTERN.test(value.manifestDigest)
+    || !DIGEST_PATTERN.test(value.manifestDigest)
     || typeof value.snapshotDigest !== 'string'
-    || !SHA256_DIGEST_PATTERN.test(value.snapshotDigest)
-    || typeof value.generationKey !== 'string'
-    || !/^[0-9a-f]{64}\/[0-9a-f]{64}$/u.test(value.generationKey)
-  ) throw stateError(`Invalid ${fieldName}.`);
-  try {
-    parseStrictSemVer(value.catalogVersion, `${fieldName}.catalogVersion`);
-  } catch (error) {
-    throw stateError(`Invalid ${fieldName}.catalogVersion.`, error);
-  }
-  const pointer: CatalogGenerationPointerV1 = {
+    || !DIGEST_PATTERN.test(value.snapshotDigest)
+  ) throw stateError(`Invalid ${name}.`);
+  return {
     sourceConfigFingerprint: value.sourceConfigFingerprint,
     sourceIdentity: value.sourceIdentity,
-    catalogVersion: value.catalogVersion,
-    channel: value.channel,
     requestedRef: value.requestedRef,
     resolvedCommit: value.resolvedCommit,
+    logicalIdentity: value.logicalIdentity,
     manifestDigest: value.manifestDigest,
     snapshotDigest: value.snapshotDigest,
-    generationKey: value.generationKey,
-    ...(value.activatedAt === undefined
-      ? {}
-      : { activatedAt: parseDate(value.activatedAt, `${fieldName}.activatedAt`) }),
-  };
-  if (!candidate) return pointer;
-  if (
-    (value.candidateKind !== 'upgrade' && value.candidateKind !== 'refChange')
-    || value.activatedAt !== undefined
-  ) throw stateError(`Invalid ${fieldName} candidate fields.`);
-  return {
-    ...pointer,
-    candidateKind: value.candidateKind,
-    downloadedAt: parseDate(value.downloadedAt, `${fieldName}.downloadedAt`),
+    activatedAt: parseDate(value.activatedAt, `${name}.activatedAt`),
   };
 }
 
-function parseLastCheck(value: unknown, fieldName: string): CatalogGenerationLastCheckV1 {
-  if (!isRecord(value)) throw stateError(`Invalid ${fieldName}: expected an object.`);
-  assertAllowedKeys(value, fieldName, ['checkedAt', 'state', 'remoteCommit', 'errorCode']);
-  const states = new Set([
-    'upToDate', 'activeReady', 'candidateReady', 'failed',
-    'immutableViolation', 'channelRollback',
-  ]);
+function parseLastSync(value: unknown, name: string): CatalogGenerationLastSyncV1 {
+  if (!isRecord(value)) throw stateError(`Invalid ${name}: expected an object.`);
+  assertKeys(value, name, ['syncedAt', 'mode', 'state', 'resolvedCommit', 'errorCode']);
   if (
-    typeof value.state !== 'string'
-    || !states.has(value.state)
-    || (value.remoteCommit !== undefined
-      && (typeof value.remoteCommit !== 'string'
-        || !RESOLVED_COMMIT_PATTERN.test(value.remoteCommit)))
+    (value.mode !== 'check' && value.mode !== 'sync')
+    || (value.state !== 'succeeded' && value.state !== 'failed')
+    || (value.resolvedCommit !== undefined
+      && (typeof value.resolvedCommit !== 'string' || !COMMIT_PATTERN.test(value.resolvedCommit)))
     || (value.errorCode !== undefined
       && (typeof value.errorCode !== 'string' || value.errorCode.length === 0))
-  ) throw stateError(`Invalid ${fieldName}.`);
+    || (value.state === 'succeeded' && value.errorCode !== undefined)
+    || (value.state === 'failed' && value.errorCode === undefined)
+  ) throw stateError(`Invalid ${name}.`);
   return {
-    checkedAt: parseDate(value.checkedAt, `${fieldName}.checkedAt`),
-    state: value.state as CatalogGenerationLastCheckV1['state'],
-    ...(value.remoteCommit ? { remoteCommit: value.remoteCommit } : {}),
-    ...(value.errorCode ? { errorCode: value.errorCode } : {}),
+    syncedAt: parseDate(value.syncedAt, `${name}.syncedAt`),
+    mode: value.mode,
+    state: value.state,
+    ...(value.resolvedCommit === undefined ? {} : { resolvedCommit: value.resolvedCommit }),
+    ...(value.errorCode === undefined ? {} : { errorCode: value.errorCode }),
   };
 }
 
-function parseSourceState(value: unknown, fieldName: string): CatalogSourceGenerationStateV1 {
-  if (!isRecord(value)) throw stateError(`Invalid ${fieldName}: expected an object.`);
-  assertAllowedKeys(value, fieldName, [
-    'logicalIdentity', 'refreshPolicy', 'active', 'candidate', 'lastCheck',
-  ]);
-  if (value.refreshPolicy !== 'startup' && value.refreshPolicy !== 'manual') {
-    throw stateError(`Invalid ${fieldName} refresh policy.`);
-  }
-  const logicalIdentity = value.logicalIdentity;
-  if (logicalIdentity !== undefined
-    && (typeof logicalIdentity !== 'string' || logicalIdentity.trim() === '')) {
-    throw stateError(`Invalid ${fieldName} logical identity.`);
-  }
-  const active = value.active === undefined
+function parseSourceState(value: unknown, name: string): CatalogSourceGenerationStateV1 {
+  if (!isRecord(value)) throw stateError(`Invalid ${name}: expected an object.`);
+  assertKeys(value, name, ['active', 'lastSync']);
+  const active = value.active === undefined ? undefined : parseActive(value.active, `${name}.active`);
+  const lastSync = value.lastSync === undefined
     ? undefined
-    : parsePointer(value.active, `${fieldName}.active`, false);
-  const candidate = value.candidate === undefined
-    ? undefined
-    : parsePointer(value.candidate, `${fieldName}.candidate`, true);
-  if ((active || candidate) && logicalIdentity === undefined) {
-    throw stateError(`Invalid ${fieldName}: selected generations require a logical identity.`);
-  }
-  for (const [pointerName, pointer] of [['active', active], ['candidate', candidate]] as const) {
-    if (pointer && pointer.generationKey !== createCatalogGenerationKey(
-      logicalIdentity!,
-      pointer.snapshotDigest,
-    )) throw stateError(`Invalid ${fieldName}.${pointerName} generation identity.`);
-  }
-  return {
-    refreshPolicy: value.refreshPolicy,
-    ...(logicalIdentity === undefined ? {} : { logicalIdentity }),
-    ...(active ? { active } : {}),
-    ...(candidate ? { candidate } : {}),
-    ...(value.lastCheck === undefined
-      ? {}
-      : { lastCheck: parseLastCheck(value.lastCheck, `${fieldName}.lastCheck`) }),
-  };
+    : parseLastSync(value.lastSync, `${name}.lastSync`);
+  return { ...(active ? { active } : {}), ...(lastSync ? { lastSync } : {}) };
 }
 
-export function validateCatalogGenerationState(
-  value: unknown,
-): CatalogGenerationStateFileV1 {
-  if (!isRecord(value)) throw stateError('Invalid Catalog generation state: expected an object.');
-  assertAllowedKeys(value, 'Catalog generation state', ['schemaVersion', 'sources']);
-  if (value.schemaVersion !== CATALOG_GENERATIONS_SCHEMA_VERSION || !isRecord(value.sources)) {
-    throw stateError('Invalid Catalog generation state schema.');
+export function validateCatalogGenerationState(value: unknown): CatalogGenerationStateFileV1 {
+  if (!isRecord(value)) throw stateError('Invalid Catalog state: expected an object.');
+  assertKeys(value, 'Catalog state', ['schemaVersion', 'sources']);
+  if (value.schemaVersion !== CATALOG_STATE_SCHEMA_VERSION || !isRecord(value.sources)) {
+    throw stateError('Invalid Catalog state schema.');
   }
   const sources: Record<string, CatalogSourceGenerationStateV1> = {};
   for (const sourceId of Object.keys(value.sources).sort()) {
     if (!CATALOG_SOURCE_ID_PATTERN.test(sourceId)) {
-      throw stateError(`Invalid Catalog generation source ID "${sourceId}".`);
+      throw stateError(`Invalid Catalog state source ID "${sourceId}".`);
     }
-    sources[sourceId] = parseSourceState(
-      value.sources[sourceId],
-      `Catalog generation state.sources.${sourceId}`,
-    );
+    sources[sourceId] = parseSourceState(value.sources[sourceId], `Catalog state.sources.${sourceId}`);
   }
   return { schemaVersion: 1, sources };
 }
@@ -213,10 +128,8 @@ export function createEmptyCatalogGenerationState(): CatalogGenerationStateFileV
   return { schemaVersion: 1, sources: {} };
 }
 
-export function resolveCatalogGenerationStatePath(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return path.join(resolveAwHome(env), CATALOG_GENERATIONS_FILE);
+export function resolveCatalogGenerationStatePath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveAwHome(env), CATALOG_STATE_FILE);
 }
 
 async function readStateAt(filePath: string): Promise<CatalogGenerationStateFileV1> {
@@ -225,14 +138,12 @@ async function readStateAt(filePath: string): Promise<CatalogGenerationStateFile
     throw error;
   });
   if (!stat) return createEmptyCatalogGenerationState();
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw stateError('Catalog generation state path is not a regular file.');
-  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw stateError('Catalog state path is unsafe.');
   try {
     return validateCatalogGenerationState(await fs.readJson(filePath));
   } catch (error) {
     if (error instanceof CatalogGenerationError) throw error;
-    throw stateError('Catalog generation state is unreadable.', error);
+    throw stateError('Catalog state is unreadable.', error);
   }
 }
 
@@ -245,12 +156,12 @@ export async function readCatalogGenerationState(
 export async function withCatalogGenerationStateTransaction<T>(options: {
   env?: NodeJS.ProcessEnv;
   beforeReplace?: (next: CatalogGenerationStateFileV1) => Promise<void> | void;
-  action: (
-    current: CatalogGenerationStateFileV1,
-  ) => Promise<{ state: CatalogGenerationStateFileV1; result: T }>;
+  action: (current: CatalogGenerationStateFileV1) => Promise<{
+    state: CatalogGenerationStateFileV1;
+    result: T;
+  }>;
 }): Promise<T> {
   const env = options.env ?? process.env;
-  const awHome = resolveAwHome(env);
   const filePath = resolveCatalogGenerationStatePath(env);
   const current = await readStateAt(filePath);
   const output = await options.action(current);
@@ -259,9 +170,24 @@ export async function withCatalogGenerationStateTransaction<T>(options: {
     await options.beforeReplace?.(next);
     await atomicReplaceConfigFile({
       filePath,
-      allowedRoot: awHome,
+      allowedRoot: resolveAwHome(env),
       content: `${JSON.stringify(next, null, 2)}\n`,
     });
   }
   return output.result;
+}
+
+export async function removeCatalogSourceGenerationState(options: {
+  sourceId: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  return withCatalogGenerationStateTransaction({
+    env: options.env,
+    action: async (current) => {
+      if (!current.sources[options.sourceId]) return { state: current, result: false };
+      const sources = { ...current.sources };
+      delete sources[options.sourceId];
+      return { state: { schemaVersion: 1, sources }, result: true };
+    },
+  });
 }

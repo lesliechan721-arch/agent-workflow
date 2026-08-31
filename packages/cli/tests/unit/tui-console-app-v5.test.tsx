@@ -138,6 +138,31 @@ function loadResult(): TuiStatusLoadResult {
   return {
     payload,
     pluginSummaries: summaries,
+    catalogGenerations: [
+      {
+        sourceId: 'official',
+        sourceType: 'path',
+        active: {
+          catalogVersion: '1.0.0', channel: 'latest', requestedRef: 'path',
+          resolvedCommit: 'path', storeKey: 'official-active', digestShort: 'official',
+        },
+        syncInstruction: 'aw catalog source sync official',
+      },
+      {
+        sourceId: 'team-tools',
+        sourceType: 'git',
+        active: {
+          catalogVersion: '2.4.0', channel: 'latest', requestedRef: 'catalog/stable',
+          resolvedCommit: 'abc123', storeKey: 'team-tools-active', digestShort: 'abc12345',
+        },
+        syncInstruction: 'aw catalog source sync team-tools',
+      },
+      {
+        sourceId: 'research', sourceType: 'path',
+        errorCode: 'catalogGenerationUnavailable',
+        syncInstruction: 'aw catalog source sync research',
+      },
+    ],
     sourceDetails: payload.catalog.sources.map((source) => ({
       id: source.id,
       type: source.type,
@@ -321,10 +346,6 @@ function dependencyLoadResult(options: {
 function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiController {
   return new TuiController({
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
-    checkSource: vi.fn(async (sourceId: string) => {
-      const selected = loadResult().payload.catalog.sources.find((source) => source.id === sourceId)!;
-      return { sourceIdentity: selected.identity, requestedRef: selected.requestedRef };
-    }),
     inspectSourceRemoval: vi.fn().mockResolvedValue({ blocked: false, inventoryComplete: true, installationCount: 0, configCount: 0, lifecycleCount: 0, marketplaceCount: 0, dependencies: [] }),
     captureEvidence: vi.fn().mockResolvedValue(evidence),
     executeIntent: vi.fn().mockResolvedValue({
@@ -478,7 +499,6 @@ describe('ConsoleAppV4', () => {
 
   it('routes typed I01-I09 issues and the empty state through mounted pages', async () => {
     const loaded = loadResult();
-    loaded.payload.catalog.sources = loaded.payload.catalog.sources.filter((source) => source.id !== 'research');
     const conflictTarget = loaded.payload.targets.find((entry) =>
       entry.pluginId === 'team-tools/review-gate'
       && entry.platform === 'codex'
@@ -489,14 +509,11 @@ describe('ConsoleAppV4', () => {
       target({ pluginName: 'changed', sourceId: 'team-tools', platform: 'codex', scope: 'project', state: 'error', errorCode: 'sourceChanged' }),
     );
     loaded.payload.errors.push({ code: 'legacyStateUnsupported', message: 'private legacy location' });
-    const value = controller({
-      loadStatus: vi.fn().mockResolvedValue(loaded),
-      checkSource: vi.fn().mockRejectedValue(new Error('remote unavailable')),
-    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     const expected = new Map([
       ['incompleteInstallation', 'I03'],
-      ['sourceDegraded', 'I04'],
+      ['sourceUnavailable', 'I04'],
       ['sourceMissing', 'I05'],
       ['sourceIdentityChanged', 'I06'],
       ['requiredConfigMissing', 'I07'],
@@ -1051,7 +1068,6 @@ describe('ConsoleAppV4', () => {
     value.replace({ name: 'sourceList' });
     await nextTurn(2);
     await input(instance, '?');
-    expect(instance.lastFrame()).toContain('r  重新检查来源');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     await input(instance, '?');
 
@@ -1080,14 +1096,11 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
   });
 
-  it('shows cached and unavailable source counts independently on the mounted home page', async () => {
+  it('shows unavailable source counts on the mounted home page', async () => {
     for (const size of [{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }]) {
-      const instance = render(<ConsoleAppV4 controller={controller({
-        checkSource: vi.fn().mockRejectedValue(new Error('remote unavailable')),
-      })} size={size} />);
+      const instance = render(<ConsoleAppV4 controller={controller()} size={size} />);
       await nextTurn(3);
       const frame = instance.lastFrame() ?? '';
-      expect(frame).toContain('1 个来源使用缓存');
       expect(frame).toContain('1 个来源不可用');
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
       instance.unmount();
@@ -1543,7 +1556,6 @@ describe('ConsoleAppV4', () => {
     const screens = new Set<ConsoleV4ScreenId>();
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(unavailable),
-      checkSource: vi.fn().mockRejectedValue(new Error('remote unavailable')),
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(4);
@@ -1570,7 +1582,7 @@ describe('ConsoleAppV4', () => {
     expect((instance.lastFrame() ?? '').replace(/\s+/gu, ' ')).toContain('[全部 1] official 0 team-tools 1');
   });
 
-  it('normalizes a mounted detail route when refresh removes its current plugin', async () => {
+  it('normalizes a mounted detail route when reload removes its current plugin', async () => {
     const initial = loadResult();
     const removed = loadResult();
     initial.payload.catalog.sources = initial.payload.catalog.sources.map((source) => source.id === 'team-tools'
@@ -1583,7 +1595,6 @@ describe('ConsoleAppV4', () => {
     removed.payload.targets = removed.payload.targets.filter((entry) => entry.pluginId !== 'team-tools/review-gate');
     const value = controller({
       loadStatus: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(removed),
-      checkSource: vi.fn().mockResolvedValue({ sourceIdentity: 'identity:team-tools', requestedRef: 'path' }),
     });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
@@ -1591,7 +1602,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).toContain('Review Gate');
 
-    await value.refreshSource('team-tools');
+    await value.reloadCatalog();
     await nextTurn(2);
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
     expect(instance.lastFrame()).not.toContain('后续阶段');
@@ -1879,7 +1890,7 @@ describe('ConsoleAppV4', () => {
       captureEvidence: vi.fn().mockResolvedValue({
         catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:candidate' },
         sourceWrite: {
-          configDigest: 'sha256:before', candidateDigest: 'sha256:candidate',
+          configDigest: 'sha256:before', proposedConfigDigest: 'sha256:candidate',
           inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
         },
       }),
@@ -2161,7 +2172,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('远端 Catalog 检查失败');
 
-    for (const [index, label] of ['重新检查来源', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
+    for (const [index, label] of ['重新加载 TUI', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
       if (index > 0) await input(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
@@ -2174,7 +2185,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'team-tools' });
   });
 
-  it('separates degraded and unavailable source diagnostics and redacts every technical field', async () => {
+  it('shows no-Active recovery and redacts every unavailable-source technical field', async () => {
     const privateFailure = 'native stderr Authorization: Bearer bearer-secret '
       + 'https://alice:url-secret@example.test/catalog?access_token=query-secret '
       + '/Users/private-user /workspace/private /tmp/private /private/source/root';
@@ -2191,9 +2202,9 @@ describe('ConsoleAppV4', () => {
       source.id === 'research' ? {
         ...source,
         type: 'git' as const,
-        requestedRef: 'https://alice:url-secret@example.test/catalog?access_token=query-secret',
+        requestedRef: 'catalog/stable',
         resolvedCommit: 'Authorization: Bearer commit-secret',
-        locationSummary: '/private/source/root',
+        locationSummary: 'Git 仓库位置已隐藏',
         errorCode: 'catalogSourceUnavailable',
       } : source);
     const unavailable = controller({ loadStatus: vi.fn().mockResolvedValue(unavailableLoad) });
@@ -2202,9 +2213,9 @@ describe('ConsoleAppV4', () => {
     const unavailableInstance = render(<ConsoleAppV4 controller={unavailable} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
     const unavailableDefault = unavailableInstance.lastFrame() ?? '';
-    expect(unavailableDefault).toContain('当前不能浏览或安装这个来源中的插件');
-    expect(unavailableDefault).toContain('已安装插件和已保存设置不会被删除');
-    expect(unavailableDefault).not.toContain('继续使用缓存');
+    expect(unavailableDefault).toContain('来源没有可用 Active');
+    expect(unavailableDefault).toContain('aw catalog source sync research');
+    expect(unavailableDefault).toContain('重新加载 TUI');
     expect(unavailableDefault).not.toContain('catalogSourceUnavailable');
     for (const privateText of ['native stderr', 'bearer-secret', 'alice', 'url-secret', 'query-secret',
       '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root']) {
@@ -2224,32 +2235,6 @@ describe('ConsoleAppV4', () => {
     }
     await input(unavailableInstance, '\r');
     expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'research' });
-
-    const degradedLoad = loadResult();
-    const degraded = controller({
-      loadStatus: vi.fn().mockResolvedValue(degradedLoad),
-      checkSource: vi.fn().mockRejectedValue(Object.assign(new Error(privateFailure), {
-        code: 'catalogSourceRemoteFailed',
-      })),
-    });
-    await degraded.load();
-    await nextTurn(4);
-    degraded.push({ name: 'sourceDetail', sourceId: 'team-tools' });
-    const degradedInstance = render(<ConsoleAppV4 controller={degraded} size={{ columns: 60, rows: 18 }} />);
-    await nextTurn(2);
-    const degradedDefault = degradedInstance.lastFrame() ?? '';
-    expect(degradedDefault).toContain('匹配缓存中的插件仍可浏览和安装');
-    expect(degradedDefault).toContain('继续使用缓存');
-    expect(degradedDefault).not.toContain('当前不能浏览或安装这个来源中的插件');
-    await input(degradedInstance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
-    const degradedTechnical = degradedInstance.lastFrame() ?? '';
-    expect(degradedTechnical).toContain('catalogSourceDegraded');
-    expect(degradedTechnical).toContain('last good: 可用');
-    expect(degradedTechnical).not.toContain('bearer-secret');
-    expect(degradedTechnical).toContain('› 返回来源详情');
-    expect(degradedTechnical.split('\n').length).toBeLessThanOrEqual(18);
-    await input(degradedInstance, '\r');
-    expect(degraded.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
   });
 
   it('opens source editing from the unavailable source issue edit action', async () => {
@@ -2372,7 +2357,7 @@ describe('ConsoleAppV4', () => {
     const productFrame = instance.lastFrame() ?? '';
     expect(productFrame).toContain('当前无法取得可信的字段定义');
     expect(productFrame).toContain('已保存的设置保持不变');
-    expect(productFrame).toContain('重新检查来源');
+    expect(productFrame).toContain('aw catalog source sync team-tools');
     expect(productFrame).not.toContain('configReadFailed');
     expect(productFrame).not.toContain('config-secret');
     await input(instance, '\u001B[B');
@@ -3390,11 +3375,7 @@ describe('ConsoleAppV4', () => {
     expect(resetInstance.lastFrame()).toContain('其他设置层保持不变');
 
     const unavailableScreens = new Set<ConsoleV4ScreenId>();
-    const checkSource = vi.fn().mockResolvedValue({
-      sourceIdentity: 'identity:team-tools', requestedRef: 'catalog/stable',
-    });
     const unavailable = controller({
-      checkSource,
       getConfigPage: vi.fn().mockRejectedValue(new Error('private manifest error /Users/private')),
     });
     unavailable.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
@@ -3402,11 +3383,12 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
     expect(unavailableScreens).toContain('C17');
     expect(unavailableInstance.lastFrame()).toContain('Manifest 或来源不可用');
+    expect(unavailableInstance.lastFrame()).toContain('aw catalog source sync team-tools');
     expect(unavailableInstance.lastFrame()).not.toContain('/Users/private');
     expect(unavailableInstance.lastFrame()).not.toContain('重置此设置层');
     await input(unavailableInstance, '\r');
     await nextTurn(4);
-    expect(checkSource).toHaveBeenCalledWith('team-tools', expect.any(AbortSignal));
+    expect(unavailable.snapshot.router.current.route).not.toMatchObject({ name: 'configUnavailable' });
 
     const longPage = configPage();
     longPage.presets = [];
@@ -4061,7 +4043,6 @@ describe('ConsoleAppV4', () => {
       loadStatus: vi.fn()
         .mockResolvedValueOnce(loadResult())
         .mockRejectedValueOnce(new Error('/private/reload failed')),
-      checkSource: vi.fn(() => new Promise(() => undefined)),
     });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
@@ -4118,7 +4099,7 @@ describe('ConsoleAppV4', () => {
     const sourceEvidence: OperationEvidence = {
       catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:candidate' },
       sourceWrite: {
-        configDigest: 'sha256:before', candidateDigest: 'sha256:candidate',
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:candidate',
         inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
       },
     };
@@ -4126,7 +4107,6 @@ describe('ConsoleAppV4', () => {
       loadStatus: vi.fn()
         .mockResolvedValueOnce(loadResult())
         .mockRejectedValueOnce(new Error('/private/reload failed')),
-      checkSource: vi.fn(() => new Promise(() => undefined)),
       captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
     });
     await value.load();

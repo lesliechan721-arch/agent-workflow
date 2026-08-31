@@ -25,7 +25,6 @@ import {
   upgradeWriteCommand,
 } from '../commands/write-commands.js';
 import { readCliPackageInfo } from '../utils/local-marketplace.js';
-import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import {
   readCatalogSourcesConfigSnapshot,
 } from '../utils/catalog-sources.js';
@@ -86,13 +85,7 @@ import {
   selectCatalogOperationContext,
   type CatalogOperationContext,
 } from '../utils/catalog-operation-context.js';
-import {
-  activateCatalogSourceCandidate,
-  refreshCatalogSourceGeneration,
-  setCatalogSourceRefreshPolicy,
-  type CatalogGenerationServiceRuntime,
-} from '../utils/catalog-generation-service.js';
-import type { PublishedCatalogGeneration } from '../utils/catalog-generation-store.js';
+import type { CatalogStoreEntry } from '../utils/catalog-generation-store.js';
 import { loadCatalogGenerationViewModels } from './catalog-generation.js';
 import {
   installPortableSkills,
@@ -115,17 +108,14 @@ async function loadPortablePluginIds(options: {
   cliVersion: string;
   signal: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
-  bootstrapMissingActive?: boolean;
 }): Promise<string[]> {
   return withResolvedMultiSourceCatalog({
     cliVersion: options.cliVersion,
-    freshnessPolicy: 'cacheFirst',
     env: options.context.env,
     signal: options.signal,
     ...(options.catalogOperationContext
       ? { operationContext: options.catalogOperationContext }
       : {}),
-    ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
     consume: async (catalog) => (await Promise.all(catalog.sources.flatMap((item) => item.resolution
       ? item.resolution.manifest.entries.flatMap((entry) => {
           const support = checkAwCapabilitySupport(
@@ -256,8 +246,6 @@ function throwIfWriteReviewStale(result: {
 }
 
 const SOURCE_PROGRESS_PHASES: Record<CatalogSourceMutationProgress['stage'], string> = {
-  refreshingCatalog: '刷新 Catalog 缓存',
-  catalogReady: 'Catalog 已读取，索引已刷新',
   savingConfig: '保存来源配置',
 };
 
@@ -433,17 +421,14 @@ async function loadDependencyOverviews(options: {
   status: Awaited<ReturnType<typeof statusCommandV6>>;
   signal: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
-  bootstrapMissingActive?: boolean;
 }): Promise<PluginDependencyOverviewViewModel[]> {
   const graph = await withResolvedMultiSourceCatalog({
       cliVersion: options.cliVersion,
-      freshnessPolicy: 'cacheFirst',
       env: options.context.env,
       signal: options.signal,
       ...(options.catalogOperationContext
         ? { operationContext: options.catalogOperationContext }
         : {}),
-      ...(options.bootstrapMissingActive === false ? { bootstrapMissingActive: false } : {}),
       consume: async (catalog) => ({
         nodes: catalog.sources.flatMap((item) => item.resolution
           ? item.resolution.manifest.entries.map((entry): DependencyCatalogNode => ({
@@ -687,27 +672,21 @@ export function createTuiControllerDependencies(
   progressFeed?: RebuildProgressFeed,
   options: {
     now?: () => number;
-    catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
     inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   } = {},
 ): TuiControllerDependencies {
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
-  const validatedCatalogGenerations = new Map<string, PublishedCatalogGeneration>();
-  const validatingCatalogGenerations = new Map<
+  const validatedStoreEntries = new Map<string, CatalogStoreEntry>();
+  const validatingStoreEntries = new Map<
     string,
-    Promise<PublishedCatalogGeneration>
+    Promise<CatalogStoreEntry>
   >();
-  const catalogGenerationRuntime: CatalogGenerationServiceRuntime = {
-    ...options.catalogGenerationRuntime,
-    validatedGenerations: validatedCatalogGenerations,
-    validatingGenerations: validatingCatalogGenerations,
-  };
   const loadCatalogGenerations = async () => {
     const generations = await loadCatalogGenerationViewModels({
       env: context.env,
-      validatedGenerations: validatedCatalogGenerations,
-      validatingGenerations: validatingCatalogGenerations,
+      validatedStoreEntries,
+      validatingStoreEntries,
       onStage: (event) => context.debugLogger.log({
         type: 'performance:stage',
         level: 'debug',
@@ -717,11 +696,10 @@ export function createTuiControllerDependencies(
       }),
     });
     const retained = new Set(generations.flatMap((source) => [
-      source.active?.generationKey,
-      source.candidate?.generationKey,
+      source.active?.storeKey,
     ].filter((value): value is string => value !== undefined)));
-    for (const generationKey of validatedCatalogGenerations.keys()) {
-      if (!retained.has(generationKey)) validatedCatalogGenerations.delete(generationKey);
+    for (const storeKey of validatedStoreEntries.keys()) {
+      if (!retained.has(storeKey)) validatedStoreEntries.delete(storeKey);
     }
     return generations;
   };
@@ -738,7 +716,6 @@ export function createTuiControllerDependencies(
   const catalogOperationByEvidence = new WeakMap<OperationEvidence, CatalogOperationContext>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
   let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV6>> | undefined;
-  let bootstrapNextCatalogSession = true;
   const sessionContextForPlugin = (pluginId: string): CatalogOperationContext | undefined => {
     const sourceId = parsePluginId(pluginId).sourceId;
     if (!sourceId || !sessionCatalogOperationContext) return undefined;
@@ -749,11 +726,10 @@ export function createTuiControllerDependencies(
     const packageInfo = await readCliPackageInfo();
     const catalogOperationContext = sessionCatalogOperationContext
       ?? await resolvePartialCatalogOperationContext({
-        cliVersion: packageInfo.version,
         env: context.env,
         signal,
-        ...(bootstrapNextCatalogSession ? {} : { bootstrapMissingActive: false }),
-        runtime: catalogGenerationRuntime,
+        validatedStoreEntries,
+        validatingStoreEntries,
       }).catch(() => undefined);
     if (catalogOperationContext) sessionCatalogOperationContext = catalogOperationContext;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -776,14 +752,12 @@ export function createTuiControllerDependencies(
         status: result,
         signal,
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
-        ...(!catalogOperationContext ? { bootstrapMissingActive: false } : {}),
       });
       const portablePluginIds = await loadPortablePluginIds({
         context,
         cliVersion: packageInfo.version,
         signal,
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
-        ...(!catalogOperationContext ? { bootstrapMissingActive: false } : {}),
       });
       signal.throwIfAborted();
       const catalogGenerations = await loadCatalogGenerations();
@@ -799,7 +773,7 @@ export function createTuiControllerDependencies(
         catalogGenerations,
         sessionGenerationKeys: Object.fromEntries(
           (catalogOperationContext?.generationSet.sources ?? [])
-            .map((source) => [source.sourceId, source.generationKey]),
+            .map((source) => [source.sourceId, source.storeKey]),
         ),
         sourceDetails: configured.sources.map((source) => {
           const status = statusById.get(source.id);
@@ -841,40 +815,9 @@ export function createTuiControllerDependencies(
       reporter: ReturnType<typeof createReviewStageReporter>;
       validateIntent: boolean;
     },
-    bootstrapMissingActive = true,
     operationInventory = createOperationInventoryReader(),
+    freshCatalog = false,
   ): Promise<OperationEvidence> => {
-    if (intent.kind === 'catalogActivate') {
-      signal?.throwIfAborted();
-      const source = (await loadCatalogGenerations())
-        .find((entry) => entry.sourceId === intent.sourceId);
-      if (!source?.active || !source.candidate) {
-        throw operationReviewStale('Catalog Candidate 不再可用。');
-      }
-      if (source.candidate.generationKey !== intent.candidateGenerationKey) {
-        throw operationReviewStale('Catalog Candidate 已变化。');
-      }
-      const sessionCatalog = sessionCatalogOperationContext?.catalog;
-      return {
-        catalog: {
-          configDigest: sessionCatalog?.configDigest ?? 'unavailable',
-          compositeDigest: sessionCatalog?.compositeDigest ?? 'unavailable',
-          ...(sessionCatalogOperationContext?.generationSetDigest
-            ? { generationSetDigest: sessionCatalogOperationContext.generationSetDigest }
-            : {}),
-        },
-        catalogCandidate: {
-          sourceId: source.sourceId,
-          activeVersion: source.active.catalogVersion,
-          candidateVersion: source.candidate.catalogVersion,
-          channel: source.candidate.channel,
-          requestedRef: source.candidate.requestedRef,
-          candidateGenerationKey: source.candidate.generationKey,
-          digestShort: source.candidate.digestShort,
-          pluginChanges: source.candidate.pluginChanges,
-        },
-      };
-    }
     if (intent.kind === 'sourceMutation') {
       signal?.throwIfAborted();
       if (intent.action === 'add' && !intent.source
@@ -896,10 +839,10 @@ export function createTuiControllerDependencies(
       await preparation?.reporter.emit('evidence');
       signal?.throwIfAborted();
       const evidence: OperationEvidence = {
-        catalog: { configDigest: preview.configDigest, compositeDigest: preview.candidateDigest },
+        catalog: { configDigest: preview.configDigest, compositeDigest: preview.proposedConfigDigest },
         sourceWrite: {
           configDigest: preview.configDigest,
-          candidateDigest: preview.candidateDigest,
+          proposedConfigDigest: preview.proposedConfigDigest,
           ...(preview.sourceIdentity ? { sourceIdentity: preview.sourceIdentity } : {}),
           inventoryDigest: digest({ references: preview.references.references, errors: preview.references.errors }),
           referenceCount: preview.references.references.length,
@@ -907,7 +850,7 @@ export function createTuiControllerDependencies(
         },
       };
       if (preparation?.validateIntent
-        && evidence.sourceWrite?.configDigest === evidence.sourceWrite?.candidateDigest) {
+        && evidence.sourceWrite?.configDigest === evidence.sourceWrite?.proposedConfigDigest) {
         throw new TuiOperationBlockedError('sourceNoChanges', '来源没有变化。');
       }
       return evidence;
@@ -930,15 +873,13 @@ export function createTuiControllerDependencies(
     if (!offlineCleanupReason && intent.kind !== 'portableInstall') {
       try {
         const sourceIds = [parsePluginId(intent.pluginId).sourceId!];
-        catalogOperation = bootstrapMissingActive && sessionCatalogOperationContext
+        catalogOperation = !freshCatalog && sessionCatalogOperationContext
           ? selectCatalogOperationContext(sessionCatalogOperationContext, sourceIds)
           : await resolveCatalogOperationContext({
-              cliVersion: packageInfo.version,
               sourceIds,
               env: context.env,
-              runtime: catalogGenerationRuntime,
+              ...(!freshCatalog ? { validatedStoreEntries, validatingStoreEntries } : {}),
               ...(signal ? { signal } : {}),
-              ...(!bootstrapMissingActive ? { bootstrapMissingActive: false } : {}),
             });
       } catch (error) {
         catalogOperationError = error;
@@ -992,7 +933,6 @@ export function createTuiControllerDependencies(
       const selected = await withResolvedCatalogPlugin({
         selector: intent.pluginId,
         cliVersion: packageInfo.version,
-        freshnessPolicy: 'cacheFirst',
         configSnapshot,
         env: context.env,
         operationContext: catalogOperation,
@@ -1061,7 +1001,7 @@ export function createTuiControllerDependencies(
     await preparation?.reporter.emit('status');
     const statusCatalogOperation = offlineCleanupReason
       ? undefined
-      : catalogOperation ?? (bootstrapMissingActive ? sessionCatalogOperationContext : undefined);
+      : catalogOperation ?? (!freshCatalog ? sessionCatalogOperationContext : undefined);
     const status = await statusCommandV6({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
@@ -1091,13 +1031,11 @@ export function createTuiControllerDependencies(
     }
     if (!offlineCleanupReason && !catalogOperation) {
       catalogOperation = await resolveCatalogOperationContext({
-        cliVersion: packageInfo.version,
         sourceIds: [parsePluginId(intent.pluginId).sourceId!],
         configSnapshot,
         env: context.env,
-        runtime: catalogGenerationRuntime,
+        ...(!freshCatalog ? { validatedStoreEntries, validatingStoreEntries } : {}),
         ...(signal ? { signal } : {}),
-        ...(!bootstrapMissingActive ? { bootstrapMissingActive: false } : {}),
       });
     }
     let dependencyPlan: DependencyOperationPlan | undefined;
@@ -1147,7 +1085,6 @@ export function createTuiControllerDependencies(
       : await withResolvedCatalogPlugin({
           selector: intent.pluginId,
           cliVersion: packageInfo.version,
-          freshnessPolicy: 'cacheFirst',
           configSnapshot,
           env: context.env,
           ...(catalogOperation ? { operationContext: catalogOperation } : {}),
@@ -1324,10 +1261,9 @@ export function createTuiControllerDependencies(
     beginCatalogSession(sessionOptions) {
       sessionCatalogOperationContext = undefined;
       if (sessionOptions?.reuseValidatedGenerations !== true) {
-        validatedCatalogGenerations.clear();
-        validatingCatalogGenerations.clear();
+        validatedStoreEntries.clear();
+        validatingStoreEntries.clear();
       }
-      bootstrapNextCatalogSession = sessionOptions?.bootstrapMissingActive !== false;
     },
     loadStatus,
     async inspectSourceRemoval(_sourceId, signal) {
@@ -1362,13 +1298,9 @@ export function createTuiControllerDependencies(
       return evidence.dependencyPlan;
     },
     async validateIntent(intent, signal) {
-      if (intent.kind === 'catalogActivate') {
-        await captureEvidence(intent, signal);
-        return;
-      }
       if (intent.kind === 'sourceMutation') {
         const evidence = await captureEvidence(intent, signal);
-        if (evidence.sourceWrite?.configDigest === evidence.sourceWrite?.candidateDigest) {
+        if (evidence.sourceWrite?.configDigest === evidence.sourceWrite?.proposedConfigDigest) {
           throw new TuiOperationBlockedError('sourceNoChanges', '来源没有变化。');
         }
         return;
@@ -1378,7 +1310,6 @@ export function createTuiControllerDependencies(
         await withResolvedCatalogPlugin({
           selector: intent.pluginId,
           cliVersion: packageInfo.version,
-          freshnessPolicy: 'cacheFirst',
           env: context.env,
           signal,
           ...(sessionContextForPlugin(intent.pluginId)
@@ -1438,10 +1369,10 @@ export function createTuiControllerDependencies(
           && (platform === 'codex' || target.scope === intent.scope)));
       if (!offlineCleanup && !catalogOperation && missingSelectedTarget) {
         catalogOperation = await resolveCatalogOperationContext({
-          cliVersion: packageInfo.version,
           sourceIds,
           env: context.env,
-          runtime: catalogGenerationRuntime,
+          validatedStoreEntries,
+          validatingStoreEntries,
           signal,
         });
         status = await statusCommandV6({
@@ -1452,72 +1383,6 @@ export function createTuiControllerDependencies(
       signal.throwIfAborted();
       await assertTypedIssueOrigin(intent, status.payload.targets);
       assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);
-    },
-    async checkSource(sourceId, signal) {
-      const packageInfo = await readCliPackageInfo();
-      const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
-      return withResolvedMultiSourceCatalog({
-        cliVersion: packageInfo.version,
-        freshnessPolicy: 'forceRemote',
-        sourceIds: [sourceId],
-        configSnapshot,
-        env: context.env,
-        signal,
-        consume: (catalog) => {
-          const item = catalog.sources[0]!;
-          if (item.error) throw item.error;
-          return {
-            sourceIdentity: item.resolution!.sourceIdentity,
-            requestedRef: item.resolution!.requestedRef,
-          };
-        },
-      });
-    },
-    async refreshCatalogSource(sourceId, signal, onState) {
-      let refreshError: unknown;
-      let refreshResult: Awaited<ReturnType<typeof refreshCatalogSourceGeneration>> | undefined;
-      try {
-        refreshResult = await refreshCatalogSourceGeneration({
-          sourceId,
-          cliVersion: (await readCliPackageInfo()).version,
-          env: context.env,
-          signal,
-          runtime: {
-            ...catalogGenerationRuntime,
-            onProgress: (event) => onState(event.state),
-          },
-        });
-      } catch (error) {
-        refreshError = error;
-      }
-      signal.throwIfAborted();
-      const source = (await loadCatalogGenerations())
-        .find((entry) => entry.sourceId === sourceId);
-      if (!source) throw refreshError ?? new TuiOperationBlockedError(
-        'catalogGenerationSourceMissing',
-        'Catalog 来源已不存在。',
-      );
-      if (refreshError && source.refreshState !== 'failed'
-        && source.refreshState !== 'immutableViolation') throw refreshError;
-      return {
-        source: refreshResult && source.refreshState === 'idle'
-          ? { ...source, refreshState: 'upToDate' }
-          : source,
-        activeChanged: refreshResult?.activeChanged ?? false,
-        ...(refreshResult?.activeGenerationKey
-          ? { activeGenerationKey: refreshResult.activeGenerationKey }
-          : {}),
-      };
-    },
-    async setCatalogRefreshPolicy(sourceId, refreshPolicy) {
-      await setCatalogSourceRefreshPolicy({
-        sourceId,
-        refreshPolicy,
-        env: context.env,
-        runtime: catalogGenerationRuntime,
-      });
-      return (await loadCatalogGenerations())
-        .find((source) => source.sourceId === sourceId)!;
     },
     captureEvidence,
     logError(_error, code, logContext) {
@@ -1536,7 +1401,6 @@ export function createTuiControllerDependencies(
       return withResolvedCatalogPlugin({
         selector: pluginId,
         cliVersion: packageInfo.version,
-        freshnessPolicy: 'cacheFirst',
         env: context.env,
         signal,
         ...(sessionContextForPlugin(pluginId)
@@ -1571,7 +1435,6 @@ export function createTuiControllerDependencies(
       return withResolvedCatalogPlugin({
         selector: pluginId,
         cliVersion: packageInfo.version,
-        freshnessPolicy: 'cacheFirst',
         env: context.env,
         signal,
         ...(sessionContextForPlugin(pluginId)
@@ -1701,30 +1564,6 @@ export function createTuiControllerDependencies(
           throw error;
         }
       }
-      if (intent.kind === 'catalogActivate') {
-        const currentEvidence = await captureEvidence(intent, undefined, undefined, false);
-        if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
-          throw operationReviewStale('确认后 Catalog Candidate 发生变化。');
-        }
-        try {
-          return await activateCatalogSourceCandidate({
-            sourceId: intent.sourceId,
-            expectedCandidateGenerationKey: intent.candidateGenerationKey,
-            env: context.env,
-            runtime: {
-              validatedGenerations: validatedCatalogGenerations,
-              validatingGenerations: validatingCatalogGenerations,
-            },
-          });
-        } catch (error) {
-          if (error instanceof CatalogGenerationError
-            && (error.code === 'catalogGenerationCandidateChanged'
-              || error.code === 'catalogGenerationCandidateUnavailable')) {
-            throw operationReviewStale('确认后 Catalog Candidate 发生变化。');
-          }
-          throw error;
-        }
-      }
       if (intent.kind === 'sourceMutation') {
         const currentEvidence = await captureEvidence(intent);
         if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
@@ -1733,7 +1572,6 @@ export function createTuiControllerDependencies(
         await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
         const packageInfo = await readCliPackageInfo();
         const runtime = {
-          generation: catalogGenerationRuntime,
           onProgress: async (event: CatalogSourceMutationProgress) => {
             const phase = SOURCE_PROGRESS_PHASES[event.stage];
             progressFeed?.setCurrent(
@@ -1772,8 +1610,8 @@ export function createTuiControllerDependencies(
             intent,
             undefined,
             undefined,
-            false,
             operationInventory,
+            true,
           );
           if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
@@ -1869,7 +1707,6 @@ export function createTuiControllerDependencies(
             return withResolvedCatalogPlugin({
               selector: intent.pluginId,
               cliVersion: packageInfo.version,
-              freshnessPolicy: 'cacheFirst',
               env: context.env,
               ...(catalogOperation ? { operationContext: catalogOperation } : {}),
               consume: async ({ plugin, source }) => {

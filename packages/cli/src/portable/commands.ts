@@ -340,7 +340,6 @@ export async function preparePortableInstall(options: {
   const agents = normalizePortableAgents(options.requestedAgents);
   const catalogOperationContext = options.catalogOperationContext
     ?? await resolveCatalogOperationContext({
-      cliVersion: options.cliVersion,
       ...(parsePluginId(options.selector).sourceId
         ? { sourceIds: [parsePluginId(options.selector).sourceId!] }
         : {}),
@@ -429,10 +428,8 @@ export async function installPortableSkills(options: {
   await options.onProgress?.('prepare');
   const parsedSelector = parsePluginId(options.selector);
   const initialCatalogOperation = await resolveCatalogOperationContext({
-    cliVersion: options.cliVersion,
     ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
     env: options.env,
-    ...(options.expectedGenerationSetDigest ? { bootstrapMissingActive: false } : {}),
   });
   if (options.expectedGenerationSetDigest
     && initialCatalogOperation.generationSetDigest !== options.expectedGenerationSetDigest) {
@@ -465,10 +462,8 @@ export async function installPortableSkills(options: {
       let current: CollectedEvidence;
       try {
         const currentCatalogOperation = await resolveCatalogOperationContext({
-          cliVersion: options.cliVersion,
           ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
           env: options.env,
-          bootstrapMissingActive: false,
         });
         if (currentCatalogOperation.generationSetDigest
           !== initialCatalogOperation.generationSetDigest
@@ -710,7 +705,6 @@ export async function materializePortableSkillsToDirectory(options: {
   const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
   const parsedSelector = parsePluginId(options.selector);
   const catalogOperationContext = await resolveCatalogOperationContext({
-    cliVersion: options.cliVersion,
     ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
     env: options.env,
   });

@@ -20,10 +20,8 @@ import {
   type CatalogSourceMutationReceipt,
 } from './commands/catalog-source.js';
 import {
-  activateCatalogSourceCandidateCommand,
-  catalogGenerationStatusCommand,
-  refreshCatalogSourceGenerationCommand,
-  setCatalogSourceRefreshPolicyCommand,
+  catalogSourceStatusCommand,
+  syncCatalogSourceCommand,
 } from './commands/catalog-generation.js';
 import {
   cleanupWriteCommand as cleanupCommand,
@@ -111,7 +109,6 @@ import {
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
 import { catalogGenerationErrorCode } from './utils/catalog-generation-error.js';
 import {
-  bootstrapCatalogOperationSources,
   resolveCatalogOperationContext,
   type CatalogOperationContext,
 } from './utils/catalog-operation-context.js';
@@ -735,7 +732,6 @@ async function resolveStoredOnlyConfigIdentity(options: {
   const sourceIdentity = [...identities][0]!;
   await withResolvedMultiSourceCatalog({
     cliVersion: resolveCliVersion(),
-    freshnessPolicy: 'cacheFirst',
     sourceIds: [parsed.sourceId],
     env: options.context.env,
     consume: async (catalog) => {
@@ -775,7 +771,6 @@ async function resolveMultiSourceConfigRead(options: {
   return withResolvedCatalogPlugin({
     selector: options.selector,
     cliVersion: resolveCliVersion(),
-    freshnessPolicy: 'cacheFirst',
     env: options.context.env,
     consume: async ({ pluginId, source, plugin }) => {
       const result = await resolveConfigRead({
@@ -2273,8 +2268,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   };
 
   const writeCatalogGenerationFailure = (
-    command: 'catalog:source:refresh' | 'catalog:source:activate-candidate'
-      | 'catalog:source:generation-status' | 'catalog:source:refresh-policy',
+    command: 'catalog:source:sync' | 'catalog:source:status',
     sourceId: string | undefined,
     json: boolean,
     error: unknown,
@@ -2283,7 +2277,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const message = redactString(failure.message);
     if (json) {
       writeJsonReceipt(io.stdout, {
-        catalogGenerationSchemaVersion: 1,
+        ...(command === 'catalog:source:sync'
+          ? { catalogGenerationSchemaVersion: 1 }
+          : { catalogGenerationStatusSchemaVersion: 1 }),
         command,
         ok: false,
         ...(sourceId ? { sourceId } : {}),
@@ -2340,24 +2336,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     ) => Promise<T> | T,
   ) => (async () => {
     const parsed = parsePluginId(selector);
-    await bootstrapCatalogOperationSources({
-      cliVersion: resolveCliVersion(),
-      ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
-      env: context.env,
-    });
     return withAwHomeMutationLock({
       env: context.env,
       action: async (awHomeMutationToken) => {
         const catalogOperationContext = await resolveCatalogOperationContext({
-          cliVersion: resolveCliVersion(),
           ...(parsed.sourceId ? { sourceIds: [parsed.sourceId] } : {}),
           env: context.env,
-          bootstrapMissingActive: false,
         });
         return withResolvedCatalogPlugin({
           selector,
           cliVersion: resolveCliVersion(),
-          freshnessPolicy: 'cacheFirst',
           operationContext: catalogOperationContext,
           env: context.env,
           consume: (resolution) => consume(
@@ -2386,28 +2374,32 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   catalogSource
-    .command('refresh')
+    .command('sync')
     .argument('<id>')
-    .option('-j, --json', 'print the generation refresh result as JSON', false)
-    .action(async (id: string, rawOptions: { json?: boolean }) => {
+    .option('--check', 'fetch and validate without changing the Catalog store or Active state', false)
+    .option('-j, --json', 'print the source sync result as JSON', false)
+    .action(async (id: string, rawOptions: { check?: boolean; json?: boolean }) => {
       try {
-        const result = await refreshCatalogSourceGenerationCommand({
+        const result = await syncCatalogSourceCommand({
           sourceId: id,
           cliVersion: resolveCliVersion(),
+          check: rawOptions.check === true,
           env,
         });
         if (rawOptions.json) {
           writeJsonReceipt(io.stdout, {
             ...result,
-            command: 'catalog:source:refresh',
+            command: 'catalog:source:sync',
             ok: true,
           });
         } else {
-          writeLine(io.stdout, `Catalog source ${id}: ${result.outcome}.`);
+          writeLine(io.stdout, rawOptions.check
+            ? `Catalog source ${id} is valid.`
+            : `Catalog source ${id}: ${result.outcome}.`);
         }
       } catch (error) {
         writeCatalogGenerationFailure(
-          'catalog:source:refresh',
+          'catalog:source:sync',
           id,
           rawOptions.json === true,
           error,
@@ -2416,87 +2408,26 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   catalogSource
-    .command('activate-candidate')
-    .argument('<id>')
-    .option('-j, --json', 'print the generation activation result as JSON', false)
-    .action(async (id: string, rawOptions: { json?: boolean }) => {
-      try {
-        const result = await activateCatalogSourceCandidateCommand({ sourceId: id, env });
-        if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, {
-            ...result,
-            command: 'catalog:source:activate-candidate',
-            ok: true,
-          });
-        } else {
-          writeLine(io.stdout, `Catalog source ${id} Candidate activated.`);
-        }
-      } catch (error) {
-        writeCatalogGenerationFailure(
-          'catalog:source:activate-candidate',
-          id,
-          rawOptions.json === true,
-          error,
-        );
-      }
-    });
-
-  catalogSource
-    .command('generation-status')
+    .command('status')
     .argument('[id]')
-    .option('-j, --json', 'print Catalog generation status as JSON', false)
+    .option('-j, --json', 'print offline Catalog source status as JSON', false)
     .action(async (id: string | undefined, rawOptions: { json?: boolean }) => {
       try {
-        const result = await catalogGenerationStatusCommand({ sourceId: id, env });
+        const result = await catalogSourceStatusCommand({ sourceId: id, env });
         if (rawOptions.json) {
           writeJsonReceipt(io.stdout, result);
         } else {
           for (const source of result.sources) {
-            const active = source.active ? `Active ${source.active.catalogVersion}` : 'no Active';
-            const candidate = source.candidate
-              ? `, Candidate ${source.candidate.catalogVersion}`
-              : '';
-            writeLine(io.stdout, `${source.sourceId}: ${active}${candidate} (${source.refreshPolicy})`);
+            const active = source.active
+              ? `Active ${source.active.snapshotDigest}`
+              : 'no Active';
+            const readiness = source.activeReady ? 'ready' : 'not ready';
+            writeLine(io.stdout, `${source.sourceId}: ${active}, ${readiness}`);
           }
         }
       } catch (error) {
         writeCatalogGenerationFailure(
-          'catalog:source:generation-status',
-          id,
-          rawOptions.json === true,
-          error,
-        );
-      }
-    });
-
-  catalogSource
-    .command('refresh-policy')
-    .argument('<id>')
-    .argument('<policy>', 'startup or manual')
-    .option('-j, --json', 'print Catalog refresh policy result as JSON', false)
-    .action(async (id: string, policy: string, rawOptions: { json?: boolean }) => {
-      try {
-        if (policy !== 'startup' && policy !== 'manual') {
-          throw new Error('Catalog refresh policy must be startup or manual.');
-        }
-        const result = await setCatalogSourceRefreshPolicyCommand({
-          sourceId: id,
-          refreshPolicy: policy,
-          env,
-        });
-        if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, {
-            catalogGenerationSchemaVersion: 1,
-            command: 'catalog:source:refresh-policy',
-            ok: true,
-            ...result,
-          });
-        } else {
-          writeLine(io.stdout, `Catalog source ${id} refresh policy: ${result.refreshPolicy}.`);
-        }
-      } catch (error) {
-        writeCatalogGenerationFailure(
-          'catalog:source:refresh-policy',
+          'catalog:source:status',
           id,
           rawOptions.json === true,
           error,
@@ -2667,20 +2598,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   program
     .command('init')
-    .option('-f, --force', 're-fetch and rebuild the current catalog cache entry', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (rawOptions: {
-      force?: boolean;
       json?: boolean;
     } & RawDiagnosticsOptions) => {
       const context = createActionContext('init', rawOptions);
       const result = await runActionWithContext(context, () =>
         initCommand({
-          force: rawOptions.force,
-          cliVersion: resolveCliVersion(),
           env: context.env,
         }),
       );
@@ -2691,7 +2618,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           writeLine(io.stdout, line);
         }
       }
-      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
       for (const source of result.sources) {
         if (!source.ok && source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
       }

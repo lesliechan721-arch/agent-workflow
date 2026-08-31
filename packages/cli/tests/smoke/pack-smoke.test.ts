@@ -839,6 +839,19 @@ describe('pack smoke', () => {
       '--ref', 'refs/heads/catalog', '--primary', '--json',
     ], { cwd: tempRoot, env: packedConsumerEnv });
     expect(JSON.parse(sourceAdd.stdout)).toMatchObject({ ok: true, sourceId: 'packed' });
+    const sourceSync = await execFileAsync(awBin, [
+      'catalog', 'source', 'sync', 'packed', '--json',
+    ], { cwd: tempRoot, env: packedConsumerEnv });
+    expect(JSON.parse(sourceSync.stdout)).toMatchObject({
+      command: 'catalog:source:sync',
+      ok: true,
+      sourceId: 'packed',
+      mode: 'sync',
+      outcome: 'activated',
+      activeChanged: true,
+      active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
+    });
+    expect(sourceSync.stderr).toBe('');
     const consumedStatus = await execFileAsync(awBin, ['status', 'packed/packed-build', '--json'], {
       cwd: tempRoot,
       env: packedConsumerEnv,
@@ -998,6 +1011,19 @@ describe('pack smoke', () => {
       FAKE_SKILLS_LOG: fakeLog,
       FAKE_SKILLS_STATE: fakeState,
     };
+    const portableSourceSync = await execFileAsync(awBin, [
+      'catalog', 'source', 'sync', 'local', '--json',
+    ], { cwd: portableCwd, env: portableEnv });
+    expect(JSON.parse(portableSourceSync.stdout)).toMatchObject({
+      command: 'catalog:source:sync',
+      ok: true,
+      sourceId: 'local',
+      mode: 'sync',
+      outcome: 'activated',
+      activeChanged: true,
+      active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
+    });
+    expect(portableSourceSync.stderr).toBe('');
     await execFileAsync(awBin, [
       'skill', 'materialize', 'local/portable-pack',
       '--scope', 'project', '--out', materializedOut,
