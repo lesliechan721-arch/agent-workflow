@@ -6,7 +6,6 @@
     "participants": [
       "decision-grill"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

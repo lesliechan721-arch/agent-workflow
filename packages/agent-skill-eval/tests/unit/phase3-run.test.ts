@@ -5,7 +5,9 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  computeCanonicalDirectoryDigest,
   computeEvalFileDigest,
+  computeEvalProviderDigest,
   computeSkillDigest,
   normalizeConversationProviderCase,
   parseSelectedCases,
@@ -111,7 +113,11 @@ async function fixture(options: {
     writeFile(path.join(target, 'SKILL.md'), 'current\n'),
     writeFile(path.join(target, 'references.md'), 'generated current reference\n'),
     writeFile(path.join(previous, 'SKILL.md'), 'previous\n'),
+    writeFile(path.join(subject, 'input.txt'), 'prepared subject input\n'),
+    writeFile(path.join(evalRoot, 'provider.mjs'), 'export const provider = true\n'),
   ])
+  await mkdir(path.join(evalRoot, 'fixtures'))
+  await writeFile(path.join(evalRoot, 'fixtures', 'tool'), 'prepared fixture\n')
   const cases = {
     version: 1,
     suite: { kind: 'custom-process', unitUnderTest: 'fixture-skill' },
@@ -131,7 +137,10 @@ async function fixture(options: {
   const spec: EvalSpec = {
     version: 1,
     source: { plugin: 'fixture-plugin', skill: 'fixture-skill', suite: 'suite', profile: 'project' },
-    workspace: 'workspace',
+    workspace: {
+      path: 'workspace',
+      digest: await computeCanonicalDirectoryDigest(path.join(root, 'workspace')),
+    },
     target: { path: 'targets/current', digest: currentDigest },
     cases: { path: 'cases.json', digest: await computeEvalFileDigest(casesPath) },
     provider: { type: 'custom-process', command: ['fixture-provider'] },
@@ -148,6 +157,8 @@ async function fixture(options: {
   await writeFile(specPath, `${JSON.stringify(spec, null, 2)}\n`)
   const audit: EvalAudit = {
     version: 1,
+    workspaceDigest: spec.workspace.digest,
+    providerDigest: computeEvalProviderDigest(spec.provider),
     targets: [
       { role: 'current', digest: currentDigest },
       ...(options.baseline === 'previous-version'
@@ -163,6 +174,29 @@ async function fixture(options: {
   const auditPath = path.join(root, 'audit.json')
   await writeFile(auditPath, `${JSON.stringify(audit, null, 2)}\n`)
   return { root, specPath, auditPath, spec, audit, target }
+}
+
+async function useTriggerProvider(data: Fixture): Promise<void> {
+  const casesPath = path.join(data.root, 'cases.json')
+  const caseIds = data.audit.approvedCaseIds.map((id) => id.replaceAll('-', '_'))
+  const cases = {
+    version: 1,
+    suite: { kind: 'trigger', unitUnderTest: 'fixture-skill' },
+    cases: caseIds.map((id) => ({
+      id,
+      split: 'validation',
+      tags: [],
+      input: { query: 'Use the fixture Skill.', expectedLoad: true },
+    })),
+  }
+  await writeFile(casesPath, `${JSON.stringify(cases, null, 2)}\n`)
+  data.spec.cases.digest = await computeEvalFileDigest(casesPath)
+  data.spec.provider = 'codex-trigger'
+  data.audit.caseDigest = data.spec.cases.digest
+  data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
+  data.audit.approvedCaseIds = caseIds
+  await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+  await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
 }
 
 beforeEach(async () => {
@@ -239,6 +273,16 @@ describe('EvalSpec v1 execution', () => {
       version: 1,
       suite: { kind: 'custom-process', unitUnderTest: 'fixture-skill' },
       cases: [{ id: 'case-1', split: 'validation', tags: [], command: ['unsafe'] }],
+    })).toThrow('unknown field')
+    const removedSuiteField = 'default' + 'Grader'
+    expect(() => parseSelectedCases({
+      version: 1,
+      suite: {
+        kind: 'custom-process',
+        unitUnderTest: 'fixture-skill',
+        [removedSuiteField]: 'mechanical',
+      },
+      cases: [{ id: 'case-1', split: 'validation', tags: [] }],
     })).toThrow('unknown field')
     expect(() => parseSelectedCases({
       version: 1,
@@ -378,6 +422,24 @@ describe('EvalSpec v1 execution', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
+  it('rejects prepared workspace, provider, and fixture mutations before output or provider execution', async () => {
+    for (const relativePath of [
+      ['subject', 'input.txt'],
+      ['eval', 'provider.mjs'],
+      ['eval', 'fixtures', 'tool'],
+    ]) {
+      const data = await fixture()
+      await writeFile(path.join(data.root, 'workspace', ...relativePath), 'changed after Audit\n')
+      const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
+      await expect(runEvalSpec(data.specPath, {
+        auditPath: data.auditPath,
+        executeCustomProvider: execute,
+      })).rejects.toThrow('workspace digest')
+      expect(execute).not.toHaveBeenCalled()
+      await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
+    }
+  })
+
   it('never invokes a provider when Audit admission is absent or mismatched', async () => {
     const data = await fixture()
     const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
@@ -402,12 +464,34 @@ describe('EvalSpec v1 execution', () => {
     await expect(validateEvalAudit(data.audit, {
       spec: {
         ...data.spec,
-        provider: 'codex-trigger',
         runs: 9,
         timeoutMs: 99_999,
       },
       selectedCaseIds: ['case-1'],
     })).resolves.toMatchObject({ valid: true })
+  })
+
+  it('rejects a changed custom provider command before output or provider execution', async () => {
+    const data = await fixture()
+    data.spec.provider = {
+      type: 'custom-process',
+      command: ['fixture-provider', '--changed-after-audit'],
+    }
+    await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+    await expect(validateEvalAudit(data.audit, {
+      spec: data.spec,
+      selectedCaseIds: ['case-1'],
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('providerDigest')]),
+    })
+    const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
+    await expect(runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      executeCustomProvider: execute,
+    })).rejects.toThrow('providerDigest')
+    expect(execute).not.toHaveBeenCalled()
+    await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
   })
 
   it('passes the parser-approved trigger Oracle to the built-in provider unchanged', async () => {
@@ -438,6 +522,7 @@ describe('EvalSpec v1 execution', () => {
     data.spec.provider = 'codex-trigger'
     await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
     data.audit.caseDigest = data.spec.cases.digest
+    data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
     data.audit.approvedCaseIds = ['loads_skill']
     await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
     const runBuiltinProvider = vi.fn(async (_id, input: { case: Record<string, unknown> }) => ({
@@ -485,8 +570,7 @@ describe('EvalSpec v1 execution', () => {
       'env_key = "CUSTOM_TOKEN"',
       '',
     ].join('\n'))
-    data.spec.provider = 'codex-trigger'
-    await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+    await useTriggerProvider(data)
     const runBuiltinProvider = vi.fn(async (_id, _input, dependencies) => {
       expect(dependencies).toMatchObject({
         codexBin: '/injected/codex',
@@ -551,6 +635,8 @@ describe('EvalSpec v1 execution', () => {
       ].join('\n'))
       data.spec.provider = { type: 'custom-process', command: [process.execPath, providerPath] }
       await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+      data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
+      await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
 
       const result = await runEvalSpec(data.specPath, {
         auditPath: data.auditPath,
@@ -584,6 +670,8 @@ describe('EvalSpec v1 execution', () => {
     await mkdir(path.join(evalRoot, 'fixtures', 'case-bin'), { recursive: true })
     await writeFile(path.join(evalRoot, 'fixtures', 'suite-bin', 'suite-tool'), '#!/bin/sh\n')
     await writeFile(path.join(evalRoot, 'fixtures', 'case-bin', 'case-tool'), '#!/bin/sh\n')
+    data.spec.workspace.digest = await computeCanonicalDirectoryDigest(path.join(data.root, 'workspace'))
+    data.audit.workspaceDigest = data.spec.workspace.digest
     const casesPath = path.join(data.root, 'cases.json')
     const cases = {
       version: 1,
@@ -627,6 +715,7 @@ describe('EvalSpec v1 execution', () => {
     data.spec.provider = 'codex-conversation'
     await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
     data.audit.caseDigest = data.spec.cases.digest
+    data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
     data.audit.approvedCaseIds = ['writes_result']
     await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
     let mappedCase: Record<string, unknown> | undefined
@@ -917,6 +1006,21 @@ describe('EvalSpec v1 execution', () => {
     expect(changedResult.result.runs[0]).toMatchObject({ status: 'failed', grade: null })
     expect(changedResult.result.runs[0]?.error?.message).toContain('digest changed')
 
+    const changedWorkspace = await fixture({ runs: 3 })
+    const changedWorkspaceResult = await runEvalSpec(changedWorkspace.specPath, {
+      auditPath: changedWorkspace.auditPath,
+      executeCustomProvider: (async () => {
+        await writeFile(
+          path.join(changedWorkspace.root, 'workspace', 'eval', 'provider.mjs'),
+          'changed during execution\n',
+        )
+        return { usage: null, grade: { passed: true, score: 1 } }
+      }) as never,
+    })
+    expect(changedWorkspaceResult.result.runs).toHaveLength(1)
+    expect(changedWorkspaceResult.result.runs[0]).toMatchObject({ status: 'failed', grade: null })
+    expect(changedWorkspaceResult.result.runs[0]?.error?.message).toContain('digest changed')
+
     const cleanup = await fixture({ runs: 3 })
     const cleanupResult = await runEvalSpec(cleanup.specPath, {
       auditPath: cleanup.auditPath,
@@ -930,8 +1034,7 @@ describe('EvalSpec v1 execution', () => {
 
   it('passes an external abort signal to built-in providers and stops later attempts', async () => {
     const data = await fixture({ runs: 3, caseCount: 2 })
-    data.spec.provider = 'codex-trigger'
-    await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+    await useTriggerProvider(data)
     const controller = new AbortController()
     const runBuiltinProvider = vi.fn(async (_id, input: { signal?: AbortSignal }) => {
       expect(input.signal).toBe(controller.signal)
@@ -979,6 +1082,8 @@ describe('EvalSpec v1 execution', () => {
         data.spec.provider = { type: 'custom-process', command: [process.execPath, providerPath] }
         data.spec.timeoutMs = 30_000
         await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+        data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
+        await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
         const bin = path.resolve('dist/bin.js')
         const runner = spawn(process.execPath, [
           bin, 'run', data.specPath, '--audit', data.auditPath,
@@ -1082,5 +1187,56 @@ describe('EvalSpec v1 execution', () => {
       bin, 'inspect-result', unknownCaseResultPath,
       '--spec', data.specPath, '--audit', data.auditPath,
     ])).rejects.toMatchObject({ code: 1 })
+  })
+
+  it('rejects every provider and suite kind mismatch during spec validation', async () => {
+    const bin = path.resolve('dist/bin.js')
+    const mismatches = [
+      {
+        provider: 'codex-trigger' as const,
+        suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+        evalCase: {
+          id: 'case-1', split: 'validation', tags: [], prompt: 'Do work.',
+          assertions: ['Returns the result.'],
+        },
+      },
+      {
+        provider: 'codex-conversation' as const,
+        suite: { kind: 'trigger', unitUnderTest: 'fixture-skill' },
+        evalCase: {
+          id: 'case_1', split: 'validation', tags: [],
+          input: { query: 'Use the fixture Skill.', expectedLoad: true },
+        },
+      },
+      {
+        provider: { type: 'custom-process' as const, command: ['fixture-provider'] },
+        suite: { kind: 'conversation', unitUnderTest: 'fixture-skill' },
+        evalCase: {
+          id: 'case-1', split: 'validation', tags: [], prompt: 'Do work.',
+          assertions: ['Returns the result.'],
+        },
+      },
+    ]
+    for (const mismatch of mismatches) {
+      const data = await fixture()
+      const casesPath = path.join(data.root, 'cases.json')
+      await writeFile(casesPath, `${JSON.stringify({
+        version: 1,
+        suite: mismatch.suite,
+        cases: [mismatch.evalCase],
+      }, null, 2)}\n`)
+      data.spec.cases.digest = await computeEvalFileDigest(casesPath)
+      data.spec.provider = mismatch.provider
+      await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+      const error = await execFileAsync(process.execPath, [
+        bin, 'spec', 'validate', data.specPath,
+      ]).catch((caught) => caught as { code: number; stdout: string })
+      expect(error).toMatchObject({ code: 1 })
+      expect(JSON.parse((error as { stdout: string }).stdout)).toMatchObject({
+        valid: false,
+        errors: expect.arrayContaining([expect.stringContaining('selected suite kind')]),
+      })
+      await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
+    }
   })
 })

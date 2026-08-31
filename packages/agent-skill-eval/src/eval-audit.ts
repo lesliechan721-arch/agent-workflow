@@ -1,6 +1,6 @@
-import { stable } from './common.js'
+import { sha256, stable } from './common.js'
 import { readEvalContractFile } from './eval-file.js'
-import type { EvalSpec } from './eval-spec.js'
+import type { EvalProvider, EvalSpec } from './eval-spec.js'
 import { validateJsonSchema } from './json-schema.js'
 import { getSchema } from './schemas.js'
 import type { Digest, ValidationResult } from './types.js'
@@ -23,6 +23,8 @@ export interface EvalAuditIssue {
 
 export interface EvalAudit {
   version: 1
+  workspaceDigest: Digest
+  providerDigest: Digest
   targets: EvalAuditTarget[]
   caseDigest: Digest
   status: 'pass' | 'fail' | 'unknown'
@@ -52,6 +54,10 @@ function expectedTargets(spec: EvalSpec): EvalAuditTarget[] {
   return targets
 }
 
+export function computeEvalProviderDigest(provider: EvalProvider): Digest {
+  return sha256(stable(provider))
+}
+
 export async function validateEvalAudit(
   value: unknown,
   binding?: EvalAuditBinding,
@@ -67,6 +73,10 @@ export async function validateEvalAudit(
     if (stable(audit.targets.slice().sort((left, right) => left.role.localeCompare(right.role))) !==
       stable(expectedTargets(binding.spec).sort((left, right) => left.role.localeCompare(right.role))))
       errors.push('Audit targets do not exactly match the bound EvalSpec')
+    if (audit.workspaceDigest !== binding.spec.workspace.digest)
+      errors.push('Audit workspaceDigest does not match the bound EvalSpec')
+    if (audit.providerDigest !== computeEvalProviderDigest(binding.spec.provider))
+      errors.push('Audit providerDigest does not match the bound EvalSpec')
     if (audit.caseDigest !== binding.spec.cases.digest)
       errors.push('Audit caseDigest does not match the bound EvalSpec')
     if (audit.status !== 'pass') errors.push(`Audit status is ${audit.status}; execution is blocked`)

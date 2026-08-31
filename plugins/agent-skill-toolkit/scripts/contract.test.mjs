@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -17,6 +17,21 @@ const bundleRoot = context?.plugin?.rootDir ?? localRoot;
 const runtimeRoot = context ? path.join(bundleRoot, context.platform) : localRoot;
 async function exists(root, relative) {
   return access(path.join(root, relative)).then(() => true, () => false);
+}
+
+async function materializeHandoffFiles(workspaceFiles) {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-audit-handoff-contract-'));
+  for (const [relative, contents] of Object.entries(workspaceFiles)) {
+    const destination = path.join(temporary, relative);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, contents);
+  }
+  return temporary;
+}
+
+async function runEval(args, cwd) {
+  const bin = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/bin.js');
+  return execFileAsync(process.execPath, [bin, ...args], { cwd, encoding: 'utf8' });
 }
 
 async function runtimeExportSource(plugin, exportName) {
@@ -188,7 +203,6 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
       kind: 'trigger',
       unitUnderTest: 'audit-agent-skill-evals',
       participants: ['review-aw-catalog'],
-      defaultGrader: 'mechanical',
       policy: {
         optimization: 'precision-first',
         falseNegativeCost: 'high',
@@ -213,7 +227,7 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
     const behaviorPath = path.join(temporary, 'behavior.json');
     await writeFile(behaviorPath, JSON.stringify({
       ...document,
-      suite: { ...document.suite, kind: 'conversation', defaultGrader: 'independent-llm' },
+      suite: { ...document.suite, kind: 'conversation' },
       cases: [routeCase],
     }));
     await assert.rejects(
@@ -266,6 +280,43 @@ test('EvalAudit v1 rejects removed v3 result fields', async () => {
     );
   } finally {
     await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('nested Audit handoff fixtures reach their intended binding states', async () => {
+  const cases = JSON.parse(await readFile(
+    path.join(sourceRoot, 'skills/audit-agent-skill-evals/evals/behavior-cases.json'),
+    'utf8',
+  )).cases;
+  const stale = cases.find((entry) => entry.id === 'invalid-bundle-or-stale-binding-is-rejected');
+  const triage = cases.find((entry) => entry.id === 'triage-separates-provider-harness-and-skill-evidence');
+  assert.ok(stale);
+  assert.ok(triage);
+
+  for (const entry of [stale, triage]) {
+    const temporary = await materializeHandoffFiles(entry.input.workspaceFiles);
+    try {
+      const prefix = 'handoff';
+      const specPath = path.join(temporary, prefix, 'spec.json');
+      const auditPath = path.join(temporary, prefix, 'audit.json');
+      const resultPath = path.join(temporary, prefix, 'result.json');
+      assert.equal(JSON.parse((await runEval(['spec', 'validate', specPath], temporary)).stdout).valid, true);
+      assert.equal(JSON.parse((await runEval([
+        'audit', 'validate', auditPath, '--spec', specPath,
+      ], temporary)).stdout).valid, true);
+      if (entry.id === stale.id) {
+        await assert.rejects(
+          runEval(['result', 'validate', resultPath, '--spec', specPath, '--audit', auditPath], temporary),
+          (error) => JSON.parse(error.stdout).errors.includes('Result auditDigest does not match its binding'),
+        );
+      } else {
+        assert.equal(JSON.parse((await runEval([
+          'result', 'validate', resultPath, '--spec', specPath, '--audit', auditPath,
+        ], temporary)).stdout).valid, true);
+      }
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
   }
 });
 

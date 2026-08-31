@@ -6,7 +6,6 @@
     "participants": [
       "git-commit"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

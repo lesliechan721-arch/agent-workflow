@@ -3,7 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  computeCanonicalDirectoryDigest,
   computeEvalFileDigest,
+  computeEvalProviderDigest,
   computeEvalResultSummary,
   computeSkillDigest,
   getSchema,
@@ -40,13 +42,17 @@ async function createSpecFixture(): Promise<{
   const root = await mkdtemp(path.join(os.tmpdir(), 'eval-contract-v1-'))
   roots.push(root)
   await mkdir(path.join(root, 'workspace'))
+  await writeFile(path.join(root, 'workspace', 'input.txt'), 'prepared input\n')
   await mkdir(path.join(root, 'target'))
   await writeFile(path.join(root, 'target', 'SKILL.md'), '# Test\n')
   await writeFile(path.join(root, 'cases.json'), '[{"id":"case-1"},{"id":"case-2"}]\n')
   const spec: EvalSpec = {
     version: 1,
     source: { plugin: 'plugin', skill: 'skill', suite: 'suite', profile: 'profile' },
-    workspace: 'workspace',
+    workspace: {
+      path: 'workspace',
+      digest: await computeCanonicalDirectoryDigest(path.join(root, 'workspace')),
+    },
     target: { path: 'target', digest: await computeSkillDigest(path.join(root, 'target')) },
     cases: { path: 'cases.json', digest: await computeEvalFileDigest(path.join(root, 'cases.json')) },
     provider: 'codex-conversation',
@@ -63,6 +69,8 @@ async function createSpecFixture(): Promise<{
 function validAudit(spec: EvalSpec): EvalAudit {
   return {
     version: 1,
+    workspaceDigest: spec.workspace.digest,
+    providerDigest: computeEvalProviderDigest(spec.provider),
     targets: [{ role: 'current', digest: spec.target.digest }],
     caseDigest: spec.cases.digest,
     status: 'pass',
@@ -142,6 +150,7 @@ describe('independent Eval v1 contracts', () => {
     const specValidation = await validateEvalSpecFile(specPath)
     expect(specValidation).toMatchObject({ valid: true, errors: [] })
     expect(specValidation.calculated?.specDigest).toBe(await computeEvalFileDigest(specPath))
+    expect(specValidation.calculated?.workspaceDigest).toBe(spec.workspace.digest)
 
     const audit = validAudit(spec)
     await expect(parseEvalAudit(audit)).resolves.toEqual(audit)
@@ -182,9 +191,16 @@ describe('independent Eval v1 contracts', () => {
 
   it('rejects unknown versions and additional properties at every new contract boundary', async () => {
     const { spec } = await createSpecFixture()
+    await expect(validateEvalSpec({ ...spec, workspace: 'workspace' })).resolves.toMatchObject({ valid: false })
     await expect(validateEvalSpec({ ...spec, version: 2 })).resolves.toMatchObject({ valid: false })
     await expect(validateEvalSpec({ ...spec, unexpected: true })).resolves.toMatchObject({ valid: false })
     const audit = validAudit(spec)
+    const legacyAudit = structuredClone(audit) as Partial<EvalAudit>
+    delete legacyAudit.workspaceDigest
+    await expect(validateEvalAudit(legacyAudit)).resolves.toMatchObject({ valid: false })
+    const legacyProviderAudit = structuredClone(audit) as Partial<EvalAudit>
+    delete legacyProviderAudit.providerDigest
+    await expect(validateEvalAudit(legacyProviderAudit)).resolves.toMatchObject({ valid: false })
     await expect(validateEvalAudit({ ...audit, version: 2 })).resolves.toMatchObject({ valid: false })
     await expect(validateEvalAudit({ ...audit, unexpected: true })).resolves.toMatchObject({ valid: false })
     const binding: EvalResultBinding = {
@@ -204,7 +220,10 @@ describe('independent Eval v1 contracts', () => {
 
   it('rejects path escape, input symlinks, and symlinked output components', async () => {
     const fixture = await createSpecFixture()
-    await writeFile(fixture.specPath, JSON.stringify({ ...fixture.spec, workspace: '../outside' }))
+    await writeFile(fixture.specPath, JSON.stringify({
+      ...fixture.spec,
+      workspace: { ...fixture.spec.workspace, path: '../outside' },
+    }))
     await expect(validateEvalSpecFile(fixture.specPath)).resolves.toMatchObject({ valid: false })
 
     await symlink('target', path.join(fixture.root, 'linked-target'))
@@ -302,8 +321,35 @@ describe('independent Eval v1 contracts', () => {
     const { spec } = await createSpecFixture()
     const audit = validAudit(spec)
     const binding = { spec, selectedCaseIds: ['case-1', 'case-2'] }
+    await expect(validateEvalAudit({ ...audit, workspaceDigest: spec.target.digest }, binding))
+      .resolves.toMatchObject({ valid: false })
     await expect(validateEvalAudit({ ...audit, caseDigest: spec.target.digest }, binding))
       .resolves.toMatchObject({ valid: false })
+    await expect(validateEvalAudit(audit, {
+      spec: { ...spec, provider: 'codex-trigger' },
+      selectedCaseIds: binding.selectedCaseIds,
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('providerDigest')]),
+    })
+    const customSpec: EvalSpec = {
+      ...spec,
+      provider: { type: 'custom-process', command: ['node', 'provider.mjs', '--first'] },
+    }
+    const customAudit = {
+      ...audit,
+      providerDigest: computeEvalProviderDigest(customSpec.provider),
+    }
+    await expect(validateEvalAudit(customAudit, {
+      spec: {
+        ...customSpec,
+        provider: { type: 'custom-process', command: ['node', 'provider.mjs', '--second'] },
+      },
+      selectedCaseIds: binding.selectedCaseIds,
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('providerDigest')]),
+    })
     await expect(validateEvalAudit({ ...audit, status: 'fail' }, binding))
       .resolves.toMatchObject({ valid: false })
     await expect(validateEvalAudit({ ...audit, status: 'unknown' }, binding))
@@ -357,9 +403,21 @@ describe('independent Eval v1 contracts', () => {
     const failedWithGrade = structuredClone(result)
     failedWithGrade.runs[3]!.grade = { passed: false, score: 0 }
     await expect(validateEvalResult(failedWithGrade)).resolves.toMatchObject({ valid: false })
+    const completedWithError = structuredClone(result)
+    completedWithError.runs[0]!.error = { message: 'contradictory error' }
+    await expect(validateEvalResult(completedWithError)).resolves.toMatchObject({ valid: false })
+    for (const index of [2, 3]) {
+      const failureWithoutError = structuredClone(result)
+      failureWithoutError.runs[index]!.error = null
+      await expect(validateEvalResult(failureWithoutError)).resolves.toMatchObject({ valid: false })
+    }
     await expect(validateEvalResult({
       ...result,
       summary: { ...result.summary, error: 0 },
+    })).resolves.toMatchObject({ valid: false })
+    await expect(validateEvalResult({
+      ...result,
+      finishedAt: '2026-08-29T23:59:59Z',
     })).resolves.toMatchObject({ valid: false })
   })
 
@@ -450,5 +508,15 @@ describe('independent Eval v1 contracts', () => {
       .resolves.toMatchObject({ valid: false })
     await writeFile(path.join(fixture.root, 'cases.json'), '[{"id":"changed"}]\n')
     await expect(validateEvalSpecFile(fixture.specPath)).resolves.toMatchObject({ valid: false })
+  })
+
+  it('recomputes the complete workspace digest', async () => {
+    const fixture = await createSpecFixture()
+    await writeFile(path.join(fixture.root, 'workspace', 'input.txt'), 'changed input\n')
+    const validation = await validateEvalSpecFile(fixture.specPath)
+    expect(validation).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('workspace digest')]),
+    })
   })
 })

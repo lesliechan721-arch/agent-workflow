@@ -23,6 +23,7 @@ import {
   type EvalResultRun,
 } from './eval-result.js'
 import { validateEvalSpecFile, type EvalSpecCalculated } from './eval-spec.js'
+import { assertEvalProviderSuiteKind } from './eval-suite-binding.js'
 import {
   runBuiltinEvalProvider,
   type BuiltinEvalProviderDependencies,
@@ -123,18 +124,31 @@ async function assertInputsUnchanged(
   } catch (error) {
     throw new BoundInputChangedError(`Prepared Eval input changed: ${(error as Error).message}`)
   }
-  if (!sameDigests(captured, current)) throw new BoundInputChangedError('Prepared Eval input digest changed.')
+  if (!sameDigests(captured, current) || !digestsMatchSpec(calculated, current)) {
+    throw new BoundInputChangedError(
+      'Prepared Eval input digest changed or no longer matches EvalSpec digests.',
+    )
+  }
+}
+
+function digestsMatchSpec(
+  calculated: EvalSpecCalculated,
+  digests: BoundInputDigests,
+): boolean {
+  return digests.workspace === calculated.workspaceDigest
+    && digests.workspace === calculated.spec.workspace.digest
+    && digests.target === calculated.targetDigest
+    && digests.cases === calculated.caseDigest
+    && digests.previousTarget === calculated.previousTargetDigest
 }
 
 function assertDigestsMatchSpec(
   calculated: EvalSpecCalculated,
   digests: BoundInputDigests,
 ): void {
-  if (
-    digests.target !== calculated.targetDigest
-    || digests.cases !== calculated.caseDigest
-    || digests.previousTarget !== calculated.previousTargetDigest
-  ) throw new BoundInputChangedError('Prepared Eval input no longer matches EvalSpec digests.')
+  if (!digestsMatchSpec(calculated, digests)) {
+    throw new BoundInputChangedError('Prepared Eval input no longer matches EvalSpec digests.')
+  }
 }
 
 function triggerProviderCase(
@@ -367,6 +381,7 @@ async function createRunInputSnapshot(
 }
 
 async function assertSnapshotUnchanged(
+  calculated: EvalSpecCalculated,
   snapshot: RunInputSnapshot,
   captured: BoundInputDigests,
 ): Promise<void> {
@@ -378,8 +393,10 @@ async function assertSnapshotUnchanged(
       ? await computeSkillDigest(snapshot.previousTarget)
       : null,
   }
-  if (!sameDigests(captured, current)) {
-    throw new BoundInputChangedError('Run input snapshot digest changed.')
+  if (!sameDigests(captured, current) || !digestsMatchSpec(calculated, current)) {
+    throw new BoundInputChangedError(
+      'Run input snapshot digest changed or no longer matches EvalSpec digests.',
+    )
   }
 }
 
@@ -436,6 +453,7 @@ export async function runEvalSpec(
   if (document.suite.unitUnderTest !== calculated.spec.source.skill) {
     throw new Error('Selected cases unitUnderTest does not match EvalSpec source.skill.')
   }
+  assertEvalProviderSuiteKind(calculated.spec.provider, document.suite.kind)
   const selectedCaseIds = document.cases.map((entry) => entry.id)
   const auditValidation = await validateEvalAuditFile(options.auditPath, {
     spec: calculated.spec,
@@ -474,6 +492,7 @@ export async function runEvalSpec(
   const startedAt = new Date().toISOString()
   const runs: EvalResultRun[] = []
   let stop = false
+  await assertInputsUnchanged(calculated, captured)
   await fs.ensureDir(path.dirname(calculated.paths.outputDir))
   await mkdir(calculated.paths.outputDir)
   let snapshot: RunInputSnapshot
@@ -504,7 +523,7 @@ export async function runEvalSpec(
         try {
           if (options.signal?.aborted) throw abortError()
           await assertInputsUnchanged(calculated, captured)
-          await assertSnapshotUnchanged(snapshot, captured)
+          await assertSnapshotUnchanged(calculated, snapshot, captured)
           const prepared = await prepareAttempt({
             calculated,
             snapshot,
@@ -561,7 +580,7 @@ export async function runEvalSpec(
         }
         try {
           await assertInputsUnchanged(calculated, captured)
-          await assertSnapshotUnchanged(snapshot, captured)
+          await assertSnapshotUnchanged(calculated, snapshot, captured)
         } catch (changed) {
           status = 'failed'
           usage = null
@@ -586,7 +605,7 @@ export async function runEvalSpec(
   }
   try {
     await assertInputsUnchanged(calculated, captured)
-    await assertSnapshotUnchanged(snapshot, captured)
+    await assertSnapshotUnchanged(calculated, snapshot, captured)
   } catch (changed) {
     if (runs.length === 0) throw changed
     const last = runs[runs.length - 1]!

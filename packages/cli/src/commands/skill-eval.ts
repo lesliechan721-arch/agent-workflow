@@ -2,6 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
+  assertEvalProviderSuiteKind,
   computeCanonicalDirectoryDigest,
   computeEvalFileDigest,
   createRuntimeSkillSnapshot,
@@ -327,6 +328,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     await fs.remove(path.join(subjectRoot, '.agents', 'skills', options.skillName))
     await computeCanonicalDirectoryDigest(subjectRoot)
     await copyEvalWorkspace(selection, path.join(staging, 'workspace', 'eval'))
+    const workspaceDigest = await computeCanonicalDirectoryDigest(path.join(staging, 'workspace'))
     let baseline: EvalSpec['baseline'] = options.baseline
       ? { type: 'without-skill' }
       : { type: 'none' }
@@ -350,6 +352,8 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     }
     const runs = options.runs ?? selection.suite.runs ?? selection.defaults.runs ?? 1
     const timeoutMs = options.timeoutMs ?? selection.suite.timeoutMs ?? selection.defaults.timeoutMs ?? 120_000
+    const provider = await resolveProvider(selection, path.join(staging, 'workspace', 'eval'))
+    assertEvalProviderSuiteKind(provider, selected.suite.kind)
     const spec: EvalSpec = {
       version: 1,
       source: {
@@ -358,10 +362,10 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
         suite: selection.suite.id,
         profile: selection.profile.id,
       },
-      workspace: 'workspace',
+      workspace: { path: 'workspace', digest: workspaceDigest },
       target: { path: 'targets/current', digest: target.digest },
       cases: { path: 'cases.json', digest: await computeEvalFileDigest(selectedCasesPath) },
-      provider: await resolveProvider(selection, path.join(staging, 'workspace', 'eval')),
+      provider,
       runs,
       timeoutMs,
       baseline,

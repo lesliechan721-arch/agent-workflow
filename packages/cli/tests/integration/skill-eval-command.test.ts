@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
+  computeCanonicalDirectoryDigest,
   computeSkillDigest,
   validateEvalSpecFile,
 } from '@lesliechan721/agent-skill-eval'
@@ -312,7 +313,7 @@ describe('aw skill eval commands', () => {
     expect(spec).toMatchObject({
       version: 1,
       source: { plugin: 'eval-owner', skill: 'owner-skill', suite: 'trigger-suite', profile: 'project-default' },
-      workspace: 'workspace',
+      workspace: { path: 'workspace', digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u) },
       provider: 'codex-trigger',
       runs: 3,
       timeoutMs: 9000,
@@ -323,6 +324,7 @@ describe('aw skill eval commands', () => {
       version: 1,
       cases: [{ id: 'validation_case' }],
     })
+    expect(await computeCanonicalDirectoryDigest(path.join(output, 'workspace'))).toBe(spec.workspace.digest)
     expect(await computeSkillDigest(path.join(output, 'targets', 'current'))).toBe(spec.target.digest)
     expect(await treeDigests(fixture.ownerRoot)).toEqual(sourceBefore)
 

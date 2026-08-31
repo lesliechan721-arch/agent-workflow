@@ -7,7 +7,7 @@
 selected cases 文档使用 `version`、`suite` 和非空 `cases`。suite 选择 `kind` 并保存：
 
 - `unitUnderTest`：被评估 Skill。
-- `defaultGrader`：suite 的默认 grader；provider 已有明确默认时仍要确认该选择是有意的。
+- `participants`：仅在 case 需要其它参与 Skill 时声明。
 - `policy`：optimization、false-negative/false-positive 成本和理由。
 - `runtime`：该 suite 的 isolation、fixture 或其它 provider runtime 条件。
 
