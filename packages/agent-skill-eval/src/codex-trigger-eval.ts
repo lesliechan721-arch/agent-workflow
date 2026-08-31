@@ -120,12 +120,14 @@ interface TriggerCaseSummary {
   expected: {
     load_skill?: boolean;
     loaded_skills?: string[];
+    first_loaded_skill?: string;
     spawn_agent?: boolean;
   };
   observed: {
     load_rate: number;
     skill_load_rates: Record<string, number>;
     route_match_rate?: number;
+    first_route_match_rate?: number;
     route_counts?: Record<string, number>;
     multiple_skill_loads: number;
     spawn_rate?: number;
@@ -362,6 +364,11 @@ function expectedEarlyStop(
   observed: TriggerObservation,
   loadedSkills: string[],
 ): string | null {
+  if (evalCase.expected_first_loaded_skill) {
+    return loadedSkills[0] === evalCase.expected_first_loaded_skill
+      ? 'expected_first_skill_route_observed'
+      : null;
+  }
   if (evalCase.expected_loaded_skills) {
     const expected = expectedLoadedSkills(suite, evalCase);
     if (suite.forbidMultipleSkillLoads && loadedSkills.length > 1) {
@@ -969,17 +976,27 @@ export function summarizeTriggerCase(
   const executionErrors = runs.filter((run) => run.execution_error).length;
   const strictNegative = suite.strictNegativeSplits.includes(evalCase.split);
   const usesRouteExpectation = evalCase.expected_loaded_skills !== undefined;
+  const usesFirstRouteExpectation = evalCase.expected_first_loaded_skill !== undefined;
   const expectedSkills = expectedLoadedSkills(suite, evalCase);
   const routeMatches = runs.filter((run) =>
     sameSkillSet(run.all_loaded_skills, expectedSkills)).length;
   const routeMatchRate = routeMatches / runs.length;
+  const firstRouteMatches = usesFirstRouteExpectation
+    ? runs.filter((run) =>
+      run.first_loaded_skill === evalCase.expected_first_loaded_skill).length
+    : 0;
+  const firstRouteMatchRate = firstRouteMatches / runs.length;
   const multipleSkillLoads = runs.filter((run) => run.all_loaded_skills.length > 1).length;
-  const loadPassed = usesRouteExpectation
+  const loadPassed = usesFirstRouteExpectation
+    ? firstRouteMatchRate >= (suite.minimumPassRate ?? PASS_THRESHOLD)
+    : usesRouteExpectation
     ? strictNegative && expectedSkills.length === 0
       ? routeMatchRate === 1
       : routeMatchRate >= (suite.minimumPassRate ?? PASS_THRESHOLD)
     : ratePasses(loadRate, Boolean(evalCase.should_load_skill), strictNegative);
-  const routePassed = !suite.forbidMultipleSkillLoads || multipleSkillLoads === 0;
+  const routePassed = usesFirstRouteExpectation
+    || !suite.forbidMultipleSkillLoads
+    || multipleSkillLoads === 0;
   const spawnPassed = suite.observeSpawnAgent
     ? ratePasses(spawnRate, Boolean(evalCase.should_spawn_agent), strictNegative)
     : true;
@@ -994,7 +1011,9 @@ export function summarizeTriggerCase(
     split: evalCase.split,
     query: evalCase.query,
     expected: {
-      ...(usesRouteExpectation
+      ...(usesFirstRouteExpectation
+        ? { first_loaded_skill: evalCase.expected_first_loaded_skill }
+        : usesRouteExpectation
         ? { loaded_skills: expectedSkills }
         : { load_skill: Boolean(evalCase.should_load_skill) }),
       ...(suite.observeSpawnAgent ? { spawn_agent: Boolean(evalCase.should_spawn_agent) } : {}),
@@ -1005,6 +1024,9 @@ export function summarizeTriggerCase(
       ...(usesRouteExpectation ? {
         route_match_rate: routeMatchRate,
         route_counts: routeCounts,
+      } : {}),
+      ...(usesFirstRouteExpectation ? {
+        first_route_match_rate: firstRouteMatchRate,
       } : {}),
       multiple_skill_loads: multipleSkillLoads,
       ...(suite.observeSpawnAgent ? { spawn_rate: spawnRate } : {}),

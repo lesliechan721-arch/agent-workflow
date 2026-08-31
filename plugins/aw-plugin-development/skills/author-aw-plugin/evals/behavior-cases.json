@@ -35,15 +35,18 @@
       "prompt": "在当前工作区新建 plugins/team-status AW 插件，同时创建 model 调用的 publish-status 和手动调用的 reset-status 两个 Skill。支持 Codex 和 Claude，补插件 README，完成作者验证。不要做独立质量评分或发布裁决。",
       "input": {
         "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"team-status-new-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://example.invalid/team-status\"},\"interface\":{\"displayName\":\"Team Status Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
           "package.json": "{\"name\":\"aw-author-eval\",\"private\":true,\"scripts\":{\"build\":\"node -e \\\"console.log('build ok')\\\"\"}}\n",
-          "AGENTS.md": "# Workspace rules\nOnly change plugins/team-status. Use the installed aw CLI for plugin author commands.\n"
+          "AGENTS.md": "# Workspace rules\nOnly change plugins/team-status and .aw/plugins/team-status output created by aw plugin build. Use the installed aw CLI for plugin author commands.\n"
         }
       },
       "expected": {
         "output": "创建插件及两个完整 Skill，验证插件，并报告两个 Skill 的独立作者交接、验证结果和未运行的模型证据。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "plugins/team-status/**"
+          "plugins/team-status/**",
+          ".aw/plugins/team-status/**"
         ],
         "artifacts": [
           {
@@ -90,6 +93,7 @@
       "prompt": "维护 plugins/support-console：新增 stdio MCP server support-data 和 Codex App support-panel，源码分别写到 .mcp.json 与 .app.json，并更新 manifest。只改这些能力并完成作者验证。",
       "input": {
         "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"mcp-app-degraded-fixture\"}\n",
           "plugins/support-console/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"support-console\",\"version\":\"0.2.0\",\"description\":\"Support tools\",\"marketplace\":{\"policy\":{\"products\":[\"CODEX\"]}}}\n",
           "plugins/support-console/README.md": "# Support Console\n",
           "AGENTS.md": "# Workspace rules\nOnly change plugins/support-console/.agents-plugin/plugin.json, plugins/support-console/.mcp.json, and plugins/support-console/.app.json.\n"
@@ -119,6 +123,7 @@
         ]
       },
       "assertions": [
+        "catalog context schema 3 报 workspace.found=true、workspace.health=degraded 和非阻断 workspace-content issue 后，仍使用 receipt root 修复 support-console",
         "AWAuthoringContext components 直接包含 manifest、mcp 和 app 三项，并保持 support-data 与 support-panel 的独立路径和 CODEX profile",
         "同时实现 MCP server 与 App 的源码真值及 manifest 引用，没有把其中一项降为 README 说明或遗漏",
         "trace 读取稳定 aw plugin validate 的帮助并调用该命令，不使用 npx 或旧作者脚本路径",
@@ -136,6 +141,7 @@
       "prompt": "给 plugins/release-helper 增加公共 /prepare-release slash command，并在插件 README 说明用途、显式调用示例和只生成候选清单、不发布的边界。更新 manifest 并验证。",
       "input": {
         "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"release-helper-slash-fixture\"}\n",
           "plugins/release-helper/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"release-helper\",\"version\":\"1.1.0\",\"description\":\"Release helper\"}\n",
           "plugins/release-helper/README.md": "# Release Helper\n\nGenerates release notes.\n",
           "AGENTS.md": "# Workspace rules\nOnly change the release-helper manifest, README, and slash-commands directory.\n"
@@ -182,6 +188,7 @@
       "prompt": "给 plugins/incident-policy 增加可配置的 Codex 项目级事故响应 instructions。新增 severityPrefix 字符串配置，非默认值必须改变受管 instructions，且配置更新能触发对应产物刷新。只实现这个能力，并验证默认值和一个非默认值。",
       "input": {
         "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"incident-policy-artifact-fixture\"}\n",
           "plugins/incident-policy/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"incident-policy\",\"version\":\"0.4.0\",\"description\":\"Incident policy\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\"]}}}\n",
           "plugins/incident-policy/README.md": "# Incident Policy\n",
           "AGENTS.md": "# Workspace rules\nOnly change the incident-policy manifest and scripts directory.\n"
@@ -217,13 +224,13 @@
         "representative",
         "composite-version-build"
       ],
-      "prompt": "修复 plugins/runtime-card 的构建。当前 pnpm build 因 scripts/build-runtime-assets.mjs 引用缺失的 scripts/lib/render.mjs 失败；这是日常 development 变化，保持插件稳定目标 1.3.0 不变，并运行作者验证和 plugin status。不要改测试来绕过失败。",
+      "prompt": "使用 $author-aw-plugin 修复 plugins/runtime-card 的构建。当前 `node plugins/runtime-card/scripts/build-runtime-assets.mjs` 因 scripts/build-runtime-assets.mjs 引用缺失的 scripts/lib/render.mjs 失败；这是日常 development 变化，保持插件稳定目标 1.3.0 不变，并运行该 node build、作者验证和 plugin status。不要改测试来绕过失败。",
       "input": {
         "workspaceFiles": {
-          "package.json": "{\"name\":\"runtime-card-workspace\",\"private\":true,\"scripts\":{\"build\":\"node plugins/runtime-card/scripts/build-runtime-assets.mjs\"}}\n",
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"runtime-card-build-fixture\"}\n",
           "plugins/runtime-card/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"runtime-card\",\"version\":\"1.3.0\",\"description\":\"Runtime card\",\"scripts\":{\"build\":\"./scripts/build-runtime-assets.mjs\"}}\n",
           "plugins/runtime-card/scripts/build-runtime-assets.mjs": "import { render } from './lib/render.mjs';\nconsole.log(render('runtime-card'));\n",
-          "AGENTS.md": "# Workspace rules\nUse pnpm build. Only change plugins/runtime-card/scripts. Keep the current stable target during development.\n"
+          "AGENTS.md": "# Workspace rules\nUse `node plugins/runtime-card/scripts/build-runtime-assets.mjs`. This fixture is offline: do not use pnpm, Corepack, npx, or a package manager. Only change plugins/runtime-card/scripts. Keep the current stable target during development.\n"
         }
       },
       "expected": {
@@ -241,9 +248,9 @@
       },
       "assertions": [
         "AWAuthoringContext components 只包含 node-build，release target 交给 workspace release workflow，buildRequired=true 保留到验证阶段",
-        "修复缺失 runtime helper 或等价直接根因，使原 pnpm build 真正通过；不修改测试、不移除 import、不把失败命令替换为空操作",
+        "修复缺失 runtime helper 或等价直接根因，使原 node build 真正通过；不修改测试、不移除 import、不把失败命令替换为空操作",
         "manifest 稳定目标保持 1.3.0，日常开发不直接提高版本",
-        "trace 先读取 stable validate 与 status 的帮助，再运行 pnpm build、aw plugin validate 和 aw plugin status；不使用 npx 或旧脚本路径",
+        "trace 先读取 stable validate 与 status 的帮助，再运行 fixture 指定的 node build、aw plugin validate 和 aw plugin status；不使用 pnpm、Corepack、npx 或旧脚本路径",
         "不进入独立 Reviewer，不把作者验证表述为 release pass"
       ]
     },
@@ -254,54 +261,39 @@
         "representative",
         "composite-skill-evals"
       ],
-      "prompt": "给 plugins/query-tools 新增 model 调用的 explain-query Skill，并补 trigger 与 behavior Eval 资产。使用通用 Skill 作者、Eval Designer 和独立 preflight；本次不授权真实模型运行。更新 manifest 并完成确定性验证。",
+      "prompt": "使用 $author-aw-plugin 维护已有的 plugins/query-tools：只在现有 explain-query Skill 中补一条“先说明查询假设”的小改，并把最小 trigger Eval suite 交给 Eval Designer。先进入被评 Skill，再 handoff 给 author-agent-skill 和 design-agent-skill-evals；本次不授权真实模型运行。使用公开 aw skill validate 与 aw plugin validate 完成确定性验证。",
       "input": {
         "workspaceFiles": {
-          "plugins/query-tools/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"query-tools\",\"version\":\"0.6.0\",\"description\":\"Query tools\",\"skills\":\"./skills\"}\n",
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"query-tools-skill-eval-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Query Tools Fixture\",\"url\":\"https://example.invalid/query-tools-fixture\"},\"interface\":{\"displayName\":\"Query Tools Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+          "plugins/query-tools/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"query-tools\",\"version\":\"0.6.0\",\"description\":\"Query tools\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"interface\":{\"displayName\":\"Query Tools\",\"shortDescription\":\"Explains a query\",\"capabilities\":[\"Skills\"]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
           "plugins/query-tools/README.md": "# Query Tools\n",
-          "AGENTS.md": "# Workspace rules\nOnly change the query-tools manifest and skills/explain-query. Do not run a real model.\n"
+          "plugins/query-tools/skills/explain-query/SKILL.md": "---\nname: explain-query\ndescription: Explain one supplied query.\nuser-invocable: true\n---\n\n# Explain Query\n\nExplain the supplied query.\n",
+          "plugins/query-tools/skills/explain-query/README.md": "# Explain Query\n\nExplain one supplied query.\n",
+          "plugins/query-tools/skills/explain-query/agents/openai.yaml": "interface:\n  display_name: Explain Query\n  short_description: Explain one supplied query\n  default_prompt: Use $explain-query to explain the supplied query.\npolicy:\n  allow_implicit_invocation: true\n",
+          "AGENTS.md": "# Workspace rules\nOnly change plugins/query-tools/skills/explain-query. Do not run a real model.\n"
         }
       },
       "expected": {
-        "output": "创建完整 Skill 与 Eval 资产，完成通用作者和 preflight 交接，保持证据为 structural 且不宣称模型已执行。",
+        "output": "只修改现有 explain-query Skill 并交接一个最小 trigger Eval suite；完成公开 validate，保持证据为确定性且不宣称模型已执行。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "plugins/query-tools/.agents-plugin/plugin.json",
-          "plugins/query-tools/skills/explain-query/**"
+          "plugins/query-tools/skills/explain-query/SKILL.md",
+          "plugins/query-tools/skills/explain-query/evals/**"
         ],
         "artifacts": [
           {
-            "path": "plugins/query-tools/.agents-plugin/plugin.json",
-            "exists": true
-          },
-          {
             "path": "plugins/query-tools/skills/explain-query/SKILL.md",
-            "exists": true
-          },
-          {
-            "path": "plugins/query-tools/skills/explain-query/agents/openai.yaml",
-            "exists": true
-          },
-          {
-            "path": "plugins/query-tools/skills/explain-query/evals/manifest.json",
-            "exists": true
-          },
-          {
-            "path": "plugins/query-tools/skills/explain-query/evals/trigger-cases.json",
-            "exists": true
-          },
-          {
-            "path": "plugins/query-tools/skills/explain-query/evals/evals.json",
             "exists": true
           }
         ]
       },
       "assertions": [
-        "AWAuthoringContext components 直接包含 manifest、explain-query skill 和 eval-assets，Skill invocation 为 model，三项在所有 handoff 后完整保留",
-        "trace 先检查 aw plugin add-skill 帮助并调用稳定 add-skill，再以 fresh context 调用 author-agent-skill、design-agent-skill-evals 和 audit-agent-skill-evals(preflight)",
-        "AW adapter 保持 evalStageOwner=caller，不让通用 Skill 作者或 Designer 接管插件级 stage，也不省略独立 preflight",
-        "运行稳定 aw plugin validate 和 eval case schema 校验；没有启动真实模型，证据等级明确为 structural",
-        "不调用 review-aw-plugin 或 review-agent-skill，不宣称模型 Eval executed、release pass 或独立质量评分"
+        "先进入被评的 $author-aw-plugin，再 handoff 给 author-agent-skill 处理现有 Skill 小改，并交给 design-agent-skill-evals 处理最小 trigger suite",
+        "最小 trigger suite 必须产出 suite metadata 和包含正例、反例的 trigger case；文件名可按 Eval Designer 合同不同，且两类文件都通过适用 schema 校验",
+        "只修改既有 explain-query Skill 和其 Eval 资产；不修改 manifest、不创建第二个 Skill、不添加 behavior suite、preflight 或模型运行",
+        "运行公开 aw skill validate、aw plugin validate 以及最小 Eval schema 校验；没有启动真实模型，证据等级明确为确定性",
+        "不调用 review-aw-plugin、review-agent-skill 或 audit-agent-skill-evals，不宣称模型 Eval executed、release pass 或独立质量评分"
       ]
     },
     {
@@ -314,6 +306,7 @@
       "prompt": "维护 plugins/portable-observer：保留现有 native Skill；portable root 必须为 portable-skills，新增的 portable static observe-status Skill 必须位于 portable-skills/observe-status，并把 runtime/status-fields.json 只投影到该 portable Skill；build 再生成 observe-status/references/status-fields.generated.md，且只声明给 Portable surface；再新增 dynamic portable observe-project Skill，renderer 必须位于 scripts/render-artifacts.mjs，并使用 workspace 中预置且只读的 plugins/status-registry-provider runtime export status-registry。请查询当前 PATH 的 aw plugin capabilities，写最小公开合同，并运行 aw plugin validate。只修改 plugins/portable-observer；不要修改 provider，也不要做 Review、Audit、模型 Eval 或发布。",
       "input": {
         "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"portable-observer-projection-fixture\"}\n",
           "plugins/portable-observer/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"portable-observer\",\"version\":\"0.3.0\",\"description\":\"Portable status observer\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_USE\",\"products\":[\"CODEX\"]}}}\n",
           "plugins/portable-observer/skills/native-observer/SKILL.md": "---\nname: native-observer\ndescription: Observe status in the native host.\n---\n\n# Native Observer\n\nObserve native status.\n",
           "plugins/portable-observer/skills/native-observer/README.md": "# Native Observer\n",

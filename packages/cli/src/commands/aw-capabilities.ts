@@ -15,6 +15,7 @@ import {
   normalizeAwCapabilities,
   type AwPluginRequirementsReceiptV1,
   type PluginRequirementsResolution,
+  type RegisteredAwCapabilityId,
 } from '@lesliechan721/aw-plugin-core/manifest'
 import fs from 'fs-extra'
 
@@ -44,7 +45,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.review-publication.v1',
   'aw.catalog-snapshot.v5',
   'aw.self-check.v1',
-] as const
+] as const satisfies readonly RegisteredAwCapabilityId[]
 
 export class AwCapabilityUnsupportedError extends Error {
   readonly code = 'awCapabilityUnsupported'

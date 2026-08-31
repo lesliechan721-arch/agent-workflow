@@ -130,6 +130,38 @@
       }
     },
     {
+      "id": "degraded-workspace-remains-locatable",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "catalog-degraded-context-review",
+        "workspace-invalid",
+        "platform-codex"
+      ],
+      "prompt": "使用 $review-aw-catalog 只读评审当前 Catalog。Workspace marker 合法，但 metadata 损坏。使用 Context v3 已解析的 root 和 identity，报告可得证据与 workspace-content finding；不要修复、build、preflight 或修改文件。",
+      "assertions": [
+        "catalog context receipt 符合 schema 3，workspace.found=true、workspace.health=degraded，且 workspace-content issue 为非阻断",
+        "继续使用 receipt 的绝对 root 和 identity 做可得的只读检查，并把 metadata/status 无法证明的结论标为 unknown",
+        "没有 init、修复、plugin test/build、catalog build、status --preflight、publish 或文件修改"
+      ],
+      "input": {
+        "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"degraded-review-fixture\"}\n",
+          "plugins/marketplace-source.json": "{}\n"
+        }
+      },
+      "expected": {
+        "output": "保留合法 Workspace 的 root 和 identity，报告 degraded workspace-content finding；静态 status 不可用的结论标为 unknown，并保持只读。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "Context v3 用合法 marker 定位 root 和 identity；workspace content 损坏只产生非阻断 issue，Reviewer 应在该 root 完成可得的只读检查并报告 finding。",
+        "minimalCounterexample": "若 marker 本身非法并产生 blocking workspace marker issue，则必须停止定位，不能把 suggestedRoot 当作已存在 Workspace。",
+        "errorCost": "high",
+        "allowedVariance": "可因静态 status 失败而减少 composition 结论；必须保留 context 给出的 root/identity、报告 workspace-content finding，并保持只读。"
+      }
+    },
+    {
       "id": "explicit-plugin-target-keeps-workspace-b",
       "split": "validation",
       "tags": [

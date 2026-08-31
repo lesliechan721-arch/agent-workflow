@@ -48,11 +48,12 @@ describe('Catalog context and unified inference', () => {
     const output = capture()
     expect(await runCli(['catalog', 'context', '--json'], { cwd: root, io: output.io })).toBe(0)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      workspace: { found: false, root: null, identity: null, resolvedFrom: null },
+      schemaVersion: 3,
+      workspace: { found: false, root: null, identity: null, resolvedFrom: null, health: null },
       initialization: { suggestedRoot: root, resolvedFrom: 'cwd' },
       git: { repositoryRoot: null, sourceHead: null, clean: null, remotes: [] },
       publication: { remote: null, remoteResolvedFrom: 'unavailable', branch: 'catalog' },
-      issues: [{ code: 'workspaceUnavailable', blocking: false }],
+      issues: [{ code: 'workspaceUnavailable', scope: 'workspace-marker', blocking: false }],
     })
   })
 
@@ -133,10 +134,10 @@ describe('Catalog context and unified inference', () => {
 
     expect(await runCli(['catalog', 'context', '--json'], { cwd: root, io: output.io })).toBe(0)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       command: 'catalog:context',
       toolchain: { capabilities: expect.arrayContaining(['aw.catalog-context.v1']), digest: expect.stringMatching(/^sha256:/u) },
-      workspace: { found: true, root, resolvedFrom: 'workspace-marker' },
+      workspace: { found: true, root, resolvedFrom: 'workspace-marker', health: 'healthy' },
       git: { repositoryRoot: root, clean: false, remotes: ['origin'] },
       publication: {
         remote: 'origin',
@@ -186,10 +187,10 @@ describe('Catalog context and unified inference', () => {
       io: contextOutput.io,
     })).toBe(1)
     expect(JSON.parse(contextOutput.stdout())).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       command: 'catalog:context',
       initialization: { suggestedRoot: null, resolvedFrom: null },
-      issues: [{ code: 'workspaceInvalid', blocking: true }],
+      issues: [{ code: 'workspaceMarkerInvalid', scope: 'workspace-marker', blocking: true }],
     })
     expect(contextOutput.stderr()).toBe('')
 
@@ -203,6 +204,22 @@ describe('Catalog context and unified inference', () => {
       expect(JSON.parse(output.stdout())).toMatchObject({ ok: false })
       expect(output.stderr()).toBe('')
     }
+  })
+
+  it('treats an explicit dangling marker symlink as invalid instead of unavailable', async () => {
+    const root = await createRoot()
+    await fs.symlink('missing-marker.json', path.join(root, '.aw-workspace.json'))
+    const output = capture()
+
+    expect(await runCli([
+      'catalog', 'context', '--workspace-root', root, '--json',
+    ], { cwd: root, io: output.io })).toBe(1)
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      schemaVersion: 3,
+      workspace: { found: false, root: null, identity: null, health: null },
+      issues: [{ code: 'workspaceMarkerInvalid', scope: 'workspace-marker', blocking: true }],
+    })
+    expect(output.stderr()).toBe('')
   })
 
   it('uses a sole remote and reports multiple remotes without origin as ambiguous', async () => {
@@ -229,6 +246,9 @@ describe('Catalog context and unified inference', () => {
     expect(JSON.parse(ambiguous.stdout()).publication).toMatchObject({
       remote: null, remoteResolvedFrom: 'ambiguous', ambiguous: true,
     })
+    expect(JSON.parse(ambiguous.stdout()).issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: 'publication', blocking: true }),
+    ]))
     const explicit = capture()
     await runCli(['catalog', 'context', '--remote', 'mirror', '--branch', 'preview', '--json'], {
       cwd: root,
@@ -237,6 +257,96 @@ describe('Catalog context and unified inference', () => {
     expect(JSON.parse(explicit.stdout()).publication).toMatchObject({
       remote: 'mirror', remoteResolvedFrom: 'explicit', branch: 'preview', branchResolvedFrom: 'explicit',
     })
+  })
+
+  it('blocks invalid explicit publication remotes and branches in read-only context', async () => {
+    const root = await createRoot()
+    const remote = await createRoot()
+    await execFileAsync('git', ['init', '--quiet'], { cwd: root })
+    await initializeWorkspace(root)
+    await execFileAsync('git', ['remote', 'add', 'origin', remote], { cwd: root })
+
+    for (const value of ['missing', '', '-option', 'has space', 'line\nbreak', 'control\u0001']) {
+      const output = capture()
+      expect(await runCli(['catalog', 'context', `--remote=${value}`, '--json'], {
+        cwd: root,
+        io: output.io,
+      })).toBe(1)
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        publication: { remote: null, remoteResolvedFrom: 'invalid-explicit' },
+        issues: expect.arrayContaining([
+          expect.objectContaining({ code: 'publicationRemoteInvalid', scope: 'publication', blocking: true }),
+        ]),
+      })
+      expect(output.stderr()).toBe('')
+    }
+
+    for (const value of ['', '-option', 'has space', 'line\nbreak', 'bad..branch', '@{-1}']) {
+      const output = capture()
+      expect(await runCli(['catalog', 'context', `--branch=${value}`, '--json'], {
+        cwd: root,
+        io: output.io,
+      })).toBe(1)
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        publication: { branch: value, branchResolvedFrom: 'explicit' },
+        issues: expect.arrayContaining([
+          expect.objectContaining({ code: 'publicationBranchInvalid', scope: 'publication', blocking: true }),
+        ]),
+      })
+      expect(output.stderr()).toBe('')
+    }
+  })
+
+  it('keeps a valid marker authoritative when Workspace content is invalid', async () => {
+    for (const damage of ['target-plugin', 'sibling-plugin', 'metadata'] as const) {
+      const root = await createRoot()
+      await initializeWorkspace(root, 'target')
+      if (damage === 'sibling-plugin') {
+        await runCli([
+          'plugin', 'init', 'sibling', '--description', 'Sibling context fixture.', '--no-skills',
+          '--workspace-root', root,
+        ], { cwd: root, io: capture().io })
+      }
+      const damagedPath = damage === 'metadata'
+        ? path.join(root, 'plugins', 'marketplace-source.json')
+        : path.join(root, 'plugins', damage === 'target-plugin' ? 'target' : 'sibling', '.agents-plugin', 'plugin.json')
+      await fs.writeFile(damagedPath, '{invalid')
+
+      const output = capture()
+      expect(await runCli(['catalog', 'context', '--json'], { cwd: root, io: output.io })).toBe(0)
+      expect(JSON.parse(output.stdout())).toMatchObject({
+        schemaVersion: 3,
+        workspace: { found: true, root, identity: expect.any(String), health: 'degraded' },
+        issues: [{ code: 'workspaceContentInvalid', scope: 'workspace-content', blocking: false }],
+      })
+    }
+  })
+
+  it('reports invalid and ambiguous development source config without blocking generic context', async () => {
+    const root = await createRoot()
+    await initializeWorkspace(root, 'source-config')
+    const env = { ...process.env, AW_HOME: path.join(root, 'aw-home') }
+    await fs.ensureDir(env.AW_HOME)
+    await fs.writeFile(path.join(env.AW_HOME, 'catalog-sources.json'), '{invalid')
+    const invalid = capture()
+    expect(await runCli(['catalog', 'context', '--json'], { cwd: root, env, io: invalid.io })).toBe(0)
+    expect(JSON.parse(invalid.stdout()).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'sourceConfigInvalid', scope: 'development-source', blocking: false }),
+    ]))
+
+    await fs.writeJson(path.join(env.AW_HOME, 'catalog-sources.json'), {
+      schemaVersion: 2,
+      sources: [
+        { id: 'official', type: 'git', primary: true, url: 'https://github.com/lesliechan721/agent-workflows.git', refPolicy: { type: 'cliChannel' } },
+        { id: 'dev-a', type: 'path', primary: false, path: path.join(root, '.aw', 'catalog'), managedBy: { kind: 'catalog-workspace', workspaceIdentity: (await fs.readJson(path.join(root, '.aw-workspace.json'))).workspaceIdentity } },
+        { id: 'dev-b', type: 'path', primary: false, path: path.join(root, '.aw', 'catalog'), managedBy: { kind: 'catalog-workspace', workspaceIdentity: (await fs.readJson(path.join(root, '.aw-workspace.json'))).workspaceIdentity } },
+      ],
+    })
+    const ambiguous = capture()
+    expect(await runCli(['catalog', 'context', '--json'], { cwd: root, env, io: ambiguous.io })).toBe(0)
+    expect(JSON.parse(ambiguous.stdout()).issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'managedSourceAmbiguous', scope: 'development-source', blocking: false }),
+    ]))
   })
 
   it('reports absent, current, stale, and invalid development snapshot evidence without rebuilding', async () => {

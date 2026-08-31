@@ -4,7 +4,7 @@
 
 ## 使用前提
 
-需要 Node.js 22+、当前 PATH 中已安装且提供所需作者命令的公开 `aw` CLI、目标工作区依赖，以及 `agent-content-toolkit` 和 `agent-skill-toolkit`。本 Skill 先检查本身的 AW requirements，再从 `aw catalog context --json` 取得既有合法 Workspace。没有 Workspace 时，本 Skill 会停止并要求使用 `author-aw-catalog`。
+需要 Node.js 22+、当前 PATH 中已安装且提供所需作者命令的公开 `aw` CLI、目标工作区依赖，以及 `agent-content-toolkit` 和 `agent-skill-toolkit`。本 Skill 先检查本身的 AW requirements，再从 `aw catalog context --json` 取得既有合法 Workspace。合法 marker 下的 degraded Workspace 仍可定位并修复插件；marker 缺失或非法时，本 Skill 会停止并要求使用 `author-aw-catalog`。
 
 ## 工作方式与结果
 

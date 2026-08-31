@@ -13,6 +13,7 @@ import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 
 const roots: string[] = [];
 
@@ -91,7 +92,7 @@ describe('Catalog Workspace development source', () => {
       source: { action: 'reused' },
     });
     const context = await jsonCommand(['catalog', 'context', '--json'], workspaceRoot, env);
-    expect(context.receipt.schemaVersion).toBe(2);
+    expect(context.receipt.schemaVersion).toBe(3);
     expect(context.receipt.developmentSource).toMatchObject({
       existingSourceId: first.receipt.source.id,
       configured: true,
@@ -203,6 +204,7 @@ describe('Catalog Workspace development source', () => {
         receiptSchemaVersion: command === 'status' ? 2 : 1,
         command: `catalog:dev:${command}`,
         ok: false,
+        ...(command === 'status' ? {} : { state: 'failed' }),
       });
       if (command === 'status') expect(invalidWorkspace.receipt.ready).toBe(false);
       const failures = command === 'status'
@@ -221,6 +223,7 @@ describe('Catalog Workspace development source', () => {
         receiptSchemaVersion: command === 'status' ? 2 : 1,
         command: `catalog:dev:${command}`,
         ok: false,
+        ...(command === 'status' ? {} : { state: 'failed' }),
       });
       if (command === 'status') expect(invalidArguments.receipt.ready).toBe(false);
       const argumentFailures = command === 'status'
@@ -258,6 +261,7 @@ describe('Catalog Workspace development source', () => {
     expect(activated.exitCode).toBe(1);
     expect(activated.receipt).toMatchObject({
       ok: false,
+      state: 'partial',
       snapshot: { action: 'built', digest: expect.stringMatching(/^sha256:/u) },
       errors: [{ code: 'sourceIdConflict', message: expect.stringContaining('foreign') }],
     });
@@ -325,6 +329,93 @@ describe('Catalog Workspace development source', () => {
     expect(repeated).toMatchObject({ ok: true, state: 'completed', snapshot: { action: 'built' } });
     const recoveredStatus = await jsonCommand(['catalog', 'dev', 'status', '--json'], workspaceRoot, env);
     expect(recoveredStatus.receipt).toMatchObject({ ok: true, ready: true });
+  });
+
+  it('reports failed, partial, and completed activation states and promotes only after refresh', async () => {
+    const failedFixture = await fixture();
+    await fs.ensureDir(path.join(failedFixture.workspaceRoot, '.aw'));
+    await fs.writeFile(path.join(failedFixture.workspaceRoot, '.aw', 'catalog'), 'foreign output');
+    const failed = await jsonCommand(
+      ['catalog', 'dev', 'activate', '--json'],
+      failedFixture.workspaceRoot,
+      failedFixture.env,
+    );
+    expect(failed.receipt).toMatchObject({ ok: false, state: 'failed', errors: [{ code: 'snapshotBuildFailed' }] });
+
+    const { workspaceRoot, env } = await fixture();
+    const completed = await activateCatalogDevSource({ cwd: workspaceRoot, cliVersion: '1.0.0', env });
+    expect(completed).toMatchObject({ ok: true, state: 'completed', source: { primary: false } });
+    const partial = await activateCatalogDevSource({
+      cwd: workspaceRoot,
+      cliVersion: '1.0.0',
+      env,
+      primary: true,
+      runtime: { sourceRuntime: { beforeRefresh: () => fs.remove(path.join(workspaceRoot, '.aw', 'catalog')) } },
+    });
+    expect(partial).toMatchObject({ ok: false, state: 'partial', source: { primary: false } });
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    expect(config.config.sources.find((source) => source.id === 'official')).toMatchObject({ primary: true });
+    expect(config.config.sources.find((source) => source.id === completed.source.id)).toMatchObject({ primary: false });
+  });
+
+  it('keeps a first activated primary non-primary when its refresh fails', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await activateCatalogDevSource({
+      cwd: workspaceRoot,
+      cliVersion: '1.0.0',
+      env,
+      primary: true,
+      runtime: { sourceRuntime: { beforeRefresh: () => fs.remove(path.join(workspaceRoot, '.aw', 'catalog')) } },
+    });
+    expect(activated).toMatchObject({
+      ok: false,
+      state: 'partial',
+      source: { action: 'added', primary: false },
+    });
+    const config = await readCatalogSourcesConfigSnapshot(env);
+    expect(config.config.sources.find((source) => source.id === 'official')).toMatchObject({ primary: true });
+    expect(config.config.sources.find((source) => source.id === activated.source.id)).toMatchObject({ primary: false });
+  });
+
+  it('keeps config after generation selection deletion fails and completes when public deactivate is rerun', async () => {
+    for (const recovery of [false, true]) {
+      const { workspaceRoot, env } = await fixture();
+      const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+      const sourceId = activated.receipt.source.id as string;
+      const generationStatePath = path.join(env.AW_HOME!, 'catalog-generations.json');
+      const generationState = await fs.readFile(generationStatePath);
+      if (recovery) await fs.writeFile(path.join(workspaceRoot, '.aw-workspace.json'), '{invalid');
+      await fs.remove(generationStatePath);
+      await fs.ensureDir(generationStatePath);
+      const args = recovery
+        ? ['catalog', 'dev', 'deactivate', '--source-id', sourceId, '--yes', '--json']
+        : ['catalog', 'dev', 'deactivate', '--workspace-root', workspaceRoot, '--json'];
+
+      const failed = await jsonCommand(args, workspaceRoot, env);
+      expect(failed).toMatchObject({
+        exitCode: 1,
+        receipt: {
+          ok: false,
+          state: 'failed',
+          source: { id: sourceId, action: 'retained' },
+        },
+      });
+      expect((await readCatalogSourcesConfigSnapshot(env)).config.sources.some(
+        (source) => source.id === sourceId,
+      )).toBe(true);
+
+      await fs.remove(generationStatePath);
+      await fs.writeFile(generationStatePath, generationState);
+      const completed = await jsonCommand(args, workspaceRoot, env);
+      expect(completed).toMatchObject({
+        exitCode: 0,
+        receipt: { ok: true, state: 'completed', source: { id: sourceId, action: 'removed' } },
+      });
+      expect((await readCatalogSourcesConfigSnapshot(env)).config.sources.some(
+        (source) => source.id === sourceId,
+      )).toBe(false);
+      expect((await readCatalogGenerationState(env)).sources[sourceId]).toBeUndefined();
+    }
   });
 
   it('reports readiness issues without failing completed diagnostics', async () => {
@@ -499,6 +590,7 @@ describe('Catalog Workspace development source', () => {
 
     const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(deactivated.exitCode).toBe(1);
+    expect(deactivated.receipt.state).toBe('failed');
     expect(deactivated.receipt.errors).toEqual([
       expect.objectContaining({ code: 'replacementPrimaryUnavailable', message: expect.stringContaining('No replacement') }),
     ]);
@@ -602,6 +694,7 @@ describe('Catalog Workspace development source', () => {
 
     const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(deactivated.exitCode).toBe(1);
+    expect(deactivated.receipt.state).toBe('failed');
     expect(deactivated.receipt.errors).toEqual([
       expect.objectContaining({
         code: 'replacementPrimaryAmbiguous',
@@ -636,6 +729,7 @@ describe('Catalog Workspace development source', () => {
 
     const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(deactivated.exitCode).toBe(1);
+    expect(deactivated.receipt.state).toBe('failed');
     expect(deactivated.receipt.errors[0]).toMatchObject({
       code: 'replacementPrimaryAmbiguous',
       message: expect.stringContaining('backup-a, backup-b'),
@@ -670,5 +764,153 @@ describe('Catalog Workspace development source', () => {
     expect(activate.exitCode).toBe(1);
     expect(activate.receipt.errors[0].code).toBe('multipleManagedSources');
     expect(activate.receipt.errors[0].message).toContain('multiple development sources');
+  });
+
+  it('requires confirmation and refuses recovery when one healthy Workspace uniquely owns the source', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    const before = await fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'));
+
+    const unconfirmed = await jsonCommand([
+      'catalog', 'dev', 'deactivate', '--source-id', activated.receipt.source.id, '--json',
+    ], workspaceRoot, env);
+    expect(unconfirmed).toMatchObject({
+      exitCode: 1,
+      receipt: {
+        state: 'failed',
+        workspaceIdentity: activated.receipt.workspaceIdentity,
+        snapshotPath: activated.receipt.snapshot.path,
+        errors: [{ code: 'confirmationRequired' }],
+      },
+    });
+    const healthy = await jsonCommand([
+      'catalog', 'dev', 'deactivate', '--source-id', activated.receipt.source.id, '--yes', '--json',
+    ], workspaceRoot, env);
+    expect(healthy).toMatchObject({
+      exitCode: 1,
+      receipt: {
+        state: 'failed',
+        workspaceIdentity: activated.receipt.workspaceIdentity,
+        snapshotPath: activated.receipt.snapshot.path,
+        errors: [{ code: 'workspaceOwnerHealthy' }],
+      },
+    });
+    await expect(fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'))).resolves.toEqual(before);
+  });
+
+  it('recovers managed sources by ID when the Workspace is removed, damaged, moved to another identity, or duplicated', async () => {
+    for (const mode of ['removed', 'marker-invalid', 'metadata-invalid', 'identity-drift', 'duplicate'] as const) {
+      const { root, workspaceRoot, env } = await fixture();
+      const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+      const sourceId = activated.receipt.source.id as string;
+      const originalIdentity = activated.receipt.workspaceIdentity as string;
+      if (mode === 'removed') await fs.remove(workspaceRoot);
+      if (mode === 'marker-invalid') await fs.writeFile(path.join(workspaceRoot, '.aw-workspace.json'), '{invalid');
+      if (mode === 'metadata-invalid') await fs.writeFile(path.join(workspaceRoot, 'plugins', 'marketplace-source.json'), '{invalid');
+      if (mode === 'identity-drift') {
+        await fs.writeJson(path.join(workspaceRoot, '.aw-workspace.json'), {
+          schemaVersion: 1,
+          kind: 'aw-catalog-workspace',
+          workspaceIdentity: 'different-workspace-identity',
+        });
+      }
+      if (mode === 'duplicate') {
+        const current = await readCatalogSourcesConfigSnapshot(env);
+        const managed = current.config.sources.find((source) => source.id === sourceId)!;
+        await replaceCatalogSourcesConfig({
+          config: { schemaVersion: 2, sources: [...current.config.sources, { ...managed, id: 'duplicate-dev' }] },
+          expectedDigest: current.digest,
+          env,
+        });
+      }
+      const snapshotExisted = await fs.pathExists(path.join(workspaceRoot, '.aw', 'catalog'));
+      const recovered = await jsonCommand([
+        'catalog', 'dev', 'deactivate', '--source-id', sourceId, '--yes', '--json',
+      ], root, env);
+      expect(recovered.exitCode, JSON.stringify(recovered.receipt)).toBe(0);
+      expect(recovered.receipt).toMatchObject({
+        ok: true,
+        state: 'completed',
+        workspaceIdentity: originalIdentity,
+        snapshotPath: activated.receipt.snapshot.path,
+        source: { id: sourceId, action: 'removed' },
+      });
+      expect((await readCatalogSourcesConfigSnapshot(env)).config.sources.some((source) => source.id === sourceId)).toBe(false);
+      expect((await readCatalogGenerationState(env)).sources[sourceId]).toBeUndefined();
+      if (snapshotExisted) await expect(fs.pathExists(path.join(workspaceRoot, '.aw', 'catalog'))).resolves.toBe(true);
+    }
+  });
+
+  it('allows recovery when a managed source path no longer has the development snapshot shape', async () => {
+    const { root, workspaceRoot, env } = await fixture();
+    const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    const nonStandardSnapshot = path.join(root, 'saved-snapshot');
+    await fs.ensureDir(nonStandardSnapshot);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: current.config.sources.map((source) => source.id === activated.receipt.source.id
+          ? { ...source, path: nonStandardSnapshot }
+          : source),
+      },
+      expectedDigest: current.digest,
+      env,
+    });
+
+    const recovered = await jsonCommand([
+      'catalog', 'dev', 'deactivate', '--source-id', activated.receipt.source.id, '--yes', '--json',
+    ], workspaceRoot, env);
+    expect(recovered).toMatchObject({ exitCode: 0, receipt: { snapshotPath: nonStandardSnapshot } });
+    await expect(fs.pathExists(nonStandardSnapshot)).resolves.toBe(true);
+  });
+
+  it('rejects foreign, ordinary path, Git, missing, and mutually exclusive recovery targets without writing', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const snapshotPath = path.join(workspaceRoot, '.aw', 'catalog');
+    expect((await jsonCommand(['catalog', 'build', '--json'], workspaceRoot, env)).exitCode).toBe(0);
+    expect((await jsonCommand(['catalog', 'source', 'add', 'ordinary', '--path', snapshotPath, '--json'], workspaceRoot, env)).exitCode).toBe(0);
+    const before = await fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'));
+    for (const sourceId of ['ordinary', 'official', 'missing']) {
+      const result = await jsonCommand([
+        'catalog', 'dev', 'deactivate', '--source-id', sourceId, '--yes', '--json',
+      ], workspaceRoot, env);
+      expect(result).toMatchObject({ exitCode: 1, receipt: { state: 'failed', errors: [{ code: 'managedSourceNotFound' }] } });
+      await expect(fs.readFile(path.join(env.AW_HOME!, 'catalog-sources.json'))).resolves.toEqual(before);
+    }
+    const exclusive = await jsonCommand([
+      'catalog', 'dev', 'deactivate', '--workspace-root', workspaceRoot,
+      '--source-id', 'ordinary', '--yes', '--json',
+    ], workspaceRoot, env);
+    expect(exclusive).toMatchObject({ exitCode: 1, receipt: { errors: [{ code: 'invalidArguments' }] } });
+  });
+
+  it('uses an explicit replacement in recovery mode and rejects replacement for a non-primary target', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const primary = await jsonCommand(['catalog', 'dev', 'activate', '--primary', '--json'], workspaceRoot, env);
+    const snapshotPath = path.join(workspaceRoot, '.aw', 'catalog');
+    expect((await jsonCommand(['catalog', 'source', 'add', 'backup-a', '--path', snapshotPath, '--json'], workspaceRoot, env)).exitCode).toBe(0);
+    expect((await jsonCommand(['catalog', 'source', 'add', 'backup-b', '--path', snapshotPath, '--json'], workspaceRoot, env)).exitCode).toBe(0);
+    await fs.writeFile(path.join(workspaceRoot, '.aw-workspace.json'), '{invalid');
+    const recovered = await jsonCommand([
+      'catalog', 'dev', 'deactivate', '--source-id', primary.receipt.source.id,
+      '--replacement-primary', 'backup-b', '--yes', '--json',
+    ], workspaceRoot, env);
+    expect(recovered).toMatchObject({
+      exitCode: 0,
+      receipt: { replacementPrimarySourceId: 'backup-b', source: { action: 'removed', previousPrimary: true } },
+    });
+    expect((await readCatalogSourcesConfigSnapshot(env)).config.sources.find((source) => source.id === 'backup-b')).toMatchObject({ primary: true });
+
+    const second = await fixture();
+    const nonPrimary = await jsonCommand(['catalog', 'dev', 'activate', '--json'], second.workspaceRoot, second.env);
+    const invalid = await jsonCommand([
+      'catalog', 'dev', 'deactivate', '--workspace-root', second.workspaceRoot,
+      '--replacement-primary', 'official', '--json',
+    ], second.workspaceRoot, second.env);
+    expect(invalid).toMatchObject({
+      exitCode: 1,
+      receipt: { state: 'failed', source: { id: nonPrimary.receipt.source.id, action: 'retained' }, errors: [{ code: 'replacementPrimaryInvalid' }] },
+    });
   });
 });

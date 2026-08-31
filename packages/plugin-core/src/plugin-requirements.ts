@@ -6,12 +6,15 @@ import {
   computeAwCapabilitySetDigest,
   normalizeAwCapabilities,
   type AwCapabilityId,
+  type RegisteredAwCapabilityId,
 } from './aw-capabilities.js'
 import {
   matchesPluginTestEntryGlob,
   scanNodeImportContract,
   tokenizeJavaScriptImports,
 } from './plugin-script-contract.js'
+import { resolvePlatformHookDefinitions } from './hooks-contract.js'
+import { resolveSupportedPlatforms } from './platform-support.js'
 import { isSkillCollectionAuthorOnlyPath } from './skill-authoring.js'
 import type { NormalizedPluginManifest, PluginManifestSource } from './types.js'
 
@@ -46,7 +49,7 @@ function hasRuntimeImports(manifest: PluginManifestSource | NormalizedPluginMani
 export function deriveAwCapabilitiesFromManifest(
   manifest: PluginManifestSource | NormalizedPluginManifest,
 ): AwCapabilityId[] {
-  const capabilities: string[] = []
+  const capabilities: RegisteredAwCapabilityId[] = []
   if ((manifest as { schemaVersion?: number }).schemaVersion === 2) capabilities.push('aw.plugin-manifest.v2')
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
@@ -58,7 +61,7 @@ export function deriveAwCapabilitiesFromManifest(
   return normalizeAwCapabilities(capabilities)
 }
 
-const COMMAND_CAPABILITIES: Readonly<Record<string, AwCapabilityId>> = {
+const COMMAND_CAPABILITIES: Readonly<Record<string, RegisteredAwCapabilityId>> = {
   'self describe': 'aw.self-check.v1',
   'self check': 'aw.self-check.v1',
   'skill validate': 'aw.skill-validation.v1',
@@ -86,13 +89,19 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, AwCapabilityId>> = {
   'review show': 'aw.review-publication.v1',
 }
 
+const CONFIG_CAPABILITY = 'aw.plugin-config.v1' satisfies RegisteredAwCapabilityId
+const CATALOG_SOURCE_CAPABILITY = 'aw.catalog-source.v2' satisfies RegisteredAwCapabilityId
+const CATALOG_DEV_SOURCE_CAPABILITY = 'aw.catalog-dev-source.v1' satisfies RegisteredAwCapabilityId
+const CATALOG_AUTHORING_CAPABILITY = 'aw.catalog-authoring.v1' satisfies RegisteredAwCapabilityId
+const CATALOG_PUBLICATION_CAPABILITY = 'aw.catalog-publication.v1' satisfies RegisteredAwCapabilityId
+
 function commandCapabilities(group: string, command: string | undefined, tail: string): AwCapabilityId[] {
   if (command === undefined) return []
-  if (group === 'config') return ['aw.plugin-config.v1']
-  if (group === 'catalog' && command === 'source') return ['aw.catalog-source.v2']
-  if (group === 'catalog' && command === 'dev') return ['aw.catalog-dev-source.v1']
+  if (group === 'config') return [CONFIG_CAPABILITY]
+  if (group === 'catalog' && command === 'source') return [CATALOG_SOURCE_CAPABILITY]
+  if (group === 'catalog' && command === 'dev') return [CATALOG_DEV_SOURCE_CAPABILITY]
   if (group === 'catalog' && command === 'status' && /(?:^|\s)--preflight(?:\s|$)/u.test(tail)) {
-    return ['aw.catalog-authoring.v1', 'aw.catalog-publication.v1']
+    return [CATALOG_AUTHORING_CAPABILITY, CATALOG_PUBLICATION_CAPABILITY]
   }
   const capability = COMMAND_CAPABILITIES[`${group} ${command}`]
   return capability ? [capability] : []
@@ -237,7 +246,7 @@ async function listFiles(root: string, predicate: (relativePath: string) => bool
 }
 
 function pluginRelativePath(value: string | undefined): string | null {
-  if (value === undefined) return null
+  if (value === undefined || value.includes('\\')) return null
   const normalized = path.posix.normalize(value.replace(/^\.\//u, ''))
   return normalized === '.'
     || normalized === '..'
@@ -248,6 +257,140 @@ function pluginRelativePath(value: string | undefined): string | null {
 }
 
 type ScriptScanMode = 'node' | 'shell'
+
+interface StructuredExecutableScan {
+  literals: Array<{ path: string; literal: AwCommandLiteral }>
+  dynamicPaths: string[]
+  scripts: Array<{ path: string; mode: ScriptScanMode }>
+}
+
+const STATIC_EXECUTABLE_TOKEN = /^[A-Za-z0-9._/@:+,=-]+$/u
+const SHELL_EXECUTABLES = new Set(['sh', 'bash', 'pwsh'])
+
+function hasOnlyStaticExecutableTokens(tokens: readonly string[]): boolean {
+  return tokens.length > 0 && tokens.every((token) => STATIC_EXECUTABLE_TOKEN.test(token))
+}
+
+function awLiteralFromArgv(argv: readonly string[]): AwCommandLiteral | null {
+  if (argv.length === 0 || !hasOnlyStaticExecutableTokens(argv)) return null
+  return {
+    group: argv[0]!,
+    ...(argv[1] === undefined ? {} : { command: argv[1] }),
+    tail: argv.slice(2).join(' '),
+  }
+}
+
+async function regularPluginRelativeFile(pluginRoot: string, value: string): Promise<string | null> {
+  const relative = pluginRelativePath(value)
+  if (!relative) return null
+  const rootStat = await fs.lstat(pluginRoot).catch(() => null)
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) return null
+  let current = pluginRoot
+  const segments = relative.split('/')
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]!)
+    const stat = await fs.lstat(current).catch(() => null)
+    if (!stat || stat.isSymbolicLink()) return null
+    if (index < segments.length - 1 && !stat.isDirectory()) return null
+    if (index === segments.length - 1 && !stat.isFile()) return null
+  }
+  return relative
+}
+
+async function scanStructuredExecutables(
+  pluginRoot: string,
+  manifest: PluginManifestSource | NormalizedPluginManifest,
+): Promise<StructuredExecutableScan> {
+  const result: StructuredExecutableScan = { literals: [], dynamicPaths: [], scripts: [] }
+  const manifestPath = '.agents-plugin/plugin.json'
+  const addScript = async (
+    observationPath: string,
+    executable: string,
+    argv: readonly string[],
+  ): Promise<void> => {
+    if (!hasOnlyStaticExecutableTokens(argv)) {
+      result.dynamicPaths.push(observationPath)
+      return
+    }
+    const script = await regularPluginRelativeFile(pluginRoot, argv[0]!)
+    if (!script) {
+      result.dynamicPaths.push(observationPath)
+      return
+    }
+    result.scripts.push({
+      path: script,
+      mode: executable === 'node' ? 'node' : 'shell',
+    })
+  }
+  const scanCommand = async (observationPath: string, command: string): Promise<void> => {
+    const trimmed = command.trim()
+    if (trimmed === '') return
+    const tokens = trimmed.split(/[ \t]+/u)
+    const executable = tokens[0]!
+    if (executable === 'aw') {
+      const literal = awLiteralFromArgv(tokens.slice(1))
+      if (literal) result.literals.push({ path: observationPath, literal })
+      else result.dynamicPaths.push(observationPath)
+      return
+    }
+    if (executable === 'node' || SHELL_EXECUTABLES.has(executable)) {
+      await addScript(observationPath, executable, tokens.slice(1))
+      return
+    }
+    if (!STATIC_EXECUTABLE_TOKEN.test(executable)) result.dynamicPaths.push(observationPath)
+  }
+
+  const hookCommands = new Set<string>()
+  for (const platform of resolveSupportedPlatforms(manifest)) {
+    for (const hook of resolvePlatformHookDefinitions(
+      manifest as NormalizedPluginManifest,
+      platform,
+    )) {
+      hookCommands.add(hook.command)
+    }
+  }
+  for (const command of hookCommands) await scanCommand(manifestPath, command)
+
+  const mcpPath = manifest.mcpServers === undefined
+    ? null
+    : await regularPluginRelativeFile(pluginRoot, manifest.mcpServers)
+  if (mcpPath) {
+    let servers: Record<string, unknown> | null = null
+    try {
+      const content = await fs.readJson(path.join(pluginRoot, mcpPath)) as unknown
+      if (content && typeof content === 'object' && !Array.isArray(content)) {
+        const value = (content as Record<string, unknown>).mcpServers
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          servers = value as Record<string, unknown>
+        }
+      }
+    } catch {
+      // Template assets can be invalid JSON before platform rendering.
+    }
+    if (servers === null) result.dynamicPaths.push(mcpPath)
+    for (const server of Object.values(servers ?? {})) {
+      if (!server || typeof server !== 'object' || Array.isArray(server)) continue
+      const { command, args } = server as { command?: unknown; args?: unknown }
+      if (typeof command !== 'string') continue
+      if (command === 'aw') {
+        const literal = Array.isArray(args) && args.every((entry) => typeof entry === 'string')
+          ? awLiteralFromArgv(args)
+          : null
+        if (literal) result.literals.push({ path: mcpPath, literal })
+        else result.dynamicPaths.push(mcpPath)
+      } else if (command === 'node' || SHELL_EXECUTABLES.has(command)) {
+        if (Array.isArray(args) && args.every((entry) => typeof entry === 'string')) {
+          await addScript(mcpPath, command, args)
+        } else {
+          result.dynamicPaths.push(mcpPath)
+        }
+      } else if (!STATIC_EXECUTABLE_TOKEN.test(command)) {
+        result.dynamicPaths.push(mcpPath)
+      }
+    }
+  }
+  return result
+}
 
 function inferredScriptScanMode(value: string): ScriptScanMode {
   return /\.(?:js|mjs|cjs)$/u.test(value) ? 'node' : 'shell'
@@ -353,6 +496,13 @@ export async function scanPluginAwCliRequirements(options: {
     if (root) roots.push({ root, predicate: isScannableSkillFile })
   }
   const pluginScripts = declaredPluginScriptPaths(options.manifest)
+  const structuredExecutables = await scanStructuredExecutables(options.pluginRoot, options.manifest)
+  for (const script of structuredExecutables.scripts) {
+    const modes = pluginScripts.productionModes.get(script.path) ?? new Set<ScriptScanMode>()
+    modes.add(script.mode)
+    pluginScripts.productionModes.set(script.path, modes)
+    if (script.mode === 'node') pluginScripts.productionNodeEntries.add(script.path)
+  }
   const productionNodeFiles = await productionNodeImportClosure(
     options.pluginRoot,
     pluginScripts.productionNodeEntries,
@@ -423,6 +573,15 @@ export async function scanPluginAwCliRequirements(options: {
         : `AW CLI command literal has no capability mapping: aw ${command}.`,
     })
   }
+  for (const entry of structuredExecutables.literals) {
+    recordLiteral(entry.path, entry.literal)
+  }
+  for (const observationPath of structuredExecutables.dynamicPaths) {
+    observe({
+      code: 'aw-command-dynamic', blocking: false, path: observationPath,
+      message: 'Structured executable command cannot be mapped safely; declare its capability explicitly in requires.aw.capabilities.',
+    })
+  }
   for (const file of [...new Set(files)].sort()) {
     const relativePath = path.relative(options.pluginRoot, file).split(path.sep).join('/')
     const content = await fs.readFile(file, 'utf8')
@@ -459,6 +618,11 @@ export async function scanPluginAwCliRequirements(options: {
       }
     }
   }
+  observations.sort((left, right) => {
+    const leftKey = JSON.stringify([left.path, left.code, left.command, left.capability, left.provenance])
+    const rightKey = JSON.stringify([right.path, right.code, right.command, right.capability, right.provenance])
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0
+  })
   return { detected: normalizeAwCapabilities(detected), observations }
 }
 

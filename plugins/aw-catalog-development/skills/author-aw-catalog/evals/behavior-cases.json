@@ -30,7 +30,7 @@
       ],
       "prompt": "使用 $author-aw-catalog 把当前 Git 项目初始化为 AW Catalog Workspace。当前没有任何插件；完成空 inventory 的 Catalog build/validate，不要发布。",
       "assertions": [
-        "run-owned 真实 CLI 的 self check 成功；首次完整 context receipt 报 workspace.found=false 后，init 使用 initialization.suggestedRoot",
+        "run-owned 真实 CLI 的 self check 成功；首次 schema 3 context receipt 报 workspace.found=false 和非阻断 workspaceUnavailable 后，init 使用 initialization.suggestedRoot",
         "真实 init 后重新运行 context，并保留 CLI 生成的 identity",
         "empty inventory 不运行 plugin validate/test；真实 catalog build/validate receipt 成功且 snapshot 通过 schema 5 complete validation",
         "没有 catalog publish"

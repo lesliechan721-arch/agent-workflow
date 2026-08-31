@@ -3,9 +3,12 @@ import crypto from 'node:crypto'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
+import fs from 'fs-extra'
 import {
+  CATALOG_WORKSPACE_MARKER_FILENAME,
   getPluginCoreVersion,
   readCatalogWorkspace,
+  readCatalogWorkspaceMarker,
 } from '@lesliechan721/aw-plugin-core'
 
 import { resolveCatalogPublicationTarget } from './catalog-publication-target.js'
@@ -42,10 +45,16 @@ export async function getCatalogContext(options: {
   awVersion: string
   capabilities: readonly string[]
 }) {
-  const issues: Array<{ code: string; message: string; blocking: boolean }> = []
+  const issues: Array<{
+    code: string
+    scope: 'workspace-marker' | 'workspace-content' | 'development-source' | 'publication'
+    message: string
+    blocking: boolean
+  }> = []
   let existing: Awaited<ReturnType<typeof resolveCatalogWorkspaceRoot>> | null = null
   let initialization: Awaited<ReturnType<typeof resolveCatalogWorkspaceRoot>> | null = null
   let workspaceIdentity: string | null = null
+  let workspaceHealth: 'healthy' | 'degraded' | null = null
   try {
     existing = await resolveCatalogWorkspaceRoot({
       cwd: options.cwd,
@@ -53,14 +62,40 @@ export async function getCatalogContext(options: {
       mode: 'existing',
       env: options.env,
     })
-    workspaceIdentity = (await readCatalogWorkspace(existing.workspaceRoot, {
-      reservedImports: CLI_RESERVED_IMPORTS,
-    })).workspaceIdentity
+    workspaceIdentity = (await readCatalogWorkspaceMarker(existing.workspaceRoot)).workspaceIdentity
+    try {
+      await readCatalogWorkspace(existing.workspaceRoot, {
+        reservedImports: CLI_RESERVED_IMPORTS,
+      })
+      workspaceHealth = 'healthy'
+    } catch (error) {
+      workspaceHealth = 'degraded'
+      issues.push({
+        code: 'workspaceContentInvalid',
+        scope: 'workspace-content',
+        message: error instanceof Error ? error.message : String(error),
+        blocking: false,
+      })
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    const blocking = !message.startsWith('Catalog Workspace marker not found from:')
+    let explicitMarkerMissing = false
+    if (options.workspaceRoot !== undefined) {
+      const markerPath = path.join(
+        path.resolve(options.cwd, options.workspaceRoot),
+        CATALOG_WORKSPACE_MARKER_FILENAME,
+      )
+      try {
+        await fs.lstat(markerPath)
+      } catch (markerError) {
+        explicitMarkerMissing = (markerError as NodeJS.ErrnoException).code === 'ENOENT'
+      }
+    }
+    const blocking = !explicitMarkerMissing
+      && !message.startsWith('Catalog Workspace marker not found from:')
     issues.push({
-      code: blocking ? 'workspaceInvalid' : 'workspaceUnavailable',
+      code: blocking ? 'workspaceMarkerInvalid' : 'workspaceUnavailable',
+      scope: 'workspace-marker',
       message,
       blocking,
     })
@@ -75,7 +110,8 @@ export async function getCatalogContext(options: {
   } catch (error) {
     if (!issues.some((issue) => issue.blocking)) {
       issues.push({
-        code: 'workspaceInvalid',
+        code: 'workspaceMarkerInvalid',
+        scope: 'workspace-marker',
         message: error instanceof Error ? error.message : String(error),
         blocking: true,
       })
@@ -88,6 +124,22 @@ export async function getCatalogContext(options: {
     branch: options.branch,
     env: options.env,
   })
+  if (target.remoteResolvedFrom === 'invalid-explicit') {
+    issues.push({
+      code: 'publicationRemoteInvalid',
+      scope: 'publication',
+      message: 'Explicit Catalog publication remote must name an existing Git remote exactly and must not contain whitespace, control characters, or a leading hyphen.',
+      blocking: true,
+    })
+  }
+  if (!target.branchValid) {
+    issues.push({
+      code: 'publicationBranchInvalid',
+      scope: 'publication',
+      message: 'Explicit Catalog publication branch is not a safe Git branch name.',
+      blocking: true,
+    })
+  }
   const repositoryRoot = target.repositoryRoot
   const sourceHead = repositoryRoot ? await git(repositoryRoot, ['rev-parse', '--verify', 'HEAD'], options.env) : null
   const status = repositoryRoot
@@ -108,8 +160,9 @@ export async function getCatalogContext(options: {
       if (owned.length > 1) {
         issues.push({
           code: 'managedSourceAmbiguous',
+          scope: 'development-source',
           message: `Catalog Workspace owns multiple development sources: ${owned.map((source) => source.id).join(', ')}.`,
-          blocking: true,
+          blocking: false,
         })
       } else if (owned.length === 1) {
         existingSourceId = owned[0]!.id
@@ -125,13 +178,14 @@ export async function getCatalogContext(options: {
     } catch (error) {
       issues.push({
         code: 'sourceConfigInvalid',
+        scope: 'development-source',
         message: error instanceof Error ? error.message : String(error),
-        blocking: true,
+        blocking: false,
       })
     }
   }
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     command: 'catalog:context',
     toolchain: {
       awVersion: options.awVersion,
@@ -144,6 +198,7 @@ export async function getCatalogContext(options: {
       root: existing?.workspaceRoot ?? null,
       identity: workspaceIdentity,
       resolvedFrom: existing?.workspaceRootResolvedFrom ?? null,
+      health: workspaceHealth,
     },
     initialization: {
       suggestedRoot: initialization?.workspaceRoot ?? null,

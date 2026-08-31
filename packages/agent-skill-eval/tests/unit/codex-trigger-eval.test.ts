@@ -161,4 +161,47 @@ describe('Codex trigger provider grading', () => {
       passed: false,
     })
   })
+
+  it('accepts a declared downstream handoff after the expected first route', () => {
+    const routingSuite = suite({
+      skill: 'author-aw-catalog',
+      skills: ['author-aw-catalog', 'author-aw-plugin'],
+      observeSpawnAgent: false,
+      minimumPassRate: 0.9,
+      forbidMultipleSkillLoads: true,
+    })
+    const evalCase: AwSkillEvalTriggerCase = {
+      id: 'catalog_author_then_plugin_author',
+      split: 'validation',
+      query: 'Add a Plugin to the Catalog, then edit its source.',
+      expected_first_loaded_skill: 'author-aw-catalog',
+    }
+    const correct = runEvidence({
+      loaded: true,
+      first_loaded_skill: 'author-aw-catalog',
+      all_loaded_skills: ['author-aw-catalog', 'author-aw-plugin'],
+      load_evidence_by_skill: {
+        'author-aw-catalog': 'read Catalog author Skill',
+        'author-aw-plugin': 'read Plugin author Skill',
+      },
+    })
+    const incorrect = runEvidence({
+      loaded: true,
+      first_loaded_skill: 'author-aw-plugin',
+      all_loaded_skills: ['author-aw-plugin', 'author-aw-catalog'],
+      load_evidence_by_skill: {
+        'author-aw-plugin': 'read Plugin author Skill',
+        'author-aw-catalog': 'read Catalog author Skill',
+      },
+    })
+    expect(summarizeTriggerCase(
+      routingSuite,
+      evalCase,
+      [...Array.from({ length: 9 }, () => correct), incorrect],
+    )).toMatchObject({
+      expected: { first_loaded_skill: 'author-aw-catalog' },
+      observed: { first_route_match_rate: 0.9, multiple_skill_loads: 10 },
+      passed: true,
+    })
+  })
 })

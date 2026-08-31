@@ -65,6 +65,8 @@ aw plugin status "$plugin" --workspace-root "$workspace" --json
 
 `author-aw-plugin` 修改插件内 Skill 时调用 `author-agent-skill`，返回后运行 `aw skill validate <skill-root>`。它只负责一个 Plugin Source，不维护 Catalog metadata、inventory、精确 Catalog version、聚合 snapshot 或远端 publication。
 
+作者工具以 best-effort 方式检查 `extensions.hooks`、`extensions.nativeHooks` 和 MCP stdio server 的 executable。静态 `aw <group> <command> ...` 会进入 detected requirements；`node`、`sh`、`bash` 或 `pwsh` 后的插件相对脚本会作为生产入口扫描，其中 Node 包含相对 import closure，shell 只包含指定入口。该检查不是通用 shell parser。变量、动态 argv、引号、转义、缺少可映射 argv 或不安全脚本路径只产生非阻断 observation；此时必须在 `requires.aw.capabilities` 显式声明真实要求。静态未知 AW command 会阻止验证；`echo`、`python` 等静态 foreign executable 不产生 AW requirement。
+
 ## 安全删除命令
 
 公开删除入口要求显式确认：

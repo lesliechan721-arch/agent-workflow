@@ -24,15 +24,15 @@ aw self check --from <skill-root> --json
 
 ## 工作流
 
-1. 运行 `aw catalog context --json`。用户已明确给出的 root、remote 或 branch 必须分别作为 `--workspace-root <user.root>`、`--remote <user.remote>` 或 `--branch <user.branch>` 传入这一次 context。只使用 CLI JSON 的 `workspace.root`、`publication.remote` 和 `publication.branch`。
-2. Workspace 找不到、remote unavailable 或 publication ambiguous 时，询问缺少的选择。取得选择后必须运行新的 context：
+1. 运行 `aw catalog context --json`。用户已明确给出的 root、remote 或 branch 必须分别作为 `--workspace-root <user.root>`、`--remote <user.remote>` 或 `--branch <user.branch>` 传入这一次 context。只使用 CLI JSON 的 `workspace.root`、`publication.remote` 和 `publication.branch`。合法 marker 使 `workspace.found` 为 true；`workspace.health` 为 `degraded` 时仍保留 CLI 定位的 root，但后续 preflight 必须证明可发布。
+2. Blocking workspace marker issue 立即停止。Workspace 找不到、remote unavailable、publication ambiguous，或存在 blocking publication issue 时，不进入 preflight；询问缺少或无效的选择。取得选择后必须运行新的 context：
 
    ```bash
    aw catalog context --workspace-root <selected.workspaceRoot> \
      --remote <selected.remote> --branch <selected.branch> --json
    ```
 
-   丢弃先前 context receipt，只消费这个新 receipt 的 resolved root、remote 和 branch；仍不从当前 Git branch 或本 Skill 推断目标。
+   丢弃先前 context receipt，只消费这个新 receipt 的 resolved root、remote 和 branch；新 receipt 仍有 blocking issue 时停止，不能复用旧值或进入 preflight。`workspace-content` 和 `development-source` 的非阻断 issue 不替代 preflight，也不改变 publication target。仍不从当前 Git branch 或本 Skill 推断目标。
 3. 告知用户 preflight 会从已提交 source HEAD 执行每个插件的公开 validator 和 build code。清晰的“发布当前 Catalog”请求可进入这一步，但不授权远端写。无歧义后运行：
 
    ```bash
