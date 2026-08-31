@@ -69,6 +69,18 @@ runner 从父会话 rollout 的原始 function call 与 output 中提取 collabo
 aw skill eval prepare codex-enhance codex-explore --suite workflow --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-explore-workflow --json
 ```
 
+## 叶子输出合同
+
+`output-contract` suite 使用同一 workflow provider，但只评估叶子结果 handoff。它从 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录实际 materialized 的四个 Explore role 文件摘要。
+
+六个用例分别覆盖：同源多个 direct finding、单个 finding 的多来源定位、inference 的直接依据、conflict 双方证据、blocked 和 insufficient。每个用例要求初次叶子结果足够，不允许 recovery。状态、来源和证据类型是正确性门禁；叶子字符数、父 turn usage 和端到端时间只作诊断。
+
+```bash
+aw skill eval prepare codex-enhance codex-explore --suite output-contract --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-output-contract --json
+```
+
+role 输出合同不在 Skill target digest 中。因此不得把 `--previous-version` 当作该合同的 A/B。需要对照时，分别从精确 plugin production digest 物化基线和候选工作区，并在诊断报告中同时记录 plugin digest、role digest 和 case digest。该对照不声称是 `previous-version` EvalResult。
+
 ## 存活协议消融
 
 `liveness-evals.json` 使用 project-short-wait 最终制品，在 V1/V2 中运行一分钟以上的只读核验，并覆盖正常推进和缺少决定性来源。

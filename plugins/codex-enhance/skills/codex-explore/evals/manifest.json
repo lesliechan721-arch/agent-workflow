@@ -106,6 +106,24 @@
       }
     },
     {
+      "id": "output-contract",
+      "kind": "custom-process",
+      "cases": "output-contract-evals.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 900000,
+      "requiredForRelease": true,
+      "provider": {
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-workflow-evals.mjs"
+        ]
+      }
+    },
+    {
       "id": "liveness",
       "kind": "custom-process",
       "cases": "liveness-evals.json",

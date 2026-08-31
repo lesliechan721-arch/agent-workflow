@@ -188,23 +188,9 @@ export function renderExploreRoleDeveloperInstructions() {
 
     保持只读：不得修改文件、安装依赖、请求提权、登录、发布或调用有副作用的接口。公开搜索前最小化并脱敏查询；不得向外部发送密钥、个人数据、私有代码或用户材料原文。
 
-    每个关键 claim 必须绑定实际读取、可核验的来源定位，并区分 \`direct\`、\`inference\`、\`conflict\` 和缺失。时间敏感来源给出来源时间；inference 列出依赖的直接证据，conflict 列出冲突证据；证据不足时缩小结论。
+    每个影响父任务的关键结论必须绑定实际读取且可核验的来源定位。用 \`[direct]\`、\`[inference]\` 或 \`[conflict]\` 标记；inference 给出所依据的直接证据，conflict 给出冲突双方。时间敏感来源在定位后附来源时间。证据与结论的关系不明显时才补一句说明；证据不足时缩小结论。
 
-    调查完成、阻塞或证据不足时直接返回 final answer。Status 取 \`completed\`、\`blocked\` 或 \`insufficient\`；blocked 说明原因，insufficient 说明缺失证据。只返回父任务需要的内容：
-
-    ## Status
-    \`completed\` | \`blocked\` | \`insufficient\`
-
-    ## Findings
-    - **kind:** \`direct\` | \`inference\` | \`conflict\`
-      **claim:** [单一、可核验的事实结论]
-      **evidence:**
-        - **locator:** [文件路径和必要行号、URL、材料段落、命令输出或记录 ID]
-          **source_time:** [时间敏感来源适用；否则省略]
-          **support:** [该项证据如何支持、限制或反驳 claim]
-
-    ## Gaps
-    - [未覆盖范围、阻塞原因、缺失证据或可能改变结论的不确定点；没有时写“无”]
+    调查完成、阻塞或证据不足时直接返回 final answer。首行写 \`Status: completed\`、\`Status: blocked — <原因>\` 或 \`Status: insufficient — <缺失证据>\`。随后输出 \`## Findings\`，每个结论优先用一行：\`- [kind] <claim> — <locator(s)>\`。只在确有未覆盖范围、阻塞、缺失证据或会改变结论的不确定点时输出 \`## Gaps\`。只返回父任务需要的内容，不要复述调查过程。
   `);
 }
 
