@@ -25,7 +25,7 @@ import {
   type DiagnosticSummaryViewModel,
 } from './diagnostics.js';
 
-export type SourceHealthState = 'ready' | 'cache' | 'path' | 'checking' | 'degraded' | 'unavailable';
+export type SourceHealthState = 'ready' | 'unavailable';
 
 export interface SourceHealthViewModel {
   sourceId: string;
@@ -191,7 +191,7 @@ export interface SourceTabViewModel {
   label: string;
   count?: number;
   primary: boolean;
-  state: 'ready' | 'cache' | 'path' | 'error';
+  state: 'ready' | 'error';
 }
 
 export interface SourceDetailViewModel {
@@ -208,7 +208,7 @@ export interface SourceDetailViewModel {
   resolvedCommit?: string;
   catalogVersion?: string;
   channel?: string;
-  freshness?: 'remote' | 'cache' | 'path' | 'active';
+  freshness?: 'active';
   errorCode?: string;
   configDigest: string;
 }
@@ -218,7 +218,6 @@ export interface HomeSummaryViewModel {
   installedPlugins: number;
   issueCount: number;
   sourceCount: number;
-  cachedSourceCount: number;
   unavailableSourceCount: number;
 }
 
@@ -275,7 +274,6 @@ export interface ConfigPageViewModel {
 export type UserIssueCategory =
   | 'incompleteInstallation'
   | 'artifactCollision'
-  | 'sourceDegraded'
   | 'sourceUnavailable'
   | 'sourceMissing'
   | 'sourceIdentityChanged'
@@ -304,7 +302,6 @@ export type UserIssueActionId =
   | 'cleanup'
   | 'remove'
   | 'refreshSource'
-  | 'continueWithCache'
   | 'editSource'
   | 'retryLater'
   | 'reAddSource'
@@ -828,47 +825,34 @@ function sourceState(
   health?: SourceHealthViewModel,
 ): SourceTabViewModel['state'] {
   if (health?.state === 'ready') return 'ready';
-  if (health?.state === 'path') return 'path';
-  if (health?.state === 'degraded') return 'cache';
   if (health?.state === 'unavailable') return 'error';
   if (source.error) return 'error';
-  if (source.freshness === 'active') return 'ready';
-  if (source.type === 'path' || source.freshness === 'path') return 'path';
-  return source.freshness === 'cache' ? 'cache' : 'ready';
+  return 'ready';
 }
 
 function sourceIssue(
   health: SourceHealthViewModel,
   impactedTargets = 0,
 ): UserIssueDraft | undefined {
-  if (health.state !== 'degraded' && health.state !== 'unavailable') return undefined;
-  const cached = health.state === 'degraded';
-  const issueId = health.issueId ?? `source:${health.sourceId}:${cached ? 'cache' : 'unavailable'}`;
+  if (health.state !== 'unavailable') return undefined;
+  const issueId = health.issueId ?? `source:${health.sourceId}:unavailable`;
   return {
     issueId,
-    category: cached ? 'sourceDegraded' : 'sourceUnavailable',
-    title: `${health.sourceId} · ${cached ? '来源使用缓存' : '来源不可用'}`,
-    explanation: cached
-      ? '远端检查失败。当前仍使用已验证的缓存数据。'
-      : '来源检查失败，并且没有可用缓存数据。',
-    impact: [cached ? '插件仍可浏览，但数据可能不是最新。' : '当前不能浏览或安装这个来源的插件。',
+    category: 'sourceUnavailable',
+    title: `${health.sourceId} · 来源不可用`,
+    explanation: '来源检查失败。',
+    impact: ['当前不能浏览或安装这个来源的插件。',
       ...(impactedTargets > 0 ? [`${impactedTargets} 个安装位置受此来源根问题影响。`] : [])],
     entity: { kind: 'source', id: health.sourceId },
     sourceId: health.sourceId,
-    actions: cached
-      ? [
-          { id: 'refreshSource', label: '重新检查来源', description: '不会修改已安装内容' },
-          { id: 'continueWithCache', label: '继续使用缓存', description: '当前缓存仍可安全读取' },
-          { id: 'viewTechnical', label: '技术详情' },
-        ]
-      : [
-          { id: 'editSource', label: '编辑来源', description: '检查 URL、路径或 ref' },
-          { id: 'refreshSource', label: '稍后重试', description: '只重新检查来源' },
-          { id: 'viewTechnical', label: '技术详情' },
-        ],
+    actions: [
+      { id: 'editSource', label: '编辑来源', description: '检查 URL、路径或 ref' },
+      { id: 'refreshSource', label: '稍后重试', description: '只重新检查来源' },
+      { id: 'viewTechnical', label: '技术详情' },
+    ],
     technicalDetails: [{
-      code: cached ? 'catalogSourceDegraded' : 'catalogSourceUnavailable',
-      message: cached ? '远端检查失败；已验证缓存仍可用。' : '来源检查失败；没有可用缓存。',
+      code: 'catalogSourceUnavailable',
+      message: '来源检查失败。',
     }],
   };
 }
@@ -1114,7 +1098,7 @@ function targetIssues(payload: StatusV6Payload): UserIssueDraft[] {
           dependencyTargetUnsupported: '依赖目标不兼容',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
-        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceDegraded' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
+        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
         explanation: root.category === 'artifactCollision'
           ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
           : dependencyCategory
@@ -1129,7 +1113,7 @@ function targetIssues(payload: StatusV6Payload): UserIssueDraft[] {
         impact: [root.category === 'artifactCollision'
           ? '请先移除或迁移冲突内容，然后重试安装或重新安装。'
           : bundleUnavailable
-          ? '可以清理可信的 AW 现场；这不表示来源缓存整体不可用。'
+          ? '可以清理可信的 AW 现场；这不表示来源整体可用。'
           : '写操作前需要重新检查这个目标。'],
         entity: { kind: 'plugin', id: target.pluginId },
         pluginId: target.pluginId,
@@ -1381,25 +1365,19 @@ function issueDiagnostic(
   sourceDetails: ReadonlyMap<string, SourceDetailViewModel>,
 ): DiagnosticSummaryViewModel {
   const source = issue.sourceId ? sourceDetails.get(issue.sourceId) : undefined;
-  const sourceDegraded = issue.category === 'sourceDegraded';
   const sourceUnavailable = issue.category === 'sourceUnavailable' && issue.entity.kind === 'source';
   const configUnavailable = issue.category === 'diagnostic' && issue.issueId.startsWith('config:');
   const configInvalid = issue.category === 'requiredConfigMissing';
   const dependency = issue.category.startsWith('dependency');
   const platformState = issue.issueId.startsWith('status:') || issue.rootCode === 'targetDiagnostic';
-  const preserved = sourceDegraded || sourceUnavailable
+  const preserved = sourceUnavailable
     ? '已安装插件和已保存设置不会被删除。'
     : configUnavailable
       ? '已保存的设置保持不变。'
       : '现有安装和已保存设置不会因本页自动改变。';
-  const impact: DiagnosticImpactEntryViewModel[] = sourceDegraded
-    ? [
-        { state: 'degraded', message: '远端数据可能不是最新；匹配的已验证缓存仍可浏览和安装。' },
-        { state: 'preserved', message: preserved },
-      ]
-    : sourceUnavailable
+  const impact: DiagnosticImpactEntryViewModel[] = sourceUnavailable
       ? [
-          { state: 'blocked', message: '没有可用缓存；当前不能浏览或安装这个来源中的插件。' },
+          { state: 'blocked', message: '当前不能浏览或安装这个来源中的插件。' },
           { state: 'preserved', message: preserved },
         ]
       : [
@@ -1413,14 +1391,13 @@ function issueDiagnostic(
   const nextStep = primaryAction
     ? `${primaryAction.label}，然后重新检查当前状态。`
     : '打开技术详情，记录安全错误代码后重新检查。';
-  const sourceDiagnostic = sourceDegraded || sourceUnavailable;
+  const sourceDiagnostic = sourceUnavailable;
   const rawCode = sourceDiagnostic
     ? source?.errorCode ?? issue.technicalDetails[0]?.code
     : issue.technicalDetails[0]?.code;
-  const code = safeDiagnosticCode(rawCode, sourceDegraded
-    ? 'catalogSourceDegraded'
-    : sourceUnavailable ? 'catalogSourceUnavailable' : 'diagnosticUnavailable');
-  const stage = sourceDegraded || sourceUnavailable ? 'resolve-source'
+  const code = safeDiagnosticCode(rawCode, sourceUnavailable
+    ? 'catalogSourceUnavailable' : 'diagnosticUnavailable');
+  const stage = sourceUnavailable ? 'resolve-source'
     : configUnavailable ? 'read-config'
       : configInvalid ? 'validate-config'
       : dependency ? 'resolve-dependencies'
@@ -1432,9 +1409,6 @@ function issueDiagnostic(
       : []),
     ...(issue.platform ? [{ key: 'platform' as const, value: issue.platform }] : []),
     ...(issue.scope ? [{ key: 'scope' as const, value: issue.scope }] : []),
-    ...(sourceDiagnostic && source?.freshness
-      ? [{ key: 'freshness' as const, value: source.freshness }]
-      : []),
     ...(issue.requiredFields?.slice(0, 1).map((field) => ({
       key: 'field' as const,
       value: field.title,
@@ -1448,7 +1422,7 @@ function issueDiagnostic(
         '按技术详情使用受支持命令或人工处理。',
         '再次运行状态检查。',
       ]
-    : sourceDegraded || sourceUnavailable
+    : sourceUnavailable
     ? ['检查 Git URL、ref 或本地目录。', '确认当前终端具备来源授权。', '运行“重新检查来源”验证修复。']
     : dependency
       ? ['检查依赖关系和依赖插件状态。', '完成恢复动作后重新检查根插件。']
@@ -1458,7 +1432,7 @@ function issueDiagnostic(
           ? ['完成或修正列出的设置字段。', '重新检查插件设置。']
         : ['检查目标平台配置和访问权限。', '完成恢复动作后重新运行状态检查。'];
   return {
-    severity: sourceDegraded ? 'warning' : 'error',
+    severity: 'error',
     title: issue.title,
     userMessage: issue.explanation,
     impact,
@@ -1469,9 +1443,6 @@ function issueDiagnostic(
       ...(sourceDiagnostic && issue.sourceId ? { sourceId: issue.sourceId } : {}),
       ...(sourceDiagnostic && source?.requestedRef ? { requestedRef: source.requestedRef } : {}),
       ...(sourceDiagnostic && source?.resolvedCommit ? { resolvedCommit: source.resolvedCommit } : {}),
-      ...(sourceDegraded || sourceUnavailable
-        ? { lastGood: sourceDegraded ? 'available' as const : 'unavailable' as const }
-        : {}),
       ...(context.length > 0 ? { context } : {}),
       checks,
     },
@@ -1493,7 +1464,6 @@ function issueGroup(issue: UserIssueDraft): UserIssueGroup {
   if (issue.category === 'sourceMissing') return 'sourceRemoved';
   if (issue.category === 'artifactCollision') return 'artifactCollision';
   if (issue.category === 'sourceUnavailable'
-    || issue.category === 'sourceDegraded'
     || issue.category === 'sourceIdentityChanged') return 'sourceUnavailable';
   if (issue.category.startsWith('dependency')) return 'dependency';
   if (issue.category === 'scopeConflict') return 'scope';
@@ -1509,7 +1479,6 @@ function primaryAttentionCode(issue: UserIssueDraft): string {
       : 'requiredConfigMissing';
   }
   if (issue.category === 'incompleteInstallation') return 'incompleteInstallation';
-  if (issue.category === 'sourceDegraded') return 'sourceUnavailable';
   if (issue.category === 'sourceIdentityChanged') return 'sourceUnavailable';
   return issue.rootCode ?? issue.category;
 }
@@ -1665,7 +1634,7 @@ export function buildTuiViewModel(options: {
     state: sourceState(source, options.sourceHealth?.get(source.id)),
   }));
   const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
-    .filter((health) => health.state === 'degraded' || health.state === 'unavailable')
+    .filter((health) => health.state === 'unavailable')
     .map((health) => health.sourceId));
   const allTargetIssues = targetIssues(options.status);
   const targetImpactCounts = new Map<string, number>();
@@ -1709,7 +1678,7 @@ export function buildTuiViewModel(options: {
     return {
       ...plugin,
       primaryAttention: {
-        severity: primary.category === 'sourceDegraded' ? 'warning' : 'error',
+        severity: 'error',
         code: primaryAttentionCode(primary),
         message: primary.explanation,
       },
@@ -1729,7 +1698,6 @@ export function buildTuiViewModel(options: {
       installedPlugins: pluginsWithAttention.filter(hasInstalledPlacement).length,
       issueCount: issues.length,
       sourceCount: sourceTabs.length,
-      cachedSourceCount: sourceTabs.filter((source) => source.state === 'cache').length,
       unavailableSourceCount: sourceTabs.filter((source) => source.state === 'error').length,
     },
   };

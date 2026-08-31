@@ -135,7 +135,7 @@ function bundleUnavailableStatus(
           type: 'path',
           primary: true,
           requestedRef: 'path',
-          freshness: 'path',
+          freshness: 'active',
         }],
       },
       filters: { plugins: ['official/demo'], platform: 'codex', cwd: '/workspace' },

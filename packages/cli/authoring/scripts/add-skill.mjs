@@ -77,7 +77,7 @@ Options:
 The command only adds one static Skill. It does not edit the plugin README.
 During development, keep the current stable target when production content changes.
 Next, run aw plugin validate, aw plugin test, aw plugin build, and aw catalog build.
-Publish only as an explicit later step; inspect aw catalog publish --help first.
+Publish only as an explicit later step; inspect aw catalog publish plan --help first.
 `);
 }
 

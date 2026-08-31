@@ -18,6 +18,8 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { createCatalogStoreKey } from '../../src/utils/catalog-generation-store.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -179,6 +181,45 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'ready' });
     const issue = controller.listUserIssues().find((entry) => entry.sourceId === 'local');
     expect(issue).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('shows the exact damaged Active entry before sync instead of repeating sync alone', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller } = await configuredController();
+    const active = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
+    const storeKey = createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest);
+    const recoveryEntryPath = `catalog-store/${storeKey}`;
+    await fs.writeFile(
+      path.join(isolation.env.AW_HOME!, recoveryEntryPath, 'metadata.json'),
+      '{ damaged metadata\n',
+    );
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 120, rows: 30 }} />);
+    await waitFor(() => controller.snapshot.phase === 'ready', 'damaged Active status', () => controller.snapshot);
+    controller.push({ name: 'sourceDetail', sourceId: 'local' });
+    await nextTurn(2);
+
+    expect(controller.getCatalogGeneration('local')).toMatchObject({
+      errorCode: 'catalogGenerationMetadataInvalid',
+      recoveryEntryPath,
+      syncInstruction: 'aw catalog source sync local',
+    });
+    const frame = instance.lastFrame() ?? '';
+    const compactFrame = frame.replace(/\s+/gu, '');
+    expect(frame).toContain('先安全删除 AW_HOME 下的精确条目');
+    expect(compactFrame).toContain(recoveryEntryPath);
+    expect(compactFrame.indexOf(recoveryEntryPath))
+      .toBeLessThan(compactFrame.indexOf('awcatalogsourcesynclocal'));
+    expect(frame).not.toContain('编辑来源…');
+    expect(frame).not.toContain(isolation.env.AW_HOME!);
+    controller.push({ name: 'sourceTechnical', sourceId: 'local' });
+    await nextTurn(2);
+    const technicalFrame = (instance.lastFrame() ?? '').replace(/\s+/gu, '');
+    expect(technicalFrame).toContain('catalogGenerationMetadataInvalid');
+    expect(technicalFrame).toContain(`catalog-store/${storeKey.split('/')[0]}`);
+    expect(technicalFrame).toContain('只删除该精确条目');
+    expect(technicalFrame).not.toContain('检查GitURL');
+    expect(technicalFrame).not.toContain(isolation.env.AW_HOME!);
     controller.dispose();
   });
 

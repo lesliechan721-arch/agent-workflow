@@ -23,7 +23,7 @@ import { TuiRouter } from '../../src/tui/router.js';
 
 function source(
   id: string,
-  options: { primary?: boolean; freshness?: 'remote' | 'cache' | 'path' | 'active'; error?: string; type?: 'git' | 'path' } = {},
+  options: { primary?: boolean; error?: string; type?: 'git' | 'path' } = {},
 ): StatusV6Payload['catalog']['sources'][number] {
   return {
     id,
@@ -31,7 +31,7 @@ function source(
     type: options.type ?? 'git',
     primary: options.primary ?? id === 'official',
     requestedRef: options.type === 'path' ? 'path' : 'refs/heads/catalog/latest',
-    ...(options.freshness ? { freshness: options.freshness } : {}),
+    ...(!options.error ? { freshness: 'active' as const } : {}),
     ...(options.error ? { error: options.error, errorCode: 'catalogSourceUnavailable' } : {}),
   };
 }
@@ -47,7 +47,7 @@ function status(options: {
       primarySourceId: 'official',
       configDigest: 'sha256:config',
       compositeDigest: 'sha256:composite',
-      sources: options.sources ?? [source('official', { freshness: 'cache' })],
+      sources: options.sources ?? [source('official')],
     },
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
     targets: options.targets ?? [],
@@ -896,8 +896,8 @@ describe('TUI v4 router and ViewModel', () => {
     const view = buildTuiViewModel({
       status: status({
         sources: [
-          source('official', { freshness: 'cache' }),
-          source('team', { freshness: 'cache', primary: false }),
+          source('official'),
+          source('team', { primary: false }),
         ],
         targets: [
           target({ sourceId: 'team', pluginName: 'review-gate', scope: 'user', state: 'absent' }),
@@ -1071,8 +1071,8 @@ describe('TUI v4 router and ViewModel', () => {
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official',
-        state: 'degraded',
-        issueId: 'source:official:cache',
+        state: 'unavailable',
+        issueId: 'source:official:unavailable',
       }]]),
     });
 
@@ -1083,7 +1083,7 @@ describe('TUI v4 router and ViewModel', () => {
       'target:official/changed:codex:user:error': 'sourceIdentityChanged',
       'config:official/required:required': 'requiredConfigMissing',
       'status:legacyStateUnsupported': 'legacyState',
-      'source:official:cache': 'sourceDegraded',
+      'source:official:unavailable': 'sourceUnavailable',
     });
     expect(JSON.stringify(view.issues)).not.toContain('arbitrary text');
     const collision = view.issues.find((issue) => issue.category === 'artifactCollision');
@@ -1093,11 +1093,11 @@ describe('TUI v4 router and ViewModel', () => {
       actions: [{ id: 'viewTechnical' }, { id: 'retryLater' }],
       technicalDetails: [{ code: 'artifactCollision', message: '目标包含没有 AW owner 标记的内容。' }],
     });
-    expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.actions.map((action) => action.id))
-      .toContain('continueWithCache');
+    expect(view.issues.find((issue) => issue.category === 'sourceUnavailable')?.actions.map((action) => action.id))
+      .toEqual(['editSource', 'refreshSource', 'viewTechnical']);
     expect(view.issues.filter((issue) => issue.sourceId === 'official'
-      && (issue.category === 'sourceUnavailable' || issue.category === 'sourceDegraded'))).toHaveLength(1);
-    expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.impact).toContain(
+      && issue.category === 'sourceUnavailable')).toHaveLength(1);
+    expect(view.issues.find((issue) => issue.category === 'sourceUnavailable')?.impact).toContain(
       '2 个安装位置受此来源根问题影响。',
     );
     expect(view.issues.find((issue) => issue.category === 'sourceMissing')?.actions.map((action) => action.id))
@@ -1162,7 +1162,7 @@ describe('TUI v4 router and ViewModel', () => {
         },
       ],
       sourceHealth: new Map([['official', {
-        sourceId: 'official', state: 'degraded', issueId: 'source:official:cache',
+        sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
       }]]),
       dependencyOverviews: [{
         pluginId: 'team/graph',
@@ -1198,7 +1198,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(view.plugins.find((plugin) => plugin.pluginId === 'team/configured')?.primaryAttention?.code)
       .toBe('invalidConfig');
     expect(view.plugins.find((plugin) => plugin.pluginId === 'official/available')?.primaryAttention)
-      .toMatchObject({ severity: 'warning', code: 'sourceUnavailable' });
+      .toMatchObject({ severity: 'error', code: 'sourceUnavailable' });
     expect(view.plugins.find((plugin) => plugin.pluginId === 'official/incomplete')?.primaryAttention?.code)
       .toBe('sourceUnavailable');
     expect(view.plugins.find((plugin) => plugin.pluginId === 'official/dependency')?.primaryAttention?.code)
@@ -1334,7 +1334,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
-  it('keeps bundleUnavailable as a plugin target issue beside a degraded source root', () => {
+  it('keeps bundleUnavailable as a plugin target issue beside an unavailable source root', () => {
     const unavailableTarget = target({
       pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable',
     });
@@ -1343,7 +1343,7 @@ describe('TUI v4 router and ViewModel', () => {
       status: status({ targets: [unavailableTarget] }),
       pluginSummaries: [],
       sourceHealth: new Map([['official', {
-        sourceId: 'official', state: 'degraded', issueId: 'source:official:cache',
+        sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
       }]]),
     });
 
@@ -1351,7 +1351,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(view.home.issueCount).toBe(2);
     expect(view.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        issueId: 'source:official:cache', category: 'sourceDegraded',
+        issueId: 'source:official:unavailable', category: 'sourceUnavailable',
         impact: expect.arrayContaining(['1 个安装位置受此来源根问题影响。']),
       }),
       expect.objectContaining({
@@ -1366,10 +1366,10 @@ describe('TUI v4 router and ViewModel', () => {
       }),
     ]));
     expect(view.issues.find((issue) => issue.rootCode === 'bundleUnavailable')?.impact)
-      .toContain('可以清理可信的 AW 现场；这不表示来源缓存整体不可用。');
+      .toContain('可以清理可信的 AW 现场；这不表示来源整体可用。');
     expect(view.plugins).toContainEqual(expect.objectContaining({
       pluginId: 'official/offline',
-      aggregateStatus: 'needsAttention',
+      aggregateStatus: 'unavailable',
       installedPlacements: [expect.objectContaining({ state: 'installed', health: 'error' })],
     }));
   });
@@ -2095,7 +2095,7 @@ describe('TUI v4 Review safety', () => {
   function issueWriteFixture(afterWrite: TuiStatusLoadResult | Error) {
     const initial: TuiStatusLoadResult = {
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -2132,7 +2132,7 @@ describe('TUI v4 Review safety', () => {
   it('reports issueStillPresent after a successful command when the typed issue remains', async () => {
     const fixture = issueWriteFixture({
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -2166,7 +2166,7 @@ describe('TUI v4 Review safety', () => {
     };
     const loaded: TuiStatusLoadResult = {
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'base'], ['official', 'toolkit'], ['official', 'demo']),
@@ -2225,7 +2225,7 @@ describe('TUI v4 Review safety', () => {
   it('reports issue success only after the typed issue disappears', async () => {
     const fixture = issueWriteFixture({
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'present' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -2239,14 +2239,14 @@ describe('TUI v4 Review safety', () => {
   it('reloads status and blocks an all-failed receipt as an unconfirmed write', async () => {
     const refreshed = {
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const loadStatus = vi.fn()
       .mockResolvedValueOnce({
-        payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
+        payload: status({ sources: [source('official', { type: 'path' })] }),
         pluginSummaries: summaries(['official', 'demo']),
       })
       .mockResolvedValue(refreshed);
@@ -2429,7 +2429,7 @@ describe('TUI v4 Review safety', () => {
 
   it('reports a reset as unconfirmed when the post-write status reload fails', async () => {
     const initial = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
+      payload: status({ sources: [source('official', { type: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const loadStatus = vi.fn()
@@ -2462,12 +2462,12 @@ describe('TUI v4 Review safety', () => {
 
   it('accepts a reset receipt when the refreshed plugin bundle is unavailable', async () => {
     const initial = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
+      payload: status({ sources: [source('official', { type: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const unavailable = {
       payload: status({
-        sources: [source('official', { freshness: 'cache' })],
+        sources: [source('official')],
         targets: [target({ scope: 'user', state: 'error', errorCode: 'bundleUnavailable' })],
       }),
       pluginSummaries: [],
@@ -2568,7 +2568,7 @@ describe('TUI v4 Review safety', () => {
 
   it('confirms reset when the source remains ready after execution', async () => {
     const readyStatus = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
+      payload: status({ sources: [source('official', { type: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const controller = new TuiController(dependencies({
@@ -2589,7 +2589,7 @@ describe('TUI v4 Review safety', () => {
 
   it('reloads status and reports uncertainty when config runtime apply throws', async () => {
     const loadStatus = vi.fn().mockResolvedValue({
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
+      payload: status({ sources: [source('official', { type: 'path' })] }),
       pluginSummaries: summaries(['official', 'demo']),
     });
     const controller = new TuiController(dependencies({
@@ -2860,7 +2860,7 @@ describe('TUI v4 Review safety', () => {
     expect(router.snapshot.current.route).toMatchObject({ layer: { projectLayer: 'shared' } });
 
     const loaded = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
+      payload: status({ sources: [source('official', { type: 'path' })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const loadSnapshot = structuredClone(loaded);

@@ -126,8 +126,8 @@ function loadResult(): TuiStatusLoadResult {
         configDigest: 'sha256:config',
         compositeDigest: 'sha256:composite',
         sources: [
-          { id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'path' },
-          { id: 'team-tools', identity: 'identity:team-tools', type: 'git', primary: false, requestedRef: 'catalog/stable', resolvedCommit: 'abc123', catalogVersion: '2.4.0', channel: 'latest', freshness: 'cache' },
+          { id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'active' },
+          { id: 'team-tools', identity: 'identity:team-tools', type: 'git', primary: false, requestedRef: 'catalog/stable', resolvedCommit: 'abc123', catalogVersion: '2.4.0', channel: 'latest', freshness: 'active' },
           { id: 'research', identity: 'identity:research', type: 'path', primary: false, requestedRef: 'path', error: 'unavailable', errorCode: 'catalogSourceUnavailable' },
         ],
       },
@@ -1586,10 +1586,10 @@ describe('ConsoleAppV4', () => {
     const initial = loadResult();
     const removed = loadResult();
     initial.payload.catalog.sources = initial.payload.catalog.sources.map((source) => source.id === 'team-tools'
-      ? { ...source, type: 'path' as const, requestedRef: 'path', freshness: 'path' as const }
+      ? { ...source, type: 'path' as const, requestedRef: 'path', freshness: 'active' as const }
       : source);
     removed.payload.catalog.sources = removed.payload.catalog.sources.map((source) => source.id === 'team-tools'
-      ? { ...source, type: 'path' as const, requestedRef: 'path', freshness: 'path' as const }
+      ? { ...source, type: 'path' as const, requestedRef: 'path', freshness: 'active' as const }
       : source);
     removed.pluginSummaries = removed.pluginSummaries.filter((entry) => entry.pluginId !== 'team-tools/review-gate');
     removed.payload.targets = removed.payload.targets.filter((entry) => entry.pluginId !== 'team-tools/review-gate');
@@ -2224,9 +2224,9 @@ describe('ConsoleAppV4', () => {
     await input(unavailableInstance, ...Array.from({ length: 4 }, () => '\u001B[B'), '\r');
     expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'research' });
     const unavailableTechnical = unavailableInstance.lastFrame() ?? '';
-    expect(unavailableTechnical).toContain('catalogSourceUnavailable');
+    expect(unavailableTechnical).toContain('catalogGenerationUnavailable');
     expect(unavailableTechnical).toContain('resolve-source');
-    expect(unavailableTechnical).toMatch(/last good\s+无/u);
+    expect(unavailableTechnical).not.toContain('last good');
     expect(unavailableTechnical).toContain('下面的信息已脱敏，可用于排查或提交 issue');
     expect(unavailableTechnical).not.toContain('sha256:');
     for (const privateText of ['native stderr', 'Authorization', 'Bearer', 'bearer-secret', 'alice', 'url-secret', 'query-secret',
@@ -2701,7 +2701,7 @@ describe('ConsoleAppV4', () => {
       type: 'path' as const,
       primary: index === 0,
       requestedRef: 'path',
-      freshness: 'path' as const,
+      freshness: 'active' as const,
     }));
     data.payload.catalog.primarySourceId = sourceIds[0]!;
     data.pluginSummaries = sourceIds.flatMap((sourceId, sourceIndex) =>
@@ -2875,7 +2875,7 @@ describe('ConsoleAppV4', () => {
       type: 'path' as const,
       primary: index === 0,
       requestedRef: 'path',
-      freshness: 'path' as const,
+      freshness: 'active' as const,
     }));
     data.sourceDetails = data.payload.catalog.sources.map((source) => ({
       id: source.id,
@@ -3883,7 +3883,7 @@ describe('ConsoleAppV4', () => {
       primary: true,
       requestedRef: 'refs/heads/catalog/latest',
       resolvedCommit: 'abc123',
-      freshness: 'cache',
+      freshness: 'active',
     };
     loaded.sourceDetails![0] = {
       id: 'official',
@@ -3895,7 +3895,7 @@ describe('ConsoleAppV4', () => {
       sourceIdentity: 'identity:official-workspace',
       requestedRef: 'refs/heads/catalog/latest',
       resolvedCommit: 'abc123',
-      freshness: 'cache',
+      freshness: 'active',
       configDigest: 'sha256:config',
     };
     const executeIntent = vi.fn().mockResolvedValue({ ok: true });

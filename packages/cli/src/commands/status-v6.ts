@@ -84,7 +84,7 @@ export interface StatusV6CatalogSource {
   resolvedCommit?: string;
   catalogVersion?: string;
   channel?: string;
-  freshness?: 'remote' | 'cache' | 'path' | 'active';
+  freshness?: 'active';
   error?: string;
   errorCode?: string;
 }

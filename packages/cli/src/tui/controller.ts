@@ -1189,9 +1189,7 @@ export class TuiController {
       this.#health.set(source.id, {
         sourceId: source.id,
         state: source.error ? 'unavailable'
-          : source.freshness === 'active' ? 'ready'
-            : source.type === 'path' ? 'path'
-            : source.freshness === 'cache' ? 'cache' : 'ready',
+          : 'ready',
         ...(source.error ? { message: '来源当前没有可用数据。' } : {}),
       });
     }

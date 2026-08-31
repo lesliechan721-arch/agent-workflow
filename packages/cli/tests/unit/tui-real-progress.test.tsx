@@ -97,7 +97,7 @@ describe('real ConsoleAppV4 progress chain', () => {
           primarySourceId: 'official',
           configDigest: 'sha256:config',
           compositeDigest: 'sha256:composite',
-          sources: [{ id: 'official', identity: 'identity:official', type: 'path' as const, primary: true, requestedRef: 'path', freshness: 'path' as const }],
+          sources: [{ id: 'official', identity: 'identity:official', type: 'path' as const, primary: true, requestedRef: 'path', freshness: 'active' as const }],
         },
         filters: { plugins: [], platform: 'both' as const, cwd: '/workspace' },
         targets: [{

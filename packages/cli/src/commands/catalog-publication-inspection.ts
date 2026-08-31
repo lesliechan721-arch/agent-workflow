@@ -74,8 +74,6 @@ export interface CatalogPublicationPreparation {
     channel: 'latest' | 'beta';
     pluginNames: string[];
     snapshotDigest: string;
-    contentDigest: string;
-    planId: string;
   };
   descriptor: CatalogPublicationDescriptor;
   env: NodeJS.ProcessEnv;

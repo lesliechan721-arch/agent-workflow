@@ -47,6 +47,7 @@ import type {
   TuiControllerSnapshot,
 } from './controller.js';
 import { extractPortableError, userIssueKey } from './controller.js';
+import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { catalogRefPolicyForPreset } from './source-ref-presets.js';
@@ -485,40 +486,41 @@ function sourceDiagnostic(
   sourceId: string,
   state: SourceHealthViewModel['state'] | 'error' | undefined,
   detail: SourceDetailViewModel | undefined,
+  generation?: CatalogSourceGenerationViewModel,
 ): DiagnosticSummaryViewModel | undefined {
-  const degraded = state === 'degraded';
   const unavailable = state === 'unavailable' || state === 'error';
-  if (!degraded && !unavailable) return undefined;
+  if (!unavailable) return undefined;
+  const metadataInvalid = generation?.errorCode === 'catalogGenerationMetadataInvalid';
   return {
-    severity: degraded ? 'warning' : 'error',
-    title: degraded ? '远端 Catalog 检查失败，正在使用缓存' : 'Catalog 来源不可用',
-    userMessage: degraded
-      ? '远端读取没有成功。当前使用匹配且已验证的缓存数据。'
-      : '当前无法读取这个来源，并且没有可用缓存数据。',
-    impact: degraded
-      ? [
-          { state: 'degraded', message: '数据可能不是最新；匹配缓存中的插件仍可浏览和安装。' },
-          { state: 'preserved', message: '已安装插件和已保存设置不会被删除。' },
-        ]
-      : [
-          { state: 'blocked', message: '当前不能浏览或安装这个来源中的插件。' },
-          { state: 'preserved', message: '已安装插件和已保存设置不会被删除。' },
-        ],
-    nextStep: degraded
-      ? '重新检查来源；在修复前也可以继续使用匹配缓存。'
+    severity: 'error',
+    title: 'Catalog 来源不可用',
+    userMessage: '当前无法读取这个来源。',
+    impact: [
+      { state: 'blocked', message: '当前不能浏览或安装这个来源中的插件。' },
+      { state: 'preserved', message: '已安装插件和已保存设置不会被删除。' },
+    ],
+    nextStep: metadataInvalid && generation.recoveryEntryPath
+      ? `先安全删除 AW_HOME 下的精确条目 ${generation.recoveryEntryPath}，再运行 ${generation.syncInstruction}。`
       : '重新检查来源；如仍失败，请编辑来源 URL、路径或 ref。',
     technical: {
       code: safeDiagnosticCode(
-        detail?.errorCode,
-        degraded ? 'catalogSourceDegraded' : 'catalogSourceUnavailable',
+        generation?.errorCode ?? detail?.errorCode,
+        'catalogSourceUnavailable',
       ),
       stage: 'resolve-source',
       sourceId,
       ...(detail?.requestedRef ? { requestedRef: detail.requestedRef } : {}),
       ...(detail?.resolvedCommit ? { resolvedCommit: detail.resolvedCommit } : {}),
-      lastGood: degraded ? 'available' : 'unavailable',
-      ...(detail?.freshness ? { context: [{ key: 'freshness', value: detail.freshness }] } : {}),
-      checks: ['检查 Git URL、ref 或本地目录。', '确认当前终端具备来源授权。', '运行“重新检查来源”验证修复。'],
+      ...(metadataInvalid && generation.recoveryEntryPath
+        ? { context: [{ key: 'storeEntry' as const, value: generation.recoveryEntryPath }] }
+        : {}),
+      checks: metadataInvalid && generation.recoveryEntryPath
+        ? [
+            `确认损坏条目为 AW_HOME/${generation.recoveryEntryPath}。`,
+            '只删除该精确条目，不删除 Catalog store 根或其它 digest。',
+            `运行 ${generation.syncInstruction} 重建 Active。`,
+          ]
+        : ['检查 Git URL、ref 或本地目录。', '确认当前终端具备来源授权。', '运行“重新检查来源”验证修复。'],
     },
   };
 }
@@ -643,7 +645,7 @@ function SourceTabs(props: {
             bold={active}
             color={active ? tuiTheme.colors.accent
               : state === 'error' ? tuiTheme.statusColors.error
-                : state === 'cache' ? tuiTheme.statusColors.warning : tuiTheme.colors.muted}
+              : tuiTheme.colors.muted}
           >
             {active ? '[' : ''}{tab.label}{state === 'error' ? ' !' : ` ${tab.count ?? ''}`}{active ? ']' : ''}{'  '}
           </Text>
@@ -935,7 +937,6 @@ export function resolveConsoleV4ScreenId(
     return {
       incompleteInstallation: 'I03',
       artifactCollision: 'I09',
-      sourceDegraded: 'I04',
       sourceUnavailable: 'I04',
       sourceMissing: 'I05',
       sourceIdentityChanged: 'I06',
@@ -1808,7 +1809,6 @@ export function ConsoleAppV4(props: {
       >
         <ResultRow title={`${home.installedPlugins} 个插件可用`} status="success" />
         <ResultRow title={`${home.issueCount} 项需要处理`} status={home.issueCount > 0 ? 'warning' : 'muted'} />
-        {home.cachedSourceCount > 0 ? <ResultRow title={`${home.cachedSourceCount} 个来源使用缓存`} status="warning" /> : null}
         {home.unavailableSourceCount > 0 ? <ResultRow title={`${home.unavailableSourceCount} 个来源不可用`} status="error" /> : null}
       </StatusCard>
       <SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} />
@@ -1834,7 +1834,7 @@ export function ConsoleAppV4(props: {
     help = `↑↓ 移动 · Enter 查看 · ←→ 来源 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ''} · Esc 返回`;
     const sourceError = sourceId !== 'all' && props.controller.getSourceOverview(sourceId).source?.state === 'error';
     actions = sourceError
-      ? [{ label: '查看来源问题', description: '没有可用缓存；当前不能浏览这个来源', run: () => go({ name: 'issueDetail', issueId: `source:${sourceId}:unavailable` }) }]
+      ? [{ label: '查看来源问题', description: '当前不能浏览这个来源', run: () => go({ name: 'issueDetail', issueId: `source:${sourceId}:unavailable` }) }]
       : [];
     pluginRows = sourceError ? [] : items.map((item) => ({
       pluginId: item.pluginId,
@@ -1890,7 +1890,7 @@ export function ConsoleAppV4(props: {
           ? <Text color={tuiTheme.colors.muted}>状态  <Text color={installFilter === 'all' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'all' ? '[全部]' : '全部'}</Text>  <Text color={installFilter === 'uninstalled' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'uninstalled' ? '[未安装]' : '未安装'} {uninstalledCount}</Text>                         f 切换</Text>
           : null}
         {sourceError
-          ? <Callout status="error" title={`${sourceId} 暂时无法提供插件`} description="没有可用缓存，因此当前不能浏览这个来源。" />
+          ? <Callout status="error" title={`${sourceId} 暂时无法提供插件`} description="当前不能浏览这个来源。" />
           : route.mode === 'installed' && items.length === 0
             ? <Callout title="开始添加第一个插件" description="插件可以安装到 Codex、Claude Code 或两者。" />
             : null}
@@ -2675,7 +2675,7 @@ export function ConsoleAppV4(props: {
           candidate.entity.kind === 'source' && candidate.sourceId === plugin.sourceId)
       : undefined;
     const platformAction = (action: PluginMenuAction): ActionItem => {
-      if (action.id === 'sourceProblem') return { label: '查看来源问题', description: `${plugin.sourceId} 无可用缓存`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) };
+      if (action.id === 'sourceProblem') return { label: '查看来源问题', description: `${plugin.sourceId} 当前不可用`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) };
       if (action.id === 'refreshSource') return { label: '重新加载状态', description: `如需同步，先在终端运行 aw catalog source sync ${plugin.sourceId}`, run: async () => { await props.controller.reloadCatalog({ sourceId: plugin.sourceId }); } };
       if (action.id === 'add') return { label: `添加到 ${platformLabel(route.platform)}…`, description: '选择使用位置', run: () => {
         const initialScope = placement?.state === 'notInstalled'
@@ -3042,16 +3042,13 @@ export function ConsoleAppV4(props: {
         const health = overview.health?.state ?? source.state;
         const status = generation?.active ? `Active ${generation.active.catalogVersion}`
           : health === 'ready' ? '当前使用'
-          : health === 'path' ? '本地目录'
-            : health === 'checking' ? '正在检查'
-              : health === 'cache' || health === 'degraded' ? '使用缓存' : '无法读取';
+          : '无法读取';
         return {
           label: `${source.id}${source.primary ? '  主来源' : ''}`,
           description: `${overview.detail?.type === 'path' ? '本地目录' : 'Git 仓库'} · ${source.count ?? 0} 个插件`,
           meta: status,
           status: !generation?.active || health === 'unavailable' ? 'error' as const
-            : health === 'cache' || health === 'degraded' ? 'warning' as const
-              : source.primary ? 'success' as const : undefined,
+            : source.primary ? 'success' as const : undefined,
           run: () => go({ name: 'sourceDetail', sourceId: source.id }),
         };
       }),
@@ -3065,14 +3062,21 @@ export function ConsoleAppV4(props: {
     const detail = overview.detail;
     const generation = props.controller.getCatalogGeneration(route.sourceId);
     const activeVersion = generation?.active?.catalogVersion;
+    const metadataInvalid = generation?.errorCode === 'catalogGenerationMetadataInvalid';
+    const damagedEntry = generation?.recoveryEntryPath;
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
-    description = activeVersion ? `当前使用 Active Catalog ${activeVersion}。` : `来源没有可用 Active。请在终端运行 ${generation?.syncInstruction ?? `aw catalog source sync ${route.sourceId}`}，然后重新加载 TUI。`;
+    description = activeVersion ? `当前使用 Active Catalog ${activeVersion}。`
+      : metadataInvalid && damagedEntry
+        ? `Active Catalog 条目已损坏。先安全删除 AW_HOME 下的精确条目 ${damagedEntry}，再运行 ${generation.syncInstruction}，然后重新加载 TUI。`
+        : `来源没有可用 Active。请在终端运行 ${generation?.syncInstruction ?? `aw catalog source sync ${route.sourceId}`}，然后重新加载 TUI。`;
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
     actions = [
-      { label: '重新加载 TUI', description: `先在终端运行 aw catalog source sync ${route.sourceId}，再重新加载 Active`, run: () => props.controller.reloadCatalog({ sourceId: route.sourceId }) },
-      { label: '编辑来源…', description: '只修改来源配置；不会访问网络', run: () => go({ name: 'sourceEdit', sourceId: route.sourceId }) },
+      { label: metadataInvalid ? '修复后重新加载 TUI' : '重新加载 TUI', description: metadataInvalid && damagedEntry
+        ? `先删除精确条目 ${damagedEntry}，再运行 ${generation.syncInstruction}`
+        : `先在终端运行 aw catalog source sync ${route.sourceId}，再重新加载 Active`, run: () => props.controller.reloadCatalog({ sourceId: route.sourceId }) },
+      ...(!metadataInvalid ? [{ label: '编辑来源…', description: '只修改来源配置；不会访问网络', run: () => go({ name: 'sourceEdit' as const, sourceId: route.sourceId }) }] : []),
       { label: '设为主来源…', description: '只改变默认 marketplace', disabled: detail?.primary ? '当前已经是主来源' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'setPrimary', sourceId: route.sourceId, changes: [{ title: '主来源', before: snapshot.viewModel?.sourceTabs.find((source) => source.primary)?.id, after: route.sourceId }] }) },
       { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
       { label: '技术详情', description: '查看脱敏错误代码和 Active 证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
@@ -3083,7 +3087,7 @@ export function ConsoleAppV4(props: {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
     const state = overview.health?.state ?? overview.source?.state;
-    const diagnostic = sourceDiagnostic(route.sourceId, state, detail) ?? {
+    const diagnostic = sourceDiagnostic(route.sourceId, state, detail, props.controller.getCatalogGeneration(route.sourceId)) ?? {
       severity: 'warning' as const,
       title: '来源解析详情',
       userMessage: '来源当前可用。',
@@ -3095,7 +3099,6 @@ export function ConsoleAppV4(props: {
         sourceId: route.sourceId,
         ...(detail?.requestedRef ? { requestedRef: detail.requestedRef } : {}),
         ...(detail?.resolvedCommit ? { resolvedCommit: detail.resolvedCommit } : {}),
-        ...(detail?.freshness ? { context: [{ key: 'freshness' as const, value: detail.freshness }] } : {}),
       },
     };
     breadcrumb = `插件来源 / ${route.sourceId} / 技术详情`;
@@ -3216,7 +3219,7 @@ export function ConsoleAppV4(props: {
         description: entry.category.startsWith('dependency')
           ? `${props.controller.getPluginOverview(entry.dependencyPluginId ?? '')?.displayName ?? entry.dependencyPluginId ?? entry.explanation} · ${entry.impact[0] ?? ''}`
           : `${entry.explanation} · ${entry.impact[0] ?? ''}`,
-        status: entry.category === 'sourceDegraded' ? 'warning' as const : 'error' as const,
+        status: 'error' as const,
         run: () => entry.category === 'dependencyStillRequired' && entry.pluginId
           ? go({ name: 'pluginDependencies', pluginId: entry.pluginId, view: 'removeBlocked',
               ...(entry.platform ? { platform: entry.platform } : {}),
@@ -3271,7 +3274,7 @@ export function ConsoleAppV4(props: {
         return;
       }
       if (entry.id === 'refreshSource' && issue.sourceId) await props.controller.reloadCatalog({ sourceId: issue.sourceId });
-      else if (entry.id === 'continueWithCache' || entry.id === 'retryLater') go({ name: 'issueList' });
+      else if (entry.id === 'retryLater') go({ name: 'issueList' });
       else if (entry.id === 'editSource' && issue.sourceId) go(issue.entity.kind === 'source'
         ? { name: 'sourceEdit', sourceId: issue.sourceId }
         : { name: 'sourceDetail', sourceId: issue.sourceId });

@@ -34,7 +34,7 @@ function status(): TuiStatusLoadResult {
   }];
   const payload: StatusV6Payload = {
     schemaVersion: 6,
-    catalog: { primarySourceId: 'official', configDigest: 'sha256:config', compositeDigest: 'sha256:catalog', sources: [{ id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'path' }] },
+    catalog: { primarySourceId: 'official', configDigest: 'sha256:config', compositeDigest: 'sha256:catalog', sources: [{ id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'active' }] },
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
     targets: summaries.flatMap((summary) => (['codex', 'claude'] as const).map((platform) => ({
       pluginName: summary.pluginName, pluginId: summary.pluginId, sourceId: 'official', sourceIdentity: 'identity:official', version: '1.0.0', platform, scope: 'project' as const, cwd: '/workspace', state: 'absent' as const, components: [], errors: [],

@@ -342,6 +342,7 @@ describe('status v6 current behavior', () => {
     expect(result.payload.catalog.sources).toEqual([
       expect.objectContaining({ id: 'official', error: expect.any(String) }),
     ]);
+    expect(result.payload.catalog.sources[0]).not.toHaveProperty('freshness');
     expect(result.payload.targets).toEqual([expect.objectContaining({
       pluginId: 'official/demo',
       desired: { enabled: true, scopes: ['project'], relation: 'root' },
@@ -540,7 +541,10 @@ describe('status v6 current behavior', () => {
     expect(result.hasErrors).toBe(true);
     expect(result.payload.catalog.sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'bad', error: expect.any(String) }),
+      expect.objectContaining({ id: 'good', freshness: 'active' }),
     ]));
+    expect(result.payload.catalog.sources.find((source) => source.id === 'bad'))
+      .not.toHaveProperty('freshness');
     expect(result.payload.targets).toEqual([
       expect.objectContaining({
         pluginId: 'good/demo',

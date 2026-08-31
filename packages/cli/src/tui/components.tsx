@@ -264,7 +264,7 @@ const diagnosticContextLabels = {
   pluginId: '插件',
   dependencyPluginId: '依赖插件',
   field: '字段',
-  freshness: '数据来源',
+  storeEntry: 'Store 条目',
   compatibility: '兼容版本',
 } as const;
 
@@ -324,7 +324,6 @@ export function DiagnosticSummary(props: {
     { label: 'code', value: safeDiagnosticCode(technical.code, 'diagnosticUnavailable') },
     ...(technical.stage ? [{ label: 'stage', value: sanitizeDiagnosticText(technical.stage) }] : []),
     ...(technical.sourceId ? [{ label: 'sourceId', value: sanitizeDiagnosticText(technical.sourceId) }] : []),
-    ...(technical.lastGood ? [{ label: 'last good', value: technical.lastGood === 'available' ? '可用' : '无' }] : []),
     ...(technical.requestedRef ? [{ label: 'requested ref', value: sanitizeDiagnosticText(technical.requestedRef) }] : []),
     ...(technical.resolvedCommit ? [{ label: 'resolved commit', value: sanitizeDiagnosticText(technical.resolvedCommit) }] : []),
     ...(technical.context ?? []).map((entry) => ({

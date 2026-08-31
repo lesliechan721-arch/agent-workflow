@@ -1324,7 +1324,6 @@ describe('multi-source read commands', () => {
       for (const secret of [
         isolation.env.AW_HOME!,
         invalidRepository,
-        'catalog-cache',
         '.materialize-',
       ]) expect(`${stdout}${captured.readStderr()}`).not.toContain(secret);
     }

@@ -1,6 +1,10 @@
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { resolveActiveCatalogGeneration } from '../utils/catalog-generation-resolver.js';
-import type { CatalogStoreEntry } from '../utils/catalog-generation-store.js';
+import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import {
+  createCatalogStoreKey,
+  type CatalogStoreEntry,
+} from '../utils/catalog-generation-store.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 
 export interface CatalogGenerationViewModel {
@@ -17,6 +21,7 @@ export interface CatalogSourceGenerationViewModel {
   sourceType: 'git' | 'path';
   active?: CatalogGenerationViewModel;
   errorCode?: string;
+  recoveryEntryPath?: string;
   syncInstruction: string;
 }
 
@@ -89,12 +94,24 @@ export async function loadCatalogGenerationViewModels(options: {
         syncInstruction: instruction,
       };
     } catch (error) {
+      const errorCode = error instanceof CatalogGenerationError
+        ? error.code
+        : 'catalogGenerationUnavailable';
+      let recoveryEntryPath: string | undefined;
+      if (errorCode === 'catalogGenerationMetadataInvalid') {
+        const active = (await readCatalogGenerationState(env)).sources[source.id]?.active;
+        if (active) {
+          recoveryEntryPath = `catalog-store/${createCatalogStoreKey(
+            active.logicalIdentity,
+            active.snapshotDigest,
+          )}`;
+        }
+      }
       return {
         sourceId: source.id,
         sourceType: source.type,
-        errorCode: error instanceof CatalogGenerationError
-          ? error.code
-          : 'catalogGenerationUnavailable',
+        errorCode,
+        ...(recoveryEntryPath ? { recoveryEntryPath } : {}),
         syncInstruction: instruction,
       };
     }

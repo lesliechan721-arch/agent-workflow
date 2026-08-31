@@ -503,25 +503,6 @@ function sha256(value: string | Buffer): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
 
-function publishedContentDigest(
-  manifest: Pick<CatalogManifestV6, 'schemaVersion' | 'requires' | 'marketplace' | 'entries'>,
-): string {
-  return sha256(stableStringify({
-    schemaIdentity: { schemaVersion: manifest.schemaVersion },
-    marketplaceMetadata: {
-      name: 'aw',
-      owner: manifest.marketplace.owner,
-      interface: manifest.marketplace.interface,
-    },
-    requires: manifest.requires,
-    plugins: manifest.entries.map((entry) => ({
-      name: entry.name,
-      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
-      contentDigest: entry.contentDigest,
-    })).sort((left, right) => left.name.localeCompare(right.name)),
-  }));
-}
-
 const SOURCE_IDENTITY_EXCLUDED_DIRECTORIES = new Set([
   '.git', '.aw', 'node_modules', 'evals', 'reports',
 ]);
@@ -933,8 +914,6 @@ export async function preparePublishedCatalogWorkspace(options: {
   channel: CatalogChannel;
   pluginNames: string[];
   snapshotDigest: string;
-  contentDigest: string;
-  planId: string;
 }> {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(options.sourceHead)) {
     throw new Error('Published Catalog sourceHead must be a committed Git object ID.');
@@ -990,7 +969,6 @@ export async function preparePublishedCatalogWorkspace(options: {
       channel,
       entries,
     };
-    const contentDigest = publishedContentDigest(manifestWithoutRelease);
     const manifest: CatalogManifestV6 = {
       ...manifestWithoutRelease,
       release: {
@@ -1022,8 +1000,6 @@ export async function preparePublishedCatalogWorkspace(options: {
       channel,
       pluginNames: built.pluginNames,
       snapshotDigest: prepared.snapshotDigest,
-      contentDigest,
-      planId: contentDigest,
     };
   } finally {
     await fs.remove(temporaryRoot);
