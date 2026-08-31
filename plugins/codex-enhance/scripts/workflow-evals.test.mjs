@@ -1,18 +1,24 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import {
   captureWorkspaceSnapshot,
   diffWorkspaceSnapshots,
+  evaluateLeafOutput,
   evaluateLifecycleTrace,
   evaluateParentScopeIsolation,
   evaluateWorkflowRun,
   workflowEvalRunCase,
 } from '../skills/codex-explore/evals/run-workflow-evals.mjs';
-import { buildCollaborationTimeline } from '../skills/codex-explore/evals/eval-harness.mjs';
+import {
+  buildCollaborationTimeline,
+  collectFinalAgentResults,
+  inspectExploreRoleContract,
+} from '../skills/codex-explore/evals/eval-harness.mjs';
 import workflowCorpusDocument from '../skills/codex-explore/evals/workflow-evals.json' with { type: 'json' };
+import outputContractCorpusDocument from '../skills/codex-explore/evals/output-contract-evals.json' with { type: 'json' };
 
 const lifecycleContract = {
   minimum_initial_wait_timeout_ms: 600_000,
@@ -113,6 +119,28 @@ function testCorpusAndAssertions() {
     Number.isInteger(entry.expected?.criteria?.lifecycle?.max_recoveries)
   )), true);
   assert.equal(new Set(spec.cases.map((entry) => entry.id)).size, spec.cases.length);
+  assert.equal(outputContractCorpusDocument.version, 1);
+  assert.equal(outputContractCorpusDocument.suite.unitUnderTest, 'codex-explore');
+  assert.equal(outputContractCorpusDocument.cases.length, 6);
+  assert.deepEqual(
+    outputContractCorpusDocument.cases.map((entry) => entry.id),
+    [
+      'shared_source_direct',
+      'multiple_sources_one_finding',
+      'inference_with_direct_basis',
+      'conflicting_sources',
+      'blocked_authenticated_source',
+      'insufficient_partial_record',
+    ],
+  );
+  assert.equal(outputContractCorpusDocument.cases.every((entry) => (
+    ['completed', 'blocked', 'insufficient'].includes(entry.expected?.criteria?.leaf_output?.status) &&
+    Array.isArray(entry.expected?.criteria?.leaf_output?.kinds) &&
+    nonEmptyStrings(entry.expected?.criteria?.leaf_output?.includes_all) &&
+    nonEmptyStrings(entry.expected?.criteria?.leaf_output?.patterns) &&
+    ['absent', 'present'].includes(entry.expected?.criteria?.leaf_output?.gaps) &&
+    entry.expected?.criteria?.lifecycle?.max_recoveries === 0
+  )), true);
   assert.deepEqual(
     workflowEvalRunCase({
       prompt: 'inspect',
@@ -283,7 +311,25 @@ function testRolloutTimeline() {
     message_type: 'FINAL_ANSWER',
     status: null,
     task_name: '/root/evidence',
+    payload: 'done',
   });
+  assert.deepEqual(collectFinalAgentResults(timeline), [{
+    source: 'agent_message',
+    task_name: '/root/evidence',
+    text: 'done',
+  }]);
+  assert.deepEqual(collectFinalAgentResults([
+    ...timeline,
+    lifecycleEvent('wait_agent', {}, {
+      status: {
+        '/root/evidence': { completed: 'done' },
+      },
+    }),
+  ]), [{
+    source: 'agent_message',
+    task_name: '/root/evidence',
+    text: 'done',
+  }]);
 }
 
 function testCodeModeRolloutTimeline() {
@@ -320,6 +366,52 @@ function testCodeModeRolloutTimeline() {
   assert.deepEqual(timeline[2].arguments, {
     cmd: 'rg timeout docs/vendor/',
   });
+}
+
+function testLeafOutputAssertions() {
+  const contract = {
+    status: 'completed',
+    kinds: ['direct', 'inference'],
+    includes_all: ['45s', 'docs/api.md:2', 'docs/migration.md:2'],
+    patterns: ['docs/api\\.md:2', 'docs/migration\\.md:2'],
+    gaps: 'absent',
+  };
+  const output = [
+    'Status: completed',
+    '',
+    '## Findings',
+    '- [direct] Timeout is 45s — docs/api.md:2',
+    '- [inference] Migration matches v2 — 依据 docs/api.md:2; docs/migration.md:2',
+  ].join('\n');
+  assert.equal(
+    evaluateLeafOutput([{ source: 'agent_message', task_name: 'evidence', text: output }], contract)
+      .passed,
+    true,
+  );
+  assert.equal(
+    evaluateLeafOutput(
+      [{ source: 'agent_message', task_name: 'evidence', text: `${output}\n\n## Gaps\n- 无` }],
+      contract,
+    ).passed,
+    false,
+  );
+  assert.equal(
+    evaluateLeafOutput(
+      [{
+        source: 'agent_message',
+        task_name: 'evidence',
+        text: 'Status: blocked — 登录凭据不可用\n\n## Findings',
+      }],
+      {
+        status: 'blocked',
+        kinds: [],
+        includes_all: ['登录凭据不可用'],
+        patterns: ['^Status: blocked — .+'],
+        gaps: 'absent',
+      },
+    ).passed,
+    true,
+  );
 }
 
 function assertLifecycleFailure(timeline, assertionName) {
@@ -364,6 +456,11 @@ function testLifecycleAssertions() {
     evaluateParentScopeIsolation(v1CompletedWait, ['docs/']).passed,
     true,
   );
+  assert.deepEqual(collectFinalAgentResults(v1CompletedWait), [{
+    source: 'wait_agent',
+    task_name: 'agent-id',
+    text: 'Status: completed',
+  }]);
 
   const earlyProbe = [
     spawnEvent(),
@@ -468,12 +565,50 @@ async function testWorkspaceSnapshots() {
   }
 }
 
+async function testRoleContractDigest() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-role-contract-'));
+  const agentsRoot = path.join(root, '.codex', 'agents');
+  try {
+    await mkdir(agentsRoot, { recursive: true });
+    for (const name of [
+      'codex-explore-custom',
+      'codex-explore-deep',
+      'codex-explore-quick',
+      'codex-explore-standard',
+    ]) {
+      await writeFile(
+        path.join(agentsRoot, `${name}.toml`),
+        `name = ${JSON.stringify(name)}\ndeveloper_instructions = "Inspect evidence."\n`,
+        'utf8',
+      );
+    }
+    const initial = await inspectExploreRoleContract(root);
+    assert.match(initial.digest, /^sha256:[a-f0-9]{64}$/u);
+    assert.deepEqual(initial.roles.map((role) => role.name), [
+      'codex-explore-custom',
+      'codex-explore-deep',
+      'codex-explore-quick',
+      'codex-explore-standard',
+    ]);
+    await writeFile(
+      path.join(agentsRoot, 'codex-explore-standard.toml'),
+      'name = "codex-explore-standard"\ndeveloper_instructions = "Changed."\n',
+      'utf8',
+    );
+    assert.notEqual((await inspectExploreRoleContract(root)).digest, initial.digest);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   testCorpusAndAssertions();
   testRolloutTimeline();
   testCodeModeRolloutTimeline();
+  testLeafOutputAssertions();
   testLifecycleAssertions();
   await testWorkspaceSnapshots();
+  await testRoleContractDigest();
   console.log('workflow eval tests passed');
 }
 

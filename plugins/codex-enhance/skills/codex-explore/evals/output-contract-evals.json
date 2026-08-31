@@ -1,0 +1,365 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "custom-process",
+    "unitUnderTest": "codex-explore",
+    "defaultGrader": "provider",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "critical",
+      "rationale": "叶子结果缺少状态、证据定位、推断依据或冲突双方时，父代理无法可靠整合；接受旧包装或空 gap 会保留本次要删除的固定输出成本。"
+    }
+  },
+  "cases": [
+    {
+      "id": "shared_source_direct",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "prompt": "$codex-explore quick：在 docs/ 的全部候选材料中定位同时规定 retry limit 和 backoff 的当前文档；文件名未知。委派后等待完成，再给出两个值、相对路径和各自行号；不要修改文件。最终答复末尾逐行输出：`FACT retry_limit=<值>`、`FACT backoff_seconds=<值>`。",
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
+      },
+      "expected": {
+        "criteria": {
+          "spawn_count": 1,
+          "agent_type": "codex-explore-quick",
+          "final_message_includes_all": [
+            "docs/output/shared-policy.md",
+            "FACT retry_limit=3",
+            "FACT backoff_seconds=5"
+          ],
+          "final_message_patterns": [
+            "docs/output/shared-policy\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
+            "docs/output/shared-policy\\.md[^\\n]{0,120}(?::3|第\\s*3\\s*行|line\\s*3)"
+          ],
+          "delegated_source_prefixes": [
+            "docs/"
+          ],
+          "workspace_unchanged": true,
+          "lifecycle": {
+            "minimum_initial_wait_timeout_ms": 600000,
+            "allow_liveness_probe": false,
+            "max_recoveries": 0
+          },
+          "leaf_output": {
+            "status": "completed",
+            "kinds": [
+              "direct"
+            ],
+            "includes_all": [
+              "3",
+              "5",
+              "docs/output/shared-policy.md"
+            ],
+            "patterns": [
+              "docs/output/shared-policy\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
+              "docs/output/shared-policy\\.md[^\\n]{0,120}(?::3|第\\s*3\\s*行|line\\s*3)"
+            ],
+            "gaps": "absent"
+          }
+        }
+      }
+    },
+    {
+      "id": "multiple_sources_one_finding",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "$codex-explore standard：在 docs/ 的全部候选材料中找齐所有 authoritative region shards；文件名和数量未知。委派后等待完成，用一个结论报告完整 supported region 集合，并把该结论同时绑定到所有必要来源；不要修改文件。最终答复末尾输出：`FACT supported_regions=ap-south-1,eu-west-1`。",
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
+      },
+      "expected": {
+        "criteria": {
+          "spawn_count": 1,
+          "agent_type": "codex-explore-standard",
+          "final_message_includes_all": [
+            "docs/output/regions-a.md",
+            "docs/output/regions-b.md",
+            "FACT supported_regions=ap-south-1,eu-west-1"
+          ],
+          "final_message_patterns": [
+            "docs/output/regions-a\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
+            "docs/output/regions-b\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+          ],
+          "delegated_source_prefixes": [
+            "docs/"
+          ],
+          "workspace_unchanged": true,
+          "lifecycle": {
+            "minimum_initial_wait_timeout_ms": 600000,
+            "allow_liveness_probe": false,
+            "max_recoveries": 0
+          },
+          "leaf_output": {
+            "status": "completed",
+            "kinds": [
+              "direct"
+            ],
+            "includes_all": [
+              "ap-south-1",
+              "eu-west-1",
+              "docs/output/regions-a.md",
+              "docs/output/regions-b.md"
+            ],
+            "patterns": [
+              "^- \\[direct\\](?=[^\\n]*docs/output/regions-a\\.md)(?=[^\\n]*docs/output/regions-b\\.md)[^\\n]+$"
+            ],
+            "gaps": "absent"
+          }
+        }
+      },
+      "audit": {
+        "rationale": "该 case 验证一个结论需要多个来源时，紧凑单行仍保留完整证据集合。",
+        "minimalCounterexample": "若两个来源各自支持独立结论，则应拆成两个 direct finding，不要求同一行绑定。"
+      }
+    },
+    {
+      "id": "inference_with_direct_basis",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-explore standard：在 docs/ 的全部候选材料中查明 vendor API migration timeout 与哪个 API 版本一致；相关文件未知。委派后等待完成，区分直接事实与版本匹配推断，并给出推断所依赖的全部文件和行号；不要修改文件。最终答复末尾输出：`FACT migration_matches=v2`。",
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
+      },
+      "expected": {
+        "criteria": {
+          "spawn_count": 1,
+          "agent_type": "codex-explore-standard",
+          "final_message_includes_all": [
+            "docs/vendor/api-v2.md",
+            "docs/vendor/migration.md",
+            "FACT migration_matches=v2"
+          ],
+          "final_message_patterns": [
+            "docs/vendor/api-v2\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
+            "docs/vendor/migration\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+          ],
+          "delegated_source_prefixes": [
+            "docs/"
+          ],
+          "workspace_unchanged": true,
+          "lifecycle": {
+            "minimum_initial_wait_timeout_ms": 600000,
+            "allow_liveness_probe": false,
+            "max_recoveries": 0
+          },
+          "leaf_output": {
+            "status": "completed",
+            "kinds": [
+              "direct",
+              "inference"
+            ],
+            "includes_all": [
+              "45",
+              "v2",
+              "docs/vendor/api-v2.md",
+              "docs/vendor/migration.md"
+            ],
+            "patterns": [
+              "^- \\[inference\\](?=[^\\n]*docs/vendor/api-v2\\.md)(?=[^\\n]*docs/vendor/migration\\.md)[^\\n]+$"
+            ],
+            "gaps": "absent"
+          }
+        }
+      },
+      "audit": {
+        "rationale": "旧模板删除 support 包装后，inference 仍必须显式绑定直接依据。",
+        "minimalCounterexample": "若来源直接写明 migration matches v2，则该结论应标记 direct。"
+      }
+    },
+    {
+      "id": "conflicting_sources",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-explore standard：在 docs/ 的全部候选材料中核对 Orchid worker timeout default；文件名未知且材料可能冲突。委派后等待完成，不解决未获支持的冲突，给出双方值、来源和行号；不要修改文件。最终答复末尾输出：`FACT timeout_conflict=20,30`。",
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
+      },
+      "expected": {
+        "criteria": {
+          "spawn_count": 1,
+          "agent_type": "codex-explore-standard",
+          "final_message_includes_all": [
+            "docs/output/default-a.md",
+            "docs/output/default-b.md",
+            "FACT timeout_conflict=20,30"
+          ],
+          "final_message_patterns": [
+            "docs/output/default-a\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
+            "docs/output/default-b\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+          ],
+          "delegated_source_prefixes": [
+            "docs/"
+          ],
+          "workspace_unchanged": true,
+          "lifecycle": {
+            "minimum_initial_wait_timeout_ms": 600000,
+            "allow_liveness_probe": false,
+            "max_recoveries": 0
+          },
+          "leaf_output": {
+            "status": "completed",
+            "kinds": [
+              "conflict"
+            ],
+            "includes_all": [
+              "20",
+              "30",
+              "docs/output/default-a.md",
+              "docs/output/default-b.md"
+            ],
+            "patterns": [
+              "^- \\[conflict\\](?=[^\\n]*docs/output/default-a\\.md)(?=[^\\n]*docs/output/default-b\\.md)(?=[^\\n]*20)(?=[^\\n]*30)[^\\n]+$"
+            ],
+            "gaps": "absent"
+          }
+        }
+      },
+      "audit": {
+        "rationale": "旧 support 字段删除后，conflict 仍必须在同一结论中保留双方说法和定位。",
+        "minimalCounterexample": "若权威优先级明确且可直接裁决，则应报告 direct 结论并说明被覆盖来源。"
+      }
+    },
+    {
+      "id": "blocked_authenticated_source",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "$codex-explore quick：在 docs/ 的全部候选材料中定位 incident archive 的完整证据入口。若入口要求当前会话没有的认证，不得登录、提权或换用未指定来源。委派后等待完成，报告可核验的本地入口和阻塞原因；不要修改文件。最终答复末尾逐行输出：`FACT archive_source=https://private.example.invalid/admin/runbook`、`FACT archive_status=blocked`。",
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
+      },
+      "expected": {
+        "criteria": {
+          "spawn_count": 1,
+          "agent_type": "codex-explore-quick",
+          "final_message_includes_all": [
+            "docs/output/blocked-index.md",
+            "FACT archive_source=https://private.example.invalid/admin/runbook",
+            "FACT archive_status=blocked"
+          ],
+          "final_message_patterns": [
+            "docs/output/blocked-index\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+          ],
+          "delegated_source_prefixes": [
+            "docs/"
+          ],
+          "workspace_unchanged": true,
+          "lifecycle": {
+            "minimum_initial_wait_timeout_ms": 600000,
+            "allow_liveness_probe": false,
+            "max_recoveries": 0
+          },
+          "leaf_output": {
+            "status": "blocked",
+            "kinds": [
+              "direct"
+            ],
+            "includes_all": [
+              "https://private.example.invalid/admin/runbook",
+              "docs/output/blocked-index.md"
+            ],
+            "patterns": [
+              "^Status: blocked — .+",
+              "(?:authentication|认证|登录)",
+              "docs/output/blocked-index\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+            ],
+            "gaps": "present"
+          }
+        }
+      },
+      "audit": {
+        "rationale": "blocked 必须表示证据入口已知但受当前认证边界阻止，不能与材料本身缺失混用。",
+        "minimalCounterexample": "若入口可读但没有记录所需事实，则状态应为 insufficient。"
+      }
+    },
+    {
+      "id": "insufficient_partial_record",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "prompt": "$codex-explore quick：在 docs/ 的全部候选材料中查明 Cobalt partial migration record 的 timeout 数值、单位和对齐 API 版本，不把其它系统的 migration 资料当作 Cobalt 证据。委派后等待完成；不得猜测缺失字段，给出已知值、来源行号和缺失证据；不要修改文件。最终答复末尾逐行输出：`FACT migration_timeout_value=45`、`FACT migration_timeout_unit=unknown`、`FACT migration_api_version=unknown`。",
+        "codex_config": {
+          "features.multi_agent_v2.enabled": true,
+          "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+          "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
+        }
+      },
+      "expected": {
+        "criteria": {
+          "spawn_count": 1,
+          "agent_type": "codex-explore-quick",
+          "final_message_includes_all": [
+            "docs/output/partial-migration.md",
+            "FACT migration_timeout_value=45",
+            "FACT migration_timeout_unit=unknown",
+            "FACT migration_api_version=unknown"
+          ],
+          "final_message_patterns": [
+            "docs/output/partial-migration\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+          ],
+          "delegated_source_prefixes": [
+            "docs/"
+          ],
+          "workspace_unchanged": true,
+          "lifecycle": {
+            "minimum_initial_wait_timeout_ms": 600000,
+            "allow_liveness_probe": false,
+            "max_recoveries": 0
+          },
+          "leaf_output": {
+            "status": "insufficient",
+            "kinds": [
+              "direct"
+            ],
+            "includes_all": [
+              "45",
+              "docs/output/partial-migration.md"
+            ],
+            "patterns": [
+              "^Status: insufficient — .+",
+              "docs/output/partial-migration\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+            ],
+            "gaps": "present"
+          }
+        }
+      },
+      "audit": {
+        "rationale": "insufficient 必须保留可直接确认的局部事实，同时明确材料没有单位和版本映射。",
+        "minimalCounterexample": "若来源存在但当前认证边界禁止读取，则状态应为 blocked。"
+      }
+    }
+  ]
+}
