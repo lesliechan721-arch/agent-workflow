@@ -190,6 +190,7 @@ function conversationEvidence(
     scriptedReplyMismatches: [],
     durationMs: 1,
     questions: [],
+    fallbackUserReplies: [],
     finalMessages: ['model answer'],
     usage: { inputTokens: 10, outputTokens: 4 },
     workspaceChanges: [],
@@ -385,13 +386,118 @@ describe('built-in Eval provider registry', () => {
     expect(evaluationInput.timeoutMs).toBeLessThanOrEqual(300_000)
   })
 
-  it('gives the grader redacted user-visible commentary and normalized input questions only', async () => {
+  it('strictly parses only the production grader final answer and redacts it', async () => {
+    const paths = await runRoot()
+    const secret = 'production-grader-secret'
+    const finalOutput = JSON.stringify({
+      passed: true,
+      score: 1,
+      details: { note: secret },
+    })
+    let graderPrompt = ''
+    const runConversationProviderCase = vi.fn(async (
+      options: Parameters<NonNullable<
+        BuiltinEvalProviderDependencies['runConversationProviderCase']
+      >>[0],
+    ) => {
+      if (options.skillName !== '__eval_grader__') {
+        return conversationEvidence({
+          eventTrace: [{
+            method: 'item/completed',
+            params: {
+              item: { type: 'agentMessage', phase: 'commentary', text: 'candidate commentary' },
+            },
+          }],
+          finalMessages: ['candidate final'],
+        })
+      }
+      graderPrompt = options.evalCase.prompt
+      return conversationEvidence({
+        eventTrace: [{
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', phase: 'commentary', text: 'grading commentary' },
+          },
+        }, {
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', phase: 'final_answer', text: finalOutput },
+          },
+        }],
+        finalMessages: [finalOutput],
+      })
+    })
+
+    const result = await runBuiltinEvalProvider(
+      'codex-conversation',
+      input(paths, conversationCaseValue()),
+      {
+        sourceEnv: { OPENAI_API_KEY: secret },
+        runConversationProviderCase,
+      },
+    )
+
+    expect(graderPrompt).toContain('candidate commentary')
+    expect(graderPrompt).toContain('candidate final')
+    expect(result.grade).toEqual({
+      passed: true,
+      score: 1,
+      details: { note: '[redacted]' },
+    })
+    expect(JSON.stringify(result)).not.toContain(secret)
+    await expect(readFile(path.join(paths.outputDir, 'grader-output.txt'), 'utf8'))
+      .resolves.toBe('{"passed":true,"score":1,"details":{"note":"[redacted]"}}')
+  })
+
+  it.each([
+    { name: 'zero', finals: [] },
+    { name: 'multiple', finals: ['{"passed":true,"score":1}', '{"passed":false,"score":0}'] },
+  ])('fails closed when the production grader emits $name final answers', async ({ finals }) => {
+    const paths = await runRoot()
+    const runConversationProviderCase = vi.fn(async (
+      options: Parameters<NonNullable<
+        BuiltinEvalProviderDependencies['runConversationProviderCase']
+      >>[0],
+    ) => options.skillName !== '__eval_grader__'
+      ? conversationEvidence()
+      : conversationEvidence({
+          eventTrace: [{
+            method: 'item/completed',
+            params: {
+              item: { type: 'agentMessage', phase: 'commentary', text: 'grading commentary' },
+            },
+          }, ...finals.map((text) => ({
+            method: 'item/completed',
+            params: { item: { type: 'agentMessage', phase: 'final_answer', text } },
+          }))],
+          finalMessages: finals,
+        }))
+
+    await expect(runBuiltinEvalProvider(
+      'codex-conversation',
+      input(paths, conversationCaseValue()),
+      {
+        sourceEnv: { OPENAI_API_KEY: 'fake-key' },
+        runConversationProviderCase,
+      },
+    )).rejects.toMatchObject({
+      name: 'EvalProviderExecutionError',
+      providerId: 'codex-conversation',
+      stage: 'grader',
+      message: expect.stringContaining(
+        `grader must emit exactly one final answer; received ${finals.length}.`,
+      ),
+    } satisfies Partial<EvalProviderExecutionError>)
+  })
+
+  it('gives the grader redacted user-visible turns in their real order only', async () => {
     const paths = await runRoot()
     const secret = 'secret-token'
     const internalReasoning = `internal reasoning with ${secret}`
     const toolDetails = `node internal-tool.js --token ${secret}`
     const before = `BEFORE the question. ${secret}`
     const after = 'AFTER the question.'
+    const interimFinal = 'INTERIM FINAL.'
     const final = 'FINAL answer.'
     const evidence = conversationEvidence({
       eventTrace: [
@@ -423,6 +529,12 @@ describe('built-in Eval provider registry', () => {
         {
           method: 'item/completed',
           params: {
+            item: { type: 'agentMessage', phase: 'final_answer', text: interimFinal },
+          },
+        },
+        {
+          method: 'item/completed',
+          params: {
             item: { type: 'agentMessage', phase: 'final_answer', text: final },
           },
         },
@@ -438,10 +550,23 @@ describe('built-in Eval provider registry', () => {
             { label: 'Project', description: 'Change this project only.' },
             { label: 'User', description: 'Change the user configuration.' },
           ],
+        }, {
+          id: 'mode',
+          header: 'Mode',
+          question: 'Which mode should I use?',
+          options: null,
         }],
-        answers: { scope: ['Project'] },
+        answers: {
+          scope: ['Use project scope.'],
+          mode: [`Careful ${secret}`],
+        },
       }],
-      finalMessages: [final],
+      fallbackUserReplies: [{
+        step: 1,
+        eventTraceIndex: 6,
+        answers: ['Continue after the first final answer.'],
+      }],
+      finalMessages: [interimFinal, final],
     })
     let prompt = ''
     await runBuiltinEvalProvider(
@@ -467,17 +592,31 @@ describe('built-in Eval provider registry', () => {
 
     const beforeIndex = prompt.indexOf('BEFORE the question.')
     const questionIndex = prompt.indexOf('Header: Scope')
+    const firstAnswerIndex = prompt.indexOf('- Use project scope.')
+    const secondQuestionIndex = prompt.indexOf('Header: Mode')
+    const secondAnswerIndex = prompt.indexOf('- Careful [redacted]')
     const afterIndex = prompt.indexOf(after)
+    const interimFinalIndex = prompt.indexOf(interimFinal)
     const finalIndex = prompt.indexOf(final)
+    const fallbackReplyIndex = prompt.indexOf('Continue after the first final answer.')
     expect(beforeIndex).toBeGreaterThanOrEqual(0)
     expect(questionIndex).toBeGreaterThan(beforeIndex)
-    expect(afterIndex).toBeGreaterThan(questionIndex)
-    expect(finalIndex).toBeGreaterThan(afterIndex)
+    expect(firstAnswerIndex).toBeGreaterThan(questionIndex)
+    expect(secondQuestionIndex).toBeGreaterThan(firstAnswerIndex)
+    expect(secondAnswerIndex).toBeGreaterThan(secondQuestionIndex)
+    expect(afterIndex).toBeGreaterThan(secondAnswerIndex)
+    expect(interimFinalIndex).toBeGreaterThan(afterIndex)
+    expect(fallbackReplyIndex).toBeGreaterThan(interimFinalIndex)
+    expect(finalIndex).toBeGreaterThan(fallbackReplyIndex)
     expect(prompt).toContain('request_user_input step 1:')
     expect(prompt).toContain('Question: Which scope should I use?')
     expect(prompt).toContain('- Project: Change this project only.')
     expect(prompt).toContain('- User: Change the user configuration.')
+    expect(prompt).toContain('Question: Which mode should I use?')
+    expect(prompt).toContain('user reply step 2:')
+    expect(prompt.match(/INTERIM FINAL\./gu)).toHaveLength(1)
     expect(prompt.match(/FINAL answer\./gu)).toHaveLength(1)
+    expect(prompt.match(/Continue after the first final answer\./gu)).toHaveLength(1)
     expect(prompt).not.toContain(internalReasoning)
     expect(prompt).not.toContain(toolDetails)
     expect(prompt).not.toContain(secret)

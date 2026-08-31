@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmod,
   lstat,
   mkdir,
   readFile,
+  realpath,
   rename,
   rm,
   rmdir,
@@ -28,8 +29,10 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const prototypeSchemaPath = path.resolve(scriptDir, '..', 'assets', 'prototype.schema.json');
 const feedbackSchemaPath = path.resolve(scriptDir, '..', 'assets', 'feedback.schema.json');
 const serverScript = path.join(scriptDir, 'review-server.mjs');
+const sessionBindings = new WeakMap();
 
 class UsageError extends Error {}
+class SessionBusyError extends Error {}
 
 function globalHelp() {
   return `Usage:
@@ -91,6 +94,22 @@ function receipt(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (isObject(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function feedbackDigest(feedback) {
+  return `sha256:${createHash('sha256').update(stableJson(feedback)).digest('hex')}`;
+}
+
 function sessionBase() {
   return path.join(os.tmpdir(), 'agent-workflow', 'prototype-review');
 }
@@ -133,14 +152,115 @@ async function createSessionDirectory() {
       } catch {
         // Directory permissions are best effort on platforms that do not expose POSIX modes.
       }
-      return { sessionDir, sessionId };
+      const location = localSessionLocation(path.join(sessionDir, 'session.json'));
+      return { sessionDir, sessionId, location: await physicalSessionLocation(location) };
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }
   }
 }
 
-function assertLocalDescriptor(value, sessionPath) {
+function sameSessionDirectory(left, right) {
+  return left.physicalSessionDir === right.physicalSessionDir
+    && left.sessionDirIdentity.dev === right.sessionDirIdentity.dev
+    && left.sessionDirIdentity.ino === right.sessionDirIdentity.ino;
+}
+
+async function bindOwnedSessionFile(location, filePath) {
+  const current = await physicalSessionLocation(location);
+  if (!sameSessionDirectory(current, location)) {
+    throw new Error('Prototype Review session directory physical identity changed during start');
+  }
+  const info = await lstat(filePath);
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new Error('Prototype Review start file must be a regular non-symlink file');
+  }
+  if (await realpath(filePath) !== path.join(location.physicalSessionDir, path.basename(filePath))) {
+    throw new Error('Prototype Review start file is outside its bound session directory');
+  }
+  return { filePath, dev: info.dev, ino: info.ino };
+}
+
+async function cleanupFailedStart(location, ownedFiles) {
+  let current;
+  try {
+    current = await physicalSessionLocation(location);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  if (!sameSessionDirectory(current, location)) return;
+  for (const owned of ownedFiles.values()) {
+    let info;
+    try {
+      info = await lstat(owned.filePath);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (
+      !info.isFile()
+      || info.isSymbolicLink()
+      || info.dev !== owned.dev
+      || info.ino !== owned.ino
+      || await realpath(owned.filePath) !== path.join(location.physicalSessionDir, path.basename(owned.filePath))
+    ) continue;
+    await rm(owned.filePath);
+  }
+  current = await physicalSessionLocation(location);
+  if (!sameSessionDirectory(current, location)) return;
+  try {
+    await rmdir(location.sessionDir);
+  } catch (error) {
+    if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error;
+  }
+}
+
+function localSessionLocation(sessionPath) {
+  const resolved = path.resolve(sessionPath);
+  const base = path.resolve(sessionBase());
+  const sessionDir = path.dirname(resolved);
+  const sessionId = path.basename(sessionDir);
+  if (
+    path.basename(resolved) !== 'session.json'
+    || path.dirname(sessionDir) !== base
+    || !/^[a-f0-9]{32}$/.test(sessionId)
+  ) {
+    throw new Error('Session descriptor is outside the Prototype Review temporary root');
+  }
+  return { base, resolved, sessionDir, sessionId };
+}
+
+async function physicalSessionLocation(location) {
+  const [baseInfo, sessionDirInfo] = await Promise.all([
+    lstat(location.base),
+    lstat(location.sessionDir),
+  ]);
+  if (!baseInfo.isDirectory() || baseInfo.isSymbolicLink()) {
+    throw new Error('Prototype Review temporary root must be a regular non-symlink directory');
+  }
+  if (!sessionDirInfo.isDirectory() || sessionDirInfo.isSymbolicLink()) {
+    throw new Error('Session directory must be a regular non-symlink directory');
+  }
+  const [physicalBase, physicalSessionDir] = await Promise.all([
+    realpath(location.base),
+    realpath(location.sessionDir),
+  ]);
+  if (
+    path.dirname(physicalSessionDir) !== physicalBase
+    || path.basename(physicalSessionDir) !== location.sessionId
+  ) {
+    throw new Error('Session directory is outside the physical Prototype Review temporary root');
+  }
+  return {
+    ...location,
+    physicalBase,
+    physicalSessionDir,
+    sessionDirIdentity: { dev: sessionDirInfo.dev, ino: sessionDirInfo.ino },
+  };
+}
+
+function assertLocalDescriptor(value, location) {
   if (
     !value
     || typeof value !== 'object'
@@ -148,6 +268,7 @@ function assertLocalDescriptor(value, sessionPath) {
     || value.schemaVersion !== 1
     || value.reviewShellVersion !== reviewShellVersion
     || typeof value.sessionId !== 'string'
+    || !/^[a-f0-9]{32}$/.test(value.sessionId)
     || typeof value.token !== 'string'
     || typeof value.pid !== 'number'
     || typeof value.url !== 'string'
@@ -158,8 +279,7 @@ function assertLocalDescriptor(value, sessionPath) {
   ) {
     throw new Error('Invalid Prototype Review session descriptor');
   }
-  const expectedPath = path.join(sessionBase(), value.sessionId, 'session.json');
-  if (path.resolve(sessionPath) !== expectedPath) {
+  if (value.sessionId !== location.sessionId) {
     throw new Error('Session descriptor is outside the Prototype Review temporary root');
   }
   const url = new URL(value.url);
@@ -173,33 +293,88 @@ function assertLocalDescriptor(value, sessionPath) {
 }
 
 async function readSession(sessionPath, { allowMissing = false } = {}) {
-  const resolved = path.resolve(sessionPath);
+  const location = localSessionLocation(sessionPath);
   let info;
   try {
-    info = await lstat(resolved);
+    info = await lstat(location.resolved);
   } catch (error) {
     if (allowMissing && error.code === 'ENOENT') return null;
     throw error;
   }
   if (!info.isFile() || info.isSymbolicLink()) throw new Error('Session descriptor must be a regular non-symlink file');
-  return assertLocalDescriptor(JSON.parse(await readFile(resolved, 'utf8')), resolved);
+  const physical = await physicalSessionLocation(location);
+  if (await realpath(location.resolved) !== path.join(physical.physicalSessionDir, 'session.json')) {
+    throw new Error('Session descriptor is outside the physical Prototype Review session directory');
+  }
+  const descriptor = assertLocalDescriptor(JSON.parse(await readFile(location.resolved, 'utf8')), location);
+  sessionBindings.set(descriptor, {
+    physicalSessionDir: physical.physicalSessionDir,
+    sessionDirIdentity: physical.sessionDirIdentity,
+    sessionPathIdentity: { dev: info.dev, ino: info.ino },
+  });
+  return descriptor;
 }
 
-async function cleanupSession(sessionPath) {
-  const resolved = path.resolve(sessionPath);
-  await rm(resolved, { force: true });
+async function cleanupSession(sessionPath, expectedDescriptor) {
+  const location = localSessionLocation(sessionPath);
+  const binding = sessionBindings.get(expectedDescriptor);
+  if (!binding) throw new Error('Prototype Review session cleanup has no bound owner identity');
+  let physical;
   try {
-    await rmdir(path.dirname(resolved));
+    physical = await physicalSessionLocation(location);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  if (
+    physical.physicalSessionDir !== binding.physicalSessionDir
+    || physical.sessionDirIdentity.dev !== binding.sessionDirIdentity.dev
+    || physical.sessionDirIdentity.ino !== binding.sessionDirIdentity.ino
+  ) {
+    throw new Error('Prototype Review session directory physical identity changed before cleanup');
+  }
+  let info;
+  try {
+    info = await lstat(location.resolved);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (info && (!info.isFile() || info.isSymbolicLink())) {
+    throw new Error('Session descriptor must be a regular non-symlink file');
+  }
+  if (info) {
+    try {
+      if (info.dev !== binding.sessionPathIdentity.dev || info.ino !== binding.sessionPathIdentity.ino) {
+        throw new Error('Prototype Review session descriptor physical identity changed before cleanup');
+      }
+      if (await realpath(location.resolved) !== path.join(await realpath(location.sessionDir), 'session.json')) {
+        throw new Error('Session descriptor is outside the physical Prototype Review session directory');
+      }
+      const current = assertLocalDescriptor(JSON.parse(await readFile(location.resolved, 'utf8')), location);
+      if (stableJson(current) !== stableJson(expectedDescriptor)) {
+        throw new Error('Prototype Review session descriptor owner identity changed before cleanup');
+      }
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
+    }
+  }
+  await rm(location.resolved, { force: true });
+  try {
+    await rmdir(location.sessionDir);
   } catch (error) {
     if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error;
   }
 }
 
-async function waitForStartup(child, sessionPath, errorPath) {
+async function waitForStartup(child, sessionPath, errorPath, location, ownedFiles) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    if (await pathExists(sessionPath)) return readSession(sessionPath);
+    if (await pathExists(sessionPath)) {
+      return readSession(sessionPath);
+    }
     if (await pathExists(errorPath)) {
+      ownedFiles.set(errorPath, await bindOwnedSessionFile(location, errorPath));
       const startupError = JSON.parse(await readFile(errorPath, 'utf8'));
       throw new Error(startupError.error || 'Prototype Review server failed to start');
     }
@@ -212,11 +387,12 @@ async function waitForStartup(child, sessionPath, errorPath) {
 async function startCommand(options) {
   const prototypeSchema = await readJsonSchema(prototypeSchemaPath);
   const prototype = await loadAndValidatePrototype(path.resolve(options.prototype), prototypeSchema);
-  const { sessionDir, sessionId } = await createSessionDirectory();
+  const { sessionDir, sessionId, location } = await createSessionDirectory();
   const sessionPath = path.join(sessionDir, 'session.json');
   const launchPath = path.join(sessionDir, 'launch.json');
   const startupErrorPath = path.join(sessionDir, 'startup-error.json');
   const token = randomBytes(32).toString('base64url');
+  const ownedFiles = new Map();
   let child;
   try {
     await writeAtomicJson(launchPath, {
@@ -225,6 +401,22 @@ async function startCommand(options) {
       token,
       prototypePath: prototype.prototypePath,
     });
+    ownedFiles.set(launchPath, await bindOwnedSessionFile(location, launchPath));
+    const startDelayMs = Number(process.env.AW_PROTOTYPE_REVIEW_TEST_AFTER_LAUNCH_DELAY_MS || '0');
+    if (startDelayMs > 0) {
+      const readyPath = path.join(sessionDir, 'start-ready');
+      const temporaryReadyPath = `${readyPath}-${process.pid}`;
+      await writeFile(temporaryReadyPath, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      const readyFile = await bindOwnedSessionFile(location, temporaryReadyPath);
+      ownedFiles.set(temporaryReadyPath, readyFile);
+      await rename(temporaryReadyPath, readyPath);
+      ownedFiles.delete(temporaryReadyPath);
+      ownedFiles.set(readyPath, { ...readyFile, filePath: readyPath });
+      await new Promise((resolve) => setTimeout(resolve, startDelayMs));
+    }
+    if (!sameSessionDirectory(await physicalSessionLocation(location), location)) {
+      throw new Error('Prototype Review session directory physical identity changed during start');
+    }
     child = spawn(process.execPath, [serverScript, '--launch', launchPath], {
       detached: true,
       stdio: 'ignore',
@@ -233,10 +425,11 @@ async function startCommand(options) {
       child.once('spawn', resolve);
       child.once('error', reject);
     });
-    const descriptor = await waitForStartup(child, sessionPath, startupErrorPath);
+    const descriptor = await waitForStartup(child, sessionPath, startupErrorPath, location, ownedFiles);
     if (descriptor.token !== token || descriptor.sessionId !== sessionId) {
       throw new Error('Prototype Review server returned a mismatched session descriptor');
     }
+    ownedFiles.set(sessionPath, await bindOwnedSessionFile(location, sessionPath));
     child.unref();
     return {
       ok: true,
@@ -249,7 +442,7 @@ async function startCommand(options) {
     };
   } catch (error) {
     if (child && child.exitCode === null) child.kill('SIGTERM');
-    await rm(sessionDir, { recursive: true, force: true });
+    await cleanupFailedStart(location, ownedFiles);
     throw error;
   }
 }
@@ -276,6 +469,7 @@ async function authenticatedRequest(descriptor, pathname, options = {}) {
     throw new Error(`Prototype Review server returned HTTP ${response.status} without a JSON receipt`);
   }
   if (!response.ok || body.ok === false) {
+    if (body.status === 'busy') throw new SessionBusyError(body.error || 'Prototype Review session is busy');
     throw new Error(body.error || `Prototype Review server returned HTTP ${response.status}`);
   }
   return body;
@@ -285,13 +479,18 @@ async function stopReachableSession(descriptor) {
   return authenticatedRequest(descriptor, '/api/stop', { method: 'POST' });
 }
 
-async function readSubmittedFeedback(descriptor) {
+async function readSubmittedFeedback(descriptor, expectedDigest) {
   const [prototypeSchema, feedbackSchema] = await Promise.all([
     readJsonSchema(prototypeSchemaPath),
     readJsonSchema(feedbackSchemaPath),
   ]);
   const prototype = await loadAndValidatePrototype(descriptor.prototypePath, prototypeSchema);
-  if (prototype.config.id !== descriptor.prototypeId || prototype.config.revision !== descriptor.revision) {
+  if (
+    prototype.prototypeRoot !== descriptor.prototypeRoot
+    || prototype.prototypePath !== descriptor.prototypePath
+    || prototype.config.id !== descriptor.prototypeId
+    || prototype.config.revision !== descriptor.revision
+  ) {
     throw new Error('Session Prototype identity no longer matches prototype.json');
   }
   const feedbackPath = path.join(descriptor.prototypeRoot, 'feedback.json');
@@ -303,7 +502,25 @@ async function readSubmittedFeedback(descriptor) {
     'feedback',
   );
   validateFeedbackAgainstPrototype(feedback, prototype.config, 'feedback');
-  return { feedback, feedbackPath };
+  const digest = feedbackDigest(feedback);
+  if (digest !== expectedDigest) return null;
+  return { feedback, feedbackPath, feedbackDigest: digest };
+}
+
+async function supersededSession(descriptor, sessionPath) {
+  try {
+    await stopReachableSession(descriptor);
+  } catch {
+    // The server can close itself after it detects the conflicting feedback.
+  }
+  await cleanupSession(sessionPath, descriptor);
+  return {
+    ok: true,
+    status: 'superseded',
+    error: 'Feedback was superseded by another Prototype Review session',
+    prototypeId: descriptor.prototypeId,
+    revision: descriptor.revision,
+  };
 }
 
 async function waitCommand(options) {
@@ -316,7 +533,7 @@ async function waitCommand(options) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       await stopReachableSession(descriptor);
-      await cleanupSession(sessionPath);
+      await cleanupSession(sessionPath, descriptor);
       return {
         ok: true,
         status: 'timeout',
@@ -332,7 +549,7 @@ async function waitCommand(options) {
     );
     if (state.status === 'ready') continue;
     if (state.status === 'cancelled') {
-      await cleanupSession(sessionPath);
+      await cleanupSession(sessionPath, descriptor);
       return {
         ok: true,
         status: 'cancelled',
@@ -340,11 +557,14 @@ async function waitCommand(options) {
         revision: descriptor.revision,
       };
     }
+    if (state.status === 'superseded') return supersededSession(descriptor, sessionPath);
     if (state.status !== 'submitted') throw new Error(`Unknown Prototype Review wait status: ${state.status}`);
 
-    const { feedback, feedbackPath } = await readSubmittedFeedback(descriptor);
+    const submitted = await readSubmittedFeedback(descriptor, state.feedbackDigest);
+    if (!submitted) return supersededSession(descriptor, sessionPath);
+    const { feedback, feedbackPath } = submitted;
     await stopReachableSession(descriptor);
-    await cleanupSession(sessionPath);
+    await cleanupSession(sessionPath, descriptor);
     return {
       ok: true,
       status: 'submitted',
@@ -354,6 +574,7 @@ async function waitCommand(options) {
       selectedOptionCount: feedback.selectedOptions.length,
       annotationCount: feedback.annotations.length,
       feedback: feedbackPath,
+      feedbackDigest: submitted.feedbackDigest,
     };
   }
 }
@@ -364,6 +585,24 @@ async function statusCommand(options) {
   if (!descriptor) return { ok: true, status: 'not-found', session: sessionPath };
   try {
     const state = await authenticatedRequest(descriptor, '/api/status');
+    if (state.status === 'superseded') {
+      return {
+        ...await supersededSession(descriptor, sessionPath),
+        session: sessionPath,
+        url: descriptor.url,
+        reviewShellVersion,
+      };
+    }
+    if (state.status === 'submitted') {
+      if (!await readSubmittedFeedback(descriptor, state.feedbackDigest)) {
+        return {
+          ...await supersededSession(descriptor, sessionPath),
+          session: sessionPath,
+          url: descriptor.url,
+          reviewShellVersion,
+        };
+      }
+    }
     return {
       ok: true,
       status: state.status,
@@ -372,6 +611,7 @@ async function statusCommand(options) {
       prototypeId: descriptor.prototypeId,
       revision: descriptor.revision,
       reviewShellVersion,
+      ...(state.feedbackDigest ? { feedbackDigest: state.feedbackDigest } : {}),
     };
   } catch (error) {
     console.error(error.message);
@@ -392,7 +632,7 @@ async function stopCommand(options) {
   const descriptor = await readSession(sessionPath, { allowMissing: true });
   if (!descriptor) return { ok: true, status: 'not-found', session: sessionPath };
   await stopReachableSession(descriptor);
-  await cleanupSession(sessionPath);
+  await cleanupSession(sessionPath, descriptor);
   return {
     ok: true,
     status: 'stopped',
@@ -423,6 +663,11 @@ async function main() {
       console.error(options?.command ? commandHelp(options.command) : globalHelp());
       receipt({ ok: false, status: 'usage', error: error.message });
       return 2;
+    }
+    if (error instanceof SessionBusyError) {
+      console.error(error.message);
+      receipt({ ok: false, status: 'busy', error: error.message });
+      return 1;
     }
     console.error(error.stack || error.message);
     receipt({ ok: false, status: 'failed', error: error.message });

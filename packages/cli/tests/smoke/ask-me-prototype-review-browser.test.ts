@@ -9,18 +9,14 @@ import { chromium, type Browser, type BrowserContext, type Locator, type Page } 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import {
+  cleanupSmokeBuildSnapshot,
+  createSmokeBuildSnapshot,
+  type SmokeBuildSnapshot,
+} from '../support/smoke-build-snapshot.js';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
-const runtimeScript = path.join(
-  repoRoot,
-  'plugins',
-  'ask-me',
-  'skills',
-  'decision-prototype',
-  'scripts',
-  'prototype-review.mjs',
-);
 
 type PrototypeOption = {
   id: string;
@@ -67,6 +63,8 @@ type StartedSession = {
 const tempRoots: string[] = [];
 const activeSessions = new Set<string>();
 let browser: Browser;
+let buildSnapshot: SmokeBuildSnapshot | null = null;
+let runtimeScript: string;
 
 function parseReceipt(stdout: string): Record<string, unknown> {
   const lines = stdout.trim().split('\n');
@@ -193,6 +191,25 @@ async function expectSubmitted(page: Page): Promise<void> {
 }
 
 beforeAll(async () => {
+  buildSnapshot = await createSmokeBuildSnapshot(repoRoot);
+  const skillRoot = path.join(
+    buildSnapshot.catalogOutputRoot,
+    'plugins',
+    'ask-me',
+    'codex',
+    'skills',
+    'decision-prototype',
+  );
+  runtimeScript = path.join(skillRoot, 'scripts', 'prototype-review.mjs');
+  await Promise.all([
+    runtimeScript,
+    path.join(skillRoot, 'assets', 'prototype.schema.json'),
+    path.join(skillRoot, 'assets', 'feedback.schema.json'),
+    path.join(skillRoot, 'assets', 'review-shell', 'index.html'),
+    path.join(skillRoot, 'assets', 'review-shell', 'app.js'),
+    path.join(skillRoot, 'assets', 'review-shell', 'styles.css'),
+    path.join(skillRoot, 'assets', 'review-shell', 'review-policy.mjs'),
+  ].map((filePath) => fs.access(filePath)));
   browser = await chromium.launch({ headless: true });
 });
 
@@ -202,7 +219,12 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  await browser?.close();
+  try {
+    await browser?.close();
+  } finally {
+    await cleanupSmokeBuildSnapshot(buildSnapshot);
+    buildSnapshot = null;
+  }
 });
 
 describe('ask-me Prototype Review browser smoke', () => {
@@ -498,7 +520,18 @@ describe('ask-me Prototype Review browser smoke', () => {
       await expectCount(first.page.locator('input[name="selected-option"][type="checkbox"]'), 2);
       await first.page.locator('input[name="selected-option"]').first().check();
       await first.page.locator('input[name="selected-option"]').last().check();
+      await first.page.locator('input[name="verdict"][value="rejected"]').check();
+      await expect.poll(() => first.page.locator('#candidateSelection').evaluate(
+        (element) => (element as HTMLFieldSetElement).disabled,
+      )).toBe(true);
+      await expectCount(first.page.locator('input[name="selected-option"]:checked'), 0);
       await first.page.locator('input[name="verdict"][value="accepted"]').check();
+      await expect.poll(() => first.page.locator('#candidateSelection').evaluate(
+        (element) => (element as HTMLFieldSetElement).disabled,
+      )).toBe(false);
+      await expectCount(first.page.locator('input[name="selected-option"]:checked'), 0);
+      await first.page.locator('input[name="selected-option"]').first().check();
+      await first.page.locator('input[name="selected-option"]').last().check();
       await first.page.getByRole('button', { name: '提交反馈' }).click();
       await expectSubmitted(first.page);
       await expect(waitForSubmission(multipleRoot, multipleStarted)).resolves.toMatchObject({
@@ -532,11 +565,22 @@ describe('ask-me Prototype Review browser smoke', () => {
       await expectHidden(singlePage.page.locator('#candidateSelection'));
       await expectCount(singlePage.page.locator('input[name="selected-option"]'), 0);
       await singlePage.page.locator('input[name="verdict"][value="accepted"]').check();
+      await singlePage.page.locator('input[name="verdict"][value="rejected"]').check();
+      await expect.poll(() => singlePage.page.locator('#candidateSelection').evaluate(
+        (element) => (element as HTMLFieldSetElement).disabled,
+      )).toBe(true);
+      await singlePage.page.locator('#verdictDetailInput').fill('唯一候选没有满足当前目标。');
       await singlePage.page.getByRole('button', { name: '提交反馈' }).click();
       await expectSubmitted(singlePage.page);
       await expect(waitForSubmission(singleRoot, singleStarted)).resolves.toMatchObject({
         status: 'submitted',
-        selectedOptionCount: 1,
+        verdict: 'rejected',
+        selectedOptionCount: 0,
+      });
+      await expect(fs.readJson(path.join(singleRoot, 'feedback.json'))).resolves.toMatchObject({
+        verdict: 'rejected',
+        selectedOptions: [],
+        reason: '唯一候选没有满足当前目标。',
       });
     } finally {
       await singlePage.context.close();

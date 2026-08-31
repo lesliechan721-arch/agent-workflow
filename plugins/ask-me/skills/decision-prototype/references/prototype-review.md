@@ -16,7 +16,7 @@ node scripts/prototype-review.mjs start --prototype <prototype.json>
 node scripts/prototype-review.mjs wait --session <session.json> --timeout 30m
 ```
 
-`submitted` 后读取 receipt 指向的 `feedback.json`。`timeout` 或 `cancelled` 后保留 Prototype，且不推断用户决定。不能保持阻塞命令时，使用以下只读命令重试：
+`submitted` 后读取 receipt 指向的 `feedback.json`，核对 ID 和 revision，并核对 `feedbackDigest`。摘要使用规范化反馈的 canonical JSON：对象 key 递归排序，数组顺序不变，无额外空白；receipt 格式为 `sha256:<hex>`。只有摘要一致时才消费反馈。`busy` 表示另一提交 transaction 尚未结束；保留 session，稍后用 `status` 或 `wait` 重试。`superseded` 表示同一或更新 Prototype revision 已提交，当前会话不返回 verdict，也不覆盖已有反馈。`timeout` 或 `cancelled` 后保留 Prototype，且不推断用户决定。不能保持阻塞命令时，使用以下只读命令重试：
 
 ```bash
 node scripts/prototype-review.mjs status --session <session.json>

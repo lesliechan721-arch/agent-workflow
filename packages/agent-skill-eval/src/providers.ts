@@ -257,26 +257,56 @@ function combinedUsage(...values: unknown[]): EvalProviderUsage | null {
 function formattedQuestionsOf(request: AppServerRunEvidence['questions'][number]): string {
   return [
     `request_user_input step ${request.step + 1}:`,
-    ...request.questions.flatMap((question, index) => [
-      `Question ${index + 1}`,
-      `Header: ${question.header}`,
-      `Question: ${question.question}`,
-      ...(question.options === null
-        ? []
-        : [
-            'Options:',
-            ...question.options.map((option) =>
-              `- ${option.label}: ${option.description}`),
-          ]),
-    ]),
+    ...request.questions.flatMap((question, index) => {
+      const answers = request.answers[question.id] ?? []
+      return [
+        `Question ${index + 1}`,
+        `Header: ${question.header}`,
+        `Question: ${question.question}`,
+        ...(question.options === null
+          ? []
+          : [
+              'Options:',
+              ...question.options.map((option) =>
+                `- ${option.label}: ${option.description}`),
+            ]),
+        'User answer:',
+        ...(answers.length > 0 ? answers.map((answer) => `- ${answer}`) : ['- [not recorded]']),
+      ]
+    }),
+  ].join('\n')
+}
+
+function formattedFallbackUserReplyOf(
+  reply: NonNullable<AppServerRunEvidence['fallbackUserReplies']>[number],
+): string {
+  return [
+    `user reply step ${reply.step + 1}:`,
+    ...(reply.answers.length > 0
+      ? reply.answers.map((answer, index) => `Answer ${index + 1}: ${answer}`)
+      : ['Answer: [not recorded]']),
   ].join('\n')
 }
 
 export function conversationModelOutputOf(evidence: AppServerRunEvidence): string {
   const output: string[] = []
   const consumedQuestions = new Set<number>()
+  const consumedFallbackReplies = new Set<number>()
   const consumedFinalMessages = new Set<number>()
-  for (const event of evidence.eventTrace) {
+  const fallbackUserReplies = evidence.fallbackUserReplies ?? []
+  const appendFallbackRepliesAt = (eventTraceIndex: number): void => {
+    fallbackUserReplies.forEach((reply, index) => {
+      if (
+        !consumedFallbackReplies.has(index) &&
+        reply.eventTraceIndex === eventTraceIndex
+      ) {
+        output.push(formattedFallbackUserReplyOf(reply))
+        consumedFallbackReplies.add(index)
+      }
+    })
+  }
+  for (const [eventTraceIndex, event] of evidence.eventTrace.entries()) {
+    appendFallbackRepliesAt(eventTraceIndex)
     if (!isRecord(event)) continue
     if (event.method === 'item/tool/requestUserInput') {
       const requestId = typeof event.id === 'string' || typeof event.id === 'number'
@@ -301,13 +331,43 @@ export function conversationModelOutputOf(evidence: AppServerRunEvidence): strin
       if (finalIndex >= 0) consumedFinalMessages.add(finalIndex)
     }
   }
+  appendFallbackRepliesAt(evidence.eventTrace.length)
   evidence.questions.forEach((request, index) => {
     if (!consumedQuestions.has(index)) output.push(formattedQuestionsOf(request))
+  })
+  fallbackUserReplies.forEach((reply, index) => {
+    if (!consumedFallbackReplies.has(index)) output.push(formattedFallbackUserReplyOf(reply))
   })
   evidence.finalMessages.forEach((message, index) => {
     if (!consumedFinalMessages.has(index)) output.push(message)
   })
   return output.join('\n\n')
+}
+
+function graderFinalOutputOf(evidence: AppServerRunEvidence): string {
+  const output: string[] = []
+  const consumedFinalMessages = new Set<number>()
+  for (const event of evidence.eventTrace) {
+    if (!isRecord(event) || event.method !== 'item/completed') continue
+    const params = isRecord(event.params) ? event.params : {}
+    const item = isRecord(params.item) ? params.item : {}
+    if (
+      item.type !== 'agentMessage' ||
+      item.phase !== 'final_answer' ||
+      typeof item.text !== 'string'
+    ) continue
+    output.push(item.text)
+    const finalIndex = evidence.finalMessages.findIndex((message, index) =>
+      !consumedFinalMessages.has(index) && message === item.text)
+    if (finalIndex >= 0) consumedFinalMessages.add(finalIndex)
+  }
+  evidence.finalMessages.forEach((message, index) => {
+    if (!consumedFinalMessages.has(index)) output.push(message)
+  })
+  if (output.length !== 1) {
+    throw new Error(`grader must emit exactly one final answer; received ${output.length}.`)
+  }
+  return output[0]!
 }
 
 function necessaryMechanicalEvidence(evidence: AppServerRunEvidence): Record<string, unknown> {
@@ -525,7 +585,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           throw new Error(`grader did not complete: ${evidence.diagnostics.join('; ')}`)
         }
         return {
-          output: conversationModelOutputOf(evidence),
+          output: graderFinalOutputOf(evidence),
           usage: evidence.usage,
           mechanicalPassed: evidence.mechanicalPassed,
           diagnostics: evidence.diagnostics,

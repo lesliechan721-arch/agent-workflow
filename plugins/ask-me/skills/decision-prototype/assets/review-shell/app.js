@@ -109,6 +109,21 @@ function syncSelectionControls() {
   }
 }
 
+function syncSelectionForVerdict() {
+  const rejected = state.verdict === 'rejected';
+  if (rejected) {
+    state.selectedOptions.clear();
+  } else if (
+    ['accepted', 'revise'].includes(state.verdict)
+    && state.config.selectionMode !== 'none'
+    && state.config.options.length === 1
+  ) {
+    state.selectedOptions.add(state.config.options[0].id);
+  }
+  $('candidateSelection').disabled = rejected;
+  syncSelectionControls();
+}
+
 function renderSelectionControls() {
   const selection = $('candidateSelection');
   const choices = $('selectionChoices');
@@ -870,6 +885,7 @@ for (const input of document.querySelectorAll('input[name="verdict"]')) {
   input.onchange = () => {
     state.verdict = input.value;
     $('verdictDetailInput').value = '';
+    syncSelectionForVerdict();
     renderVerdictDetail();
     clearFieldError('verdictError', $('verdictFieldset'));
     clearFieldError('verdictDetailError', $('verdictDetailInput'));

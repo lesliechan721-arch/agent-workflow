@@ -12,7 +12,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "Shape 必须维护用户可见的共享方向，让问答和 Prototype 复用它，并只传播材料性变化。"
+      "rationale": "本 suite 只验证用户可见的共享方向连续性，以及候选产物和 Shape 结果；内部 Skill 路由由现有 router suite 和组合合同测试负责。"
     },
     "runtime": {
       "isolation": "strict"
@@ -47,7 +47,7 @@
         ]
       },
       "expected": {
-        "output": "形成可校准的共享方向，并选择适当叶子能力处理第一个问题。",
+        "output": "形成可校准的共享方向，并沿该方向处理第一个材料问题。",
         "workspaceUnchanged": true
       },
       "audit": {
@@ -65,12 +65,12 @@
         "frame-continuity",
         "platform-codex"
       ],
-      "prompt": "使用 decision-shape 继续 planning/approval-shape.md。Grill 已确认审批角色边界；现在必须看到两种风险提示文案才能决定信息层级。沿用现有共享方向，把两个轻量候选写到 prototypes/approval-risk-copy/candidates.md；不要启动网页 Review。展示候选后问我选择，再更新 Shape 并停止。",
+      "prompt": "使用 decision-shape 继续 planning/approval-shape.md。Grill 已确认审批角色边界；现在必须看到两种风险提示文案才能决定信息层级。沿用现有共享方向，把简短决策背景和两个轻量候选写到 prototypes/approval-risk-copy/candidates.md；不要启动网页 Review。展示候选后问我选择，再更新 Shape 并停止。",
       "assertions": [
-        "trace 由 decision-shape 使用 decision-prototype，并向它提供现有共享方向和当前问题",
-        "Prototype 不重新制定优化方向",
-        "用户反馈后把 verdict 归一到同一 Shape",
-        "保留 Grill 已确认的审批角色边界"
+        "candidates.md 中用户可见的决策背景与现有 Shape 的共享方向一致",
+        "两个风险提示候选都遵守关键风险不能在用户确认后才出现的边界",
+        "更新后的 Shape 保留安全与正确性的共享方向和已确认的审批角色边界",
+        "更新后的 Shape 记录用户选择的方案 B"
       ],
       "input": {
         "scriptedReplies": [
@@ -87,11 +87,11 @@
         }
       },
       "expected": {
-        "output": "Prototype 复用现有共享方向，保留 Grill 已确认的审批角色边界，并把方案 B 的反馈归一到当前 Shape。",
+        "output": "候选产物和更新后的 Shape 使用一致的共享方向；Shape 保留已确认的审批角色边界并记录方案 B。本 case 不判断内部 Skill 加载。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "planning/approval-shape.md",
-          "prototypes/approval-risk-copy/**"
+          "prototypes/approval-risk-copy/candidates.md"
         ],
         "artifacts": [
           {
@@ -107,6 +107,8 @@
             "path": "prototypes/approval-risk-copy/candidates.md",
             "exists": true,
             "contains": [
+              "安全与正确性",
+              "确认后",
               "方案 A",
               "方案 B"
             ]
@@ -125,10 +127,10 @@
       ],
       "prompt": "使用 decision-shape 继续 planning/audit-retention-shape.md。当前开放问题是审计日志保留 30 天还是 90 天，可以通过讨论决定。本轮只提出这一题，不写文件。",
       "assertions": [
-        "trace 由 decision-shape 使用 decision-grill，并向它提供现有共享方向",
-        "Grill 直接复用安全、可恢复和合规优先的 frame",
-        "Grill 不重新提出另一套方向，也不要求用户重复确认 frame",
-        "问题的推荐和后果对照能追溯到现有 frame"
+        "用户可见的问题直接以安全、可恢复和合规优先的现有共享方向为依据",
+        "用户可见的推荐和 30 天与 90 天后果对照说明合规风险与有限存储成本的取舍",
+        "不向用户重新提出、替换或要求重复确认另一套 frame",
+        "本轮只提出审计日志保留期限这一题"
       ],
       "input": {
         "scriptedReplies": [
@@ -145,7 +147,7 @@
         }
       },
       "expected": {
-        "output": "Shape 把现有共享方向传给 Grill；Grill 沿用该方向，直接呈现 30 天与 90 天的主要结果差异和推荐。",
+        "output": "用户可见的问题、后果对照和推荐沿用现有共享方向，且没有重新制定 frame。本 case 不判断内部 Skill 加载。",
         "workspaceUnchanged": true
       }
     },

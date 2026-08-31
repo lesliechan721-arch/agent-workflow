@@ -83,6 +83,9 @@ export function feedbackValidationErrors(feedback, prototype, label = 'feedback'
   if (selectionMode === 'single' && selectedOptions.length > 1) {
     errors.push(`${label}.selectedOptions must contain at most one option when selectionMode is "single"`);
   }
+  if (feedback.verdict === 'rejected' && selectedOptions.length !== 0) {
+    errors.push(`${label}.selectedOptions must be empty for a rejected verdict`);
+  }
   if (feedback.verdict === 'accepted' && selectionMode === 'single' && selectedOptions.length !== 1) {
     errors.push(`${label}.selectedOptions must contain exactly one option for an accepted single-selection Prototype`);
   }
