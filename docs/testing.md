@@ -37,7 +37,7 @@
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 
-Codex project native qualification 是显式 suite。它不得由 `pnpm test`、unit、integration、build 或 release 默认链隐式调用。runner 必须覆盖真实用户 home 环境变量，使用自己的临时 Codex home、AW home、项目和本地 marketplace，只执行本地命令，并在成功或失败后清理。报告不得包含真实或临时绝对路径、credential 或 native stderr；退出码反映最低 qualification 合同。报告是一次性兼容性证据，不是 installed ledger。
+Codex project native qualification 是显式 suite。它不得由 `pnpm test`、unit、integration、build 或 release 默认链隐式调用。runner 必须覆盖真实用户 home 环境变量，使用自己的临时 Codex home、AW home、项目和本地 marketplace，只执行本地命令，并在成功或失败后清理。报告不得包含真实或临时绝对路径、credential 或 native stderr；退出码反映最低 qualification 合同。报告是一次性兼容性证据，不是 installed ledger。macOS 报告只证明该次 macOS 运行；Windows 必须在 Windows 上独立运行，未运行时保留明确的 evidence gap。
 
 Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runner 本身。native kind 的 `supported` 结果、project activation 和 trust 行为只能来自显式真实 qualification；无法从 `0.151.0` 离线 JSON 或行为证明的 kind 必须报告 `unsupported`。
 

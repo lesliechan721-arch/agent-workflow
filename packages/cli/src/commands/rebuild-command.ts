@@ -4,7 +4,6 @@ import type {
   CatalogSourceResolution,
   CatalogResolution,
   CommandOptions,
-  GeneratedArtifact,
   InstallCommandOptions,
   PlatformName,
   PluginMeta,
@@ -219,8 +218,6 @@ export interface RebuildCommandResult {
   rebuildResults: RebuildResult[];
   targetResults: ReceiptTargetResult[];
   overallState: ReceiptOverallState;
-  nativePlugins: Partial<Record<PlatformName, string[]>>;
-  repoManagedArtifacts: GeneratedArtifact[];
   receiptTargets: Array<{
     pluginName: string;
     pluginId?: string;
@@ -687,18 +684,6 @@ async function runSingleSourceRebuildCommand(options: {
     }
   }
   const successful = results.filter((result) => result.status === 'succeeded');
-  const artifacts = targets.flatMap((target) => [...target.artifacts]);
-  const nativePlugins: Partial<Record<PlatformName, string[]>> = {};
-  for (const result of successful) {
-    const target = targets.find((entry) =>
-      entry.identity.pluginName === result.target.pluginName
-      && entry.identity.platform === result.target.platform
-      && entry.identity.scope === result.target.scope);
-    if (target?.requiresNative && options.command !== 'cleanup' && options.command !== 'uninstall') {
-      nativePlugins[result.target.platform] ??= [];
-      nativePlugins[result.target.platform]!.push(result.target.pluginName);
-    }
-  }
   return {
     platforms,
     plugins: [...new Set(successful.map((result) => result.target.pluginName))],
@@ -706,8 +691,6 @@ async function runSingleSourceRebuildCommand(options: {
     rebuildResults: results,
     targetResults: results.map(toTargetResult),
     overallState: results.every((result) => result.status === 'succeeded') ? 'succeeded' : 'failed',
-    nativePlugins,
-    repoManagedArtifacts: artifacts,
     receiptTargets: results.map((result) => ({
       pluginName: result.target.pluginName,
       ...(result.target.sourceId ? {
@@ -737,13 +720,6 @@ function toCatalogResolution(source: CatalogSourceResolution): CatalogResolution
 function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCommandResult {
   const rebuildResults = results.flatMap((result) => result.rebuildResults);
   const platforms = [...new Set(results.flatMap((result) => result.platforms))];
-  const nativePlugins: RebuildCommandResult['nativePlugins'] = {};
-  for (const result of results) {
-    for (const platform of ['codex', 'claude'] as const) {
-      const names = result.nativePlugins[platform];
-      if (names) nativePlugins[platform] = [...new Set([...(nativePlugins[platform] ?? []), ...names])];
-    }
-  }
   return {
     platforms,
     plugins: [...new Set(results.flatMap((result) => result.plugins))],
@@ -753,8 +729,6 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
     overallState: rebuildResults.every((result) => result.status === 'succeeded')
       ? 'succeeded'
       : 'failed',
-    nativePlugins,
-    repoManagedArtifacts: [],
     receiptTargets: results.flatMap((result) => result.receiptTargets),
     ...(results.find((result) => result.dependencyPlan)?.dependencyPlan
       ? { dependencyPlan: results.find((result) => result.dependencyPlan)!.dependencyPlan }
@@ -769,7 +743,6 @@ function leaseSafeRebuildResult(result: RebuildCommandResult): RebuildCommandRes
   const projectPath = (value: string): string => path.basename(value);
   return {
     ...result,
-    repoManagedArtifacts: [],
     rebuildResults: result.rebuildResults.map((entry) => ({
       ...entry,
       target: { ...entry.target, cwd: '.' },
@@ -833,6 +806,8 @@ type LiveCleanupTarget = {
   marketplaceName?: string;
   marketplaceIdentityUnresolved?: boolean;
   nativeRegistration?: boolean;
+  lifecycleMetadataIntegrityDigest?: string;
+  lifecyclePluginVersion?: string;
 };
 
 function desiredCleanupNoopResult(
@@ -866,8 +841,6 @@ function desiredCleanupNoopResult(
       state: 'completed',
     })),
     overallState: 'succeeded',
-    nativePlugins: {},
-    repoManagedArtifacts: [],
     receiptTargets: targets,
   };
 }
@@ -911,6 +884,13 @@ function resolveLiveCleanupTargets(options: {
     for (const reference of visible.filter((entry) =>
       entry.pluginName === parsed.pluginName
       && (parsed.sourceId === undefined || entry.sourceId === parsed.sourceId))) {
+        const lifecycleReference = visible.find((entry) =>
+          entry.kind === 'namespacedLifecycle'
+          && entry.sourceId === reference.sourceId
+          && entry.sourceIdentity === reference.sourceIdentity
+          && entry.pluginName === reference.pluginName
+          && entry.platform === reference.platform
+          && entry.scope === reference.scope);
         const liveNames = new Set(options.references.flatMap((candidate) =>
           candidate.sourceId === reference.sourceId
           && candidate.sourceIdentity === reference.sourceIdentity
@@ -954,6 +934,15 @@ function resolveLiveCleanupTargets(options: {
             ? { nativeRegistration: true }
             : {}),
           ...(marketplaceIdentityUnresolved ? { marketplaceIdentityUnresolved: true } : {}),
+          ...(lifecycleReference?.lifecycleMetadataIntegrityDigest
+            ? {
+                lifecycleMetadataIntegrityDigest:
+                  lifecycleReference.lifecycleMetadataIntegrityDigest,
+              }
+            : {}),
+          ...(lifecycleReference?.pluginVersion
+            ? { lifecyclePluginVersion: lifecycleReference.pluginVersion }
+            : {}),
         };
         const key = [target.pluginId, target.sourceIdentity, target.platform, target.scope].join('\0');
         const previous = matchesByTarget.get(key);
@@ -988,6 +977,7 @@ async function discoverDamagedExclusiveCleanupTargets(options: {
   if (!parsed.sourceId) return [];
   const targets: LiveCleanupTarget[] = [];
   for (const platform of options.platforms) {
+    if (platform === 'codex' && options.scope === 'project') continue;
     const root = exclusiveSkillRoot({
       platform,
       scope: options.scope,
@@ -1061,7 +1051,7 @@ async function cleanupOfflineOwnedComponents(options: {
     const exclusiveRecovery: CleanupResult = {
       removed: [], absent: [], residual: [], quarantined: [], failures: [],
     };
-    if (options.force) {
+    if (options.force && !(target.platform === 'codex' && target.scope === 'project')) {
       const root = exclusiveSkillRoot({
         platform: target.platform,
         scope: target.scope,
@@ -1103,6 +1093,9 @@ async function cleanupOfflineOwnedComponents(options: {
       }
     }
     const plugin = createSyntheticPlugin(target.pluginName, options.env);
+    if (target.lifecyclePluginVersion) {
+      plugin.manifest.version = target.lifecyclePluginVersion;
+    }
     plugin.sourceId = target.sourceId;
     plugin.sourceIdentity = target.sourceIdentity;
     plugin.pluginId = target.pluginId;
@@ -1125,7 +1118,14 @@ async function cleanupOfflineOwnedComponents(options: {
         catalogVersion: '0.0.0',
         channel: 'beta',
       },
-      includeHistoricalLifecycleArtifacts: false,
+      includeHistoricalLifecycleArtifacts:
+        target.lifecycleMetadataIntegrityDigest !== undefined,
+      ...(target.lifecycleMetadataIntegrityDigest
+        ? {
+            expectedLifecycleMetadataIntegrityDigest:
+              target.lifecycleMetadataIntegrityDigest,
+          }
+        : {}),
       includeNativeCleanupCandidate: target.nativeRegistration === true,
     });
     let result = await executeRebuildOperation({
@@ -1182,7 +1182,6 @@ async function cleanupOfflineOwnedComponents(options: {
     rebuildResults: results,
     targetResults: results.map(toTargetResult),
     overallState: results.every((result) => result.status === 'succeeded') ? 'succeeded' : 'failed',
-    nativePlugins: {}, repoManagedArtifacts: [],
     receiptTargets: results.map((result) => ({
       pluginName: result.target.pluginName,
       pluginId: result.target.pluginId,
@@ -2885,7 +2884,7 @@ export async function runRebuildCommand(options: {
               errorCode: code,
               message,
             }],
-            overallState: 'failed', nativePlugins: {}, repoManagedArtifacts: [],
+            overallState: 'failed',
             receiptTargets: [{
               pluginName: identity.pluginName, pluginId: identity.pluginId,
               sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
@@ -2911,7 +2910,7 @@ export async function runRebuildCommand(options: {
                 errorCode: message.split(':', 1)[0] ?? 'targetPreparationFailed',
                 message,
               }],
-              overallState: 'failed', nativePlugins: {}, repoManagedArtifacts: [],
+              overallState: 'failed',
               receiptTargets: [{
                 pluginName: identity.pluginName, pluginId: identity.pluginId,
                 sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
@@ -2927,7 +2926,7 @@ export async function runRebuildCommand(options: {
           results.push({
             platforms: [platform], plugins: [identity.pluginName], warnings: [], rebuildResults: [result],
             targetResults: [{ target: identity, action: planned.action, state: 'completed' }],
-            overallState: 'succeeded', nativePlugins: {}, repoManagedArtifacts: [],
+            overallState: 'succeeded',
             receiptTargets: [{
               pluginName: identity.pluginName, pluginId: identity.pluginId,
               sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
@@ -2947,7 +2946,7 @@ export async function runRebuildCommand(options: {
           results.push({
             platforms: [platform], plugins: [identity.pluginName], warnings: [], rebuildResults: [result],
             targetResults: [{ target: identity, action: 'keep', state: 'completed' }],
-            overallState: 'succeeded', nativePlugins: {}, repoManagedArtifacts: [],
+            overallState: 'succeeded',
             receiptTargets: [{
               pluginName: identity.pluginName, pluginId: identity.pluginId,
               sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
@@ -2964,7 +2963,7 @@ export async function runRebuildCommand(options: {
           results.push({
             platforms: [platform], plugins: [identity.pluginName], warnings: [], rebuildResults: [result],
             targetResults: [{ target: identity, action: 'keep', state: 'completed' }],
-            overallState: 'succeeded', nativePlugins: {}, repoManagedArtifacts: [],
+            overallState: 'succeeded',
             receiptTargets: [{
               pluginName: identity.pluginName, pluginId: identity.pluginId,
               sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
@@ -3079,8 +3078,6 @@ export async function runRebuildCommand(options: {
               message,
             }],
             overallState: 'failed',
-            nativePlugins: {},
-            repoManagedArtifacts: [],
             receiptTargets: [{
               pluginName: identity.pluginName,
               pluginId: identity.pluginId,

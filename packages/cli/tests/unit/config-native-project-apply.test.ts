@@ -84,8 +84,6 @@ function rebuildResult(target: ReceiptTargetIdentity): RebuildCommandResult {
     rebuildResults: [],
     targetResults: [{ target, action: 'reinstall', state: 'completed' }],
     overallState: 'succeeded',
-    nativePlugins: {},
-    repoManagedArtifacts: [],
     receiptTargets: [{
       pluginName: target.pluginName,
       platform: target.platform,

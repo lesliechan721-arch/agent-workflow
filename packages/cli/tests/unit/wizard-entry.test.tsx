@@ -53,8 +53,6 @@ describe('write command runtime entry', () => {
       rebuildResults: [],
       targetResults: [],
       overallState: 'succeeded',
-      nativePlugins: {},
-      repoManagedArtifacts: [],
       receiptTargets: [],
     });
     const exitCode = await runCli([command, ...args, '--json'], {

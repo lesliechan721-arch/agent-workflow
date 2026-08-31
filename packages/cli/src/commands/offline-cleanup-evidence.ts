@@ -25,7 +25,9 @@ export function offlineCleanupEvidenceFromInventory(options: {
   inventory: CatalogSourceReferenceInventory;
 }): OfflineCleanupTargetEvidence | null {
   const references = options.inventory.references.filter((reference) =>
-    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+    (reference.kind === 'namespacedOwner'
+      || reference.kind === 'namespacedMarketplace'
+      || reference.kind === 'namespacedLifecycle')
     && reference.pluginName === options.pluginName
     && reference.sourceId === options.sourceId
     && reference.sourceIdentity === options.sourceIdentity
@@ -38,6 +40,9 @@ export function offlineCleanupEvidenceFromInventory(options: {
       location: reference.location,
       marketplaceName: reference.marketplaceName ?? null,
       projectKey: reference.projectKey ?? null,
+      lifecycleMetadataIntegrityDigest:
+        reference.lifecycleMetadataIntegrityDigest ?? null,
+      pluginVersion: reference.pluginVersion ?? null,
     })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), 'en')),
   )).digest('hex')}`;
   return {

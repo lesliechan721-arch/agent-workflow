@@ -57,6 +57,7 @@ export interface DesiredTarget {
   writeNativeRequired?: boolean;
   artifacts: readonly GeneratedArtifact[];
   lifecycleSource: PluginMeta;
+  historicalLifecycleMetadataIntegrityDigest?: string;
 }
 
 export interface RebuildAction {
@@ -191,6 +192,9 @@ export function createRebuildActiveStore(options: {
       scope: target.identity.scope,
       cwd: target.identity.cwd,
       env: options.env,
+      ...(target.historicalLifecycleMetadataIntegrityDigest
+        ? { expectedMetadataIntegrityDigest: target.historicalLifecycleMetadataIntegrityDigest }
+        : {}),
     }),
   };
 }

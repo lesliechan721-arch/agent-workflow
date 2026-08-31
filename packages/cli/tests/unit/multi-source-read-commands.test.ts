@@ -249,7 +249,7 @@ describe('multi-source read commands', () => {
     expect(JSON.stringify(unreadable)).not.toContain('private invalid config');
   });
 
-  it('keeps one typed component model and limits human details to verbose status', async () => {
+  it('does not project a legacy project Skill marker in ordinary or verbose status', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('verbose-components');
     await fs.outputFile(
@@ -302,10 +302,7 @@ describe('multi-source read commands', () => {
     });
     expect(JSON.parse(ordinary.readStdout())).toMatchObject({
       targets: [expect.objectContaining({
-        state: 'partial',
-        components: expect.arrayContaining([
-          expect.objectContaining({ key: 'review', state: 'partial' }),
-        ]),
+        state: 'absent',
       })],
     });
     expect(ordinaryExit).toBe(0);
@@ -324,12 +321,10 @@ describe('multi-source read commands', () => {
     };
     expect(verbosePayload).toMatchObject({
       targets: [expect.objectContaining({
-        state: 'partial',
-        components: expect.arrayContaining([
-          expect.objectContaining({ key: 'review', state: 'partial' }),
-        ]),
+        state: 'absent',
       })],
     });
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
     expect(JSON.stringify(verbosePayload.targets[0]!.components)).not.toContain(isolation.layout.rootDir);
 
     const ordinaryConsole = await loadConsoleItemsResult({
@@ -344,12 +339,12 @@ describe('multi-source read commands', () => {
       verbose: true,
     }, { env: isolation.env });
     expect(ordinaryConsole.items.find((item) => item.pluginName === 'team/demo')?.targets[0]?.components)
-      .toEqual(expect.arrayContaining([
-        expect.objectContaining({ key: 'review', state: 'partial' }),
+      .not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: 'review' }),
       ]));
     expect(verboseConsole.items.find((item) => item.pluginName === 'team/demo')?.targets[0]?.components)
-      .toEqual(expect.arrayContaining([
-        expect.objectContaining({ key: 'review', state: 'partial' }),
+      .not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: 'review' }),
       ]));
     expect(JSON.stringify(
       verboseConsole.items.flatMap((item) => item.targets.flatMap((target) => target.components)),
@@ -375,7 +370,7 @@ describe('multi-source read commands', () => {
       io: human.io,
       interactive: false,
     });
-    expect(human.readStdout()).toContain('component review: partial');
+    expect(human.readStdout()).not.toContain('component review');
     expect(human.readStdout()).not.toContain(isolation.layout.rootDir);
 
     await fs.outputFile(path.join(skillRoot, '.agent-workflows-owner.json'), '{ invalid');
@@ -387,7 +382,7 @@ describe('multi-source read commands', () => {
       env: isolation.env,
       io: broken.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(0);
     const brokenPayload = JSON.parse(broken.readStdout()) as {
       targets: Array<{ components: Array<{ error?: { message: string } }> }>;
     };
@@ -404,7 +399,7 @@ describe('multi-source read commands', () => {
       scope: 'project',
       json: true,
       verbose: true,
-    })).toMatchObject({ hasErrors: true });
+    })).toMatchObject({ hasErrors: false });
     expect(JSON.stringify(brokenPayload.targets[0]!.components)).not.toContain(isolation.layout.rootDir);
 
     const collisionHuman = createCapturedCliIo();
@@ -421,7 +416,7 @@ describe('multi-source read commands', () => {
     expect(collisionHuman.readStdout()).not.toContain(isolation.layout.rootDir);
   });
 
-  it('keeps owned incomplete evidence partial when another required artifact collides', async () => {
+  it('ignores marker-only and foreign static project Skill directories', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('partial-collision');
     for (const skillName of ['owned', 'collision']) {
@@ -472,15 +467,15 @@ describe('multi-source read commands', () => {
     expect(result.payload).toMatchObject({
       schemaVersion: 6,
       targets: [expect.objectContaining({
-        state: 'partial',
+        state: 'absent',
         errors: [],
-        components: expect.arrayContaining([
-          expect.objectContaining({ key: 'owned', state: 'partial' }),
-        ]),
       })],
     });
     expect(result.payload.targets[0]!.components)
-      .not.toContainEqual(expect.objectContaining({ key: 'collision' }));
+      .not.toContainEqual(expect.objectContaining({ key: expect.stringMatching(/owned|collision/u) }));
+    await expect(fs.pathExists(ownedRoot)).resolves.toBe(true);
+    await expect(fs.readFile(path.join(skillsRoot, 'collision', 'foreign.txt'), 'utf8'))
+      .resolves.toBe('keep\n');
     expect(JSON.stringify(result.payload.targets[0]!.errors)).not.toContain(isolation.layout.rootDir);
   });
 
@@ -843,7 +838,7 @@ describe('multi-source read commands', () => {
     });
   });
 
-  it('uses the Codex project managed-artifact capability for target support', async () => {
+  it('uses the qualified Codex native surface for project target support', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const codexOnly = fixturePath('codex-only');
     await createCatalogSnapshotFixture(

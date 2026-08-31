@@ -1136,8 +1136,6 @@ describe('TUI controller runtime scope conflict validation', () => {
         state: 'completed',
       }],
       overallState: 'succeeded',
-      nativePlugins: {},
-      repoManagedArtifacts: [],
       receiptTargets: [],
       codexManagerPreview: { state: 'requires-install' },
     });

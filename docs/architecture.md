@@ -157,7 +157,7 @@ Review 仍是用户确认边界。插件 Review 按 Project intent、User intent
 
 已安装插件的 dependency placement 调整只从现有插件详情和依赖关系动作进入，不增加独立工具入口。project→user 使用同一计划、Review 和执行链。user→project 先只原子更新当前项目 desired intent；结果页明确要求用户随后显式清理 user actual，再运行 project sync。首版不自动串联 cleanup，也不扫描未知项目。pure-native Codex 的 user/project activation overlap 合法；含 AW-only extension 的 overlap 显示 conflict 和两个恢复路径。`needsSync`、drift 和对应 recovery 的 `sync` 也进入现有 Review、Progress 和 Result 链。
 
-Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。Codex project scope 不使用 native manager。用户级正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt v5 或 Status v6，也不成为 `operationReviewStale` 证据。
+Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。仅修改已有 shared native 的 project activation 不使用 native manager；project intent 若需要写入、替换或移除 shared native package，仍解析同一个 user-level manager。正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 receipt v5 或 Status v6，也不成为 `operationReviewStale` 证据。
 
 TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 
@@ -243,13 +243,15 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 当前 write、Status v6 和 Receipt v5 使用以下合同。旧 Codex project materialization 不作为 AW fallback，也不维护第二套 project 安装模型。
 
 - Intent 只表示 desired state。user/project enablement、选中平台和 scope 都是待达成目标，不是安装事实。actual state 只来自当前 live ownership、Codex native config/cache/manifest，以及可观察的 native loader 证据。
-- Codex plugin 只物化一份 shared native user package。project scope 只在项目的 Codex 配置中激活该 native plugin。不得为此保存 project path、global claim、refcount、native installed ledger 或第二套安装状态；qualification report 也不是 installed ledger。
+- Intent 使用严格 schema 1：`kind` 固定为 `aw-plugin-intents`，字段固定为 `schemaVersion`、`kind`、`roots`、`dependencyScopeOverrides` 和 `managed.codexPluginIds`。user 文件是 `<AW_HOME>/plugin-intents.json`；project 文件是仓库根 `.agent-workflows/plugin-intents.json`，可以随仓库共享。dependency override 以 `(source/plugin, platform)` 为键；project root 可选择 project 或 user dependency placement，user root 的依赖固定为 user。
+- Codex plugin 只物化一份 shared native user package。project scope 只在项目的 Codex 配置中激活该 native plugin。shared-native ownership 不得为此保存 project claim path、global claim、refcount、native installed ledger 或第二套安装状态，也不通过全局项目扫描执行 auto-GC。lifecycle snapshot 保留的 `projectKey` 和依赖删除保护按需扫描的历史项目不属于该 claim/refcount 模型；qualification report 也不是 installed ledger。
 - Shared native 现场使用 payload-aware inspector。它比较当前 Catalog 派生的 canonical tree digest 与 native cache，覆盖非 manifest 文件、文件 mode 和 symlink boundary；AW owner marker 与 native 管理的 `skills` manifest 投影按固定规则规范化。payload 修改或删除为 `corrupt`，越界 symlink 为 `foreign`。write preview 与 mutation lock 内重算使用同一实际 payload digest；repair 不得复用现场，并按 shared impact 要求 `--yes` 或 TUI 确认。
 - 基础 Codex native plugin 合同最低为 `0.145.0`。涉及 project activation 的操作最低为 `0.151.0`。开发 qualification 固定拒绝非精确 `0.151.0`，避免把其它版本的行为外推到 rollout allowlist。
-- PATH 中有 Codex CLI 时，操作按适用版本门禁探测它。PATH 中没有 system CLI 且操作只修改 project activation 时，不探测 Codex App，也不获取 manager；系统把 App 的 project activation 能力标记为 `assumed`。只有操作需要物化或移除 shared native package 时才解析 manager；system CLI 缺失时，AW-managed manager 必须取得精确 `0.151.0`。
+- PATH 中有 Codex CLI 时，操作按适用版本门禁探测它。PATH 中没有 system CLI 且操作只修改 project activation 时，不获取 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标记为 `assumed`。只有操作需要物化或移除 shared native package 时才解析 manager；system CLI 缺失时，AW-managed manager 必须取得精确 `0.151.0`。
 - 每种 native kind 必须先通过显式真实 qualification 才能进入 rollout allowlist。未被行为证据证明的 kind 必须返回 `unsupported`，不能从帮助文本、源码字符串或相邻 kind 推断。当前 `0.151.0` qualification 可证明 Skill、MCP、Hook 和 App；slash command 因没有可用的离线运行时证据保持 `unsupported`。
 - project activation 的最低行为合同是：native add 默认创建 user enabled；`user=false, project=true` 只在受信任的精确 project cwd 加载；neutral cwd 不加载；`user=true, project=true` 在两处加载同一 shared native plugin；project trust 未生效时 project-only activation 不加载。
 - `status` 始终只读。它只能读取 Intent、live ownership 和 native evidence，并标明 observed 或 assumed；不得安装 manager、调用 native add/remove、修改 trust/config、创建 claim/refcount，或把 qualification report 当现场事实。
+- 旧 Codex direct MCP/Hook residue 只可由已验证的 historical lifecycle artifact 建立 cleanup-only 条件删除组件。普通写入、status、discovery 和无历史证据的 cleanup 不扫描或重建这些旧 payload，也不把它们迁移到新合同。
 
 独立入口 `pnpm qualification:codex-project-native` 只用于 rollout qualification。它使用临时 Codex home、临时项目和临时本地 marketplace，且不进入普通 test、build 或 release 默认链。机器报告只说明该次 CLI/OS 的 qualification 结果，不授权或记录任何用户安装。
 

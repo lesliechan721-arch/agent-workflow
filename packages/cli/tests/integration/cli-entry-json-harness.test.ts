@@ -194,8 +194,6 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
         projectIntent: [], userIntent: [], sharedCodexNative: [],
         userActivation: [], projectActivation: [], awExtensions: [],
       },
-      nativePlugins: {},
-      repoManagedArtifacts: [],
       receiptTargets: [{
         pluginName: 'git-commit',
         pluginId: 'official/git-commit',

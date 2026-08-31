@@ -415,7 +415,7 @@ describe('status v6 current behavior', () => {
     });
   });
 
-  it('keeps a partial target when another Catalog source fails', async () => {
+  it('ignores a legacy project Skill marker when another Catalog source fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const good = path.join(isolation.layout.fixtureCwd, 'partial-good');
     const bad = path.join(isolation.layout.fixtureCwd, 'partial-bad');
@@ -478,12 +478,10 @@ describe('status v6 current behavior', () => {
     expect(result.payload.targets).toEqual([
       expect.objectContaining({
         pluginId: 'good/demo',
-        state: 'partial',
-        components: expect.arrayContaining([
-          expect.objectContaining({ key: 'review', state: 'partial' }),
-        ]),
+        state: 'absent',
       }),
     ]);
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
   });
 
   it('treats a disabled-capable dynamic component as optional without running its renderer', async () => {
@@ -527,7 +525,7 @@ describe('status v6 current behavior', () => {
     expect(await fs.pathExists(sentinel)).toBe(false);
   });
 
-  it('reports live owner residue that is absent from the current snapshot', async () => {
+  it('does not report marker-only legacy project Skill residue', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'residue-source');
     await createCatalogSnapshotFixture(sourceRoot);
@@ -552,13 +550,8 @@ describe('status v6 current behavior', () => {
       platform: 'codex', scope: 'project', json: true,
     });
 
-    expect(result.payload.targets).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        pluginId: 'local/removed',
-        state: 'error',
-        errors: [expect.objectContaining({ code: 'bundleUnavailable' })],
-      }),
-    ]));
+    expect(result.payload.targets).toEqual([]);
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
   });
 
   it('does not create or change files during a real status inspection', async () => {

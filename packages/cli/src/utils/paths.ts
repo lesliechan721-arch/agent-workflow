@@ -96,7 +96,6 @@ export interface CodexPaths {
   instructionsPath: string;
   rulesDir: string;
   agentsDir: string;
-  hooksPath: string;
   registryConfigPath: string;
   registryScope: 'user';
 }
@@ -214,7 +213,6 @@ export function resolveCodexPaths(
     instructionsPath: path.join(configDir, 'AGENTS.md'),
     rulesDir: path.join(configDir, 'rules'),
     agentsDir: path.join(configDir, 'agents'),
-    hooksPath: path.join(configDir, 'hooks.json'),
     registryConfigPath: path.join(getCodexHome(env), 'config.toml'),
     registryScope: 'user',
   };

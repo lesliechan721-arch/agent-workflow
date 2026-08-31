@@ -149,6 +149,10 @@ aw install git-toolkit -p both
 aw upgrade git-toolkit -p both
 aw uninstall git-toolkit -p both
 
+# 按已有 Codex desired intent 修复实际状态
+aw sync official/git-toolkit -p codex -s project
+aw sync --all -p codex -s project
+
 # 查看现场状态
 aw status
 aw status git --verbose
@@ -176,9 +180,37 @@ aw reinstall git -p codex -s user
 
 普通写操作在锁内复用一次 ordinary live inventory，并只对依赖计划中的目标执行 ownership、native、config 和 generation 重验。删除保护需要历史 project consumer 时，会使用独立范围的 inventory。需要定位耗时时，使用 `--debug --log-file <path>`，查看 `review.prepare.*`、`native:success|error` 和 `rebuild:action` 的 `durationMs`。原生事件只包含 agent、稳定 operation、退出状态和固定 reason，不包含 args、cwd、stdout、stderr 或未知错误文本。原生 CLI 时间单独记录，不计入 Catalog 读取时间。
 
-`install`、`upgrade`、`reinstall`、`uninstall` 和 `cleanup` 都接受 `--allow-managed-codex-install`。只有用户级计划实际需要 Codex native 写入或移除，且 system Codex CLI 缺失、AW-managed cache 也不可用时，AW 才需要获取固定的 `@openai/codex@0.150.1` runtime。直接 TTY 会在首次获取或安全重建前询问一次，默认不允许；JSON 和非交互模式必须显式传该 flag。有效 cache 可直接复用，不再次询问。已安装但过旧、版本不可解析或探测失败的 system CLI 会停止操作，不能用 managed runtime 绕过。
+`install`、`upgrade`、`reinstall`、`uninstall`、`cleanup` 和 `sync` 都接受 `--allow-managed-codex-install`。只有计划实际需要写入、替换或移除 Codex shared native package，且 system Codex CLI 缺失、AW-managed cache 也不可用时，AW 才需要获取固定的 `@openai/codex@0.151.0` runtime。直接 TTY 会在首次获取或安全重建前询问一次，默认不允许；JSON 和非交互模式必须显式传该 flag。有效 cache 可直接复用，不再次询问。PATH 中已有但过旧、版本不可解析或探测失败的 system CLI 会停止操作，不能用 managed runtime 绕过。
 
-该 runtime 位于 `AW_HOME` 的可删除弱缓存中，固定版本随 AW 发布更新，不加入 `PATH`，也不检测 Codex App。Codex project scope 不需要它。cleanup 和 uninstall 在没有可证明的 AW-owned native residue 时不会探测、提示或下载；移除失败会保留 residue，用户可重试命令、升级 AW，或安装兼容的官方 Codex CLI 后恢复。AW 不直接删除 Codex 私有 plugin storage，也不删除 foreign 内容。
+该 runtime 位于 `AW_HOME` 的可删除弱缓存中，不加入 `PATH`，也不检测 Codex App。只修改已有 shared native 的 project activation 时不需要 manager；项目 intent 缺少 shared native package 时仍需要兼容的 system 或 AW-managed CLI。cleanup 和 uninstall 在没有可证明的 AW-owned native residue 时不会探测、提示或下载；移除失败会保留 residue，用户可重试命令、升级 AW，或安装兼容的官方 Codex CLI 后恢复。AW 不直接删除 Codex 私有 plugin storage，也不删除 foreign 内容。
+
+### Codex project desired state 与恢复
+
+Codex native plugin 的基础最低版本是 `0.145.0`；任何 project activation 操作要求 `0.151.0`。AW-managed runtime 固定为已 qualification 的 `0.151.0`。PATH 中没有 system CLI 且操作只需修改 project activation 时，AW 不下载 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标为 `assumed`。
+
+AW 把 desired intent 保存为严格的 schema 1 JSON：user scope 位于 `<AW_HOME>/plugin-intents.json`，project scope 位于仓库根的 `.agent-workflows/plugin-intents.json`。project intent 可以提交到 Git，并在多台机器共享。文件只包含以下字段：
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-intents",
+  "roots": [{ "pluginId": "source/plugin", "platforms": ["codex"] }],
+  "dependencyScopeOverrides": [
+    { "pluginId": "source/dependency", "platform": "codex", "scope": "user" }
+  ],
+  "managed": { "codexPluginIds": ["plugin@marketplace"] }
+}
+```
+
+`managed` 是 AW 收敛 intent 时维护的 ownership 集合，不是 installed-state ledger。Project root 的依赖可以使用默认 project placement，或在 install 时用可重复的 `--dependency-scope source/plugin[#platform]=user|project` 覆盖；`#platform` 可以是 `#codex` 或 `#claude`，省略时同时覆盖两个平台。User root 的依赖固定为 user scope，不能降到 project scope。
+
+`aw sync` 当前只支持 `-p codex`。插件 selector 与 `--all` 互斥；TTY 中两者都省略时会显示多选。JSON 或非交互模式必须提供至少一个 selector 或 `--all`。新 clone 在 Catalog Active generation 可用后，可运行 `aw sync --all -p codex -s project` 恢复 shared native、project activation 和 AW-only extensions。
+
+Codex static Skill、MCP、Hook 和 App 只存在于一份 user-level shared native package。project scope 只写项目 activation，以及插件明确声明的 AW-only 动态 Skill、instruction、permission 和 agent 输出；它不把 native payload 复制到仓库。健康且版本精确的 shared native 是零写入。需要 upgrade、替换、repair 或 reinstall shared native 时，Review 会警告它可能影响其它项目；直接 CLI 必须传 `--yes`，TUI 必须在 Review 中确认。
+
+公开状态合同是 Status v6，写操作 receipt 是 v5。Status 严格只读，不创建 intent、AW_HOME 或平台目录，也不修改 trust 或 activation。Codex shared-native ownership 模型不维护 project claim path 或 refcount ledger，也不通过全局项目扫描执行 auto-GC。这不改变 lifecycle snapshot 的 `projectKey`，也不取消依赖删除保护按需使用的历史项目 inventory。project uninstall 不删除仍共享的 native package，foreign 内容始终保留。pure-native user/project activation 可以重叠；含 AW-only extension 的 mixed overlap 会报告 conflict，并要求先卸载不保留的 root intent，再 sync。
+
+TUI 安装流程依次选择 root scope、目标平台，并只在存在可配置依赖时编辑 dependency placement；随后进入只读 `ReviewPreparing`、Review 和写入 Progress。Windows native 行为必须在 Windows 上运行 qualification 才能形成证据；macOS 的成功报告不能替代 Windows 证据。
 
 Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使用 PATH 中 `skills >=1.5.23 <2.0.0`：project scope 使用当前项目根，user scope 使用 Skills CLI 的 global 模式。Agent 默认使用 Skills CLI 的自动选择；命令行可传 `--agent <id...>`，TUI 也可改为显式 Agent。`--skill` 只筛选最终安装项；验证仍覆盖完整 plugin dependency closure。外部安装允许部分成功，不做补偿回滚；失败后可重跑命令，或按 receipt 提示使用外部 `skills remove`。
 
@@ -198,9 +230,9 @@ aw config set codex-enhance minimumInitialWaitMinutes 15 -s user
 ## 安装范围
 
 - **User scope**：为当前用户安装，适合跨项目复用。
-- **Project scope**：把受 AW 管理的 Skill、规则、Agent role 和相关配置写入当前仓库，适合团队共享。
+- **Project scope**：把 desired intent 和项目 activation 写入当前仓库，适合团队共享；Claude 和 AW-only extension 仍按各自平台合同写项目输出。
 
-Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/` 中实际需要的文件，并使用 AW owner marker 限定后续清理范围。
+Codex project scope 不复制 static Skill、MCP、Hook、App 或其它 native plugin payload。它只在 `.codex/config.toml` 写 activation，并按需在 `.agents/skills`、`.codex/config.toml`、`.codex/rules/` 和 `.codex/agents/` 写 AW-only 动态或配置派生产物。AW owner marker 限定后续清理范围。
 
 ## 对安全边界的约定
 

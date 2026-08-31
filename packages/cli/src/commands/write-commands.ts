@@ -171,8 +171,6 @@ function failedWriteCommandResult(
       errorCode,
     })),
     overallState: 'failed',
-    nativePlugins: {},
-    repoManagedArtifacts: [],
     receiptTargets: rebuildResults.map((result) => result.target),
   };
 }

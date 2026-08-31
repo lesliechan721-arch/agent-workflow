@@ -8,8 +8,6 @@ vi.mock('../../src/commands/write-commands.js', () => ({
     rebuildResults: [],
     targetResults: [],
     overallState: 'succeeded',
-    nativePlugins: {},
-    repoManagedArtifacts: [],
     receiptTargets: [],
   })),
 }));
@@ -18,6 +16,7 @@ import { syncCommand } from '../../src/commands/sync-command.js';
 import { installWriteCommand } from '../../src/commands/write-commands.js';
 import {
   createEmptyPluginIntentState,
+  readPluginIntentState,
   upsertPluginIntentRoot,
   widenPluginIntentManagedCodexOwnership,
   writePluginIntentState,
@@ -122,5 +121,38 @@ describe('public Codex sync command', () => {
       expect.objectContaining({ platform: 'codex', scope: 'project' }),
       expect.objectContaining({ reconcileIntentOnly: true }),
     );
+  });
+
+  it('recovers a new clone from shared project intent with --all', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'official/demo',
+      platforms: ['codex'],
+    });
+    await writePluginIntentState({
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }, intent);
+
+    await syncCommand([], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      all: true,
+      interactive: false,
+    });
+
+    expect(mockedInstall).toHaveBeenCalledWith(
+      ['official/demo'],
+      expect.objectContaining({ platform: 'codex', scope: 'project' }),
+      expect.objectContaining({ reconcileIntentOnly: true, directCli: true }),
+    );
+    await expect(readPluginIntentState({
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toEqual(intent);
   });
 });

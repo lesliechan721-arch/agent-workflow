@@ -108,7 +108,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backupPath }));
   });
 
-  it('inventories only canonical owner artifact locations', async () => {
+  it('inventories canonical owner artifacts but ignores ordinary project Skill markers', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const identity: OwnerIdentity = {
       owner: 'agent-workflows',
@@ -192,17 +192,15 @@ describe('phase 3B namespaced runtime stores', () => {
       expect.objectContaining({ kind: 'namespacedOwner', location: role, sourceId: 'team' }),
       expect.objectContaining({
         kind: 'namespacedOwner',
-        location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
-        sourceId: 'team',
-      }),
-      expect.objectContaining({
-        kind: 'namespacedOwner',
         location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
         sourceId: 'team',
       }),
     ]));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backup }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: exampleMarker }));
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
+    }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: nestedSkillMarker }));
   });
 
@@ -739,353 +737,7 @@ describe('phase 3B namespaced runtime stores', () => {
       entry.startsWith('team.backup-'))).toEqual([]);
   });
 
-  it('keeps live state and stored config when a configured source drops the plugin bundle', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'bundle-removed-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
-      manifest.extensions = {
-        instructions: [{ name: 'policy', title: 'Policy', content: 'Use policy.' }],
-      };
-      manifest.marketplace.policy.products = ['CODEX'];
-    });
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const setOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'set', 'team/demo', 'mode', 'fast', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: setOutput.io,
-      interactive: false,
-    })).toBe(0);
-    const sourceIdentity = (JSON.parse(setOutput.readStdout()) as { sourceIdentity: string }).sourceIdentity;
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const skillRoot = path.join(skillsRoot, 'removed-bundle');
-    await fs.ensureDir(skillRoot);
-    await writeSkillOwnerMarker({
-      skillRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'team',
-        sourceIdentity,
-        pluginId: 'team/demo',
-        plugin: 'demo',
-        artifactKey: 'removed-bundle',
-        platform: 'codex',
-        scope: 'project',
-      },
-    });
-    const removedPluginRoot = path.join(sourceRoot, 'plugins', 'demo');
-    const retainedPluginRoot = path.join(sourceRoot, 'plugins', 'other');
-    await fs.move(removedPluginRoot, retainedPluginRoot);
-    await createCatalogSnapshotFixture(sourceRoot, 'other');
-    await refreshCatalogSourceGeneration({
-      sourceId: 'team',
-      cliVersion: '1.0.0',
-      env: isolation.env,
-    });
-
-    const statusOutput = createCapturedCliIo();
-    expect(await runCli(['status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: statusOutput.io,
-      interactive: false,
-    })).toBe(1);
-    const statusPayload = JSON.parse(statusOutput.readStdout()) as {
-      targets: Array<{ pluginId: string; errors: Array<{ code: string }> }>;
-      errors: Array<{ code: string }>;
-    };
-    expect(statusPayload).toMatchObject({
-      targets: expect.arrayContaining([expect.objectContaining({
-        pluginId: 'team/demo',
-        errors: [expect.objectContaining({ code: 'bundleUnavailable' })],
-      })]),
-    });
-    expect(statusPayload.errors).not.toContainEqual(expect.objectContaining({ code: 'bundleUnavailable' }));
-    const filteredStatus = createCapturedCliIo();
-    await runCli(['status', 'team/demo', '--platform', 'claude', '--scope', 'project', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: filteredStatus.io,
-      interactive: false,
-    });
-    expect((JSON.parse(filteredStatus.readStdout()) as { targets: unknown[] }).targets).toEqual([]);
-
-    for (const args of [
-      ['config', 'list', 'team/demo', '--scope', 'user', '--json'],
-      ['config', 'get', 'team/demo', 'mode', '--scope', 'user', '--json'],
-    ]) {
-      const output = createCapturedCliIo();
-      expect(await runCli(args, {
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        io: output.io,
-        interactive: false,
-      })).toBe(0);
-      expect(JSON.parse(output.readStdout())).toMatchObject({
-        pluginId: 'team/demo',
-        sourceId: 'team',
-        fields: expect.arrayContaining([expect.objectContaining({ key: 'mode' })]),
-      });
-    }
-    const unsetOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'unset', 'team/demo', 'mode', '--scope', 'user', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: unsetOutput.io,
-      interactive: false,
-    })).toBe(1);
-    expect(`${unsetOutput.readStdout()}${unsetOutput.readStderr()}`).toContain('does not exist');
-
-    const blockedReset = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--yes', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: blockedReset.io,
-      interactive: false,
-    })).toBe(1);
-    expect(blockedReset.readStderr()).toContain('configSchemaUnavailable');
-    await expect(cleanupWriteCommand(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, {
-      env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
-    })).resolves.toMatchObject({
-      overallState: 'succeeded',
-      targetResults: [expect.objectContaining({ state: 'completed' })],
-    });
-    expect(await fs.pathExists(skillRoot)).toBe(false);
-    const resetOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--yes', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: resetOutput.io,
-      interactive: false,
-    })).toBe(1);
-    expect(resetOutput.readStderr()).toContain('configSchemaUnavailable');
-    await expect(readPluginConfigStore({
-      sourceId: 'team',
-      sourceIdentity,
-      pluginName: 'demo',
-      scope: 'user',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    })).resolves.toMatchObject({ exists: true, values: { mode: 'fast' } });
-  });
-
-  it('resolves only sources with live namespaced targets for upgrade --all', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const goodRoot = path.join(isolation.layout.fixtureCwd, 'upgrade-all-good');
-    const badRoot = path.join(isolation.layout.fixtureCwd, 'upgrade-all-missing');
-    await createCatalogSnapshotFixture(goodRoot, 'good-plugin');
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [
-          { id: 'good', type: 'path', primary: true, path: goodRoot },
-          { id: 'bad', type: 'path', primary: false, path: badRoot },
-        ],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    await expect(upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, { env: isolation.env })).resolves.toMatchObject({ overallState: 'succeeded', rebuildResults: [] });
-
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const liveRoot = path.join(skillsRoot, 'bad-live');
-    await fs.ensureDir(liveRoot);
-    await writeSkillOwnerMarker({
-      skillRoot: liveRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'bad',
-        sourceIdentity: SOURCE_IDENTITY,
-        pluginId: 'bad/demo',
-        plugin: 'demo',
-        artifactKey: 'bad-live',
-        platform: 'codex',
-        scope: 'project',
-      },
-    });
-    const blocked = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'both',
-      scope: 'project',
-    }, { env: isolation.env });
-    expect(blocked).toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({
-        errorCode: 'catalogSourceUnavailable',
-        target: expect.objectContaining({
-          pluginId: 'bad/demo',
-          pluginVersion: 'unavailable',
-          platform: 'codex',
-          scope: 'project',
-        }),
-      })],
-    });
-    expect(blocked.targetResults).toHaveLength(1);
-    expect(await fs.pathExists(liveRoot)).toBe(true);
-
-    const statusOutput = createCapturedCliIo();
-    expect(await runCli([
-      'status', 'bad/demo', '--platform', 'codex', '--scope', 'project', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: statusOutput.io,
-      interactive: false,
-    })).toBe(1);
-    const statusPayload = JSON.parse(statusOutput.readStdout()) as {
-      targets: Array<{ errors: Array<{ code: string }> }>;
-    };
-    expect(statusPayload.targets).toEqual([expect.objectContaining({
-      pluginId: 'bad/demo',
-      platform: 'codex',
-      scope: 'project',
-      errors: [expect.objectContaining({ code: 'catalogSourceUnavailable' })],
-    })]);
-    expect(statusPayload.targets.flatMap((target) => target.errors))
-      .not.toContainEqual(expect.objectContaining({ code: 'bundleUnavailable' }));
-  });
-
-  it('keeps namespaced and legacy targets on upgrade --all source failures', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const missingRoot = path.join(isolation.layout.fixtureCwd, 'upgrade-all-mixed-missing');
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'bad', type: 'path', primary: true, path: missingRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const namespacedRoot = path.join(skillsRoot, 'bad-live');
-    const legacyRoot = path.join(skillsRoot, 'legacy-live');
-    await Promise.all([fs.ensureDir(namespacedRoot), fs.ensureDir(legacyRoot)]);
-    await Promise.all([
-      writeSkillOwnerMarker({
-        skillRoot: namespacedRoot,
-        allowedRoot: skillsRoot,
-        identity: {
-          owner: 'agent-workflows',
-          sourceId: 'bad',
-          sourceIdentity: SOURCE_IDENTITY,
-          pluginId: 'bad/demo',
-          plugin: 'demo',
-          artifactKey: 'bad-live',
-          platform: 'codex',
-          scope: 'project',
-        },
-      }),
-      writeSkillOwnerMarker({
-        skillRoot: legacyRoot,
-        allowedRoot: skillsRoot,
-        identity: {
-          owner: 'agent-workflows',
-          plugin: 'legacy-demo',
-          artifactKey: 'legacy-live',
-          platform: 'codex',
-          scope: 'project',
-        },
-      }),
-    ]);
-
-    const result = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, { env: isolation.env });
-    expect(result.overallState).toBe('failed');
-    expect(result.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        target: expect.objectContaining({
-          pluginId: 'bad/demo', platform: 'codex', scope: 'project',
-        }),
-      }),
-      expect.objectContaining({
-        target: expect.objectContaining({
-          pluginName: 'legacy-demo', platform: 'codex', scope: 'project',
-        }),
-      }),
-    ]));
-    expect(result.targetResults).toHaveLength(2);
-  });
-
-  it('fails upgrade --all closed on an invalid owner while retaining later partial inventory', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const incompleteRoot = path.join(skillsRoot, 'a-incomplete');
-    const validRoot = path.join(skillsRoot, 'z-valid');
-    await fs.ensureDir(validRoot);
-    await Promise.all([
-      fs.outputJson(path.join(incompleteRoot, '.agent-workflows-owner.json'), {
-        schemaVersion: 2,
-        owner: 'agent-workflows',
-        sourceId: 'incomplete',
-        pluginId: 'incomplete/demo',
-        plugin: 'demo',
-        artifactKey: 'a-incomplete',
-        platform: 'codex',
-        scope: 'project',
-      }),
-      writeSkillOwnerMarker({
-        skillRoot: validRoot,
-        allowedRoot: skillsRoot,
-        identity: {
-          owner: 'agent-workflows',
-          sourceId: 'valid',
-          sourceIdentity: SOURCE_IDENTITY,
-          pluginId: 'valid/later',
-          plugin: 'later',
-          artifactKey: 'z-valid',
-          platform: 'codex',
-          scope: 'project',
-        },
-      }),
-    ]);
-
-    const result = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, { env: isolation.env });
-    expect(result.overallState).toBe('failed');
-    expect(result.targetResults).toEqual([]);
-    const inventory = await inventoryCatalogSourceReferences({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    });
-    expect(inventory.errors).toContainEqual(expect.objectContaining({ kind: 'ownerMarkerValidation' }));
-    expect(inventory.references).toContainEqual(expect.objectContaining({
-      kind: 'namespacedOwner', sourceId: 'valid', pluginName: 'later',
-    }));
-  });
-
-  it('keeps valid owner references while reporting each corrupt canonical owner item', async () => {
+  it('ignores all ordinary project Skill markers while reporting canonical owner errors', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const validRoot = path.join(skillsRoot, 'valid');
@@ -1131,18 +783,10 @@ describe('phase 3B namespaced runtime stores', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     });
-    expect(inventory.references).toContainEqual(expect.objectContaining({
-      kind: 'namespacedOwner',
-      sourceId: 'team',
-      pluginName: 'demo',
-      location: path.join(validRoot, '.agent-workflows-owner.json'),
-    }));
-    expect(inventory.errors).toEqual(expect.arrayContaining([
+    expect(inventory.references).toEqual([]);
+    expect(inventory.errors).toEqual([
       expect.objectContaining({ kind: 'ownerHeaderParse' }),
-      expect.objectContaining({ kind: 'ownerMarkerRead' }),
-      expect.objectContaining({ kind: 'ownerMarkerValidation' }),
-    ]));
-    expect(inventory.errors).toHaveLength(4);
+    ]);
     expect(JSON.stringify(inventory.errors)).not.toContain(isolation.layout.fixtureCwd);
   });
 
@@ -1206,106 +850,7 @@ describe('phase 3B namespaced runtime stores', () => {
     }));
   });
 
-  it('projects later valid upgrade --all targets before identity conflict validation', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const owners: OwnerIdentity[] = [
-      {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
-        pluginId: 'team/demo', plugin: 'demo', artifactKey: 'a-demo-one',
-        platform: 'codex', scope: 'project',
-      },
-      {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: `sha256:${'2'.repeat(64)}`,
-        pluginId: 'team/demo', plugin: 'demo', artifactKey: 'b-demo-two',
-        platform: 'codex', scope: 'project',
-      },
-      {
-        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
-        pluginId: 'team/later', plugin: 'later', artifactKey: 'z-later',
-        platform: 'codex', scope: 'project',
-      },
-    ];
-    await Promise.all(owners.map((identity) => fs.ensureDir(
-      path.join(skillsRoot, identity.artifactKey),
-    )));
-    await Promise.all(owners.map((identity) => writeSkillOwnerMarker({
-      skillRoot: path.join(skillsRoot, identity.artifactKey),
-      allowedRoot: skillsRoot,
-      identity,
-    })));
-
-    const result = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, { env: isolation.env });
-    expect(result.overallState).toBe('failed');
-    expect(result.targetResults).toHaveLength(3);
-    expect(result.targetResults.filter((entry) => entry.target.pluginId === 'team/demo'))
-      .toHaveLength(2);
-    expect(result.targetResults).toContainEqual(expect.objectContaining({
-      errorCode: 'sourceChanged',
-      target: expect.objectContaining({ pluginId: 'team/later' }),
-    }));
-  });
-
-  it('upgrades only the live platform target for upgrade --all with both selected', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'upgrade-live-platform');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo');
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [source] },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const liveRoot = path.join(skillsRoot, 'live-codex-only');
-    await fs.ensureDir(liveRoot);
-    await writeSkillOwnerMarker({
-      skillRoot: liveRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'team',
-        sourceIdentity,
-        pluginId: 'team/demo',
-        plugin: 'demo',
-        artifactKey: 'live-codex-only',
-        platform: 'codex',
-        scope: 'project',
-      },
-    });
-    const calls: string[] = [];
-    const result = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'both',
-      scope: 'project',
-    }, {
-      env: isolation.env,
-      nativeCliRunner: async (invocation) => {
-        calls.push([invocation.command, ...invocation.args].join(' '));
-        return {
-          exitCode: 0,
-          stdout: invocation.args.length === 1 && invocation.args[0] === '--version'
-            ? 'codex-cli 0.200.0'
-            : '',
-          stderr: '',
-        };
-      },
-    });
-    expect(result.targetResults.length).toBeGreaterThan(0);
-    expect(result.targetResults.every((target) =>
-      target.target.pluginId === 'team/demo' && target.target.platform === 'codex')).toBe(true);
-    expect(calls.some((call) => call.startsWith('claude '))).toBe(false);
-  });
-
-  it('blocks empty upgrade --all only for filtered legacy live evidence', async () => {
+  it('ignores legacy project Skill evidence but blocks legacy user native evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const legacyMarker = path.join(
       isolation.layout.fixtureCwd,
@@ -1332,24 +877,17 @@ describe('phase 3B namespaced runtime stores', () => {
       overallState: 'succeeded',
       targetResults: [],
     });
-    const blocked = await upgradeWriteCommand([], {
+    const ignoredProjectMarker = await upgradeWriteCommand([], {
       all: true,
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
     }, { env: isolation.env });
-    expect(blocked).toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({
-        errorCode: 'legacyStateUnsupported',
-        target: expect.objectContaining({
-          pluginName: 'legacy-demo',
-          pluginVersion: 'unavailable',
-          platform: 'codex',
-          scope: 'project',
-        }),
-      })],
+    expect(ignoredProjectMarker).toMatchObject({
+      overallState: 'succeeded',
+      targetResults: [],
     });
+    await expect(fs.pathExists(legacyMarker)).resolves.toBe(true);
 
     await fs.outputFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
       '[marketplaces.aw]',
@@ -1454,23 +992,15 @@ describe('phase 3B namespaced runtime stores', () => {
       scope: 'project',
     }));
     await fs.outputFile(samePluginMarker, samePluginMarkerBytes);
-    const blocked = await installWriteCommand(['team/demo'], {
+    const ignoredSamePluginMarker = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
     }, { ...runtime, previewDependencyPlanOnly: true });
-    expect(blocked).toMatchObject({
-      overallState: 'failed',
-      targetResults: expect.arrayContaining([expect.objectContaining({
-        errorCode: 'legacyStateUnsupported',
-        target: expect.objectContaining({
-          pluginId: 'team/demo',
-          platform: 'codex',
-          scope: 'project',
-        }),
-      })]),
+    expect(ignoredSamePluginMarker).toMatchObject({
+      overallState: 'succeeded',
+      targetResults: [],
     });
-    expect(blocked.targetResults).toHaveLength(2);
     await expect(fs.readFile(samePluginMarker)).resolves.toEqual(samePluginMarkerBytes);
     await expect(fs.readFile(legacyMarker)).resolves.toEqual(legacyMarkerBytes);
   });
@@ -1780,82 +1310,6 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it('reports both namespaced and filtered legacy targets when upgrade --all is blocked', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'legacy-coexist-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo');
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [source] },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    await Promise.all([
-      fs.ensureDir(path.join(skillsRoot, 'namespaced')),
-      fs.outputJson(path.join(skillsRoot, 'legacy-demo', '.agent-workflows-owner.json'), {
-        schemaVersion: 1,
-        owner: 'agent-workflows',
-        plugin: 'legacy-demo',
-        artifactKey: 'legacy-demo',
-        platform: 'codex',
-        scope: 'project',
-      }),
-      fs.outputJson(path.join(skillsRoot, 'unrelated', '.agent-workflows-owner.json'), {
-        schemaVersion: 1,
-        owner: 'agent-workflows',
-        plugin: 'unrelated',
-        artifactKey: 'unrelated',
-        platform: 'claude',
-        scope: 'project',
-      }),
-      fs.outputJson(path.join(isolation.env.AW_HOME!, 'plugin-config', 'legacy', 'config.json'), {
-        schemaVersion: 1,
-      }),
-      fs.outputJson(path.join(
-        isolation.env.AW_HOME!,
-        'lifecycle-active',
-        'codex',
-        'project',
-        'legacy.json',
-      ), { schemaVersion: 1 }),
-    ]);
-    await writeSkillOwnerMarker({
-      skillRoot: path.join(skillsRoot, 'namespaced'),
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'team',
-        sourceIdentity,
-        pluginId: 'team/demo',
-        plugin: 'demo',
-        artifactKey: 'namespaced',
-        platform: 'codex',
-        scope: 'project',
-      },
-    });
-    const result = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, { env: isolation.env });
-    expect(result.overallState).toBe('failed');
-    expect(result.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        errorCode: 'legacyStateUnsupported',
-        target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
-      }),
-      expect.objectContaining({
-        errorCode: 'legacyStateUnsupported',
-        target: expect.objectContaining({ pluginName: 'legacy-demo', platform: 'codex', scope: 'project' }),
-      }),
-    ]));
-    expect(result.targetResults).toHaveLength(2);
-  });
-
   it('ignores legacy config and lifecycle in status and filters legacy live owners', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'legacy-status-source');
@@ -1917,63 +1371,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(1);
     expect((JSON.parse(codexOutput.readStdout()) as { errors: Array<{ code: string }> }).errors)
-      .toContainEqual(expect.objectContaining({ code: 'legacyStateUnsupported' }));
-  });
-
-  it('projects a qualified missing-source selector from matching live evidence', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const primaryRoot = path.join(isolation.layout.fixtureCwd, 'missing-selector-primary');
-    await createCatalogSnapshotFixture(primaryRoot, 'primary-demo');
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'primary', type: 'path', primary: true, path: primaryRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const skillRoot = path.join(skillsRoot, 'missing-live');
-    await fs.ensureDir(skillRoot);
-    await writeSkillOwnerMarker({
-      skillRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'missing',
-        sourceIdentity: SOURCE_IDENTITY,
-        pluginId: 'missing/demo',
-        plugin: 'demo',
-        artifactKey: 'missing-live',
-        platform: 'codex',
-        scope: 'project',
-      },
-    });
-
-    const output = createCapturedCliIo();
-    expect(await runCli([
-      'status', 'missing/demo', '--platform', 'codex', '--scope', 'project', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: output.io,
-      interactive: false,
-    })).toBe(1);
-    const stdout = output.readStdout();
-    const payload = JSON.parse(stdout) as {
-      targets: Array<{ errors: Array<{ code: string }> }>;
-      errors: Array<{ code: string }>;
-    };
-    expect(stdout.trim().split('\n')).toHaveLength(1);
-    expect(payload.targets).toEqual([expect.objectContaining({
-      pluginId: 'missing/demo',
-      platform: 'codex',
-      scope: 'project',
-      errors: [expect.objectContaining({ code: 'sourceMissing' })],
-    })]);
-    expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
-    expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'sourceMissing' }));
+      .not.toContainEqual(expect.objectContaining({ code: 'legacyStateUnsupported' }));
   });
 
   it('sanitizes target status errors and does not duplicate them as global errors', async () => {
@@ -2034,65 +1432,6 @@ describe('phase 3B namespaced runtime stores', () => {
     })).toBe(1);
     expect(human.readStdout()).toContain('sourceChanged');
     expect(human.readStdout()).not.toContain(skillRoot);
-  });
-
-  it('keeps live targets whose current bundle no longer supports their platform', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'revoked-platform-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.marketplace.policy.products = ['CLAUDE'];
-    });
-    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [source] },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
-    const skillRoot = path.join(skillsRoot, 'revoked-live');
-    await fs.ensureDir(skillRoot);
-    await writeSkillOwnerMarker({
-      skillRoot,
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'team',
-        sourceIdentity,
-        pluginId: 'team/demo',
-        plugin: 'demo',
-        artifactKey: 'revoked-live',
-        platform: 'codex',
-        scope: 'project',
-      },
-    });
-
-    const unfiltered = createCapturedCliIo();
-    expect(await runCli(['status', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: unfiltered.io,
-      interactive: false,
-    })).toBe(1);
-    expect(JSON.parse(unfiltered.readStdout())).toMatchObject({
-      targets: expect.arrayContaining([expect.objectContaining({
-        pluginId: 'team/demo',
-        platform: 'codex',
-        scope: 'project',
-        errors: [expect.objectContaining({ code: 'noLongerSupported' })],
-      })]),
-    });
-
-    const unrelated = createCapturedCliIo();
-    await runCli(['status', 'team/demo', '--platform', 'claude', '--scope', 'project', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: unrelated.io,
-      interactive: false,
-    });
-    expect((JSON.parse(unrelated.readStdout()) as { targets: Array<{ platform: string }> }).targets)
-      .not.toContainEqual(expect.objectContaining({ platform: 'codex' }));
   });
 
   it('fails closed on invalid shared Codex inventory for a native project target', async () => {
