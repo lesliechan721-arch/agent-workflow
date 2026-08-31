@@ -4,6 +4,7 @@ import { isPathInside, pathsOverlap, sha256 } from './common.js'
 import { readEvalContractFile } from './eval-file.js'
 import { validateJsonSchema } from './json-schema.js'
 import { assertSafeOutputPath } from './output-path.js'
+import { computeEvalProviderDigest } from './eval-audit.js'
 import { computeCanonicalDirectoryDigest, computeSkillDigest } from './runtime-skill.js'
 import { getSchema } from './schemas.js'
 import type { Digest, ValidationResult } from './types.js'
@@ -40,6 +41,7 @@ export interface EvalSpecCalculated {
   spec: EvalSpec
   specDigest: Digest
   workspaceDigest: Digest
+  providerDigest: Digest
   targetDigest: Digest
   caseDigest: Digest
   previousTargetDigest: Digest | null
@@ -150,6 +152,7 @@ export async function validateEvalSpecFile(
         spec,
         specDigest: file.digest,
         workspaceDigest,
+        providerDigest: computeEvalProviderDigest(spec.provider),
         targetDigest,
         caseDigest,
         previousTargetDigest,

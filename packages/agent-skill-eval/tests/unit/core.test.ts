@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import {
   assertProviderProcessSupported,
   canonicalJson,
+  computeCanonicalDirectoryDigest,
   computeCaseCorpusDigest,
   computeSkillDigest,
   createRuntimeSkillSnapshot,
@@ -142,6 +143,17 @@ describe('public Eval execution contracts', () => {
       expect(await computeSkillDigest(singleRecord)).not.toBe(
         await computeSkillDigest(twoRecords),
       )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('rejects unsupported workspace nodes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-special-node-'))
+    try {
+      const fifo = path.join(root, 'unsupported-fifo')
+      await execFileAsync('mkfifo', [fifo])
+      await expect(computeCanonicalDirectoryDigest(root)).rejects.toThrow('unsupported node')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

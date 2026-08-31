@@ -177,6 +177,20 @@ test('materialized EvalAudit template validates against the canonical v1 schema'
   assert.equal(JSON.parse(stdout).valid, true);
 });
 
+test('Auditor copies the public provider digest receipt without owning its algorithm', async () => {
+  const roots = [sourceRoot];
+  if (context) roots.push(runtimeRoot);
+  // Static contract exception: an Auditor that reimplements provider digest logic can admit a stale provider binding; behavior test is not suitable because this is a direct Agent instruction about the public machine receipt owner.
+  for (const root of roots) {
+    const skill = await readFile(
+      path.join(root, 'skills/audit-agent-skill-evals/SKILL.md'),
+      'utf8',
+    );
+    assert.match(skill, /calculated\.providerDigest/u);
+    assert.match(skill, /不得复制或推导其算法/u);
+  }
+});
+
 test('Eval case validator admits exact trigger routes only at the trigger layer', async () => {
   const validator = path.join(
     runtimeRoot,

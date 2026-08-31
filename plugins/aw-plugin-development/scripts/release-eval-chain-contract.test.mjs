@@ -38,7 +38,7 @@ function computeEvalProviderDigest(provider) {
 }
 
 function emptyWorkspaceDigest() {
-  const domain = Buffer.from('aw-production-records-v1', 'utf8');
+  const domain = Buffer.from('aw-eval-workspace-records-v1', 'utf8');
   const length = Buffer.allocUnsafe(8);
   length.writeBigUInt64BE(BigInt(domain.length));
   return `sha256:${createHash('sha256').update(length).update(domain).digest('hex')}`;

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -151,6 +151,7 @@ describe('independent Eval v1 contracts', () => {
     expect(specValidation).toMatchObject({ valid: true, errors: [] })
     expect(specValidation.calculated?.specDigest).toBe(await computeEvalFileDigest(specPath))
     expect(specValidation.calculated?.workspaceDigest).toBe(spec.workspace.digest)
+    expect(specValidation.calculated?.providerDigest).toBe(computeEvalProviderDigest(spec.provider))
 
     const audit = validAudit(spec)
     await expect(parseEvalAudit(audit)).resolves.toEqual(audit)
@@ -518,5 +519,28 @@ describe('independent Eval v1 contracts', () => {
       valid: false,
       errors: expect.arrayContaining([expect.stringContaining('workspace digest')]),
     })
+  })
+
+  it('binds empty directory additions, removals, and renames', async () => {
+    const fixture = await createSpecFixture()
+    const workspace = path.join(fixture.root, 'workspace')
+    const originalDigest = fixture.spec.workspace.digest
+
+    await mkdir(path.join(workspace, 'added-empty'))
+    expect(await computeCanonicalDirectoryDigest(workspace)).not.toBe(originalDigest)
+    await expect(validateEvalSpecFile(fixture.specPath)).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('workspace digest')]),
+    })
+
+    fixture.spec.workspace.digest = await computeCanonicalDirectoryDigest(workspace)
+    await writeFile(fixture.specPath, JSON.stringify(fixture.spec))
+    await rename(path.join(workspace, 'added-empty'), path.join(workspace, 'renamed-empty'))
+    await expect(validateEvalSpecFile(fixture.specPath)).resolves.toMatchObject({ valid: false })
+
+    fixture.spec.workspace.digest = await computeCanonicalDirectoryDigest(workspace)
+    await writeFile(fixture.specPath, JSON.stringify(fixture.spec))
+    await rm(path.join(workspace, 'renamed-empty'), { recursive: true })
+    await expect(validateEvalSpecFile(fixture.specPath)).resolves.toMatchObject({ valid: false })
   })
 })
