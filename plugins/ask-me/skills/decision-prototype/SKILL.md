@@ -9,16 +9,17 @@ description: "当一个重要决定无法只靠提问或文字分析可靠确定
 
 ## 工作流
 
-1. 先读取当前对话、已有决定、可选 Decision frame，以及相关代码和文档。确认阻塞点是需要用户判断的问题，而不是可以调查的事实或普通局部实现选择。
+1. 读取当前对话、已有决定及相关代码和文档。确认阻塞点需要用户判断，而不是可以调查的事实或普通局部实现选择。
 2. 写出唯一的原型问题、用户需要观察什么，以及得到什么反馈后可以停止。不要用“探索整个产品”代替具体问题。
-3. 选择最便于用户判断的最低成本形式：候选文案、图片、可点击网页、流程 walkthrough、API consumer 示例、状态模拟器或最小技术 spike。
-4. 读取并使用 [原型说明模板](assets/prototype-brief.md)。优先使用用户或调用者给定的目录，其次遵循仓库约定；都没有时使用清楚命名的隔离目录 `prototypes/<decision-id>/`。清楚标记验证范围、有意忽略和查看方式。除非用户明确要求保留，避免覆盖生产文件。
-5. 默认先把原型组织成视觉问答：提供少量候选、`都不接受` 和补充评论。用户需要指出具体位置或连续调整时，再升级到引导问题、局部标注或受控参数；只有低保真无法回答时才提高保真度。
-6. 需要标准网页反馈时读取 [Prototype Review](references/prototype-review.md)。简单文案、单图或低成本示例不强制启动 Review Shell。
-7. 多文件交互页面、视觉资源、两轮以上修改或大量仓库分析时，可以使用 Prototype builder 子代理。Builder 只创建或修改 artifact，并返回路径、查看方式、变更摘要和限制；不要替用户作决定。
-8. 向用户展示或提供操作方式。适合有限选项时使用 {{questionTool}}；否则请用户说明观察、偏好和无法接受的部分，然后等待回答。
-9. 记录已经确认的当前决定、支持证据、未解决项和新的材料问题。被否决方向只有在安全、兼容、迁移、回滚或避免高概率重复错误需要时才作为证据保留。
+3. 选择最低成本形式：候选文案、图片、可点击网页、流程 walkthrough、API consumer 示例、状态模拟器或最小技术 spike。
+4. 使用[原型说明模板](assets/prototype-brief.md)，并创建 `brief.md`、`prototype.json` 和 `artifact/`。优先使用用户给定目录，其次遵循仓库约定；都没有时使用 `prototypes/<decision-id>/`。不要覆盖生产文件。
+5. 默认先提供少量候选、`都不接受` 和补充评论。只有具体位置或连续调整会改变决定时，才增加引导问题、局部标注或受控参数。
+6. 简单文案、单图或低成本示例不启动 Review Shell；适合有限选项时使用 {{questionTool}}。标准网页反馈必须读取 [Prototype Review](references/prototype-review.md)，然后执行 `start`。Agent 使用环境可用能力打开返回的 URL，再执行 `wait`。没有打开能力时，把 URL 给用户并仍执行 `wait`；环境不能长时间阻塞时，用 `status` 重试。
+7. `wait` 返回 `submitted` 后，读取 `feedback.json` 并继续。`timeout` 或 `cancelled` 不表示接受或拒绝。`revise` 必须更新 artifact、递增 revision，并为新 revision 启动新会话。
+8. 记录当前决定、支持证据、未解决项和新的材料问题。被否决方向只在安全、兼容、迁移、回滚或避免高概率重复错误需要时保留。
 
-结束时向用户说明原型在哪里、如何体验、当前结论以及仍未解决的问题。使用 Review Shell 时，机器可读反馈保存在 `feedback.json`。
+复杂 artifact 可以使用 Prototype builder 子代理。Builder 只修改 artifact，并返回路径、查看方式、变更摘要和限制；用户决定仍由当前 Skill 负责。
+
+Prototype 目录只包含 `brief.md`、`prototype.json`、`artifact/`、提交后生成的 `feedback.json` 和决定后生成的 `verdict.md`。Review Shell 和会话状态不写入 Prototype 目录。
 
 原型默认可丢弃。只有用户明确选择复用，且后续实现者重新评估结构、测试和风险后，生产实现才可以从原型演进。

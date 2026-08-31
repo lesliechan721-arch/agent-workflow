@@ -1,6 +1,13 @@
-import { annotationTargets, iframeSandbox, imageAnnotationTarget, markedAnnotationTarget } from './review-policy.mjs';
+import {
+  annotationTargets,
+  consumeSessionToken,
+  iframeSandbox,
+  imageAnnotationTarget,
+  markedAnnotationTarget,
+  validateFeedbackForPrototype,
+} from './review-policy.mjs';
 
-const state = { config: null, sessionToken: null, selectedOptions: new Set(), answers: [], annotations: [], cssVariableValues: {}, verdict: 'revise' };
+const state = { config: null, sessionToken: consumeSessionToken(window.location, window.history), selectedOptions: new Set(), answers: [], annotations: [], cssVariableValues: {}, verdict: 'revise' };
 const $ = (id) => document.getElementById(id);
 
 function artifactUrl(path) {
@@ -14,7 +21,7 @@ function addAnnotation(target) {
   state.annotations.push({
     id: `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     target,
-    category: 'prototype-feedback',
+    category: { kind: 'other' },
     comment,
     desiredOutcome,
   });
@@ -48,16 +55,24 @@ function renderOption(option) {
   heading.textContent = option.label;
   const description = document.createElement('p');
   description.textContent = option.description || '';
-  const choose = document.createElement('label');
-  const checkbox = document.createElement('input');
-  checkbox.type = 'checkbox';
-  checkbox.onchange = () => {
-    if (checkbox.checked) state.selectedOptions.add(option.id);
-    else state.selectedOptions.delete(option.id);
-    card.classList.toggle('selected', checkbox.checked);
-  };
-  choose.append(checkbox, ' 选择此方案');
-  card.append(heading, description, choose);
+  card.append(heading, description);
+  if (state.config.selectionMode !== 'none') {
+    const choose = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = state.config.selectionMode === 'multiple' ? 'checkbox' : 'radio';
+    input.name = 'prototype-option';
+    input.onchange = () => {
+      if (state.config.selectionMode === 'single') {
+        state.selectedOptions.clear();
+        for (const optionCard of document.querySelectorAll('.option')) optionCard.classList.remove('selected');
+      }
+      if (input.checked) state.selectedOptions.add(option.id);
+      else state.selectedOptions.delete(option.id);
+      card.classList.toggle('selected', input.checked);
+    };
+    choose.append(input, ' 选择此方案');
+    card.append(choose);
+  }
 
   if (option.kind === 'html') {
     const iframe = document.createElement('iframe');
@@ -130,8 +145,10 @@ function renderGuided() {
     for (const choice of question.choices || []) {
       const label = document.createElement('label');
       const input = document.createElement('input');
-      input.type = 'checkbox';
+      input.type = question.selectionMode === 'multiple' ? 'checkbox' : 'radio';
+      input.name = `guided-${question.id}`;
       input.onchange = () => {
+        if (question.selectionMode === 'single') state.answers[index].selected = [];
         const values = state.answers[index].selected;
         if (input.checked && !values.includes(choice)) values.push(choice);
         if (!input.checked) state.answers[index].selected = values.filter((value) => value !== choice);
@@ -168,8 +185,6 @@ function renderEditableCssVariables() {
   $('tokens').append(heading);
   for (const [name, values] of entries) {
     if (!Array.isArray(values) || values.length === 0) continue;
-    const answer = { questionId: `css-variable:${name}`, selected: [String(values[0])], comment: '' };
-    state.answers.push(answer);
     applyCssVariable(name, String(values[0]));
     const label = document.createElement('label');
     label.textContent = name;
@@ -181,7 +196,6 @@ function renderEditableCssVariables() {
       select.append(option);
     }
     select.onchange = () => {
-      answer.selected = [select.value];
       applyCssVariable(name, select.value);
     };
     label.append(select);
@@ -191,21 +205,28 @@ function renderEditableCssVariables() {
 
 function feedback() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    reviewShellVersion: 2,
     prototypeId: state.config.id,
     prototypeRevision: state.config.revision,
     verdict: state.verdict,
     selectedOptions: [...state.selectedOptions],
     answers: state.answers,
     annotations: state.annotations,
+    cssVariableValues: state.cssVariableValues,
     globalNotes: $('globalNotes').value,
+    ...(state.verdict === 'rejected' ? { reason: $('globalNotes').value } : {}),
+    ...(state.verdict === 'new-material-question' ? { materialQuestion: $('globalNotes').value } : {}),
   };
 }
 
 async function save(verdict) {
   state.verdict = verdict;
-  const body = JSON.stringify(feedback(), null, 2);
+  let currentFeedback;
   try {
+    currentFeedback = feedback();
+    validateFeedbackForPrototype(currentFeedback, state.config);
+    const body = JSON.stringify(currentFeedback, null, 2);
     const response = await fetch('/api/feedback', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-prototype-review-token': state.sessionToken },
@@ -219,25 +240,30 @@ async function save(verdict) {
 }
 
 function download() {
-  const blob = new Blob([JSON.stringify(feedback(), null, 2)], { type: 'application/json' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = 'feedback.json';
-  link.click();
-  URL.revokeObjectURL(link.href);
+  try {
+    const currentFeedback = feedback();
+    validateFeedbackForPrototype(currentFeedback, state.config);
+    const blob = new Blob([JSON.stringify(currentFeedback, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'feedback.json';
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch (error) {
+    $('status').textContent = error.message;
+  }
 }
 
-const [configResponse, sessionResponse] = await Promise.all([fetch('./config.json'), fetch('/api/session')]);
+const configResponse = await fetch('./config.json');
 state.config = await configResponse.json();
-state.sessionToken = (await sessionResponse.json()).token;
 $('question').textContent = state.config.question;
 $('meta').textContent = `${state.config.id} · revision ${state.config.revision}`;
-if (state.config.decisionFrame) {
+if (state.config.decisionContext) {
   $('frame').hidden = false;
   const heading = document.createElement('h2');
-  heading.textContent = 'Decision frame';
+  heading.textContent = 'Decision context';
   const content = document.createElement('pre');
-  content.textContent = JSON.stringify(state.config.decisionFrame, null, 2);
+  content.textContent = JSON.stringify(state.config.decisionContext, null, 2);
   $('frame').append(heading, content);
 }
 for (const option of state.config.options) $('options').append(renderOption(option));

@@ -7,83 +7,57 @@
     "id",
     "revision",
     "question",
+    "decisionContext",
     "options",
     "stopCondition"
   ],
   "properties": {
-    "schemaVersion": {
-      "const": 1
+    "schemaVersion": { "const": 2 },
+    "id": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "question": { "type": "string", "minLength": 1 },
+    "decisionContext": {
+      "type": "object",
+      "required": ["goal", "priorities", "constraints"],
+      "properties": {
+        "goal": { "type": "string", "minLength": 1 },
+        "priorities": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "constraints": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
     },
-    "id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "revision": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "question": {
-      "type": "string",
-      "minLength": 1
+    "selectionMode": {
+      "enum": ["single", "multiple", "none"],
+      "default": "single"
     },
     "htmlExecution": {
-      "enum": [
-        "static",
-        "sandboxed"
-      ],
+      "enum": ["static", "sandboxed"],
       "default": "static"
     },
-    "decisionFrame": {
-      "type": "object",
-      "additionalProperties": true
-    },
-    "stopCondition": {
-      "type": "string",
-      "minLength": 1
-    },
-    "allowOther": {
-      "type": "boolean",
-      "default": true
-    },
-    "allowAnnotations": {
-      "type": "boolean",
-      "default": false
-    },
+    "stopCondition": { "type": "string", "minLength": 1 },
+    "allowOther": { "type": "boolean", "default": true },
+    "allowAnnotations": { "type": "boolean", "default": false },
     "options": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": [
-          "id",
-          "label",
-          "kind",
-          "artifact"
-        ],
+        "required": ["id", "label", "kind", "artifact"],
         "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "label": {
-            "type": "string",
-            "minLength": 1
-          },
-          "kind": {
-            "enum": [
-              "html",
-              "image",
-              "text",
-              "metrics"
-            ]
-          },
-          "artifact": {
-            "type": "string",
-            "minLength": 1
-          },
-          "description": {
-            "type": "string"
-          }
+          "id": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["html", "image", "text", "metrics"] },
+          "artifact": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" },
+          "summary": { "type": "string" }
         },
         "additionalProperties": false
       }
@@ -93,24 +67,19 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": [
-          "id",
-          "label"
-        ],
+        "required": ["id", "label"],
         "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "label": {
-            "type": "string",
-            "minLength": 1
+          "id": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "selectionMode": {
+            "enum": ["single", "multiple", "freeform"],
+            "default": "single"
           },
           "choices": {
             "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
           }
         },
         "additionalProperties": false
@@ -121,10 +90,8 @@
       "additionalProperties": {
         "type": "array",
         "minItems": 1,
-        "items": {
-          "type": "string",
-          "minLength": 1
-        }
+        "uniqueItems": true,
+        "items": { "type": "string", "minLength": 1 }
       }
     }
   },

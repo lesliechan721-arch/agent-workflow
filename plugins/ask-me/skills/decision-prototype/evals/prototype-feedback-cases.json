@@ -137,17 +137,16 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "读取 prototypes/revision-check/prototype.json、review/config.json 和 feedback.json。当前 Prototype 是 revision 3，但 feedback 来自 revision 2。说明应如何处理，不要修改文件。",
+      "prompt": "读取 prototypes/revision-check/prototype.json 和 feedback.json。当前 Prototype 是 revision 3，但 feedback 来自 revision 2。说明应如何处理，不要修改文件。",
       "assertions": [
         "识别 revision mismatch",
         "不静默迁移旧标注"
       ],
       "input": {
         "workspaceFiles": {
-          "prototypes/revision-check/prototype.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
+          "prototypes/revision-check/prototype.json": "{\"schemaVersion\":2,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"decisionContext\":{\"goal\":\"确定风险摘要位置\",\"priorities\":[\"风险可见\"],\"constraints\":[]},\"allowAnnotations\":true,\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
           "prototypes/revision-check/artifact/index.html": "<!doctype html><section data-prototype-id=\"risk-summary\">风险摘要 revision 3</section>\n",
-          "prototypes/revision-check/review/config.json": "{\"schemaVersion\":1,\"id\":\"revision-check\",\"revision\":3,\"question\":\"风险摘要应放在哪里？\",\"htmlExecution\":\"static\",\"allowOther\":true,\"allowAnnotations\":false,\"options\":[{\"id\":\"top\",\"label\":\"顶部\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户确认信息位置\"}\n",
-          "prototypes/revision-check/feedback.json": "{\"schemaVersion\":1,\"prototypeId\":\"revision-check\",\"prototypeRevision\":2,\"verdict\":\"revise\",\"answers\":[],\"annotations\":[{\"id\":\"a-1\",\"target\":{\"kind\":\"dom\",\"value\":{\"optionId\":\"top\",\"elementId\":\"risk-summary\"}},\"comment\":\"移到顶部\"}]}\n"
+          "prototypes/revision-check/feedback.json": "{\"schemaVersion\":2,\"reviewShellVersion\":2,\"prototypeId\":\"revision-check\",\"prototypeRevision\":2,\"verdict\":\"revise\",\"selectedOptions\":[\"top\"],\"answers\":[],\"annotations\":[{\"id\":\"a-1\",\"target\":{\"kind\":\"dom\",\"value\":{\"optionId\":\"top\",\"elementId\":\"risk-summary\"}},\"category\":{\"kind\":\"information-hierarchy\"},\"comment\":\"移到顶部\"}],\"cssVariableValues\":{}}\n"
         }
       },
       "expected": {
