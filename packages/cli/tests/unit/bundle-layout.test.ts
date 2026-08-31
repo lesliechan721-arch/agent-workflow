@@ -1479,10 +1479,10 @@ describe('runtime Skill resource closure', () => {
     await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
   });
 
-  it('ignores dot-relative plan working files without local execution semantics', async () => {
+  it('ignores dot-relative EvalSpec working files without local execution semantics', async () => {
     const skillRoot = await createRuntimeSkill([
-      'Use `./plan.json` as the working file.',
-      'Run `aw-skill-eval run ./plan.json`.',
+      'Use `./spec.json` as the working file.',
+      'Run `aw-skill-eval run ./spec.json`.',
     ].join('\n'));
 
     await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();

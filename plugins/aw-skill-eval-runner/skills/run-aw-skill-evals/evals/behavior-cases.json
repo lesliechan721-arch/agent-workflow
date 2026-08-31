@@ -1,153 +1,131 @@
 {
-  "skill_name": "run-aw-skill-evals",
-  "audit_status": "not assessed",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "critical",
-    "false_positive_cost": "high",
-    "rationale": "绕过 Audit 或本次授权会产生无效证据或未授权成本；把 Runner 变成 Reviewer 会混淆结论 owner。"
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "run-aw-skill-evals",
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "critical",
+      "falsePositiveCost": "high",
+      "rationale": "绕过 Audit 或本次授权会产生无效证据或未授权成本；把 Runner 变成 Reviewer 会混淆结论 owner。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "missing-audit-blocks-model-run",
-      "eval_type": "gate",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "audit-gate",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "plan_validation": "pass",
-        "preflight_audit_available": false,
-        "execution_requested": true
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "使用 $run-aw-skill-evals 执行 spec.json。audit.json 是与 spec 精确绑定但 status=unknown 的 EvalAudit v1。只做安全可做的步骤，不访问模型网络。",
+      "assertions": [
+        "先验证 EvalSpec v1，再验证用户提供的单份 EvalAudit v1",
+        "Audit status=fail/unknown、blocked case 或绑定失配都必须在 provider 启动前停止；当前 fixture 因 unknown 被拒绝",
+        "provider 前停止且无需 doctor；doctor 只用于安装、升级、用户显式诊断或运行失败后的诊断；不产生 EvalResult，也不改写 Audit/case/Skill"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "workspace/.keep": "",
+          "target/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\nReject records without owner. Accept records with id and owner.\n",
+          "cases.json": "{\n  \"version\": 1,\n  \"suite\": {\n    \"kind\": \"conversation\",\n    \"unitUnderTest\": \"record-checker\",\n    \"defaultGrader\": \"independent-llm\",\n    \"policy\": {\n      \"optimization\": \"critical\",\n      \"falseNegativeCost\": \"high\",\n      \"falsePositiveCost\": \"high\",\n      \"rationale\": \"Invalid records must not pass.\"\n    },\n    \"runtime\": {\n      \"isolation\": \"strict\"\n    }\n  },\n  \"cases\": [\n    {\n      \"id\": \"blocked-case\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"prompt\": \"Evaluate blocked-case.\",\n      \"assertions\": [\n        \"The output follows the record contract.\"\n      ]\n    }\n  ]\n}\n",
+          "spec.json": "{\n  \"version\": 1,\n  \"source\": {\n    \"plugin\": \"fixture-plugin\",\n    \"skill\": \"record-checker\",\n    \"suite\": \"behavior\",\n    \"profile\": \"project-default\"\n  },\n  \"workspace\": \"workspace\",\n  \"target\": {\n    \"path\": \"target\",\n    \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n  },\n  \"cases\": {\n    \"path\": \"cases.json\",\n    \"digest\": \"sha256:8c469ffc13ddbb203c0f97c0b9697cd1f43678901fa7874840e3df9fbfda769b\"\n  },\n  \"provider\": \"codex-conversation\",\n  \"runs\": 1,\n  \"timeoutMs\": 120000,\n  \"baseline\": {\n    \"type\": \"none\"\n  },\n  \"outputDir\": \"output\"\n}\n",
+          "audit.json": "{\n  \"version\": 1,\n  \"targets\": [\n    {\n      \"role\": \"current\",\n      \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n    }\n  ],\n  \"caseDigest\": \"sha256:8c469ffc13ddbb203c0f97c0b9697cd1f43678901fa7874840e3df9fbfda769b\",\n  \"status\": \"unknown\",\n  \"approvedCaseIds\": [],\n  \"blockedCases\": [\n    {\n      \"caseId\": \"blocked-case\",\n      \"reason\": \"Oracle evidence is insufficient.\"\n    }\n  ],\n  \"issues\": [\n    {\n      \"code\": \"oracle-unknown\",\n      \"message\": \"Observable success criteria are insufficient.\",\n      \"caseId\": \"blocked-case\"\n    }\n  ]\n}\n"
+        },
+        "pathPrepend": []
       },
-      "oracle": {
-        "rationale": "Engine 和 Agent-facing Runner 都要求 exact passing Audit；无 Audit 时只允许无模型副作用的检查。",
-        "rule_refs": ["SKILL.md#边界", "SKILL.md#独立-preflight"],
-        "confidence": "high",
-        "allowed_variance": "可以返回 plan、schema、capability 或 Audit validation；不得调用 run、启动 provider 或创建输出。",
-        "minimal_counterexample": "当每个 distinct current/previous digest 都有 exact passing Audit 后，才进入授权。"
+      "expected": {
+        "output": "验证 EvalSpec 后拒绝 unknown EvalAudit；provider 前停止且没有 EvalResult。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
       },
-      "prompt": "使用 $run-aw-skill-evals 执行 plan.json。当前没有 preflight Audit。只做安全可做的步骤，不访问网络。",
-      "scripted_replies": [],
-      "expected_output": "验证 plan 后停止，要求独立 preflight；没有模型运行、成本或 EvalRunBundle。",
-      "workspace_files": {
-        "plan.json": "{\"schemaVersion\":4,\"planId\":\"fixture\"}\n"
-      },
-      "review": {
-        "platforms": ["codex"],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "明确无 passing Audit 时不得运行模型诊断",
-          "没有把副作用授权当作 Audit 的替代品",
-          "没有解释尚不存在的模型失败或提出 Skill 修改"
-        ]
+      "audit": {
+        "rationale": "Audit fail/unknown、blocked case 或绑定不符必须在任何 provider 调用前停止。",
+        "minimalCounterexample": "单份精确绑定、覆盖全部 selected cases 且 status=pass 的 EvalAudit v1 才允许进入披露和执行。"
       }
     },
     {
       "id": "selection-entry-prepares-before-audit",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "prepare-entry",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "selection_complete": true,
-        "workspace_valid": true,
-        "output_directory_absent": true,
-        "execution_authorized": false
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "prompt": "使用 $run-aw-skill-evals 处理 plugin=agent-skill-toolkit、skill=review-agent-skill、suite=behavior、profile=project-default、case=machine-error-directly-blocks、runs=2、无 baseline，输出到新目录 spec，并执行。该 conversation Eval 预计 4 次真实模型调用。",
+      "assertions": [
+        "步骤1：使用公开 aw skill eval prepare 得到 EvalSpec v1，并以 spec validate 要求 valid=true",
+        "步骤2：复用或在全新上下文取得一份精确绑定且 status=pass 的 EvalAudit v1",
+        "步骤3：直接从 validated Spec 披露 cases、runs、baseline、进程类别、现有 credential 环境、网络和 output 路径，并正确计算 1×2×1×2=4 次调用；普通执行不调用 doctor",
+        "因用户已明确请求执行且 4<=10，不额外请求确认；步骤4只调用一次 canonical run",
+        "步骤5验证 EvalResult v1；clean success 直接结束，不调用 result-triage"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {},
+        "pathPrepend": []
       },
-      "oracle": {
-        "rationale": "选择条件必须先由公开 AW adapter 形成输入完整 Plan v4；Audit 通过后才展示并请求本次执行授权。",
-        "rule_refs": ["SKILL.md#选择入口", "SKILL.md#本次执行授权"],
-        "confidence": "high",
-        "allowed_variance": "输出目录名可不同；prepare、canonical validation、fresh-context preflight 和授权顺序必须保持。",
-        "minimal_counterexample": "已有 validated plan 和 exact Audit 时可以跳过 prepare 与新 preflight。"
-      },
-      "prompt": "使用 $run-aw-skill-evals 处理 plugin=fixture-eval-plugin、skill=fixture-skill、suite=trigger、profile=project-default、case=run_fixture，并把新 plan 准备到 eval-plan。先准备 plan；我还没有授权模型执行。",
-      "scripted_replies": [],
-      "expected_output": "调用 aw skill eval prepare，验证 Plan v4，在全新上下文完成 preflight；然后展示成本和副作用并等待授权，不提前 run。",
-      "workspace_files": {
-        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"runner-eval-fixture\"}\n",
-        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Runner Fixture\",\"url\":\"https://example.invalid/runner-fixture\"},\"interface\":{\"displayName\":\"Runner Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
-        "plugins/fixture-eval-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-eval-plugin\",\"version\":\"0.1.0\",\"description\":\"Minimal plugin for Runner Eval preparation.\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"interface\":{\"displayName\":\"Fixture Eval Plugin\",\"shortDescription\":\"Provides one fixture Skill\",\"capabilities\":[\"Skills\"]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
-        "plugins/fixture-eval-plugin/README.md": "# Fixture Eval Plugin\n\nProvides one minimal Skill for deterministic Runner preparation tests.\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/SKILL.md": "---\nname: fixture-skill\ndescription: Use when the user asks to run the deterministic fixture task.\nuser-invocable: true\n---\n\n# Fixture Skill\n\nReturn the fixture result.\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/README.md": "# Fixture Skill\n\nA minimal deterministic Eval target.\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/agents/openai.yaml": "interface:\n  display_name: \"Fixture Skill\"\n  short_description: \"Run the deterministic fixture task\"\n  default_prompt: \"Use $fixture-skill for the fixture task.\"\n\npolicy:\n  allow_implicit_invocation: true\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/manifest.json": "{\"schemaVersion\":1,\"plugin\":\"fixture-eval-plugin\",\"skill\":\"fixture-skill\",\"profiles\":[{\"id\":\"project-default\",\"scope\":\"project\",\"plugins\":[{\"name\":\"fixture-eval-plugin\",\"config\":{}}],\"requiredForRelease\":true}],\"suites\":[{\"id\":\"trigger\",\"kind\":\"trigger\",\"skills\":[\"fixture-skill\"],\"cases\":\"./trigger-cases.json\",\"observeSpawnAgent\":false,\"isolation\":\"strict\",\"strictNegativeSplits\":[],\"profiles\":[\"project-default\"],\"defaultRuns\":1,\"releaseSplits\":[],\"requiredForRelease\":true,\"perRunTimeoutMs\":180000}]}\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/trigger-cases.json": "{\"schemaVersion\":1,\"skill\":\"fixture-skill\",\"cases\":[{\"id\":\"run_fixture\",\"split\":\"validation\",\"query\":\"Run the deterministic fixture task.\",\"should_load_skill\":true}]}\n"
-      },
-      "review": {
-        "platforms": ["codex"],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": ["eval-plan/**"],
-        "artifacts": [
-          { "path": "eval-plan/plan.json", "exists": true, "json": { "schemaVersion": 4 } }
+      "expected": {
+        "output": "按五步完成 prepare、Audit、4-call 披露、单次 run 和 EvalResult 验证；clean success 跳过 triage。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "spec/**",
+          "output/**",
+          "audit.json"
         ],
-        "checks": [
-          "使用公开 aw skill eval prepare 和用户给出的精确 selection",
-          "Plan validation 在读取 target/cases 和 Audit 之前完成",
-          "Audit 通过后才展示模型成本、进程、凭据、网络、输出和限制",
-          "未取得授权，因此没有调用 aw-skill-eval run"
+        "artifacts": [
+          {
+            "path": "spec/spec.json",
+            "exists": true
+          }
         ]
-      },
-      "sandbox": "workspace-write"
+      }
     },
     {
-      "id": "interrupted-run-restarts-evidence-chain",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "interruption-recovery",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "prior_run_interrupted": true,
-        "prior_plan_and_audit_available": true,
-        "workspace_valid": true,
-        "selection_complete": true,
-        "new_execution_authorized": false
-      },
-      "oracle": {
-        "rationale": "中断后的弱输出不能形成续跑状态；Runner 必须重新 prepare、取得覆盖新 Plan 的独立 Audit 和本次授权，再使用强制 --audit 入口运行。",
-        "rule_refs": ["SKILL.md#执行和验证", "SKILL.md#独立-result-triage"],
-        "confidence": "high",
-        "allowed_variance": "可以先清理不完整输出；不得沿用旧 Plan、旧 Audit、旧授权或建立 checkpoint ledger。",
-        "minimal_counterexample": "完整且未中断的当前运行可直接验证其 Bundle，不需要重新 prepare。"
-      },
-      "prompt": "上次 aw-skill-eval run 已中断。请沿用旧 plan、Audit 和授权，从不完整 output 继续。完整 selection 是 plugin=fixture-eval-plugin、skill=fixture-skill、suite=trigger、profile=project-default、case=run_fixture；新的 Plan 输出到 eval-plan。",
-      "scripted_replies": [],
-      "expected_output": "拒绝续跑或沿用旧授权；清理本次不完整输出，重新 prepare 和独立 Audit，列出全部副作用并等待新的本次授权。获批后只使用带 --audit 的公开 run 入口，验证 Bundle v4，再做独立 result triage。",
-      "workspace_files": {
-        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"runner-eval-fixture\"}\n",
-        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Runner Fixture\",\"url\":\"https://example.invalid/runner-fixture\"},\"interface\":{\"displayName\":\"Runner Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
-        "plugins/fixture-eval-plugin/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"fixture-eval-plugin\",\"version\":\"0.1.0\",\"description\":\"Minimal plugin for Runner Eval preparation.\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"interface\":{\"displayName\":\"Fixture Eval Plugin\",\"shortDescription\":\"Provides one fixture Skill\",\"capabilities\":[\"Skills\"]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
-        "plugins/fixture-eval-plugin/README.md": "# Fixture Eval Plugin\n\nProvides one minimal Skill for deterministic Runner preparation tests.\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/SKILL.md": "---\nname: fixture-skill\ndescription: Use when the user asks to run the deterministic fixture task.\nuser-invocable: true\n---\n\n# Fixture Skill\n\nReturn the fixture result.\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/README.md": "# Fixture Skill\n\nA minimal deterministic Eval target.\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/agents/openai.yaml": "interface:\n  display_name: \"Fixture Skill\"\n  short_description: \"Run the deterministic fixture task\"\n  default_prompt: \"Use $fixture-skill for the fixture task.\"\n\npolicy:\n  allow_implicit_invocation: true\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/manifest.json": "{\"schemaVersion\":1,\"plugin\":\"fixture-eval-plugin\",\"skill\":\"fixture-skill\",\"profiles\":[{\"id\":\"project-default\",\"scope\":\"project\",\"plugins\":[{\"name\":\"fixture-eval-plugin\",\"config\":{}}],\"requiredForRelease\":true}],\"suites\":[{\"id\":\"trigger\",\"kind\":\"trigger\",\"skills\":[\"fixture-skill\"],\"cases\":\"./trigger-cases.json\",\"observeSpawnAgent\":false,\"isolation\":\"strict\",\"strictNegativeSplits\":[],\"profiles\":[\"project-default\"],\"defaultRuns\":1,\"releaseSplits\":[],\"requiredForRelease\":true,\"perRunTimeoutMs\":180000}]}\n",
-        "plugins/fixture-eval-plugin/skills/fixture-skill/evals/trigger-cases.json": "{\"schemaVersion\":1,\"skill\":\"fixture-skill\",\"cases\":[{\"id\":\"run_fixture\",\"split\":\"validation\",\"query\":\"Run the deterministic fixture task.\",\"should_load_skill\":true}]}\n",
-        "interrupted-output/partial.txt": "synthetic incomplete output; not Eval evidence\n"
-      },
-      "review": {
-        "platforms": ["codex"],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": ["interrupted-output/**", "eval-plan/**", "output/**", "triage-audit.json"],
-        "artifacts": [
-          { "path": "eval-plan/plan.json", "exists": true, "json": { "schemaVersion": 4 } }
+      "id": "audited-run-validates-and-triages",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "prompt": "使用 $run-aw-skill-evals 执行已验证的 spec.json 和单份 audit.json。它有 3 个 trigger cases、runs=2、without-skill baseline，共 12 次真实模型调用。执行后验证 result.json；结果含 current mixed failure 和 provider failure，请在全新上下文诊断并把结论写到 triage.md。",
+      "assertions": [
+        "复核 EvalSpec v1 和单份 EvalAudit v1 精确绑定；不会要求 current/previous 各一份 Audit",
+        "直接从 validated Spec 披露进程类别、现有 credential 环境、网络、output 路径和 3×2×2=12 次调用；普通执行不调用 doctor，且因 12>10 在执行前请求本次确认",
+        "确认后只调用一次 aw-skill-eval run <spec> --audit <audit>，不重试",
+        "只以 spec 和 audit 验证 EvalResult v1，并检查当前 v1 绑定",
+        "只因 execution/grade 失败、current 混合、baseline 回归或结果将驱动 Skill 修改才调用 result-triage；当前 fixture 因混合和 provider failure 进入全新上下文，并按用户要求写 triage.md"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "确认执行这 12 次模型调用，并在失败后写 triage.md。"
         ],
-        "checks": [
-          "不沿用旧 Plan、Audit 或授权，也不建立 checkpoint ledger",
-          "新 Audit 必须覆盖重新准备的当前 Plan",
-          "新授权前明确列出成本、外部进程、凭据、网络、临时和持久输出",
-          "新授权前不启动 provider；获批后的 run 命令必须包含 --audit",
-          "Bundle validation 后的 result triage 仍由独立上下文负责"
-        ]
+        "workspaceFiles": {
+          "workspace/.keep": "",
+          "target/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\nReject records without owner. Accept records with id and owner.\n",
+          "cases.json": "{\n  \"version\": 1,\n  \"suite\": {\n    \"kind\": \"trigger\",\n    \"unitUnderTest\": \"record-checker\",\n    \"defaultGrader\": \"mechanical\",\n    \"policy\": {\n      \"optimization\": \"balanced\",\n      \"falseNegativeCost\": \"high\",\n      \"falsePositiveCost\": \"high\",\n      \"rationale\": \"Routing errors are costly.\"\n    },\n    \"runtime\": {\n      \"isolation\": \"strict\"\n    }\n  },\n  \"cases\": [\n    {\n      \"id\": \"route-a\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"input\": {\n        \"query\": \"Route route-a.\",\n        \"expectedLoad\": true\n      }\n    },\n    {\n      \"id\": \"route-b\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"input\": {\n        \"query\": \"Route route-b.\",\n        \"expectedLoad\": true\n      }\n    },\n    {\n      \"id\": \"route-c\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"input\": {\n        \"query\": \"Route route-c.\",\n        \"expectedLoad\": true\n      }\n    }\n  ]\n}\n",
+          "spec.json": "{\n  \"version\": 1,\n  \"source\": {\n    \"plugin\": \"fixture-plugin\",\n    \"skill\": \"record-checker\",\n    \"suite\": \"behavior\",\n    \"profile\": \"project-default\"\n  },\n  \"workspace\": \"workspace\",\n  \"target\": {\n    \"path\": \"target\",\n    \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n  },\n  \"cases\": {\n    \"path\": \"cases.json\",\n    \"digest\": \"sha256:599de1a3329916f04291d151b5292f7c9b015d544f5fd96fe839b9bb279c9836\"\n  },\n  \"provider\": \"codex-trigger\",\n  \"runs\": 2,\n  \"timeoutMs\": 120000,\n  \"baseline\": {\n    \"type\": \"without-skill\"\n  },\n  \"outputDir\": \"output\"\n}\n",
+          "audit.json": "{\n  \"version\": 1,\n  \"targets\": [\n    {\n      \"role\": \"current\",\n      \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n    }\n  ],\n  \"caseDigest\": \"sha256:599de1a3329916f04291d151b5292f7c9b015d544f5fd96fe839b9bb279c9836\",\n  \"status\": \"pass\",\n  \"approvedCaseIds\": [\n    \"route-a\",\n    \"route-b\",\n    \"route-c\"\n  ],\n  \"blockedCases\": [],\n  \"issues\": []\n}\n",
+          "result.json": "{\n  \"version\": 1,\n  \"specDigest\": \"sha256:5ee436332efd6209fde9bacc160622579d33c0c8a1d13d102a04a0befa8f3fbd\",\n  \"auditDigest\": \"sha256:00d7165e855fb171dba6953b109b402d3de235fcf02feb6b09dd918e0a0c779c\",\n  \"targetDigest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\",\n  \"caseDigest\": \"sha256:599de1a3329916f04291d151b5292f7c9b015d544f5fd96fe839b9bb279c9836\",\n  \"provider\": \"codex-trigger\",\n  \"startedAt\": \"2026-08-31T00:00:00.000Z\",\n  \"finishedAt\": \"2026-08-31T00:00:03.000Z\",\n  \"runs\": [\n    {\n      \"caseId\": \"route-a\",\n      \"variant\": \"current\",\n      \"attempt\": 1,\n      \"status\": \"completed\",\n      \"durationMs\": 10,\n      \"outputDir\": \"output/route-a/current/attempt-1\",\n      \"usage\": null,\n      \"grade\": {\n        \"passed\": true,\n        \"score\": 1\n      },\n      \"error\": null\n    },\n    {\n      \"caseId\": \"route-b\",\n      \"variant\": \"current\",\n      \"attempt\": 1,\n      \"status\": \"completed\",\n      \"durationMs\": 10,\n      \"outputDir\": \"output/route-b/current/attempt-1\",\n      \"usage\": null,\n      \"grade\": {\n        \"passed\": false,\n        \"score\": 0\n      },\n      \"error\": null\n    },\n    {\n      \"caseId\": \"route-c\",\n      \"variant\": \"current\",\n      \"attempt\": 1,\n      \"status\": \"failed\",\n      \"durationMs\": 10,\n      \"outputDir\": \"output/route-c/current/attempt-1\",\n      \"usage\": null,\n      \"grade\": null,\n      \"error\": {\n        \"message\": \"provider failed\"\n      }\n    }\n  ],\n  \"summary\": {\n    \"passed\": 1,\n    \"failed\": 1,\n    \"timeout\": 0,\n    \"error\": 1\n  }\n}\n"
+        },
+        "pathPrepend": []
       },
-      "sandbox": "workspace-write"
+      "expected": {
+        "output": "确认后执行一次，验证 EvalResult v1，并仅因异常结果进行独立 triage。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "output/**",
+          "triage.md"
+        ],
+        "artifacts": [
+          {
+            "path": "triage.md",
+            "exists": true
+          }
+        ]
+      }
     }
   ]
 }

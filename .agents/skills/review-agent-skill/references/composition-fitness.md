@@ -10,6 +10,8 @@
 | Environment profiles | 通用 Skill 是否混入单一项目、客户端或 runtime 适配细节？ |
 | Context phases | 是否有某个 branch 需要独立上下文，且应由相邻 Skill 承接？ |
 | Stable handoffs | 拆分后是否可以用短、必要且稳定的输入输出通信？ |
+| Dependency direction | 可复用 standalone/leaf 是否反向依赖 caller 或 orchestrator 拥有的目录、生命周期、阶段、状态名或后续能力？ |
+| Output consumer boundary | 固定输出字段是否有 parser、持久 artifact、独立 actor 或明确的人类决策用途？ |
 
 ## Verdict
 

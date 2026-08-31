@@ -112,11 +112,11 @@ test('Author Eval fixtures report their intended Context v3 Workspace health', a
   const behaviorCases = JSON.parse(await readFile(
     path.join(evalRoot, 'behavior-cases.json'),
     'utf8',
-  )).evals;
+  )).cases;
   const lightweightCases = JSON.parse(await readFile(
     path.join(evalRoot, 'lightweight-delta-cases.json'),
     'utf8',
-  )).evals;
+  )).cases;
   const expectedContexts = new Map([
     ['new-plugin-with-two-skills', { identity: 'team-status-new-fixture', health: 'healthy' }],
     ['mcp-and-app-composition', { identity: 'mcp-app-degraded-fixture', health: 'degraded' }],
@@ -134,7 +134,7 @@ test('Author Eval fixtures report their intended Context v3 Workspace health', a
   for (const evalCase of evalCases) {
     const temp = await mkdtemp(path.join(tmpdir(), `aw-author-context-${evalCase.id}-`));
     temps.push(temp);
-    await materializeWorkspaceFiles(temp, evalCase.workspace_files);
+    await materializeWorkspaceFiles(temp, evalCase.input.workspaceFiles);
     const result = await execFileAsync(process.execPath, [
       skillValidatorBin,
       'catalog',
@@ -167,15 +167,15 @@ test('new-plugin Eval fixture allows only its source and real build output', asy
   const behaviorCases = JSON.parse(await readFile(
     path.join(sourceRoot, 'skills', 'author-aw-plugin', 'evals', 'behavior-cases.json'),
     'utf8',
-  )).evals;
+  )).cases;
   const evalCase = behaviorCases.find((entry) => entry.id === 'new-plugin-with-two-skills');
   assert.ok(evalCase);
-  assert.deepEqual(evalCase.review.allowed_workspace_changes, [
+  assert.deepEqual(evalCase.expected.allowedWorkspaceChanges, [
     'plugins/team-status/**',
     '.aw/plugins/team-status/**',
   ]);
-  assert.ok(evalCase.review.artifacts.every((artifact) => artifact.path.startsWith('plugins/team-status/')));
-  const changeIsAllowed = (relativePath) => evalCase.review.allowed_workspace_changes.some((pattern) => (
+  assert.ok(evalCase.expected.artifacts.every((artifact) => artifact.path.startsWith('plugins/team-status/')));
+  const changeIsAllowed = (relativePath) => evalCase.expected.allowedWorkspaceChanges.some((pattern) => (
     pattern.endsWith('/**')
       ? relativePath === pattern.slice(0, -3) || relativePath.startsWith(pattern.slice(0, -2))
       : relativePath === pattern
@@ -183,7 +183,7 @@ test('new-plugin Eval fixture allows only its source and real build output', asy
 
   const temp = await realpath(await mkdtemp(path.join(tmpdir(), 'aw-author-new-plugin-fixture-')));
   temps.push(temp);
-  await materializeWorkspaceFiles(temp, evalCase.workspace_files);
+  await materializeWorkspaceFiles(temp, evalCase.input.workspaceFiles);
   const env = { AW_HOME: path.join(temp, '.aw-home') };
 
   const status = await runPublicJson([
@@ -221,10 +221,10 @@ test('new-plugin Eval fixture allows only its source and real build output', asy
   assert.equal(changeIsAllowed('plugins/other-plugin/.agents-plugin/plugin.json'), false);
 });
 
-test('Author Eval repairs and handoffs prepare and validate Plan v4 from public commands', async () => {
+test('Author Eval repairs and handoffs prepare and validate EvalSpec v1 from public commands', async () => {
   const evalRoot = path.join(sourceRoot, 'skills', 'author-aw-plugin', 'evals');
-  const behaviorCases = JSON.parse(await readFile(path.join(evalRoot, 'behavior-cases.json'), 'utf8')).evals;
-  const lightweightCases = JSON.parse(await readFile(path.join(evalRoot, 'lightweight-delta-cases.json'), 'utf8')).evals;
+  const behaviorCases = JSON.parse(await readFile(path.join(evalRoot, 'behavior-cases.json'), 'utf8')).cases;
+  const lightweightCases = JSON.parse(await readFile(path.join(evalRoot, 'lightweight-delta-cases.json'), 'utf8')).cases;
   const lightweight = lightweightCases.find((entry) => entry.id === 'existing-skill-small-delta-skips-aw-authoring-context');
   const buildRepair = behaviorCases.find((entry) => entry.id === 'manifest-version-and-build-repair');
   const handoff = behaviorCases.find((entry) => entry.id === 'skill-and-eval-assets-handoff');
@@ -232,22 +232,22 @@ test('Author Eval repairs and handoffs prepare and validate Plan v4 from public 
   assert.ok(buildRepair);
   assert.ok(handoff);
   assert.match(lightweight.prompt, /\$author-aw-plugin/u);
-  assert.ok(lightweight.review.checks.some((entry) => entry.includes('先进入被评的 $author-aw-plugin，再 handoff 给 author-agent-skill')));
-  assert.equal('package.json' in buildRepair.workspace_files, false);
+  assert.ok(lightweight.assertions.some((entry) => entry.includes('先进入被评的 $author-aw-plugin，再 handoff 给 author-agent-skill')));
+  assert.equal('package.json' in buildRepair.input.workspaceFiles, false);
   assert.match(buildRepair.prompt, /node plugins\/runtime-card\/scripts\/build-runtime-assets\.mjs/u);
   assert.doesNotMatch(buildRepair.prompt, /pnpm|Corepack/u);
-  assert.match(buildRepair.workspace_files['AGENTS.md'], /offline: do not use pnpm, Corepack/u);
+  assert.match(buildRepair.input.workspaceFiles['AGENTS.md'], /offline: do not use pnpm, Corepack/u);
   assert.match(handoff.prompt, /现有 explain-query Skill/u);
-  assert.ok(handoff.review.checks.some((entry) => entry.includes('最小 trigger suite')));
-  assert.ok(handoff.review.checks.some((entry) => entry.includes('不修改 manifest、不创建第二个 Skill')));
+  assert.ok(handoff.assertions.some((entry) => entry.includes('最小 trigger suite')));
+  assert.ok(handoff.assertions.some((entry) => entry.includes('不修改 manifest、不创建第二个 Skill')));
   // Static contract exception: fixed filenames in the input would reject valid Eval Designer output; behavior test is not suitable because model-generated filenames and contents have allowed variance and this deterministic suite does not run a model Eval.
-  assert.deepEqual(handoff.review.artifacts, [
+  assert.deepEqual(handoff.expected.artifacts, [
     { path: 'plugins/query-tools/skills/explain-query/SKILL.md', exists: true },
   ]);
-  assert.equal(handoff.review.artifacts.some((artifact) => (
+  assert.equal(handoff.expected.artifacts.some((artifact) => (
     artifact.path.endsWith('/manifest.json') || artifact.path.endsWith('/trigger-cases.json')
   )), false);
-  assert.ok(handoff.review.checks.some((entry) => (
+  assert.ok(handoff.assertions.some((entry) => (
     entry.includes('suite metadata')
       && entry.includes('正例、反例')
       && entry.includes('文件名可按 Eval Designer 合同不同')
@@ -265,8 +265,7 @@ test('Author Eval repairs and handoffs prepare and validate Plan v4 from public 
   for (const entry of cases) {
     const output = path.join(temp, entry.id);
     const preparation = await runPublicJson([
-      'skill', 'eval', 'prepare', 'aw-plugin-development',
-      '--skill', 'author-aw-plugin',
+      'skill', 'eval', 'prepare', 'aw-plugin-development', 'author-aw-plugin',
       '--suite', entry.suite,
       '--profile', 'project-default',
       '--case', entry.id,
@@ -278,14 +277,14 @@ test('Author Eval repairs and handoffs prepare and validate Plan v4 from public 
       env: { AW_HOME: path.join(temp, `.aw-home-${entry.id}`) },
     });
     assert.ok(preparation.ok, `${entry.id}: ${JSON.stringify(preparation.errors)}`);
-    assert.equal(preparation.plans.length, 1, entry.id);
+    assert.equal(preparation.specPath, path.join(output, 'spec.json'), entry.id);
     const validation = JSON.parse((await execFileAsync(process.execPath, [
       evalValidatorBin,
-      'plan', 'validate', preparation.plans[0].planPath,
+      'spec', 'validate', preparation.specPath,
     ], { encoding: 'utf8' })).stdout);
     assert.equal(validation.valid, true, entry.id);
-    const selectedCases = JSON.parse(await readFile(path.join(output, 'cases', 'selected-cases.json'), 'utf8'));
-    assert.deepEqual(selectedCases.map((caseEntry) => caseEntry.id), [entry.id], entry.id);
+    const selectedCases = JSON.parse(await readFile(path.join(output, 'cases.json'), 'utf8'));
+    assert.deepEqual(selectedCases.cases.map((caseEntry) => caseEntry.id), [entry.id], entry.id);
   }
 });
 
@@ -296,27 +295,15 @@ test('review adapter manifest and runtime contain only current quality and relea
     .map((entry) => entry.target)
     .sort();
   assert.deepEqual(targets, [
-    'assets/eval-audit-result.schema.json',
-    'assets/eval-run-bundle.schema.json',
     'assets/quality-review-result.schema.json',
     'assets/review-dimensions.json',
     'references/review-publication.md',
     'scripts/check-agent-skill.mjs',
     'scripts/check-aw-plugin-release.mjs',
-    'scripts/corpus-digest.mjs',
-    'scripts/eval-run-bundle-validator.mjs',
     'scripts/review-skill-leaf-plan.mjs',
-    'scripts/validate-eval-audit-result.mjs',
-    'scripts/validate-eval-run-bundle.mjs',
-    'scripts/validate-json-contract.mjs',
     'scripts/validate-quality-review-result.mjs',
   ]);
   assert.ok((await readFile(path.join(reviewSkillRoot, 'scripts/discover-aw-review-targets.mjs'), 'utf8')).length > 100);
-  if (context) {
-    assert.ok((await readFile(path.join(reviewSkillRoot, 'scripts/corpus-digest.mjs'), 'utf8')).length > 100);
-  } else {
-    assert.ok(targets.includes('scripts/corpus-digest.mjs'));
-  }
 });
 
 test('AW reviewer production and materialized closures use registered current dependencies', async () => {
@@ -331,19 +318,12 @@ test('AW reviewer production and materialized closures use registered current de
       .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
       .sort(),
     [
-      '@aw/agent-skill-eval:case-corpus-digest',
-      '@aw/agent-skill-eval:eval-audit-result-schema',
-      '@aw/agent-skill-eval:eval-run-bundle-schema',
-      '@aw/agent-skill-eval:eval-run-bundle-validator',
       'agent-skill-toolkit:check-agent-skill',
       'agent-skill-toolkit:quality-review-result-schema',
       'agent-skill-toolkit:review-dimensions',
       'agent-skill-toolkit:review-publication-reference',
       'agent-skill-toolkit:review-publication-reference',
       'agent-skill-toolkit:skill-design-brief-schema',
-      'agent-skill-toolkit:validate-eval-audit-result',
-      'agent-skill-toolkit:validate-eval-run-bundle',
-      'agent-skill-toolkit:validate-json-contract',
       'agent-skill-toolkit:validate-json-contract',
       'agent-skill-toolkit:validate-quality-review-result',
     ],

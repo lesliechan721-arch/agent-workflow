@@ -36,7 +36,6 @@ import {
   hookFailureMessageChecks,
   inspectCommitExecTrace,
   partialMessageExcludesUnstagedFact,
-  runEvalProvider as commitRunEvalProvider,
 } from '../skills/git-commit/evals/run-commit-evals.mjs';
 import {
   analysisMessageChecks,
@@ -44,7 +43,6 @@ import {
   committedControlPaths,
   mergeCommitState,
   semanticMergeOutcomeChecks,
-  runEvalProvider as mergeRunEvalProvider,
 } from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
 import {
   captureTriggerWorkspaceState as captureMergeTriggerWorkspaceState,
@@ -56,7 +54,6 @@ import {
   snapshot as snapshotWorktreeRepository,
   worktreeCaseAllowsGitWrites,
   worktreePathsOutsideRoot,
-  runEvalProvider as worktreeRunEvalProvider,
 } from '../skills/isolating-work-with-git-worktrees/evals/run-worktree-evals.mjs';
 import {
   captureTriggerWorkspaceState as captureWorktreeTriggerWorkspaceState,
@@ -129,88 +126,48 @@ async function resolveTestContext() {
   };
 }
 
-async function assertProviderManifest(manifest, bundleRoot, expectedSkill, expectedProviderIds) {
-  assert.equal(manifest.schemaVersion, 1);
-  assert.equal(manifest.plugin, 'git-toolkit');
-  assert.equal(manifest.skill, expectedSkill);
-  const providerSuites = manifest.suites.filter((suite) => suite.kind === 'provider');
+async function assertCustomProcessManifest(manifest, bundleRoot, expectedSkill, expectedCommands) {
+  assert.equal(manifest.version, 1);
+  const customProcessSuites = manifest.suites.filter((suite) => suite.kind === 'custom-process');
   assert.deepEqual(
-    providerSuites.map((suite) => suite.id),
-    expectedProviderIds,
+    customProcessSuites.map((suite) => suite.id),
+    [...expectedCommands.keys()],
   );
   const evalRoot = path.join(bundleRoot, 'skills', expectedSkill, 'evals');
-  const capabilityKeys = [
-    'cleanContext',
-    'conversation',
-    'duration',
-    'materialization',
-    'parallelRuns',
-    'previousVersionBaseline',
-    'sandbox',
-    'skillPathExecution',
-    'tokenUsage',
-    'toolTrace',
-    'triggerDiscovery',
-    'withoutSkillBaseline',
-  ];
-  const entryModules = new Map([
-    ['run-commit-evals.mjs', commitRunEvalProvider],
-    ['run-merge-evals.mjs', mergeRunEvalProvider],
-    ['run-worktree-evals.mjs', worktreeRunEvalProvider],
-  ]);
-  for (const suite of providerSuites) {
-    assert.equal(suite.kind, 'provider');
+  for (const suite of customProcessSuites) {
+    assert.equal(suite.kind, 'custom-process');
     assert.equal(Object.hasOwn(suite, 'entry'), false);
     assert.equal(Object.hasOwn(suite, 'supports'), false);
     assert.equal(Object.hasOwn(suite, 'suiteTimeoutMs'), false);
     assert.equal(Object.hasOwn(suite, 'command'), false);
     assert.ok(suite.provider && typeof suite.provider === 'object');
     const provider = suite.provider;
-    assert.equal(typeof provider.id, 'string');
-    assert.equal(typeof provider.entry, 'string');
-    assert.equal(path.isAbsolute(provider.entry), false);
-    assert.match(provider.entry, /\.mjs$/u);
-    assert.equal(Array.isArray(provider.assets ?? []), true);
-    for (const asset of provider.assets ?? []) {
-      assert.equal(typeof asset, 'string');
-      assert.equal(path.isAbsolute(asset), false);
-      assert.notEqual(path.posix.normalize(asset), '..');
-      assert.equal(path.posix.normalize(asset).startsWith('../'), false);
+    assert.equal(provider.type, 'custom-process');
+    assert.deepEqual(provider.command, expectedCommands.get(suite.id));
+    for (const field of ['id', 'entry', 'assets', 'credentialEnvironment', 'capabilities', 'describe']) {
+      assert.equal(Object.hasOwn(provider, field), false);
     }
-    assert.equal(Array.isArray(provider.credentialEnvironment), true);
-    assert.ok(provider.credentialEnvironment.length > 0);
-    assert.equal(new Set(provider.credentialEnvironment).size, provider.credentialEnvironment.length);
-    assert.equal(
-      provider.credentialEnvironment.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)),
-      true,
-    );
-    assert.deepEqual(Object.keys(provider.capabilities).sort(), [...capabilityKeys].sort());
-    assert.equal(
-      Object.values(provider.capabilities).every((value) => typeof value === 'boolean'),
-      true,
-    );
     assert.equal(typeof suite.cases, 'string');
     assert.equal(path.isAbsolute(suite.cases), false);
-    const entryPath = path.resolve(evalRoot, provider.entry);
-    const relativeEntry = path.relative(evalRoot, entryPath);
-    assert.equal(relativeEntry === '..' || relativeEntry.startsWith(`..${path.sep}`), false);
-    assert.equal(typeof entryModules.get(path.basename(entryPath)), 'function');
+    assert.equal(suite.cases.startsWith('./'), false);
+    await readFile(path.join(evalRoot, provider.command[1]), 'utf8');
   }
 }
 
 async function testEvalCorpora(bundleRoot) {
   const document = commitTriggerDocument;
   const behaviorDocument = commitBehaviorDocument;
-  const behaviorCases = behaviorDocument.evals;
+  const behaviorCases = behaviorDocument.cases;
   const commitManifest = commitManifestDocument;
   const { cases } = document;
-  assert.equal(document.schemaVersion, 1);
-  assert.equal(document.skill, 'git-commit');
+  assert.equal(document.version, 1);
+  assert.equal(document.suite.kind, 'trigger');
+  assert.equal(document.suite.unitUnderTest, 'git-commit');
   assert.equal(cases.length, 20);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 10);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
+  assert.equal(cases.filter((entry) => entry.input.expectedLoad).length, 10);
+  assert.equal(cases.filter((entry) => !entry.input.expectedLoad).length, 10);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
 
   const expectedContracts = new Map([
@@ -228,24 +185,27 @@ async function testEvalCorpora(bundleRoot) {
   for (const [id, shouldLoad] of expectedContracts) {
     const entry = cases.find((candidate) => candidate.id === id);
     assert.ok(entry, `Missing required eval case ${id}`);
-    assert.equal(entry.should_load_skill, shouldLoad);
+    assert.equal(entry.input.expectedLoad, shouldLoad);
   }
-  assert.equal(cases.some((entry) => entry.query.includes('$git-commit')), false);
-  assert.match(cases.find((entry) => entry.id === 'english_commit').query, /useful summary/);
-  assert.match(cases.find((entry) => entry.id === 'scoped_fix_commit').query, /body/);
-  assert.match(cases.find((entry) => entry.id === 'terse_commit').query, /commti/);
-  assert.match(cases.find((entry) => entry.id === 'specific_files').query, /docs\/notes\.md/);
+  assert.equal(cases.some((entry) => entry.input.query.includes('$git-commit')), false);
+  assert.match(cases.find((entry) => entry.id === 'english_commit').input.query, /useful summary/);
+  assert.match(cases.find((entry) => entry.id === 'scoped_fix_commit').input.query, /body/);
+  assert.match(cases.find((entry) => entry.id === 'terse_commit').input.query, /commti/);
+  assert.match(cases.find((entry) => entry.id === 'specific_files').input.query, /docs\/notes\.md/);
 
-  assert.equal(behaviorDocument.skill_name, 'git-commit');
-  assert.equal(behaviorDocument.policy.optimization, 'critical');
-  assert.equal(behaviorDocument.policy.false_negative_cost, 'high');
-  assert.equal(behaviorDocument.policy.false_positive_cost, 'high');
+  assert.equal(behaviorDocument.version, 1);
+  assert.equal(behaviorDocument.suite.kind, 'custom-process');
+  assert.equal(behaviorDocument.suite.unitUnderTest, 'git-commit');
+  assert.equal(behaviorDocument.suite.policy.optimization, 'critical');
+  assert.equal(behaviorDocument.suite.policy.falseNegativeCost, 'high');
+  assert.equal(behaviorDocument.suite.policy.falsePositiveCost, 'high');
   assert.equal(Array.isArray(behaviorCases), true);
   assert.equal(behaviorCases.length, 8);
   assert.equal(new Set(behaviorCases.map((entry) => entry.id)).size, behaviorCases.length);
   for (const entry of behaviorCases) {
-    assert.equal(typeof entry.prompt, 'string');
-    assert.notEqual(entry.prompt.trim(), '');
+    assert.equal(typeof entry.input?.prompt, 'string');
+    assert.notEqual(entry.input.prompt.trim(), '');
+    assert.equal(typeof entry.expected?.outcome, 'string');
     assert.equal(Array.isArray(entry.assertions), true);
     assert.ok(entry.assertions.length >= 2);
     assert.equal(
@@ -319,42 +279,43 @@ async function testEvalCorpora(bundleRoot) {
       `Missing required behavior assertion for ${id}`,
     );
   }
-  assert.equal(commitManifest.skill, 'git-commit');
+  assert.equal(commitManifest.version, 1);
   assert.equal(commitManifest.suites.length, 2);
   const commitBehaviorSuite = commitManifest.suites.find((suite) => suite.id === 'behavior');
-  assert.equal(commitBehaviorSuite.kind, 'provider');
-  assert.deepEqual(commitBehaviorSuite.skills, ['git-commit']);
-  assert.equal(commitBehaviorSuite.cases, './behavior-cases.json');
+  assert.equal(commitBehaviorSuite.kind, 'custom-process');
+  assert.equal(commitBehaviorSuite.cases, 'behavior-cases.json');
   assert.equal(commitBehaviorSuite.requiredForRelease, true);
-  assert.equal(commitBehaviorSuite.defaultRuns, 3);
-  assert.equal(commitBehaviorSuite.perRunTimeoutMs, 300000);
-  await assertProviderManifest(
+  assert.equal(commitBehaviorSuite.runs, 3);
+  assert.equal(commitBehaviorSuite.timeoutMs, 300000);
+  await assertCustomProcessManifest(
     commitManifest,
     bundleRoot,
     'git-commit',
-    ['behavior'],
+    new Map([['behavior', ['node', 'run-commit-evals.mjs']]]),
   );
 
   const mergeDocument = mergeTriggerDocument;
   const mergeCases = mergeDocument.cases;
   const participants = new Set(['reconciling-git-merges', 'git-commit']);
-  assert.equal(mergeDocument.schemaVersion, 1);
-  assert.equal(mergeDocument.skill, 'reconciling-git-merges');
+  assert.equal(mergeDocument.version, 1);
+  assert.equal(mergeDocument.suite.kind, 'trigger');
+  assert.equal(mergeDocument.suite.unitUnderTest, 'reconciling-git-merges');
+  assert.deepEqual(mergeDocument.suite.participants, ['git-commit']);
   assert.equal(mergeCases.length, 21);
   assert.equal(mergeCases.filter((entry) => entry.split === 'train').length, 14);
   assert.equal(mergeCases.filter((entry) => entry.split === 'validation').length, 7);
   assert.equal(new Set(mergeCases.map((entry) => entry.id)).size, mergeCases.length);
-  assert.equal(mergeCases.filter((entry) => entry.expected_loaded_skills.length === 1).length, 11);
-  assert.equal(mergeCases.filter((entry) => entry.expected_loaded_skills.length === 0).length, 10);
+  assert.equal(mergeCases.filter((entry) => entry.input.expected.loadedSkills.length === 1).length, 11);
+  assert.equal(mergeCases.filter((entry) => entry.input.expected.loadedSkills.length === 0).length, 10);
   for (const entry of mergeCases) {
-    assert.equal(Array.isArray(entry.expected_loaded_skills), true);
+    assert.equal(Array.isArray(entry.input.expected.loadedSkills), true);
     assert.equal(
-      entry.expected_loaded_skills.every((skill) => participants.has(skill)),
+      entry.input.expected.loadedSkills.every((skill) => participants.has(skill)),
       true,
     );
     assert.equal(
-      new Set(entry.expected_loaded_skills).size,
-      entry.expected_loaded_skills.length,
+      new Set(entry.input.expected.loadedSkills).size,
+      entry.input.expected.loadedSkills.length,
     );
   }
   const expectedMergeRouting = new Map([
@@ -371,15 +332,17 @@ async function testEvalCorpora(bundleRoot) {
   for (const [id, expectedSkills] of expectedMergeRouting) {
     const entry = mergeCases.find((candidate) => candidate.id === id);
     assert.ok(entry, `Missing required merge routing case ${id}`);
-    assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
+    assert.deepEqual(entry.input.expected.loadedSkills, expectedSkills);
   }
 
   const mergeEvals = mergeEvalDocument;
   const mergeManifest = mergeManifestDocument;
-  assert.equal(mergeEvals.skill_name, 'reconciling-git-merges');
-  assert.equal(mergeEvals.evals.length, 4);
+  assert.equal(mergeEvals.version, 1);
+  assert.equal(mergeEvals.suite.kind, 'custom-process');
+  assert.equal(mergeEvals.suite.unitUnderTest, 'reconciling-git-merges');
+  assert.equal(mergeEvals.cases.length, 4);
   assert.deepEqual(
-    mergeEvals.evals.map((entry) => entry.id),
+    mergeEvals.cases.map((entry) => entry.id),
     [
       'ambiguous_retention',
       'semantic_same_file',
@@ -387,48 +350,46 @@ async function testEvalCorpora(bundleRoot) {
       'analysis_only_dirty_worktree',
     ],
   );
-  for (const entry of mergeEvals.evals) {
-    assert.equal(typeof entry.prompt, 'string');
-    assert.equal(typeof entry.expected_output, 'string');
-    assert.equal(entry.files.length, 1);
-    assert.equal(path.isAbsolute(entry.files[0]), false);
-    assert.equal(path.posix.normalize(entry.files[0]).startsWith('../'), false);
+  for (const entry of mergeEvals.cases) {
+    assert.equal(typeof entry.input.prompt, 'string');
+    assert.equal(typeof entry.expected.outcome, 'string');
+    assert.equal(entry.input.files.length, 1);
+    assert.equal(path.isAbsolute(entry.input.files[0]), false);
+    assert.equal(path.posix.normalize(entry.input.files[0]).startsWith('../'), false);
   }
-  assert.equal(mergeManifest.skill, 'reconciling-git-merges');
+  assert.equal(mergeManifest.version, 1);
   assert.equal(mergeManifest.suites.length, 2);
   const routerSuite = mergeManifest.suites.find((suite) => suite.id === 'router');
   const behaviorSuite = mergeManifest.suites.find((suite) => suite.id === 'behavior');
   assert.equal(routerSuite.kind, 'trigger');
-  assert.deepEqual(routerSuite.skills, ['reconciling-git-merges', 'git-commit']);
-  assert.equal(routerSuite.forbidMultipleSkillLoads, true);
-  assert.equal(routerSuite.cases, './trigger-cases.json');
-  assert.equal(routerSuite.fixtureModule, './trigger-fixture.mjs');
-  assert.equal(behaviorSuite.kind, 'provider');
-  assert.deepEqual(behaviorSuite.skills, ['reconciling-git-merges', 'git-commit']);
-  assert.equal(behaviorSuite.cases, './evals.json');
+  assert.equal(routerSuite.cases, 'trigger-cases.json');
+  assert.equal(mergeDocument.suite.runtime.forbidMultipleSkillLoads, true);
+  assert.equal(mergeDocument.suite.runtime.fixture, 'trigger-fixture.mjs');
+  assert.equal(behaviorSuite.kind, 'custom-process');
+  assert.equal(behaviorSuite.cases, 'evals.json');
   assert.equal(behaviorSuite.requiredForRelease, true);
-  assert.equal(behaviorSuite.defaultRuns, 3);
-  assert.equal(behaviorSuite.perRunTimeoutMs, 300000);
-  await assertProviderManifest(
+  assert.equal(behaviorSuite.runs, 3);
+  assert.equal(behaviorSuite.timeoutMs, 300000);
+  await assertCustomProcessManifest(
     mergeManifest,
     bundleRoot,
     'reconciling-git-merges',
-    ['behavior'],
+    new Map([['behavior', ['node', 'run-merge-evals.mjs']]]),
   );
   assert.equal(
-    mergeCases.find((entry) => entry.id === 'source_08').workspace_fixture,
+    mergeCases.find((entry) => entry.id === 'source_08').input.workspaceFixture,
     'ambiguous_retention',
   );
   assert.equal(
-    mergeCases.find((entry) => entry.id === 'source_09').workspace_fixture,
+    mergeCases.find((entry) => entry.id === 'source_09').input.workspaceFixture,
     'semantic_retry',
   );
   assert.equal(
-    mergeCases.find((entry) => entry.id === 'source_10').workspace_fixture,
+    mergeCases.find((entry) => entry.id === 'source_10').input.workspaceFixture,
     'semantic_permissions',
   );
   assert.equal(
-    mergeCases.find((entry) => entry.id === 'ordinary_local_commit').workspace_fixture,
+    mergeCases.find((entry) => entry.id === 'ordinary_local_commit').input.workspaceFixture,
     'commit_ready',
   );
   const alignedMergeFixtures = new Map([
@@ -444,8 +405,7 @@ async function testEvalCorpora(bundleRoot) {
   ]);
   for (const [id, fixture] of alignedMergeFixtures) {
     const entry = mergeCases.find((candidate) => candidate.id === id);
-    assert.equal(entry.workspace_fixture, fixture);
-    assert.equal(entry.preconditions.workspace_fixture, fixture);
+    assert.equal(entry.input.workspaceFixture, fixture);
   }
 
   const worktreeDocument = worktreeTriggerDocument;
@@ -455,11 +415,12 @@ async function testEvalCorpora(bundleRoot) {
     'reconciling-git-merges',
     'git-commit',
   ]);
-  assert.equal(worktreeDocument.schemaVersion, 1);
-  assert.equal(worktreeDocument.skill, 'isolating-work-with-git-worktrees');
-  assert.equal(worktreeDocument.policy.optimization, 'recall-first');
-  assert.equal(worktreeDocument.policy.false_negative_cost, 'high');
-  assert.equal(worktreeDocument.policy.false_positive_cost, 'medium');
+  assert.equal(worktreeDocument.version, 1);
+  assert.equal(worktreeDocument.suite.kind, 'trigger');
+  assert.equal(worktreeDocument.suite.unitUnderTest, 'isolating-work-with-git-worktrees');
+  assert.equal(worktreeDocument.suite.policy.optimization, 'recall-first');
+  assert.equal(worktreeDocument.suite.policy.falseNegativeCost, 'high');
+  assert.equal(worktreeDocument.suite.policy.falsePositiveCost, 'medium');
   assert.equal(worktreeCases.length, 28);
   assert.equal(worktreeCases.filter((entry) => entry.split === 'train').length, 13);
   assert.equal(worktreeCases.filter((entry) => entry.split === 'validation').length, 6);
@@ -467,23 +428,23 @@ async function testEvalCorpora(bundleRoot) {
   assert.equal(new Set(worktreeCases.map((entry) => entry.id)).size, worktreeCases.length);
   assert.equal(
     worktreeCases.filter((entry) =>
-      entry.expected_loaded_skills.includes('isolating-work-with-git-worktrees'),
+      entry.input.expected.loadedSkills.includes('isolating-work-with-git-worktrees'),
     ).length,
     15,
   );
   assert.equal(
-    worktreeCases.filter((entry) => entry.expected_loaded_skills.length === 0).length,
+    worktreeCases.filter((entry) => entry.input.expected.loadedSkills.length === 0).length,
     10,
   );
   for (const entry of worktreeCases) {
-    assert.equal(Array.isArray(entry.expected_loaded_skills), true);
+    assert.equal(Array.isArray(entry.input.expected.loadedSkills), true);
     assert.equal(
-      entry.expected_loaded_skills.every((skill) => worktreeParticipants.has(skill)),
+      entry.input.expected.loadedSkills.every((skill) => worktreeParticipants.has(skill)),
       true,
     );
     assert.equal(
-      new Set(entry.expected_loaded_skills).size,
-      entry.expected_loaded_skills.length,
+      new Set(entry.input.expected.loadedSkills).size,
+      entry.input.expected.loadedSkills.length,
     );
   }
   const expectedWorktreeRouting = new Map([
@@ -505,11 +466,13 @@ async function testEvalCorpora(bundleRoot) {
   for (const [id, expectedSkills] of expectedWorktreeRouting) {
     const entry = worktreeCases.find((candidate) => candidate.id === id);
     assert.ok(entry, `Missing required worktree routing case ${id}`);
-    assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
+    assert.deepEqual(entry.input.expected.loadedSkills, expectedSkills);
   }
   const worktreeDiagnosticCases = worktreeDiagnosticDocument;
-  assert.equal(worktreeDiagnosticCases.policy.optimization, 'recall-first');
-  assert.equal(worktreeDiagnosticCases.policy.false_positive_cost, 'low');
+  assert.equal(worktreeDiagnosticCases.version, 1);
+  assert.equal(worktreeDiagnosticCases.suite.kind, 'trigger');
+  assert.equal(worktreeDiagnosticCases.suite.policy.optimization, 'recall-first');
+  assert.equal(worktreeDiagnosticCases.suite.policy.falsePositiveCost, 'low');
   assert.deepEqual(
     worktreeDiagnosticCases.cases.map((entry) => entry.id),
     ['source_15', 'sanity_full_clone'],
@@ -517,17 +480,15 @@ async function testEvalCorpora(bundleRoot) {
   const fullCloneDiagnostic = worktreeDiagnosticCases.cases.find(
     (entry) => entry.id === 'source_15',
   );
-  assert.equal(fullCloneDiagnostic.case_role, 'diagnostic');
-  assert.equal(fullCloneDiagnostic.oracle.confidence, 'medium');
-  assert.match(fullCloneDiagnostic.oracle.rationale, /expected-tradeoff/);
+  assert.equal(fullCloneDiagnostic.tags.includes('diagnostic'), true);
   const fullCloneSanityDiagnostic = worktreeDiagnosticCases.cases.find(
     (entry) => entry.id === 'sanity_full_clone',
   );
   assert.equal(fullCloneSanityDiagnostic.split, 'sanity');
-  assert.equal(fullCloneSanityDiagnostic.case_role, 'diagnostic');
+  assert.equal(fullCloneSanityDiagnostic.tags.includes('diagnostic'), true);
   assert.equal(
     worktreeCases.some((entry) =>
-      entry.query.includes('$isolating-work-with-git-worktrees'),
+      entry.input.query.includes('$isolating-work-with-git-worktrees'),
     ),
     false,
   );
@@ -543,26 +504,26 @@ async function testEvalCorpora(bundleRoot) {
   ]);
   assert.equal(
     worktreeCases.every((entry) =>
-      entry.workspace_fixture === undefined || worktreeFixtures.has(entry.workspace_fixture),
+      entry.input.workspaceFixture === undefined || worktreeFixtures.has(entry.input.workspaceFixture),
     ),
     true,
   );
   assert.match(
-    worktreeCases.find((entry) => entry.id === 'sanity_dirty_new_task').query,
+    worktreeCases.find((entry) => entry.id === 'sanity_dirty_new_task').input.query,
     /两个任务的文件和 Git 状态不要混在一起/,
   );
   assert.match(
-    worktreeCases.find((entry) => entry.id === 'sanity_dirty_same_branch').query,
+    worktreeCases.find((entry) => entry.id === 'sanity_dirty_same_branch').input.query,
     /继续完成这个功能/,
   );
   assert.match(
-    worktreeCases.find((entry) => entry.id === 'sanity_parallel_test').query,
+    worktreeCases.find((entry) => entry.id === 'sanity_parallel_test').input.query,
     /运行兼容性测试/,
   );
   const releaseParticipants = new Set(
     worktreeCases
       .filter((entry) => ['validation', 'sanity'].includes(entry.split))
-      .flatMap((entry) => entry.expected_loaded_skills),
+      .flatMap((entry) => entry.input.expected.loadedSkills),
   );
   assert.deepEqual(
     [...releaseParticipants].sort(),
@@ -571,10 +532,12 @@ async function testEvalCorpora(bundleRoot) {
 
   const worktreeEvals = worktreeEvalDocument;
   const worktreeManifest = worktreeManifestDocument;
-  assert.equal(worktreeEvals.skill_name, 'isolating-work-with-git-worktrees');
-  assert.equal(worktreeEvals.policy.optimization, 'critical');
+  assert.equal(worktreeEvals.version, 1);
+  assert.equal(worktreeEvals.suite.kind, 'custom-process');
+  assert.equal(worktreeEvals.suite.unitUnderTest, 'isolating-work-with-git-worktrees');
+  assert.equal(worktreeEvals.suite.policy.optimization, 'critical');
   assert.deepEqual(
-    worktreeEvals.evals.map((entry) => entry.id),
+    worktreeEvals.cases.map((entry) => entry.id),
     [
       'preserve_dirty_workspace_and_use_default_path',
       'stop_when_default_root_not_ignored',
@@ -583,12 +546,12 @@ async function testEvalCorpora(bundleRoot) {
       'report_dirty_baseline',
     ],
   );
-  for (const entry of worktreeEvals.evals) {
-    assert.equal(typeof entry.name, 'string');
-    assert.equal(typeof entry.prompt, 'string');
-    assert.equal(typeof entry.expected_output, 'string');
+  for (const entry of worktreeEvals.cases) {
+    assert.equal(typeof entry.input.name, 'string');
+    assert.equal(typeof entry.input.prompt, 'string');
+    assert.equal(typeof entry.expected.outcome, 'string');
   }
-  assert.equal(worktreeManifest.skill, 'isolating-work-with-git-worktrees');
+  assert.equal(worktreeManifest.version, 1);
   assert.equal(worktreeManifest.suites.length, 3);
   const worktreeRouterSuite = worktreeManifest.suites.find((suite) => suite.id === 'router');
   const worktreeDiagnosticRouterSuite = worktreeManifest.suites.find(
@@ -597,39 +560,32 @@ async function testEvalCorpora(bundleRoot) {
   const worktreeBehaviorSuite = worktreeManifest.suites.find((suite) => suite.id === 'behavior');
   assert.equal(worktreeRouterSuite.id, 'router');
   assert.equal(worktreeRouterSuite.kind, 'trigger');
-  assert.deepEqual(worktreeRouterSuite.skills, [
-    'isolating-work-with-git-worktrees',
+  assert.deepEqual(worktreeDocument.suite.participants, [
     'reconciling-git-merges',
     'git-commit',
   ]);
-  assert.equal(worktreeRouterSuite.forbidMultipleSkillLoads, true);
-  assert.equal(worktreeRouterSuite.minimumPassRate, 0.8);
-  assert.equal(worktreeRouterSuite.cases, './trigger-cases.json');
-  assert.deepEqual(worktreeRouterSuite.strictNegativeSplits, ['validation', 'sanity']);
+  assert.equal(worktreeDocument.suite.runtime.forbidMultipleSkillLoads, true);
+  assert.equal(worktreeRouterSuite.cases, 'trigger-cases.json');
+  assert.deepEqual(worktreeDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
   assert.deepEqual(worktreeRouterSuite.releaseSplits, ['validation', 'sanity']);
   assert.equal(worktreeDiagnosticRouterSuite.kind, 'trigger');
   assert.equal(
     worktreeDiagnosticRouterSuite.cases,
-    './trigger-diagnostic-cases.json',
+    'trigger-diagnostic-cases.json',
   );
-  assert.deepEqual(worktreeDiagnosticRouterSuite.releaseSplits, []);
+  assert.equal(Object.hasOwn(worktreeDiagnosticRouterSuite, 'releaseSplits'), false);
   assert.equal(worktreeDiagnosticRouterSuite.requiredForRelease, false);
-  assert.equal(worktreeBehaviorSuite.kind, 'provider');
-  assert.deepEqual(worktreeBehaviorSuite.skills, [
-    'isolating-work-with-git-worktrees',
-    'reconciling-git-merges',
-    'git-commit',
-  ]);
-  assert.equal(worktreeBehaviorSuite.cases, './evals.json');
+  assert.equal(worktreeBehaviorSuite.kind, 'custom-process');
+  assert.equal(worktreeBehaviorSuite.cases, 'evals.json');
   assert.equal(worktreeBehaviorSuite.requiredForRelease, true);
-  assert.equal(worktreeBehaviorSuite.defaultRuns, 3);
-  assert.equal(worktreeBehaviorSuite.perRunTimeoutMs, 300000);
-  assert.equal(worktreeRouterSuite.fixtureModule, './trigger-fixture.mjs');
-  await assertProviderManifest(
+  assert.equal(worktreeBehaviorSuite.runs, 3);
+  assert.equal(worktreeBehaviorSuite.timeoutMs, 300000);
+  assert.equal(worktreeDocument.suite.runtime.fixture, 'trigger-fixture.mjs');
+  await assertCustomProcessManifest(
     worktreeManifest,
     bundleRoot,
     'isolating-work-with-git-worktrees',
-    ['behavior'],
+    new Map([['behavior', ['node', 'run-worktree-evals.mjs']]]),
   );
   assert.equal(worktreeCaseAllowsGitWrites('stop_when_default_root_not_ignored'), true);
   assert.equal(

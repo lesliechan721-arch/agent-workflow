@@ -84,7 +84,7 @@ export interface PortableReview {
 }
 
 export interface PortableInstallReceipt {
-  receiptSchemaVersion: 4;
+  receiptSchemaVersion: 5;
   command: 'skill:install';
   ok: boolean;
   status: 'succeeded' | 'failed' | 'partial';
@@ -114,7 +114,7 @@ export interface PortableInstallReceipt {
 export type PortableInstallProgressStage = 'prepare' | 'add' | 'verify';
 
 export interface PortableMaterializeReceipt {
-  receiptSchemaVersion: 4;
+  receiptSchemaVersion: 5;
   command: 'skill:materialize';
   ok: true;
   plugin: PortableInstallReceipt['plugin'];
@@ -377,7 +377,7 @@ function installFailureReceipt(
   verification: PortableInstallReceipt['verification'],
 ): PortableInstallReceipt {
   return {
-    receiptSchemaVersion: 4,
+    receiptSchemaVersion: 5,
     command: 'skill:install',
     ok: false,
     status,
@@ -750,7 +750,7 @@ export async function materializePortableSkillsToDirectory(options: {
         pluginConfig: materialized.configDigest,
       });
       const receipt: PortableMaterializeReceipt = {
-        receiptSchemaVersion: 4,
+        receiptSchemaVersion: 5,
         command: 'skill:materialize',
         ok: true,
         plugin: {

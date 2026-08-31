@@ -5,6 +5,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { runCustomProcessMain } from './custom-process-protocol.mjs';
+
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const providerId = 'git-merge-provider';
 const providerVersion = 'manifest-v1';
@@ -408,14 +410,21 @@ function usageFromEvents(stdout) {
   return usage;
 }
 
-async function credentialValues(input) {
-  const suiteRoot = input.runtimeInputs['eval-suite'];
-  if (!suiteRoot) throw new Error('Merge provider requires the eval-suite runtime input.');
-  const suite = JSON.parse(await readFile(path.join(suiteRoot, 'suite.json'), 'utf8'));
-  const names = suite?.provider?.credentialEnvironment ?? [];
-  if (!Array.isArray(names) || names.some((name) => typeof name !== 'string')) {
-    throw new Error('Merge provider credentialEnvironment is invalid.');
-  }
+async function credentialValues() {
+  const names = [
+    'ALL_PROXY',
+    'AW_SKILL_EVAL_CODEX_BIN',
+    'AW_SKILL_EVAL_CODEX_MODEL',
+    'CODEX_HOME',
+    'HOME',
+    'HTTPS_PROXY',
+    'HTTP_PROXY',
+    'NODE_EXTRA_CA_CERTS',
+    'NO_PROXY',
+    'OPENAI_API_KEY',
+    'SSL_CERT_DIR',
+    'SSL_CERT_FILE',
+  ];
   return [...new Set(names.flatMap((name) => {
     const value = process.env[name];
     return value ? [value] : [];
@@ -513,3 +522,5 @@ export async function runEvalProvider(input) {
     await rm(workspace.root, { recursive: true, force: true });
   }
 }
+
+await runCustomProcessMain(import.meta.url, runEvalProvider);

@@ -92,7 +92,7 @@ describe('real ConsoleAppV4 progress chain', () => {
     const context = createCliExecutionContext({ cwd: '/workspace', io: { stdout } });
     const status = () => ({
       payload: {
-        schemaVersion: 5 as const,
+        schemaVersion: 6 as const,
         catalog: {
           primarySourceId: 'official',
           configDigest: 'sha256:config',

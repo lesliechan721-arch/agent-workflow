@@ -90,27 +90,29 @@ function runResult(finalMessage, collaborationTimeline = passingTimeline()) {
 
 function testCorpusAndAssertions() {
   const spec = workflowCorpusDocument;
-  assert.equal(spec.skill_name, 'codex-explore');
-  assert.equal(spec.evals.length > 0, true);
-  assert.equal(spec.evals.every((entry) => (
+  assert.equal(spec.version, 1);
+  assert.equal(spec.suite.kind, 'custom-process');
+  assert.equal(spec.suite.unitUnderTest, 'codex-explore');
+  assert.equal(spec.cases.length > 0, true);
+  assert.equal(spec.cases.every((entry) => (
     typeof entry.id === 'string' &&
     entry.id.length > 0 &&
-    typeof entry.prompt === 'string' &&
-    entry.prompt.length > 0 &&
-    (entry.parent_model === undefined || typeof entry.parent_model === 'string') &&
-    (entry.codex_config === undefined || typeof entry.codex_config === 'object') &&
-    Number.isInteger(entry.expected?.spawn_count) &&
-    typeof entry.expected?.agent_type === 'string' &&
-    entry.expected.agent_type.length > 0 &&
-    nonEmptyStrings(entry.expected?.final_message_includes_all) &&
-    nonEmptyStrings(entry.expected?.final_message_patterns) &&
-    nonEmptyStrings(entry.expected?.delegated_source_prefixes) &&
-    typeof entry.expected?.workspace_unchanged === 'boolean' &&
-    Number.isInteger(entry.expected?.lifecycle?.minimum_initial_wait_timeout_ms) &&
-    typeof entry.expected?.lifecycle?.allow_liveness_probe === 'boolean' &&
-    Number.isInteger(entry.expected?.lifecycle?.max_recoveries)
+    typeof entry.input?.prompt === 'string' &&
+    entry.input.prompt.length > 0 &&
+    (entry.input.parent_model === undefined || typeof entry.input.parent_model === 'string') &&
+    (entry.input.codex_config === undefined || typeof entry.input.codex_config === 'object') &&
+    Number.isInteger(entry.expected?.criteria?.spawn_count) &&
+    typeof entry.expected?.criteria?.agent_type === 'string' &&
+    entry.expected.criteria.agent_type.length > 0 &&
+    nonEmptyStrings(entry.expected?.criteria?.final_message_includes_all) &&
+    nonEmptyStrings(entry.expected?.criteria?.final_message_patterns) &&
+    nonEmptyStrings(entry.expected?.criteria?.delegated_source_prefixes) &&
+    typeof entry.expected?.criteria?.workspace_unchanged === 'boolean' &&
+    Number.isInteger(entry.expected?.criteria?.lifecycle?.minimum_initial_wait_timeout_ms) &&
+    typeof entry.expected?.criteria?.lifecycle?.allow_liveness_probe === 'boolean' &&
+    Number.isInteger(entry.expected?.criteria?.lifecycle?.max_recoveries)
   )), true);
-  assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
+  assert.equal(new Set(spec.cases.map((entry) => entry.id)).size, spec.cases.length);
   assert.deepEqual(
     workflowEvalRunCase({
       prompt: 'inspect',

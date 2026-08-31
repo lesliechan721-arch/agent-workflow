@@ -7,9 +7,6 @@ import {
   evaluateModelSelectionRun,
   modelEvalRunCase,
 } from '../skills/codex-explore/evals/run-model-selection-evals.mjs';
-import * as modelProvider from '../skills/codex-explore/evals/run-model-selection-evals.mjs';
-import * as workflowProvider from '../skills/codex-explore/evals/run-workflow-evals.mjs';
-import * as livenessProvider from '../skills/codex-explore/evals/run-liveness-evals.mjs';
 import modelManifestDocument from '../skills/codex-explore/evals/manifest.json' with { type: 'json' };
 import modelCorpusDocument from '../skills/codex-explore/evals/evals.json' with { type: 'json' };
 import {
@@ -21,78 +18,49 @@ import {
 
 async function testProviderManifestComposition() {
   const manifest = modelManifestDocument;
-  assert.equal(manifest.schemaVersion, 1);
-  assert.equal(manifest.plugin, 'codex-enhance');
-  assert.equal(manifest.skill, 'codex-explore');
-  const providerSuites = manifest.suites.filter((suite) => suite.kind === 'provider');
-  assert.deepEqual(providerSuites.map((suite) => suite.id), [
+  assert.equal(manifest.version, 1);
+  const customProcessSuites = manifest.suites.filter((suite) => suite.kind === 'custom-process');
+  assert.deepEqual(customProcessSuites.map((suite) => suite.id), [
     'model-selection',
     'workflow',
     'liveness',
   ]);
-  const entryModules = {
-    'run-model-selection-evals.mjs': modelProvider,
-    'run-workflow-evals.mjs': workflowProvider,
-    'run-liveness-evals.mjs': livenessProvider,
-  };
-  const capabilityKeys = [
-    'cleanContext',
-    'conversation',
-    'duration',
-    'materialization',
-    'parallelRuns',
-    'previousVersionBaseline',
-    'sandbox',
-    'skillPathExecution',
-    'tokenUsage',
-    'toolTrace',
-    'triggerDiscovery',
-    'withoutSkillBaseline',
-  ];
-  for (const suite of providerSuites) {
+  const commands = new Map([
+    ['model-selection', ['node', 'run-model-selection-evals.mjs']],
+    ['workflow', ['node', 'run-workflow-evals.mjs']],
+    ['liveness', ['node', 'run-liveness-evals.mjs']],
+  ]);
+  for (const suite of customProcessSuites) {
+    assert.equal(suite.kind, 'custom-process');
     assert.equal(Object.hasOwn(suite, 'entry'), false);
     assert.equal(Object.hasOwn(suite, 'supports'), false);
     assert.equal(Object.hasOwn(suite, 'suiteTimeoutMs'), false);
     assert.equal(Object.hasOwn(suite, 'command'), false);
     assert.equal(typeof suite.cases, 'string');
     assert.equal(path.isAbsolute(suite.cases), false);
+    assert.equal(suite.cases.startsWith('./'), false);
     const provider = suite.provider;
     assert.ok(provider && typeof provider === 'object');
-    assert.equal(typeof provider.id, 'string');
-    assert.equal(typeof provider.entry, 'string');
-    assert.equal(path.isAbsolute(provider.entry), false);
-    assert.equal(provider.entry.startsWith('../'), false);
-    assert.match(provider.entry, /^run-[a-z-]+-evals\.mjs$/u);
-    assert.equal(Array.isArray(provider.assets), true);
-    assert.equal(Array.isArray(provider.credentialEnvironment), true);
-    assert.ok(provider.credentialEnvironment.length > 0);
-    assert.equal(new Set(provider.credentialEnvironment).size, provider.credentialEnvironment.length);
-    assert.equal(
-      provider.credentialEnvironment.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)),
-      true,
-    );
-    assert.deepEqual(Object.keys(provider.capabilities).sort(), [...capabilityKeys].sort());
-    assert.equal(
-      Object.values(provider.capabilities).every((value) => typeof value === 'boolean'),
-      true,
-    );
-    const entryModule = entryModules[path.basename(provider.entry)];
-    assert.ok(entryModule, `missing bundled provider entry ${provider.entry}`);
-    assert.equal(typeof entryModule.runEvalProvider, 'function');
+    assert.equal(provider.type, 'custom-process');
+    assert.deepEqual(provider.command, commands.get(suite.id));
+    for (const field of ['id', 'entry', 'assets', 'credentialEnvironment', 'capabilities', 'describe']) {
+      assert.equal(Object.hasOwn(provider, field), false);
+    }
   }
-  assert.equal(modelCorpusDocument.skill_name, 'codex-explore');
-  assert.ok(Array.isArray(modelCorpusDocument.evals));
-  assert.equal(modelCorpusDocument.evals.length > 0, true);
+  assert.equal(modelCorpusDocument.version, 1);
+  assert.equal(modelCorpusDocument.suite.kind, 'custom-process');
+  assert.equal(modelCorpusDocument.suite.unitUnderTest, 'codex-explore');
+  assert.ok(Array.isArray(modelCorpusDocument.cases));
+  assert.equal(modelCorpusDocument.cases.length > 0, true);
   assert.equal(
-    new Set(modelCorpusDocument.evals.map((entry) => entry.id)).size,
-    modelCorpusDocument.evals.length,
+    new Set(modelCorpusDocument.cases.map((entry) => entry.id)).size,
+    modelCorpusDocument.cases.length,
   );
-  for (const entry of modelCorpusDocument.evals) {
+  for (const entry of modelCorpusDocument.cases) {
     assert.equal(entry.assertions.length > 0, true);
-    assert.equal(['routing', 'gate'].includes(entry.eval_type), true);
-    assert.equal(typeof entry.scenario_family, 'string');
-    assert.equal(typeof entry.preconditions, 'object');
-    assert.equal(typeof entry.oracle?.rationale, 'string');
+    assert.equal(typeof entry.input?.prompt, 'string');
+    assert.equal(typeof entry.expected?.criteria, 'object');
+    assert.equal(typeof entry.expected?.outcome, 'string');
     assert.equal(
       entry.assertions.every((assertion) => (
         typeof assertion.text === 'string' &&

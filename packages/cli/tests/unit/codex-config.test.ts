@@ -396,4 +396,44 @@ describe('codex-config', () => {
     });
     await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(result.content);
   });
+
+  it.each(['user', 'project'])('round-trips %s plugin activation and preserves unknown TOML', async (scope) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), `aw-codex-${scope}-activation-`));
+    const configPath = scope === 'user'
+      ? path.join(root, 'codex-home', 'config.toml')
+      : path.join(root, 'repo', '.codex', 'config.toml');
+    const baseline = [
+      'model = "gpt-5"',
+      '',
+      '[plugins."demo@aw-team"]',
+      'enabled = false',
+      'channel = "preview"',
+      '',
+      '[plugins."other@aw"]',
+      'enabled = true',
+      '',
+    ].join('\n');
+    await fs.outputFile(configPath, baseline, 'utf8');
+
+    const upserted = await applyCodexConfigTransactionFile(configPath, {
+      upsertPluginActivations: { 'demo@aw-team': true },
+    });
+    expect(upserted.snapshot.plugins['demo@aw-team']?.enabled).toBe(true);
+    expect(upserted.content).toContain('channel = "preview"');
+    expect(upserted.content).toContain('[plugins."other@aw"]');
+
+    const removed = await applyCodexConfigTransactionFile(configPath, {
+      removePluginActivations: ['demo@aw-team'],
+    });
+    expect(removed.snapshot.plugins['demo@aw-team']).toEqual({
+      name: 'demo@aw-team',
+      enabled: undefined,
+    });
+    expect(removed.content).toContain('[plugins."demo@aw-team"]');
+    expect(removed.content).toContain('channel = "preview"');
+    expect(removed.content).toContain('model = "gpt-5"');
+    expect(removed.content).toContain('[plugins."other@aw"]');
+    await expect(fs.readFile(configPath, 'utf8')).resolves.toBe(removed.content);
+    await fs.remove(root);
+  });
 });

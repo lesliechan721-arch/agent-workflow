@@ -75,62 +75,6 @@
       },
       {
         "skill": "review-aw-plugin",
-        "target": "scripts/validate-json-contract.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-json-contract"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/validate-eval-audit-result.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-eval-audit-result"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/corpus-digest.mjs",
-        "import": {
-          "plugin": "@aw/agent-skill-eval",
-          "export": "case-corpus-digest"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/validate-eval-run-bundle.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-eval-run-bundle"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/eval-run-bundle-validator.mjs",
-        "import": {
-          "plugin": "@aw/agent-skill-eval",
-          "export": "eval-run-bundle-validator"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/eval-audit-result.schema.json",
-        "import": {
-          "plugin": "@aw/agent-skill-eval",
-          "export": "eval-audit-result-schema"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/eval-run-bundle.schema.json",
-        "import": {
-          "plugin": "@aw/agent-skill-eval",
-          "export": "eval-run-bundle-schema"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
         "target": "references/review-publication.md",
         "import": {
           "plugin": "agent-skill-toolkit",

@@ -13,98 +13,53 @@ import {
   evaluateRoutingRun,
   routingRunCase,
 } from '../skills/codex-subagent-guide/evals/run-routing-evals.mjs';
-import * as routingProvider from '../skills/codex-subagent-guide/evals/run-routing-evals.mjs';
-import * as lifecycleProvider from '../skills/codex-subagent-guide/evals/run-lifecycle-evals.mjs';
 import routingManifestDocument from '../skills/codex-subagent-guide/evals/manifest.json' with { type: 'json' };
 import routingCorpusDocument from '../skills/codex-subagent-guide/evals/provider-evals.json' with { type: 'json' };
-import { fileURLToPath } from 'node:url';
 
 async function testProviderManifestComposition() {
   const manifest = routingManifestDocument;
-  assert.equal(manifest.schemaVersion, 1);
-  assert.equal(manifest.plugin, 'codex-enhance');
-  assert.equal(manifest.skill, 'codex-subagent-guide');
-  const providerSuites = manifest.suites.filter((suite) => suite.kind === 'provider');
+  assert.equal(manifest.version, 1);
+  const customProcessSuites = manifest.suites.filter((suite) => suite.kind === 'custom-process');
   assert.deepEqual(
-    providerSuites.map((suite) => suite.id),
+    customProcessSuites.map((suite) => suite.id),
     ['routing', 'lifecycle', 'lifecycle-timeout'],
   );
-
-  const entryModules = {
-    'run-routing-evals.mjs': routingProvider,
-    'run-lifecycle-evals.mjs': lifecycleProvider,
-  };
-  const evalRoot = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    '..',
-    'skills',
-    'codex-subagent-guide',
-    'evals',
-  );
-  const capabilityKeys = [
-    'cleanContext',
-    'conversation',
-    'duration',
-    'materialization',
-    'parallelRuns',
-    'previousVersionBaseline',
-    'sandbox',
-    'skillPathExecution',
-    'tokenUsage',
-    'toolTrace',
-    'triggerDiscovery',
-    'withoutSkillBaseline',
-  ];
-  for (const suite of providerSuites) {
+  const commands = new Map([
+    ['routing', ['node', 'run-routing-evals.mjs']],
+    ['lifecycle', ['node', 'run-lifecycle-evals.mjs']],
+    ['lifecycle-timeout', ['node', 'run-lifecycle-evals.mjs']],
+  ]);
+  for (const suite of customProcessSuites) {
+    assert.equal(suite.kind, 'custom-process');
     assert.equal(Object.hasOwn(suite, 'entry'), false);
     assert.equal(Object.hasOwn(suite, 'supports'), false);
     assert.equal(Object.hasOwn(suite, 'suiteTimeoutMs'), false);
     assert.equal(Object.hasOwn(suite, 'command'), false);
     assert.equal(typeof suite.cases, 'string');
     assert.equal(path.isAbsolute(suite.cases), false);
-    assert.equal(suite.cases.startsWith('./'), true);
+    assert.equal(suite.cases.startsWith('./'), false);
     const provider = suite.provider;
     assert.ok(provider && typeof provider === 'object');
-    assert.equal(typeof provider.id, 'string');
-    assert.equal(typeof provider.entry, 'string');
-    assert.equal(path.isAbsolute(provider.entry), false);
-    assert.equal(provider.entry.startsWith('../'), false);
-    assert.match(provider.entry, /^run-[a-z-]+-evals\.mjs$/u);
-    assert.equal(Array.isArray(provider.assets), true);
-    for (const asset of provider.assets) {
-      assert.equal(typeof asset, 'string');
-      assert.equal(path.isAbsolute(asset), false);
-      assert.equal(path.posix.normalize(asset).startsWith('../'), false);
-      await readFile(path.join(evalRoot, asset), 'utf8');
+    assert.equal(provider.type, 'custom-process');
+    assert.deepEqual(provider.command, commands.get(suite.id));
+    for (const field of ['id', 'entry', 'assets', 'credentialEnvironment', 'capabilities', 'describe']) {
+      assert.equal(Object.hasOwn(provider, field), false);
     }
-    assert.equal(Array.isArray(provider.credentialEnvironment), true);
-    assert.ok(provider.credentialEnvironment.length > 0);
-    assert.equal(new Set(provider.credentialEnvironment).size, provider.credentialEnvironment.length);
-    assert.equal(
-      provider.credentialEnvironment.every((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)),
-      true,
-    );
-    assert.deepEqual(Object.keys(provider.capabilities).sort(), [...capabilityKeys].sort());
-    assert.equal(
-      Object.values(provider.capabilities).every((value) => typeof value === 'boolean'),
-      true,
-    );
-    const entryModule = entryModules[path.basename(provider.entry)];
-    assert.ok(entryModule, `missing bundled provider entry ${provider.entry}`);
-    assert.equal(typeof entryModule.runEvalProvider, 'function');
   }
 
-  assert.equal(routingCorpusDocument.skill_name, 'codex-subagent-guide');
-  assert.ok(Array.isArray(routingCorpusDocument.evals));
-  assert.ok(routingCorpusDocument.evals.length > 0);
+  assert.equal(routingCorpusDocument.version, 1);
+  assert.equal(routingCorpusDocument.suite.kind, 'custom-process');
+  assert.equal(routingCorpusDocument.suite.unitUnderTest, 'codex-subagent-guide');
+  assert.ok(Array.isArray(routingCorpusDocument.cases));
+  assert.ok(routingCorpusDocument.cases.length > 0);
   assert.equal(
-    new Set(routingCorpusDocument.evals.map((entry) => entry.id)).size,
-    routingCorpusDocument.evals.length,
+    new Set(routingCorpusDocument.cases.map((entry) => entry.id)).size,
+    routingCorpusDocument.cases.length,
   );
-  for (const entry of routingCorpusDocument.evals) {
-    assert.equal(typeof entry.sourceCaseId, 'string');
-    assert.equal(['v1', 'v2'].includes(entry.runtimeProfile), true);
-    assert.deepEqual(Object.keys(entry.expectations), [entry.runtimeProfile]);
+  for (const entry of routingCorpusDocument.cases) {
+    assert.equal(typeof entry.input.sourceCaseId, 'string');
+    assert.equal(['v1', 'v2'].includes(entry.input.runtimeProfile), true);
+    assert.deepEqual(Object.keys(entry.expected.criteria), [entry.input.runtimeProfile]);
     assert.equal(Object.hasOwn(entry, 'runs'), false);
     assert.equal(Object.hasOwn(entry, 'profiles'), false);
   }

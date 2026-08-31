@@ -579,9 +579,34 @@ describe('authoring tools', () => {
         path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'evals', 'manifest.json'),
       ),
     ).resolves.toMatchObject({
-      schemaVersion: 1,
-      plugin: 'repo-check',
-      skill: 'repo-check',
+      version: 1,
+      defaults: { profile: 'project-default' },
+      profiles: {
+        'project-default': {
+          scope: 'project',
+          plugins: { 'repo-check': {} },
+        },
+        'user-default': {
+          scope: 'user',
+          plugins: { 'repo-check': {} },
+        },
+      },
+      suites: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'trigger',
+          kind: 'trigger',
+          cases: 'trigger-cases.json',
+          runs: 3,
+          timeoutMs: 180000,
+        }),
+        expect.objectContaining({
+          id: 'behavior',
+          kind: 'conversation',
+          cases: 'behavior-cases.json',
+          runs: 1,
+          timeoutMs: 300000,
+        }),
+      ]),
     });
     const modelTriggerCasesPath = path.join(
       tempRepo,
@@ -594,54 +619,73 @@ describe('authoring tools', () => {
     );
     await expect(fs.pathExists(modelTriggerCasesPath)).resolves.toBe(true);
     const modelTriggerCases = await fs.readJson(modelTriggerCasesPath) as {
-      policy: {
-        optimization: string;
-        false_negative_cost: string;
-        false_positive_cost: string;
+      version: number;
+      suite: {
+        kind: string;
+        unitUnderTest: string;
+        defaultGrader: string;
+        policy: {
+          optimization: string;
+          falseNegativeCost: string;
+          falsePositiveCost: string;
+        };
+        runtime: {
+          isolation: string;
+          strictNegativeSplits: string[];
+        };
       };
       cases: Array<{
-        query: string;
-        should_load_skill: boolean;
-        eval_type: string;
-        case_role: string;
-        provenance: string;
-        scenario_family: string;
-        unit_under_test: string;
-        preconditions: Record<string, unknown>;
-        oracle: {
+        tags: string[];
+        input: {
+          query: string;
+          expectedLoad: boolean;
+        };
+        audit?: {
           rationale: string;
-          rule_refs: string[];
-          confidence: string;
-          allowed_variance: string;
-          minimal_counterexample?: string;
+          minimalCounterexample: string;
         };
       }>;
     };
-    expect(modelTriggerCases.policy).toMatchObject({
-      optimization: 'balanced',
-      false_negative_cost: 'high',
-      false_positive_cost: 'high',
+    expect(modelTriggerCases).toMatchObject({
+      version: 1,
+      suite: {
+        kind: 'trigger',
+        unitUnderTest: 'repo-check',
+        defaultGrader: 'mechanical',
+        policy: {
+          optimization: 'balanced',
+          falseNegativeCost: 'high',
+          falsePositiveCost: 'high',
+        },
+        runtime: {
+          isolation: 'strict',
+          strictNegativeSplits: ['validation', 'sanity'],
+        },
+      },
     });
     expect(modelTriggerCases.cases
-      .filter((entry) => entry.should_load_skill)
-      .every((entry) => entry.query.includes(
+      .filter((entry) => entry.input.expectedLoad)
+      .every((entry) => entry.input.query.includes(
         '检查仓库状态、执行风险核验并生成结构化诊断报告工作流',
       ))).toBe(true);
-    expect(modelTriggerCases.cases.every((entry) => (
-      entry.eval_type === 'trigger'
-      && entry.scenario_family === 'primary-invocation-boundary'
-      && Object.keys(entry.preconditions).length > 0
-      && entry.oracle.rationale.length > 0
-      && entry.oracle.rule_refs.length > 0
-      && entry.oracle.allowed_variance.length > 0
-    ))).toBe(true);
     expect(modelTriggerCases.cases
-      .filter((entry) => !entry.should_load_skill)
+      .filter((entry) => entry.input.expectedLoad)
+      .every((entry) => entry.audit === undefined)).toBe(true);
+    expect(modelTriggerCases.cases
+      .filter((entry) => !entry.input.expectedLoad)
       .every((entry) => (
-        entry.case_role === 'boundary'
-        && entry.provenance === 'boundary'
-        && typeof entry.oracle.minimal_counterexample === 'string'
+        entry.tags.includes('boundary')
+        && typeof entry.audit?.rationale === 'string'
+        && typeof entry.audit?.minimalCounterexample === 'string'
       ))).toBe(true);
+    for (const entry of modelTriggerCases.cases) {
+      expect(entry).not.toHaveProperty('query');
+      expect(entry).not.toHaveProperty('should_load_skill');
+      expect(entry).not.toHaveProperty('eval_type');
+      expect(entry).not.toHaveProperty('scenario_family');
+      expect(entry).not.toHaveProperty('preconditions');
+      expect(entry).not.toHaveProperty('oracle');
+    }
     expect(JSON.stringify(modelTriggerCases)).not.toContain('$repo-check');
     const modelBehaviorCasesPath = path.join(
       tempRepo,
@@ -650,42 +694,49 @@ describe('authoring tools', () => {
       'skills',
       'repo-check',
       'evals',
-      'evals.json',
+      'behavior-cases.json',
     );
     const modelBehaviorCases = await fs.readJson(modelBehaviorCasesPath) as {
-      policy: {
-        optimization: string;
-        false_negative_cost: string;
-        false_positive_cost: string;
-      };
-      evals: Array<{
-        eval_type: string;
-        case_role: string;
-        provenance: string;
-        scenario_family: string;
-        unit_under_test: string;
-        preconditions: Record<string, unknown>;
-        oracle: {
-          confidence: string;
-          rule_refs: string[];
+      version: number;
+      suite: {
+        kind: string;
+        unitUnderTest: string;
+        defaultGrader: string;
+        policy: {
+          optimization: string;
+          falseNegativeCost: string;
+          falsePositiveCost: string;
         };
+        runtime: { isolation: string };
+      };
+      cases: Array<{
+        prompt: string;
+        assertions: string[];
+        expected: Record<string, unknown>;
+        audit?: Record<string, unknown>;
       }>;
     };
-    expect(modelBehaviorCases.policy).toMatchObject({
-      optimization: 'precision-first',
-      false_negative_cost: 'medium',
-      false_positive_cost: 'high',
-    });
-    expect(modelBehaviorCases.evals[0]).toMatchObject({
-      eval_type: 'outcome',
-      case_role: 'diagnostic',
-      provenance: 'representative-synthetic',
-      scenario_family: 'primary-workflow-outcome',
-      unit_under_test: 'full-skill',
-      oracle: {
-        confidence: 'low',
+    expect(modelBehaviorCases).toMatchObject({
+      version: 1,
+      suite: {
+        kind: 'conversation',
+        unitUnderTest: 'repo-check',
+        defaultGrader: 'independent-llm',
+        policy: {
+          optimization: 'precision-first',
+          falseNegativeCost: 'medium',
+          falsePositiveCost: 'high',
+        },
+        runtime: { isolation: 'strict' },
       },
+      cases: [expect.objectContaining({
+        prompt: expect.any(String),
+        assertions: expect.any(Array),
+        expected: expect.any(Object),
+      })],
     });
+    expect(modelBehaviorCases.cases[0]?.assertions.length).toBeGreaterThan(0);
+    expect(modelBehaviorCases.cases[0]?.audit).toBeUndefined();
     const evalCaseValidatorPath = path.join(
       repoRoot(),
       'plugins',
@@ -702,7 +753,6 @@ describe('authoring tools', () => {
         { cwd: repoRoot(), env: process.env },
       );
       expect(JSON.parse(validation.stdout)).toMatchObject({
-        mode: 'strict',
         valid: true,
         summary: {
           errors: 0,
@@ -770,24 +820,26 @@ describe('authoring tools', () => {
     const manualTriggerCases = await fs.readJson(
       path.join(manualRoot, 'evals', 'trigger-cases.json'),
     ) as {
-      policy: {
-        optimization: string;
-        false_negative_cost: string;
-        false_positive_cost: string;
+      suite: {
+        policy: {
+          optimization: string;
+          falseNegativeCost: string;
+          falsePositiveCost: string;
+        };
       };
-      cases: Array<{ query: string; should_load_skill: boolean }>;
+      cases: Array<{ input: { query: string; expectedLoad: boolean } }>;
     };
-    expect(manualTriggerCases.policy).toMatchObject({
+    expect(manualTriggerCases.suite.policy).toMatchObject({
       optimization: 'precision-first',
-      false_negative_cost: 'medium',
-      false_positive_cost: 'high',
+      falseNegativeCost: 'medium',
+      falsePositiveCost: 'high',
     });
     expect(manualTriggerCases.cases
-      .filter((entry) => entry.should_load_skill)
-      .every((entry) => entry.query.includes('$manual-workflow'))).toBe(true);
+      .filter((entry) => entry.input.expectedLoad)
+      .every((entry) => entry.input.query.includes('$manual-workflow'))).toBe(true);
     expect(manualTriggerCases.cases
-      .filter((entry) => !entry.should_load_skill)
-      .every((entry) => !entry.query.includes('$manual-workflow'))).toBe(true);
+      .filter((entry) => !entry.input.expectedLoad)
+      .every((entry) => !entry.input.query.includes('$manual-workflow'))).toBe(true);
 
     await execFileAsync('node', [
       scriptPath,
@@ -884,20 +936,37 @@ describe('authoring tools', () => {
     ).resolves.toEqual(expect.stringContaining('allow_implicit_invocation: false'));
     await expect(
       fs.readJson(path.join(dualSkillRoot, 'evals', 'manifest.json')),
-    ).resolves.toMatchObject({ plugin: 'git-commit', skill: 'release-notes' });
+    ).resolves.toMatchObject({
+      version: 1,
+      defaults: { profile: 'project-default' },
+      profiles: {
+        'project-default': {
+          plugins: { 'git-commit': {} },
+        },
+      },
+    });
     await expect(
       fs.readJson(path.join(dualSkillRoot, 'evals', 'trigger-cases.json')),
     ).resolves.toMatchObject({
-      policy: {
-        optimization: 'precision-first',
-        false_negative_cost: 'medium',
-        false_positive_cost: 'high',
+      version: 1,
+      suite: {
+        kind: 'trigger',
+        unitUnderTest: 'release-notes',
+        defaultGrader: 'mechanical',
+        policy: {
+          optimization: 'precision-first',
+          falseNegativeCost: 'medium',
+          falsePositiveCost: 'high',
+        },
       },
       cases: expect.arrayContaining([
         expect.objectContaining({
-          eval_type: 'trigger',
-          scenario_family: 'primary-invocation-boundary',
-          oracle: expect.objectContaining({ confidence: 'medium' }),
+          tags: expect.arrayContaining(['boundary']),
+          input: expect.objectContaining({ expectedLoad: false }),
+          audit: expect.objectContaining({
+            rationale: expect.any(String),
+            minimalCounterexample: expect.any(String),
+          }),
         }),
       ]),
     });
@@ -3889,38 +3958,52 @@ describe('authoring tools', () => {
     const dynamicEvalDir = path.join(dynamicCodex.pluginDir, 'skills', 'codex-dynamic', 'evals');
     await fs.ensureDir(dynamicEvalDir);
     await fs.writeJson(path.join(dynamicEvalDir, 'trigger-cases.json'), {
-      schemaVersion: 1,
-      skill: 'codex-dynamic',
+      version: 1,
+      suite: {
+        kind: 'trigger',
+        unitUnderTest: 'codex-dynamic',
+        defaultGrader: 'mechanical',
+        policy: {
+          optimization: 'balanced',
+          falseNegativeCost: 'high',
+          falsePositiveCost: 'high',
+          rationale: 'The dynamic Skill must load only for its owned user goal.',
+        },
+        runtime: {
+          observeSpawnAgent: false,
+          isolation: 'strict',
+          strictNegativeSplits: [],
+          forbidMultipleSkillLoads: false,
+        },
+      },
       cases: [{
         id: 'dynamic_release',
         split: 'validation',
-        query: 'Run the dynamic Skill.',
-        should_load_skill: true,
+        tags: [],
+        input: {
+          query: 'Run the dynamic Skill.',
+          expectedLoad: true,
+        },
       }],
     });
     await fs.writeJson(path.join(dynamicEvalDir, 'manifest.json'), {
-      schemaVersion: 1,
-      plugin: 'codex-dynamic',
-      skill: 'codex-dynamic',
-      profiles: [{
-        id: 'project-default',
-        scope: 'project',
-        plugins: [{ name: 'codex-dynamic', config: {} }],
-        requiredForRelease: false,
-      }],
+      version: 1,
+      defaults: { profile: 'project-default' },
+      profiles: {
+        'project-default': {
+          scope: 'project',
+          plugins: { 'codex-dynamic': {} },
+        },
+      },
       suites: [{
         id: 'trigger',
         kind: 'trigger',
-        skills: ['codex-dynamic'],
-        cases: './trigger-cases.json',
-        observeSpawnAgent: false,
-        isolation: 'strict',
-        strictNegativeSplits: [],
+        cases: 'trigger-cases.json',
         profiles: ['project-default'],
-        defaultRuns: 1,
+        runs: 1,
         releaseSplits: ['validation'],
         requiredForRelease: false,
-        perRunTimeoutMs: 10_000,
+        timeoutMs: 10_000,
       }],
     });
     await expect(runValidatePlugin(dynamicCodex.pluginDir)).rejects.toMatchObject({

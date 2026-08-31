@@ -2,10 +2,12 @@
 
 `behavior-cases.json` 是作者期的结构与设计证据。它定义可观察场景、Oracle 和人工语义 checks，但当前没有真实模型执行证据，也不得据此声称行为已通过。
 
-通过公开 adapter 准备 Plan v4；如需执行，直接交给 Runner：
+通过公开 adapter 按 suite/profile/case 选择准备 `EvalSpec v1`：
 
 ```bash
-aw skill eval prepare agent-skill-toolkit --skill review-agent-skill --suite behavior --profile project-default --output ./review-agent-skill-plan --json
+aw skill eval prepare agent-skill-toolkit review-agent-skill --suite behavior --profile project-default --output ./review-agent-skill-spec --json
 ```
 
-行为 suite 是 manifest 声明的 release-required 证据（`requiredForRelease: true`、`releaseSplits: []`、`defaultRuns: 1`）。conversation driver 不支持 split 过滤，因此 `releaseSplits` 保持空数组。
+执行前验证 Spec，并复用与 target 和 selected cases 精确绑定的单份 `EvalAudit v1`；没有可复用 Audit 时，由全新上下文生成一份。Runner 执行 `aw-skill-eval run <spec> --audit <audit>`，生成 `EvalResult v1`，再用 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>` 验证。
+
+clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。triage 不是 Release Check 的机器输入。发布检查范围只从当前 `evals/manifest.json` 的 `requiredForRelease` 和 `releaseSplits` 派生。

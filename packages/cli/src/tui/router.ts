@@ -42,6 +42,13 @@ export type TuiRoute =
       pluginId: string;
       view?: 'selection' | 'blocked';
     }
+  | { name: 'dependencyPlacement'; pluginId: string }
+  | {
+      name: 'dependencyPlacementEditor';
+      pluginId: string;
+      dependencyPluginId: string;
+      platform: PlatformName;
+    }
   | { name: 'pluginDetail'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }

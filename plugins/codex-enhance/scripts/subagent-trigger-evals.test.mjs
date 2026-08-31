@@ -5,12 +5,14 @@ import path from 'node:path';
 
 import {
   createEvalWorkspace,
-  readEvalResource,
 } from '../skills/codex-subagent-guide/evals/eval-harness.mjs';
 import {
   setupTriggerWorkspace,
   TRIGGER_WORKSPACE_FIXTURES,
 } from '../skills/codex-subagent-guide/evals/trigger-fixture.mjs';
+import manifestDocument from '../skills/codex-subagent-guide/evals/manifest.json' with { type: 'json' };
+import releaseCorpusDocument from '../skills/codex-subagent-guide/evals/trigger-cases.json' with { type: 'json' };
+import compositionCorpusDocument from '../skills/codex-subagent-guide/evals/trigger-composition-cases.json' with { type: 'json' };
 
 const GUIDE_ROLE_NAMES = [
   'codex-subagent-simple',
@@ -27,21 +29,18 @@ const EXPLORE_ROLE_NAMES = [
 const ROLE_NAMES = [...GUIDE_ROLE_NAMES, ...EXPLORE_ROLE_NAMES];
 
 async function testEvalCorpus() {
-  const manifest = JSON.parse(await readEvalResource('manifest.json'));
+  const manifest = manifestDocument;
   const releaseSuite = manifest.suites.find((entry) => entry.id === 'trigger');
   const compositionSuite = manifest.suites.find((entry) => entry.id === 'trigger-composition');
+  assert.equal(manifest.version, 1);
   assert.deepEqual(
     {
       cases: releaseSuite?.cases,
-      isolation: releaseSuite?.isolation,
-      strictNegativeSplits: releaseSuite?.strictNegativeSplits,
       releaseSplits: releaseSuite?.releaseSplits,
       requiredForRelease: releaseSuite?.requiredForRelease,
     },
     {
-      cases: './trigger-cases.json',
-      isolation: 'strict',
-      strictNegativeSplits: ['validation', 'sanity'],
+      cases: 'trigger-cases.json',
       releaseSplits: ['validation', 'sanity'],
       requiredForRelease: true,
     },
@@ -49,62 +48,56 @@ async function testEvalCorpus() {
   assert.deepEqual(
     {
       cases: compositionSuite?.cases,
-      skills: compositionSuite?.skills,
-      isolation: compositionSuite?.isolation,
-      strictNegativeSplits: compositionSuite?.strictNegativeSplits,
-      minimumPassRate: compositionSuite?.minimumPassRate,
-      forbidMultipleSkillLoads: compositionSuite?.forbidMultipleSkillLoads,
-      releaseSplits: compositionSuite?.releaseSplits,
       requiredForRelease: compositionSuite?.requiredForRelease,
     },
     {
-      cases: './trigger-composition-cases.json',
-      skills: ['codex-subagent-guide', 'codex-explore'],
-      isolation: 'standard',
-      strictNegativeSplits: ['validation', 'sanity'],
-      minimumPassRate: 1,
-      forbidMultipleSkillLoads: true,
-      releaseSplits: [],
+      cases: 'trigger-composition-cases.json',
       requiredForRelease: false,
     },
   );
 
-  const releaseDocument = JSON.parse(await readEvalResource('trigger-cases.json'));
-  const compositionDocument = JSON.parse(
-    await readEvalResource('trigger-composition-cases.json'),
-  );
+  const releaseDocument = releaseCorpusDocument;
+  const compositionDocument = compositionCorpusDocument;
   const releaseCases = releaseDocument.cases;
   const compositionCases = compositionDocument.cases;
   const cases = [...releaseCases, ...compositionCases];
-  assert.equal(releaseDocument.schemaVersion, 1);
-  assert.equal(releaseDocument.skill, 'codex-subagent-guide');
-  assert.equal(compositionDocument.schemaVersion, 1);
-  assert.equal(compositionDocument.skill, 'codex-subagent-guide');
+  assert.equal(releaseDocument.version, 1);
+  assert.equal(releaseDocument.suite.kind, 'trigger');
+  assert.equal(releaseDocument.suite.unitUnderTest, 'codex-subagent-guide');
+  assert.equal(releaseDocument.suite.runtime.isolation, 'strict');
+  assert.deepEqual(releaseDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
+  assert.equal(compositionDocument.version, 1);
+  assert.equal(compositionDocument.suite.kind, 'trigger');
+  assert.equal(compositionDocument.suite.unitUnderTest, 'codex-subagent-guide');
+  assert.deepEqual(compositionDocument.suite.participants, ['codex-explore']);
+  assert.equal(compositionDocument.suite.runtime.isolation, 'standard');
+  assert.deepEqual(compositionDocument.suite.runtime.strictNegativeSplits, ['validation', 'sanity']);
+  assert.equal(compositionDocument.suite.runtime.forbidMultipleSkillLoads, true);
   assert.equal(releaseCases.length > 0, true);
   assert.equal(compositionCases.length > 0, true);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
-  assert.equal(cases.every((entry) => typeof entry.should_spawn_agent === 'boolean'), true);
+  assert.equal(cases.every((entry) => typeof entry.input?.shouldSpawnAgent === 'boolean'), true);
   assert.equal(
     compositionCases.every((entry) => (
-      Array.isArray(entry.expected_loaded_skills) && entry.should_load_skill === undefined
+      Array.isArray(entry.input.expected?.loadedSkills) && entry.input.expectedLoad === undefined
     )),
     true,
   );
   assert.equal(
     releaseCases.every((entry) => !['authorization_skill', 'lifecycle_skill'].includes(
-      entry.workspace_fixture,
+      entry.input.workspaceFixture,
     )),
     true,
   );
   assert.equal(
     compositionCases.every((entry) => ['authorization_skill', 'lifecycle_skill', 'explore_route'].includes(
-      entry.workspace_fixture,
+      entry.input.workspaceFixture,
     )),
     true,
   );
   assert.equal(
-    releaseCases.filter((entry) => entry.workspace_fixture === 'project_authorization')
-      .every((entry) => entry.use_project_rules === true),
+    releaseCases.filter((entry) => entry.input.workspaceFixture === 'project_authorization')
+      .every((entry) => entry.input.useProjectRules === true),
     true,
   );
 

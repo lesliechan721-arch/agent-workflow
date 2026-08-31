@@ -1,612 +1,453 @@
 {
-  "schemaVersion": 1,
-  "skill": "decision-grill",
-  "policy": {
-    "optimization": "balanced",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏触发会跳过用户要求的共同决策；误触发会把直接回答或实施任务变成长访谈。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "decision-grill",
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏触发会跳过用户要求的共同决策；误触发会把直接回答或实施任务变成长访谈。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation",
+        "sanity"
+      ],
+      "forbidMultipleSkillLoads": false,
+      "fixture": "trigger-fixture.mjs"
+    }
   },
   "cases": [
     {
       "id": "p01_tenant_migration_plan",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "collaborative-migration-plan",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "和我一起制定多租户迁移计划。租户隔离方式、兼容期和回滚策略还没定，关键选择逐轮问我，最后形成可执行计划。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户明确要求通过逐轮选择共同形成迁移计划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "访谈问题和最终计划格式可以不同，但必须加载 decision-grill。"
-      },
       "split": "train",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "collaborative-migration-plan"
+      ],
+      "input": {
+        "query": "和我一起制定多租户迁移计划。租户隔离方式、兼容期和回滚策略还没定，关键选择逐轮问我，最后形成可执行计划。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "p02_iterative_launch_plan",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "iterative-plan-revision",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "这份上线计划还不成熟。请逐轮和我修改，发布节奏和故障回退由我参与决定，直到计划能执行。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "未定型计划需要用户参与交互式修订。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以从不同上游决定开始，但必须加载 decision-grill。"
-      },
       "split": "train",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "iterative-plan-revision"
+      ],
+      "input": {
+        "query": "这份上线计划还不成熟。请逐轮和我修改，发布节奏和故障回退由我参与决定，直到计划能执行。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "p03_product_idea_to_plan",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "product-idea-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "我有一个面向独立设计师的协作产品想法。请逐轮追问并压力测试我的判断，直到我们对目标、边界和主要风险形成共享理解。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户明确要求通过逐轮访谈把产品想法想透并形成共享理解。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "问题内容可以不同，但必须加载 decision-grill。"
-      },
       "split": "train",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "product-idea-interview"
+      ],
+      "input": {
+        "query": "我有一个面向独立设计师的协作产品想法。请逐轮追问并压力测试我的判断，直到我们对目标、边界和主要风险形成共享理解。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "p04_runner_choice_to_plan",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "runner-decision-mode",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "本地 MCP runner 和 CI runner 都可行。请和我权衡凭据、运维和工作树要求，关键取舍逐项问我，最后定下方向并形成落地计划。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "方案比较服务于用户参与的选择和规划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以先查事实，但必须加载 decision-grill。",
-        "minimal_counterexample": "若只要求解释 runner 的实现和难度，不要求逐轮共同决定，则不应加载。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "runner-decision-mode"
+      ],
+      "input": {
+        "query": "本地 MCP runner 和 CI runner 都可行。请和我权衡凭据、运维和工作树要求，关键取舍逐项问我，最后定下方向并形成落地计划。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "方案比较服务于用户参与的选择和规划。",
+        "minimalCounterexample": "若只要求解释 runner 的实现和难度，不要求逐轮共同决定，则不应加载。",
+        "errorCost": "high",
+        "allowedVariance": "可以先查事实，但必须加载 decision-grill。"
+      }
     },
     {
       "id": "p05_workflow_planning_stage",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "workflow-delegated-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "outer_workflow_authorized_interview": true
-      },
-      "query": "外层工作流现在进入协作决策访谈阶段。发布方式和兼容期限仍需我选择，请逐轮推演，直到我们形成共享理解。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "外层工作流明确进入协作决策访谈阶段。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "访谈起点可以不同，但必须加载 decision-grill。"
-      },
       "split": "train",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "workflow-delegated-interview"
+      ],
+      "input": {
+        "query": "外层工作流现在进入协作决策访谈阶段。发布方式和兼容期限仍需我选择，请逐轮推演，直到我们形成共享理解。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "p06_revision_to_executable_plan",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "iterative-plan-revision",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "和我逐轮修订这份数据迁移草案。每遇到会改变范围或回滚方式的选择先问我，最后整理成可执行计划。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户要求交互式修订计划并参与关键取舍。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "问题顺序可以不同，但必须加载 decision-grill。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "iterative-plan-revision"
+      ],
+      "input": {
+        "query": "和我逐轮修订这份数据迁移草案。每遇到会改变范围或回滚方式的选择先问我，最后整理成可执行计划。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "p07_roadmap_planning",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "collaborative-roadmap",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "和我制定下个季度的产品路线图。优先级和范围还没定，请逐轮讨论后形成计划。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "路线图需要通过用户参与的取舍形成。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以先确认目标或范围，但必须加载 decision-grill。"
-      },
       "split": "train",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "collaborative-roadmap"
+      ],
+      "input": {
+        "query": "和我制定下个季度的产品路线图。优先级和范围还没定，请逐轮讨论后形成计划。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "p08_architecture_choice_plan",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "architecture-decision-mode",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "单体和微服务都能满足需求。请先问清我的交付期限和运维取舍，和我选定方向，再形成迁移计划。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "比较是共同选定方向并制定计划的一部分。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以先查仓库事实，但必须加载 decision-grill。",
-        "minimal_counterexample": "若只要求一次性比较单体和微服务，不要求共同选择，则不应加载。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "architecture-decision-mode"
+      ],
+      "input": {
+        "query": "单体和微服务都能满足需求。请先问清我的交付期限和运维取舍，和我选定方向，再形成迁移计划。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "比较是共同选定方向并制定计划的一部分。",
+        "minimalCounterexample": "若只要求一次性比较单体和微服务，不要求共同选择，则不应加载。",
+        "errorCost": "high",
+        "allowedVariance": "可以先查仓库事实，但必须加载 decision-grill。"
+      }
     },
     {
       "id": "p09_pricing_transition_plan",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "implementation-interview-vs-clarification",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implementation_context": true
-      },
-      "query": "实现导出前，围绕导出范围、权限和格式逐轮追问我。请压力测试这些决定，直到我们形成共享方案。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "显式决策访谈意图覆盖实施语境。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以先查事实，但必须加载 decision-grill 而不是只做局部澄清。",
-        "minimal_counterexample": "若只说明导出范围未定并要求实现，没有逐轮推演意图，则不应加载 decision-grill。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "implementation-interview-vs-clarification"
+      ],
+      "input": {
+        "query": "实现导出前，围绕导出范围、权限和格式逐轮追问我。请压力测试这些决定，直到我们形成共享方案。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "显式决策访谈意图覆盖实施语境。",
+        "minimalCounterexample": "若只说明导出范围未定并要求实现，没有逐轮推演意图，则不应加载 decision-grill。",
+        "errorCost": "high",
+        "allowedVariance": "可以先查事实，但必须加载 decision-grill 而不是只做局部澄清。"
+      }
     },
     {
       "id": "p10_explicit_skill_plan",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "explicit-invocation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "explicit_invocation": true
-      },
-      "query": "$decision-grill 帮我把 API 下线想法想透。逐轮确认兼容期限、迁移责任和回退条件，直到形成共享理解。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户显式选择 Skill，并要求逐轮访谈一个尚未定型的想法。",
-        "rule_refs": [
-          "SKILL.md frontmatter description",
-          "agents/openai.yaml default_prompt"
-        ],
-        "confidence": "high",
-        "allowed_variance": "访谈问题可以不同，但必须加载 decision-grill。"
-      },
       "split": "sanity",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "explicit-invocation"
+      ],
+      "input": {
+        "query": "$decision-grill 帮我把 API 下线想法想透。逐轮确认兼容期限、迁移责任和回退条件，直到形成共享理解。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "p11_colloquial_decision_interview",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "colloquial-decision-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "这事我拿不准。你每次问我一个最要紧的问题，跟我一起把 API 版本切换方向定下来，最后把我们定下的内容记好。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "口语请求仍明确要求逐轮提问、共同决定和形成共享记录。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以使用不同访谈起点，但必须加载 decision-grill。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "colloquial-decision-interview"
+      ],
+      "input": {
+        "query": "这事我拿不准。你每次问我一个最要紧的问题，跟我一起把 API 版本切换方向定下来，最后把我们定下的内容记好。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "n01_observed_runner_explanation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "observed",
-      "scenario_family": "runner-decision-mode",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "专用 MCP/CI runner 具体怎么实现？实现难度大么？",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "用户要求技术说明和难度估算，没有要求共同形成计划或决定。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "回答深度可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求逐轮权衡 runner 取舍并共同定下方向，则应加载。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "runner-decision-mode"
+      ],
+      "input": {
+        "query": "专用 MCP/CI runner 具体怎么实现？实现难度大么？",
+        "expectedLoad": false,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "用户要求技术说明和难度估算，没有要求共同形成计划或决定。",
+        "minimalCounterexample": "若用户要求逐轮权衡 runner 取舍并共同定下方向，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "回答深度可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n02_solution_comparison",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "architecture-decision-mode",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "比较单体和微服务的成本、性能和实现难度。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "这是一次性方案比较，不是交互式规划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以给出比较表或结论，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求先问清期限和运维取舍，再共同选定方向，则应加载。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "architecture-decision-mode"
+      ],
+      "input": {
+        "query": "比较单体和微服务的成本、性能和实现难度。",
+        "expectedLoad": false,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "这是一次性方案比较，不是交互式规划。",
+        "minimalCounterexample": "若用户要求先问清期限和运维取舍，再共同选定方向，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "可以给出比较表或结论，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n03_one_shot_plan_review",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "plan-review-vs-revision",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "评审这份迁移计划，直接列出风险和改进建议。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "用户要求一次性计划评审，没有要求逐轮修订。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "评审形式可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求逐轮修改计划并确认关键取舍，则应加载。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "plan-review-vs-revision"
+      ],
+      "input": {
+        "query": "评审这份迁移计划，直接列出风险和改进建议。",
+        "expectedLoad": false,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "用户要求一次性计划评审，没有要求逐轮修订。",
+        "minimalCounterexample": "若用户要求逐轮修改计划并确认关键取舍，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "评审形式可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n04_feasibility_effort",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "feasibility-vs-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "这个方案两周内能做完吗？估一下可行性和工作量。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "这是可行性和工作量估算，不是共同制定计划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "估算方法可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求围绕范围和期限逐轮取舍并共同形成计划，则应加载。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "feasibility-vs-interview"
+      ],
+      "input": {
+        "query": "这个方案两周内能做完吗？估一下可行性和工作量。",
+        "expectedLoad": false,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "这是可行性和工作量估算，不是共同制定计划。",
+        "minimalCounterexample": "若用户要求围绕范围和期限逐轮取舍并共同形成计划，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "估算方法可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n05_direct_recommendation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "recommendation-vs-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "PostgreSQL 和 MySQL 哪个更适合这个服务？分析后直接推荐一个。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "用户要一次性技术选型建议，没有要求参与取舍或形成计划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "推荐内容可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求逐轮讨论一致性、运维和迁移取舍后共同选择，则应加载。"
-      },
       "split": "validation",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "recommendation-vs-interview"
+      ],
+      "input": {
+        "query": "PostgreSQL 和 MySQL 哪个更适合这个服务？分析后直接推荐一个。",
+        "expectedLoad": false,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "用户要一次性技术选型建议，没有要求参与取舍或形成计划。",
+        "minimalCounterexample": "若用户要求逐轮讨论一致性、运维和迁移取舍后共同选择，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "推荐内容可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n06_generate_plan_from_spec",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "direct-plan-vs-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "complete_spec_available": true
-      },
-      "query": "需求和技术规范都完整，直接生成实施计划，不需要问我。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "用户明确要求根据完整输入直接产出计划，不需要交互式规划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "计划格式可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若规范仍有重要取舍且用户要求逐轮共同决定，则应加载。"
-      },
       "split": "train",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
+      "tags": [
+        "boundary",
+        "direct-plan-vs-interview"
+      ],
+      "input": {
+        "query": "需求和技术规范都完整，直接生成实施计划，不需要问我。",
+        "expectedLoad": false,
+        "workspaceFixture": "implementation_repo",
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "用户明确要求根据完整输入直接产出计划，不需要交互式规划。",
+        "minimalCounterexample": "若规范仍有重要取舍且用户要求逐轮共同决定，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "计划格式可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n07_delegated_internal_choice",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "delegated-internal-choice",
-      "unit_under_test": "description",
-      "preconditions": {
-        "user_delegated_choice": true
-      },
-      "query": "根据当前仓库为内部日志库做技术选型并直接采用你的推荐，不需要和我讨论。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "用户已把内部选择委托给 agent，且没有协作规划意图。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以选择不同方案，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户保留关键取舍并要求逐轮参与，则应加载。"
-      },
       "split": "train",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
+      "tags": [
+        "boundary",
+        "delegated-internal-choice"
+      ],
+      "input": {
+        "query": "根据当前仓库为内部日志库做技术选型并直接采用你的推荐，不需要和我讨论。",
+        "expectedLoad": false,
+        "workspaceFixture": "implementation_repo",
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "用户已把内部选择委托给 agent，且没有协作规划意图。",
+        "minimalCounterexample": "若用户保留关键取舍并要求逐轮参与，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "可以选择不同方案，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n08_agent_internal_planning",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "internal-planning-vs-collaboration",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implementation_task_is_bounded": true
-      },
-      "query": "修复 tests/parser_test.py 中稳定复现的错误。你自己先规划再实现，保持其他行为不变。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "计划只是 agent 实施任务的内部步骤。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "内部计划深度可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求参与关键修复方案取舍并逐轮形成共同决定，则应加载。"
-      },
       "split": "train",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
+      "tags": [
+        "boundary",
+        "internal-planning-vs-collaboration"
+      ],
+      "input": {
+        "query": "修复 tests/parser_test.py 中稳定复现的错误。你自己先规划再实现，保持其他行为不变。",
+        "expectedLoad": false,
+        "workspaceFixture": "implementation_repo",
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "计划只是 agent 实施任务的内部步骤。",
+        "minimalCounterexample": "若用户要求参与关键修复方案取舍并逐轮形成共同决定，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "内部计划深度可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "n09_implementation_ambiguity",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "implementation-interview-vs-clarification",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implementation_context": true,
-        "iterative_interview_requested": false
-      },
-      "query": "实现导出功能，但导出全部还是当前筛选结果还没定。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "这是具体实施需求的关键歧义，不是逐轮决策访谈；单 Skill trigger suite 只要求 decision-grill 不加载。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以直接询问或通过其它可用机制处理，但不能加载 decision-grill；跨 Skill 选择由 router suite 验证。",
-        "minimal_counterexample": "若用户要求围绕范围、权限和格式逐轮压力测试并形成共享方案，则应加载 decision-grill。"
-      },
       "split": "train",
-      "use_project_rules": false,
-      "workspace_fixture": "neutral_export_repo"
+      "tags": [
+        "boundary",
+        "implementation-interview-vs-clarification"
+      ],
+      "input": {
+        "query": "实现导出功能，但导出全部还是当前筛选结果还没定。",
+        "expectedLoad": false,
+        "workspaceFixture": "neutral_export_repo",
+        "useProjectRules": false
+      },
+      "audit": {
+        "rationale": "这是具体实施需求的关键歧义，不是逐轮决策访谈；单 Skill trigger suite 只要求 decision-grill 不加载。",
+        "minimalCounterexample": "若用户要求围绕范围、权限和格式逐轮压力测试并形成共享方案，则应加载 decision-grill。",
+        "errorCost": "high",
+        "allowedVariance": "可以直接询问或通过其它可用机制处理，但不能加载 decision-grill；跨 Skill 选择由 router suite 验证。"
+      }
     },
     {
       "id": "n10_technical_explanation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "explanation-vs-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implementation_repo_available": true
-      },
-      "query": "解释当前系统的会话迁移是怎么实现的，只给技术说明。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "这是技术原理说明，不需要协作规划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "说明内容可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求围绕迁移方案逐轮作出取舍并形成共享理解，则应加载。"
-      },
       "split": "train",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
+      "tags": [
+        "boundary",
+        "explanation-vs-interview"
+      ],
+      "input": {
+        "query": "解释当前系统的会话迁移是怎么实现的，只给技术说明。",
+        "expectedLoad": false,
+        "workspaceFixture": "implementation_repo",
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "这是技术原理说明，不需要协作规划。",
+        "minimalCounterexample": "若用户要求围绕迁移方案逐轮作出取舍并形成共享理解，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "说明内容可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "s01_colloquial_interview",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "colloquial-decision-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "咱们别一下子拍板。一个问题一个问题地聊发布节奏和回退条件，等我俩都认同了再收尾。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户用口语明确要求逐轮共同决定并形成共享理解。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "访谈措辞可以不同，但必须加载 decision-grill。"
-      },
       "split": "sanity",
-      "use_project_rules": true
+      "tags": [
+        "representative",
+        "colloquial-decision-interview"
+      ],
+      "input": {
+        "query": "咱们别一下子拍板。一个问题一个问题地聊发布节奏和回退条件，等我俩都认同了再收尾。",
+        "expectedLoad": true,
+        "useProjectRules": true
+      }
     },
     {
       "id": "s02_short_recommendation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "recommendation-vs-interview",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true
-      },
-      "query": "单体还是微服务？直接给建议。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "短请求仍是一次性推荐，没有协作访谈意图。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "推荐内容可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求一个问题一个问题地共同选择方向，则应加载。"
-      },
       "split": "sanity",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "recommendation-vs-interview"
+      ],
+      "input": {
+        "query": "单体还是微服务？直接给建议。",
+        "expectedLoad": false,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "短请求仍是一次性推荐，没有协作访谈意图。",
+        "minimalCounterexample": "若用户要求一个问题一个问题地共同选择方向，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "推荐内容可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "s03_long_context_direct_review",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "plan-review-vs-revision",
-      "unit_under_test": "description",
-      "preconditions": {
-        "implicit_invocation": true,
-        "plan_is_provided": true
-      },
-      "query": "迁移计划已经列出三阶段切流、双写观察、失败回滚和负责人。我只要一次性评审：直接指出遗漏、风险和最小改进，不要进入逐轮讨论。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "长上下文没有改变交付类型；用户仍只要一次性评审。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "评审深度可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求逐轮修改这些阶段并共同确认取舍，则应加载。"
-      },
       "split": "sanity",
-      "use_project_rules": true
+      "tags": [
+        "boundary",
+        "plan-review-vs-revision"
+      ],
+      "input": {
+        "query": "迁移计划已经列出三阶段切流、双写观察、失败回滚和负责人。我只要一次性评审：直接指出遗漏、风险和最小改进，不要进入逐轮讨论。",
+        "expectedLoad": false,
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "长上下文没有改变交付类型；用户仍只要一次性评审。",
+        "minimalCounterexample": "若用户要求逐轮修改这些阶段并共同确认取舍，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "评审深度可以不同，但不能加载 decision-grill。"
+      }
     },
     {
       "id": "s04_complete_implementation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "internal-planning-vs-collaboration",
-      "unit_under_test": "description",
-      "preconditions": {
-        "approved_plan_is_complete": true
-      },
-      "query": "严格按 docs/approved-migration.md 实现。你自己安排步骤并直接完成，不要和我讨论方案。",
-      "should_load_skill": false,
-      "oracle": {
-        "rationale": "完整批准的实施任务只需要 agent 内部规划。",
-        "rule_refs": [
-          "SKILL.md frontmatter description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "内部步骤可以不同，但不能加载 decision-grill。",
-        "minimal_counterexample": "若用户要求逐轮重审迁移方向和回退取舍，则应加载。"
-      },
       "split": "sanity",
-      "use_project_rules": true,
-      "workspace_fixture": "session_migration_repo"
+      "tags": [
+        "boundary",
+        "internal-planning-vs-collaboration"
+      ],
+      "input": {
+        "query": "严格按 docs/approved-migration.md 实现。你自己安排步骤并直接完成，不要和我讨论方案。",
+        "expectedLoad": false,
+        "workspaceFixture": "session_migration_repo",
+        "useProjectRules": true
+      },
+      "audit": {
+        "rationale": "完整批准的实施任务只需要 agent 内部规划。",
+        "minimalCounterexample": "若用户要求逐轮重审迁移方向和回退取舍，则应加载。",
+        "errorCost": "high",
+        "allowedVariance": "内部步骤可以不同，但不能加载 decision-grill。"
+      }
     }
   ]
 }

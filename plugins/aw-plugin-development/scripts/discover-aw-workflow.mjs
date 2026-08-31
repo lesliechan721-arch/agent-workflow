@@ -138,15 +138,6 @@ function supportedPlatforms(manifest) {
   return [...platforms].sort();
 }
 
-const RESERVED_RUNTIME_IMPORTS = new Map([
-  ['@aw/agent-skill-eval', new Map([
-    ['case-corpus-digest', new Set(['buildImportEdges', 'skillRuntimeFileImportEdges'])],
-    ['eval-audit-result-schema', new Set(['skillRuntimeFileImportEdges'])],
-    ['eval-run-bundle-schema', new Set(['skillRuntimeFileImportEdges'])],
-    ['eval-run-bundle-validator', new Set(['buildImportEdges', 'skillRuntimeFileImportEdges'])],
-  ])],
-]);
-
 function importEdge(from, reference, source, extra = {}) {
   if (typeof reference?.plugin !== 'string' || typeof reference?.export !== 'string') return null;
   return { from, to: reference.plugin, export: reference.export, source, ...extra };
@@ -210,13 +201,9 @@ async function readPluginManifest(pluginRoot) {
   return { manifestPath, manifest: JSON.parse(await readFile(manifestPath, 'utf8')) };
 }
 
-function reservedImportReason(edge, edgeType) {
+function reservedImportReason(edge) {
   if (!edge.to.startsWith('@aw/')) return null;
-  const provider = RESERVED_RUNTIME_IMPORTS.get(edge.to);
-  if (!provider) return 'missing-provider';
-  const purposes = provider.get(edge.export);
-  if (!purposes) return 'missing-export';
-  return purposes.has(edgeType) ? null : 'unsupported-virtual-import-kind';
+  return 'missing-provider';
 }
 
 function findCycles(names, edges) {
@@ -379,7 +366,7 @@ async function main() {
     artifactRuntimeImportEdges,
   })) {
     for (const edge of edges) {
-      const reservedReason = reservedImportReason(edge, edgeType);
+      const reservedReason = reservedImportReason(edge);
       if (reservedReason) {
         unresolved[edgeType].push({ ...edge, reason: reservedReason });
         continue;

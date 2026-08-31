@@ -9,9 +9,12 @@ import {
   MANAGED_CODEX_PACKAGE_NAME,
   MANAGED_CODEX_REGISTRY,
   MANAGED_CODEX_VERSION,
+  inspectSystemCodexFilesystem,
   previewCodexManager,
   resolveCodexManager,
+  resolveCodexOperationConsumer,
 } from '../../src/utils/codex-manager.js';
+import { getCodexOperationRequirement } from '../../src/utils/agent-version.js';
 import {
   buildCodexMarketplaceAddInvocation,
   buildCodexPluginListInvocation,
@@ -122,6 +125,30 @@ async function writeWindowsNpmCodex(
   return { binRoot, launcher };
 }
 
+async function writePosixNpmCodex(
+  isolation: IsolatedTestEnvironment,
+  directoryName: string,
+  options: { name?: string; version?: string; bin?: unknown } = {},
+): Promise<{ binRoot: string; launcher: string }> {
+  const prefixRoot = path.join(isolation.layout.fixtureCwd, directoryName);
+  const binRoot = path.join(prefixRoot, 'bin');
+  const packageRoot = path.join(prefixRoot, 'lib', 'node_modules', '@openai', 'codex');
+  const launcher = path.join(packageRoot, 'bin', 'codex.js');
+  await fs.ensureDir(path.dirname(launcher));
+  await Promise.all([
+    fs.writeJson(path.join(packageRoot, 'package.json'), {
+      name: options.name ?? MANAGED_CODEX_PACKAGE_NAME,
+      version: options.version ?? '0.151.0',
+      bin: options.bin ?? { codex: 'bin/codex.js' },
+    }),
+    fs.writeFile(launcher, '#!/usr/bin/env node\n'),
+  ]);
+  await fs.chmod(launcher, 0o755);
+  await fs.ensureDir(binRoot);
+  await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
+  return { binRoot, launcher };
+}
+
 describe('Codex manager resolver', () => {
   let isolation: IsolatedTestEnvironment;
 
@@ -133,6 +160,73 @@ describe('Codex manager resolver', () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await isolation.cleanup();
+  });
+
+  it('classifies missing and validated system Codex from filesystem evidence only', async () => {
+    const requirement = getCodexOperationRequirement('project');
+    await expect(inspectSystemCodexFilesystem({
+      env: { ...isolation.env, PATH: '' },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      operationRequirement: requirement,
+    })).resolves.toEqual({
+      state: 'missing',
+      requiredMinVersion: '0.151.0',
+    });
+
+    const installation = await writePosixNpmCodex(isolation, 'filesystem-system');
+    await expect(inspectSystemCodexFilesystem({
+      env: { ...isolation.env, PATH: installation.binRoot },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      operationRequirement: requirement,
+    })).resolves.toEqual({
+      state: 'compatible',
+      detectedVersion: '0.151.0',
+      requiredMinVersion: '0.151.0',
+    });
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+    expect(await fs.pathExists(isolation.layout.codexHomeDir)).toBe(false);
+  });
+
+  it('returns typed npm failures and leaves an ordinary POSIX launcher unobserved', async () => {
+    const requirement = getCodexOperationRequirement('project');
+    const low = await writePosixNpmCodex(isolation, 'filesystem-low', { version: '0.150.0' });
+    await expect(inspectSystemCodexFilesystem({
+      env: { ...isolation.env, PATH: low.binRoot },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      operationRequirement: requirement,
+    })).resolves.toMatchObject({
+      state: 'incompatible',
+      code: 'codexProjectPluginVersionTooLow',
+      detectedVersion: '0.150.0',
+      requiredMinVersion: '0.151.0',
+    });
+
+    const ordinary = await writePathCodex(isolation, 'filesystem-ordinary', 'linux');
+    await expect(inspectSystemCodexFilesystem({
+      env: { ...isolation.env, PATH: ordinary.pathEntry },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      operationRequirement: requirement,
+    })).resolves.toEqual({
+      state: 'unobserved',
+      requiredMinVersion: '0.151.0',
+    });
+
+    const foreignNpm = await writePosixNpmCodex(isolation, 'filesystem-foreign-npm', {
+      name: 'foreign/codex',
+    });
+    await expect(inspectSystemCodexFilesystem({
+      env: { ...isolation.env, PATH: foreignNpm.binRoot },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      operationRequirement: requirement,
+    })).resolves.toMatchObject({
+      state: 'unresolved',
+      code: 'codexProjectPluginUnsupported',
+    });
   });
 
   it('selects a supported system Codex and does not inspect or authorize managed state', async () => {
@@ -156,6 +250,74 @@ describe('Codex manager resolver', () => {
       argsPrefix: [],
     });
     expect(authorizer).not.toHaveBeenCalled();
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+  });
+
+  it('blocks system Codex 0.150 for a project operation without managed fallback', async () => {
+    const executable = await writePathCodex(isolation, 'project-system-bin', 'linux');
+    const authorizer = vi.fn(() => true);
+
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: executable.pathEntry },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      runner: async () => result('codex-cli 0.150.0'),
+      authorizer,
+      operationRequirement: getCodexOperationRequirement('project'),
+      requiresNativeMaterialization: false,
+    })).rejects.toMatchObject({ code: 'codexProjectPluginVersionTooLow' });
+    expect(authorizer).not.toHaveBeenCalled();
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+  });
+
+  it.each([
+    ['unparseable', result('Codex development build')],
+    ['probe failure', result('', 'probe failed', 2)],
+  ])('uses the project-contract unsupported code for %s system evidence', async (
+    _label,
+    probeResult,
+  ) => {
+    const executable = await writePathCodex(isolation, 'project-unsupported-bin', 'linux');
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: executable.pathEntry },
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'linux',
+      runner: async () => probeResult,
+      operationRequirement: getCodexOperationRequirement('project'),
+      requiresNativeMaterialization: false,
+    })).rejects.toMatchObject({ code: 'codexProjectPluginUnsupported' });
+  });
+
+  it('assumes an App consumer when project activation has no system CLI and needs no native write', async () => {
+    const runner = vi.fn(async () => result('must not run'));
+    const authorizer = vi.fn(() => true);
+    const requirement = getCodexOperationRequirement('project');
+
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: '' },
+      cwd: isolation.layout.fixtureCwd,
+      runner,
+      authorizer,
+      operationRequirement: requirement,
+      requiresNativeMaterialization: false,
+    })).resolves.toEqual({ support: 'assumed', requirement });
+    expect(runner).not.toHaveBeenCalled();
+    expect(authorizer).not.toHaveBeenCalled();
+    expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
+  });
+
+  it('resolves and authorizes managed Codex only when native materialization is required', async () => {
+    const authorizer = vi.fn(() => false);
+
+    await expect(resolveCodexOperationConsumer({
+      env: { ...isolation.env, PATH: '' },
+      cwd: isolation.layout.fixtureCwd,
+      runner: async () => { throw missingExecutable(); },
+      authorizer,
+      operationRequirement: getCodexOperationRequirement('project'),
+      requiresNativeMaterialization: true,
+    })).rejects.toMatchObject({ code: 'managedCodexAuthorizationRequired' });
+    expect(authorizer).toHaveBeenCalledTimes(1);
     expect(await fs.pathExists(isolation.layout.awHomeDir)).toBe(false);
   });
 

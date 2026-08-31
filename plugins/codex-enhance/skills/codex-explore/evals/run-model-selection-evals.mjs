@@ -7,6 +7,7 @@ import {
   PROVIDER_CREDENTIAL_ENVIRONMENT,
   runCodexOnce,
 } from './eval-harness.mjs';
+import { runCustomProcessMain } from './custom-process-protocol.mjs';
 
 function validateExpected(expected, id) {
   const range = expected?.spawn_calls;
@@ -399,3 +400,5 @@ export async function runEvalProvider(input) {
     await rm(workspace.root, { recursive: true, force: true });
   }
 }
+
+await runCustomProcessMain(import.meta.url, runEvalProvider);

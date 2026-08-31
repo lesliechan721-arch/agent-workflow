@@ -49,24 +49,6 @@
         }
       },
       {
-        "name": "validate-eval-audit-result",
-        "source": "./scripts/validate-eval-audit-result.mjs",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "validate-eval-run-bundle",
-        "source": "./scripts/validate-eval-run-bundle.mjs",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
         "name": "check-agent-skill",
         "source": "./scripts/check-agent-skill.mjs",
         "requires": {
@@ -108,16 +90,6 @@
         "plugin": "agent-content-toolkit",
         "export": "content-rules",
         "env": "AW_PLUGIN_IMPORT_CONTENT_RULES"
-      },
-      {
-        "plugin": "@aw/agent-skill-eval",
-        "export": "case-corpus-digest",
-        "env": "AW_PLUGIN_IMPORT_CASE_CORPUS_DIGEST"
-      },
-      {
-        "plugin": "@aw/agent-skill-eval",
-        "export": "eval-run-bundle-validator",
-        "env": "AW_PLUGIN_IMPORT_EVAL_RUN_BUNDLE_VALIDATOR"
       }
     ],
     "skillRuntimeFiles": [
@@ -160,37 +132,6 @@
         "skill": "review-agent-workflow",
         "source": "./references/review-publication.md",
         "target": "references/review-publication.md"
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "target": "assets/eval-audit-result.schema.json",
-        "import": {
-          "plugin": "@aw/agent-skill-eval",
-          "export": "eval-audit-result-schema"
-        }
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "source": "./scripts/validate-json-contract.mjs",
-        "target": "scripts/validate-json-contract.mjs"
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "source": "./scripts/validate-eval-audit-result.mjs",
-        "target": "scripts/validate-eval-audit-result.mjs"
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "source": "./scripts/validate-eval-run-bundle.mjs",
-        "target": "scripts/validate-eval-run-bundle.mjs"
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "target": "assets/eval-run-bundle.schema.json",
-        "import": {
-          "plugin": "@aw/agent-skill-eval",
-          "export": "eval-run-bundle-schema"
-        }
       }
     ],
     "generatedSkillRuntimeFiles": [
@@ -221,14 +162,6 @@
       {
         "skill": "audit-agent-skill-evals",
         "target": "references/eval-audit-standard.md"
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "target": "scripts/corpus-digest.mjs"
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "target": "scripts/eval-run-bundle-validator.mjs"
       }
     ]
   },

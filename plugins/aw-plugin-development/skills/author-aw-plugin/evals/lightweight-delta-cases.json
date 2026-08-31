@@ -1,56 +1,54 @@
 {
-  "skill_name": "author-aw-plugin",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "单组件低风险修改应保留作者验证，但不应物化可从插件树重算的完整 AWAuthoringContext。"
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "author-aw-plugin",
+    "participants": [
+      "review-aw-plugin",
+      "write-agent-content",
+      "review-agent-content",
+      "author-agent-skill",
+      "review-agent-skill",
+      "design-agent-skill-evals",
+      "audit-agent-skill-evals",
+      "run-aw-skill-evals"
+    ],
+    "defaultGrader": "independent-llm",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "单组件低风险修改应保留作者验证，但不应物化可从插件树重算的完整 AWAuthoringContext。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
   },
-  "evals": [
+  "cases": [
     {
       "id": "existing-skill-small-delta-skips-aw-authoring-context",
-      "eval_type": "behavior",
-      "case_role": "regression",
-      "provenance": "derived",
-      "scenario_family": "lightweight-aw-authoring-delta",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "plugin_exists": true,
-        "one_existing_skill_changes": true,
-        "manifest_and_invocation_unchanged": true,
-        "no_build_or_materialization_change": true,
-        "review_not_requested": true
-      },
-      "oracle": {
-        "rationale": "已知 Skill 正文的一处局部修复不需要持久化 repository、profile、component、build 和 validator 等可重算事实。",
-        "rule_refs": [
-          "SKILL.md#工作流"
-        ],
-        "confidence": "high",
-        "allowed_variance": "验证命令可按目标 workspace 变化；不得生成 AWAuthoringContext、components JSON 或完整 SkillDesignBrief。",
-        "minimal_counterexample": "若新增 Skill、修改 description/invocation、manifest/profile 或 build/materialization，则应进入结构化路径。"
-      },
+      "split": "validation",
+      "tags": [
+        "regression",
+        "lightweight-aw-authoring-delta"
+      ],
       "prompt": "使用 $author-aw-plugin 修复 plugins/notes/skills/summarize/SKILL.md 正文中的一个错别字，只把“摘腰”改成“摘要”。不要改 description、调用方式、manifest、README、Eval 或构建。完成作者验证。",
-      "scripted_replies": [],
-      "expected_output": "只修改目标 SKILL.md，使用 author-agent-skill 的轻量 change 路径，运行适用的 AW 验证；不生成 AWAuthoringContext、components JSON 或 SkillDesignBrief。",
-      "sandbox": "workspace-write",
-      "workspace_files": {
-        ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"notes-lightweight-delta-fixture\"}\n",
-        "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Notes Fixture\",\"url\":\"https://example.invalid/notes-fixture\"},\"interface\":{\"displayName\":\"Notes Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
-        "plugins/notes/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"notes\",\"version\":\"0.1.0\",\"description\":\"Summarize supplied notes.\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"interface\":{\"displayName\":\"Notes\",\"shortDescription\":\"Summarizes supplied notes\",\"capabilities\":[\"Skills\"]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
-        "plugins/notes/README.md": "# Notes\n\nSummarize one supplied note.\n",
-        "plugins/notes/skills/summarize/README.md": "# Summarize\n\nSummarize one supplied note.\n",
-        "plugins/notes/skills/summarize/SKILL.md": "---\nname: summarize\ndescription: Summarize one supplied note.\n---\n\nReturn a concise 摘腰.\n",
-        "plugins/notes/skills/summarize/agents/openai.yaml": "interface:\n  display_name: Summarize\n  short_description: Summarize one supplied note into a concise and accurate result\n  default_prompt: Use $summarize to summarize the supplied note.\npolicy:\n  allow_implicit_invocation: true\n",
-        "AGENTS.md": "# Workspace rules\nOnly change plugins/notes/skills/summarize/SKILL.md. Use the installed aw CLI for validation.\n"
+      "input": {
+        "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"notes-lightweight-delta-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Notes Fixture\",\"url\":\"https://example.invalid/notes-fixture\"},\"interface\":{\"displayName\":\"Notes Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
+          "plugins/notes/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"notes\",\"version\":\"0.1.0\",\"description\":\"Summarize supplied notes.\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"interface\":{\"displayName\":\"Notes\",\"shortDescription\":\"Summarizes supplied notes\",\"capabilities\":[\"Skills\"]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+          "plugins/notes/README.md": "# Notes\n\nSummarize one supplied note.\n",
+          "plugins/notes/skills/summarize/README.md": "# Summarize\n\nSummarize one supplied note.\n",
+          "plugins/notes/skills/summarize/SKILL.md": "---\nname: summarize\ndescription: Summarize one supplied note.\n---\n\nReturn a concise 摘腰.\n",
+          "plugins/notes/skills/summarize/agents/openai.yaml": "interface:\n  display_name: Summarize\n  short_description: Summarize one supplied note into a concise and accurate result\n  default_prompt: Use $summarize to summarize the supplied note.\npolicy:\n  allow_implicit_invocation: true\n",
+          "AGENTS.md": "# Workspace rules\nOnly change plugins/notes/skills/summarize/SKILL.md. Use the installed aw CLI for validation.\n"
+        }
       },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": false,
-        "allowed_workspace_changes": [
+      "expected": {
+        "output": "只修改目标 SKILL.md，使用 author-agent-skill 的轻量 change 路径，运行适用的 AW 验证；不生成 AWAuthoringContext、components JSON 或 SkillDesignBrief。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
           "plugins/notes/skills/summarize/SKILL.md"
         ],
         "artifacts": [
@@ -58,14 +56,19 @@
             "path": "plugins/notes/skills/summarize/SKILL.md",
             "exists": true
           }
-        ],
-        "checks": [
-          "只修正目标正文，没有改变 frontmatter、manifest、README、Eval 或其它资源",
-          "trace 记录本次意图、允许路径、成功标准和实际验证",
-          "没有运行 prepare-aw-authoring-context.mjs，也没有创建 components JSON、AWAuthoringContext 或 SkillDesignBrief",
-          "先进入被评的 $author-aw-plugin，再 handoff 给 author-agent-skill(change) 的轻量 delta 路径，且没有调用独立 Reviewer",
-          "先读取 aw plugin validate --help，再运行工作区支持的验证命令"
         ]
+      },
+      "assertions": [
+        "只修正目标正文，没有改变 frontmatter、manifest、README、Eval 或其它资源",
+        "trace 记录本次意图、允许路径、成功标准和实际验证",
+        "没有运行 prepare-aw-authoring-context.mjs，也没有创建 components JSON、AWAuthoringContext 或 SkillDesignBrief",
+        "先进入被评的 $author-aw-plugin，再 handoff 给 author-agent-skill(change) 的轻量 delta 路径，且没有调用独立 Reviewer",
+        "先读取 aw plugin validate --help，再运行工作区支持的验证命令"
+      ],
+      "audit": {
+        "rationale": "已知 Skill 正文的一处局部修复不需要持久化 repository、profile、component、build 和 validator 等可重算事实。",
+        "allowedVariance": "验证命令可按目标 workspace 变化；不得生成 AWAuthoringContext、components JSON 或完整 SkillDesignBrief。",
+        "minimalCounterexample": "若新增 Skill、修改 description/invocation、manifest/profile 或 build/materialization，则应进入结构化路径。"
       }
     }
   ]

@@ -6,23 +6,33 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   NativeCliError,
+  CodexProjectConfigNotEffectiveError,
   SYSTEM_CODEX_MANAGER,
   buildCodexMarketplaceAddInvocation,
   buildCodexMarketplaceListInvocation,
   buildCodexMarketplaceRemoveInvocation,
   buildCodexPluginAddInvocation,
   buildCodexPluginListInvocation,
+  buildCodexPluginListJsonInvocation,
   buildCodexPluginRemoveInvocation,
+  buildCodexProjectPluginListInvocations,
   createExecFileNativeCliRunner,
   execFileNativeCliRunner,
   isNativeCliExecutableMissingError,
   isNativeCliTimeoutError,
+  parseCodexPluginListJson,
+  postcheckCodexProjectPluginActivation,
   runNativeCli,
   summarizeNativeCliFailure,
   type CodexManager,
   type NativeCliInvocation,
+  type NativeCliResult,
 } from '../../src/utils/native-cli.js';
 import { TestNativeCliGuardError } from '../helpers/native-guard.js';
+
+function result(stdout = '', stderr = '', exitCode = 0): NativeCliResult {
+  return { stdout, stderr, exitCode };
+}
 
 describe('native-cli', () => {
   it('blocks guarded agent CLIs by default in tests', async () => {
@@ -117,6 +127,104 @@ describe('native-cli', () => {
       { command: 'codex', args: ['plugin', 'marketplace', 'list'], agentKind: 'codex', cwd, codexHome },
       { command: 'codex', args: ['plugin', 'marketplace', 'remove', 'aw'], agentKind: 'codex', cwd, codexHome },
     ]);
+  });
+
+  it('builds exact and neutral Codex JSON postcheck invocations without changing trust', () => {
+    const env = { ...process.env, CODEX_HOME: '/ignored' };
+    const invocations = buildCodexProjectPluginListInvocations(SYSTEM_CODEX_MANAGER, {
+      exactCwd: '/tmp/project',
+      neutralCwd: '/tmp/neutral',
+      env,
+    });
+
+    expect(invocations).toEqual({
+      exact: buildCodexPluginListJsonInvocation(
+        SYSTEM_CODEX_MANAGER,
+        '/tmp/project',
+        env,
+      ),
+      neutral: buildCodexPluginListJsonInvocation(
+        SYSTEM_CODEX_MANAGER,
+        '/tmp/neutral',
+        env,
+      ),
+    });
+    expect(invocations.exact.args).toEqual(['plugin', 'list', '--json']);
+    expect(invocations.neutral.args).toEqual(['plugin', 'list', '--json']);
+    expect([...invocations.exact.args, ...invocations.neutral.args]).not.toContain('trust');
+  });
+
+  it('parses structured plugin list identities and verifies project-only activation', () => {
+    expect(parseCodexPluginListJson(JSON.stringify({
+      installed: [{
+        pluginId: 'demo@aw-team',
+        name: 'demo',
+        marketplaceName: 'aw-team',
+        version: '1.0.0',
+        installed: true,
+        enabled: true,
+        source: { source: 'local', path: '/tmp/marketplace/plugins/demo' },
+        marketplaceSource: { sourceType: 'local', source: '/tmp/marketplace' },
+        installPolicy: 'AVAILABLE',
+        authPolicy: 'ON_USE',
+      }],
+      available: [],
+    }))).toEqual([{
+      pluginId: 'demo@aw-team',
+      enabled: true,
+      version: '1.0.0',
+      path: '/tmp/marketplace/plugins/demo',
+    }]);
+
+    expect(postcheckCodexProjectPluginActivation({
+      pluginId: 'demo@aw-team',
+      userEnabled: false,
+      projectEnabled: true,
+      exactResult: result(JSON.stringify({
+        installed: [{ pluginId: 'demo@aw-team', installed: true, enabled: true }],
+        available: [],
+      })),
+      neutralResult: result(JSON.stringify({ installed: [], available: [] })),
+    })).toEqual({
+      effective: true,
+      pluginId: 'demo@aw-team',
+      exactActive: true,
+      neutralActive: false,
+    });
+  });
+
+  it('maps an ineffective project config to the stable postcheck error', () => {
+    expect(() => postcheckCodexProjectPluginActivation({
+      pluginId: 'demo@aw-team',
+      userEnabled: false,
+      projectEnabled: true,
+      exactResult: result(JSON.stringify({ installed: [], available: [] })),
+      neutralResult: result(JSON.stringify({ installed: [], available: [] })),
+    })).toThrow(expect.objectContaining<Partial<CodexProjectConfigNotEffectiveError>>({
+      code: 'codexProjectConfigNotEffective',
+    }));
+  });
+
+  it.each([
+    ['legacy plugins object', { plugins: [] }],
+    ['bare array', []],
+    ['missing available inventory', { installed: [] }],
+    ['missing exact plugin ID', {
+      installed: [{ name: 'demo', marketplaceName: 'aw-team', installed: true, enabled: true }],
+      available: [],
+    }],
+    ['non-installed entry', {
+      installed: [{ pluginId: 'demo@aw-team', installed: false, enabled: true }],
+      available: [],
+    }],
+    ['missing enabled state', {
+      installed: [{ pluginId: 'demo@aw-team', installed: true }],
+      available: [],
+    }],
+  ])('fails closed for an invalid Codex 0.151 plugin list: %s', (_label, value) => {
+    expect(() => parseCodexPluginListJson(JSON.stringify(value))).toThrow(
+      /^codexPluginListInvalid:/u,
+    );
   });
 
   it('runs an AW-managed Codex invocation through its launcher prefix with the Codex default timeout', async () => {

@@ -165,51 +165,46 @@ policy:
 `;
 }
 
-export function renderEvalManifest(pluginName, skillName) {
+export function renderEvalManifest(pluginName) {
   return {
-    schemaVersion: 1,
-    plugin: pluginName,
-    skill: skillName,
-    profiles: [
-      {
-        id: 'project-default',
+    version: 1,
+    defaults: {
+      profile: 'project-default',
+    },
+    profiles: {
+      'project-default': {
         scope: 'project',
-        plugins: [{ name: pluginName, config: {} }],
-        requiredForRelease: true,
+        plugins: {
+          [pluginName]: {},
+        },
       },
-      {
-        id: 'user-default',
+      'user-default': {
         scope: 'user',
-        plugins: [{ name: pluginName, config: {} }],
-        requiredForRelease: true,
+        plugins: {
+          [pluginName]: {},
+        },
       },
-    ],
+    },
     suites: [
       {
         id: 'trigger',
         kind: 'trigger',
-        skills: [skillName],
-        cases: './trigger-cases.json',
-        observeSpawnAgent: false,
-        isolation: 'strict',
-        strictNegativeSplits: ['validation', 'sanity'],
+        cases: 'trigger-cases.json',
         profiles: ['project-default'],
-        defaultRuns: 3,
+        runs: 3,
         releaseSplits: ['validation', 'sanity'],
         requiredForRelease: true,
-        perRunTimeoutMs: 180000,
+        timeoutMs: 180000,
       },
       {
         id: 'behavior',
         kind: 'conversation',
-        skills: [skillName],
-        cases: './evals.json',
-        isolation: 'strict',
+        cases: 'behavior-cases.json',
         profiles: ['project-default'],
-        defaultRuns: 1,
+        runs: 1,
         releaseSplits: [],
         requiredForRelease: true,
-        perRunTimeoutMs: 300000,
+        timeoutMs: 300000,
       },
     ],
   };
@@ -219,52 +214,28 @@ function renderTriggerPolicy(invocation) {
   if (invocation === 'manual') {
     return {
       optimization: 'precision-first',
-      false_negative_cost: 'medium',
-      false_positive_cost: 'high',
+      falseNegativeCost: 'medium',
+      falsePositiveCost: 'high',
       rationale: 'Manual invocation favors avoiding implicit loads; a missed explicit request is recoverable, but an implicit load can start an unintended workflow.',
     };
   }
   return {
     optimization: 'balanced',
-    false_negative_cost: 'high',
-    false_positive_cost: 'high',
+    falseNegativeCost: 'high',
+    falsePositiveCost: 'high',
     rationale: 'The Skill must load for its stated user goal and stay inactive for adjacent tasks; either error can make routing unreliable.',
   };
 }
 
-function renderTriggerCaseAudit(skillName, invocation, shouldLoadSkill) {
+function renderTriggerBoundaryAudit(skillName, invocation) {
   const manual = invocation === 'manual';
-  const positiveRationale = manual
-    ? 'The prompt explicitly invokes the manual Skill, so the owner Skill must load.'
-    : 'The prompt directly requests the user goal stated by the owner Skill description.';
-  const negativeRationale = manual
-    ? 'The prompt does not explicitly invoke the manual Skill and asks for an adjacent task only.'
-    : 'The prompt shares vocabulary with the Skill but explicitly excludes its stated user goal.';
   return {
-    eval_type: 'trigger',
-    case_role: shouldLoadSkill ? 'representative' : 'boundary',
-    provenance: shouldLoadSkill ? 'representative-synthetic' : 'boundary',
-    scenario_family: 'primary-invocation-boundary',
-    unit_under_test: manual ? 'description-and-invocation-metadata' : 'description',
-    preconditions: {
-      target_skill_available: true,
-      invocation_mode: invocation,
-      user_explicitly_names_skill: manual && shouldLoadSkill,
-    },
-    oracle: {
-      rationale: shouldLoadSkill ? positiveRationale : negativeRationale,
-      rule_refs: [
-        'SKILL.md#frontmatter.description',
-        'agents/openai.yaml#policy.allow_implicit_invocation',
-      ],
-      confidence: 'medium',
-      allowed_variance: 'Final wording and tool order may differ; the owner Skill load decision must match should_load_skill.',
-      ...(shouldLoadSkill ? {} : {
-        minimal_counterexample: manual
-          ? `Add an explicit $${skillName} invocation while keeping the requested workflow unchanged; the expected label flips to load.`
-          : 'Replace the adjacent goal with the owner Skill user goal while keeping the shared vocabulary; the expected label flips to load.',
-      }),
-    },
+    rationale: manual
+      ? 'The prompt does not explicitly invoke the manual Skill and asks for an adjacent task only.'
+      : 'The prompt shares vocabulary with the Skill but explicitly excludes its stated user goal.',
+    minimalCounterexample: manual
+      ? `Add an explicit $${skillName} invocation while keeping the requested workflow unchanged; the expected label flips to load.`
+      : 'Replace the adjacent goal with the owner Skill user goal while keeping the shared vocabulary; the expected label flips to load.',
   };
 }
 
@@ -280,57 +251,76 @@ export function renderTriggerCases(skillName, skillDescription, invocation) {
     ? '请不要调用任何 Skill，只解释如何完成相邻任务；这不是目标 Skill 的显式请求。'
     : `解释一个共享术语但职责不同的相邻任务；不要执行以下目标：${skillDescription}。`;
   return {
-    schemaVersion: 1,
-    skill: skillName,
-    policy: renderTriggerPolicy(invocation),
+    version: 1,
+    suite: {
+      kind: 'trigger',
+      unitUnderTest: skillName,
+      defaultGrader: 'mechanical',
+      policy: renderTriggerPolicy(invocation),
+      runtime: {
+        observeSpawnAgent: false,
+        isolation: 'strict',
+        strictNegativeSplits: ['validation', 'sanity'],
+        forbidMultipleSkillLoads: false,
+      },
+    },
     cases: [
       {
         id: 'primary_train_positive',
         split: 'train',
-        query: `${explicitPrefix}${skillDescription}。`,
-        should_load_skill: true,
         tags: [invocation, 'positive', 'starter'],
-        ...renderTriggerCaseAudit(skillName, invocation, true),
+        input: {
+          query: `${explicitPrefix}${skillDescription}。`,
+          expectedLoad: true,
+        },
       },
       {
         id: 'primary_train_negative',
         split: 'train',
-        query: implicitNegative,
-        should_load_skill: false,
-        tags: ['near-miss', 'negative', 'starter'],
-        ...renderTriggerCaseAudit(skillName, invocation, false),
+        tags: ['boundary', 'near-miss', 'negative', 'starter'],
+        input: {
+          query: implicitNegative,
+          expectedLoad: false,
+        },
+        audit: renderTriggerBoundaryAudit(skillName, invocation),
       },
       {
         id: 'primary_validation_positive',
         split: 'validation',
-        query: validationPositive,
-        should_load_skill: true,
         tags: [invocation, 'positive', 'starter'],
-        ...renderTriggerCaseAudit(skillName, invocation, true),
+        input: {
+          query: validationPositive,
+          expectedLoad: true,
+        },
       },
       {
         id: 'primary_validation_negative',
         split: 'validation',
-        query: '只处理一个共享关键词但目标不同的近似任务，不要调用该 Skill。',
-        should_load_skill: false,
-        tags: ['near-miss', 'negative', 'starter'],
-        ...renderTriggerCaseAudit(skillName, invocation, false),
+        tags: ['boundary', 'near-miss', 'negative', 'starter'],
+        input: {
+          query: '只处理一个共享关键词但目标不同的近似任务，不要调用该 Skill。',
+          expectedLoad: false,
+        },
+        audit: renderTriggerBoundaryAudit(skillName, invocation),
       },
       {
         id: 'primary_sanity_positive',
         split: 'sanity',
-        query: sanityPositive,
-        should_load_skill: true,
         tags: [invocation, 'positive', 'starter'],
-        ...renderTriggerCaseAudit(skillName, invocation, true),
+        input: {
+          query: sanityPositive,
+          expectedLoad: true,
+        },
       },
       {
         id: 'primary_sanity_negative',
         split: 'sanity',
-        query: '执行另一个职责边界外的任务；即使出现相同术语，也不要加载该 Skill。',
-        should_load_skill: false,
-        tags: ['near-miss', 'negative', 'starter'],
-        ...renderTriggerCaseAudit(skillName, invocation, false),
+        tags: ['boundary', 'near-miss', 'negative', 'starter'],
+        input: {
+          query: '执行另一个职责边界外的任务；即使出现相同术语，也不要加载该 Skill。',
+          expectedLoad: false,
+        },
+        audit: renderTriggerBoundaryAudit(skillName, invocation),
       },
     ],
   };
@@ -338,48 +328,41 @@ export function renderTriggerCases(skillName, skillDescription, invocation) {
 
 export function renderBehaviorCases(skillName, skillDescription) {
   return {
-    skill_name: skillName,
-    policy: {
-      optimization: 'precision-first',
-      false_negative_cost: 'medium',
-      false_positive_cost: 'high',
-      rationale: 'Rejecting an acceptable result causes rework, while accepting an incomplete or unsafe result can ship a broken plugin.',
+    version: 1,
+    suite: {
+      kind: 'conversation',
+      unitUnderTest: skillName,
+      defaultGrader: 'independent-llm',
+      policy: {
+        optimization: 'precision-first',
+        falseNegativeCost: 'medium',
+        falsePositiveCost: 'high',
+        rationale: 'Rejecting an acceptable result causes rework, while accepting an incomplete or unsafe result can ship a broken plugin.',
+      },
+      runtime: {
+        isolation: 'strict',
+      },
     },
-    evals: [
+    cases: [
       {
         id: 'complete_primary_workflow',
-        eval_type: 'outcome',
-        case_role: 'diagnostic',
-        provenance: 'representative-synthetic',
-        scenario_family: 'primary-workflow-outcome',
-        unit_under_test: 'full-skill',
-        preconditions: {
-          materialized_owner_skill: true,
-          domain_fixture_customized: false,
-        },
+        split: 'validation',
+        tags: ['diagnostic', 'starter'],
         prompt: `使用 $${skillName} 完成以下目标：${skillDescription}。把可交付结果写入 eval-output/result.md；不要修改 eval-output/ 之外的文件。`,
-        expected_output: '完成真实工作流，并生成可复核的 eval-output/result.md。作者应把本 starter 替换为领域真实任务和断言。',
-        oracle: {
-          rationale: 'The prompt requires the Skill workflow and a reviewable result artifact; domain-specific acceptance rules must replace this starter before release.',
-          rule_refs: ['SKILL.md#完成标准', 'SKILL.md#验证', 'SKILL.md#输出'],
-          confidence: 'low',
-          allowed_variance: 'The implementation and prose may differ; changes must stay in eval-output and the required result artifact must exist.',
-        },
-        scripted_replies: [],
-        sandbox: 'workspace-write',
-        review: {
-          workspace_unchanged: false,
-          allowed_workspace_changes: ['eval-output/**'],
+        assertions: [
+          'trace 读取并执行 owner Skill，而不是只解释计划',
+          '结果满足 Skill 的完成标准，并包含可核验的领域证据',
+          '作者已把 starter prompt、near-miss 和断言替换为真实任务材料',
+        ],
+        expected: {
+          output: '完成真实工作流，并生成可复核的 eval-output/result.md。作者应把本 starter 替换为领域真实任务和断言。',
+          workspaceUnchanged: false,
+          allowedWorkspaceChanges: ['eval-output/**'],
           artifacts: [
             {
               path: 'eval-output/result.md',
               exists: true,
             },
-          ],
-          checks: [
-            'trace 读取并执行 owner Skill，而不是只解释计划',
-            '结果满足 Skill 的完成标准，并包含可核验的领域证据',
-            '作者已把 starter prompt、near-miss 和断言替换为真实任务材料',
           ],
         },
       },

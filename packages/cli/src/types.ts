@@ -429,6 +429,12 @@ export interface AgentVersionRequirement {
   minVersion: StrictSemVerString;
 }
 
+export interface CodexOperationRequirement {
+  scope: Scope;
+  minimumVersion: StrictSemVerString;
+  requiresProjectPluginContract: boolean;
+}
+
 export interface AgentVersionProbeResult {
   platform: PlatformName;
   command: string;
@@ -467,9 +473,24 @@ export interface CommandOptions {
   cwd: string;
   scriptTimeoutMs?: number;
   allowManagedCodexInstall?: boolean;
+  yes?: boolean;
 }
 
-export type InstallCommandOptions = CommandOptions;
+export interface DependencyScopeOverride {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+}
+
+export interface DependencyScopeSelector {
+  pluginId: string;
+  platform?: PlatformName;
+  scope: Scope;
+}
+
+export interface InstallCommandOptions extends CommandOptions {
+  dependencyScopeOverrides?: DependencyScopeSelector[];
+}
 
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;

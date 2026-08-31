@@ -160,6 +160,38 @@ export async function calculateCatalogEntryContentDigest(
   return createSha256Digest(stableStringify(fileEntries));
 }
 
+/**
+ * Digest for the Codex native cache payload. Codex/AW can add or remove the
+ * manifest `skills` projection during native installation, so that one field
+ * is canonicalized while all other manifest fields and non-manifest payload
+ * bytes remain covered.
+ */
+export async function calculateCodexSharedNativePayloadDigest(
+  pluginRoot: string,
+): Promise<string> {
+  const files = (await listFilesRecursively(pluginRoot)).filter((relativePath) =>
+    path.posix.basename(relativePath) !== '.agent-workflows-owner.json');
+  const fileEntries = await Promise.all(
+    files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {
+      const filePath = path.join(pluginRoot, relativePath);
+      const node = await resolveCatalogDigestNode(filePath);
+      let digest: string;
+      if (relativePath === '.codex-plugin/plugin.json' && node.kind === 'file') {
+        const manifest = await fs.readJson(filePath) as Record<string, unknown>;
+        digest = createSha256Digest(stableStringify({
+          ...manifest,
+          version: '<plugin-version>',
+          skills: '<native-managed>',
+        }));
+      } else {
+        digest = await calculateContentPathDigest(pluginRoot, relativePath, node);
+      }
+      return { path: relativePath, kind: node.kind, mode: node.mode, digest };
+    }),
+  );
+  return createSha256Digest(stableStringify(fileEntries));
+}
+
 export async function calculateCatalogEntryDigestsFromRoot(
   pluginRoot: string,
 ): Promise<{ manifestDigest: string; artifactDigest: string }> {

@@ -1,236 +1,179 @@
 {
-  "schemaVersion": 1,
-  "skill": "review-aw-workflow",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏触发会遗漏跨插件系统性问题，也会跳过整仓 AW Agent Review 必需的 Scope Admission；误触发会抢占单插件、单 Skill 或普通代码仓库 Review。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "review-aw-workflow",
+    "participants": [
+      "write-agent-content",
+      "review-agent-content",
+      "author-agent-skill",
+      "review-agent-skill",
+      "review-agent-workflow",
+      "design-agent-skill-evals",
+      "audit-agent-skill-evals",
+      "run-aw-skill-evals",
+      "author-aw-plugin",
+      "review-aw-plugin"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏触发会遗漏跨插件系统性问题，也会跳过整仓 AW Agent Review 必需的 Scope Admission；误触发会抢占单插件、单 Skill 或普通代码仓库 Review。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ]
+    }
   },
   "cases": [
     {
       "id": "cross_plugin_workflow",
       "split": "train",
-      "query": "审核 agent-skill-toolkit、aw-plugin-development 和 runner 联合实现的 Eval 流程。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "aw-workflow",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求有明确跨插件用户结果。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。"
+      "tags": [
+        "representative",
+        "aw-workflow"
+      ],
+      "input": {
+        "query": "审核 agent-skill-toolkit、aw-plugin-development 和 runner 联合实现的 Eval 流程。",
+        "expectedLoad": true
       }
     },
     {
       "id": "dependency_workflow",
       "split": "train",
-      "query": "只读检查这三个 AW 插件之间的 imports、profiles、materialization 和 handoff。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "aw-workflow",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求聚焦 AW 跨插件事实和组合。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。"
+      "tags": [
+        "representative",
+        "aw-workflow"
+      ],
+      "input": {
+        "query": "只读检查这三个 AW 插件之间的 imports、profiles、materialization 和 handoff。",
+        "expectedLoad": true
       }
     },
     {
       "id": "leaf_blast_radius",
       "split": "validation",
-      "query": "审核跨插件流程，并判断修改共享 Skill 会影响哪些插件消费者。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "aw-workflow",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "需要跨插件 Leaf Fix Admission。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。"
+      "tags": [
+        "representative",
+        "aw-workflow"
+      ],
+      "input": {
+        "query": "审核跨插件流程，并判断修改共享 Skill 会影响哪些插件消费者。",
+        "expectedLoad": true
       }
     },
     {
       "id": "single_aw_plugin",
       "split": "train",
-      "query": "评审这个单独 AW 插件的 manifest 和 materialized profiles。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "single-aw-plugin",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "single-aw-plugin"
+      ],
+      "input": {
+        "query": "评审这个单独 AW 插件的 manifest 和 materialized profiles。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "单插件由 review-aw-plugin 负责。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求覆盖多个 AW 插件的一个有界用户结果，则应加载 review-aw-workflow。"
+        "allowedVariance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
+        "minimalCounterexample": "若请求覆盖多个 AW 插件的一个有界用户结果，则应加载 review-aw-workflow。"
       }
     },
     {
       "id": "generic_workflow",
       "split": "validation",
-      "query": "审核三个普通 Skill 组成的工作流，不涉及 AW 插件。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "generic-workflow",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "generic-workflow"
+      ],
+      "input": {
+        "query": "审核三个普通 Skill 组成的工作流，不涉及 AW 插件。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "通用工作流由 review-agent-workflow 负责。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若工作流跨多个 AW 插件并需要 manifest 或 runtime facts，则应加载 review-aw-workflow。"
+        "allowedVariance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
+        "minimalCounterexample": "若工作流跨多个 AW 插件并需要 manifest 或 runtime facts，则应加载 review-aw-workflow。"
       }
     },
     {
       "id": "single_skill",
       "split": "validation",
-      "query": "评审这个单独 Skill 包。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "single-skill",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "single-skill"
+      ],
+      "input": {
+        "query": "评审这个单独 Skill 包。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "单 Skill 由 review-agent-skill 负责。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求覆盖多个 AW 插件的有界工作流，则应加载 review-aw-workflow。"
+        "allowedVariance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
+        "minimalCounterexample": "若请求覆盖多个 AW 插件的有界工作流，则应加载 review-aw-workflow。"
       }
     },
     {
       "id": "whole_repo",
       "split": "validation",
-      "query": "评审整个仓库所有插件并给总 pass。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "boundary",
-      "scenario_family": "unbounded-system",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "显式整仓 AW Agent 能力 Review 必须加载 AW workflow Reviewer，以执行 Scope Admission 和 workflow partitions；加载不表示全局 scope 已准入。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "必须加载本 Skill；后续只能给 partial/rejected、workflow partitions 和 no global pass。"
+      "tags": [
+        "representative",
+        "unbounded-system"
+      ],
+      "input": {
+        "query": "评审整个仓库所有插件并给总 pass。",
+        "expectedLoad": true
       }
     },
     {
       "id": "multiple_unbounded_aw_agent_components",
       "split": "train",
-      "query": "只读 Review 这批尚未划分工作流的 AW Agent 插件组件、runtime imports 和 materialized targets，请先把范围理清。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "unbounded-system",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "多个未界定 AW Agent 组件需要 AW workflow Reviewer 执行 Scope Admission 和 partitions。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "必须加载本 Skill，但不能据此给未准入 scope 完整 verdict。"
+      "tags": [
+        "representative",
+        "unbounded-system"
+      ],
+      "input": {
+        "query": "只读 Review 这批尚未划分工作流的 AW Agent 插件组件、runtime imports 和 materialized targets，请先把范围理清。",
+        "expectedLoad": true
       }
     },
     {
       "id": "ordinary_code_repository",
       "split": "validation",
-      "query": "Review 整个普通 TypeScript 仓库的代码质量、性能和测试覆盖率，不涉及 AW 插件或 Agent 能力。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "ordinary-code-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "ordinary-code-review"
+      ],
+      "input": {
+        "query": "Review 整个普通 TypeScript 仓库的代码质量、性能和测试覆盖率，不涉及 AW 插件或 Agent 能力。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "普通代码仓库 Review 不属于 AW Agent workflow Review。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "不得加载本 Skill。",
-        "minimal_counterexample": "若请求显式评审仓库中的 AW Agent 能力，即使尚未形成有界 workflow，也应加载本 Skill做 Scope Admission。"
+        "allowedVariance": "不得加载本 Skill。",
+        "minimalCounterexample": "若请求显式评审仓库中的 AW Agent 能力，即使尚未形成有界 workflow，也应加载本 Skill做 Scope Admission。"
       }
     },
     {
       "id": "modify_plugins",
       "split": "validation",
-      "query": "修改三个插件并提交。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "write-request",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "write-request"
+      ],
+      "input": {
+        "query": "修改三个插件并提交。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "本 Skill 只读。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求只读评审这三个插件的有界工作流而不要求写入，则应加载 review-aw-workflow。"
+        "allowedVariance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
+        "minimalCounterexample": "若请求只读评审这三个插件的有界工作流而不要求写入，则应加载 review-aw-workflow。"
       }
     }
   ]

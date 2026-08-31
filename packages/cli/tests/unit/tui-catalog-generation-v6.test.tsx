@@ -1,7 +1,7 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/status-v5.js';
+import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import {
   CatalogRefreshCoordinator,
@@ -82,7 +82,7 @@ function generation(options: {
 
 function loadResult(catalogGenerations: CatalogSourceGenerationViewModel[]): TuiStatusLoadResult {
   const sourceId = catalogGenerations[0]?.sourceId ?? 'official';
-  const summaries: StatusV5PluginSummary[] = [{
+  const summaries: StatusV6PluginSummary[] = [{
     pluginName: 'toolkit',
     pluginId: `${sourceId}/toolkit`,
     displayName: 'Agent Toolkit',
@@ -91,8 +91,8 @@ function loadResult(catalogGenerations: CatalogSourceGenerationViewModel[]): Tui
     supportedTargets: { codex: ['user'], claude: [] },
     configFieldCount: 1,
   }];
-  const payload: StatusV5Payload = {
-    schemaVersion: 5,
+  const payload: StatusV6Payload = {
+    schemaVersion: 6,
     catalog: {
       primarySourceId: sourceId,
       configDigest: `sha256:${'c'.repeat(64)}`,

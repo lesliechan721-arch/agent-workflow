@@ -6,42 +6,6 @@ export interface ValidationResult<TCalculated = unknown> {
   calculated: TCalculated | null
 }
 
-export interface EvalProviderCapabilities {
-  schemaVersion: 2
-  provider: string
-  providerVersion: string
-  capabilities: {
-    triggerDiscovery: boolean
-    conversation: boolean
-    skillPathExecution: boolean
-    previousVersionBaseline: boolean
-    withoutSkillBaseline: boolean
-    cleanContext: boolean
-    parallelRuns: boolean
-    toolTrace: boolean
-    tokenUsage: boolean
-    duration: boolean
-    sandbox: boolean
-    materialization: boolean
-  }
-  limitations: string[]
-}
-
-export type RuntimeCapabilities = EvalProviderCapabilities
-
-export interface EvalProviderArtifactOutput {
-  path: string
-  role?: 'trace' | 'report' | 'output' | 'other'
-}
-
-export interface EvalProviderOutput {
-  schemaVersion: 1
-  provider: { id: string; version: string }
-  usage: Record<string, unknown> | null
-  grading: Record<string, unknown> | null
-  artifacts: EvalProviderArtifactOutput[]
-}
-
 export interface RuntimeSkillSnapshot {
   root: string
   digest: Digest
@@ -52,6 +16,7 @@ export interface ProcessRequest {
   args: string[]
   cwd: string
   env: NodeJS.ProcessEnv
+  stdin?: string
   timeoutMs: number
   maxBufferBytes: number
   signal?: AbortSignal
@@ -99,26 +64,7 @@ export interface ProcessResult {
   containmentLimitation?: string
 }
 
-export interface RunExecutionPlanOptions {
-  auditPaths: string[]
-  processHooks?: ProcessLifecycleHooks
-  beforeBundleCommit?: () => void | Promise<void>
-  sourceEnv?: NodeJS.ProcessEnv
-  platform?: NodeJS.Platform
-  processTree?: import('./process-tree.js').ProcessTreeDependencies
-}
-
-export interface RunExecutionResult {
-  valid: true
-  bundlePath: string
-  bundleDigest: Digest
-  evidenceLevel: 'executed' | 'comparative'
-  requirementsMet: boolean
-}
-
 export type SchemaName =
-  | 'aw-skill-eval-execution-plan'
-  | 'eval-run-bundle'
-  | 'eval-audit-result'
-  | 'eval-provider-capabilities'
-  | 'eval-provider-output'
+  | 'eval-spec'
+  | 'eval-audit'
+  | 'eval-result'

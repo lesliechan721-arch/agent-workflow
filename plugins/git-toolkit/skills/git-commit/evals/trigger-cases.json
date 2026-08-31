@@ -1,541 +1,263 @@
 {
-  "schemaVersion": 1,
-  "skill": "git-commit",
-  "policy": {
-    "optimization": "critical",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "漏加载会绕过提交范围和状态保护；误加载会把 message、查看、暂存、push 或历史改写任务错误升级为创建 commit。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "git-commit",
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "critical",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "漏加载会绕过提交范围和状态保护；误加载会把 message、查看、暂存、push 或历史改写任务错误升级为创建 commit。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "fixture": "trigger-fixture.mjs"
+    }
   },
   "cases": [
     {
       "id": "casual_current_changes",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "支付超时的问题已经修好了，帮我把当前改动提交一下。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "支付超时的问题已经修好了，帮我把当前改动提交一下。",
+        "expectedLoad": true
       }
     },
     {
       "id": "staged_only",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "我已经 git add 过了，请只把 staged changes 做成一个 commit。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "我已经 git add 过了，请只把 staged changes 做成一个 commit。",
+        "expectedLoad": true
       }
     },
     {
       "id": "specific_files",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "只提交 README.md 和 docs/notes.md 这次文档调整，其它本地改动别动。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "只提交 README.md 和 docs/notes.md 这次文档调整，其它本地改动别动。",
+        "expectedLoad": true
       }
     },
     {
       "id": "english_commit",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "Commit these changes with a useful summary of what changed.",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "Commit these changes with a useful summary of what changed.",
+        "expectedLoad": true
       }
     },
     {
       "id": "commit_and_push",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "核对一下范围，然后把这些改动提交并推送到当前分支。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "核对一下范围，然后把这些改动提交并推送到当前分支。",
+        "expectedLoad": true
       }
     },
     {
       "id": "scoped_fix_commit",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "把配置加载修复创建成一个 Git commit，scope 使用 cli，body 用几条说明主要变化。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "把配置加载修复创建成一个 Git commit，scope 使用 cli，body 用几条说明主要变化。",
+        "expectedLoad": true
       }
     },
     {
       "id": "draft_message_only",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "commit_message_only_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "根据当前 diff 帮我拟一个 commit message 就好，不要真的提交。",
+        "expectedLoad": false
       },
-      "query": "根据当前 diff 帮我拟一个 commit message 就好，不要真的提交。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "review_message_only",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "commit_message_only_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "评审一下 `fix(cli): 修复安装失败` 这个 commit message 是否合适。",
+        "expectedLoad": false
       },
-      "query": "评审一下 `fix(cli): 修复安装失败` 这个 commit message 是否合适。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "status_only",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "git_inspection_or_staging_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "看看现在 git status 是什么，解释一下哪些文件 staged 了。",
+        "expectedLoad": false
       },
-      "query": "看看现在 git status 是什么，解释一下哪些文件 staged 了。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "stage_only",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "git_inspection_or_staging_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只把 src/app.ts 加入暂存区，先不要创建 commit。",
+        "expectedLoad": false
       },
-      "query": "只把 src/app.ts 加入暂存区，先不要创建 commit。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "push_existing",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "history_remote_or_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "本地 commit 已经有了，把它 push 到 origin 当前分支。",
+        "expectedLoad": false
       },
-      "query": "本地 commit 已经有了，把它 push 到 origin 当前分支。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "amend_history",
       "split": "train",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "history_remote_or_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "用 amend 把漏掉的 CHANGELOG 合进上一个 commit。",
+        "expectedLoad": false
       },
-      "query": "用 amend 把漏掉的 CHANGELOG 合进上一个 commit。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "terse_commit",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "帮我 git commti 一下，正文别只写标题。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "帮我 git commti 一下，正文别只写标题。",
+        "expectedLoad": true
       }
     },
     {
       "id": "documentation_commit",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "安装指南已经更新完，请把文档变更提交掉。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "安装指南已经更新完，请把文档变更提交掉。",
+        "expectedLoad": true
       }
     },
     {
       "id": "mixed_language_staged",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "pls commit 已暂存的 docs changes，别带上 workspace 里其它东西。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "pls commit 已暂存的 docs changes，别带上 workspace 里其它东西。",
+        "expectedLoad": true
       }
     },
     {
       "id": "implicit_commit_then_push",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "local_commit_creation",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
-      },
-      "query": "把这批修改记录进 Git 历史，再推到当前远端分支。",
-      "should_load_skill": true,
-      "oracle": {
-        "rationale": "用户目标符合 git-commit description 的正向触发条件。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。"
+      "tags": [],
+      "input": {
+        "query": "把这批修改记录进 Git 历史，再推到当前远端分支。",
+        "expectedLoad": true
       }
     },
     {
       "id": "explain_last_commit",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "git_inspection_or_staging_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "最近一次 commit 改了什么？按模块解释给我。",
+        "expectedLoad": false
       },
-      "query": "最近一次 commit 改了什么？按模块解释给我。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "squash_history",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "history_remote_or_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把最近三个 commits rebase squash 成一个，保留第一条 message。",
+        "expectedLoad": false
       },
-      "query": "把最近三个 commits rebase squash 成一个，保留第一条 message。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "non_git_commitment",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "non_git_commitment_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "Can you commit to the Friday deadline，并把审批表单提交给财务？这里不是 Git 操作。",
+        "expectedLoad": false
       },
-      "query": "Can you commit to the Friday deadline，并把审批表单提交给财务？这里不是 Git 操作。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     },
     {
       "id": "merge_operation",
       "split": "validation",
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "history_remote_or_merge_boundary",
-      "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills": [
-          "git-commit"
-        ],
-        "workspace_fixture": "none",
-        "invocation": "model-discovery"
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把 feature 分支 merge 进当前分支，按 Git 默认流程处理。",
+        "expectedLoad": false
       },
-      "query": "把 feature 分支 merge 进当前分支，按 Git 默认流程处理。",
-      "should_load_skill": false,
-      "oracle": {
+      "audit": {
         "rationale": "用户目标属于 git-commit description 明确排除的近似任务。",
-        "rule_refs": [
-          "SKILL.md:3"
-        ],
-        "confidence": "high",
-        "allowed_variance": "允许不同内部判断和响应措辞；materialized participant Skill 的最终加载集合必须与机械期望完全一致。",
-        "minimal_counterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
+        "minimalCounterexample": "仅将目标改为实际创建一个新的本地 Git commit，标签应翻转为加载 git-commit。"
       }
     }
   ]

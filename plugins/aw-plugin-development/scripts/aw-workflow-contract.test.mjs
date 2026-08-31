@@ -162,7 +162,7 @@ test('AW workflow inventory keeps manifest dependencies separate from typed impo
   }
 });
 
-test('AW workflow inventory rejects removed CLI capability exports', async () => {
+test('AW workflow inventory rejects removed reserved capability exports', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-cli-import-'));
   temps.push(temp);
   const a = path.join(temp, 'a');
@@ -193,8 +193,10 @@ test('AW workflow inventory rejects removed CLI capability exports', async () =>
   const result = JSON.parse(stdout);
   assert.deepEqual(result.unresolved.buildImportEdges.map(({ to, reason }) => ({ to, reason })), [
     { to: '@aw/cli', reason: 'missing-provider' },
+    { to: '@aw/agent-skill-eval', reason: 'missing-provider' },
   ]);
   assert.deepEqual(result.unresolved.skillRuntimeFileImportEdges.map(({ to, reason }) => ({ to, reason })), [
+    { to: '@aw/agent-skill-eval', reason: 'missing-provider' },
     { to: '@aw/cli', reason: 'missing-provider' },
   ]);
 });
@@ -643,12 +645,14 @@ test('release-required workflow archive fixture delegates component digests to t
     path.join(sourceRoot, 'skills/review-aw-workflow/evals/behavior-cases.json'),
     'utf8',
   ));
-  const fixture = fixtureDocument.evals.find((entry) =>
+  assert.equal(fixtureDocument.version, 1);
+  assert.equal(fixtureDocument.suite.unitUnderTest, 'review-aw-workflow');
+  const fixture = fixtureDocument.cases.find((entry) =>
     entry.id === 'delta-archive-writes-aw-workflow-scope-and-supersedes');
   assert.ok(fixture);
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-workflow-release-fixture-'));
   temps.push(temp);
-  for (const [relativePath, content] of Object.entries(fixture.workspace_files)) {
+  for (const [relativePath, content] of Object.entries(fixture.input.workspaceFiles)) {
     const target = path.join(temp, relativePath);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content);

@@ -495,20 +495,20 @@ describe('AW capability contracts', () => {
     })
 
     expect(result.detected).toEqual([
-      'aw.skill-eval.v1',
+      'aw.skill-eval.v2',
       'aw.skill-validation.v1',
     ])
     expect(result.observations).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: 'aw-command-detected',
         command: 'aw skill eval',
-        capability: 'aw.skill-eval.v1',
+        capability: 'aw.skill-eval.v2',
         provenance: 'direct-command-line',
       }),
       expect.objectContaining({
         code: 'aw-command-detected',
         command: 'aw skill eval',
-        capability: 'aw.skill-eval.v1',
+        capability: 'aw.skill-eval.v2',
         path: 'scripts/run.sh',
       }),
       expect.objectContaining({

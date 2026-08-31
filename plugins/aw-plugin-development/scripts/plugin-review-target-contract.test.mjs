@@ -506,7 +506,7 @@ test('installed reviewer supports a real non-Git plugin with MCP and no Skills',
   await mkdir(emptyFinal, { recursive: true });
   await writeFile(outsideEvidence, '{}');
   await symlink(outsideEvidence, linkedEvidence);
-  for (const flag of ['--review', '--eval-plan', '--preflight-audit', '--run-bundle', '--triage-audit']) {
+  for (const flag of ['--review', '--eval-spec', '--eval-audit', '--eval-result']) {
     await assert.rejects(execFileAsync(process.execPath, [
       releaseCheck,
       plugin,
@@ -521,7 +521,7 @@ test('installed reviewer supports a real non-Git plugin with MCP and no Skills',
   if (process.platform !== 'win32') {
     const fifoEvidence = path.join(temp, 'blocking-evidence.pipe');
     await execFileAsync('mkfifo', [fifoEvidence]);
-    for (const flag of ['--review', '--eval-plan', '--preflight-audit', '--run-bundle', '--triage-audit']) {
+    for (const flag of ['--review', '--eval-spec', '--eval-audit', '--eval-result']) {
       await assert.rejects(execFileAsync(process.execPath, [
         releaseCheck,
         plugin,

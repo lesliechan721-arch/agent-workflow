@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "aw-plugin-development",
+    "version": "0.1.0"
+  },
+  "requiredCapabilities": [
+    "aw.catalog-context.v1",
+    "aw.plugin-authoring.v1",
+    "aw.plugin-build-config.v1",
+    "aw.plugin-manifest.v2",
+    "aw.plugin-skills.v1",
+    "aw.review-publication.v1",
+    "aw.runtime-imports.v1",
+    "aw.self-check.v1",
+    "aw.skill-validation.v1"
+  ],
+  "digest": "sha256:e3ed44b51534fc60d1e62cc0fad8023f52a585a7ff580ede3eddbac079bb8a9f"
+}

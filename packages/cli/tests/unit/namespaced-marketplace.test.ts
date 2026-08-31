@@ -530,6 +530,7 @@ describe('namespaced marketplace root', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       includeHistoricalProjects: true,
+      includeOrphanedCodexNativeResidue: true,
     });
     expect(inventory.errors).toContainEqual(expect.objectContaining({
       code: 'stateInventoryFailed',

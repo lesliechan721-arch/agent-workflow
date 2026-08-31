@@ -1,9 +1,26 @@
 # aw-skill-eval-runner
 
-提供默认 AW Agent Skill Eval 的单一 Agent-facing 编排入口。`run-aw-skill-evals` 依赖 `agent-skill-toolkit` 的独立 Auditor，并调用 canonical `aw`/`aw-skill-eval` 命令；插件不复制执行引擎或 Eval schema。
+为 AW Agent Skill Eval 提供默认的准备、独立审核、执行和结果验证入口。安装后可直接请求 `run-aw-skill-evals` 处理已有 EvalSpec，或从 plugin/Skill 选择开始。
 
-输入可以是现有 `AwSkillEvalExecutionPlan v4` 加 passing `EvalAuditResult v3`，也可以是 plugin/Skill/suite/profile/case/split 选择条件。后者先由 `aw skill eval prepare` 生成输入完整 plan。
+## 安装
 
-当前机器合同是 Plan v4、Audit v3、Bundle v4、provider capabilities v2 和 provider output v1。执行前必须有精确覆盖当前 plan 的独立 preflight Audit，并在 Audit 通过后明确列出模型成本、外部进程、凭据、网络及临时和持久输出，再取得本次授权。公开执行入口是 `aw-skill-eval run <plan.json> --audit <audit.json>`。
+```bash
+aw install aw-skill-eval-runner -p both
+```
 
-执行生成 `EvalRunBundle v4`，验证后再由全新上下文输出 result-triage Audit v3。Runner 不设计或审核 case，不产出 passing preflight Audit，不修改生产 Skill，也不作 Quality Review 或 Release Check 结论。只验证时不启动 provider 或创建输出；执行中断后重新 prepare、Audit、授权和 run，不续跑 checkpoint。
+安装会同时解析 `agent-skill-toolkit` 依赖。运行需要当前 `aw` 和 `aw-skill-eval` 可执行文件。
+
+## 典型用法
+
+```text
+使用 $run-aw-skill-evals 执行这个 spec.json；先复用同目录 Audit，并显示预计模型调用数和输出位置。
+为 plugin-a 的 skill-a 准备 validation cases 并验证，但这次不要执行模型。
+```
+
+## 用户可见边界
+
+- 执行前只从已验证 Spec/cases 显示 cases、runs、baseline、预计真实调用数、provider 进程类别、可能使用现有 credential 环境、模型网络和输出路径。
+- 明确请求且不超过 10 次内置模型调用时直接执行；超过 10 次或 custom process 会再次确认。
+- clean success 直接返回已验证 EvalResult；只有异常、混合、回归或将修改 Skill 时才做独立 result-triage。
+- 普通成功路径不运行环境 doctor；只有安装或版本升级、用户明确请求诊断或执行失败时才进入高级诊断。
+- 插件不设计 Eval、不修改 Skill，也不作 Quality Review 或发布决定。

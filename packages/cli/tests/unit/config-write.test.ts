@@ -64,8 +64,6 @@ function rebuildResult(target: ReceiptTargetIdentity, state: 'succeeded' | 'fail
       ...(state === 'failed' ? { message: 'target failed' } : {}),
     }],
     overallState: state,
-    nativePlugins: {},
-    repoManagedArtifacts: [],
     receiptTargets: [{
       pluginName: target.pluginName,
       platform: target.platform,
@@ -583,7 +581,7 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).toHaveBeenCalledTimes(1);
   });
 
-  it('does not inspect a Codex project target when the manifest has no project-managed capability', async () => {
+  it('discovers a current Codex project activation without legacy project-managed capability', async () => {
     const fixture = await createFixture('configurable-plugin', {
       products: ['CODEX'],
       codexProjectManaged: false,
@@ -601,12 +599,9 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(mocks.discover).toHaveBeenCalledTimes(1);
-    expect(mocks.discover).toHaveBeenCalledWith(expect.objectContaining({
-      platform: 'codex',
-      scope: 'user',
-    }));
-    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['user']);
+    expect(mocks.discover).toHaveBeenCalledTimes(2);
+    expect(mocks.discover.mock.calls.map((call) => call[0].scope)).toEqual(['user', 'project']);
+    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['user', 'project']);
   });
 
   it('does not inspect or render an absent dynamic plugin target', async () => {

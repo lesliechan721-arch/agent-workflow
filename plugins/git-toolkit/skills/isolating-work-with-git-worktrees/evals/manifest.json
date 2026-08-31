@@ -1,131 +1,65 @@
 {
-  "schemaVersion": 1,
-  "plugin": "git-toolkit",
-  "skill": "isolating-work-with-git-worktrees",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {
+    "profile": "project-default"
+  },
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "git-toolkit",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "git-toolkit": {}
+      }
     },
-    {
-      "id": "user-default",
+    "user-default": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "git-toolkit",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "git-toolkit": {}
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "router",
       "kind": "trigger",
-      "skills": [
-        "isolating-work-with-git-worktrees",
-        "reconciling-git-merges",
-        "git-commit"
-      ],
-      "cases": "./trigger-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation",
-        "sanity"
-      ],
-      "minimumPassRate": 0.8,
-      "forbidMultipleSkillLoads": true,
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "router-diagnostic",
       "kind": "trigger",
-      "skills": [
-        "isolating-work-with-git-worktrees",
-        "reconciling-git-merges",
-        "git-commit"
-      ],
-      "cases": "./trigger-diagnostic-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": false,
-      "isolation": "strict",
-      "strictNegativeSplits": [],
-      "minimumPassRate": 0.8,
-      "forbidMultipleSkillLoads": true,
+      "cases": "trigger-diagnostic-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
-      "releaseSplits": [],
-      "requiredForRelease": false,
-      "perRunTimeoutMs": 180000
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
     },
     {
       "id": "behavior",
-      "kind": "provider",
-      "skills": [
-        "isolating-work-with-git-worktrees",
-        "reconciling-git-merges",
-        "git-commit"
-      ],
-      "cases": "./evals.json",
+      "kind": "custom-process",
+      "cases": "evals.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
-      "releaseSplits": [],
+      "runs": 3,
+      "timeoutMs": 300000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000,
       "provider": {
-        "id": "git-worktree-provider",
-        "entry": "./run-worktree-evals.mjs",
-        "credentialEnvironment": [
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "OPENAI_API_KEY",
-          "ALL_PROXY",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NO_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-worktree-evals.mjs"
+        ]
       }
     }
   ]

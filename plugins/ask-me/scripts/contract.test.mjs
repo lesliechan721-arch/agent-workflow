@@ -50,27 +50,34 @@ function assertOpenAiMetadata(openaiYaml, skillName) {
   assert.match(openaiYaml, /^policy:\n  allow_implicit_invocation: true$/m);
 }
 
-function assertCaseDocument(document, participants) {
-  const entries = Array.isArray(document.cases)
-    ? document.cases
-    : Array.isArray(document.evals)
-      ? document.evals
-      : [];
+function assertCaseDocument(document, skillName, availableSkills) {
+  assert.equal(document.version, 1);
+  assert.equal(document.suite?.unitUnderTest, skillName);
+  assert.equal(Array.isArray(document.suite?.participants ?? []), true);
+  const participants = new Set([
+    document.suite.unitUnderTest,
+    ...(document.suite.participants ?? []),
+  ]);
+  assert.equal([...participants].every((skill) => availableSkills.has(skill)), true);
+  const entries = document.cases;
+  assert.equal(Array.isArray(entries), true);
   assert.equal(entries.length > 0, true);
   assert.equal(new Set(entries.map((entry) => entry.id)).size, entries.length);
   for (const entry of entries) {
     assert.equal(typeof entry.id, 'string');
-    if (entry.expected_loaded_skills !== undefined) {
-      assert.equal(Array.isArray(entry.expected_loaded_skills), true);
-      assert.equal(
-        entry.expected_loaded_skills.every((skill) => participants.has(skill)),
-        true,
-      );
-    }
-    if (entry.should_load_skill !== undefined) {
-      assert.equal(typeof entry.should_load_skill, 'boolean');
+    if (document.suite.kind === 'trigger') {
+      assert.equal(typeof entry.input?.query, 'string');
+      const expectedLoad = entry.input?.expectedLoad;
+      const loadedSkills = entry.input?.expected?.loadedSkills;
+      assert.equal(expectedLoad !== undefined || loadedSkills !== undefined, true);
+      if (expectedLoad !== undefined) assert.equal(typeof expectedLoad, 'boolean');
+      if (loadedSkills !== undefined) {
+        assert.equal(Array.isArray(loadedSkills), true);
+        assert.equal(loadedSkills.every((skill) => participants.has(skill)), true);
+      }
     }
   }
+  return document;
 }
 
 const context = await resolveContext();
@@ -108,20 +115,14 @@ test('eval manifests point to parseable case documents with valid participant na
   for (const skillName of requiredSkills) {
     const evalRoot = path.join(context.sourceRoot, 'skills', skillName, 'evals');
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
-    assert.equal(manifest.plugin, 'ask-me');
-    assert.equal(manifest.skill, skillName);
+    assert.equal(manifest.version, 1);
     assert.equal(Array.isArray(manifest.suites), true);
     assert.equal(manifest.suites.length > 0, true);
 
     for (const suite of manifest.suites) {
-      assert.equal(Array.isArray(suite.skills), true);
-      assert.equal(
-        suite.skills.every((name) => participants.has(name)),
-        true,
-      );
       const casePath = path.resolve(evalRoot, suite.cases);
       await access(casePath);
-      assertCaseDocument(await readJson(casePath), participants);
+      assertCaseDocument(await readJson(casePath), skillName, participants);
       if (suite.fixtureModule) {
         await access(path.resolve(evalRoot, suite.fixtureModule));
       }
@@ -135,11 +136,21 @@ test('leaf behavior stays independent and decision-shape owns composition', asyn
       path.join(context.sourceRoot, 'skills', skillName, 'evals', 'manifest.json'),
     );
     const router = manifest.suites.find((suite) => suite.id === 'router');
-    assert.deepEqual([...router.skills].sort(), [...leafSkills].sort());
-    assert.equal(router.forbidMultipleSkillLoads, true);
+    const routerCorpus = await readJson(path.join(
+      context.sourceRoot, 'skills', skillName, 'evals', router.cases,
+    ));
+    assert.deepEqual(
+      [routerCorpus.suite.unitUnderTest, ...(routerCorpus.suite.participants ?? [])].sort(),
+      [...leafSkills].sort(),
+    );
+    assert.equal(routerCorpus.suite.runtime.forbidMultipleSkillLoads, true);
 
     for (const suite of manifest.suites.filter((entry) => entry.kind === 'conversation')) {
-      assert.deepEqual(suite.skills, [skillName]);
+      const corpus = await readJson(path.join(
+        context.sourceRoot, 'skills', skillName, 'evals', suite.cases,
+      ));
+      assert.equal(corpus.suite.unitUnderTest, skillName);
+      assert.deepEqual(corpus.suite.participants ?? [], []);
     }
   }
 
@@ -147,28 +158,38 @@ test('leaf behavior stays independent and decision-shape owns composition', asyn
     path.join(context.sourceRoot, 'skills', 'decision-shape', 'evals', 'manifest.json'),
   );
   const shapeRouter = shapeManifest.suites.find((suite) => suite.id === 'router');
-  assert.deepEqual([...shapeRouter.skills].sort(), [...requiredSkills].sort());
-  assert.equal(shapeRouter.forbidMultipleSkillLoads, false);
+  const shapeEvalRoot = path.join(context.sourceRoot, 'skills', 'decision-shape', 'evals');
+  const shapeRouterCorpus = await readJson(path.join(shapeEvalRoot, shapeRouter.cases));
+  assert.deepEqual(
+    [shapeRouterCorpus.suite.unitUnderTest, ...(shapeRouterCorpus.suite.participants ?? [])].sort(),
+    [...requiredSkills].sort(),
+  );
+  assert.equal(shapeRouterCorpus.suite.runtime.forbidMultipleSkillLoads, false);
   const shapeBehavior = shapeManifest.suites.find((suite) => suite.id === 'behavior');
-  assert.deepEqual([...shapeBehavior.skills].sort(), [...requiredSkills].sort());
+  const shapeBehaviorCorpus = await readJson(path.join(shapeEvalRoot, shapeBehavior.cases));
+  assert.deepEqual(
+    [shapeBehaviorCorpus.suite.unitUnderTest, ...(shapeBehaviorCorpus.suite.participants ?? [])].sort(),
+    [...requiredSkills].sort(),
+  );
 
   const prototypeRoot = path.join(context.sourceRoot, 'skills', 'decision-prototype', 'evals');
   const behavior = await readJson(
     path.join(prototypeRoot, 'decision-prototype-release-evals.json'),
   );
-  assert.equal(behavior.skill_name, 'decision-prototype');
-  assert.equal(Array.isArray(behavior.evals), true);
-  assert.equal(behavior.evals.length > 0, true);
-  for (const entry of behavior.evals) {
-    assert.equal(entry.sandbox, 'workspace-write');
-    assert.equal(entry.review.workspace_unchanged, false);
-    assert.equal(entry.review.allowed_workspace_changes.length > 0, true);
+  assert.equal(behavior.version, 1);
+  assert.equal(behavior.suite.unitUnderTest, 'decision-prototype');
+  assert.equal(behavior.suite.runtime.isolation, 'strict');
+  assert.equal(Array.isArray(behavior.cases), true);
+  assert.equal(behavior.cases.length > 0, true);
+  for (const entry of behavior.cases) {
+    assert.equal(entry.expected.workspaceUnchanged, false);
+    assert.equal(entry.expected.allowedWorkspaceChanges.length > 0, true);
     assert.equal(
-      Object.keys(entry.workspace_files).some((file) => file.startsWith('src/')),
+      Object.keys(entry.input.workspaceFiles).some((file) => file.startsWith('src/')),
       true,
     );
     assert.equal(
-      entry.review.artifacts.every((artifact) => artifact.path.startsWith('prototypes/')),
+      entry.expected.artifacts.every((artifact) => artifact.path.startsWith('prototypes/')),
       true,
     );
   }

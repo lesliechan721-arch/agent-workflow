@@ -1,283 +1,210 @@
 {
-  "schemaVersion": 1,
-  "skill": "review-agent-skill",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "单 Skill Review 漏触发会遗漏质量问题；跨插件或跨 Skill 工作流误触发会产生错误范围结论。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "review-agent-skill",
+    "participants": [
+      "write-agent-content",
+      "review-agent-content",
+      "author-agent-skill",
+      "review-agent-workflow",
+      "design-agent-skill-evals",
+      "audit-agent-skill-evals",
+      "run-aw-skill-evals"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "单 Skill Review 漏触发会遗漏质量问题；跨插件或跨 Skill 工作流误触发会产生错误范围结论。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": false
+    }
   },
   "cases": [
     {
       "id": "full_skill",
       "split": "train",
-      "query": "完整只读评审这个 Agent Skill 包，检查触发、职责、references 和脚本。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "single-skill",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求只涉及一个 Skill package。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。"
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "完整只读评审这个 Agent Skill 包，检查触发、职责、references 和脚本。",
+        "expectedLoad": true
       }
     },
     {
       "id": "delta_skill",
       "split": "train",
-      "query": "对比这个 Skill 的新旧版本，确认旧 finding 和净复杂度变化。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "single-skill",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求是单 Skill delta review。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。"
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "对比这个 Skill 的新旧版本，确认旧 finding 和净复杂度变化。",
+        "expectedLoad": true
       }
     },
     {
       "id": "split_skill",
       "split": "validation",
-      "query": "审核这个单独 Skill 是否塞入多个独立职责，是否需要拆分。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "single-skill",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "representative",
+        "release-critical"
+      ],
+      "input": {
+        "query": "审核这个单独 Skill 是否塞入多个独立职责，是否需要拆分。",
+        "expectedLoad": true
       },
-      "oracle": {
-        "rationale": "一个 Skill 内部 composition 属于本 Skill。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。"
+      "audit": {
+        "errorCost": "high"
       }
     },
     {
       "id": "skill_existing_eval",
       "split": "validation",
-      "query": "评审这个 Skill 及它已有的 Eval 定义和运行证据。",
-      "should_load_skill": true,
-      "eval_type": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "single-skill",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "representative",
+        "release-critical"
+      ],
+      "input": {
+        "query": "评审这个 Skill 及它已有的 Eval 定义和运行证据。",
+        "expectedLoad": true
       },
-      "oracle": {
-        "rationale": "已有 Eval 证据是单 Skill Review 的一部分。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。"
+      "audit": {
+        "errorCost": "high"
       }
     },
     {
       "id": "modify_skill",
       "split": "train",
-      "query": "直接修改这个 Skill 并提交。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "author-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "直接修改这个 Skill 并提交。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求是写入变更，不是只读 Review。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "改为只读评价现有 Skill 后标签翻转。"
+        "minimalCounterexample": "改为只读评价现有 Skill 后标签翻转。"
       }
     },
     {
       "id": "prompt_review",
       "split": "train",
-      "query": "只审核一个普通 prompt，不评价 Skill 包。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "content-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只审核一个普通 prompt，不评价 Skill 包。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由 Agent 内容 Reviewer 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若目标改为一个完整 Skill package，则应加载 review-agent-skill。"
+        "minimalCounterexample": "若目标改为一个完整 Skill package，则应加载 review-agent-skill。"
       }
     },
     {
       "id": "design_eval",
       "split": "validation",
-      "query": "为这个 Skill 设计一组新的 Eval cases。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-design",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "为这个 Skill 设计一组新的 Eval cases。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由 Eval Designer 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求改为评审现有 Skill package，而不是设计 Eval，则应加载 review-agent-skill。"
+        "minimalCounterexample": "若请求改为评审现有 Skill package，而不是设计 Eval，则应加载 review-agent-skill。",
+        "errorCost": "high"
       }
     },
     {
       "id": "audit_eval",
       "split": "validation",
-      "query": "只审核这组 Eval Oracle 是否合理。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "eval-audit",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "只审核这组 Eval Oracle 是否合理。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "请求由 Eval Auditor 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求改为评审生产 Skill package，而不是审核 Oracle，则应加载 review-agent-skill。"
+        "minimalCounterexample": "若请求改为评审生产 Skill package，而不是审核 Oracle，则应加载 review-agent-skill。",
+        "errorCost": "high"
       }
     },
     {
       "id": "single_aw_plugin",
       "split": "validation",
-      "query": "评审这个 AW 插件的 manifest、两个 Skill 和 materialized profiles。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "aw-plugin-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "评审这个 AW 插件的 manifest、两个 Skill 和 materialized profiles。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "完整 AW plugin 由 review-aw-plugin 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求只收窄到插件中的一个 Skill package，则应加载 review-agent-skill。"
+        "minimalCounterexample": "若请求只收窄到插件中的一个 Skill package，则应加载 review-agent-skill。",
+        "errorCost": "high"
       }
     },
     {
       "id": "multi_skill_workflow",
       "split": "validation",
-      "query": "审核 author、auditor 和 runner 联合完成的 Eval 工作流。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "workflow-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "审核 author、auditor 和 runner 联合完成的 Eval 工作流。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "跨多个 Skill 的有界工作流由 workflow Reviewer 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求只评审其中一个 Skill package，则应加载 review-agent-skill。"
+        "minimalCounterexample": "若请求只评审其中一个 Skill package，则应加载 review-agent-skill。",
+        "errorCost": "high"
       }
     },
     {
       "id": "multi_aw_workflow",
       "split": "validation",
-      "query": "审核三个 AW 插件联合实现的 Skill 开发与 Eval 流程。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "aw-workflow-review",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
+      "tags": [
+        "boundary",
+        "release-critical"
+      ],
+      "input": {
+        "query": "审核三个 AW 插件联合实现的 Skill 开发与 Eval 流程。",
+        "expectedLoad": false
       },
-      "oracle": {
+      "audit": {
         "rationale": "跨多个 AW plugin 的工作流由 AW workflow Reviewer 拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若请求只评审一个插件中的一个 Skill package，则应加载 review-agent-skill。"
+        "minimalCounterexample": "若请求只评审一个插件中的一个 Skill package，则应加载 review-agent-skill。",
+        "errorCost": "high"
       }
     },
     {
       "id": "whole_repo",
       "split": "sanity",
-      "query": "评审整个仓库的所有 Agent 系统并给一个总 pass。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "diagnostic",
-      "provenance": "boundary",
-      "scenario_family": "unbounded-system",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "未界定系统必须先拆分工作流，单 Skill Reviewer 不应给结论。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和结论范围必须正确。",
-        "minimal_counterexample": "若用户明确指定一个 Skill package，则应加载 review-agent-skill 并给有界结论。"
+      "tags": [
+        "diagnostic"
+      ],
+      "input": {
+        "query": "评审整个仓库的所有 Agent 系统并给一个总 pass。",
+        "expectedLoad": false
       }
     }
   ]

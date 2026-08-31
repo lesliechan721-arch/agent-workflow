@@ -290,12 +290,15 @@ function createSkillFiles(stageSkillRoot, options) {
         skillInvocation,
       ),
     );
-    addJson(path.join('evals', 'manifest.json'), renderEvalManifest(pluginName, skillName));
+    addJson(path.join('evals', 'manifest.json'), renderEvalManifest(pluginName));
     addJson(
       path.join('evals', 'trigger-cases.json'),
       renderTriggerCases(skillName, skillDescription, skillInvocation),
     );
-    addJson(path.join('evals', 'evals.json'), renderBehaviorCases(skillName, skillDescription));
+    addJson(
+      path.join('evals', 'behavior-cases.json'),
+      renderBehaviorCases(skillName, skillDescription),
+    );
   }
   return created;
 }

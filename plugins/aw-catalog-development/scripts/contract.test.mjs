@@ -29,13 +29,17 @@ const expectedDetectedCapabilities = [
 const execFileAsync = promisify(execFile);
 
 async function readBehaviorCases(skill) {
-  return JSON.parse(await readFile(path.join(
+  const corpus = JSON.parse(await readFile(path.join(
     sourceRoot,
     'skills',
     skill,
     'evals',
     'behavior-cases.json',
-  ), 'utf8')).evals;
+  ), 'utf8'));
+  assert.equal(corpus.version, 1);
+  assert.equal(corpus.suite?.unitUnderTest, skill);
+  assert.equal(Array.isArray(corpus.cases), true);
+  return corpus.cases;
 }
 
 async function materializeWorkspaceFiles(root, workspaceFiles) {
@@ -145,15 +149,11 @@ test('Eval wrappers forward through PATH without private host CLI entry variable
 
 test('dependency aggregation trigger allows the required Plugin Author handoff', async () => {
   const evalRoot = path.join(sourceRoot, 'skills', 'author-aw-catalog', 'evals');
-  const cases = JSON.parse(await readFile(path.join(evalRoot, 'trigger-cases.json'), 'utf8')).cases;
-  const manifest = JSON.parse(await readFile(path.join(evalRoot, 'manifest.json'), 'utf8'));
-  const evalCase = cases.find((entry) => entry.id === 'catalog_dependency_update_requires_aggregation');
-  const suite = manifest.suites.find((entry) => entry.id === 'trigger');
+  const document = JSON.parse(await readFile(path.join(evalRoot, 'trigger-cases.json'), 'utf8'));
+  const evalCase = document.cases.find((entry) => entry.id === 'catalog_dependency_update_requires_aggregation');
   assert.ok(evalCase);
-  assert.ok(suite);
-  assert.equal(evalCase.expected_first_loaded_skill, 'author-aw-catalog');
-  assert.equal(evalCase.expected_loaded_skills, undefined);
-  assert.equal(suite.forbidMultipleSkillLoads, true);
+  assert.deepEqual(evalCase.input.expected.loadedSkills, ['author-aw-catalog']);
+  assert.equal(document.suite.runtime.forbidMultipleSkillLoads, true);
 });
 
 function assertNoPrivatePublisherFields(receipt, label) {
@@ -285,7 +285,7 @@ test('explicit-target behavior fixture keeps context and status on Workspace B i
   assert.ok(evalCase);
   const cwdRoot = await mkdtemp(path.join(os.tmpdir(), 'aw-catalog-target-a-'));
   try {
-    await materializeWorkspaceFiles(cwdRoot, evalCase.workspace_files);
+    await materializeWorkspaceFiles(cwdRoot, evalCase.input.workspaceFiles);
     const targetRoot = path.join(cwdRoot, 'targets', 'catalog-b');
     const cwdContext = await execFileAsync(process.execPath, [
       cliEntry, 'catalog', 'context', '--json',
@@ -329,7 +329,7 @@ test('degraded Review fixture keeps the legal Workspace identity in Context v3',
   assert.ok(evalCase);
   const root = await mkdtemp(path.join(os.tmpdir(), 'aw-catalog-degraded-review-'));
   try {
-    await materializeWorkspaceFiles(root, evalCase.workspace_files);
+    await materializeWorkspaceFiles(root, evalCase.input.workspaceFiles);
     const context = await execFileAsync(process.execPath, [
       cliEntry, 'catalog', 'context', '--workspace-root', root, '--json',
     ], { cwd: root, maxBuffer: 10 * 1024 * 1024 });
@@ -392,7 +392,7 @@ test('Catalog publisher preflights and binds the user authorization to the recei
   ));
   assert.ok(invalidRemote);
   assert.deepEqual(
-    invalidRemote.scripted_replies.map((reply) => reply.answers_by_index),
+    invalidRemote.input.scriptedReplies.map((reply) => reply.answersByIndex),
     [['remote 名称改为 staging。'], ['拒绝，这次不要发布。']],
     'remote correction and publication refusal must be separate conversation turns',
   );
@@ -407,7 +407,7 @@ test('Author Eval fixture forwards local work to the run-owned AW CLI', async ()
   assert.ok(initializeCase);
   const root = await mkdtemp(path.join(os.tmpdir(), 'aw-author-eval-real-cli-'));
   try {
-    await materializeWorkspaceFiles(root, initializeCase.workspace_files);
+    await materializeWorkspaceFiles(root, initializeCase.input.workspaceFiles);
     await execFileAsync('git', ['init'], { cwd: root });
     await execFileAsync('git', ['add', '.'], { cwd: root });
     await execFileAsync('git', [
@@ -486,7 +486,7 @@ test('Author removal Eval fixture creates a clean Git precondition and restores 
   const fixtureOptions = { fixture, cliEntry, cwd: root, fixtureHome, tmpDir: fixtureHome };
   try {
     await execFileAsync('git', ['init'], { cwd: root });
-    await materializeWorkspaceFiles(root, removalCase.workspace_files);
+    await materializeWorkspaceFiles(root, removalCase.input.workspaceFiles);
     const initialGit = await snapshotTree(path.join(root, '.git'));
 
     const self = await runEvalFixture({
@@ -591,9 +591,9 @@ test('Publisher Eval fixture separates public receipts from private remote evide
   for (const evalCase of cases) {
     const root = await mkdtemp(path.join(os.tmpdir(), `aw-publisher-eval-${evalCase.id}-`));
     try {
-      await materializeWorkspaceFiles(root, evalCase.workspace_files);
+      await materializeWorkspaceFiles(root, evalCase.input.workspaceFiles);
       await execFileAsync('git', ['init'], { cwd: root });
-      const scenario = evalCase.workspace_files['fixtures/scenario.txt'].trim()
+      const scenario = evalCase.input.workspaceFiles['fixtures/scenario.txt'].trim()
         .replace(/^scenario=/u, '');
       const isDefault = scenario === 'default-authorization';
       const remote = isDefault ? 'origin' : 'staging';
@@ -709,7 +709,7 @@ test('Publisher Eval fixture separates public receipts from private remote evide
   }
 });
 
-test('workspace_valid Eval fixtures pass the public Catalog and plugin preflight', async () => {
+test('Eval fixtures with a workspace marker pass the public Catalog and plugin preflight', async () => {
   const repoRoot = path.resolve(sourceRoot, '..', '..');
   const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
   const owningValidation = await execFileAsync(process.execPath, [
@@ -744,21 +744,24 @@ test('workspace_valid Eval fixtures pass the public Catalog and plugin preflight
   ]);
   assert.deepEqual(
     caseGroups[1]
-      .filter((entry) => entry.preconditions?.workspace_valid === true)
-      .map((entry) => entry.id)
-      .sort(),
+      .filter((entry) => expectedReviewerSnapshots.has(entry.id))
+    .map((entry) => entry.id)
+    .sort(),
     [...expectedReviewerSnapshots.keys()].sort(),
-    'Reviewer workspace_valid case IDs must have explicit snapshot expectations',
+    'Reviewer snapshot case IDs must have explicit snapshot expectations',
   );
   const cases = caseGroups.flat()
-    .filter((entry) => entry.preconditions?.workspace_valid === true);
-  assert.ok(cases.length > 0, 'at least one Eval fixture must declare workspace_valid=true');
+    .filter((entry) => (
+      entry.input.workspaceFiles['.aw-workspace.json'] !== undefined
+      && !entry.tags.includes('workspace-invalid')
+    ));
+  assert.ok(cases.length > 0, 'at least one Eval fixture must materialize a workspace marker');
 
   for (const evalCase of cases) {
     const root = await mkdtemp(path.join(os.tmpdir(), `aw-catalog-eval-${evalCase.id}-`));
     try {
-      await materializeWorkspaceFiles(root, evalCase.workspace_files);
-      const expectedPluginNames = Object.keys(evalCase.workspace_files)
+      await materializeWorkspaceFiles(root, evalCase.input.workspaceFiles);
+      const expectedPluginNames = Object.keys(evalCase.input.workspaceFiles)
         .map((relativePath) => relativePath.match(/^plugins\/([^/]+)\/\.agents-plugin\/plugin\.json$/u)?.[1])
         .filter((name) => name !== undefined)
         .sort();

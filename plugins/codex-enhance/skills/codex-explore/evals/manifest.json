@@ -1,261 +1,126 @@
 {
-  "schemaVersion": 1,
-  "plugin": "codex-enhance",
-  "skill": "codex-explore",
-  "profiles": [
-    {
-      "id": "project-default",
+  "version": 1,
+  "defaults": {
+    "profile": "project-default"
+  },
+  "profiles": {
+    "project-default": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "codex-enhance": {}
+      }
     },
-    {
-      "id": "user-default",
+    "user-default": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {}
-        }
-      ],
-      "requiredForRelease": true
+      "plugins": {
+        "codex-enhance": {}
+      }
     },
-    {
-      "id": "project-nondefault",
+    "project-nondefault": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {
-            "quickModel": "eval-quick-model",
-            "quickReasoningEffort": "high",
-            "standardModel": "eval-standard-model",
-            "standardReasoningEffort": "xhigh",
-            "deepModel": "eval-deep-model",
-            "deepReasoningEffort": "max",
-            "exploreMinimumInitialWaitMinutes": 2
-          }
+      "plugins": {
+        "codex-enhance": {
+          "quickModel": "eval-quick-model",
+          "quickReasoningEffort": "high",
+          "standardModel": "eval-standard-model",
+          "standardReasoningEffort": "xhigh",
+          "deepModel": "eval-deep-model",
+          "deepReasoningEffort": "max",
+          "exploreMinimumInitialWaitMinutes": 2
         }
-      ],
-      "requiredForRelease": true
+      }
     },
-    {
-      "id": "project-short-wait",
+    "project-short-wait": {
       "scope": "project",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {
-            "exploreMinimumInitialWaitMinutes": 1
-          }
+      "plugins": {
+        "codex-enhance": {
+          "exploreMinimumInitialWaitMinutes": 1
         }
-      ],
-      "requiredForRelease": false
+      }
     },
-    {
-      "id": "user-nondefault",
+    "user-nondefault": {
       "scope": "user",
-      "plugins": [
-        {
-          "name": "codex-enhance",
-          "config": {
-            "quickModel": "eval-quick-model",
-            "quickReasoningEffort": "high",
-            "standardModel": "eval-standard-model",
-            "standardReasoningEffort": "xhigh",
-            "deepModel": "eval-deep-model",
-            "deepReasoningEffort": "max",
-            "exploreMinimumInitialWaitMinutes": 2
-          }
+      "plugins": {
+        "codex-enhance": {
+          "quickModel": "eval-quick-model",
+          "quickReasoningEffort": "high",
+          "standardModel": "eval-standard-model",
+          "standardReasoningEffort": "xhigh",
+          "deepModel": "eval-deep-model",
+          "deepReasoningEffort": "max",
+          "exploreMinimumInitialWaitMinutes": 2
         }
-      ],
-      "requiredForRelease": true
+      }
     }
-  ],
+  },
   "suites": [
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "codex-explore"
-      ],
-      "cases": "./trigger-cases.json",
-      "fixtureModule": "./trigger-fixture.mjs",
-      "observeSpawnAgent": true,
-      "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation",
-        "sanity"
-      ],
+      "cases": "trigger-cases.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
       "releaseSplits": [
         "validation",
         "sanity"
-      ],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 180000
+      ]
     },
     {
       "id": "model-selection",
-      "kind": "provider",
-      "skills": [
-        "codex-explore",
-        "codex-subagent-guide"
-      ],
-      "cases": "./evals.json",
+      "kind": "custom-process",
+      "cases": "evals.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 3,
-      "releaseSplits": [],
+      "runs": 3,
+      "timeoutMs": 900000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 900000,
       "provider": {
-        "id": "codex-explore-model-selection",
-        "entry": "run-model-selection-evals.mjs",
-        "assets": [
-          "eval-harness.mjs",
-          "trigger-fixture.mjs"
-        ],
-        "credentialEnvironment": [
-          "ALL_PROXY",
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "NO_PROXY",
-          "OPENAI_API_KEY",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-model-selection-evals.mjs"
+        ]
       }
     },
     {
       "id": "workflow",
-      "kind": "provider",
-      "skills": [
-        "codex-explore"
-      ],
-      "cases": "./workflow-evals.json",
+      "kind": "custom-process",
+      "cases": "workflow-evals.json",
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
-      "releaseSplits": [],
+      "runs": 1,
+      "timeoutMs": 900000,
       "requiredForRelease": true,
-      "perRunTimeoutMs": 900000,
       "provider": {
-        "id": "codex-explore-workflow",
-        "entry": "run-workflow-evals.mjs",
-        "assets": [
-          "eval-harness.mjs",
-          "trigger-fixture.mjs"
-        ],
-        "credentialEnvironment": [
-          "ALL_PROXY",
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "NO_PROXY",
-          "OPENAI_API_KEY",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-workflow-evals.mjs"
+        ]
       }
     },
     {
       "id": "liveness",
-      "kind": "provider",
-      "skills": [
-        "codex-explore"
-      ],
-      "cases": "./liveness-evals.json",
+      "kind": "custom-process",
+      "cases": "liveness-evals.json",
       "profiles": [
         "project-short-wait"
       ],
-      "defaultRuns": 3,
-      "releaseSplits": [],
+      "runs": 3,
+      "timeoutMs": 300000,
       "requiredForRelease": false,
-      "perRunTimeoutMs": 300000,
       "provider": {
-        "id": "codex-explore-liveness",
-        "entry": "run-liveness-evals.mjs",
-        "assets": [
-          "eval-harness.mjs",
-          "run-workflow-evals.mjs",
-          "trigger-fixture.mjs"
-        ],
-        "credentialEnvironment": [
-          "ALL_PROXY",
-          "AW_SKILL_EVAL_CODEX_BIN",
-          "AW_SKILL_EVAL_CODEX_MODEL",
-          "CODEX_HOME",
-          "HOME",
-          "HTTPS_PROXY",
-          "HTTP_PROXY",
-          "NODE_EXTRA_CA_CERTS",
-          "NO_PROXY",
-          "OPENAI_API_KEY",
-          "SSL_CERT_DIR",
-          "SSL_CERT_FILE"
-        ],
-        "capabilities": {
-          "triggerDiscovery": false,
-          "conversation": true,
-          "skillPathExecution": true,
-          "previousVersionBaseline": true,
-          "withoutSkillBaseline": true,
-          "cleanContext": true,
-          "parallelRuns": false,
-          "toolTrace": true,
-          "tokenUsage": true,
-          "duration": true,
-          "sandbox": true,
-          "materialization": true
-        }
+        "type": "custom-process",
+        "command": [
+          "node",
+          "run-liveness-evals.mjs"
+        ]
       }
     }
   ]

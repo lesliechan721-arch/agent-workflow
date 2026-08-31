@@ -1,92 +1,87 @@
 {
-  "schemaVersion": 1,
-  "skill": "publish-aw-catalog",
-  "audit_status": "not assessed",
-  "policy": {
-    "optimization": "precision-first",
-    "false_negative_cost": "high",
-    "false_positive_cost": "high",
-    "rationale": "清晰的远端 publication 意图应加载唯一 Publisher；prepare-only 和非发布请求必须保持 specificity。"
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "publish-aw-catalog",
+    "participants": [
+      "author-aw-catalog",
+      "review-aw-catalog"
+    ],
+    "defaultGrader": "mechanical",
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "清晰的远端 publication 意图应加载唯一 Publisher；prepare-only 和非发布请求必须保持 specificity。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "forbidMultipleSkillLoads": true
+    }
   },
   "cases": [
     {
       "id": "explicit_publish",
       "split": "validation",
-      "query": "使用 $publish-aw-catalog 发布当前 Workspace 到 remote staging、branch catalogs/team。",
-      "expected_loaded_skills": ["publish-aw-catalog"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "representative",
-      "provenance": "representative-synthetic",
-      "scenario_family": "explicit-publication",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "rare",
-        "impact": "critical",
-        "false_negative_cost": "high",
-        "false_positive_cost": "critical",
-        "rationale": "显式调用是进入远端写工作流的必要入口。"
-      },
-      "oracle": {
-        "rationale": "用户显式调用并给出 remote/branch。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "仍必须先 preflight 并请求 exact identity 授权。"
+      "tags": [
+        "representative",
+        "explicit-publication"
+      ],
+      "input": {
+        "query": "使用 $publish-aw-catalog 发布当前 Workspace 到 remote staging、branch catalogs/team。",
+        "expected": {
+          "loadedSkills": [
+            "publish-aw-catalog"
+          ]
+        }
       }
     },
     {
       "id": "implicit_publish_request",
       "split": "validation",
-      "query": "把 Catalog 发出去。",
-      "expected_loaded_skills": ["publish-aw-catalog"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "implicit-publication",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "occasional",
-        "impact": "critical",
-        "false_negative_cost": "high",
-        "false_positive_cost": "critical",
-        "rationale": "自然语言中的清晰发布请求属于 Publisher description；漏接会阻断合法发布，误接仍可能进入高成本远端工作流。"
+      "tags": [
+        "boundary",
+        "implicit-publication"
+      ],
+      "input": {
+        "query": "把 Catalog 发出去。",
+        "expected": {
+          "loadedSkills": [
+            "publish-aw-catalog"
+          ]
+        }
       },
-      "oracle": {
+      "audit": {
         "rationale": "“把 Catalog 发出去”是清晰的 Catalog publication 请求，符合 description 的自然语言入口；加载 Skill 不等于授权远端写。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "应加载 Publisher，再由 context 解析或询问 target，并在 preflight 后取得 exact authorization；不得把原句当作远端写授权。",
-        "minimal_counterexample": "若用户只要求维护、build、验证或准备发布，并明确不要发布，则不应加载 Publisher。"
+        "minimalCounterexample": "若用户只要求维护、build、验证或准备发布，并明确不要发布，则不应加载 Publisher。",
+        "errorCost": "high",
+        "allowedVariance": "应加载 Publisher，再由 context 解析或询问 target，并在 preflight 后取得 exact authorization；不得把原句当作远端写授权。"
       }
     },
     {
       "id": "prepare_only",
       "split": "train",
-      "query": "维护 Catalog 并准备好验证结果，但不要发布。",
-      "expected_loaded_skills": ["author-aw-catalog"],
-      "eval_type": "trigger",
-      "test_layer": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "catalog-authoring",
-      "unit_under_test": "description",
-      "preconditions": { "target_available": true },
-      "decision_context": {
-        "frequency": "common",
-        "impact": "critical",
-        "false_negative_cost": "low",
-        "false_positive_cost": "critical",
-        "rationale": "明确的 prepare-only 请求禁止进入任何远端写路径。"
+      "tags": [
+        "boundary",
+        "catalog-authoring"
+      ],
+      "input": {
+        "query": "维护 Catalog 并准备好验证结果，但不要发布。",
+        "expected": {
+          "loadedSkills": [
+            "author-aw-catalog"
+          ]
+        }
       },
-      "oracle": {
+      "audit": {
         "rationale": "普通维护由 Catalog Author 拥有。",
-        "rule_refs": ["SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "不得把准备发布解释为远端授权。",
-        "minimal_counterexample": "若用户清晰要求把当前 Catalog 发出去，即使未写 Skill 名，也应加载 Publisher；后续仍需独立 exact authorization。"
+        "minimalCounterexample": "若用户清晰要求把当前 Catalog 发出去，即使未写 Skill 名，也应加载 Publisher；后续仍需独立 exact authorization。",
+        "errorCost": "high",
+        "allowedVariance": "不得把准备发布解释为远端授权。"
       }
     }
   ]

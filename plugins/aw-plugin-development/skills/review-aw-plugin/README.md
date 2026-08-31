@@ -10,4 +10,4 @@
 
 ## 边界
 
-本 Skill 不修改 Skill、Eval、README、manifest 或 materialized final，也不因 Review 运行 build、test 或 Catalog mutation。只有用户明确要求发布准备状态时，才单独运行确定性发布检查；检查要求完整 QualityReviewResult v1，并对 required Eval 校验 preflight、run bundle 和 result-triage 的实际 digest 链。
+本 Skill 不修改 Skill、Eval、README、manifest 或 materialized final，也不因 Review 运行 build、test 或 Catalog mutation。Quality Review 不声明 Eval 执行事实。只有用户明确要求发布准备状态时，才单独运行确定性发布检查；检查要求完整 QualityReviewResult v1，并对 required Eval 校验一组或多组 exact 绑定的 EvalSpec、EvalAudit、EvalResult 和必要运行事实。clean success 不需要 triage。

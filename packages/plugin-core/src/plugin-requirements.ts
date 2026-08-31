@@ -65,7 +65,7 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, RegisteredAwCapabilityId>> =
   'self describe': 'aw.self-check.v1',
   'self check': 'aw.self-check.v1',
   'skill validate': 'aw.skill-validation.v1',
-  'skill eval': 'aw.skill-eval.v1',
+  'skill eval': 'aw.skill-eval.v2',
   'plugin capabilities': 'aw.plugin-authoring.v1',
   'plugin init': 'aw.plugin-authoring.v1',
   'plugin add-skill': 'aw.plugin-authoring.v1',

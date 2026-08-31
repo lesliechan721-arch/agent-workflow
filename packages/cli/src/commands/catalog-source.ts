@@ -42,7 +42,7 @@ export interface CatalogSourceEvidence {
 }
 
 export interface CatalogSourceMutationReceipt {
-  receiptSchemaVersion: 4;
+  receiptSchemaVersion: 5;
   command: 'catalog:source:add' | 'catalog:source:update' | 'catalog:source:set-primary' | 'catalog:source:remove';
   ok: boolean;
   changed: boolean;
@@ -158,7 +158,7 @@ function unchangedReceipt(options: {
   snapshot: Awaited<ReturnType<typeof readCatalogSourcesConfigSnapshot>>;
 }): CatalogSourceMutationReceipt {
   return {
-    receiptSchemaVersion: 4,
+    receiptSchemaVersion: 5,
     command: options.command,
     ok: true,
     changed: false,
@@ -236,7 +236,7 @@ async function commitCandidate(options: {
     },
   });
   return {
-    receiptSchemaVersion: 4,
+    receiptSchemaVersion: 5,
     command: options.command,
     ok: true,
     changed: true,

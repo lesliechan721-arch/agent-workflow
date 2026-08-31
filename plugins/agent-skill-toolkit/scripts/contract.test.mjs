@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -21,16 +20,6 @@ async function exists(root, relative) {
 }
 
 async function runtimeExportSource(plugin, exportName) {
-  if (plugin === '@aw/agent-skill-eval') {
-    const sources = {
-      'case-corpus-digest': 'dist/corpus-digest.js',
-      'eval-audit-result-schema': 'dist/schemas/eval-audit-result.schema.json',
-      'eval-run-bundle-schema': 'dist/schemas/eval-run-bundle.schema.json',
-      'eval-run-bundle-validator': 'dist/bundle-validation-runtime.js',
-    };
-    assert.ok(sources[exportName], `missing virtual runtime export ${plugin}:${exportName}`);
-    return path.resolve(sourceRoot, '../../packages/agent-skill-eval', sources[exportName]);
-  }
   const providerRoot = path.resolve(sourceRoot, '..', plugin);
   const manifest = JSON.parse(await readFile(path.join(providerRoot, '.agents-plugin/plugin.json'), 'utf8'));
   const item = manifest.buildConfig?.runtimeExports?.find((entry) => entry.name === exportName);
@@ -49,8 +38,6 @@ test('reviewer manifest and runtime expose only the current quality contract', a
       'review-publication-reference',
       'skill-design-brief-schema',
       'skill-rules',
-      'validate-eval-audit-result',
-      'validate-eval-run-bundle',
       'validate-json-contract',
       'validate-quality-review-result',
     ],
@@ -64,8 +51,6 @@ test('reviewer manifest and runtime expose only the current quality contract', a
       'review-publication-reference:./references/review-publication.md',
       'skill-design-brief-schema:./schemas/skill-design-brief.schema.json',
       'skill-rules:./standards/skill-rules.json',
-      'validate-eval-audit-result:./scripts/validate-eval-audit-result.mjs',
-      'validate-eval-run-bundle:./scripts/validate-eval-run-bundle.mjs',
       'validate-json-contract:./scripts/validate-json-contract.mjs',
       'validate-quality-review-result:./scripts/validate-quality-review-result.mjs',
     ],
@@ -99,20 +84,13 @@ test('reviewer production and materialized closures use registered current depen
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
   assert.deepEqual(
     manifest.buildConfig.buildImports.map((entry) => `${entry.plugin}:${entry.export}`).sort(),
-    [
-      '@aw/agent-skill-eval:case-corpus-digest',
-      '@aw/agent-skill-eval:eval-run-bundle-validator',
-      'agent-content-toolkit:content-rules',
-    ],
+    ['agent-content-toolkit:content-rules'],
   );
   assert.deepEqual(
     manifest.buildConfig.skillRuntimeFiles
       .flatMap((entry) => entry.import ? [`${entry.import.plugin}:${entry.import.export}`] : [])
       .sort(),
-    [
-      '@aw/agent-skill-eval:eval-audit-result-schema',
-      '@aw/agent-skill-eval:eval-run-bundle-schema',
-    ],
+    [],
   );
   if (!context) return;
   const reviewRoot = path.join(runtimeRoot, 'skills/review-agent-skill');
@@ -121,7 +99,12 @@ test('reviewer production and materialized closures use registered current depen
     'assets/review-result.schema.json',
     'assets/skill-inspection-result.schema.json',
     'assets/eval-execution-plan.schema.json',
+    'assets/eval-audit-result.schema.json',
     'assets/eval-run-bundle.schema.json',
+    'scripts/corpus-digest.mjs',
+    'scripts/eval-run-bundle-validator.mjs',
+    'scripts/validate-eval-audit-result.mjs',
+    'scripts/validate-eval-run-bundle.mjs',
     'scripts/validate-review-input-bundle.mjs',
     'scripts/validate-review-result.mjs',
     'scripts/inspect-agent-skill.mjs',
@@ -159,41 +142,27 @@ test('source excludes standard views rendered during staging', async () => {
   }
 });
 
-test('materialized audit validator runs with its projected dependency closure', async () => {
+test('materialized EvalAudit template validates against the canonical v1 schema', async () => {
   if (!context) return;
-  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
-  const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
-  const templatePath = path.join(auditRoot, 'assets/eval-audit-result-template.json');
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-runtime-contract-'));
-  try {
-    const { stdout } = await execFileAsync(process.execPath, [validator, '--help'], {
-      cwd: auditRoot,
-      encoding: 'utf8',
-    });
-    assert.match(stdout, /--plan <plan\.json>/u);
-
-    const sourceOnly = await execFileAsync(process.execPath, [
-      validator, templatePath, '--format', 'json',
-    ], {
-      cwd: auditRoot,
-      encoding: 'utf8',
-    });
-    assert.equal(JSON.parse(sourceOnly.stdout).valid, true);
-
-    const invalid = JSON.parse(await readFile(templatePath, 'utf8'));
-    invalid.runBundleDigest = 'sha256:' + '1'.repeat(64);
-    const invalidPath = path.join(temporary, 'invalid-preflight.json');
-    await writeFile(invalidPath, JSON.stringify(invalid));
-    await assert.rejects(execFileAsync(process.execPath, [validator, invalidPath], {
-      cwd: auditRoot,
-      encoding: 'utf8',
-    }));
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+  const validator = path.join(sourceRoot, 'scripts/validate-json-contract.mjs');
+  const templatePath = path.join(
+    runtimeRoot,
+    'skills/audit-agent-skill-evals/assets/eval-audit-template.json',
+  );
+  const schemaPath = path.resolve(
+    sourceRoot,
+    '../../packages/agent-skill-eval/schemas/eval-audit.schema.json',
+  );
+  const { stdout } = await execFileAsync(process.execPath, [
+    validator, schemaPath, templatePath, '--format', 'json',
+  ], {
+    cwd: runtimeRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(JSON.parse(stdout).valid, true);
 });
 
-test('Eval case validator admits exact first trigger routes only at the trigger layer', async () => {
+test('Eval case validator admits exact trigger routes only at the trigger layer', async () => {
   const validator = path.join(
     runtimeRoot,
     'skills/audit-agent-skill-evals/scripts/validate-eval-cases.mjs',
@@ -202,28 +171,31 @@ test('Eval case validator admits exact first trigger routes only at the trigger 
   const routeCase = {
     id: 'catalog_review_route',
     split: 'validation',
-    eval_type: 'trigger',
-    test_layer: 'trigger',
-    case_role: 'regression',
-    provenance: 'derived',
-    scenario_family: 'catalog-routing',
-    unit_under_test: 'Catalog trigger description',
-    preconditions: { target_available: true },
-    expected_first_loaded_skill: 'review-aw-catalog',
-    oracle: {
+    tags: ['regression', 'catalog-routing'],
+    input: {
+      query: 'Review this Catalog composition without changing it.',
+      expected: { loadedSkills: ['review-aw-catalog'] },
+    },
+    audit: {
       rationale: 'A Catalog composition review has one exact owner.',
-      rule_refs: ['SKILL.md description'],
-      confidence: 'high',
-      allowed_variance: 'The route may explain the boundary but must load only the owner.',
-      minimal_counterexample: 'A Catalog write request routes to the Catalog Author.',
+      allowedVariance: 'The route may explain the boundary but must load only the owner.',
+      minimalCounterexample: 'A Catalog write request routes to the Catalog Author.',
     },
   };
   const document = {
-    policy: {
-      optimization: 'precision-first',
-      false_negative_cost: 'high',
-      false_positive_cost: 'critical',
-      rationale: 'Sibling co-load crosses a critical ownership boundary.',
+    version: 1,
+    suite: {
+      kind: 'trigger',
+      unitUnderTest: 'audit-agent-skill-evals',
+      participants: ['review-aw-catalog'],
+      defaultGrader: 'mechanical',
+      policy: {
+        optimization: 'precision-first',
+        falseNegativeCost: 'high',
+        falsePositiveCost: 'critical',
+        rationale: 'Sibling co-load crosses a critical ownership boundary.',
+      },
+      runtime: { isolation: 'strict' },
     },
     cases: [routeCase],
   };
@@ -238,31 +210,11 @@ test('Eval case validator admits exact first trigger routes only at the trigger 
     assert.equal(triggerResult.summary.errors, 0);
     assert.equal(triggerResult.summary.warnings, 0);
 
-    for (const [name, expectedFirstLoadedSkill] of [
-      ['empty', ''],
-      ['non-string', ['review-aw-catalog']],
-    ]) {
-      const invalidPath = path.join(temporary, `first-route-${name}.json`);
-      await writeFile(invalidPath, JSON.stringify({
-        ...document,
-        cases: [{ ...routeCase, expected_first_loaded_skill: expectedFirstLoadedSkill }],
-      }));
-      await assert.rejects(
-        execFileAsync(process.execPath, [
-          validator, invalidPath, '--strict', '--format', 'json',
-        ], { encoding: 'utf8' }),
-        (error) => {
-          const result = JSON.parse(error.stdout);
-          return result.diagnostics.some((entry) =>
-            entry.code === 'case.first-route-expectation-type' && entry.level === 'error');
-        },
-      );
-    }
-
     const behaviorPath = path.join(temporary, 'behavior.json');
     await writeFile(behaviorPath, JSON.stringify({
       ...document,
-      cases: [{ ...routeCase, eval_type: 'behavior', test_layer: 'conversation' }],
+      suite: { ...document.suite, kind: 'conversation', defaultGrader: 'independent-llm' },
+      cases: [routeCase],
     }));
     await assert.rejects(
       execFileAsync(process.execPath, [
@@ -271,7 +223,9 @@ test('Eval case validator admits exact first trigger routes only at the trigger 
       (error) => {
         const result = JSON.parse(error.stdout);
         return result.diagnostics.some((entry) =>
-          entry.code === 'case.route-expectation-type' && entry.level === 'error');
+          entry.code === 'case.conversation-prompt' && entry.level === 'error') &&
+          result.diagnostics.some((entry) =>
+            entry.code === 'case.conversation-assertions' && entry.level === 'error');
       },
     );
   } finally {
@@ -279,281 +233,34 @@ test('Eval case validator admits exact first trigger routes only at the trigger 
   }
 });
 
-test('materialized audit validator uses the canonical corpus digest runtime', async () => {
+test('EvalAudit v1 rejects removed v3 result fields', async () => {
   if (!context) return;
-  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
-  const runtimeDigest = path.join(auditRoot, 'scripts/corpus-digest.mjs');
-  const packageDigest = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/corpus-digest.js');
-  assert.deepEqual(await readFile(runtimeDigest), await readFile(packageDigest));
-});
-
-test('materialized Bundle validator matches the canonical package validator', async () => {
-  if (!context) return;
-  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
-  const validator = path.join(auditRoot, 'scripts/validate-eval-run-bundle.mjs');
-  const packageValidator = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/bin.js');
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'bundle-validator-differential-'));
-  const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex');
-  const targetSkillDigest = 'sha256:' + '1'.repeat(64);
-  const evidenceRoot = path.join(temporary, 'evidence');
-  const runRoot = path.join(evidenceRoot, 'case-1', 'current', '1');
-  const baselineRoot = path.join(evidenceRoot, 'case-1', 'baseline', '1');
-  const grading = {
-    grader: { id: 'fixture-grader', version: '1' },
-    result: { score: 1 },
-  };
-  const providerOutput = {
-    schemaVersion: 1,
-    provider: { id: 'fixture-provider', version: '1' },
-    usage: { tokens: 2 },
-    grading,
-    artifacts: [{ path: 'provider.txt', role: 'output' }],
-  };
-  async function pluginValidation(bundlePath) {
-    try {
-      const { stdout } = await execFileAsync(process.execPath, [validator, bundlePath, '--format', 'json'], {
-        cwd: auditRoot,
-        encoding: 'utf8',
-      });
-      return JSON.parse(stdout);
-    } catch (error) {
-      return JSON.parse(error.stdout);
-    }
-  }
-  async function packageValidation(bundlePath) {
-    try {
-      const { stdout } = await execFileAsync(process.execPath, [
-        packageValidator,
-        'bundle',
-        'validate',
-        bundlePath,
-      ], { encoding: 'utf8' });
-      return JSON.parse(stdout);
-    } catch (error) {
-      return JSON.parse(error.stdout);
-    }
-  }
+  const validator = path.join(sourceRoot, 'scripts/validate-json-contract.mjs');
+  const templatePath = path.join(
+    runtimeRoot,
+    'skills/audit-agent-skill-evals/assets/eval-audit-template.json',
+  );
+  const schemaPath = path.resolve(
+    sourceRoot,
+    '../../packages/agent-skill-eval/schemas/eval-audit.schema.json',
+  );
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-audit-v1-contract-'));
   try {
-    await Promise.all([
-      mkdir(runRoot, { recursive: true }),
-      mkdir(baselineRoot, { recursive: true }),
-    ]);
-    const stdout = JSON.stringify(providerOutput);
-    const gradingRaw = JSON.stringify(grading);
-    await writeFile(path.join(runRoot, 'stdout.txt'), stdout);
-    await writeFile(path.join(runRoot, 'stderr.txt'), '');
-    await writeFile(path.join(runRoot, 'provider.txt'), 'provider\n');
-    await writeFile(path.join(runRoot, 'grading.json'), gradingRaw);
-    await writeFile(path.join(baselineRoot, 'stdout.txt'), stdout);
-    await writeFile(path.join(baselineRoot, 'stderr.txt'), '');
-    await writeFile(path.join(baselineRoot, 'provider.txt'), 'provider\n');
-    await writeFile(path.join(baselineRoot, 'grading.json'), gradingRaw);
-    const bundle = {
-      schemaVersion: 4,
-      runner: { id: 'fixture-runner', version: '1' },
-      independentContext: true,
-      provider: { id: 'fixture-provider', version: '1' },
-      providerCapabilitiesDigest: 'sha256:' + '2'.repeat(64),
-      planDigest: 'sha256:' + '3'.repeat(64),
-      targetSkillDigest,
-      caseCorpusDigest: 'sha256:' + '4'.repeat(64),
-      runtimeInputs: [{ id: 'workspace', digest: 'sha256:' + '5'.repeat(64) }],
-      comparisonPlanned: false,
-      evidenceLevel: 'executed',
-      processManagement: { mode: 'managed', descendantCleanupGuaranteed: true },
-      runs: [{
-        caseId: 'case-1',
-        configuration: 'current',
-        comparisonId: null,
-        skillMode: 'with-skill',
-        skillDigest: targetSkillDigest,
-        runIndex: 1,
-        status: 'completed',
-        exitCode: 0,
-        durationMs: 1,
-        stdoutPath: 'case-1/current/1/stdout.txt',
-        stdoutDigest: digest(stdout),
-        stderrPath: 'case-1/current/1/stderr.txt',
-        stderrDigest: digest(''),
-        usage: providerOutput.usage,
-        grading,
-        artifacts: [
-          { role: 'output', path: 'case-1/current/1/provider.txt', digest: digest('provider\n') },
-          { role: 'grading', path: 'case-1/current/1/grading.json', digest: digest(gradingRaw) },
-        ],
-      }],
-      aggregate: {
-        cases: 1,
-        configurations: 1,
-        runs: 1,
-        completed: 1,
-        processFailed: 0,
-        timedOut: 0,
-        comparisons: [],
-      },
-      limitations: [],
-    };
-    for (const [name, mutate] of [
-      ['valid', () => undefined],
-      ['usage', (value) => { value.runs[0].usage.tokens = 9; }],
-      ['grading', (value) => { value.runs[0].grading.result.score = 0; }],
-      ['runtime-input-id', (value) => { value.runtimeInputs.push({ ...value.runtimeInputs[0] }); }],
-      ['comparison', (value) => {
-        value.runs[0].comparisonId = 'pair-1';
-        const baseline = structuredClone(value.runs[0]);
-        baseline.configuration = 'baseline';
-        baseline.skillMode = 'without-skill';
-        baseline.skillDigest = null;
-        baseline.stdoutPath = baseline.stdoutPath.replace('/current/', '/baseline/');
-        baseline.stderrPath = baseline.stderrPath.replace('/current/', '/baseline/');
-        baseline.artifacts = baseline.artifacts.map((artifact) => ({
-          ...artifact,
-          path: artifact.path.replace('/current/', '/baseline/'),
-        }));
-        value.runs.push(baseline);
-        value.comparisonPlanned = true;
-        value.evidenceLevel = 'comparative';
-        value.aggregate.configurations = 2;
-        value.aggregate.runs = 2;
-        value.aggregate.completed = 2;
-        value.aggregate.comparisons = [{
-          comparisonId: 'pair-1',
-          caseId: 'case-1',
-          runIndex: 1,
-          paired: true,
-          comparable: true,
-        }];
-      }],
-    ]) {
-      const value = structuredClone(bundle);
-      mutate(value);
-      const bundlePath = path.join(evidenceRoot, `${name}.json`);
-      await writeFile(bundlePath, JSON.stringify(value));
-      const canonical = await packageValidation(bundlePath);
-      const projected = await pluginValidation(bundlePath);
-      assert.equal(projected.valid, canonical.valid, name);
-      assert.deepEqual(projected.errors, canonical.errors, name);
-      assert.deepEqual(projected.calculated, canonical.calculated, name);
-    }
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
-});
-
-test('audit triage rejects conclusions from an unmet bundle evidence requirement', async () => {
-  if (!context) return;
-  const auditRoot = path.join(runtimeRoot, 'skills/audit-agent-skill-evals');
-  const validator = path.join(auditRoot, 'scripts/validate-eval-audit-result.mjs');
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'audit-evidence-requirement-'));
-  const digest = (value) => 'sha256:' + createHash('sha256').update(value).digest('hex');
-  const targetSkillDigest = 'sha256:' + '1'.repeat(64);
-  const caseCorpusDigest = 'sha256:' + '2'.repeat(64);
-  try {
-    const stdout = JSON.stringify({
-      schemaVersion: 1,
-      provider: { id: 'fixture', version: '1' },
-      usage: null,
-      grading: null,
-      artifacts: [],
-    });
-    await writeFile(path.join(temporary, 'stdout.txt'), stdout);
-    await writeFile(path.join(temporary, 'stderr.txt'), '');
-    const bundle = {
-      schemaVersion: 4,
-      runner: { id: 'fixture', version: '1' },
-      independentContext: true,
-      provider: { id: 'fixture', version: '1' },
-      providerCapabilitiesDigest: 'sha256:' + '4'.repeat(64),
-      planDigest: 'sha256:' + '3'.repeat(64),
-      targetSkillDigest,
-      caseCorpusDigest,
-      runtimeInputs: [],
-      comparisonPlanned: false,
-      evidenceLevel: 'executed',
-      evidenceRequirement: {
-        minimumEvidenceLevel: 'executed',
-        plannedComparisons: 0,
-        comparableComparisons: 0,
-        satisfied: false,
-      },
-      processManagement: {
-        mode: 'observed',
-        descendantCleanupGuaranteed: false,
-        limitation: 'Provider process cleanup could not be verified.',
-      },
-      runs: [{
-        caseId: 'case-1',
-        configuration: 'current',
-        comparisonId: null,
-        skillMode: 'with-skill',
-        skillDigest: targetSkillDigest,
-        runIndex: 1,
-        status: 'error',
-        exitCode: 0,
-        durationMs: 1,
-        stdoutPath: 'stdout.txt',
-        stdoutDigest: digest(stdout),
-        stderrPath: 'stderr.txt',
-        stderrDigest: digest(''),
-        usage: null,
-        grading: null,
-        artifacts: [],
-      }],
-      aggregate: {
-        cases: 1,
-        configurations: 1,
-        runs: 1,
-        completed: 0,
-        processFailed: 1,
-        timedOut: 0,
-        comparisons: [],
-      },
-      limitations: ['Provider process cleanup could not be verified.'],
-    };
-    const bundlePath = path.join(temporary, 'bundle.json');
-    const bundleBytes = JSON.stringify(bundle);
-    await writeFile(bundlePath, bundleBytes);
-    const audit = {
-      schemaVersion: 3,
-      producer: 'audit-agent-skill-evals',
-      independentContext: true,
-      auditId: 'unmet-evidence-fixture',
-      mode: 'result-triage',
-      targetSkillDigest,
-      caseCorpusDigest,
-      runBundleDigest: digest(bundleBytes),
-      validity: 'pass',
-      optimizationPolicy: 'balanced',
-      cases: [{
-        caseId: 'case-1',
-        releaseRelevant: true,
-        admission: 'pass',
-        oracleConfidence: 'high',
-        findings: [],
-      }],
-      blockedCases: [],
-      releaseEligible: true,
-      failureTriage: [{
-        caseId: 'case-1',
-        attribution: 'skill-defect',
-        action: 'candidate-skill-fix',
-        evidence: ['fixture'],
-      }],
-      recommendedAction: 'candidate-skill-fix',
-    };
-    const auditPath = path.join(temporary, 'audit.json');
+    const audit = JSON.parse(await readFile(templatePath, 'utf8'));
+    audit.schemaVersion = 3;
+    audit.runBundleDigest = 'sha256:' + '1'.repeat(64);
+    const auditPath = path.join(temporary, 'legacy-audit.json');
     await writeFile(auditPath, JSON.stringify(audit));
 
     await assert.rejects(
-      execFileAsync(process.execPath, [validator, auditPath, '--run-bundle', bundlePath, '--format', 'json'], {
-        cwd: auditRoot,
+      execFileAsync(process.execPath, [validator, schemaPath, auditPath, '--format', 'json'], {
+        cwd: runtimeRoot,
         encoding: 'utf8',
       }),
       (error) => {
         const errors = JSON.parse(error.stdout).errors;
-        assert.ok(errors.some((entry) => entry.startsWith('releaseEligible=true')));
-        assert.ok(errors.some((entry) => entry.includes('recommendedAction=collect-more-data or runtime-issue')));
-        assert.ok(errors.some((entry) => entry.includes('forbids candidate-skill-fix triage actions')));
+        assert.ok(errors.some((entry) => entry === '$: unknown property schemaVersion'));
+        assert.ok(errors.some((entry) => entry === '$: unknown property runBundleDigest'));
         return true;
       },
     );
@@ -574,17 +281,13 @@ test('reviewer runtime includes full dimensions without release workflow state',
   await assert.rejects(readFile(path.join(reviewRoot, 'source-map.md'), 'utf8'));
 });
 
-test('starter author and Eval contracts remain valid', async () => {
+test('starter author contract remains valid', async () => {
   if (!context) return;
   const validator = path.join(runtimeRoot, 'skills/author-agent-skill/scripts/validate-json-contract.mjs');
   for (const [schema, value] of [
     [
       'skills/author-agent-skill/assets/skill-design-brief.schema.json',
       'skills/author-agent-skill/assets/skill-design-brief.template.json',
-    ],
-    [
-      'skills/audit-agent-skill-evals/assets/eval-audit-result.schema.json',
-      'skills/audit-agent-skill-evals/assets/eval-audit-result-template.json',
     ],
   ]) {
     await execFileAsync(process.execPath, [validator, path.join(runtimeRoot, schema), path.join(runtimeRoot, value)], {
