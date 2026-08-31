@@ -1,10 +1,8 @@
 # AW Catalog Workspace 作者指南
 
-本指南适用于官方和第三方 Catalog Workspace。官方仓库也是普通 Catalog Workspace；它使用相同的公开 Catalog metadata、build、validate、preflight、publisher 和失败恢复合同。当前组合合同是 Plugin Manifest v2、Catalog snapshot schema 5 和 Catalog Sources Config schema 2。
+本指南适用于官方和第三方 Catalog Workspace。当前合同是 Plugin Manifest v2、Catalog snapshot schema 6 和 Catalog Sources Config schema 2。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是机器真值。
 
-当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是 marker、metadata、snapshot、ledger 和 publication 的机器真值。先运行对应命令的 `--help`，不要从本文复制易变字段或实现发布算法。
-
-## Workspace 和 composition
+## Workspace 和聚合验证
 
 ```text
 <workspace>/
@@ -18,20 +16,9 @@
 
 使用 `aw catalog init --workspace-root <workspace>` 创建 Workspace v1。合法 marker 使用 schema 1、`kind: "aw-catalog-workspace"` 和稳定非空 `workspaceIdentity`。已有合法 identity 不因 metadata、插件或版本变化而替换。
 
-`plugins/marketplace-source.json` 保存 owner、interface 和精确 `catalog.version`。版本只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。插件 inventory 来自 canonical `plugins/<name>/.agents-plugin/plugin.json` 集合；同 source runtime dependency 只来自各 manifest `dependencies`。依赖图必须没有缺失节点或环。
+`plugins/marketplace-source.json` 保存 owner、interface 和精确 `catalog.version`。版本只允许稳定 `x.y.z` 或精确 `x.y.z-beta.N`。插件 inventory 来自 canonical `plugins/<name>/.agents-plugin/plugin.json`；同 source dependency 只来自 manifest `dependencies`，且依赖图不能有缺失节点或环。
 
-Catalog Author 拥有 Workspace identity、metadata、inventory、依赖 composition 和 Catalog exact version。任何 Plugin manifest、Skill、extension、config、lifecycle、build script 或 artifact 内容修改都交给 [Plugin Author](plugin-authoring.md)，返回后再运行聚合验证。不要让底层 plugin 反向依赖 Catalog development layer。
-
-## 状态、版本和聚合验证
-
-先用只读 context 接受显式 `--workspace-root`，或让 CLI 从 cwd 向上选择最近的合法 marker。没有祖先 Workspace 时，context 只报告 Git worktree root 或 cwd 作为 `initialization.suggestedRoot`；它不创建文件。静态 status 使用 schema v2，不运行插件代码、不 build，也不创建 `.aw`：
-
-```bash
-aw catalog context --workspace-root "$workspace" --json
-aw catalog status --workspace-root "$workspace" --json
-```
-
-静态 receipt 分开报告 Workspace、metadata/inventory/dependency graph、Git 和 snapshot 的 `absent|current|stale|invalid` 证据。只有显式 `--preflight` 才运行 committed source HEAD 中的 validator/build 和 publication preparation。
+每个 Catalog 命令自行从 `--workspace-root` 或 cwd 向上定位最近的合法 marker。`aw catalog status --workspace-root "$workspace" --json` 是静态命令：它读取 Workspace、metadata、inventory、依赖图、Git 状态和 snapshot evidence，不 build、fetch 或运行插件代码。
 
 Catalog version 只通过公开 mutation 设置：
 
@@ -40,90 +27,81 @@ aw catalog version 0.2.0 --workspace-root "$workspace"
 aw catalog version --bump patch --workspace-root "$workspace"
 ```
 
-单插件 `version` 是 artifact identity；`catalog.version` 是整个 snapshot candidate identity。只提高 Catalog version 不能使同一 plugin version 的不同 production bytes 合法。是否需要 plugin bump 由 workspace policy、现有 ledger 和 plugin status 证据决定。
-
-## 删除一个 canonical Plugin Source
-
-Catalog Author 是删除意图和 Workspace 编排 owner。先确认用户明确给出 `<workspace-root>` 和 `<plugin-name>`，读取当前 inventory、目标 manifest dependency graph 和反向依赖。依据 Workspace 版本策略和已有发布证据，决定删除是否关联 Catalog version；`aw plugin remove` 不会修改 version，策略或授权不足时不要猜测 mutation。
-
-实际删除只交给 `author-aw-plugin`：它通过 runtime compatibility check 后，调用公开的 `aw plugin remove <name> --workspace-root <root> --yes --json`。它不直接删除目录、不使用 `--force`、不修改 Catalog metadata、也不 commit、build 或 publish。成功 receipt 返回后，Catalog Author 必须重新读取 inventory 和依赖图；不再验证已删除对象。对每个剩余 canonical plugin 运行 validate/test，并在需要时运行 build/status；若 inventory 为空，记录 empty inventory，不运行 plugin 命令。然后执行聚合验证。普通删除不创建 tombstone、retirement metadata 或 release ledger。
-
-先逐个完成当前 inventory 中插件的 `aw plugin validate`、`aw plugin test` 和必要的 `aw plugin build/status`，再执行：
+单插件 `version` 是 artifact identity；`catalog.version` 是整个 snapshot identity。先对每个当前 canonical plugin 运行 `aw plugin validate`、`aw plugin test` 和必要的 `aw plugin build/status`，再运行：
 
 ```bash
 aw catalog build --workspace-root "$workspace" --json
 aw catalog validate "$workspace/.aw/catalog" --json
 ```
 
-`aw catalog build` 执行 inventory 中插件的 validator/build code。生成 snapshot、manifest、digest、ledger projection 和 platform marketplace 都不能手改。需要 determinism 证据时，对相同受控 source 输入执行独立 build，并比较 CLI/Core 提供的 digest；文档判断不能替代该证据。删除和日常维护都不会自动 publish；远端 publication 仍只由显式 `publish-aw-catalog` 完成。
+第三方公开 `aw catalog build` 默认只 advisory，不使用 `--strict-requirements`。本仓库官方入口 `pnpm build` 必须使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖 strict 门禁。
 
-## Publication preflight 和授权
+snapshot v6 的 release metadata 只含 `state` 和 `sourceHead`。生成 snapshot、manifest、digest 和 marketplace projection 都不能手改。
 
-远端发布只由用户显式调用 `publish-aw-catalog`。先用 `aw catalog context --json` 检查 CLI 解析的精确目标。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须显式选择。Branch 使用显式参数或固定默认 `catalog`，绝不从当前 Git branch 推断。
+## Plugin 版本规则
 
-先说明 preflight 会从 committed source HEAD 执行所有插件的公开 validator 和 build code，再运行：
+Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publication journal。
+
+- Plugin beta 和 stable 都只使用目标 branch 的上一份 manifest 作为唯一相邻基线。beta 没有上一份 manifest，或 stable base 提高时，使用 `beta.1`。
+- stable base 相同且 `contentDigest` 相同时，复用现有 beta；contentDigest 改变时使用下一个 `beta.N`。
+- stable base 降低时拒绝。
+- Stable 只对上一份 manifest 仍存在的同名 Plugin 检查 version 和 `contentDigest`：contentDigest 改变但 version 没有提高时拒绝；version 降低也拒绝。
+- Plugin 移除后重新加入时，不保留历史。
+
+## 发布计划、授权和恢复
+
+远端发布使用两个公开命令。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须明确选择。Branch 使用显式值或固定默认 `catalog`，不从当前 Git branch 推断。
 
 ```bash
-aw catalog status --workspace-root "$workspace" \
-  --preflight --remote <remote> --branch <branch> --json
-```
+aw catalog publish plan --workspace-root "$workspace" \
+  --remote <remote> --branch <branch> --json
 
-Preflight 从 committed HEAD 的隔离 archive 准备与 publisher 相同的 plan，但不写 attempt、不 push，也不形成持久授权。授权前向用户展示 CLI 返回的最终绝对 Workspace root、Workspace identity、source HEAD、Catalog version、remote name、安全 fetch URL、安全 push URL、branch、parent、tag、snapshot digest、plan ID 和 descriptor digest。只有用户精确授权完整 descriptor digest 后，才能执行：
-
-`aw catalog init` 的默认 owner URL 使用 `example.invalid` 占位。静态 status 仍报告该 metadata；`status --preflight` 和 `publish` 会以 `catalogMetadataIncomplete` 阻止 publication。发布前必须在 `plugins/marketplace-source.json` 设置真实 `owner.url`，然后重新运行 preflight；CLI 不从 remote 推断该 URL。
-
-```bash
-aw catalog publish --workspace-root "$workspace" \
+aw catalog publish apply --workspace-root "$workspace" \
   --remote <remote> --branch <branch> \
-  --expected-descriptor-digest <descriptorDigest> --yes --json
+  --expected-plan-digest <planDigest> --yes --json
 ```
 
-Publisher 在远端写入前重新核验 source、remote、tag 和 plan identity。完成后核对 receipt，并验证 remote branch 和 immutable tag。不要在 Agent 内复制 parent、ledger、digest、tag 或 push 算法。
+plan 从已提交 source HEAD 的隔离 Git repo 验证插件、构建和 snapshot。它返回并要求授权 Workspace identity、source HEAD、remote identity、branch、parent、tag 和 snapshot digest。`apply` 在远端写入前再次核验这些身份。
 
-## Published snapshot 和恢复
+publication journal 是 version-scoped 强恢复和门禁状态，状态为 `prepared`、`uncertain` 或 `published`。隔离 repo 是 pending plan 的可重建暂存 artifact，但同版本恢复依赖它。对于 `prepared` 或 `uncertain`，journal 或 repo 任一缺失或损坏时，停止并提高 Catalog version；不得盲目重建或复用该版本。`published` journal 缺失时，远端 immutable tag 仍占用版本。首次远端写入前保存已验证隔离 repo；成功后删除 repo 并保留 JSON journal。相同 journal plan 和版本可对账或续跑；不同 plan 必须提高 Catalog version。journal 是恢复记录，不是跨系统补偿。
 
-Published snapshot 绑定完整 release ledger、source identity、plugin artifacts、parent 和 immutable tag。具体 schema 由 Core validator 负责；Author 和 Reviewer 只消费公开 JSON 与验证结果。
+publisher 保留 annotated `catalog-v<version>` tag、branch lease、atomic push 和 post-verify。branch 与 tag 都正确时成功；两者都不存在时 atomic push；只有一个缺失时只补该 ref；任一冲突时停止。
 
-第一次远端写入前，CLI 保存版本特定 attempt。发布失败或结果不确定后：
-
-- 不删除、修改或绕过 attempt。
-- 不重试同一 Catalog version。
-- 使用 Catalog Author 设置更高的新 exact version；必要时按 plugin artifact policy 提高已变化插件版本。
-- 对新 identity 重新运行 preflight，并取得新的精确授权。
-
-Catalog 没有同版本 repair。Development snapshot 和 Catalog cache 是可重建弱状态；source marker、metadata 和 source manifests 是强源码。删除弱输出后可重新 build/validate，但这不改变已占用的 publication attempt。
+`owner.url` 的 host 为 `example.invalid` 时，publish plan 和 apply 以 `catalogMetadataIncomplete` 阻断。先修复 `plugins/marketplace-source.json`，再重新生成 plan。
 
 ## Source consumption 和信任
 
-Path source 消费本地 development snapshot；Git source 消费 published snapshot。两者都使用 Catalog schema 5，source config 只使用 schema 2。Transport validation 负责安全消费 snapshot；producer、publication 和发布后核验使用 complete validation。安装先计算所选插件的 dependency closure，对闭包内每个 entry 检查 capability compatibility，再只对该闭包执行完整 plugin validation。当前 Workspace 的日常 development source 使用稳定 marker identity 管理：
+消费端只保存 `catalog-sources.json`、`catalog-state.json` 和内容寻址的 `catalog-store/<logicalIdentity>/<snapshotDigest>/{metadata.json,snapshot/**}`。state 中每个 source 只有 `Active` 和 `lastSync`。普通命令只读 Active store，完全离线；没有 Active 时运行 sync。
+
+```bash
+aw catalog source sync <id> --json
+aw catalog source sync <id> --check --json
+aw catalog source status <id> --json
+```
+
+`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。`catalog source add/update` 只改 source config。Git 回退时改 ref 后再 sync；Path source 损坏时恢复目录后再 sync。
+
+当前 Workspace 的 development source 使用：
 
 ```bash
 aw catalog dev activate --workspace-root "$workspace" --json
 aw catalog dev status --workspace-root "$workspace" --json
 aw catalog dev deactivate --workspace-root "$workspace" --json
-# Workspace 已删除、损坏或 identity 漂移时，按精确 managed source ID 恢复：
-aw catalog dev deactivate --source-id <id> --yes --json
 ```
 
-`activate` 会在 snapshot absent、stale、invalid 或显式要求时 build/complete validate，再原子提交 managed path source 并 refresh。`--primary` 在 add/update/refresh 成功后才提升 source；refresh 失败保留原 primary。config 提交后的 refresh 失败返回 partial receipt，不回滚 source；重跑 refresh 或 activate 可以恢复。activate/deactivate receipt schema 1 的 `state` 为 `completed | partial | failed`：最终目标完成为 completed，已有强或弱 mutation 但目标未完成为 partial，没有目标 mutation 为 failed。Development status schema v2 的 `ok` 只表示诊断可靠完成；`ready` 只在 snapshot current、唯一 managed source、path 匹配、cache current 且 cache digest 匹配 snapshot 时为 `true`。`ok: true, ready: false` 仍以 exit 0 返回，并用 blocking issues 说明未就绪原因。`status` 不 build、不 refresh；`deactivate` 不删除 `.aw/catalog`。
+`activate` build、complete validate、注册 managed Path source 并 sync。`dev status` 只读取 snapshot、source/path 和 Active digest。`deactivate` 不删除 `.aw/catalog`，只安全移除精确的 managed Path source。
 
-普通 deactivate 使用 `--workspace-root`。只有 Workspace/marker 缺失或损坏、identity 已漂移、managed path 不再符合 `.aw/catalog` 形状，或同一 identity 有多个 managed source 时，才使用 `--source-id <id> --yes` 恢复。该模式只接受精确的 Workspace-managed path source；健康且唯一的 owner 会被拒绝。它从 `managedBy` 取得 identity，先删除该 source 的可重建 generation selection，再原子删除 source config；它不删除 snapshot、cache 或 immutable generation。selection 删除失败时 config 保持不变；config 删除失败时可以 refresh 或重跑 deactivate。目标为 primary 时，可用 `--replacement-primary <id>` 明确选择现有的其它 source；未指定时优先真实默认 official，再接受唯一其它 source，否则失败。非 primary 目标不能使用该参数。
+Git source 保持非交互，保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。消费端只清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。
 
-低层 `catalog source add/update` 不能声明 managed ownership。context schema v3 用合法 marker 决定 Workspace identity，并用 `workspace.health` 区分完整内容 healthy/degraded。Workspace 内容、source config 或 managed source 歧义不阻断 generic context；marker 非法仍阻断。`developmentSource.configured` 只检查唯一 owned managed source 及其 path，不替代 readiness。安装测试使用隔离 `AW_HOME`、`AW_CODEX_HOME` 和 `AW_CLAUDE_HOME`：
+Snapshot v6 首次上线使用空的新 branch state，不读取旧 snapshot state。旧 `AW_HOME` 不迁移或自动删除；开发环境使用新的 `AW_HOME`，或手工清理后重新 sync。
 
-```bash
-activation_receipt="$(aw catalog dev activate --workspace-root "$workspace" --json)"
-source_id="$(node -e 'const receipt = JSON.parse(process.argv[1]); process.stdout.write(receipt.source.id)' "$activation_receipt")"
-aw install "$source_id/example-plugin" -p both --json
-```
+## 删除一个 canonical Plugin Source
 
-手工添加任意外部 Path snapshot 时，低层 source add/refresh 会把完整验证后的 snapshot 发布为 immutable local generation，并直接切换 Active；同一 Catalog version 的本地内容可以再次 refresh。Git source 首次 refresh 建立 Active，后续新版本只建立 Candidate；先用 `generation-status` 检查，再显式运行 `aw catalog source activate-candidate <id> --json`。Git 同一 Workspace identity 和 Catalog version 的不同 snapshot digest 会返回 `catalogImmutableVersionViolation`，必须发布更高版本，不能覆盖或绕过。
-
-Catalog 可以包含 executable plugin software。添加 source 或安装前检查 source、transport、插件代码和授权边界。Source config 原子提交，但 refresh 和平台安装允许部分失败；原 Active 在 refresh 或 activation 失败时保留。使用 receipt、source refresh、`reinstall` 或安全 cleanup 恢复。
+Catalog Author 先确认用户明确给出 `<workspace-root>` 和 `<plugin-name>`，读取 inventory、目标 dependency graph 和反向依赖。实际删除使用 `aw plugin remove <name> --workspace-root <root> --yes --json`。它不直接删除目录、不使用 `--force`、不修改 Catalog metadata、不 commit、build 或 publish。成功后重新验证剩余 inventory；空 inventory 不运行 plugin 命令。删除不自动 publish。
 
 ## Related documents
 
 - [Plugin authoring](plugin-authoring.md) defines one Plugin Source and plugin commands.
-- [Architecture](architecture.md) defines product, snapshot, and publisher boundaries.
+- [Architecture](architecture.md) defines product, snapshot, source, and publisher boundaries.
 - [Plugin maintenance](plugin-maintenance.md) defines this monorepo's CLI/Core/npm/Product Release orchestration.
 - [Testing guide](testing.md) defines aggregate build and publication verification.
