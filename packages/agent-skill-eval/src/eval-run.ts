@@ -28,6 +28,7 @@ import {
   type BuiltinEvalProviderDependencies,
   type BuiltinEvalProviderRunInput,
 } from './providers.js'
+import { resolveCodexEvalRuntimeConfig } from './codex-eval-runtime-config.js'
 import { ProviderProcessCleanupError } from './process.js'
 import { computeCanonicalDirectoryDigest, computeSkillDigest } from './runtime-skill.js'
 import {
@@ -451,8 +452,25 @@ export async function runEvalSpec(
   const captured = await inputDigests(calculated)
   assertDigestsMatchSpec(calculated, captured)
   await assertInputsUnchanged(calculated, captured)
-  const sourceEnv = options.sourceEnv ?? process.env
-  const secrets = secretValues(sourceEnv)
+  const sourceEnv = options.sourceEnv
+    ?? options.builtinProviderDependencies?.sourceEnv
+    ?? process.env
+  const runtime = await resolveCodexEvalRuntimeConfig({
+    sourceEnv,
+    inheritUserConfig: true,
+    modelOverride: options.builtinProviderDependencies?.model
+      ?? sourceEnv.AW_SKILL_EVAL_CODEX_MODEL,
+  })
+  const secrets = (): string[] => [
+    ...secretValues(sourceEnv),
+    ...runtime.sensitiveValues,
+  ]
+  const builtinProviderDependencies: BuiltinEvalProviderDependencies = {
+    ...options.builtinProviderDependencies,
+    sourceEnv,
+    model: runtime.model ?? undefined,
+    codexRuntime: runtime,
+  }
   const startedAt = new Date().toISOString()
   const runs: EvalResultRun[] = []
   let stop = false
@@ -510,16 +528,17 @@ export async function runEvalSpec(
             ? await (options.runBuiltinProvider ?? runBuiltinEvalProvider)(
                 calculated.spec.provider,
                 { ...input, evalRoot: prepared.attemptRoot },
-                options.builtinProviderDependencies,
+                builtinProviderDependencies,
               )
             : await (options.executeCustomProvider ?? executeCustomProcessProvider)({
                 command: calculated.spec.provider.command as [string, ...string[]],
                 evalRoot: prepared.attemptRoot,
                 input,
                 sourceEnv,
+                codexRuntime: runtime,
               })
           if (options.signal?.aborted) throw abortError()
-          const sanitized = redactValue(providerResult, secrets)
+          const sanitized = redactValue(providerResult, secrets())
           usage = sanitized.usage === null ? null : { ...sanitized.usage }
           grade = sanitized.grade
           await writeFile(
@@ -532,7 +551,7 @@ export async function runEvalSpec(
           status = isTimeout(caught) ? 'timeout' : 'failed'
           usage = null
           grade = null
-          error = { message: redactText(caught instanceof Error ? caught.message : String(caught), secrets) || 'Provider failed.' }
+          error = { message: redactText(caught instanceof Error ? caught.message : String(caught), secrets()) || 'Provider failed.' }
           if (
             options.signal?.aborted
             || caught instanceof BoundInputChangedError
@@ -547,7 +566,7 @@ export async function runEvalSpec(
           status = 'failed'
           usage = null
           grade = null
-          error = { message: redactText((changed as Error).message, secrets) }
+          error = { message: redactText((changed as Error).message, secrets()) }
           stop = true
         }
         runs.push({
@@ -574,7 +593,7 @@ export async function runEvalSpec(
     last.status = 'failed'
     last.usage = null
     last.grade = null
-    last.error = { message: redactText((changed as Error).message, secrets) }
+    last.error = { message: redactText((changed as Error).message, secrets()) }
   }
   if (options.signal?.aborted && runs.length > 0) {
     const last = runs[runs.length - 1]!

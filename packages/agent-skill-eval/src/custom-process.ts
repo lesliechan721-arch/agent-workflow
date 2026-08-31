@@ -1,6 +1,11 @@
 import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import {
+  applyCodexEvalProviderEnvironment,
+  materializeCodexEvalRuntimeHome,
+  type CodexEvalRuntimeConfig,
+} from './codex-eval-runtime-config.js'
 import { credentialValues, redactSecrets, secretVariants } from './credentials.js'
 import type { ProcessTreeDependencies } from './process-tree.js'
 import { ProviderProcessCleanupError, runProviderProcess } from './process.js'
@@ -315,6 +320,7 @@ export interface CustomProcessExecutorOptions {
   evalRoot: string
   input: EvalProviderRunInput
   sourceEnv?: NodeJS.ProcessEnv
+  codexRuntime?: CodexEvalRuntimeConfig
   maxBufferBytes?: number
   processTree?: ProcessTreeDependencies
 }
@@ -346,9 +352,10 @@ export async function executeCustomProcessProvider(
     outputDir: options.input.outputDir,
   }
   const sourceEnv = options.sourceEnv ?? process.env
-  const secrets = credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
-  const variants = secretVariants(secrets)
+  const runtimeHome = path.join(evalRoot, '.custom-provider-runtime')
   const stdin = JSON.stringify(input)
+  let secrets = credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
+  let variants = secretVariants(secrets)
   if (containsSecret(stdin, variants)) {
     throw new Error('custom process input contains an allowlisted credential value.')
   }
@@ -356,8 +363,33 @@ export async function executeCustomProcessProvider(
   if (cleanupPlatform !== 'darwin' && cleanupPlatform !== 'linux') {
     throw new Error(`custom process cleanup is unsupported on ${cleanupPlatform}.`)
   }
-  const env = cleanEnvironment(sourceEnv, evalRoot)
-  const temporaryRoots: string[] = []
+  if (options.codexRuntime) {
+    try {
+      await materializeCodexEvalRuntimeHome(options.codexRuntime, runtimeHome)
+      secrets = [...secrets, ...options.codexRuntime.sensitiveValues]
+      variants = secretVariants(secrets)
+      if (containsSecret(stdin, variants)) {
+        throw new Error('custom process input contains a runtime credential value.')
+      }
+    } catch (error) {
+      await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+  let env = cleanEnvironment(sourceEnv, evalRoot)
+  if (options.codexRuntime) {
+    env = applyCodexEvalProviderEnvironment({
+      ...env,
+      CODEX_HOME: runtimeHome,
+      AW_SKILL_EVAL_CODEX_MODEL: options.codexRuntime.model ?? undefined,
+      AW_CODEX_EVAL_RUNTIME_HOME: runtimeHome,
+      AW_CODEX_EVAL_MODEL_PROVIDER: options.codexRuntime.modelProvider,
+      AW_CODEX_EVAL_SENSITIVE_ENV_NAMES: JSON.stringify(
+        options.codexRuntime.sensitiveEnvironmentNames,
+      ),
+    }, options.codexRuntime)
+  }
+  const temporaryRoots: string[] = options.codexRuntime ? [runtimeHome] : []
   let processResult: Awaited<ReturnType<typeof runProviderProcess>> | undefined
   let processCleanupError: unknown
   let providerResult: EvalProviderRunResult | undefined

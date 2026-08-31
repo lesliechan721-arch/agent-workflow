@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   computeEvalFileDigest,
   computeSkillDigest,
@@ -165,8 +165,15 @@ async function fixture(options: {
   return { root, specPath, auditPath, spec, audit, target }
 }
 
+beforeEach(async () => {
+  const codexHome = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-test-codex-'))
+  roots.push(codexHome)
+  vi.stubEnv('CODEX_HOME', codexHome)
+})
+
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
@@ -456,8 +463,119 @@ describe('EvalSpec v1 execution', () => {
         },
         suite: expect.objectContaining({ fixtureModule: 'fixtures/setup.mjs' }),
       }),
-    }), undefined)
+    }), expect.objectContaining({
+      model: 'gpt-5.6-luna',
+      codexRuntime: expect.objectContaining({ inherited: false, modelProvider: 'openai' }),
+    }))
   })
+
+  it('resolves one inherited runtime for the built-in provider before output creation', async () => {
+    const data = await fixture()
+    const sourceCodexHome = path.join(data.root, 'source-codex-home')
+    const ignoredCodexHome = path.join(data.root, 'ignored-codex-home')
+    await Promise.all([mkdir(sourceCodexHome), mkdir(ignoredCodexHome)])
+    await writeFile(path.join(sourceCodexHome, 'config.toml'), [
+      'model = "user-model"',
+      'model_provider = "custom"',
+      '',
+      '[model_providers.custom]',
+      'name = "Custom"',
+      'base_url = "https://provider.example.invalid/v1"',
+      'wire_api = "responses"',
+      'env_key = "CUSTOM_TOKEN"',
+      '',
+    ].join('\n'))
+    data.spec.provider = 'codex-trigger'
+    await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+    const runBuiltinProvider = vi.fn(async (_id, _input, dependencies) => {
+      expect(dependencies).toMatchObject({
+        codexBin: '/injected/codex',
+        model: 'dependency-model',
+        sourceEnv: expect.objectContaining({ CODEX_HOME: sourceCodexHome }),
+        codexRuntime: expect.objectContaining({
+          inherited: true,
+          model: 'dependency-model',
+          modelProvider: 'custom',
+          sourceCodexHome,
+          providerEnvironment: { CUSTOM_TOKEN: 'runtime-token' },
+        }),
+      })
+      return { usage: null, grade: { passed: true, score: 1 } }
+    })
+
+    const result = await runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      sourceEnv: {
+        PATH: process.env.PATH,
+        CODEX_HOME: sourceCodexHome,
+        CUSTOM_TOKEN: 'runtime-token',
+        AW_SKILL_EVAL_CODEX_MODEL: 'environment-model',
+      },
+      builtinProviderDependencies: {
+        codexBin: '/injected/codex',
+        model: 'dependency-model',
+        sourceEnv: { CODEX_HOME: ignoredCodexHome },
+      },
+      runBuiltinProvider: runBuiltinProvider as never,
+    })
+
+    expect(runBuiltinProvider).toHaveBeenCalledOnce()
+    expect(JSON.stringify(result.result)).not.toContain(sourceCodexHome)
+    expect(JSON.stringify(result.result)).not.toContain('provider.example.invalid')
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'stages auth and runtime variables for a custom provider, then removes runtime homes',
+    async () => {
+      const data = await fixture()
+      const sourceCodexHome = path.join(data.root, 'auth-only-codex-home')
+      const providerPath = path.join(data.root, 'runtime-provider.mjs')
+      await mkdir(sourceCodexHome)
+      await writeFile(path.join(sourceCodexHome, 'auth.json'), JSON.stringify({
+        tokens: { access_token: 'fake-auth-token' },
+      }))
+      await writeFile(providerPath, [
+        "import fs from 'node:fs'",
+        "import path from 'node:path'",
+        `const sourceCodexHome = ${JSON.stringify(sourceCodexHome)}`,
+        'const runtimeHome = process.env.AW_CODEX_EVAL_RUNTIME_HOME',
+        "if (!runtimeHome || runtimeHome !== process.env.CODEX_HOME) throw new Error('runtime home mismatch')",
+        "if (runtimeHome === sourceCodexHome) throw new Error('runtime was not staged')",
+        "if (process.env.HOME === runtimeHome) throw new Error('HOME was not isolated separately')",
+        "if (process.env.AW_CODEX_EVAL_MODEL_PROVIDER !== 'openai') throw new Error('provider mismatch')",
+        "if (process.env.AW_CODEX_EVAL_SENSITIVE_ENV_NAMES === undefined) throw new Error('sensitive names missing')",
+        "const auth = JSON.parse(fs.readFileSync(path.join(runtimeHome, 'auth.json'), 'utf8'))",
+        "if (auth.tokens.access_token !== 'fake-auth-token') throw new Error('staged auth mismatch')",
+        "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
+        '',
+      ].join('\n'))
+      data.spec.provider = { type: 'custom-process', command: [process.execPath, providerPath] }
+      await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+
+      const result = await runEvalSpec(data.specPath, {
+        auditPath: data.auditPath,
+        sourceEnv: { PATH: process.env.PATH, CODEX_HOME: sourceCodexHome },
+      })
+
+      expect(result.result.runs[0]).toMatchObject({ status: 'completed' })
+      const attemptRoot = path.join(
+        data.root,
+        'output',
+        'runs',
+        'case-1',
+        'current',
+        'attempt-1',
+      )
+      await expect(readFile(path.join(attemptRoot, '.custom-provider-runtime', 'auth.json')))
+        .rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readFile(path.join(attemptRoot, '.custom-provider-home', 'auth.json')))
+        .rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readFile(path.join(attemptRoot, '.custom-provider-tmp', 'auth.json')))
+        .rejects.toMatchObject({ code: 'ENOENT' })
+      expect(JSON.stringify(result.result)).not.toContain(sourceCodexHome)
+      expect(JSON.stringify(result.result)).not.toContain('fake-auth-token')
+    },
+  )
 
   it('maps conversation input, expected values, PATH fixtures, and artifacts to the provider', async () => {
     const data = await fixture()

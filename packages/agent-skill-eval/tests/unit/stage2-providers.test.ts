@@ -13,6 +13,7 @@ import {
   executeCustomProcessProvider,
   getBuiltinEvalProvider,
   parseConversationGraderOutput,
+  resolveCodexEvalRuntimeConfig,
   runBuiltinEvalProvider,
   type AppServerRunEvidence,
   type CodexEvalTransport,
@@ -631,6 +632,60 @@ describe('built-in Eval provider registry', () => {
 })
 
 describe('custom process provider', () => {
+  it('stages auth and Codex runtime variables outside the isolated HOME', async () => {
+    const paths = await runRoot()
+    const sourceCodexHome = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-auth-only-'))
+    roots.push(sourceCodexHome)
+    await writeFile(path.join(sourceCodexHome, 'auth.json'), JSON.stringify({
+      tokens: { access_token: 'fake-auth-token' },
+    }))
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: {
+        CODEX_HOME: sourceCodexHome,
+        AW_SKILL_EVAL_CODEX_MODEL: 'environment-model',
+      },
+      inheritUserConfig: true,
+      modelOverride: 'dependency-model',
+    })
+    const script = [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      `const sourceCodexHome = ${JSON.stringify(sourceCodexHome)}`,
+      'const runtimeHome = process.env.AW_CODEX_EVAL_RUNTIME_HOME',
+      "if (!runtimeHome || runtimeHome !== process.env.CODEX_HOME) throw new Error('runtime home mismatch')",
+      "if (runtimeHome === sourceCodexHome) throw new Error('runtime was not staged')",
+      "if (process.env.HOME === runtimeHome) throw new Error('HOME was not isolated separately')",
+      "if (process.env.AW_CODEX_EVAL_MODEL_PROVIDER !== 'openai') throw new Error('provider mismatch')",
+      "if (process.env.AW_SKILL_EVAL_CODEX_MODEL !== 'dependency-model') throw new Error('model precedence mismatch')",
+      "if (process.env.AW_CODEX_EVAL_SENSITIVE_ENV_NAMES === undefined) throw new Error('sensitive names missing')",
+      "const auth = JSON.parse(fs.readFileSync(path.join(runtimeHome, 'auth.json'), 'utf8'))",
+      "if (auth.tokens.access_token !== 'fake-auth-token') throw new Error('staged auth mismatch')",
+      "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
+    ].join(';')
+
+    await expect(executeCustomProcessProvider({
+      command: [process.execPath, '-e', script],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: {
+        PATH: process.env.PATH,
+        CODEX_HOME: sourceCodexHome,
+        AW_SKILL_EVAL_CODEX_MODEL: 'environment-model',
+      },
+      codexRuntime: runtime,
+      processTree: availableProcessTree,
+    })).resolves.toEqual({
+      usage: null,
+      grade: { passed: true, score: 1 },
+    })
+    await expect(access(path.join(paths.root, '.custom-provider-runtime')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(path.join(paths.root, '.custom-provider-home')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(path.join(paths.root, '.custom-provider-tmp')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('accepts default environment paths when evalRoot is inside HOME', async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-home-'))
     roots.push(home)
