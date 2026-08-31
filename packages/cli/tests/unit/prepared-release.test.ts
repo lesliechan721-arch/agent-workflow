@@ -16,7 +16,11 @@ import {
 import { captureCommand } from '../../../../scripts/release/common.mjs';
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
 import { updateReleaseTargets } from '../../../../scripts/release/release-target.mjs';
-import { readCatalogAttemptVersions } from '../../../../scripts/release/catalog-publication.mjs';
+import {
+  prepareCatalogRelease,
+  readCatalogAttemptVersions,
+  readReusableCatalogAttempt,
+} from '../../../../scripts/release/catalog-publication.mjs';
 
 const roots: string[] = [];
 const head = 'a'.repeat(40);
@@ -42,21 +46,11 @@ function sha256(value: string | Buffer) {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
 
-function catalogPublicationDescriptor(overrides: Record<string, unknown> = {}) {
+function catalogPublicationPlan(overrides: Record<string, unknown> = {}) {
   return {
-    schemaVersion: 1,
-    workspaceIdentity: 'workspace:test',
     catalogVersion: '2.3.0',
     channel: 'latest',
-    sourceHead: head,
-    remote: { name: null, identityDigest: sha256('remote') },
-    branch: 'catalog/latest',
-    parent: null,
-    tag: 'catalog-v2.3.0',
-    snapshotDigest: 'catalog-digest',
-    contentDigest: sha256('catalog-content'),
-    planId: sha256('catalog-plan'),
-    pluginNames: [],
+    planDigest: sha256('catalog-plan'),
     ...overrides,
   };
 }
@@ -64,15 +58,14 @@ function catalogPublicationDescriptor(overrides: Record<string, unknown> = {}) {
 async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
   const root = await temporaryRoot();
   const artifacts = path.join(root, 'artifacts');
-  await fs.mkdir(path.join(artifacts, 'catalog'), { recursive: true });
+  await fs.mkdir(artifacts, { recursive: true });
   const evalBytes = Buffer.from('eval-tarball');
   const coreBytes = Buffer.from('core-tarball');
   const cliBytes = Buffer.from('cli-tarball');
   await fs.writeFile(path.join(artifacts, 'eval.tgz'), evalBytes);
   await fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes);
   await fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes);
-  await fs.writeFile(path.join(artifacts, 'catalog', 'catalog-manifest.json'), '{}');
-  const catalogPublication = catalogPublicationDescriptor();
+  const catalogPublication = catalogPublicationPlan();
   return {
     root,
     descriptor: {
@@ -99,8 +92,7 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
         },
       } : null,
       catalog: axes.catalog ? {
-        version: '2.3.0', path: 'artifacts/catalog', snapshotDigest: 'catalog-digest',
-        publication: catalogPublication,
+        version: '2.3.0', publication: { planDigest: catalogPublication.planDigest },
       } : null,
     },
   };
@@ -116,17 +108,11 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
     withSnapshot: async (callback: (snapshot: typeof build) => unknown) => callback(build),
     readPackageVersions: async () => [],
     resolveCandidates: async () => fixture.descriptor.candidates,
-    assertCatalogTagAvailable: async () => undefined,
     assertCliTagAvailable: async () => undefined,
     publishCliTag: async () => undefined,
     computeTarballTreeDigest: async (file: string) => file.endsWith('eval.tgz')
       ? 'eval-tree'
       : file.endsWith('core.tgz') ? 'core-tree' : 'cli-tree',
-    catalogModules: {
-      catalogSnapshot: {
-        validateCatalogSnapshotComplete: async () => ({ snapshotDigest: 'catalog-digest', manifest: {} }),
-      },
-    },
     attemptPath: path.join(fixture.root, 'attempted.json'),
   };
 }
@@ -244,24 +230,18 @@ describe('local prepared release', () => {
       withSnapshot: async (callback: (snapshot: typeof build) => unknown) => callback(build),
       prepareCatalog: async (mode: string) => {
         expect(mode).toBe('beta');
-        const outputRoot = path.join(root, 'common-catalog-preparation');
-        await fs.mkdir(outputRoot, { recursive: true });
-        await fs.writeFile(path.join(outputRoot, 'catalog-manifest.json'), '{}');
         return {
-          prepared: { outputRoot },
-          descriptor: {
-            ...catalogPublicationDescriptor(),
-            catalogVersion: candidate,
-            channel: 'beta',
-            tag: `catalog-v${candidate}`,
-          },
+          ...catalogPublicationPlan(),
+          catalogVersion: candidate,
+          channel: 'beta',
         };
       },
-      disposeCatalog: async () => undefined,
     });
     expect(descriptor.source.targetsDigest).toBeNull();
-    expect(descriptor.catalog).not.toHaveProperty('ledgerDigest');
-    expect(descriptor.catalog.publication).not.toHaveProperty('ledgerDigest');
+    expect(descriptor.catalog).toEqual({
+      version: candidate,
+      publication: { planDigest: sha256('catalog-plan') },
+    });
     expect(forbiddenCliRead).not.toHaveBeenCalled();
 
     const prepared = { root: path.join(releaseRoot, 'prepared'), descriptor };
@@ -281,7 +261,7 @@ describe('local prepared release', () => {
     expect(publishCatalog).toHaveBeenCalledOnce();
   });
 
-  it('selects Catalog candidates from exact metadata, published tags, and every attempt', () => {
+  it('selects Catalog candidates from exact metadata, published tags, and every journal', () => {
     expect(selectCatalogReleaseCandidate('stable', '2.3.0', [])).toBe('2.3.0');
     expect(selectCatalogReleaseCandidate('stable', '2.3.0', ['2.3.0'])).toBeNull();
     expect(selectCatalogReleaseCandidate('stable', '2.3.0-beta.4', [
@@ -301,15 +281,111 @@ describe('local prepared release', () => {
     ])).toBe('2.3.0-beta.2');
   });
 
-  it('treats a corrupt Workspace attempt file as an occupied exact Catalog version', async () => {
+  it('treats a corrupt Workspace journal as an occupied exact Catalog version', async () => {
     const root = await temporaryRoot();
-    const attemptsRoot = path.join(root, '.aw', 'publish', 'attempts');
-    await fs.mkdir(attemptsRoot, { recursive: true });
-    await fs.writeFile(path.join(attemptsRoot, '2.3.0-beta.2.json'), '{ corrupt attempt');
+    const journalsRoot = path.join(root, '.aw', 'publish');
+    await fs.mkdir(journalsRoot, { recursive: true });
+    await fs.writeFile(path.join(journalsRoot, '2.3.0-beta.2.json'), '{ corrupt journal');
     const attempted = await readCatalogAttemptVersions({ repoRoot: root });
     expect(attempted).toEqual(['2.3.0-beta.2']);
     expect(selectCatalogReleaseCandidate('beta', '2.3.0-beta.2', attempted))
       .toBe('2.3.0-beta.3');
+  });
+
+  it.each(['prepared', 'uncertain'] as const)(
+    'reuses a strictly validated %s journal for the current exact Catalog version',
+    async (state) => {
+      const root = await temporaryRoot();
+      await fs.mkdir(path.join(root, 'plugins'), { recursive: true });
+      await fs.mkdir(path.join(root, '.aw', 'publish'), { recursive: true });
+      await fs.writeFile(path.join(root, 'plugins', 'marketplace-source.json'), JSON.stringify({
+        catalog: { version: '2.3.0-beta.2' },
+      }));
+      await fs.writeFile(path.join(root, '.aw', 'publish', '2.3.0-beta.2.json'), '{}');
+      const prepareCatalogPublicationPlan = vi.fn(async () => ({
+        state,
+        catalogVersion: '2.3.0-beta.2',
+        channel: 'beta',
+      }));
+
+      await expect(readReusableCatalogAttempt('beta', '2.3.0-beta.2', {
+        repoRoot: root,
+        catalogPublicationService: { prepareCatalogPublicationPlan },
+      })).resolves.toBe('2.3.0-beta.2');
+      expect(prepareCatalogPublicationPlan).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceRoot: root,
+        branch: 'catalog/beta',
+      }));
+    },
+  );
+
+  it('keeps published and non-matching Catalog attempts occupied', async () => {
+    const root = await temporaryRoot();
+    await fs.mkdir(path.join(root, 'plugins'), { recursive: true });
+    await fs.mkdir(path.join(root, '.aw', 'publish'), { recursive: true });
+    await fs.writeFile(path.join(root, 'plugins', 'marketplace-source.json'), JSON.stringify({
+      catalog: { version: '2.3.0' },
+    }));
+    await fs.writeFile(path.join(root, '.aw', 'publish', '2.3.0.json'), '{}');
+    await expect(readReusableCatalogAttempt('stable', '2.3.0', {
+      repoRoot: root,
+      catalogPublicationService: {
+        prepareCatalogPublicationPlan: async () => ({
+          state: 'published', catalogVersion: '2.3.0', channel: 'latest',
+        }),
+      },
+    })).resolves.toBeNull();
+    await expect(readReusableCatalogAttempt('stable', '2.3.0', {
+      repoRoot: root,
+      catalogPublicationService: {
+        prepareCatalogPublicationPlan: async () => {
+          throw new Error('Catalog publication identity changed. Increase the Catalog version.');
+        },
+      },
+    })).rejects.toThrow('Increase the Catalog version');
+
+    await expect(resolvePreparedCandidates('stable', targets, {
+      axes: { cli: false, catalog: true },
+      readCatalogVersion: async () => '2.3.0',
+      readCatalogVersions: async () => [],
+      readCatalogAttemptVersions: async () => ['2.3.0'],
+      readReusableCatalogAttempt: async () => null,
+    })).resolves.toEqual({ cli: null, catalog: null });
+
+    await expect(resolvePreparedCandidates('beta', targets, {
+      axes: { cli: false, catalog: true },
+      readCatalogVersion: async () => '2.3.0-beta.2',
+      readCatalogVersions: async () => [],
+      readCatalogAttemptVersions: async () => ['2.3.0-beta.2'],
+      readReusableCatalogAttempt: async () => null,
+    })).resolves.toEqual({ cli: null, catalog: '2.3.0-beta.3' });
+  });
+
+  it.each([
+    ['stable', '2.3.0'],
+    ['beta', '2.3.0-beta.2'],
+  ] as const)('does not skip the current %s Catalog version for a reusable plan', async (channel, version) => {
+    await expect(resolvePreparedCandidates(channel, targets, {
+      axes: { cli: false, catalog: true },
+      readCatalogVersion: async () => version,
+      readCatalogVersions: async () => [],
+      readCatalogAttemptVersions: async () => [version],
+      readReusableCatalogAttempt: async () => version,
+    })).resolves.toEqual({ cli: null, catalog: version });
+  });
+
+  it('rejects an official channel mismatch before creating a publication plan', async () => {
+    const root = await temporaryRoot();
+    await fs.mkdir(path.join(root, 'plugins'), { recursive: true });
+    await fs.writeFile(path.join(root, 'plugins', 'marketplace-source.json'), JSON.stringify({
+      catalog: { version: '2.3.0-beta.1' },
+    }));
+    const prepareCatalogPublicationPlan = vi.fn();
+    await expect(prepareCatalogRelease('latest', {
+      repoRoot: root,
+      catalogPublicationService: { prepareCatalogPublicationPlan },
+    })).rejects.toThrow('does not match the latest release channel');
+    expect(prepareCatalogPublicationPlan).not.toHaveBeenCalled();
   });
 
   it('selects independent CLI and exact Catalog candidates without cross-axis closure', async () => {
@@ -472,15 +548,8 @@ describe('local prepared release', () => {
       computeTarballTreeDigest: async (file: string) => sha256(await fs.readFile(file)),
       prepareCatalog: async (mode: string) => {
         expect(mode).toBe('latest');
-        const outputRoot = path.join(root, 'common-catalog-preparation');
-        await fs.mkdir(outputRoot, { recursive: true });
-        await fs.writeFile(path.join(outputRoot, 'catalog-manifest.json'), '{}');
-        return {
-          prepared: { outputRoot },
-          descriptor: catalogPublicationDescriptor(),
-        };
+        return catalogPublicationPlan();
       },
-      disposeCatalog: async () => undefined,
     };
     const descriptor = await prepareLocalRelease('stable', prepareOptions);
     expect(descriptor.axes).toEqual({ cli: true, catalog: true });
@@ -702,7 +771,7 @@ describe('local prepared release', () => {
       .toMatchObject({ candidates: { cli: '1.2.1' } });
   });
 
-  it('keeps Catalog attempts out of .release/attempted.json when Catalog publication is uncertain', async () => {
+  it('keeps Catalog journal state out of .release/attempted.json when publication is uncertain', async () => {
     const fixture = await publicationFixture({ cli: true, catalog: true });
     await expect(publishPreparedRelease({
       ...publishOptions(fixture),
@@ -757,13 +826,13 @@ describe('local prepared release', () => {
     expect(publishCatalog).toHaveBeenCalledOnce();
   });
 
-  it('rejects Catalog snapshot drift', async () => {
-    const drift = await publicationFixture({ cli: false, catalog: true });
-    const options = publishOptions(drift);
-    options.catalogModules.catalogSnapshot.validateCatalogSnapshotComplete = async () => ({
-      snapshotDigest: 'changed', manifest: {},
-    });
-    await expect(publishPreparedRelease({ ...options, publishCatalog: vi.fn() }))
-      .rejects.toThrow('snapshot digest changed');
+  it('applies the exact Catalog plan authorized by the prepared release', async () => {
+    const fixture = await publicationFixture({ cli: false, catalog: true });
+    const publishCatalog = vi.fn();
+    await publishPreparedRelease({ ...publishOptions(fixture), publishCatalog });
+    expect(publishCatalog).toHaveBeenCalledWith({
+      channel: 'stable',
+      expectedPlanDigest: fixture.descriptor.catalog!.publication.planDigest,
+    }, expect.any(Object));
   });
 });

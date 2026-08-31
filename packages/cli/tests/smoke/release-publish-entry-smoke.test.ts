@@ -9,10 +9,7 @@ import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
 
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
-import {
-  disposeCatalogPublicationInspection,
-  prepareCatalogPublicationInspection,
-} from '../../src/commands/catalog-publication-inspection.js';
+import { prepareCatalogPublicationPlan } from '../../src/commands/catalog-publish.js';
 import { runCli } from '../../src/index.js';
 
 const execFileAsync = promisify(execFile);
@@ -30,16 +27,18 @@ function quietIo() {
   return { stdout: () => undefined, stderr: () => undefined };
 }
 
-async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' | 'catalog') {
+async function runCase(
+  axes: { cli: boolean; catalog: boolean },
+  fail?: 'eval' | 'catalog' | 'catalog-retry',
+) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-entry-smoke-'));
   roots.push(root);
   const workspaceRoot = path.join(root, 'workspace');
   const preparedRoot = path.join(root, 'prepared');
   const artifacts = path.join(preparedRoot, 'artifacts');
-  const catalogRoot = path.join(artifacts, 'catalog');
   const remoteUrl = path.join(root, 'catalog.git');
   await Promise.all([
-    fs.mkdir(catalogRoot, { recursive: true }),
+    fs.mkdir(artifacts, { recursive: true }),
     fs.mkdir(workspaceRoot, { recursive: true }),
     execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]),
   ]);
@@ -60,30 +59,22 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
   const sourceHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], {
     cwd: workspaceRoot,
   })).stdout.trim();
-  if (fail === 'catalog') {
+  if (fail === 'catalog' || fail === 'catalog-retry') {
     await fs.writeFile(path.join(remoteUrl, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
   }
 
   let catalog = null;
   if (axes.catalog) {
-    const preparation = await prepareCatalogPublicationInspection({
+    const plan = await prepareCatalogPublicationPlan({
       workspaceRoot,
       remoteUrl,
       branch: 'catalog/latest',
       env: process.env,
-      failOnUnavailable: true,
     });
-    try {
-      await fs.cp(preparation.prepared.outputRoot, catalogRoot, { recursive: true });
-      catalog = {
-        version: '2.0.0',
-        path: 'artifacts/catalog',
-        snapshotDigest: preparation.descriptor.snapshotDigest,
-        publication: preparation.descriptor,
-      };
-    } finally {
-      await disposeCatalogPublicationInspection(preparation);
-    }
+    catalog = {
+      version: '2.0.0',
+      publication: { planDigest: plan.planDigest },
+    };
   }
 
   const evalBytes = Buffer.from('eval');
@@ -134,38 +125,57 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
     path.dirname(fileURLToPath(import.meta.url)),
     '../support/release-publish-smoke-child.mjs',
   );
-  try {
-    const { stdout } = await execFileAsync(process.execPath, [child, configPath]);
-    return JSON.parse(stdout);
-  } catch (error) {
-    const stdout = (error as { stdout?: string }).stdout;
-    if (stdout) return JSON.parse(stdout);
-    throw error;
-  }
+  const invoke = async () => {
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [child, configPath]);
+      return JSON.parse(stdout);
+    } catch (error) {
+      const stdout = (error as { stdout?: string }).stdout;
+      if (stdout) return JSON.parse(stdout);
+      throw error;
+    }
+  };
+  const first = await invoke();
+  if (fail !== 'catalog-retry') return first;
+  await fs.rm(path.join(remoteUrl, 'hooks', 'pre-receive'));
+  await fs.writeFile(configPath, JSON.stringify({
+    workspaceRoot,
+    preparedRoot,
+    attemptPath: path.join(root, 'attempted.json'),
+    remoteUrl,
+    targets,
+    fail,
+    entry: 'release',
+  }));
+  return { first, retry: await invoke() };
 }
 
-it('runs official release order through the common Catalog publisher and unified attempt', async () => {
+it('runs official release order and resumes an uncertain Catalog plan through runRelease', async () => {
   await expect(runCase({ cli: true, catalog: true })).resolves.toMatchObject({
     ok: true,
     events: ['eval', 'core', 'cli', 'tag', 'catalog'],
-    catalogAttempt: 'published',
+    catalogJournal: 'published',
     releaseAttempt: { cli: '1.0.0' },
   });
   await expect(runCase({ cli: true, catalog: false })).resolves.toMatchObject({
     ok: true, events: ['eval', 'core', 'cli', 'tag'],
   });
   await expect(runCase({ cli: false, catalog: true })).resolves.toMatchObject({
-    ok: true, events: ['catalog'], catalogAttempt: 'published', releaseAttempt: null,
+    ok: true, events: ['catalog'], catalogJournal: 'published', releaseAttempt: null,
   });
   await expect(runCase({ cli: true, catalog: true }, 'eval')).resolves.toMatchObject({
     ok: false,
     events: ['eval'],
     error: expect.stringContaining('--cli-bump'),
-    catalogAttempt: null,
+    catalogJournal: 'prepared',
     releaseAttempt: { cli: '1.0.0' },
   });
   await expect(runCase({ cli: false, catalog: true }, 'catalog')).resolves.toMatchObject({
-    ok: false, events: ['catalog'], error: expect.stringContaining('version <higher>'),
-    catalogAttempt: 'attempted',
+    ok: false, events: ['catalog'], error: expect.any(String),
+    catalogJournal: 'uncertain',
+  });
+  await expect(runCase({ cli: false, catalog: true }, 'catalog-retry')).resolves.toMatchObject({
+    first: { ok: false, events: ['catalog'], catalogJournal: 'uncertain' },
+    retry: { ok: true, events: ['catalog'], catalogJournal: 'published' },
   });
 });

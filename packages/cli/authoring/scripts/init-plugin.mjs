@@ -580,7 +580,7 @@ function main() {
   console.log(`[NEXT] aw plugin test ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
   console.log(`[NEXT] aw plugin build ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
   console.log(`[NEXT] aw catalog build --workspace-root ${printableRepoRoot}`);
-  console.log(`[LATER] Publish only when explicitly requested: aw catalog publish --workspace-root ${printableRepoRoot}`);
+  console.log(`[LATER] Publish only when explicitly requested: aw catalog publish plan --workspace-root ${printableRepoRoot}`);
 }
 
 main();

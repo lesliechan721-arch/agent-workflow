@@ -154,7 +154,10 @@ import {
   runPluginBuildCommand,
   runPluginTestCommand,
 } from './authoring/workspace-commands.js';
-import { runCatalogPublishCommand } from './commands/catalog-publish.js';
+import {
+  runCatalogPublishApplyCommand,
+  runCatalogPublishPlanCommand,
+} from './commands/catalog-publish.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
 import { getCatalogContext } from './commands/catalog-context.js';
 import {
@@ -1776,7 +1779,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       '',
       'During development, keep the current stable target when production content changes.',
       'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
-      'Publish only as an explicit later step; inspect `aw catalog publish --help` first.',
+      'Publish only as an explicit later step; inspect `aw catalog publish plan --help` first.',
       '',
     ].join('\n'))
     .argument('<plugin-name>', 'lowercase hyphen-case plugin name')
@@ -1802,7 +1805,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       '',
       'During development, keep the current stable target when production content changes.',
       'Next, run `aw plugin validate`, `aw plugin test`, `aw plugin build`, and `aw catalog build`.',
-      'Publish only as an explicit later step; inspect `aw catalog publish --help` first.',
+      'Publish only as an explicit later step; inspect `aw catalog publish plan --help` first.',
       '',
     ].join('\n'))
     .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
@@ -2064,25 +2067,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   catalog
     .command('status')
-    .description('Inspect a Catalog Workspace; --preflight executes plugin validation and build code')
+    .description('Inspect static Catalog Workspace, snapshot, and Git facts')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
-    .option('--remote <name>', 'Git remote for preflight (default: origin, otherwise sole remote; explicit if ambiguous)')
-    .option('--branch <name>', 'dedicated Catalog branch for preflight (default: catalog)')
-    .option('--preflight', 'run publication validation and temporary plugin builds (executes plugin code)', false)
     .option('--json', 'emit one machine-readable JSON status object', false)
     .action(async (rawOptions: {
       workspaceRoot?: string;
-      remote?: string;
-      branch?: string;
-      preflight?: boolean;
       json?: boolean;
     }) => {
       const receipt = await getCatalogStatus({
         cwd,
         workspaceRoot: rawOptions.workspaceRoot,
-        remote: rawOptions.remote,
-        branch: rawOptions.branch,
-        preflight: rawOptions.preflight,
         env,
       });
       if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
@@ -2090,31 +2084,81 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = receipt.ok ? 0 : 1;
     });
 
-  catalog
+  const catalogPublish = catalog
     .command('publish')
-    .description('Publish a versioned Catalog snapshot to a configured Git remote')
+    .description('Plan or apply a versioned Catalog publication');
+
+  catalogPublish
+    .command('plan')
+    .description('Prepare and inspect the exact Catalog publication plan')
     .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
     .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
     .option('--branch <name>', 'dedicated Catalog branch (default: catalog)')
-    .option('--expected-descriptor-digest <digest>', 'required exact descriptor returned by publication preflight')
+    .option('--json', 'emit one machine-readable JSON result', false)
+    .action(async (rawOptions: {
+      workspaceRoot?: string;
+      remote?: string;
+      branch?: string;
+      json?: boolean;
+    }) => {
+      try {
+        const result = await runCatalogPublishPlanCommand({
+          cwd,
+          workspaceRoot: rawOptions.workspaceRoot,
+          remote: rawOptions.remote,
+          branch: rawOptions.branch,
+          env,
+          io,
+        });
+        if (rawOptions.json) writeJsonReceipt(io.stdout, result);
+        else {
+          writeLine(io.stdout, `Workspace identity: ${result.workspaceIdentity}`);
+          writeLine(io.stdout, `Source HEAD: ${result.sourceHead}`);
+          writeLine(io.stdout, `Remote identity: ${result.descriptor.remote.identityDigest}`);
+          writeLine(io.stdout, `Remote: ${result.remote} (${result.remoteUrl})`);
+          writeLine(io.stdout, `Branch: refs/heads/${result.branch}`);
+          writeLine(io.stdout, `Parent: ${result.parent ?? '<root>'}`);
+          writeLine(io.stdout, `Tag: refs/tags/${result.tag}`);
+          writeLine(io.stdout, `Snapshot digest: ${result.snapshotDigest}`);
+          writeLine(io.stdout, `Plan digest: ${result.planDigest}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, {
+          command: 'catalog:publish:plan',
+          ok: false,
+          errors: [{ message }],
+        });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalogPublish
+    .command('apply')
+    .description('Apply an authorized Catalog publication plan')
+    .option('--workspace-root <path>', 'Catalog Workspace root (default: nearest ancestor from current directory)')
+    .option('--remote <name>', 'Git remote (default: origin, otherwise sole remote; explicit if ambiguous)')
+    .option('--branch <name>', 'dedicated Catalog branch (default: catalog)')
+    .requiredOption('--expected-plan-digest <sha256>', 'exact plan digest returned by catalog publish plan')
     .option('-y, --yes', 'confirm publication without a prompt', false)
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (rawOptions: {
       workspaceRoot?: string;
       remote?: string;
       branch?: string;
-      expectedDescriptorDigest?: string;
+      expectedPlanDigest: string;
       yes?: boolean;
       json?: boolean;
     }) => {
       try {
-        const context = createActionContext('catalog:publish', {});
-        const result = await runCatalogPublishCommand({
+        const context = createActionContext('catalog:publish:apply', {});
+        const result = await runCatalogPublishApplyCommand({
           cwd,
           workspaceRoot: rawOptions.workspaceRoot,
           remote: rawOptions.remote,
           branch: rawOptions.branch,
-          expectedDescriptorDigest: rawOptions.expectedDescriptorDigest,
+          expectedPlanDigest: rawOptions.expectedPlanDigest,
           yes: rawOptions.yes,
           json: rawOptions.json,
           env,
@@ -2139,7 +2183,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (rawOptions.json) writeJsonReceipt(io.stdout, {
-          command: 'catalog:publish',
+          command: 'catalog:publish:apply',
           ok: false,
           errors: [{ message }],
         });

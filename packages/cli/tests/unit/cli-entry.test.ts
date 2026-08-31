@@ -162,7 +162,7 @@ describe('CLI entry v4', () => {
       [['plugin', 'status'], 'nearest ancestor from current directory'],
       [['catalog', 'init'], 'then Git worktree root'],
       [['catalog', 'build'], 'nearest ancestor from current directory'],
-      [['catalog', 'publish'], 'otherwise sole remote'],
+      [['catalog', 'publish', 'plan'], 'otherwise sole remote'],
     ] as const) {
       const output = capture();
       expect(await runCli([...command, '--help'], { io: output.io })).toBe(0);
@@ -171,10 +171,20 @@ describe('CLI entry v4', () => {
 
     const status = capture();
     expect(await runCli(['catalog', 'status', '--help'], { io: status.io })).toBe(0);
-    expect(status.stdout()).toContain('--preflight');
-    expect(status.stdout()).toContain('executes plugin');
-    expect(status.stdout().replace(/\s+/gu, ' ')).toContain('otherwise sole remote');
-    expect(status.stdout()).toContain('--branch');
+    expect(status.stdout()).not.toContain('--preflight');
+    expect(status.stdout()).not.toContain('--remote');
+    expect(status.stdout()).not.toContain('--branch');
+
+    const apply = capture();
+    expect(await runCli(['catalog', 'publish', 'apply', '--help'], { io: apply.io })).toBe(0);
+    expect(apply.stdout()).toContain('--expected-plan-digest <sha256>');
+    expect(apply.stdout()).toContain('--yes');
+
+    const removedPublish = capture();
+    expect(await runCli([
+      'catalog', 'publish', '--workspace-root', '.', '--yes',
+    ], { io: removedPublish.io })).toBe(1);
+    expect(removedPublish.stderr()).toContain("unknown option '--workspace-root'");
   });
 
   it.each(['init', 'add-skill'])('keeps plugin %s help on public authoring commands', async (command) => {
@@ -185,7 +195,7 @@ describe('CLI entry v4', () => {
       'aw plugin test',
       'aw plugin build',
       'aw catalog build',
-      'aw catalog publish --help',
+      'aw catalog publish plan --help',
     ]) expect(output.stdout()).toContain(nextCommand);
     expect(output.stdout()).not.toContain('pnpm release');
     expect(output.stdout()).not.toContain('--plugin-root');

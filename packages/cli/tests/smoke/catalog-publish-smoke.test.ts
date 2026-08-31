@@ -53,15 +53,15 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
   ], { cwd: workspaceRoot });
   await execFileAsync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: workspaceRoot });
 
-  const preflight = await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'status', '--workspace-root', workspaceRoot,
-    '--preflight', '--remote', 'origin', '--branch', 'catalog/smoke', '--json',
+  const plan = await runAw(cliEntry, workspaceRoot, [
+    'catalog', 'publish', 'plan', '--workspace-root', workspaceRoot,
+    '--remote', 'origin', '--branch', 'catalog/smoke', '--json',
   ]);
-  const descriptorDigest = JSON.parse(preflight.stdout).publication.descriptorDigest;
+  const planDigest = JSON.parse(plan.stdout).planDigest;
   const result = await runAw(cliEntry, workspaceRoot, [
-    'catalog', 'publish', '--workspace-root', workspaceRoot,
+    'catalog', 'publish', 'apply', '--workspace-root', workspaceRoot,
     '--remote', 'origin', '--branch', 'catalog/smoke',
-    '--expected-descriptor-digest', descriptorDigest, '--yes', '--json',
+    '--expected-plan-digest', planDigest, '--yes', '--json',
   ]);
   const receipt = JSON.parse(result.stdout) as { commit: string; snapshotDigest: string };
   expect((await execFileAsync('git', [
@@ -88,11 +88,13 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
     workspaceRoot,
     '.aw',
     'publish',
-    'attempts',
     '91.0.0.json',
   ))).resolves.toMatchObject({
     state: 'published',
-    branch: 'catalog/smoke',
-    snapshotDigest: receipt.snapshotDigest,
+    repository: null,
+    descriptor: {
+      branch: 'catalog/smoke',
+      snapshotDigest: receipt.snapshotDigest,
+    },
   });
 });

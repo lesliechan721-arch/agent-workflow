@@ -589,7 +589,7 @@ describe('build smoke', () => {
       });
       expect(help.stdout).toContain('aw plugin validate');
       expect(help.stdout).toContain('aw catalog build');
-      expect(help.stdout).toContain('aw catalog publish --help');
+      expect(help.stdout).toContain('aw catalog publish plan --help');
       expect(help.stdout).not.toContain('pnpm release');
     }
   });
