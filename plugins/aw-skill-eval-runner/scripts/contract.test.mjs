@@ -57,6 +57,11 @@ test('Runner exposes exactly five public workflow steps', async () => {
   assert.match(skill, /预计调用数 `<=10`/u);
   assert.match(skill, /预计调用数 `>10`/u);
   assert.match(skill, /`custom-process` 因调用数和外部影响未知/u);
+  // Static contract exception: an installed Runner must disclose that custom-process is cooperative containment, not a sandbox; behavior test is not suitable because this safety boundary is direct Agent instruction.
+  assert.match(skill, /可信、协作式 provider，不是任意外部程序 sandbox/u);
+  assert.match(skill, /Engine 只在 macOS\/Linux 启动它/u);
+  assert.match(skill, /违反或检查失效会 fail closed、丢弃 grade 并停止 batch/u);
+  assert.match(skill, /Runner 只披露并调用 Engine，不重复该运行期检查/u);
   assert.match(skill, /clean success 直接结束，不要求 triage/u);
   assert.match(skill, /只有出现 execution\/grade 失败、current 结果混合、current 相对 baseline 回归/u);
 

@@ -1,10 +1,12 @@
-import { access, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { access, link, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BUILTIN_EVAL_PROVIDER_IDS,
+  assertProcessTreeInspectionAvailable,
   createConversationGraderPrompt,
   doctorEvalProviders,
   EvalProviderExecutionError,
@@ -20,13 +22,72 @@ import {
 
 const roots: string[] = []
 
-async function runRoot(): Promise<{
+let sentinelMarker = ''
+let sentinelAlive = false
+const availableProcessTree = {
+  platform: process.platform === 'win32' ? 'linux' as const : process.platform,
+  createSentinel: async (_markerEnvironmentVariable: string, marker: string) => {
+    sentinelMarker = marker
+    sentinelAlive = true
+    return {
+      pid: 900_001,
+      stop: async () => { sentinelAlive = false },
+    }
+  },
+  execFile: (
+    _command: string,
+    args: string[],
+    _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+    callback: (error: Error | null, stdout: string) => void,
+  ): void => callback(null, args.includes('pid=,command=')
+    ? sentinelAlive
+      ? `900001 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${sentinelMarker}`
+      : ''
+    : sentinelAlive
+      ? '900001 1 900001 S Mon Aug 24 12:00:00 2026'
+      : ''),
+}
+
+function releaseFailingProcessTree(message = 'inspection release failed') {
+  let marker = ''
+  return {
+    platform: 'linux' as const,
+    createSentinel: async (_markerEnvironmentVariable: string, value: string) => {
+      marker = value
+      return {
+        pid: 900_011,
+        stop: async () => { throw new Error(message) },
+      }
+    },
+    execFile: (
+      _command: string,
+      args: string[],
+      _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+      callback: (error: Error | null, stdout: string) => void,
+    ): void => callback(
+      null,
+      args.includes('pid=,command=')
+        ? `900011 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
+        : '900011 1 900011 S Mon Aug 24 12:00:00 2026',
+    ),
+  }
+}
+
+let hostProcessInspectionAvailable = false
+try {
+  await assertProcessTreeInspectionAvailable()
+  hostProcessInspectionAvailable = true
+} catch {
+  // Process-tree integration tests require host process inspection permission.
+}
+
+async function runRoot(parent = os.tmpdir()): Promise<{
   root: string
   workspacePath: string
   fixturesPath: string
   outputDir: string
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-provider-'))
+  const root = await mkdtemp(path.join(parent, 'agent-skill-eval-provider-'))
   const workspacePath = path.join(root, 'workspace')
   const fixturesPath = path.join(root, 'fixtures')
   const outputDir = path.join(root, 'output')
@@ -52,6 +113,40 @@ function input(
     fixturesPath: paths.fixturesPath,
     outputDir: paths.outputDir,
     timeoutMs: 2_000,
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processIsAlive(pid)) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`process ${pid} is still running`)
+}
+
+async function killTestProcess(pid: number, pidPath: string): Promise<void> {
+  let targetPid = pid
+  if (targetPid <= 0) {
+    try {
+      targetPid = Number(await readFile(pidPath, 'utf8'))
+    } catch {
+      return
+    }
+  }
+  if (!processIsAlive(targetPid)) return
+  try {
+    process.kill(targetPid, 'SIGKILL')
+  } catch {
+    // The detached child can exit during test cleanup.
   }
 }
 
@@ -419,6 +514,35 @@ describe('built-in Eval provider registry', () => {
       .not.toContain(secret)
   })
 
+  it('redacts JSON-escaped credential variants but keeps non-credential controls', async () => {
+    const paths = await runRoot()
+    const secret = 'quote" slash\\ line\n tab\t'
+    const encoded = JSON.stringify(secret).slice(1, -1)
+    const control = '/opt/codex-model-control'
+    let error: unknown
+    try {
+      await runBuiltinEvalProvider(
+        'codex-conversation',
+        input(paths, conversationCaseValue()),
+        { sourceEnv: {
+          OPENAI_API_KEY: secret,
+          AW_SKILL_EVAL_CODEX_MODEL: control,
+          HOME: '/home/control',
+        }, transport: {
+          runTrigger: vi.fn(async () => { throw new Error('not used') }),
+          runConversation: vi.fn(async () => { throw new Error(`transport ${encoded} ${control}`) }),
+          runGrader: vi.fn(async () => { throw new Error('not used') }),
+        } },
+      )
+    } catch (caught) {
+      error = caught
+    }
+    expect(error).toBeInstanceOf(EvalProviderExecutionError)
+    expect((error as Error).message).not.toContain(secret)
+    expect((error as Error).message).not.toContain(encoded)
+    expect((error as Error).message).toContain(control)
+  })
+
   it.each([
     ['non-JSON', 'grade: pass'],
     ['unknown field', '{"passed":true,"score":1,"extra":true}'],
@@ -507,6 +631,343 @@ describe('built-in Eval provider registry', () => {
 })
 
 describe('custom process provider', () => {
+  it('accepts default environment paths when evalRoot is inside HOME', async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-home-'))
+    roots.push(home)
+    const paths = await runRoot(home)
+    vi.stubEnv('HOME', home)
+    try {
+      await expect(executeCustomProcessProvider({
+        command: [
+          process.execPath,
+          '-e',
+          "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
+        ],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        processTree: availableProcessTree,
+      })).resolves.toEqual({
+        usage: null,
+        grade: { passed: true, score: 1 },
+      })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('rejects a credential value in provider stdin before startup', async () => {
+    const paths = await runRoot()
+    const startedPath = path.join(paths.outputDir, 'started')
+    await expect(executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(startedPath)}, 'yes')`,
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'stdin-secret' }),
+      sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: 'stdin-secret' },
+      processTree: availableProcessTree,
+    })).rejects.toThrow('input contains an allowlisted credential value')
+    await expect(access(startedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects a JSON-escaped credential value in provider stdin before startup', async () => {
+    const paths = await runRoot()
+    const secret = 'stdin-"\\\n\t-secret'
+    const startedPath = path.join(paths.outputDir, 'started')
+    await expect(executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(startedPath)}, 'yes')`,
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: secret }),
+      sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+      processTree: availableProcessTree,
+    })).rejects.toThrow('input contains an allowlisted credential value')
+    await expect(access(startedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it.each([
+    ['unavailable POSIX inspection', 'linux' as const],
+    ['unsupported Windows cleanup', 'win32' as const],
+  ])('rejects before starting the provider when %s is detected', async (_label, platform) => {
+    const paths = await runRoot()
+    const startedPath = path.join(paths.outputDir, 'started')
+    await expect(executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(startedPath)}, 'yes')`,
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH },
+      processTree: {
+        platform,
+        execFile: (_command, _args, _options, callback) => {
+          callback(platform === 'linux' ? new Error('inspection unavailable') : null, '')
+        },
+      },
+    })).rejects.toThrow(/cleanup|unsupported/iu)
+    await expect(access(startedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(path.join(paths.root, '.custom-provider-home')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(path.join(paths.root, '.custom-provider-tmp')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it.skipIf(process.platform === 'win32')('keeps process-cleanup diagnostics while deleting a read-only credential artifact', async () => {
+    const paths = await runRoot()
+    const rootPidPath = path.join(paths.outputDir, 'root.pid')
+    const childPidPath = path.join(paths.outputDir, 'child.pid')
+    const secretPath = path.join(paths.outputDir, 'readonly-secret.txt')
+    const secret = 'process-cleanup-"\\\n\t-secret'
+    let childPid = 0
+    let marker = ''
+    let inspectionRounds = 0
+    let sentinelAlive = false
+    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    foreign.unref()
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "const fs = require('node:fs')",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+      'child.unref()',
+      `fs.writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid))`,
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
+      `fs.writeFileSync(${JSON.stringify(secretPath)}, process.env.OPENAI_API_KEY)`,
+      `fs.chmodSync(${JSON.stringify(secretPath)}, 0o400)`,
+      "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 200)",
+    ].join(';')
+    const readProviderPids = async (): Promise<[string, string]> => {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const pids: [string, string] = await Promise.all([
+          readFile(rootPidPath, 'utf8').catch(() => ''),
+          readFile(childPidPath, 'utf8').catch(() => ''),
+        ])
+        if (pids[0] && pids[1]) return pids
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      return ['', '']
+    }
+    try {
+      let error: unknown
+      try {
+        await executeCustomProcessProvider({
+          command: [process.execPath, '-e', script],
+          evalRoot: paths.root,
+          input: input(paths, { id: 'case-1' }),
+          sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+          processTree: {
+            platform: 'linux',
+            createSentinel: async (_markerEnvironmentVariable, value) => {
+              marker = value
+              sentinelAlive = true
+              return {
+                pid: 900_005,
+                stop: async () => { sentinelAlive = false },
+              }
+            },
+            execFile: (_command, args, _options, callback) => {
+              if (!args.includes('pid=,command=')) inspectionRounds += 1
+              if (inspectionRounds >= 3) {
+                callback(new Error('inspection failed after startup'), '')
+                return
+              }
+              void (inspectionRounds === 2
+                ? readProviderPids()
+                : Promise.resolve(['', ''] as [string, string]))
+                .then(([rootPid, providerChildPid]) => {
+                  if (args.includes('pid=,command=')) {
+                    callback(null, [
+                      ...(sentinelAlive
+                        ? [`900005 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        : []),
+                      ...(rootPid
+                        ? [`${rootPid} node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        : []),
+                      ...(providerChildPid
+                        ? [`${providerChildPid} node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        : []),
+                    ].join('\n'))
+                    return
+                  }
+                  callback(null, [
+                    ...(sentinelAlive
+                      ? ['900005 1 900005 S Mon Aug 24 12:00:00 2026']
+                      : []),
+                    ...(rootPid
+                      ? [`${rootPid} 1 ${rootPid} S Mon Aug 24 12:00:00 2026`]
+                      : []),
+                    ...(providerChildPid
+                      ? [`${providerChildPid} ${rootPid} ${rootPid} S Mon Aug 24 12:00:00 2026`]
+                      : []),
+                  ].join('\n'))
+                })
+            },
+          },
+        })
+      } catch (caught) {
+        error = caught
+      }
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toContain('cleanup could not be proven')
+      expect((error as Error).message).not.toContain(secret)
+      await expect(access(secretPath)).rejects.toMatchObject({ code: 'ENOENT' })
+      childPid = Number(await readFile(childPidPath, 'utf8'))
+      await waitForProcessExit(childPid)
+      expect(processIsAlive(foreign.pid!)).toBe(true)
+    } finally {
+      await killTestProcess(childPid, childPidPath)
+      await killTestProcess(foreign.pid ?? 0, childPidPath)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)('rejects a passed result when an ordinary child clears the process marker', async () => {
+    const paths = await runRoot()
+    const childPidPath = path.join(paths.outputDir, 'markerless-child.pid')
+    let childPid = 0
+    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    foreign.unref()
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "const fs = require('node:fs')",
+      'const childEnv = { ...process.env }',
+      'delete childEnv.AW_AGENT_SKILL_EVAL_PROCESS_MARKER',
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: childEnv, stdio: 'ignore' })",
+      'child.unref()',
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
+      "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 200)",
+    ].join(';')
+    try {
+      await expect(executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: { PATH: process.env.PATH },
+      })).rejects.toThrow('lost its process marker')
+      childPid = Number(await readFile(childPidPath, 'utf8'))
+      await waitForProcessExit(childPid)
+      expect(processIsAlive(foreign.pid!)).toBe(true)
+    } finally {
+      await killTestProcess(childPid, childPidPath)
+      await killTestProcess(foreign.pid ?? 0, childPidPath)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)('terminates a detached provider descendant after a passed result', async () => {
+    const paths = await runRoot()
+    const childPidPath = path.join(paths.outputDir, 'detached-child.pid')
+    let childPid = 0
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "const fs = require('node:fs')",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      'child.unref()',
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
+      "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
+    ].join(';')
+    try {
+      await expect(executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: { PATH: process.env.PATH },
+      })).rejects.toThrow('contract violation')
+      childPid = Number(await readFile(childPidPath, 'utf8'))
+      await waitForProcessExit(childPid)
+    } finally {
+      await killTestProcess(childPid, childPidPath)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)('rejects a passed result until an ordinary marked child exits', async () => {
+    const paths = await runRoot()
+    const childPidPath = path.join(paths.outputDir, 'ordinary-child.pid')
+    let childPid = 0
+    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    foreign.unref()
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "const fs = require('node:fs')",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+      'child.unref()',
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
+      "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
+    ].join(';')
+    try {
+      await expect(executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: { PATH: process.env.PATH },
+      })).rejects.toThrow('all provider descendants must exit before completion')
+      childPid = Number(await readFile(childPidPath, 'utf8'))
+      await waitForProcessExit(childPid)
+      expect(processIsAlive(foreign.pid!)).toBe(true)
+    } finally {
+      await killTestProcess(childPid, childPidPath)
+      await killTestProcess(foreign.pid ?? 0, childPidPath)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)('accepts a passed result after an ordinary child exits', async () => {
+    const paths = await runRoot()
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 100)'], { stdio: 'ignore' })",
+      "child.once('exit', () => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })))",
+    ].join(';')
+
+    await expect(executeCustomProcessProvider({
+      command: [process.execPath, '-e', script],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH },
+    })).resolves.toEqual({
+      usage: null,
+      grade: { passed: true, score: 1 },
+    })
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)('terminates a detached provider descendant after a non-zero exit', async () => {
+    const paths = await runRoot()
+    const childPidPath = path.join(paths.outputDir, 'detached-child.pid')
+    let childPid = 0
+    const script = [
+      "const { spawn } = require('node:child_process')",
+      "const fs = require('node:fs')",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      'child.unref()',
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
+      'process.exitCode = 7',
+    ].join(';')
+    try {
+      await expect(executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: { PATH: process.env.PATH },
+      })).rejects.toThrow('contract violation')
+      childPid = Number(await readFile(childPidPath, 'utf8'))
+      await waitForProcessExit(childPid)
+    } finally {
+      await killTestProcess(childPid, childPidPath)
+    }
+  })
+
   it('uses strict JSON stdin/stdout and a clean allowlisted environment', async () => {
     const paths = await runRoot()
     const script = [
@@ -529,6 +990,7 @@ describe('custom process provider', () => {
         OPENAI_API_KEY: 'test-secret-value',
         UNRELATED_SECRET: 'must-not-pass',
       },
+      processTree: availableProcessTree,
     })
     expect(result).toEqual({
       usage: { inputTokens: 3, outputTokens: 1 },
@@ -554,6 +1016,96 @@ describe('custom process provider', () => {
       .resolves.toBe('[redacted]')
   })
 
+  it('treats an allowlisted proxy as a credential in retained artifacts', async () => {
+    const paths = await runRoot()
+    const proxy = 'http://proxy-user:quote-"\\\n\t@proxy.invalid'
+    const artifactPath = path.join(paths.outputDir, 'proxy.txt')
+    const result = await executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(artifactPath)}, process.env.HTTP_PROXY); process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))`,
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH, HTTP_PROXY: proxy },
+      processTree: availableProcessTree,
+    })
+
+    expect(result).toEqual({ usage: null, grade: { passed: true, score: 1 } })
+    await expect(readFile(artifactPath, 'utf8')).resolves.toBe('[redacted]')
+  })
+
+  it('unlinks a sensitive hardlink without changing its foreign inode', async () => {
+    const paths = await runRoot()
+    const foreignRoot = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-foreign-'))
+    roots.push(foreignRoot)
+    const secret = 'hardlink-credential-secret'
+    const foreignPath = path.join(foreignRoot, 'foreign.txt')
+    const attemptPath = path.join(paths.outputDir, 'shared.txt')
+    await writeFile(foreignPath, secret)
+    await link(foreignPath, attemptPath)
+    const before = await lstat(foreignPath)
+
+    const result = await executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        'process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))',
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+      processTree: availableProcessTree,
+    })
+
+    expect(result.diagnostics).toEqual([
+      'custom process credential cleanup removed an unredactable artifact.',
+    ])
+    await expect(lstat(attemptPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(foreignPath, 'utf8')).resolves.toBe(secret)
+    const after = await lstat(foreignPath)
+    expect(after.ino).toBe(before.ino)
+    expect(after.mode).toBe(before.mode)
+    expect(after.nlink).toBe(before.nlink - 1)
+  })
+
+  it('removes sensitive filenames, directory names, and symlink targets without reporting paths', async () => {
+    const paths = await runRoot()
+    const secret = 'metadata-"\\\n\t-secret'
+    const encoded = JSON.stringify(secret).slice(1, -1)
+    const sensitiveFile = path.join(paths.outputDir, `file-${encoded}`)
+    const sensitiveDirectory = path.join(paths.outputDir, `directory-${secret}`)
+    const sensitiveLink = path.join(paths.outputDir, 'safe-link')
+    await writeFile(sensitiveFile, 'safe content')
+    await mkdir(sensitiveDirectory)
+    await writeFile(path.join(sensitiveDirectory, 'safe.txt'), 'safe content')
+    await symlink(`missing-${encoded}`, sensitiveLink)
+
+    const result = await executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        'process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))',
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+      processTree: availableProcessTree,
+    })
+
+    expect(result.diagnostics).toHaveLength(3)
+    expect(new Set(result.diagnostics)).toEqual(new Set([
+      'custom process credential cleanup removed an unredactable artifact.',
+    ]))
+    expect(JSON.stringify(result)).not.toContain(secret)
+    expect(JSON.stringify(result)).not.toContain(encoded)
+    expect(JSON.stringify(result)).not.toContain(paths.outputDir)
+    await expect(lstat(sensitiveFile)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(lstat(sensitiveDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(lstat(sensitiveLink)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it.each([
     ['success', 'success', 2_000],
     ['failure', 'failure', 2_000],
@@ -573,6 +1125,9 @@ describe('custom process provider', () => {
       "  fs.writeFileSync(path.join(value.workspacePath, 'workspace-secret.txt'), secret)",
       "  fs.writeFileSync(path.join(value.fixturesPath, 'fixture-secret.txt'), secret)",
       "  fs.writeFileSync(path.join(value.outputDir, 'output-secret.txt'), secret)",
+      "  fs.writeFileSync(path.join(value.outputDir, 'readonly-secret.txt'), JSON.stringify({ secret }))",
+      "  fs.chmodSync(path.join(value.outputDir, 'readonly-secret.txt'), 0o400)",
+      "  fs.writeFileSync(path.join(process.cwd(), 'cwd-secret.txt'), secret)",
       "  fs.writeFileSync(path.join(process.env.HOME, 'home-secret.txt'), secret)",
       "  fs.writeFileSync(path.join(process.env.TMPDIR, 'tmp-secret.txt'), secret)",
       "  process.stderr.write(`provider stderr ${secret}`)",
@@ -591,15 +1146,17 @@ describe('custom process provider', () => {
         evalRoot: paths.root,
         input: { ...input(paths, { id: 'case-1' }), timeoutMs },
         sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+        processTree: availableProcessTree,
       })
     } catch (caught) {
       error = caught
     }
 
     if (mode === 'success') {
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         usage: null,
         grade: { passed: true, score: 1 },
+        diagnostics: ['custom process credential cleanup removed an unredactable artifact.'],
       })
       expect(error).toBeUndefined()
     } else {
@@ -614,10 +1171,119 @@ describe('custom process provider', () => {
       .resolves.toBe('[redacted]')
     await expect(readFile(path.join(paths.outputDir, 'output-secret.txt'), 'utf8'))
       .resolves.toBe('[redacted]')
+    await expect(readFile(path.join(paths.root, 'cwd-secret.txt'), 'utf8'))
+      .resolves.toBe('[redacted]')
+    await expect(access(path.join(paths.outputDir, 'readonly-secret.txt')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
     await expect(access(path.join(paths.root, '.custom-provider-home')))
       .rejects.toMatchObject({ code: 'ENOENT' })
     await expect(access(path.join(paths.root, '.custom-provider-tmp')))
       .rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('preserves provider failure diagnostics when credential cleanup removes the owned attempt', async () => {
+    const paths = await runRoot()
+    const secret = 'cleanup-"\\\n\t-secret'
+    const script = [
+      "const fs = require('node:fs')",
+      "const path = require('node:path')",
+      "const target = path.join(process.cwd(), 'locked')",
+      'fs.mkdirSync(target)',
+      "fs.writeFileSync(path.join(target, 'secret.txt'), process.env.OPENAI_API_KEY)",
+      "fs.chmodSync(path.join(target, 'secret.txt'), 0o400)",
+      'fs.chmodSync(target, 0o500)',
+      "process.stderr.write(`provider stderr ${JSON.stringify(process.env.OPENAI_API_KEY).slice(1, -1)}`)",
+      'process.exitCode = 7',
+    ].join(';')
+    let error: unknown
+    try {
+      await executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+        processTree: availableProcessTree,
+      })
+    } catch (caught) {
+      error = caught
+    }
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('failed with exit code 7')
+    expect((error as Error).message).toContain('credential cleanup removed the attempt')
+    expect((error as Error).message).not.toContain(secret)
+    expect((error as Error).message).not.toContain(JSON.stringify(secret).slice(1, -1))
+    await expect(access(paths.root)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('merges provider, process release, and credential cleanup failures without losing exit details', async () => {
+    const paths = await runRoot()
+    const secret = 'merged-"\\\n\t-secret'
+    const encoded = JSON.stringify(secret).slice(1, -1)
+    const artifactPath = path.join(paths.outputDir, 'readonly-secret.txt')
+    const script = [
+      "const fs = require('node:fs')",
+      `fs.writeFileSync(${JSON.stringify(artifactPath)}, process.env.OPENAI_API_KEY)`,
+      `fs.chmodSync(${JSON.stringify(artifactPath)}, 0o400)`,
+      'process.stderr.write(`provider stderr ${JSON.stringify(process.env.OPENAI_API_KEY).slice(1, -1)}`)',
+      'process.exitCode = 7',
+    ].join(';')
+    let error: unknown
+    try {
+      await executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+        processTree: releaseFailingProcessTree(),
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('failed with exit code 7')
+    expect((error as Error).message).toContain('provider stderr [redacted]')
+    expect((error as Error).message).toContain('Process cleanup:')
+    expect((error as Error).message).toContain('inspection lease release failed')
+    expect((error as Error).message).toContain('Credential cleanup:')
+    expect((error as Error).message).not.toContain(secret)
+    expect((error as Error).message).not.toContain(encoded)
+    await expect(lstat(artifactPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('redacts raw and JSON-escaped credentials in artifacts and errors but keeps model controls', async () => {
+    const paths = await runRoot()
+    const secret = 'artifact-"\\\n\t-secret'
+    const control = 'model-control-value'
+    const artifactPath = path.join(paths.outputDir, 'encoded-secret.json')
+    const script = [
+      "const fs = require('node:fs')",
+      `fs.writeFileSync(${JSON.stringify(artifactPath)}, JSON.stringify({ secret: process.env.OPENAI_API_KEY }))`,
+      "process.stderr.write(`${JSON.stringify(process.env.OPENAI_API_KEY).slice(1, -1)} ${process.env.AW_SKILL_EVAL_CODEX_MODEL}`)",
+      'process.exitCode = 8',
+    ].join(';')
+    let error: unknown
+    try {
+      await executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: {
+          PATH: process.env.PATH,
+          OPENAI_API_KEY: secret,
+          AW_SKILL_EVAL_CODEX_MODEL: control,
+        },
+        processTree: availableProcessTree,
+      })
+    } catch (caught) {
+      error = caught
+    }
+    const artifact = await readFile(artifactPath, 'utf8')
+    expect(artifact).toContain('[redacted]')
+    expect(artifact).not.toContain(secret)
+    expect(artifact).not.toContain(JSON.stringify(secret).slice(1, -1))
+    expect((error as Error).message).not.toContain(secret)
+    expect((error as Error).message).toContain(control)
   })
 
   it.each(['home', 'tmp'])('does not remove a pre-existing foreign %s directory', async (kind) => {
@@ -632,6 +1298,7 @@ describe('custom process provider', () => {
       evalRoot: paths.root,
       input: input(paths, { id: 'case-1' }),
       sourceEnv: { PATH: process.env.PATH },
+      processTree: availableProcessTree,
     })).rejects.toThrow()
     await expect(readFile(foreignFile, 'utf8')).resolves.toBe('keep')
   })
@@ -650,6 +1317,7 @@ describe('custom process provider', () => {
         evalRoot: paths.root,
         input: input(paths, { id: 'case-1' }),
         sourceEnv: { PATH: process.env.PATH, OPENAI_API_KEY: secret },
+        processTree: availableProcessTree,
       })
     } catch (caught) {
       error = caught
@@ -665,6 +1333,7 @@ describe('custom process provider', () => {
       evalRoot: paths.root,
       input: { ...input(paths, { id: 'case-1' }), timeoutMs: 25 },
       sourceEnv: { PATH: process.env.PATH },
+      processTree: availableProcessTree,
     })).rejects.toThrow(/timed out|cleanup/iu)
   })
 
@@ -676,73 +1345,133 @@ describe('custom process provider', () => {
       evalRoot: paths.root,
       input: { ...input(paths, { id: 'case-1' }), signal: controller.signal },
       sourceEnv: { PATH: process.env.PATH },
+      processTree: availableProcessTree,
     })
     setTimeout(() => controller.abort(), 25)
     await expect(running).rejects.toThrow(/aborted|cleanup/iu)
   })
 
-  it.skipIf(process.platform === 'win32')('terminates an observed descendant on timeout', async () => {
+  it.each([
+    ['success', 'cleanup', 2_000],
+    ['timeout', 'timed out', 40],
+    ['abort', 'aborted', 2_000],
+  ])('preserves the %s outcome when inspection lease cleanup fails', async (mode, outcome, timeoutMs) => {
     const paths = await runRoot()
-    const rootPidPath = path.join(paths.outputDir, 'root.pid')
-    const childPidPath = path.join(paths.outputDir, 'child.pid')
-    let rootPid = 0
-    let childPid = 0
-    const states = new Map<number, string>()
-    const killed: number[] = []
-    const readIdentities = async (): Promise<void> => {
-      if (rootPid > 0 && childPid > 0) return
-      try {
-        rootPid = Number(await readFile(rootPidPath, 'utf8'))
-        childPid = Number(await readFile(childPidPath, 'utf8'))
-        states.set(rootPid, 'S')
-        states.set(childPid, 'S')
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 10))
-        await readIdentities()
-      }
+    const secret = `outcome-${mode}-secret`
+    const controller = new AbortController()
+    const script = mode === 'success'
+      ? `process.stderr.write(process.env.HTTP_PROXY); process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))`
+      : 'process.stderr.write(process.env.HTTP_PROXY); setInterval(() => {}, 1000)'
+    const running = executeCustomProcessProvider({
+      command: [process.execPath, '-e', script],
+      evalRoot: paths.root,
+      input: {
+        ...input(paths, { id: 'case-1' }),
+        timeoutMs,
+        ...(mode === 'abort' ? { signal: controller.signal } : {}),
+      },
+      sourceEnv: { PATH: process.env.PATH, HTTP_PROXY: secret },
+      processTree: releaseFailingProcessTree(),
+    })
+    if (mode === 'abort') setTimeout(() => controller.abort(), 40)
+
+    let error: unknown
+    try {
+      await running
+    } catch (caught) {
+      error = caught
     }
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain(outcome)
+    expect((error as Error).message).toContain('inspection lease release failed')
+    expect((error as Error).message).not.toContain(secret)
+  })
+
+  it('reports a provider signal without leaking credential stderr', async () => {
+    const paths = await runRoot()
+    const secret = 'signal-proxy-secret'
+    let error: unknown
+    try {
+      await executeCustomProcessProvider({
+        command: [
+          process.execPath,
+          '-e',
+          "process.stderr.write(process.env.HTTP_PROXY); process.kill(process.pid, 'SIGTERM')",
+        ],
+        evalRoot: paths.root,
+        input: input(paths, { id: 'case-1' }),
+        sourceEnv: { PATH: process.env.PATH, HTTP_PROXY: secret },
+        processTree: availableProcessTree,
+      })
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain('terminated by signal SIGTERM')
+    expect((error as Error).message).not.toContain(secret)
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)('rejects and terminates a detached provider descendant before timeout', async () => {
+    const paths = await runRoot()
+    const childPidPath = path.join(paths.outputDir, 'child.pid')
+    let childPid = 0
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      `fs.writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid))`,
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       'setInterval(() => {}, 1000)',
     ].join(';')
-    await expect(executeCustomProcessProvider({
-      command: [process.execPath, '-e', script],
-      evalRoot: paths.root,
-      input: { ...input(paths, { id: 'case-1' }), timeoutMs: 120 },
-      sourceEnv: { PATH: process.env.PATH },
-      processTree: {
-        platform: 'linux',
-        execFile: (_command, _args, _options, callback) => {
-          void readIdentities().then(() => {
-            callback(null, [
-              ...(states.has(rootPid) ? [`${rootPid} 1 ${states.get(rootPid)} root-start`] : []),
-              ...(states.has(childPid) ? [`${childPid} ${rootPid} ${states.get(childPid)} child-start`] : []),
-            ].join('\n'))
-          })
-        },
-        kill: (pid, signal) => {
-          if (signal === 'SIGSTOP' && states.has(pid)) states.set(pid, 'T')
-          if (signal === 'SIGKILL') {
-            states.delete(pid)
-            killed.push(pid)
-            try {
-              process.kill(pid, 'SIGKILL')
-            } catch {
-              // The process can already be closed by the group fallback.
-            }
-          }
-        },
-      },
-    })).rejects.toThrow('timed out')
-    expect(killed).toContain(childPid)
+    try {
+      await expect(executeCustomProcessProvider({
+        command: [process.execPath, '-e', script],
+        evalRoot: paths.root,
+        input: { ...input(paths, { id: 'case-1' }), timeoutMs: 120 },
+        sourceEnv: { PATH: process.env.PATH },
+      })).rejects.toThrow('contract violation')
+      childPid = Number(await readFile(childPidPath, 'utf8'))
+      await waitForProcessExit(childPid)
+    } finally {
+      await killTestProcess(childPid, childPidPath)
+    }
   })
 })
 
 describe('provider doctor', () => {
+  it('reports cleanup only after a live sentinel probe and immediately releases it', async () => {
+    let marker = ''
+    let stopped = false
+    const result = await doctorEvalProviders({
+      sourceEnv: { PATH: path.join(path.sep, 'fake') },
+      platform: 'linux',
+      canAccess: async () => false,
+      processTree: {
+        createSentinel: async (_markerEnvironmentVariable, value) => {
+          marker = value
+          return {
+            pid: 900_008,
+            stop: async () => { stopped = true },
+          }
+        },
+        execFile: (_command, args, _options, callback) => callback(
+          null,
+          args.includes('pid=,command=')
+            ? `900008 node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
+            : '900008 1 900008 S Mon Aug 24 12:00:00 2026',
+        ),
+      },
+    })
+
+    expect(result.cleanup).toEqual({
+      platform: 'linux',
+      supported: true,
+      mechanism: 'process-tree',
+    })
+    expect(stopped).toBe(true)
+  })
+
   it('reports registry, runtime, credential names, and cleanup without secret values or artifacts', async () => {
     const secret = 'doctor-secret-value'
     const result = await doctorEvalProviders({
@@ -761,6 +1490,33 @@ describe('provider doctor', () => {
       cleanup: { platform: 'linux', supported: true, mechanism: 'process-tree' },
     })
     expect(result.credentials).toContainEqual({ name: 'OPENAI_API_KEY', present: true })
+    expect(result.credentials).toEqual([
+      { name: 'ALL_PROXY', present: false },
+      { name: 'HTTPS_PROXY', present: false },
+      { name: 'HTTP_PROXY', present: false },
+      { name: 'OPENAI_API_KEY', present: true },
+    ])
     expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it('does not report provider control values as credentials', async () => {
+    const result = await doctorEvalProviders({
+      sourceEnv: {
+        HOME: '/home/control',
+        CODEX_HOME: '/codex/control',
+        NODE_EXTRA_CA_CERTS: '/cert/control.pem',
+        AW_SKILL_EVAL_CODEX_BIN: '/bin/control',
+        AW_SKILL_EVAL_CODEX_MODEL: 'model-control',
+      },
+      platform: 'linux',
+      canAccess: async () => false,
+      checkCleanup: async () => true,
+    })
+    expect(result.credentials).toEqual([
+      { name: 'ALL_PROXY', present: false },
+      { name: 'HTTPS_PROXY', present: false },
+      { name: 'HTTP_PROXY', present: false },
+      { name: 'OPENAI_API_KEY', present: false },
+    ])
   })
 })

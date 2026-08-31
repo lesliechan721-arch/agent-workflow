@@ -141,4 +141,26 @@ describe('Codex eval provider runtime config', () => {
       runtime,
     )).toBe('[redacted] [redacted] [redacted]')
   })
+
+  it('redacts raw and JSON-escaped credentials discovered while materializing auth', async () => {
+    const root = await tempRoot()
+    const destination = await tempRoot()
+    const secret = 'dynamic-"\\\n\t-secret'
+    const encoded = JSON.stringify(secret).slice(1, -1)
+    await fs.writeJson(path.join(root, 'auth.json'), { OPENAI_API_KEY: secret })
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root },
+      inheritUserConfig: false,
+    })
+
+    await materializeCodexEvalRuntimeHome(runtime, destination)
+
+    expect(redactCodexEvalValue({
+      [`raw-${secret}`]: `raw=${secret}`,
+      [encoded]: encoded,
+    }, runtime)).toEqual({
+      'raw-[redacted]': 'raw=[redacted]',
+      '[redacted]': '[redacted]',
+    })
+  })
 })

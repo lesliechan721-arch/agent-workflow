@@ -1,8 +1,9 @@
-import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
-import { observeProcessTree, terminateProcessTree, type ProcessTreeDependencies } from './process-tree.js'
-import { runProviderProcess } from './process.js'
+import { credentialValues, redactSecrets, secretVariants } from './credentials.js'
+import type { ProcessTreeDependencies } from './process-tree.js'
+import { ProviderProcessCleanupError, runProviderProcess } from './process.js'
 import { assertProviderRunPaths } from './run-paths.js'
 
 export type EvalProviderVariant = 'current' | 'without-skill' | 'previous-version'
@@ -154,27 +155,9 @@ export function parseCustomProcessOutput(stdout: string): CustomProcessOutput {
   }
 }
 
-function credentialValues(sourceEnv: NodeJS.ProcessEnv): string[] {
-  return [...new Set(CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST.flatMap((name) => {
-    const value = sourceEnv[name]
-    return value ? [value] : []
-  }))].sort((left, right) => right.length - left.length)
-}
-
-function redact(value: string, secrets: readonly string[]): string {
-  return secrets.reduce((current, secret) => current.replaceAll(secret, '[redacted]'), value)
-}
-
-function secretVariants(secrets: readonly string[]): string[] {
-  return [...new Set(secrets.flatMap((secret) => {
-    const encoded = JSON.stringify(secret).slice(1, -1)
-    return encoded === secret ? [secret] : [secret, encoded]
-  }))].sort((left, right) => right.length - left.length)
-}
-
-function redactBuffer(value: Buffer, secrets: readonly string[]): Buffer {
+function redactBuffer(value: Buffer, variants: readonly string[]): Buffer {
   let result = value
-  for (const variant of secretVariants(secrets)) {
+  for (const variant of variants) {
     const secret = Buffer.from(variant)
     if (secret.length === 0) continue
     const chunks: Buffer[] = []
@@ -192,39 +175,114 @@ function redactBuffer(value: Buffer, secrets: readonly string[]): Buffer {
   return result
 }
 
-async function redactOutputTree(root: string, secrets: readonly string[]): Promise<void> {
-  if (secrets.length === 0) return
+async function removeSensitiveFile(target: string, parentMode: number): Promise<void> {
+  if ((parentMode & 0o222) === 0) {
+    throw new Error('credential artifact parent directory is not writable.')
+  }
+  await rm(target)
+}
+
+const REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC =
+  'custom process credential cleanup removed an unredactable artifact.'
+
+function containsSecret(value: string, variants: readonly string[]): boolean {
+  return variants.some((secret) => value.includes(secret))
+}
+
+async function redactOutputTree(root: string, variants: readonly string[]): Promise<string[]> {
+  if (variants.length === 0) return []
   const rootInfo = await lstat(root)
   if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
     throw new Error('custom process credential cleanup requires an ordinary owned directory.')
   }
+  const diagnostics: string[] = []
   for (const entry of await readdir(root, { withFileTypes: true })) {
     const target = path.join(root, entry.name)
     const info = await lstat(target)
-    if (info.isSymbolicLink()) continue
+    const sensitiveName = containsSecret(entry.name, variants)
+    if (info.isSymbolicLink()) {
+      const sensitiveTarget = containsSecret(await readlink(target), variants)
+      if (sensitiveName || sensitiveTarget) {
+        await removeSensitiveFile(target, rootInfo.mode)
+        diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
+      }
+      continue
+    }
     if (info.isDirectory()) {
-      await redactOutputTree(target, secrets)
+      if (sensitiveName) {
+        if ((rootInfo.mode & 0o222) === 0) {
+          throw new Error('credential artifact parent directory is not writable.')
+        }
+        await rm(target, { recursive: true })
+        diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
+        continue
+      }
+      diagnostics.push(...await redactOutputTree(target, variants))
       continue
     }
     if (!info.isFile()) continue
+    if (sensitiveName) {
+      await removeSensitiveFile(target, rootInfo.mode)
+      diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
+      continue
+    }
     const content = await readFile(target)
-    const redacted = redactBuffer(content, secrets)
-    if (!redacted.equals(content)) await writeFile(target, redacted)
+    const redacted = redactBuffer(content, variants)
+    if (redacted.equals(content)) continue
+    if (info.nlink > 1 || (info.mode & 0o222) === 0) {
+      await removeSensitiveFile(target, rootInfo.mode)
+      diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
+      continue
+    }
+    try {
+      await writeFile(target, redacted)
+    } catch {
+      await removeSensitiveFile(target, rootInfo.mode)
+      diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
+    }
+  }
+  return diagnostics
+}
+
+async function makeOwnedTreeRemovable(root: string): Promise<void> {
+  const info = await lstat(root)
+  if (info.isSymbolicLink()) return
+  if (!info.isDirectory()) {
+    if (info.isFile() && info.nlink === 1) await chmod(root, 0o600)
+    return
+  }
+  await chmod(root, 0o700)
+  for (const entry of await readdir(root)) {
+    await makeOwnedTreeRemovable(path.join(root, entry))
   }
 }
 
 async function cleanupCustomProcessAttempt(
-  retainedRoots: readonly string[],
+  evalRoot: string,
   temporaryRoots: readonly string[],
-  secrets: readonly string[],
-): Promise<void> {
-  const results = await Promise.allSettled([
-    ...retainedRoots.map((root) => redactOutputTree(root, secrets)),
-    ...temporaryRoots.map((root) => rm(root, { recursive: true, force: true })),
-  ])
-  if (results.some((result) => result.status === 'rejected')) {
-    throw new Error('custom process credential cleanup failed.')
+  variants: readonly string[],
+): Promise<string[]> {
+  const temporaryResults = await Promise.allSettled(
+    temporaryRoots.map((root) => rm(root, { recursive: true, force: true })),
+  )
+  const redactionResult = await Promise.allSettled([redactOutputTree(evalRoot, variants)])
+  if (
+    temporaryResults.some((result) => result.status === 'rejected') ||
+    redactionResult.some((result) => result.status === 'rejected')
+  ) {
+    let removalError: unknown
+    try {
+      await makeOwnedTreeRemovable(evalRoot)
+      await rm(evalRoot, { recursive: true, force: true })
+    } catch (error) {
+      removalError = error
+    }
+    if (removalError) {
+      throw new Error('custom process credential cleanup could not clear the attempt after an artifact cleanup failure.')
+    }
+    throw new Error('custom process credential cleanup removed the attempt after an artifact cleanup failure.')
   }
+  return redactionResult[0]!.status === 'fulfilled' ? redactionResult[0]!.value : []
 }
 
 function cleanEnvironment(
@@ -288,21 +346,28 @@ export async function executeCustomProcessProvider(
     outputDir: options.input.outputDir,
   }
   const sourceEnv = options.sourceEnv ?? process.env
-  const secrets = credentialValues(sourceEnv)
+  const secrets = credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
+  const variants = secretVariants(secrets)
   const stdin = JSON.stringify(input)
-  if (secrets.some((secret) => stdin.includes(secret))) {
+  if (containsSecret(stdin, variants)) {
     throw new Error('custom process input contains an allowlisted credential value.')
+  }
+  const cleanupPlatform = options.processTree?.platform ?? process.platform
+  if (cleanupPlatform !== 'darwin' && cleanupPlatform !== 'linux') {
+    throw new Error(`custom process cleanup is unsupported on ${cleanupPlatform}.`)
   }
   const env = cleanEnvironment(sourceEnv, evalRoot)
   const temporaryRoots: string[] = []
-  let observation: ReturnType<typeof observeProcessTree> | undefined
-  let result: Awaited<ReturnType<typeof runProviderProcess>>
+  let processResult: Awaited<ReturnType<typeof runProviderProcess>> | undefined
+  let processCleanupError: unknown
+  let providerResult: EvalProviderRunResult | undefined
+  let providerError: unknown
   try {
     await mkdir(env.HOME!, { mode: 0o700 })
     temporaryRoots.push(env.HOME!)
     await mkdir(env.TMPDIR!, { mode: 0o700 })
     temporaryRoots.push(env.TMPDIR!)
-    result = await runProviderProcess({
+    processResult = await runProviderProcess({
       executable: options.command[0],
       args: [...options.command.slice(1)],
       cwd: evalRoot,
@@ -311,56 +376,75 @@ export async function executeCustomProcessProvider(
       timeoutMs: options.input.timeoutMs,
       maxBufferBytes: options.maxBufferBytes ?? 4 * 1024 * 1024,
       ...(options.input.signal ? { signal: options.input.signal } : {}),
-    }, {
-      onSpawn: ({ pid }) => {
-        observation = observeProcessTree(pid, undefined, options.processTree)
-      },
-      terminateProcessTree: async ({ pid }, reason) => {
-        await terminateProcessTree(
-          pid,
-          (signal) => {
-            try {
-              if ((options.processTree?.platform ?? process.platform) === 'win32') {
-                process.kill(pid, signal)
-              } else {
-                process.kill(-pid, signal)
-              }
-            } catch {
-              // The direct child or process group can already be closed.
-            }
-          },
-          options.processTree,
-          {
-            observation,
-            requireConfirmedCleanup: reason !== 'complete',
-            allowInspectionUnavailable: reason === 'complete',
-          },
-        )
-        return { confirmed: true }
-      },
-    }, {
-      containment: 'observed',
+    }, {}, {
+      containment: 'verified-observed',
       processTree: options.processTree,
     })
-  } finally {
-    await cleanupCustomProcessAttempt(
-      [options.input.workspacePath, options.input.fixturesPath, options.input.outputDir],
+  } catch (error) {
+    if (error instanceof ProviderProcessCleanupError) {
+      processResult = error.result
+      processCleanupError = error
+    } else {
+      providerError = error
+    }
+  }
+  if (processResult) {
+    try {
+      if (processResult.timedOut) {
+        throw new Error(`custom process timed out after ${options.input.timeoutMs}ms.`)
+      }
+      if (processResult.cancelled) throw new Error('custom process was aborted.')
+      if (processResult.maxBufferExceeded) {
+        throw new Error('custom process output exceeded the buffer limit.')
+      }
+      const stderr = redactSecrets(processResult.stderr.trim(), secrets)
+      if (processResult.signal) {
+        throw new Error(
+          `custom process terminated by signal ${processResult.signal}${stderr ? `: ${stderr}` : '.'}`,
+        )
+      }
+      if (processResult.exitCode !== 0) {
+        throw new Error(
+          `custom process failed with exit code ${String(processResult.exitCode)}${stderr ? `: ${stderr}` : '.'}`,
+        )
+      }
+      if (containsSecret(processResult.stdout, variants)) {
+        throw new Error('custom process stdout contains an allowlisted credential value.')
+      }
+      const parsed = parseCustomProcessOutput(redactSecrets(processResult.stdout, secrets))
+      providerResult = { usage: parsed.usage, grade: parsed.grade }
+    } catch (error) {
+      providerError = error
+    }
+  }
+  let cleanupDiagnostics: string[] = []
+  let cleanupError: unknown
+  try {
+    cleanupDiagnostics = await cleanupCustomProcessAttempt(
+      evalRoot,
       temporaryRoots,
-      secrets,
+      variants,
     )
+  } catch (error) {
+    cleanupError = error
   }
-  if (result.timedOut) throw new Error(`custom process timed out after ${options.input.timeoutMs}ms.`)
-  if (result.cancelled) throw new Error('custom process was aborted.')
-  if (result.maxBufferExceeded) throw new Error('custom process output exceeded the buffer limit.')
-  if (result.exitCode !== 0) {
-    const stderr = redact(result.stderr.trim(), secrets)
-    throw new Error(
-      `custom process failed with exit code ${String(result.exitCode)}${stderr ? `: ${stderr}` : '.'}`,
-    )
+  if (providerError || processCleanupError || cleanupError || cleanupDiagnostics.length > 0) {
+    const messages = [
+      ...(providerError ? [providerError instanceof Error ? providerError.message : String(providerError)] : []),
+      ...(processCleanupError
+        ? [`Process cleanup: ${processCleanupError instanceof Error ? processCleanupError.message : String(processCleanupError)}`]
+        : []),
+      ...cleanupDiagnostics.map((diagnostic) => `Credential cleanup: ${diagnostic}`),
+      ...(cleanupError
+        ? [`Credential cleanup: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`]
+        : []),
+    ]
+    if (providerError || processCleanupError || cleanupError) {
+      throw new Error(redactSecrets(messages.join(' '), secrets))
+    }
   }
-  if (secrets.some((secret) => result.stdout.includes(secret))) {
-    throw new Error('custom process stdout contains an allowlisted credential value.')
-  }
-  const parsed = parseCustomProcessOutput(redact(result.stdout, secrets))
-  return { usage: parsed.usage, grade: parsed.grade }
+  if (!providerResult) throw new Error('custom process did not return a result.')
+  return cleanupDiagnostics.length > 0
+    ? { ...providerResult, diagnostics: cleanupDiagnostics }
+    : providerResult
 }

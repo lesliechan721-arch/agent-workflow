@@ -17,6 +17,7 @@ import {
 import { inspectCodexEvalHostIsolation } from './codex-eval-isolation.js'
 import {
   cleanCodexEvalRuntimeConfig,
+  redactCodexEvalText,
   redactCodexEvalValue,
 } from './codex-eval-runtime-config.js'
 import {
@@ -32,6 +33,7 @@ import {
   type EvalProviderRunResult,
   type EvalProviderUsage,
 } from './custom-process.js'
+import { credentialValues, redactSecrets } from './credentials.js'
 import { assertProviderRunPaths } from './run-paths.js'
 
 export const BUILTIN_EVAL_PROVIDER_IDS = [
@@ -160,19 +162,11 @@ async function assertRunInput(
 }
 
 function sensitiveValues(sourceEnv: NodeJS.ProcessEnv): string[] {
-  return [...new Set(CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST.flatMap((name) => {
-    const value = sourceEnv[name]
-    if (!value) return []
-    const encoded = JSON.stringify(value).slice(1, -1)
-    return encoded === value ? [value] : [value, encoded]
-  }))].sort((left, right) => right.length - left.length)
+  return credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
 }
 
 function redactSensitiveText(value: string, sourceEnv: NodeJS.ProcessEnv): string {
-  return sensitiveValues(sourceEnv).reduce(
-    (current, secret) => current.replaceAll(secret, '[redacted]'),
-    value,
-  )
+  return redactSecrets(value, sensitiveValues(sourceEnv))
 }
 
 function redactSensitiveValue<T>(value: T, sourceEnv: NodeJS.ProcessEnv): T {
@@ -182,7 +176,7 @@ function redactSensitiveValue<T>(value: T, sourceEnv: NodeJS.ProcessEnv): T {
   }
   if (isRecord(value)) {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-      key,
+      redactSensitiveText(key, sourceEnv),
       redactSensitiveValue(entry, sourceEnv),
     ])) as T
   }
@@ -337,8 +331,18 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
   const codexBin = dependencies.codexBin ?? sourceEnv.AW_SKILL_EVAL_CODEX_BIN ?? 'codex'
   const model = dependencies.model ?? runtime.model ?? undefined
   const redact = <T>(value: T): T => redactCodexEvalValue(value, runtime)
+  const runRedacted = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return redact(await operation())
+    } catch (error) {
+      throw new Error(redactCodexEvalText(
+        error instanceof Error ? error.message : String(error),
+        runtime,
+      ))
+    }
+  }
   return {
-    runTrigger: async (input) => {
+    runTrigger: async (input) => runRedacted(async () => {
       const control = new CodexEvalAttemptControl({
         label: 'codex-trigger',
         timeoutMs: input.timeoutMs,
@@ -377,12 +381,12 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           timeoutMs: control.remaining('evaluation'),
           signal: control.signal,
         })
-        return redact({ evidence, usage: evidence.usage })
+        return { evidence, usage: evidence.usage }
       } finally {
         control.dispose()
       }
-    },
-    runConversation: async (input) => {
+    }),
+    runConversation: async (input) => runRedacted(async () => {
       const control = new CodexEvalAttemptControl({
         label: 'codex-conversation',
         timeoutMs: input.timeoutMs,
@@ -431,12 +435,12 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           manageTimeout: true,
           signal: control.signal,
         })
-        return redact({ evidence, modelOutput: modelOutputOf(evidence), usage: evidence.usage })
+        return { evidence, modelOutput: modelOutputOf(evidence), usage: evidence.usage }
       } finally {
         control.dispose()
       }
-    },
-    runGrader: async (input) => {
+    }),
+    runGrader: async (input) => runRedacted(async () => {
       const graderSourceRoot = path.join(input.outputDir, '.codex-grader-source')
       await fs.emptyDir(graderSourceRoot)
       try {
@@ -461,16 +465,16 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
         if (!evidence.complete) {
           throw new Error(`grader did not complete: ${evidence.diagnostics.join('; ')}`)
         }
-        return redact({
+        return {
           output: modelOutputOf(evidence),
           usage: evidence.usage,
           mechanicalPassed: evidence.mechanicalPassed,
           diagnostics: evidence.diagnostics,
-        })
+        }
       } finally {
         await fs.remove(graderSourceRoot)
       }
-    },
+    }),
   }
 }
 

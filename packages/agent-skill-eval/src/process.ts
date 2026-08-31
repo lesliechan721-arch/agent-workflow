@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import process from 'node:process'
 import {
+  acquireProcessTreeInspectionLease,
   observeProcessTree,
   terminateProcessTree,
   type ProcessTreeDependencies,
@@ -116,12 +117,23 @@ export async function runProviderProcess(
     }
   }
 
-  const marker = containment === 'unmanaged-confirmed' ? '' : randomUUID()
+  const verifiedProcessTree = containment === 'verified-observed'
+    ? {
+        ...dependencies.processTree,
+        markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+        enforceCooperativeProcessGroup: true,
+      }
+    : dependencies.processTree
+  const inspectionLease = containment === 'verified-observed'
+    ? await acquireProcessTreeInspectionLease(verifiedProcessTree)
+    : undefined
+  const marker = inspectionLease?.marker ??
+    (containment === 'unmanaged-confirmed' ? '' : randomUUID())
   const childEnvironment = { ...request.env }
   if (marker) childEnvironment[PROVIDER_PROCESS_MARKER_ENV] = marker
   else delete childEnvironment[PROVIDER_PROCESS_MARKER_ENV]
 
-  return await new Promise<ProcessResult>((resolve, reject) => {
+  const running = new Promise<ProcessResult>((resolve, reject) => {
     const child = spawn(request.executable, request.args, {
       cwd: request.cwd,
       env: childEnvironment,
@@ -132,7 +144,7 @@ export async function runProviderProcess(
     const handle = child.pid === undefined ? null : { pid: child.pid }
     const verifiedObservation: ProcessTreeObservation | undefined =
       containment === 'verified-observed' && handle
-        ? observeProcessTree(handle.pid, marker, dependencies.processTree)
+        ? observeProcessTree(handle.pid, marker, verifiedProcessTree, inspectionLease)
         : undefined
     let stdout = Buffer.alloc(0)
     let stderr = Buffer.alloc(0)
@@ -142,6 +154,7 @@ export async function runProviderProcess(
     let cleanupFailure: unknown = null
     let timer: NodeJS.Timeout | null = null
     let cleanupCloseTimer: NodeJS.Timeout | null = null
+    let stopFailureListener: (() => void) | undefined
     let stdoutTruncated = false
     let stderrTruncated = false
 
@@ -174,11 +187,15 @@ export async function runProviderProcess(
                   try {
                     child.kill(signal)
                   } catch {
-                    // The direct child can already be closed.
+                    // The direct provider process can already be closed.
                   }
                 },
-                dependencies.processTree,
-                { observation: verifiedObservation, requireConfirmedCleanup: true },
+                verifiedProcessTree,
+                {
+                  observation: verifiedObservation,
+                  requireConfirmedCleanup: true,
+                  requireDescendantsExitedBeforeCompletion: reason === 'complete',
+                },
               ).then(() => ({ confirmed: true as const }))
             : hooks.terminateProcessTree!(handle, reason),
           timeoutMs,
@@ -241,10 +258,14 @@ export async function runProviderProcess(
     const clearObservation = (): void => {
       if (timer) clearTimeout(timer)
       if (cleanupCloseTimer) clearTimeout(cleanupCloseTimer)
+      stopFailureListener?.()
       request.signal?.removeEventListener('abort', abort)
     }
     const output = (buffer: Buffer, truncated: boolean): string =>
       scrubProcessMarker(buffer.toString('utf8'), marker, truncated)
+    stopFailureListener = verifiedObservation?.onFailure(() => {
+      void startCleanup('abort')
+    })
 
     child.stdout!.on('data', (chunk: Buffer) => append('stdout', chunk))
     child.stderr!.on('data', (chunk: Buffer) => append('stderr', chunk))
@@ -295,7 +316,6 @@ export async function runProviderProcess(
             safeErrorCause(cleanupFailure, marker),
             {
               ...result,
-              stderr: `${result.stderr}${result.stderr && !result.stderr.endsWith('\n') ? '\n' : ''}${errorMessage(cleanupFailure, marker)}\n`,
               descendantCleanupGuaranteed: false,
               gradingEvidenceAccepted: false,
             },
@@ -317,6 +337,43 @@ export async function runProviderProcess(
       await startCleanup('abort')
     })
   })
+  let result: ProcessResult | undefined
+  let runningError: unknown
+  try {
+    result = await running
+  } catch (error) {
+    runningError = error
+  }
+  let releaseError: unknown
+  try {
+    await inspectionLease?.release()
+  } catch (error) {
+    releaseError = error
+  }
+  if (releaseError) {
+    const retainedResult = runningError instanceof ProviderProcessCleanupError
+      ? runningError.result
+      : result
+    const messages = [
+      ...(runningError
+        ? [errorMessage(runningError, marker)]
+        : []),
+      `Provider inspection lease release failed: ${errorMessage(releaseError, marker)}`,
+    ]
+    throw new ProviderProcessCleanupError(
+      messages.join(' '),
+      safeErrorCause(releaseError, marker),
+      retainedResult
+        ? {
+            ...retainedResult,
+            descendantCleanupGuaranteed: false,
+            gradingEvidenceAccepted: false,
+          }
+        : undefined,
+    )
+  }
+  if (runningError) throw runningError
+  return result!
 }
 
 export function assertProviderProcessSupported(

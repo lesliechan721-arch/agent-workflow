@@ -5,7 +5,11 @@ import process from 'node:process'
 import { cleanCodexEvalRuntimeConfig } from './codex-eval-runtime-config.js'
 import { BUILTIN_EVAL_PROVIDER_IDS, type BuiltinEvalProviderId } from './providers.js'
 import { CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST } from './custom-process.js'
-import { assertProcessTreeInspectionAvailable } from './process-tree.js'
+import { credentialEnvironmentNames } from './credentials.js'
+import {
+  assertProcessTreeInspectionAvailable,
+  type ProcessTreeDependencies,
+} from './process-tree.js'
 
 export interface EvalProviderDoctorResult {
   providers: BuiltinEvalProviderId[]
@@ -31,6 +35,7 @@ export interface EvalProviderDoctorOptions {
   codexBin?: string
   model?: string
   platform?: NodeJS.Platform
+  processTree?: ProcessTreeDependencies
   canAccess?: (candidate: string) => Promise<boolean>
   checkCleanup?: (platform: NodeJS.Platform) => Promise<boolean>
 }
@@ -81,7 +86,10 @@ export async function doctorEvalProviders(
   const cleanupSupported = platformCanClean && await (
     options.checkCleanup ?? (async (currentPlatform: NodeJS.Platform) => {
       try {
-        await assertProcessTreeInspectionAvailable({ platform: currentPlatform })
+        await assertProcessTreeInspectionAvailable({
+          ...options.processTree,
+          platform: currentPlatform,
+        })
         return true
       } catch {
         return false
@@ -99,7 +107,7 @@ export async function doctorEvalProviders(
         credentialSource: runtime.credentialSource,
       },
     },
-    credentials: CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST.map((name) => ({
+    credentials: credentialEnvironmentNames(CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST).map((name) => ({
       name,
       present: sourceEnv[name] !== undefined && sourceEnv[name] !== '',
     })),

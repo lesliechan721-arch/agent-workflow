@@ -19,7 +19,7 @@ selected cases 文档使用 `version`、`suite` 和非空 `cases`。suite 选择
 
 - `trigger`：`input.query` 加一个 route 预期。单 Skill 布尔预期使用 `input.expectedLoad`；多 Skill route 使用 `input.expected.loadedSkills`。只在场景需要时增加 spawn 或 workspace fixture 输入。
 - `conversation`：`prompt` 和非空、可观察的 `assertions`。只在需要时增加 scripted replies、workspace files、期望输出、允许的 workspace 变化或 artifacts。
-- `custom-process`：按 provider 合同使用 JSON `input`、`expected` 或 `assertions`。不要发明第二份 provider schema。
+- `custom-process`：按 provider 合同使用 JSON `input`、`expected` 或 `assertions`。它只用于可信、协作式 provider，不是 sandbox：provider 和后代保留 Engine marker、留在初始进程组、不 detach，且在最终 JSON 前退出。Engine 在运行期观察；违反或检查失效时 fail closed。不要发明第二份 provider schema，也不要在每个 case 重复 containment 检查。
 
 普通 case 不要求重复 unit、provenance、scenario family、decision context 或完整 Oracle object。场景族可用 tags 或 suite 设计说明表达。
 

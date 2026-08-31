@@ -107,10 +107,28 @@ async function main(argv: string[]): Promise<void> {
     if (value !== '--audit' || extra.length !== 1) {
       throw new Error('Usage: aw-skill-eval run <spec.json> --audit <audit.json>')
     }
-    const result = await runEvalSpec(runPath, {
-      auditPath: requirePath(extra[0], '--audit requires a path'),
-    })
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    const controller = new AbortController()
+    let receivedSignal: NodeJS.Signals | null = null
+    const handleSignal = (signal: NodeJS.Signals): void => {
+      if (receivedSignal) return
+      receivedSignal = signal
+      controller.abort()
+    }
+    const handleSigint = (): void => handleSignal('SIGINT')
+    const handleSigterm = (): void => handleSignal('SIGTERM')
+    process.on('SIGINT', handleSigint)
+    process.on('SIGTERM', handleSigterm)
+    try {
+      const result = await runEvalSpec(runPath, {
+        auditPath: requirePath(extra[0], '--audit requires a path'),
+        signal: controller.signal,
+      })
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    } finally {
+      process.off('SIGINT', handleSigint)
+      process.off('SIGTERM', handleSigterm)
+      if (receivedSignal) process.exitCode = receivedSignal === 'SIGINT' ? 130 : 143
+    }
     return
   }
   if (command === 'result') {
@@ -186,5 +204,5 @@ async function main(argv: string[]): Promise<void> {
 
 main(process.argv.slice(2)).catch((error: unknown) => {
   process.stderr.write(`[ERROR] ${(error as Error).message}\n`)
-  process.exitCode = 1
+  if (!process.exitCode) process.exitCode = 1
 })

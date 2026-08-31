@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -10,6 +10,7 @@ import {
   normalizeConversationProviderCase,
   parseSelectedCases,
   runEvalSpec,
+  assertProcessTreeInspectionAvailable,
   validateEvalAudit,
   type EvalAudit,
   type EvalSpec,
@@ -18,6 +19,52 @@ import { adaptConversationProviderCase } from '../../dist/eval-run.js'
 
 const execFileAsync = promisify(execFile)
 const roots: string[] = []
+
+let hostProcessInspectionAvailable = false
+try {
+  await assertProcessTreeInspectionAvailable()
+  hostProcessInspectionAvailable = true
+} catch {
+  // CLI signal integration tests require host process inspection permission.
+}
+
+async function waitForFile(filePath: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      await readFile(filePath)
+      return
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}.`)
+}
+
+function waitForClose(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal }))
+  })
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`Timed out waiting for process ${pid} to exit.`)
+}
 
 async function evalManifestPaths(root: string): Promise<string[]> {
   const result: string[] = []
@@ -653,7 +700,8 @@ describe('EvalSpec v1 execution', () => {
     const without = await fixture({ baseline: 'without-skill' })
     const sourceDigest = await computeSkillDigest(without.target)
     const observed: Array<{ variant: string; content: string | null }> = []
-    const secret = 'phase3-runner-secret'
+    const secret = 'phase3-"\\\n\t-runner-secret'
+    const control = 'phase3-model-control'
     const execute = vi.fn(async ({ input }: { input: {
       variant: string
       workspacePath: string
@@ -666,14 +714,19 @@ describe('EvalSpec v1 execution', () => {
         grade: {
           passed: input.variant === 'current',
           score: input.variant === 'current' ? 1 : 0,
-          details: { secret },
+          details: { [secret]: secret, secret, control },
         },
       }
     })
     const first = await runEvalSpec(without.specPath, {
       auditPath: without.auditPath,
       executeCustomProvider: execute as never,
-      sourceEnv: { ...process.env, OPENAI_API_KEY: secret },
+      sourceEnv: {
+        ...process.env,
+        OPENAI_API_KEY: secret,
+        AW_SKILL_EVAL_CODEX_MODEL: control,
+        HOME: '/phase3/home-control',
+      },
     })
     expect(observed).toEqual([
       { variant: 'current', content: 'current\n' },
@@ -689,10 +742,13 @@ describe('EvalSpec v1 execution', () => {
       }),
     ]))
     expect(await computeSkillDigest(without.target)).toBe(sourceDigest)
-    expect(await readFile(first.resultPath, 'utf8')).not.toContain(secret)
+    const resultBytes = await readFile(first.resultPath, 'utf8')
+    expect(resultBytes).not.toContain(secret)
+    expect(resultBytes).not.toContain(JSON.stringify(secret).slice(1, -1))
+    expect(resultBytes).toContain(control)
     expect(await readFile(path.join(
       without.root, first.result.runs[0]!.outputDir, 'provider-result.json',
-    ), 'utf8')).not.toContain(secret)
+    ), 'utf8')).not.toContain(JSON.stringify(secret).slice(1, -1))
 
     const previous = await fixture({ baseline: 'previous-version' })
     const previousObserved: string[] = []
@@ -753,6 +809,112 @@ describe('EvalSpec v1 execution', () => {
     expect(cleanupResult.result.runs).toHaveLength(1)
     expect(cleanupResult.result.runs[0]).toMatchObject({ status: 'failed' })
   })
+
+  it('passes an external abort signal to built-in providers and stops later attempts', async () => {
+    const data = await fixture({ runs: 3, caseCount: 2 })
+    data.spec.provider = 'codex-trigger'
+    await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+    const controller = new AbortController()
+    const runBuiltinProvider = vi.fn(async (_id, input: { signal?: AbortSignal }) => {
+      expect(input.signal).toBe(controller.signal)
+      controller.abort()
+      return { usage: { inputTokens: 1, outputTokens: 1 }, grade: { passed: true, score: 1 } }
+    })
+    const result = await runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      signal: controller.signal,
+      runBuiltinProvider: runBuiltinProvider as never,
+    })
+    expect(runBuiltinProvider).toHaveBeenCalledTimes(1)
+    expect(result.result.runs).toHaveLength(1)
+    expect(result.result.runs[0]).toMatchObject({
+      status: 'failed',
+      usage: null,
+      grade: null,
+      error: { message: 'Eval execution was aborted.' },
+    })
+  })
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'cleans a custom provider tree before exiting for SIGINT and SIGTERM',
+    async () => {
+      for (const [signal, exitCode] of [
+        ['SIGINT', 130],
+        ['SIGTERM', 143],
+      ] as const) {
+        const data = await fixture({ runs: 3, caseCount: 2 })
+        const providerPath = path.join(data.root, 'provider.mjs')
+        const processPath = path.join(data.root, 'provider-processes.json')
+        await writeFile(providerPath, [
+          "import { spawn } from 'node:child_process'",
+          "import { writeFileSync } from 'node:fs'",
+          "let input = ''",
+          "process.stdin.setEncoding('utf8')",
+          "process.stdin.on('data', (chunk) => { input += chunk })",
+          "process.stdin.on('end', () => {",
+          "  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+          `  writeFileSync(${JSON.stringify(processPath)}, JSON.stringify({ parent: process.pid, child: child.pid }))`,
+          "  setInterval(() => {}, 1000)",
+          "})",
+          '',
+        ].join('\n'))
+        data.spec.provider = { type: 'custom-process', command: [process.execPath, providerPath] }
+        data.spec.timeoutMs = 30_000
+        await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
+        const bin = path.resolve('dist/bin.js')
+        const runner = spawn(process.execPath, [
+          bin, 'run', data.specPath, '--audit', data.auditPath,
+        ], { stdio: ['ignore', 'pipe', 'pipe'] })
+        const closedPromise = waitForClose(runner)
+        let stdout = ''
+        let stderr = ''
+        runner.stdout!.setEncoding('utf8')
+        runner.stderr!.setEncoding('utf8')
+        runner.stdout!.on('data', (chunk) => { stdout += chunk })
+        runner.stderr!.on('data', (chunk) => { stderr += chunk })
+        let providerPids: { parent: number; child: number } | null = null
+        try {
+          await Promise.race([
+            waitForFile(processPath),
+            closedPromise.then(({ code, signal: closedSignal }) => {
+              throw new Error(
+                `Runner exited before provider startup (code ${String(code)}, signal ${String(closedSignal)}): ${stderr}${stdout}`,
+              )
+            }),
+          ])
+          providerPids = JSON.parse(await readFile(processPath, 'utf8')) as {
+            parent: number
+            child: number
+          }
+          expect(runner.kill(signal)).toBe(true)
+          const closed = await closedPromise
+          expect(closed).toEqual({ code: exitCode, signal: null })
+          expect(stderr).toBe('')
+          const result = JSON.parse(stdout) as {
+            result: { runs: Array<{ status: string; usage: unknown; grade: unknown }> }
+          }
+          expect(result.result.runs).toHaveLength(1)
+          expect(result.result.runs[0]).toMatchObject({ status: 'failed', usage: null, grade: null })
+          await Promise.all([
+            waitForProcessExit(providerPids.parent),
+            waitForProcessExit(providerPids.child),
+          ])
+        } finally {
+          if (runner.exitCode === null && runner.signalCode === null) runner.kill('SIGKILL')
+          for (const pid of providerPids ? [providerPids.parent, providerPids.child] : []) {
+            if (processExists(pid)) {
+              try {
+                process.kill(pid, 'SIGKILL')
+              } catch {
+                // The provider can exit between the check and cleanup.
+              }
+            }
+          }
+        }
+      }
+    },
+    30_000,
+  )
 
   it('supports the new validation and inspection CLI contract', async () => {
     const data = await fixture({ baseline: 'without-skill' })

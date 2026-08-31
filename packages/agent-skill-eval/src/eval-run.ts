@@ -4,6 +4,7 @@ import path from 'node:path'
 import process from 'node:process'
 import fs from 'fs-extra'
 import { sha256, toPosixRelative } from './common.js'
+import { credentialValues, redactSecrets } from './credentials.js'
 import {
   CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST,
   executeCustomProcessProvider,
@@ -38,6 +39,7 @@ import type { Digest } from './types.js'
 
 export interface RunEvalSpecOptions {
   auditPath: string
+  signal?: AbortSignal
   sourceEnv?: NodeJS.ProcessEnv
   builtinProviderDependencies?: BuiltinEvalProviderDependencies
   runBuiltinProvider?: (
@@ -73,14 +75,11 @@ interface RunInputSnapshot {
 class BoundInputChangedError extends Error {}
 
 function secretValues(sourceEnv: NodeJS.ProcessEnv): string[] {
-  return [...new Set(CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST.flatMap((name) => {
-    const value = sourceEnv[name]
-    return value ? [value, JSON.stringify(value).slice(1, -1)] : []
-  }))].filter(Boolean).sort((left, right) => right.length - left.length)
+  return credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
 }
 
 function redactText(value: string, secrets: readonly string[]): string {
-  return secrets.reduce((current, secret) => current.replaceAll(secret, '[redacted]'), value)
+  return redactSecrets(value, secrets)
 }
 
 function redactValue<T>(value: T, secrets: readonly string[]): T {
@@ -88,7 +87,7 @@ function redactValue<T>(value: T, secrets: readonly string[]): T {
   if (Array.isArray(value)) return value.map((entry) => redactValue(entry, secrets)) as T
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-      key,
+      redactText(key, secrets),
       redactValue(entry, secrets),
     ])) as T
   }
@@ -392,6 +391,10 @@ function isCleanupFailure(error: unknown): boolean {
     /cleanup|termination|process-tree/u.test(error instanceof Error ? error.message : String(error))
 }
 
+function abortError(): Error {
+  return new Error('Eval execution was aborted.')
+}
+
 async function writeResultSafely(
   resultPath: string,
   result: EvalResult,
@@ -481,6 +484,7 @@ export async function runEvalSpec(
           'output',
         )
         try {
+          if (options.signal?.aborted) throw abortError()
           await assertInputsUnchanged(calculated, captured)
           await assertSnapshotUnchanged(snapshot, captured)
           const prepared = await prepareAttempt({
@@ -500,6 +504,7 @@ export async function runEvalSpec(
             fixturesPath: prepared.fixturesPath,
             outputDir: prepared.runOutput,
             timeoutMs: calculated.spec.timeoutMs,
+            ...(options.signal ? { signal: options.signal } : {}),
           }
           const providerResult = typeof calculated.spec.provider === 'string'
             ? await (options.runBuiltinProvider ?? runBuiltinEvalProvider)(
@@ -513,6 +518,7 @@ export async function runEvalSpec(
                 input,
                 sourceEnv,
               })
+          if (options.signal?.aborted) throw abortError()
           const sanitized = redactValue(providerResult, secrets)
           usage = sanitized.usage === null ? null : { ...sanitized.usage }
           grade = sanitized.grade
@@ -524,8 +530,15 @@ export async function runEvalSpec(
           status = 'completed'
         } catch (caught) {
           status = isTimeout(caught) ? 'timeout' : 'failed'
+          usage = null
+          grade = null
           error = { message: redactText(caught instanceof Error ? caught.message : String(caught), secrets) || 'Provider failed.' }
-          if (caught instanceof BoundInputChangedError || isCleanupFailure(caught) || status === 'timeout') stop = true
+          if (
+            options.signal?.aborted
+            || caught instanceof BoundInputChangedError
+            || isCleanupFailure(caught)
+            || status === 'timeout'
+          ) stop = true
         }
         try {
           await assertInputsUnchanged(calculated, captured)
@@ -562,6 +575,13 @@ export async function runEvalSpec(
     last.usage = null
     last.grade = null
     last.error = { message: redactText((changed as Error).message, secrets) }
+  }
+  if (options.signal?.aborted && runs.length > 0) {
+    const last = runs[runs.length - 1]!
+    last.status = 'failed'
+    last.usage = null
+    last.grade = null
+    last.error = { message: abortError().message }
   }
   const result: EvalResult = {
     version: 1,

@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { ParseError, parseTOML, type AST } from 'toml-eslint-parser';
 
 import { CODEX_EVAL_CREDENTIAL_CONFIG_LINES } from './codex-eval-isolation.js';
+import { redactSecrets } from './credentials.js';
 
 export const DEFAULT_CODEX_EVAL_MODEL = 'gpt-5.6-luna';
 
@@ -710,14 +711,7 @@ export function redactCodexEvalText(
   value: string,
   runtime: CodexEvalRuntimeConfig,
 ): string {
-  let redacted = value;
-  const secrets = [...new Set(runtime.sensitiveValues)]
-    .filter(Boolean)
-    .sort((left, right) => right.length - left.length);
-  for (const secret of secrets) {
-    if (secret) redacted = redacted.replaceAll(secret, '[redacted]');
-  }
-  return redacted;
+  return redactSecrets(value, runtime.sensitiveValues);
 }
 
 export function redactCodexEvalValue<T>(
@@ -732,7 +726,10 @@ export function redactCodexEvalValue<T>(
   }
   if (isRecord(value)) {
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, redactCodexEvalValue(entry, runtime)]),
+      Object.entries(value).map(([key, entry]) => [
+        redactCodexEvalText(key, runtime),
+        redactCodexEvalValue(entry, runtime),
+      ]),
     ) as T;
   }
   return value;
