@@ -773,7 +773,7 @@ async function runTriggerOnce(options: {
       );
       if (reason) finishRun(reason);
     });
-    await session.initialize(control.remaining('initialize'));
+    await session.initialize(control.rpcTimeout('initialize'));
     control.throwIfStopped('initialize');
     const threadResult = await session.sendRequest('thread/start', {
       cwd: workspaceRoot,
@@ -781,7 +781,7 @@ async function runTriggerOnce(options: {
       sandbox: 'read-only',
       ephemeral: false,
       ...(options.model ? { model: options.model } : {}),
-    }, control.remaining('thread/start'));
+    }, control.rpcTimeout('thread/start'));
     rootThreadId = extractAppServerThreadId(threadResult);
     control.throwIfStopped('turn/start');
     await session.sendRequest('turn/start', {
@@ -791,7 +791,7 @@ async function runTriggerOnce(options: {
       approvalPolicy: 'never',
       sandboxPolicy: { type: 'readOnly', networkAccess: true },
       ...(options.model ? { model: options.model } : {}),
-    }, control.remaining('turn/start'));
+    }, control.rpcTimeout('turn/start'));
     const termination = await runDone;
     control.throwIfStopped('turn wait');
     removeHandler();

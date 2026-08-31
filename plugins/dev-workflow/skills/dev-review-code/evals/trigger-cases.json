@@ -9,7 +9,6 @@
       "dev-review-spec",
       "dev-implement"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

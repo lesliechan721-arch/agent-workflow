@@ -32,6 +32,18 @@ function sha256(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
+function computeEvalProviderDigest(provider) {
+  assert.equal(provider, 'codex-conversation');
+  return sha256(JSON.stringify(provider));
+}
+
+function emptyWorkspaceDigest() {
+  const domain = Buffer.from('aw-eval-workspace-records-v1', 'utf8');
+  const length = Buffer.allocUnsafe(8);
+  length.writeBigUInt64BE(BigInt(domain.length));
+  return `sha256:${createHash('sha256').update(length).update(domain).digest('hex')}`;
+}
+
 function resultSummary(runs) {
   const summary = { passed: 0, failed: 0, timeout: 0, error: 0 };
   for (const run of runs) {
@@ -215,7 +227,10 @@ exec "${process.execPath}" "${evalBin}" "$@"
         suite: options.suite ?? 'release',
         profile: options.profile ?? 'project-default',
       },
-      workspace: 'workspace',
+      workspace: {
+        path: 'workspace',
+        digest: emptyWorkspaceDigest(),
+      },
       target: { path: 'target', digest: check.target.digest },
       cases: { path: 'cases.json', digest: sha256(casesRaw) },
       provider: 'codex-conversation',
@@ -235,6 +250,8 @@ exec "${process.execPath}" "${evalBin}" "$@"
     if (options.auditTargetMismatch) targets[0].digest = spec.cases.digest;
     const audit = {
       version: 1,
+      workspaceDigest: spec.workspace.digest,
+      providerDigest: computeEvalProviderDigest(spec.provider),
       targets,
       caseDigest: spec.cases.digest,
       status: options.auditStatus ?? 'pass',

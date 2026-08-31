@@ -3,7 +3,6 @@
   "suite": {
     "kind": "conversation",
     "unitUnderTest": "dev-review-code",
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

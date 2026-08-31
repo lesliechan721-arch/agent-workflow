@@ -12,7 +12,6 @@ export interface SelectedCaseSuite {
   kind: SelectedCaseSuiteKind
   unitUnderTest: string
   participants?: string[]
-  defaultGrader?: string
   policy?: {
     optimization?: string
     falseNegativeCost?: string
@@ -221,7 +220,7 @@ function parseSuite(value: unknown): SelectedCaseSuite {
   const suite = record(value, 'selected cases.suite')
   onlyKeys(
     suite,
-    ['kind', 'unitUnderTest', 'participants', 'defaultGrader', 'policy', 'runtime'],
+    ['kind', 'unitUnderTest', 'participants', 'policy', 'runtime'],
     'selected cases.suite',
   )
   if (suite.kind !== 'trigger' && suite.kind !== 'conversation' && suite.kind !== 'custom-process') {
@@ -234,9 +233,6 @@ function parseSuite(value: unknown): SelectedCaseSuite {
   if (suite.participants !== undefined) {
     result.participants = uniqueStrings(suite.participants, 'selected cases.suite.participants')
       .map((entry, index) => safeId(entry, `selected cases.suite.participants[${index}]`))
-  }
-  if (suite.defaultGrader !== undefined) {
-    result.defaultGrader = nonEmptyString(suite.defaultGrader, 'selected cases.suite.defaultGrader')
   }
   if (suite.policy !== undefined) {
     const policy = record(suite.policy, 'selected cases.suite.policy')

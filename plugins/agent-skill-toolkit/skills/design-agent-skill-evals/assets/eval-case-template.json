@@ -3,7 +3,6 @@
   "suite": {
     "kind": "trigger",
     "unitUnderTest": "skill-name",
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "medium",

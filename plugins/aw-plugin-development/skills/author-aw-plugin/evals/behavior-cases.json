@@ -13,7 +13,6 @@
       "audit-agent-skill-evals",
       "run-aw-skill-evals"
     ],
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

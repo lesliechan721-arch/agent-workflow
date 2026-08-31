@@ -29,13 +29,13 @@ aw-skill-eval spec validate <spec.json>
 
 ## 2. 复用或取得 EvalAudit
 
-先检查用户显式提供的 Audit；没有显式路径时，只检查 spec 同目录的 `audit.json`。用以下命令验证 target、可选 previous-version、case digest 和 selected case 覆盖：
+先检查用户显式提供的 Audit；没有显式路径时，只检查 spec 同目录的 `audit.json`。用以下命令验证 provider、workspace digest、current target、可选 previous-version target、case digest 和 selected case 覆盖：
 
 ```bash
 aw-skill-eval audit validate <audit.json> --spec <spec.json>
 ```
 
-精确绑定且 `status=pass` 时复用。Audit 缺失或因 target/case 绑定陈旧而不可复用时，在全新上下文调用 `audit-agent-skill-evals` 的 preflight，并只传 validated spec。`status=fail` 或 `unknown`、blocked case、格式错误或重新验证失败时停止；不得启动模型，也不得为通过而修改 Audit、case 或 Skill。
+精确绑定且 `status=pass` 时复用；`runs` 或 `timeoutMs` 改变不影响复用。Audit 缺失或绑定陈旧时，在全新上下文调用 `audit-agent-skill-evals` 的 preflight，并只传 validated spec。旧版使用字符串 `workspace` 的 v1 Spec 必须重新 prepare 并重新 Audit。`status=fail` 或 `unknown`、blocked case、格式错误或重新验证失败时停止；不得启动模型，也不得为通过而修改 Audit、case 或 Skill。
 
 ## 3. 披露调用与副作用
 

@@ -2,7 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import fs from 'fs-extra'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_CODEX_EVAL_MODEL,
@@ -20,6 +20,7 @@ async function tempRoot(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(tempDirs.splice(0).map((root) => fs.remove(root)))
 })
 
@@ -163,4 +164,40 @@ describe('Codex eval provider runtime config', () => {
       '[redacted]': '[redacted]',
     })
   })
+
+  it.each(['auth.json', '.credentials.json'])(
+    'stages the same %s bytes used to collect sensitive values when the source rotates',
+    async (name) => {
+      const root = await tempRoot()
+      const destination = await tempRoot()
+      const source = path.join(root, name)
+      const oldToken = `old-${name}-token`
+      const newToken = `new-${name}-token`
+      const oldBytes = Buffer.from(JSON.stringify({ token: oldToken }))
+      const newBytes = Buffer.from(JSON.stringify({ token: newToken }))
+      await fs.writeFile(source, oldBytes)
+      const runtime = await resolveCodexEvalRuntimeConfig({
+        sourceEnv: { CODEX_HOME: root },
+        inheritUserConfig: false,
+      })
+      const originalReadFile = fs.readFile.bind(fs) as (...args: any[]) => Promise<any>
+      let rotated = false
+      vi.spyOn(fs, 'readFile').mockImplementation((async (...args: any[]) => {
+        const value = await originalReadFile(...args)
+        if (!rotated && path.resolve(String(args[0])) === source) {
+          rotated = true
+          await fs.writeFile(source, newBytes)
+        }
+        return value
+      }) as typeof fs.readFile)
+
+      await materializeCodexEvalRuntimeHome(runtime, destination)
+
+      expect(rotated).toBe(true)
+      await expect(fs.readFile(source)).resolves.toEqual(newBytes)
+      await expect(fs.readFile(path.join(destination, name))).resolves.toEqual(oldBytes)
+      expect(runtime.sensitiveValues).toContain(oldToken)
+      expect(runtime.sensitiveValues).not.toContain(newToken)
+    },
+  )
 })

@@ -9,7 +9,7 @@
 
 ## 工作方式
 
-preflight 保持只读，并且必须由没有参与当前 case/Oracle 设计的上下文完成。result-triage 默认在聊天中返回，也可以按用户要求写 `triage.md`。clean success 不需要额外 triage。
+preflight 保持只读，并且必须由没有参与当前 case/Oracle 设计的上下文完成。机器核对 provider、workspace、current/previous target、case digest 和 selected cases；人工只读 case 明确引用的材料。result-triage 默认在聊天中返回，也可以按用户要求写 `triage.md`。clean success 不需要额外 triage。
 
 ## 边界
 

@@ -15,7 +15,6 @@
       "author-aw-plugin",
       "review-aw-plugin"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

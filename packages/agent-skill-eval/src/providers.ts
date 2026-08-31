@@ -16,9 +16,9 @@ import {
 } from './codex-eval-cases.js'
 import { inspectCodexEvalHostIsolation } from './codex-eval-isolation.js'
 import {
-  cleanCodexEvalRuntimeConfig,
   redactCodexEvalText,
   redactCodexEvalValue,
+  type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js'
 import {
   runCodexTriggerProviderCase,
@@ -106,6 +106,7 @@ export interface BuiltinEvalProviderDependencies {
   sourceEnv?: NodeJS.ProcessEnv
   codexBin?: string
   model?: string
+  codexRuntime?: CodexEvalRuntimeConfig
 }
 
 export interface BuiltinEvalProvider {
@@ -161,23 +162,37 @@ async function assertRunInput(
   return { ...input, ...paths }
 }
 
-function sensitiveValues(sourceEnv: NodeJS.ProcessEnv): string[] {
-  return credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
+function sensitiveValues(
+  sourceEnv: NodeJS.ProcessEnv,
+  runtime?: CodexEvalRuntimeConfig,
+): string[] {
+  return [
+    ...credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST),
+    ...(runtime?.sensitiveValues ?? []),
+  ]
 }
 
-function redactSensitiveText(value: string, sourceEnv: NodeJS.ProcessEnv): string {
-  return redactSecrets(value, sensitiveValues(sourceEnv))
+function redactSensitiveText(
+  value: string,
+  sourceEnv: NodeJS.ProcessEnv,
+  runtime?: CodexEvalRuntimeConfig,
+): string {
+  return redactSecrets(value, sensitiveValues(sourceEnv, runtime))
 }
 
-function redactSensitiveValue<T>(value: T, sourceEnv: NodeJS.ProcessEnv): T {
-  if (typeof value === 'string') return redactSensitiveText(value, sourceEnv) as T
+function redactSensitiveValue<T>(
+  value: T,
+  sourceEnv: NodeJS.ProcessEnv,
+  runtime?: CodexEvalRuntimeConfig,
+): T {
+  if (typeof value === 'string') return redactSensitiveText(value, sourceEnv, runtime) as T
   if (Array.isArray(value)) {
-    return value.map((entry) => redactSensitiveValue(entry, sourceEnv)) as T
+    return value.map((entry) => redactSensitiveValue(entry, sourceEnv, runtime)) as T
   }
   if (isRecord(value)) {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-      redactSensitiveText(key, sourceEnv),
-      redactSensitiveValue(entry, sourceEnv),
+      redactSensitiveText(key, sourceEnv, runtime),
+      redactSensitiveValue(entry, sourceEnv, runtime),
     ])) as T
   }
   return value
@@ -327,7 +342,8 @@ function graderCase(prompt: string): ConversationEvalCase {
 
 function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexEvalTransport {
   const sourceEnv = dependencies.sourceEnv ?? process.env
-  const runtime = cleanCodexEvalRuntimeConfig(sourceEnv, dependencies.model)
+  const runtime = dependencies.codexRuntime
+  if (!runtime) throw new Error('Built-in Codex provider requires a resolved runtime.')
   const codexBin = dependencies.codexBin ?? sourceEnv.AW_SKILL_EVAL_CODEX_BIN ?? 'codex'
   const model = dependencies.model ?? runtime.model ?? undefined
   const redact = <T>(value: T): T => redactCodexEvalValue(value, runtime)
@@ -502,7 +518,11 @@ async function runTriggerProvider(
   let result: CodexTriggerTransportResult
   try {
     result = await (dependencies.transport ?? defaultTransport(dependencies)).runTrigger(typedInput)
-    result = redactSensitiveValue(result, dependencies.sourceEnv ?? process.env)
+    result = redactSensitiveValue(
+      result,
+      dependencies.sourceEnv ?? process.env,
+      dependencies.codexRuntime,
+    )
   } catch (error) {
     throw new EvalProviderExecutionError(
       'codex-trigger',
@@ -558,7 +578,11 @@ async function runConversationProvider(
   let evaluation: CodexConversationTransportResult
   try {
     evaluation = await transport.runConversation(typedInput)
-    evaluation = redactSensitiveValue(evaluation, dependencies.sourceEnv ?? process.env)
+    evaluation = redactSensitiveValue(
+      evaluation,
+      dependencies.sourceEnv ?? process.env,
+      dependencies.codexRuntime,
+    )
   } catch (error) {
     throw new EvalProviderExecutionError(
       'codex-conversation',
@@ -603,7 +627,11 @@ async function runConversationProvider(
       timeoutMs: graderTimeoutMs,
       ...(checkedInput.signal ? { signal: checkedInput.signal } : {}),
     })
-    grader = redactSensitiveValue(grader, dependencies.sourceEnv ?? process.env)
+    grader = redactSensitiveValue(
+      grader,
+      dependencies.sourceEnv ?? process.env,
+      dependencies.codexRuntime,
+    )
     await fs.writeFile(path.join(checkedInput.outputDir, 'grader-output.txt'), grader.output)
   } catch (error) {
     throw new EvalProviderExecutionError(
@@ -655,12 +683,17 @@ const builtinRegistry: ReadonlyMap<BuiltinEvalProviderId, BuiltinEvalProvider> =
     ): Promise<EvalProviderRunResult> => {
       const sourceEnv = dependencies.sourceEnv ?? process.env
       try {
-        return redactSensitiveValue(await implementation(input, dependencies), sourceEnv)
+        return redactSensitiveValue(
+          await implementation(input, dependencies),
+          sourceEnv,
+          dependencies.codexRuntime,
+        )
       } catch (error) {
         const stage = error instanceof EvalProviderExecutionError ? error.stage : 'evaluation'
         const message = redactSensitiveText(
           error instanceof Error ? error.message : String(error),
           sourceEnv,
+          dependencies.codexRuntime,
         )
         throw new EvalProviderExecutionError(id, stage, message)
       }

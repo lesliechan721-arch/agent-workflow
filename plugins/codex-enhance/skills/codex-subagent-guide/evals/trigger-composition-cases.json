@@ -6,7 +6,6 @@
     "participants": [
       "codex-explore"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",
