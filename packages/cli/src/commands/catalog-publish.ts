@@ -112,10 +112,9 @@ async function assertSnapshotBinding(
   snapshotRoot: string,
   descriptor: CatalogPublicationDescriptor,
 ): Promise<void> {
-  const [stats, validation, ledgerBytes] = await Promise.all([
+  const [stats, validation] = await Promise.all([
     fs.lstat(snapshotRoot),
     validatePublishedCatalogSnapshot(snapshotRoot),
-    fs.readFile(path.join(snapshotRoot, 'plugin-release-ledger.json')),
   ]);
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
     throw new Error('Prepared Catalog snapshot must be a regular local directory.');
@@ -127,11 +126,9 @@ async function assertSnapshotBinding(
     || validation.snapshotDigest !== descriptor.snapshotDigest
     || release.state !== 'published'
     || release.sourceHead !== descriptor.sourceHead
-    || release.contentDigest !== descriptor.contentDigest
-    || release.planId !== descriptor.planId
-    || digest(ledgerBytes) !== descriptor.ledgerDigest
+    || descriptor.contentDigest !== descriptor.planId
   ) {
-    throw new Error('Prepared Catalog descriptor, snapshot, ledger, or plan identity changed.');
+    throw new Error('Prepared Catalog descriptor, snapshot, or plan identity changed.');
   }
   await assertNoGitAttributes(snapshotRoot);
 }

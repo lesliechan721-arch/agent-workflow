@@ -50,7 +50,7 @@ describe('AW capability contracts', () => {
     expect(registry).toEqual(expect.arrayContaining([
       'aw.plugin-manifest.v2',
       'aw.plugin-authoring.v1',
-      'aw.catalog-snapshot.v5',
+      'aw.catalog-snapshot.v6',
       'aw.self-check.v1',
     ]))
     expect(normalizeAwCapabilities([

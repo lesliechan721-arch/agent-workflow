@@ -56,7 +56,6 @@ function catalogPublicationDescriptor(overrides: Record<string, unknown> = {}) {
     snapshotDigest: 'catalog-digest',
     contentDigest: sha256('catalog-content'),
     planId: sha256('catalog-plan'),
-    ledgerDigest: sha256(Buffer.from('{}')),
     pluginNames: [],
     ...overrides,
   };
@@ -73,8 +72,6 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
   await fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes);
   await fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes);
   await fs.writeFile(path.join(artifacts, 'catalog', 'catalog-manifest.json'), '{}');
-  await fs.writeFile(path.join(artifacts, 'catalog', 'plugin-release-ledger.json'), '{}');
-  const catalogLedgerDigest = sha256(Buffer.from('{}'));
   const catalogPublication = catalogPublicationDescriptor();
   return {
     root,
@@ -103,7 +100,6 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
       } : null,
       catalog: axes.catalog ? {
         version: '2.3.0', path: 'artifacts/catalog', snapshotDigest: 'catalog-digest',
-        ledgerDigest: catalogLedgerDigest,
         publication: catalogPublication,
       } : null,
     },
@@ -129,9 +125,6 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
     catalogModules: {
       catalogSnapshot: {
         validateCatalogSnapshotComplete: async () => ({ snapshotDigest: 'catalog-digest', manifest: {} }),
-      },
-      pluginStaging: {
-        validatePluginReleaseLedgerAgainstManifest: () => undefined,
       },
     },
     attemptPath: path.join(fixture.root, 'attempted.json'),
@@ -254,7 +247,6 @@ describe('local prepared release', () => {
         const outputRoot = path.join(root, 'common-catalog-preparation');
         await fs.mkdir(outputRoot, { recursive: true });
         await fs.writeFile(path.join(outputRoot, 'catalog-manifest.json'), '{}');
-        await fs.writeFile(path.join(outputRoot, 'plugin-release-ledger.json'), '{}');
         return {
           prepared: { outputRoot },
           descriptor: {
@@ -268,6 +260,8 @@ describe('local prepared release', () => {
       disposeCatalog: async () => undefined,
     });
     expect(descriptor.source.targetsDigest).toBeNull();
+    expect(descriptor.catalog).not.toHaveProperty('ledgerDigest');
+    expect(descriptor.catalog.publication).not.toHaveProperty('ledgerDigest');
     expect(forbiddenCliRead).not.toHaveBeenCalled();
 
     const prepared = { root: path.join(releaseRoot, 'prepared'), descriptor };
@@ -481,7 +475,6 @@ describe('local prepared release', () => {
         const outputRoot = path.join(root, 'common-catalog-preparation');
         await fs.mkdir(outputRoot, { recursive: true });
         await fs.writeFile(path.join(outputRoot, 'catalog-manifest.json'), '{}');
-        await fs.writeFile(path.join(outputRoot, 'plugin-release-ledger.json'), '{}');
         return {
           prepared: { outputRoot },
           descriptor: catalogPublicationDescriptor(),
@@ -764,10 +757,13 @@ describe('local prepared release', () => {
     expect(publishCatalog).toHaveBeenCalledOnce();
   });
 
-  it('rejects Catalog ledger drift', async () => {
+  it('rejects Catalog snapshot drift', async () => {
     const drift = await publicationFixture({ cli: false, catalog: true });
-    await fs.writeFile(path.join(drift.root, 'artifacts', 'catalog', 'plugin-release-ledger.json'), '{"changed":true}');
-    await expect(publishPreparedRelease({ ...publishOptions(drift), publishCatalog: vi.fn() }))
-      .rejects.toThrow('ledger digest changed');
+    const options = publishOptions(drift);
+    options.catalogModules.catalogSnapshot.validateCatalogSnapshotComplete = async () => ({
+      snapshotDigest: 'changed', manifest: {},
+    });
+    await expect(publishPreparedRelease({ ...options, publishCatalog: vi.fn() }))
+      .rejects.toThrow('snapshot digest changed');
   });
 });

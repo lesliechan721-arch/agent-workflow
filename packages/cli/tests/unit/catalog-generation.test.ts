@@ -194,7 +194,7 @@ describe('Catalog immutable generations', () => {
         workspaceIdentity: 'workspace:future-active',
         catalogVersion: '1.0.0',
         content: 'future active\n',
-        requiredAwCapabilities: ['aw.catalog-snapshot.v5', 'aw.future-feature.v3'],
+        requiredAwCapabilities: ['aw.catalog-snapshot.v6', 'aw.future-feature.v3'],
       }),
       createGenerationSnapshot({
         root: supportedActive,
@@ -207,7 +207,7 @@ describe('Catalog immutable generations', () => {
         workspaceIdentity: 'workspace:candidate',
         catalogVersion: '1.1.0',
         content: 'future candidate\n',
-        requiredAwCapabilities: ['aw.catalog-snapshot.v5', 'aw.future-feature.v3'],
+        requiredAwCapabilities: ['aw.catalog-snapshot.v6', 'aw.future-feature.v3'],
       }),
     ]);
     await configureSources({

@@ -97,7 +97,6 @@ export interface CatalogPublicationDescriptor {
   snapshotDigest: string;
   contentDigest: string;
   planId: string;
-  ledgerDigest: string;
   pluginNames: string[];
 }
 
@@ -507,11 +506,7 @@ export async function prepareCatalogPublicationInspection(options: {
         'Catalog remote changed during preparation. Increase the Catalog version before publishing again.',
       );
     }
-    const [, ledgerBytes] = await Promise.all([
-      validatePublishedCatalogSnapshot(prepared.outputRoot),
-      fs.readFile(path.join(prepared.outputRoot, 'plugin-release-ledger.json')),
-    ]);
-    const ledgerDigest = digest(ledgerBytes);
+    await validatePublishedCatalogSnapshot(prepared.outputRoot);
     const descriptor: CatalogPublicationDescriptor = {
       schemaVersion: 1,
       workspaceIdentity: catalogWorkspace.workspaceIdentity,
@@ -528,7 +523,6 @@ export async function prepareCatalogPublicationInspection(options: {
       snapshotDigest: prepared.snapshotDigest,
       contentDigest: prepared.contentDigest,
       planId: prepared.planId,
-      ledgerDigest,
       pluginNames: [...prepared.pluginNames],
     };
     return {
@@ -634,7 +628,6 @@ export async function readCatalogPublicationBranchState(options: {
   commit: string;
   version: string;
   manifest: Awaited<ReturnType<typeof validatePublishedCatalogSnapshot>>['manifest'];
-  ledger: Awaited<ReturnType<typeof validatePublishedCatalogSnapshot>>['ledger'];
   snapshotDigest: string;
 } | null> {
   assertSafeBranchValue(options.branch);
@@ -666,7 +659,6 @@ export async function readCatalogPublicationBranchState(options: {
       commit,
       version: validation.manifest.catalogVersion,
       manifest: validation.manifest,
-      ledger: validation.ledger,
       snapshotDigest: validation.snapshotDigest,
     };
   } finally {

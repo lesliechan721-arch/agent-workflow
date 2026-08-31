@@ -33,7 +33,7 @@ describe('current AW executable capabilities', () => {
     })
     expect(result.capabilities).toEqual([...IMPLEMENTED_AW_CAPABILITIES].sort())
     expect(result.capabilities).toContain('aw.plugin-manifest.v2')
-    expect(result.capabilities).toContain('aw.catalog-snapshot.v5')
+    expect(result.capabilities).toContain('aw.catalog-snapshot.v6')
     expect(result.capabilities).toContain('aw.catalog-source.v2')
     expect(result.capabilities).toContain('aw.catalog-dev-source.v1')
     expect(result.capabilities).not.toContain('aw.skill-eval.v1')

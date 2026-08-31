@@ -3,7 +3,7 @@ import type {
   CatalogGenerationLastCheckV1,
   CatalogGenerationPointerV1,
   CatalogGenerationRefreshPolicy,
-  CatalogManifestV5,
+  CatalogManifestV6,
 } from '../types.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readCatalogGenerationControlSnapshot } from '../utils/catalog-generation-control-snapshot.js';
@@ -127,13 +127,13 @@ function generationViewModel(pointer: CatalogGenerationPointerV1): CatalogGenera
   };
 }
 
-function manifestEntryMap(manifest: CatalogManifestV5): Map<string, CatalogManifestV5['entries'][number]> {
+function manifestEntryMap(manifest: CatalogManifestV6): Map<string, CatalogManifestV6['entries'][number]> {
   return new Map(manifest.entries.map((entry) => [entry.name, entry]));
 }
 
 export function countCatalogPluginChanges(
-  active: CatalogManifestV5,
-  candidate: CatalogManifestV5,
+  active: CatalogManifestV6,
+  candidate: CatalogManifestV6,
 ): CatalogPluginChangesViewModel {
   const activeEntries = manifestEntryMap(active);
   const candidateEntries = manifestEntryMap(candidate);

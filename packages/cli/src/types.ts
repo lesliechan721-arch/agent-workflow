@@ -3,7 +3,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   CatalogChannel,
-  CatalogManifestV5,
+  CatalogManifestV6,
   CatalogSourceId,
   CliVersion,
   DistributionName,
@@ -127,7 +127,7 @@ export interface CatalogSourceResolution {
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
   manifestDigest: string;
   snapshotDigest: string;
   cacheEntryKey: string;
@@ -234,7 +234,7 @@ export interface CatalogGenerationSetSource {
   snapshotDigest: string;
   generationKey: string;
   snapshotPath: string;
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
 }
 
 export interface CatalogGenerationSet {

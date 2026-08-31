@@ -7,12 +7,12 @@ import {
 } from '@lesliechan721/aw-plugin-core';
 
 import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
-import type { CatalogManifestV5 } from '../types.js';
+import type { CatalogManifestV6 } from '../types.js';
 import { calculateFileDigest } from './bundle-integrity.js';
 
 export interface CatalogSnapshotValidation {
   rootDir: string;
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
   manifestDigest: string;
   snapshotDigest: string;
 }

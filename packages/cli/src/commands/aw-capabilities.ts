@@ -43,7 +43,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.catalog-dev-source.v1',
   'aw.catalog-publication.v1',
   'aw.review-publication.v1',
-  'aw.catalog-snapshot.v5',
+  'aw.catalog-snapshot.v6',
   'aw.self-check.v1',
 ] as const satisfies readonly RegisteredAwCapabilityId[]
 

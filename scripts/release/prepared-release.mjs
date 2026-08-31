@@ -432,7 +432,6 @@ export async function prepareLocalRelease(channel, options = {}) {
             version: candidates.catalog,
             path: path.relative(temporaryRoot, catalogPath),
             snapshotDigest: preparation.descriptor.snapshotDigest,
-            ledgerDigest: preparation.descriptor.ledgerDigest,
             publication: preparation.descriptor,
           };
         } finally {
@@ -498,10 +497,8 @@ export async function readPreparedDescriptor(options = {}) {
     || (!descriptor.axes.cli && descriptor.npm !== null)
     || (descriptor.axes.catalog && (
       descriptor.catalog?.version !== descriptor.candidates.catalog
-      || typeof descriptor.catalog?.ledgerDigest !== 'string'
       || descriptor.catalog?.publication?.catalogVersion !== descriptor.candidates.catalog
       || descriptor.catalog?.publication?.snapshotDigest !== descriptor.catalog?.snapshotDigest
-      || descriptor.catalog?.publication?.ledgerDigest !== descriptor.catalog?.ledgerDigest
     ))
     || (!descriptor.axes.catalog && descriptor.catalog !== null)
   ) {
@@ -578,18 +575,8 @@ async function assertPreparedArtifacts(root, descriptor, options = {}) {
       throw new Error('Prepared Catalog path is not a regular local directory; prepare again.');
     }
     const validation = await modules.catalogSnapshot.validateCatalogSnapshotComplete(catalogRoot);
-    const ledgerPath = path.join(catalogRoot, 'plugin-release-ledger.json');
-    const ledgerBytes = await fs.readFile(ledgerPath);
-    const ledger = JSON.parse(ledgerBytes);
-    modules.pluginStaging.validatePluginReleaseLedgerAgainstManifest(ledger, validation.manifest);
     if (validation.snapshotDigest !== descriptor.catalog.snapshotDigest) {
       throw new Error('Prepared Catalog snapshot digest changed; prepare again.');
-    }
-    if (
-      digest(ledgerBytes) !== descriptor.catalog.ledgerDigest
-      || descriptor.catalog.publication.ledgerDigest !== descriptor.catalog.ledgerDigest
-    ) {
-      throw new Error('Prepared Catalog ledger digest changed; prepare again.');
     }
   }
 }

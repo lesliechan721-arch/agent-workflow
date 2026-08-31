@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process';
-import crypto from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -15,7 +14,7 @@ import {
   validateCatalogSnapshotComplete,
   validateCatalogSnapshotTransport,
 } from '../../src/utils/catalog-snapshot.js';
-import { createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
+import { createCatalogManifestV6Entry } from '../../src/utils/catalog-manifest-v6.js';
 import { calculateCatalogSourcesConfigDigest } from '../../src/utils/catalog-sources.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import {
@@ -63,55 +62,14 @@ describe('catalog Git authentication environment', () => {
   });
 });
 
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) =>
-      `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sha256(value: unknown): string {
-  return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`;
-}
-
 async function publishFixtureManifest(root: string): Promise<void> {
   const manifestPath = path.join(root, 'catalog-manifest.json');
   const manifest = await fs.readJson(manifestPath);
-  const contentDigest = sha256({
-    schemaIdentity: { schemaVersion: manifest.schemaVersion },
-    marketplaceMetadata: { name: 'aw', ...manifest.marketplace },
-    requires: manifest.requires,
-    plugins: manifest.entries.map((entry: Record<string, string>) => ({
-      name: entry.name,
-      targetVersion: entry.version,
-      contentDigest: entry.contentDigest,
-    })),
-  });
   manifest.release = {
     state: 'published',
-    targetVersion: manifest.catalogVersion,
-    planId: contentDigest,
     sourceHead: '1'.repeat(40),
-    contentDigest,
   };
-  await Promise.all([
-    fs.writeJson(manifestPath, manifest),
-    fs.writeJson(path.join(root, 'plugin-release-ledger.json'), {
-      schemaVersion: 2,
-      records: manifest.entries.map((entry: Record<string, string>) => ({
-        plugin: entry.name,
-        version: entry.version,
-        contentDigest: entry.contentDigest,
-        artifactDigest: entry.artifactDigest,
-        manifestDigest: entry.manifestDigest,
-        channel: manifest.channel,
-        catalogVersion: manifest.catalogVersion,
-      })),
-    }),
-  ]);
+  await fs.writeJson(manifestPath, manifest);
 }
 
 function fixturePath(name: string): string {
@@ -136,16 +94,15 @@ async function publish(root: string, resolvedCommit: string): Promise<ReturnType
 }
 
 describe('catalog source current and last-good cache', () => {
-  it('rejects a cached published snapshot after its required ledger is removed', async () => {
-    const root = fixturePath('cache-published-ledger');
+  it('accepts a cached published snapshot without a release ledger', async () => {
+    const root = fixturePath('cache-published-no-ledger');
     await createCatalogSnapshotFixture(root);
     await publishFixtureManifest(root);
     const location = await publish(root, '1'.repeat(40));
-    await fs.remove(path.join(location.currentDir, 'snapshot', 'plugin-release-ledger.json'));
     await expect(readCatalogSourceCache({
       location, sourceId: 'team', sourceIdentity: identity,
       requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    })).resolves.toBeNull();
+    })).resolves.not.toBeNull();
   });
   it('publishes complete validated snapshots and rotates current to last-good', async () => {
     const first = fixturePath('cache-first');
@@ -328,19 +285,19 @@ describe('catalog source current and last-good cache', () => {
 });
 
 describe('multi-source resolver public behavior', () => {
-  it('rejects published CLI and path source validation without the release ledger', async () => {
+  it('accepts published CLI and path source validation without a release ledger', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('published-without-ledger');
     await createCatalogSnapshotFixture(root);
     await publishFixtureManifest(root);
-    await fs.remove(path.join(root, 'plugin-release-ledger.json'));
-
-    await expect(validateCatalogSnapshotTransport(root)).rejects.toThrow(/must include plugin-release-ledger/u);
+    await expect(validateCatalogSnapshotTransport(root)).resolves.toMatchObject({
+      manifest: { release: { state: 'published', sourceHead: '1'.repeat(40) } },
+    });
     await expect(catalogPathProviderInternal.resolve({
-      id: 'missing-ledger', type: 'path', primary: true, path: root,
+      id: 'published', type: 'path', primary: true, path: root,
     }, {
       cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
-    })).rejects.toThrow(/must include plugin-release-ledger/u);
+    })).resolves.toMatchObject({ manifest: { release: { state: 'published' } } });
   });
 
   it('rejects joint marketplace root metadata changes against the canonical manifest identity', async () => {
@@ -390,7 +347,7 @@ describe('multi-source resolver public behavior', () => {
     const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
     const catalogManifestPath = path.join(root, 'catalog-manifest.json');
     const catalogManifest = await fs.readJson(catalogManifestPath);
-    catalogManifest.entries = [await createCatalogManifestV5Entry(plugin, pluginRoot)];
+    catalogManifest.entries = [await createCatalogManifestV6Entry(plugin, pluginRoot)];
     await fs.writeJson(catalogManifestPath, catalogManifest);
 
     await expect(catalogPathProviderInternal.resolve({

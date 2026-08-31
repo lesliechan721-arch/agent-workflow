@@ -540,16 +540,13 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       '--work-tree', publishedRoot,
       'checkout', '--quiet', first.commit, '--', '.',
     ]);
-    const ledgerPath = path.join(publishedRoot, 'plugin-release-ledger.json');
-    const ledger = await fs.readFile(ledgerPath);
-    await fs.remove(ledgerPath);
-    const missingLedgerOutput = capture();
+    expect(await fs.readdir(publishedRoot)).not.toContain('plugin-release-ledger.json');
+    const publishedValidation = capture();
     expect(await runCli(['catalog', 'validate', publishedRoot, '--json'], {
       cwd: root,
-      io: missingLedgerOutput.io,
-    })).toBe(1);
-    expect(missingLedgerOutput.stderr()).toContain('must include plugin-release-ledger.json');
-    await fs.writeFile(ledgerPath, ledger);
+      io: publishedValidation.io,
+    })).toBe(0);
+    expect(publishedValidation.stderr()).toBe('');
 
     expect(await runCli(['catalog', 'version', '0.2.0', '--workspace-root', root], { cwd: root, io: capture().io })).toBe(0);
     await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], { cwd: root });

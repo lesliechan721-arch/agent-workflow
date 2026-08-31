@@ -2049,7 +2049,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   catalog
     .command('validate')
-    .description('Validate a schema 5 Catalog snapshot')
+    .description('Validate a schema 6 Catalog snapshot')
     .argument('<snapshot-directory>', 'Catalog snapshot directory')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (snapshotDirectory: string, rawOptions: { json?: boolean }) => {

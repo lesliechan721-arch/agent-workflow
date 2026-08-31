@@ -505,7 +505,7 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
     expect(catalogManifest).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       catalogVersion: sourceMetadata.catalog.version,
       channel: String(sourceMetadata.catalog.version).includes('-') ? 'beta' : 'latest',
       release: { state: 'development' },
@@ -518,7 +518,7 @@ describe('build smoke', () => {
           contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }))),
     });
-    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v5']);
+    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v6']);
     expect(catalogManifest.entries.every((entry) =>
       entry.requires.aw.capabilities.includes('aw.plugin-manifest.v2'))).toBe(true);
     expect(catalogManifest).not.toHaveProperty('history');
@@ -529,8 +529,7 @@ describe('build smoke', () => {
       'catalog-manifest.json',
       'plugins',
     ]);
-    await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json')))
-      .resolves.toBe(false);
+    expect(await fs.readdir(outputRoot)).not.toContain('plugin-release-ledger.json');
   });
 
   it('reuses a warm build without changing key output mtimes', async () => {
@@ -552,7 +551,7 @@ describe('build smoke', () => {
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
   });
 
-  it('materializes and completely validates schema 5 from real build bundles', async () => {
+  it('materializes and completely validates schema 6 from real build bundles', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
     const { validateCatalogSnapshotComplete } = await importSmokeSnapshotModule<{
@@ -561,7 +560,7 @@ describe('build smoke', () => {
       }>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
     const validated = await validateCatalogSnapshotComplete(outputRoot);
-    expect(validated.manifest.schemaVersion).toBe(5);
+    expect(validated.manifest.schemaVersion).toBe(6);
     expect(validated.manifest.entries.map((entry) => entry.name).sort())
       .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
     expect(validated.manifest.entries.every((entry) =>

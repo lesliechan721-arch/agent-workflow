@@ -106,13 +106,10 @@ describe('common Catalog publisher used by official release', () => {
         publicPreparation.prepared.outputRoot,
         'catalog-manifest.json',
       )));
-      await expect(fs.readFile(path.join(
-        officialPreparation.prepared.outputRoot,
-        'plugin-release-ledger.json',
-      ))).resolves.toEqual(await fs.readFile(path.join(
-        publicPreparation.prepared.outputRoot,
-        'plugin-release-ledger.json',
-      )));
+      expect(await fs.readdir(officialPreparation.prepared.outputRoot))
+        .not.toContain('plugin-release-ledger.json');
+      expect(await fs.readdir(publicPreparation.prepared.outputRoot))
+        .not.toContain('plugin-release-ledger.json');
 
       const published = await publishCatalogRelease({
         descriptor: officialPreparation.descriptor,
@@ -231,7 +228,7 @@ describe('common Catalog publisher used by official release', () => {
       repoRoot: root,
       remoteUrl: remote,
       catalogPublicationService: service,
-    })).rejects.toThrow(/schemaVersion: expected 5/u);
+    })).rejects.toThrow(/schemaVersion: expected 6/u);
   });
 
   it('rejects invalid direct publication targets before source archive and build', async () => {

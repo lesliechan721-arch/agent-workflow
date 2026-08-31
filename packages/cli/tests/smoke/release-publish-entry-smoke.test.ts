@@ -79,7 +79,6 @@ async function runCase(axes: { cli: boolean; catalog: boolean }, fail?: 'eval' |
         version: '2.0.0',
         path: 'artifacts/catalog',
         snapshotDigest: preparation.descriptor.snapshotDigest,
-        ledgerDigest: preparation.descriptor.ledgerDigest,
         publication: preparation.descriptor,
       };
     } finally {

@@ -9,7 +9,7 @@ import {
 } from '../constants.js';
 import type {
   CatalogGenerationMetadataV1,
-  CatalogManifestV5,
+  CatalogManifestV6,
   CatalogSourceResolution,
 } from '../types.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
@@ -37,14 +37,14 @@ export interface PreparedCatalogGeneration {
   stagingDir: string;
   location: CatalogGenerationLocation;
   metadata: CatalogGenerationMetadataV1;
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
 }
 
 export interface PublishedCatalogGeneration {
   generationDir: string;
   snapshotRoot: string;
   metadata: CatalogGenerationMetadataV1;
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
 }
 
 function sha256Hex(value: string): string {
