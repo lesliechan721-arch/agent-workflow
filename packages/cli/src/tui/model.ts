@@ -6,13 +6,18 @@ import type {
   Scope,
 } from '../types.js';
 import type {
-  StatusV5Payload,
-  StatusV5PluginSummary,
-  StatusV5Target,
-  StatusV5Component,
+  StatusV6Payload,
+  StatusV6PluginSummary,
+  StatusV6Target,
+  StatusV6Component,
   StatusTargetRevision,
   TargetRevisionState,
-} from '../commands/status-v5.js';
+} from '../commands/status-v6.js';
+import type {
+  DependencyAssignmentSource,
+  DependencyOperationPlan,
+} from '../commands/dependency-operation-plan.js';
+import type { DependencyScopeOverride } from '../types.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 import {
   safeDiagnosticCode,
@@ -43,6 +48,13 @@ export type PlatformPlacementSummary =
       scope: Scope;
       health: 'ready' | 'incomplete' | 'error';
       revision: TargetRevisionState;
+      desiredScopes?: Scope[];
+      relation?: StatusV6Target['desired']['relation'];
+      actualState?: StatusV6Target['actual']['state'];
+      activation?: StatusV6Target['activation'];
+      sharedNative?: StatusV6Target['sharedNative'];
+      extensions?: StatusV6Target['extensions'];
+      recovery?: StatusV6Target['recovery'];
       blockingReason?: 'artifactCollision';
     }
   | {
@@ -56,9 +68,18 @@ export type PlatformPlacementSummary =
     };
 
 export type PluginMenuAction =
-  | { id: 'add' | 'manage' | 'repair' | 'portableSkills' | 'dependencies' | 'settings'
+  | { id: 'add' | 'manage' | 'repair' | 'sync' | 'portableSkills' | 'dependencies' | 'settings'
       | 'source' | 'sourceProblem' | 'about' | 'refreshSource' | 'technical' | 'back'
       | 'outputCollision' }
+  | { id: 'addScope'; platform: PlatformName; scope: Scope }
+  | {
+      id: 'resolveScopeConflict';
+      pluginId: string;
+      platform: PlatformName;
+      scope: Scope;
+      keepScope: Scope;
+      description: string;
+    }
   | { id: 'platform' | 'scopeConflict'; platform: PlatformName }
   | { id: 'upgrade'; platform: PlatformName; scope: Scope; availableVersion: string }
   | { id: 'reinstall' | 'remove'; platform: PlatformName; scope: Scope };
@@ -72,6 +93,7 @@ export interface PluginListItemViewModel {
   configFieldCount: number;
   sourceLabel: string;
   supportedPlatforms: PlatformName[];
+  supportedScopes?: Partial<Record<PlatformName, Scope[]>>;
   installedPlacements: PlatformPlacementSummary[];
   aggregateStatus: 'available' | 'installed' | 'needsAttention' | 'unavailable';
   primaryAttention?: {
@@ -86,7 +108,7 @@ export interface PluginListItemViewModel {
     platform: PlatformName;
     scope: Scope;
     key: string;
-    state: StatusV5Component['state'];
+    state: StatusV6Component['state'];
     errorCode?: string;
   }>;
 }
@@ -134,6 +156,34 @@ export interface PluginDependencyOverviewViewModel {
   dependencies: PluginDependencyItemViewModel[];
   dependents: PluginDependencyItemViewModel[];
   blockers: PluginDependencyBlockerViewModel[];
+}
+
+export interface DependencyPlacementTargetViewModel {
+  key: string;
+  pluginId: string;
+  displayName: string;
+  platform: PlatformName;
+  relation: 'direct' | 'transitive';
+  scope: Scope;
+  minimumScope: Scope;
+  allowedScopes: Scope[];
+  locked: boolean;
+  requiredBy: string[];
+  assignmentSource: DependencyAssignmentSource;
+  explanation: string;
+  affectsOtherProjects: boolean;
+  action: DependencyOperationPlan['targets'][number]['action'];
+}
+
+export interface InstallPlacementDraftViewModel {
+  pluginId: string;
+  rootScope: Scope;
+  platforms: PlatformName[];
+  dependencyScopeOverrides: DependencyScopeOverride[];
+  state: 'selecting' | 'loading' | 'ready' | 'blocked';
+  targets: DependencyPlacementTargetViewModel[];
+  canContinue: boolean;
+  error?: { code: string; message: string };
 }
 
 export interface SourceTabViewModel {
@@ -277,7 +327,7 @@ export interface UserIssueActionViewModel {
   platform?: PlatformName;
   scope?: Scope;
   project?: 'current' | 'other' | null;
-  writeAction?: 'install' | 'upgrade' | 'reinstall' | 'cleanup';
+  writeAction?: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
 }
 
 export type TargetIssueRootCode =
@@ -386,14 +436,120 @@ function compareText(left: string, right: string): number {
   return left.localeCompare(right, 'en');
 }
 
-function targetHealth(target: StatusV5Target): 'ready' | 'incomplete' | 'error' {
+function targetHealth(target: StatusV6Target): 'ready' | 'incomplete' | 'error' {
+  if (target.actual?.state === 'ready') return 'ready';
+  if (target.actual?.state === 'needsSync'
+    || target.actual?.state === 'drifted'
+    || target.actual?.state === 'conflict'
+    || target.actual?.state === 'orphaned'
+    || target.actual?.state === 'unresolved') return 'incomplete';
   if (target.state === 'present') return 'ready';
   if (target.state === 'partial') return 'incomplete';
   return 'error';
 }
 
-function isInstalledScopeEvidence(target: StatusV5Target): boolean {
-  return target.state === 'present' || target.state === 'partial';
+export function isPureNativeCodexTarget(target: StatusV6Target): boolean {
+  return target.platform === 'codex'
+    && target.sharedNative?.shared === true
+    && (target.extensions?.kinds.length ?? 0) === 0;
+}
+
+function isPureNativeCodexPlacement(
+  placement: PlatformPlacementSummary,
+): placement is Extract<PlatformPlacementSummary, { state: 'installed' }> {
+  return placement.platform === 'codex'
+    && placement.state === 'installed'
+    && placement.sharedNative?.shared === true
+    && (placement.extensions?.kinds.length ?? 0) === 0;
+}
+
+function parsedScopedUninstallRecovery(
+  recovery: StatusV6Target['recovery'][number],
+  expectedPlatform: PlatformName,
+): { pluginId: string; scope: Scope; description: string } | undefined {
+  if (recovery.command !== 'uninstall' || !recovery.scope) return undefined;
+  const match = /(?:^|\s)aw uninstall ([^\s]+) --platform (codex|claude) --scope (user|project)(?:，|,|\s|$)/u
+    .exec(recovery.description);
+  if (!match || match[2] !== expectedPlatform || match[3] !== recovery.scope) return undefined;
+  return { pluginId: match[1]!, scope: recovery.scope, description: recovery.description };
+}
+
+function scopeConflictRecoveryMenuActions(
+  placement: Extract<PlatformPlacementSummary, { state: 'installed' }>,
+): Extract<PluginMenuAction, { id: 'resolveScopeConflict' }>[] {
+  if (placement.actualState !== 'conflict') return [];
+  return (placement.recovery ?? []).flatMap((recovery) => {
+    const parsed = parsedScopedUninstallRecovery(recovery, placement.platform);
+    return parsed ? [{
+      id: 'resolveScopeConflict' as const,
+      pluginId: parsed.pluginId,
+      platform: placement.platform,
+      scope: parsed.scope,
+      keepScope: parsed.scope === 'user' ? 'project' as const : 'user' as const,
+      description: parsed.description,
+    }] : [];
+  });
+}
+
+function missingPureNativeScopes(
+  plugin: PluginListItemViewModel,
+  placement: PlatformPlacementSummary,
+): Scope[] {
+  if (!isPureNativeCodexPlacement(placement) || placement.actualState !== 'ready') return [];
+  const supported = plugin.supportedScopes?.codex ?? ['user', 'project'];
+  return supported.filter((scope) =>
+    !placement.desiredScopes?.includes(scope) && placement.activation?.[scope] !== true);
+}
+
+function isInstalledScopeEvidence(target: StatusV6Target): boolean {
+  return target.desired?.enabled === true
+    || target.state === 'present'
+    || target.state === 'partial';
+}
+
+function dependencyAssignmentExplanation(
+  assignmentSource: DependencyAssignmentSource,
+  requiredBy: string[],
+): string {
+  const consumer = requiredBy[0];
+  return {
+    root: '根插件位置',
+    default: '推荐使用当前项目',
+    existingWiderTarget: '复用健康的所有项目安装',
+    userOverride: '你选择的位置',
+    consumerPromotion: consumer
+      ? `因 ${consumer} 的位置而一并调整`
+      : '因上游依赖位置而一并调整',
+    platformRequirement: '平台只支持这个位置',
+  }[assignmentSource];
+}
+
+export function dependencyPlacementTargets(
+  plan: DependencyOperationPlan,
+): DependencyPlacementTargetViewModel[] {
+  return plan.targets.filter((target) => target.relation === 'dependency').map((target) => ({
+    key: `${target.pluginId}\0${target.platform}`,
+    pluginId: target.pluginId,
+    displayName: target.pluginName,
+    platform: target.platform,
+    relation: plan.dependencyEdges.some((edge) =>
+      plan.requestedPluginIds.includes(edge.from)
+      && edge.to === target.pluginId
+      && edge.platform === target.platform)
+      ? 'direct'
+      : 'transitive',
+    scope: target.resolvedScope,
+    minimumScope: target.minimumScope,
+    allowedScopes: [...target.allowedScopes],
+    locked: (target.locked && target.lockReason !== 'dependencyScopeOverride')
+      || target.allowedScopes.filter((scope) =>
+        target.minimumScope === 'project' || scope === 'user').length < 2,
+    requiredBy: [...target.requiredBy],
+    assignmentSource: target.assignmentSource,
+    explanation: dependencyAssignmentExplanation(target.assignmentSource, target.requiredBy),
+    affectsOtherProjects: target.affectsOtherProjects,
+    action: target.action,
+  }));
 }
 
 function dependencyPluginIdFromMessage(message: string): string | undefined {
@@ -402,7 +558,7 @@ function dependencyPluginIdFromMessage(message: string): string | undefined {
 
 function rootPlacementFromIssueId(
   issueId: string | undefined,
-  fallback: Pick<StatusV5Target, 'platform' | 'scope'>,
+  fallback: Pick<StatusV6Target, 'platform' | 'scope'>,
 ): Pick<TargetIssueEntityViewModel, 'platform' | 'scope'> {
   if (issueId) {
     for (const platform of ['claude', 'codex'] as const) {
@@ -433,8 +589,8 @@ function rootPluginIdFromIssueId(
 }
 
 function targetIssueRelationship(options: {
-  target: StatusV5Target;
-  error?: StatusV5Target['errors'][number];
+  target: StatusV6Target;
+  error?: StatusV6Target['errors'][number];
   dependencyPluginId?: string;
 }): {
   relationship: 'direct' | 'consumer';
@@ -470,10 +626,10 @@ function targetIssueRelationship(options: {
 
 export function projectPlatformPlacement(
   platform: PlatformName,
-  targets: StatusV5Target[],
+  targets: StatusV6Target[],
   revisions: StatusTargetRevision[] = [],
 ): PlatformPlacementSummary {
-  const revisionFor = (target: StatusV5Target): TargetRevisionState =>
+  const revisionFor = (target: StatusV6Target): TargetRevisionState =>
     revisions.find((entry) => entry.pluginId === target.pluginId
       && entry.platform === target.platform
       && entry.scope === target.scope)?.revision
@@ -507,6 +663,15 @@ export function projectPlatformPlacement(
       scope: target.scope,
       health: targetHealth(target),
       revision: revisionFor(target),
+      ...(target.desired ? {
+        desiredScopes: [...target.desired.scopes],
+        relation: target.desired.relation,
+      } : {}),
+      ...(target.actual ? { actualState: target.actual.state } : {}),
+      ...(target.activation ? { activation: target.activation } : {}),
+      ...(target.sharedNative ? { sharedNative: target.sharedNative } : {}),
+      ...(target.extensions ? { extensions: target.extensions } : {}),
+      ...(target.recovery ? { recovery: [...target.recovery] } : {}),
       ...(blockingReason ? { blockingReason } : {}),
     };
   }
@@ -583,9 +748,12 @@ export function buildPluginDetailActions(plugin: PluginListItemViewModel): Plugi
     ];
   }
   return [
-    ...plugin.installedPlacements.map((placement): PluginMenuAction => placement.state === 'scopeConflict'
-      ? { id: 'scopeConflict', platform: placement.platform }
-      : { id: 'platform', platform: placement.platform }),
+    ...plugin.installedPlacements.flatMap((placement): PluginMenuAction[] => [
+      ...(placement.state === 'installed' ? scopeConflictRecoveryMenuActions(placement) : []),
+      placement.state === 'scopeConflict'
+        ? { id: 'scopeConflict', platform: placement.platform }
+        : { id: 'platform', platform: placement.platform },
+    ]),
     ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
     ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
     ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
@@ -606,6 +774,8 @@ export function buildPlatformActions(
   }
   if (!placement || placement.state === 'notInstalled') return [{ id: 'add' }, { id: 'about' }];
   if (placement.state === 'scopeConflict') return [{ id: 'scopeConflict', platform }];
+  const scopedRecovery = scopeConflictRecoveryMenuActions(placement);
+  if (scopedRecovery.length > 0) return [...scopedRecovery, { id: 'technical' }];
   if (placement.blockingReason === 'artifactCollision') {
     return [
       { id: 'outputCollision' },
@@ -615,6 +785,15 @@ export function buildPlatformActions(
   }
   if (placement.health === 'error') return [{ id: 'technical' }, { id: 'back' }];
   if (placement.health === 'incomplete') {
+    if (platform === 'codex'
+      && (placement.actualState === 'needsSync' || placement.actualState === 'drifted'
+        || placement.recovery?.some((action) => action.command === 'sync'))) {
+      return [
+        { id: 'sync' },
+        { id: 'technical' },
+        { id: 'remove', platform, scope: placement.scope },
+      ];
+    }
     return [
       { id: 'reinstall', platform, scope: placement.scope },
       { id: 'technical' },
@@ -622,6 +801,9 @@ export function buildPlatformActions(
     ];
   }
   return [
+    ...missingPureNativeScopes(plugin, placement).map((scope): PluginMenuAction => ({
+      id: 'addScope', platform, scope,
+    })),
     ...(placement.revision.state === 'upgradeAvailable'
       ? [{
           id: 'upgrade' as const,
@@ -642,7 +824,7 @@ export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean 
 }
 
 function sourceState(
-  source: StatusV5Payload['catalog']['sources'][number],
+  source: StatusV6Payload['catalog']['sources'][number],
   health?: SourceHealthViewModel,
 ): SourceTabViewModel['state'] {
   if (health?.state === 'ready') return 'ready';
@@ -691,9 +873,9 @@ function sourceIssue(
   };
 }
 
-function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
+function targetIssues(payload: StatusV6Payload): UserIssueDraft[] {
   const issues: UserIssueDraft[] = [];
-  const byPlacement = new Map<string, StatusV5Target[]>();
+  const byPlacement = new Map<string, StatusV6Target[]>();
   const canonicalRootsByEntity = new Map<string, string>();
   for (const target of payload.targets) {
     for (const error of target.errors) {
@@ -717,6 +899,45 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
   for (const target of payload.targets) {
     const key = `${target.pluginId}\0${target.platform}`;
     byPlacement.set(key, [...(byPlacement.get(key) ?? []), target]);
+    const scopedConflictRecovery = target.actual?.state === 'conflict'
+      ? target.recovery.flatMap((recovery) => {
+          const parsed = parsedScopedUninstallRecovery(recovery, target.platform);
+          return parsed ? [{ ...parsed, keepScope: parsed.scope === 'user'
+            ? 'project' as const : 'user' as const }] : [];
+        })
+      : [];
+    if (scopedConflictRecovery.length > 0) {
+      issues.push({
+        issueId: `scope:${target.pluginId}:${target.platform}`,
+        category: 'scopeConflict',
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · 扩展位置冲突`,
+        explanation: 'AW-only 扩展不能同时使用所有项目和当前项目位置。',
+        impact: ['选择一条 root uninstall 路径，然后按该路径同步保留的 scope。'],
+        entity: { kind: 'plugin', id: target.pluginId },
+        pluginId: target.pluginId,
+        platform: target.platform,
+        scope: target.scope,
+        sourceId: target.sourceId,
+        sourceIdentity: target.sourceIdentity,
+        placements: [...target.desired.scopes].sort(compareText),
+        actions: [
+          ...scopedConflictRecovery.map((recovery): UserIssueActionViewModel => ({
+            id: recovery.keepScope === 'user' ? 'keepUserScope' : 'keepProjectScope',
+            label: `保留${recovery.keepScope === 'user' ? '所有项目' : '当前项目'}`,
+            description: recovery.description,
+            pluginId: recovery.pluginId,
+            platform: target.platform,
+            scope: recovery.scope,
+            writeAction: 'uninstall',
+          })),
+          { id: 'viewTechnical', label: '查看冲突详情' },
+        ],
+        technicalDetails: [{
+          code: 'codexExtensionScopeConflict',
+          message: 'mixed 或 AW-only 扩展同时使用两个 scope。',
+        }],
+      });
+    }
     if (target.state !== 'partial' && target.state !== 'error'
       && !target.errors.some((error) => error.code === 'artifactCollision'
         || error.dependencyPluginId !== undefined && error.rootIssueId !== undefined)) continue;
@@ -732,7 +953,7 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
       code: TargetIssueRootCode;
       category: UserIssueCategory;
       mergeEligible: boolean;
-      error?: StatusV5Target['errors'][number];
+      error?: StatusV6Target['errors'][number];
       dependencyPluginId?: string;
     };
     const dependencyRootMap = new Map<string, TargetIssueRoot>();
@@ -964,7 +1185,7 @@ function targetIssues(payload: StatusV5Payload): UserIssueDraft[] {
   return issues;
 }
 
-function statusIssues(payload: StatusV5Payload): UserIssueDraft[] {
+function statusIssues(payload: StatusV6Payload): UserIssueDraft[] {
   const targetCodes = new Set(payload.targets.flatMap((target) =>
     target.errors.map((error) => error.code)));
   const issues = new Map<string, UserIssueDraft>();
@@ -1007,7 +1228,7 @@ function statusIssues(payload: StatusV5Payload): UserIssueDraft[] {
   return [...issues.values()];
 }
 
-function configIssues(pluginSummaries: StatusV5PluginSummary[]): UserIssueDraft[] {
+function configIssues(pluginSummaries: StatusV6PluginSummary[]): UserIssueDraft[] {
   return pluginSummaries.flatMap((summary): UserIssueDraft[] => {
     const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
     if (summary.configDiagnostic) {
@@ -1069,8 +1290,8 @@ function configIssues(pluginSummaries: StatusV5PluginSummary[]): UserIssueDraft[
 
 function dependencyOverviewIssues(
   overviews: PluginDependencyOverviewViewModel[],
-  pluginSummaries: StatusV5PluginSummary[],
-  status: StatusV5Payload,
+  pluginSummaries: StatusV6PluginSummary[],
+  status: StatusV6Payload,
 ): UserIssueDraft[] {
   const summaryById = new Map(pluginSummaries.map((summary) => [summary.pluginId, summary]));
   return overviews.flatMap((overview) => overview.blockers.flatMap((blocker): UserIssueDraft[] => {
@@ -1355,8 +1576,8 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
 }
 
 export function buildTuiViewModel(options: {
-  status: StatusV5Payload;
-  pluginSummaries: StatusV5PluginSummary[];
+  status: StatusV6Payload;
+  pluginSummaries: StatusV6PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
@@ -1366,7 +1587,7 @@ export function buildTuiViewModel(options: {
   const dependencyById = new Map((options.dependencyOverviews ?? [])
     .map((overview) => [overview.pluginId, overview]));
   const summaryById = new Map(options.pluginSummaries.map((summary) => [summary.pluginId, summary]));
-  const targetsByPlugin = new Map<string, StatusV5Target[]>();
+  const targetsByPlugin = new Map<string, StatusV6Target[]>();
   for (const target of options.status.targets) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }
@@ -1403,6 +1624,10 @@ export function buildTuiViewModel(options: {
         ? (['codex', 'claude'] as const).filter((platform) =>
             summary.supportedTargets![platform].length > 0)
         : placements.map((placement) => placement.platform),
+      ...(summary?.supportedTargets ? { supportedScopes: {
+        codex: [...summary.supportedTargets.codex],
+        claude: [...summary.supportedTargets.claude],
+      } } : {}),
       installedPlacements: placements,
       aggregateStatus: unavailable ? 'unavailable' : attention ? 'needsAttention' : installed ? 'installed' : 'available',
       portableSkills: options.portablePluginIds?.includes(pluginId) ?? false,

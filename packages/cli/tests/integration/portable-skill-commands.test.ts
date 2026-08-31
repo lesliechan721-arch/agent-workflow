@@ -274,7 +274,7 @@ describe('portable skill public commands', () => {
     );
     expect(exitCode).toBe(1);
     expect(JSON.parse(io.readStdout())).toMatchObject({
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       command: 'skill:install',
       failures: [{ code: 'confirmationRequired' }],
     });
@@ -334,7 +334,7 @@ describe('portable skill public commands', () => {
     expect(exitCode, io.readStderr()).toBe(0);
     const receipt = JSON.parse(io.readStdout());
     expect(receipt).toMatchObject({
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       ok: true,
       status: 'succeeded',
       agentMode: 'automatic',

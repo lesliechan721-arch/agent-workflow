@@ -20,7 +20,6 @@ import {
   parseOwnedTextHeader,
   readSkillOwnerMarker,
   SKILL_OWNER_MARKER,
-  type OwnerIdentity,
 } from './ownership.js';
 import {
   createLifecycleProjectLocationKey,
@@ -29,8 +28,8 @@ import {
 import {
   CodexNativeResidueProbeError,
   discoverCodexNativeResidueNames,
+  inspectCodexNativeResidue,
 } from '../commands/rebuild-integration.js';
-import { parseCodexSharedHooksFile } from './hooks-contract.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readPluginManifest } from './manifest.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
@@ -56,6 +55,8 @@ export interface CatalogSourceReference {
   platform?: string;
   scope?: string;
   projectKey?: string | null;
+  lifecycleMetadataIntegrityDigest?: string;
+  pluginVersion?: string;
 }
 
 export function canonicalMarketplaceRegistrationNames(
@@ -482,7 +483,6 @@ export async function inventoryLegacyOwnerReferences(options: {
   const skillRoots = new Set([
     path.join(getCodexHome(env), 'skills'),
     path.join(getClaudeHome(env), 'skills'),
-    path.join(repoRoot, '.agents', 'skills'),
     path.join(repoRoot, '.claude', 'skills'),
   ]);
   const legacyPluginsRoot = path.join(awHome, 'plugins');
@@ -541,7 +541,6 @@ export async function inventoryLegacyOwnerReferences(options: {
   for (const configRoot of [
     getCodexHome(env),
     getClaudeHome(env),
-    path.join(repoRoot, '.codex'),
     path.join(repoRoot, '.claude'),
   ]) {
     references.push(
@@ -549,14 +548,20 @@ export async function inventoryLegacyOwnerReferences(options: {
       ...await findOwnedHeadersInDirectory(path.join(configRoot, 'agents'), new Set(['.md', '.toml']), true, errors, env, options.cwd),
     );
   }
-  references.push(
-    ...await findOwnedHeadersInDirectory(path.join(repoRoot, '.agents', 'rules'), new Set(['.md']), false, errors, env, options.cwd),
-    ...await findOwnedHeadersInDirectory(path.join(repoRoot, '.agents', 'agents'), new Set(['.md']), false, errors, env, options.cwd),
-  );
-  for (const filePath of [
-    path.join(getCodexHome(env), 'AGENTS.md'),
-    path.join(repoRoot, '.codex', 'AGENTS.md'),
-  ]) {
+  for (const [directory, extensions] of [
+    [path.join(repoRoot, '.codex', 'rules'), new Set(['.md', '.rules'])],
+    [path.join(repoRoot, '.codex', 'agents'), new Set(['.md', '.toml'])],
+  ] as const) {
+    references.push(...(await findOwnedHeadersInDirectory(
+      directory,
+      extensions,
+      true,
+      errors,
+      env,
+      options.cwd,
+    )).filter((reference) => reference.kind === 'namespacedOwner'));
+  }
+  for (const filePath of [path.join(getCodexHome(env), 'AGENTS.md')]) {
     const reference = await readOwnedHeaderReference(filePath, false, errors, env, options.cwd);
     if (reference) references.push(reference);
   }
@@ -861,13 +866,6 @@ async function codexSharedOwnerReferences(
       value,
       location: filePath,
     })),
-    ...Object.values(config.snapshot.mcpServers).flatMap((server) => {
-      const env = server.value?.env;
-      const value = isRecord(env) && typeof env.AW_AGENT_WORKFLOWS_OWNER === 'string'
-        ? env.AW_AGENT_WORKFLOWS_OWNER
-        : null;
-      return value ? [{ value, location: filePath }] : [];
-    }),
   ];
   const references = sharedOwnerTokenReferences(
     filePath,
@@ -876,7 +874,7 @@ async function codexSharedOwnerReferences(
     env,
     cwd,
   );
-  for (const { value, location } of ownerValues) {
+  for (const { value, location } of scope === 'user' ? ownerValues : []) {
     if (value.startsWith('aw-owner-v2:') || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)) continue;
     references.push({
       kind: 'legacyOwner',
@@ -918,45 +916,6 @@ async function claudeSharedOwnerReferences(
     });
   }
   return references;
-}
-
-async function codexHookOwnerReferences(
-  filePath: string,
-  errors: CatalogSourceInventoryError[],
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-): Promise<CatalogSourceReference[]> {
-  const raw = await readJsonFileIfExists<Record<string, unknown>>(filePath);
-  if (!raw) return [];
-  const parsed = parseCodexSharedHooksFile(raw);
-  const output: CatalogSourceReference[] = [];
-  for (const hook of parsed.managedIdentities) {
-    if (!hook.command.includes(OWNED_TEXT_HEADER_PREFIX)) continue;
-    let owner: OwnerIdentity | undefined;
-    try {
-      owner = parseOwnedTextHeader(hook.command)?.identity;
-    } catch (error) {
-      errors.push(inventoryError(error, filePath, 'ownerHeaderParse', env, cwd));
-      continue;
-    }
-    if (!owner) continue;
-    output.push(owner.sourceId ? {
-      kind: 'namespacedOwner',
-      location: filePath,
-      sourceId: owner.sourceId,
-      sourceIdentity: owner.sourceIdentity,
-      pluginName: owner.plugin,
-      platform: owner.platform,
-      scope: owner.scope,
-    } : {
-      kind: 'legacyOwner',
-      location: filePath,
-      pluginName: owner.plugin,
-      platform: owner.platform,
-      scope: owner.scope,
-    });
-  }
-  return output;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1193,6 +1152,11 @@ export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   includeHistoricalProjects?: boolean;
+  includeOrphanedCodexNativeResidue?: boolean;
+  codexNativeResidueTargets?: ReadonlyArray<{
+    sourceId?: string;
+    pluginName: string;
+  }>;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
@@ -1406,6 +1370,8 @@ export async function inventoryCatalogSourceReferences(options: {
           platform: snapshot.metadata.platform,
           scope: snapshot.metadata.scope,
           projectKey: snapshot.metadata.projectKey,
+          lifecycleMetadataIntegrityDigest: snapshot.metadata.metadataIntegrityDigest,
+          pluginVersion: snapshot.metadata.pluginVersion,
         });
       }
     }
@@ -1418,7 +1384,6 @@ export async function inventoryCatalogSourceReferences(options: {
     [path.join(getClaudeHome(env), 'settings.json'), 'nativeStateRead', () => claudeSharedOwnerReferences(path.join(getClaudeHome(env), 'settings.json'), 'user', errors, env, options.cwd)],
     [path.join(resolveRepoRootSync(options.cwd), '.codex', 'config.toml'), 'nativeStateRead', () => codexSharedOwnerReferences(path.join(resolveRepoRootSync(options.cwd), '.codex', 'config.toml'), 'project', errors, env, options.cwd)],
     [path.join(resolveRepoRootSync(options.cwd), '.claude', 'settings.json'), 'nativeStateRead', () => claudeSharedOwnerReferences(path.join(resolveRepoRootSync(options.cwd), '.claude', 'settings.json'), 'project', errors, env, options.cwd)],
-    [path.join(resolveRepoRootSync(options.cwd), '.codex', 'hooks.json'), 'nativeStateRead', () => codexHookOwnerReferences(path.join(resolveRepoRootSync(options.cwd), '.codex', 'hooks.json'), errors, env, options.cwd)],
   ] as const) {
     references.push(...await inventoryRead({
       operation, absent: [], errors, location, kind, env, cwd: options.cwd,
@@ -1560,7 +1525,8 @@ export async function inventoryCatalogSourceReferences(options: {
       && !codexMarketplace.sourcePointsToManifest
       && path.normalize(codexMarketplace.source ?? '') === path.normalize(marketplaceRoot);
     const consumers: NativeMarketplaceConsumer[] = [];
-    if (marketplaceName !== null
+    if (options.includeOrphanedCodexNativeResidue === true
+      && marketplaceName !== null
       && (strictRoot !== null || (canonicalRoot && codexMarketplaceIsCanonical))) {
       let residueNames: string[] = [];
       try {
@@ -1590,6 +1556,43 @@ export async function inventoryCatalogSourceReferences(options: {
       }
       for (const pluginName of residueNames) {
         consumers.push({ pluginName, platform: 'codex', scope: 'user' });
+      }
+    } else if (marketplaceName !== null
+      && (strictRoot !== null || (canonicalRoot && codexMarketplaceIsCanonical))) {
+      const exactPluginNames = [...new Set((options.codexNativeResidueTargets ?? []).flatMap((target) =>
+        (target.sourceId === undefined || target.sourceId === sourceEntry.name)
+          ? [target.pluginName]
+          : []))];
+      for (const pluginName of exactPluginNames) {
+        try {
+          const residue = await inspectCodexNativeResidue({
+            cwd: options.cwd,
+            env,
+            pluginName,
+            marketplaceName,
+            marketplaceRoot,
+          });
+          if (residue.state === 'present') {
+            consumers.push({ pluginName, platform: 'codex', scope: 'user' });
+          } else if (residue.state === 'foreign') {
+            throw new Error('Codex native residue has foreign or incomplete identity evidence.');
+          }
+        } catch (error) {
+          errors.push(inventoryError(
+            error,
+            path.join(getCodexHome(env), 'plugins', 'cache', marketplaceName, pluginName),
+            'nativeStateRead',
+            env,
+            options.cwd,
+            {
+              global: false,
+              sourceId: sourceEntry.name,
+              pluginName,
+              platform: 'codex',
+              scope: 'user',
+            },
+          ));
+        }
       }
     }
     if (marketplaceName !== null && (strictRoot !== null || codexMarketplaceIsCanonical)) {

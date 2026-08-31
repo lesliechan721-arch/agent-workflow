@@ -3,13 +3,16 @@ import crypto from 'node:crypto';
 import {
   AGENT_VERSION_DISPLAY_NAMES,
   AGENT_VERSION_PROBE_COMMANDS,
+  CODEX_PROJECT_PLUGIN_MIN_VERSION,
   DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
   MINIMUM_AGENT_VERSIONS,
 } from '../constants.js';
 import type {
   AgentVersionProbeResult,
   AgentVersionRequirement,
+  CodexOperationRequirement,
   PlatformName,
+  Scope,
 } from '../types.js';
 import { compareStrictSemVer, tryParseStrictSemVer } from './manifest.js';
 import { getCodexHome } from './state-paths.js';
@@ -27,6 +30,7 @@ export interface ProbeAgentVersionOptions {
   command?: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  minimumVersion?: string;
   runner?: NativeCliRunner;
   timeoutMs?: number;
 }
@@ -45,6 +49,17 @@ export function getAgentVersionRequirement(platform: PlatformName): AgentVersion
     command: AGENT_VERSION_PROBE_COMMANDS[platform],
     displayName: AGENT_VERSION_DISPLAY_NAMES[platform],
     minVersion: getMinimumAgentVersion(platform),
+  };
+}
+
+export function getCodexOperationRequirement(scope: Scope): CodexOperationRequirement {
+  const requiresProjectPluginContract = scope === 'project';
+  return {
+    scope,
+    minimumVersion: requiresProjectPluginContract
+      ? CODEX_PROJECT_PLUGIN_MIN_VERSION
+      : MINIMUM_AGENT_VERSIONS.codex,
+    requiresProjectPluginContract,
   };
 }
 
@@ -86,7 +101,7 @@ function buildProbeCacheKey(
     args: [...(options.argsPrefix ?? []), ...VERSION_ARGUMENTS],
     cwd: options.cwd ?? process.cwd(),
     timeoutMs: options.timeoutMs ?? DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
-    minVersion: requirement.minVersion,
+    minVersion: options.minimumVersion ?? requirement.minVersion,
     envFingerprint: createEnvFingerprint(env),
   });
 }
@@ -133,7 +148,16 @@ export async function probeAgentVersion(
   platform: PlatformName,
   options: ProbeAgentVersionOptions = {},
 ): Promise<AgentVersionProbeResult> {
-  const requirement = getAgentVersionRequirement(platform);
+  const baseRequirement = getAgentVersionRequirement(platform);
+  const requirement = options.minimumVersion === undefined
+    ? baseRequirement
+    : {
+        ...baseRequirement,
+        minVersion: options.minimumVersion,
+      };
+  if (!tryParseStrictSemVer(requirement.minVersion)) {
+    throw new Error(`Invalid agent version requirement: ${requirement.minVersion}.`);
+  }
   const runner = options.runner ?? getDefaultNativeCliRunner();
   if (options.cache === false) {
     return probeAgentVersionUncached(requirement, runner, options);
@@ -157,6 +181,16 @@ export async function probeAgentVersion(
     });
   runnerCache.set(cacheKey, probe);
   return cloneProbeResult(await probe);
+}
+
+export function probeCodexOperationVersion(
+  requirement: CodexOperationRequirement,
+  options: Omit<ProbeAgentVersionOptions, 'minimumVersion'> = {},
+): Promise<AgentVersionProbeResult> {
+  return probeAgentVersion('codex', {
+    ...options,
+    minimumVersion: requirement.minimumVersion,
+  });
 }
 
 async function probeAgentVersionUncached(

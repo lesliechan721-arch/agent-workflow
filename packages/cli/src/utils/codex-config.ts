@@ -130,6 +130,8 @@ export interface CodexConfigSnapshot {
 }
 
 export interface CodexConfigTransaction {
+  upsertPluginActivations?: Record<string, boolean>;
+  removePluginActivations?: string[];
   upsertManagedInstructionBlock?: CodexManagedInstructionBlock;
   removeManagedInstructionPluginName?: string;
   upsertAgentRegistrations?: Record<string, CodexAgentRegistrationConfig>;
@@ -684,6 +686,33 @@ function removeSection(
   return applyPatches(document.content, [{ start, end, text: '' }]);
 }
 
+function removeSectionEntry(
+  content: string,
+  sectionType: string,
+  sectionName: string,
+  keyName: string,
+): string {
+  const document = parseTomlDocument(content);
+  const table = findTopLevelTable(document, sectionType, sectionName);
+  if (!table) return ensureTerminalNewline(content);
+  const entry = findTableEntry(table, keyName);
+  if (!entry) return ensureTerminalNewline(content);
+  if (table.body.length === 1) {
+    const [start, end] = expandNodeRemovalRange(
+      document.content,
+      table.range[0],
+      table.range[1],
+    );
+    return applyPatches(document.content, [{ start, end, text: '' }]);
+  }
+  const [start, end] = expandNodeRemovalRange(
+    document.content,
+    entry.range[0],
+    entry.range[1],
+  );
+  return applyPatches(document.content, [{ start, end, text: '' }]);
+}
+
 function resolveTopLevelKeyInsertIndex(document: CodexTomlDocument): number {
   const topLevelKeyValues = document.topLevel.body.filter(
     (entry): entry is AST.TOMLKeyValue => entry.type === 'TOMLKeyValue',
@@ -1130,7 +1159,7 @@ export function removeCodexPluginEnabled(
   content: string,
   name: string,
 ): string {
-  return removeSection(content, 'plugins', name);
+  return removeSectionEntry(content, 'plugins', name, 'enabled');
 }
 
 export function upsertCodexAgentRegistration(
@@ -1447,6 +1476,10 @@ export function applyCodexConfigTransaction(
 ): string {
   let next = content;
 
+  for (const pluginId of [...new Set(transaction.removePluginActivations ?? [])]) {
+    next = removeCodexPluginEnabled(next, pluginId);
+  }
+
   for (const serverName of [...new Set(transaction.removeMcpServers ?? [])]) {
     next = removeCodexMcpServer(next, serverName);
   }
@@ -1457,6 +1490,10 @@ export function applyCodexConfigTransaction(
 
   for (const [serverName, serverConfig] of Object.entries(transaction.upsertMcpServers ?? {})) {
     next = upsertCodexMcpServer(next, serverName, serverConfig);
+  }
+
+  for (const [pluginId, enabled] of Object.entries(transaction.upsertPluginActivations ?? {})) {
+    next = upsertCodexPluginEnabled(next, pluginId, { enabled });
   }
 
   for (const [roleKey, registration] of Object.entries(transaction.upsertAgentRegistrations ?? {})) {

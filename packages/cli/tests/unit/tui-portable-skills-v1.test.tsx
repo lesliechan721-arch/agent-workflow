@@ -2,7 +2,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PortableReview, PortableInstallReceipt } from '../../src/portable/commands.js';
-import type { StatusV5Payload, StatusV5PluginSummary } from '../../src/commands/status-v5.js';
+import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import {
@@ -24,7 +24,7 @@ const candidates: PortableReview['selected'] = [
 ];
 
 function status(): TuiStatusLoadResult {
-  const summaries: StatusV5PluginSummary[] = [{
+  const summaries: StatusV6PluginSummary[] = [{
     pluginName: 'toolkit', pluginId: 'official/toolkit', displayName: 'Toolkit', description: '工具集',
     version: '1.0.0', supportedTargets: { codex: ['project'], claude: ['project'] }, configFieldCount: 0,
     dependencyDirectCount: 1, dependencyTotalCount: 1, dependencyIssueCount: 0,
@@ -32,8 +32,8 @@ function status(): TuiStatusLoadResult {
     pluginName: 'content', pluginId: 'official/content', displayName: 'Content', description: '内容工具',
     version: '1.0.0', supportedTargets: { codex: ['project'], claude: ['project'] }, configFieldCount: 0,
   }];
-  const payload: StatusV5Payload = {
-    schemaVersion: 5,
+  const payload: StatusV6Payload = {
+    schemaVersion: 6,
     catalog: { primarySourceId: 'official', configDigest: 'sha256:config', compositeDigest: 'sha256:catalog', sources: [{ id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'path' }] },
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
     targets: summaries.flatMap((summary) => (['codex', 'claude'] as const).map((platform) => ({
@@ -82,7 +82,7 @@ function portableController(overrides: Partial<TuiControllerDependencies> = {}):
     if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
     const portable = review(intent);
     return {
-      receiptSchemaVersion: 4, command: 'skill:install', ok: true, status: 'succeeded',
+      receiptSchemaVersion: 5, command: 'skill:install', ok: true, status: 'succeeded',
       plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
       requestedSkills: intent.selectedSkills, agentMode: portable.agentMode, requestedAgents: portable.requestedAgents,
       skillsCliVersion: portable.skillsCliVersion, collisions: portable.collisions, dependencies: portable.dependencies,
@@ -181,7 +181,7 @@ describe('Portable Skills TUI V1', () => {
         }
         const portable = review(intent);
         return {
-          receiptSchemaVersion: 4, command: 'skill:install', ok: attempt > 1,
+          receiptSchemaVersion: 5, command: 'skill:install', ok: attempt > 1,
           status: attempt > 1 ? 'succeeded' : 'failed', plugin: { id: intent.pluginId },
           scope: intent.scope, selectedSkills: portable.selected, requestedSkills: intent.selectedSkills,
           agentMode: portable.agentMode, requestedAgents: portable.requestedAgents,
@@ -263,7 +263,7 @@ describe('Portable Skills TUI V1', () => {
       const portable = review(intent);
       if (attempt === 1) {
         return {
-          receiptSchemaVersion: 4, command: 'skill:install', ok: false, status: 'failed',
+          receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: 'failed',
           plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
           requestedSkills: intent.selectedSkills, agentMode: portable.agentMode,
           requestedAgents: portable.requestedAgents, skillsCliVersion: portable.skillsCliVersion,
@@ -275,7 +275,7 @@ describe('Portable Skills TUI V1', () => {
         };
       }
       return {
-        receiptSchemaVersion: 4, command: 'skill:install', ok: true, status: 'succeeded',
+        receiptSchemaVersion: 5, command: 'skill:install', ok: true, status: 'succeeded',
         plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
         requestedSkills: intent.selectedSkills, agentMode: portable.agentMode,
         requestedAgents: portable.requestedAgents, skillsCliVersion: portable.skillsCliVersion,
@@ -678,7 +678,7 @@ describe('Portable Skills TUI V1', () => {
       await gate.promise;
       const portable = review(intent);
       return {
-        receiptSchemaVersion: 4, command: 'skill:install', ok: true, status: 'succeeded',
+        receiptSchemaVersion: 5, command: 'skill:install', ok: true, status: 'succeeded',
         plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
         requestedSkills: intent.selectedSkills, agentMode: portable.agentMode,
         requestedAgents: portable.requestedAgents, skillsCliVersion: portable.skillsCliVersion,
@@ -782,7 +782,7 @@ describe('Portable Skills TUI V1', () => {
       if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
       const portable = { ...review(intent), selected: manyCandidates };
       return {
-        receiptSchemaVersion: 4, command: 'skill:install', ok: false, status: 'partial',
+        receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: 'partial',
         plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: manyCandidates,
         requestedSkills: intent.selectedSkills, agentMode: portable.agentMode,
         requestedAgents: portable.requestedAgents, skillsCliVersion: portable.skillsCliVersion,
@@ -1265,7 +1265,7 @@ describe('Portable Skills TUI V1', () => {
       if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
       const portable = review(intent);
       return {
-        receiptSchemaVersion: 4, command: 'skill:install', ok: false, status: statusValue,
+        receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: statusValue,
         plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
         requestedSkills: intent.selectedSkills, agentMode: portable.agentMode, requestedAgents: portable.requestedAgents,
         skillsCliVersion: portable.skillsCliVersion, collisions: [], dependencies: portable.dependencies,
@@ -1302,7 +1302,7 @@ describe('Portable Skills TUI V1', () => {
       if (intent.kind !== 'portableInstall') throw new Error('unexpected intent');
       const portable = review(intent);
       return {
-        receiptSchemaVersion: 4, command: 'skill:install', ok: false, status: 'partial',
+        receiptSchemaVersion: 5, command: 'skill:install', ok: false, status: 'partial',
         plugin: { id: intent.pluginId }, scope: intent.scope, selectedSkills: portable.selected,
         requestedSkills: intent.selectedSkills, agentMode: portable.agentMode,
         requestedAgents: portable.requestedAgents, skillsCliVersion: portable.skillsCliVersion,

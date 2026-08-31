@@ -87,7 +87,7 @@ describe('catalog source mutation v4', () => {
       runtime: { beforeRefresh: () => fs.remove(root) },
     });
     expect(receipt).toMatchObject({
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       ok: true,
       changed: true,
       sourceId: 'team',

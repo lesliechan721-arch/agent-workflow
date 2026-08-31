@@ -32,6 +32,7 @@ import {
   uninstallWriteCommand as uninstallCommand,
   upgradeWriteCommand as upgradeCommand,
 } from './commands/write-commands.js';
+import { syncCommand } from './commands/sync-command.js';
 import type { RebuildCommandResult } from './commands/rebuild-command.js';
 import {
   formatInteractiveConsoleUnavailableMessage,
@@ -53,7 +54,7 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult, statusCommandV5 } from './commands/status-v5.js';
+import { loadConsoleItemsResult, statusCommandV6 } from './commands/status-v6.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
@@ -78,6 +79,7 @@ import {
   renderRebuildReceipt,
   renderInitReceipt,
   type CliCommandResult,
+  type RebuildReceiptJson,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
 import {
@@ -123,6 +125,7 @@ import {
 } from './utils/aw-home-mutation-lock.js';
 import type {
   ConfigFieldEntry,
+  PlatformName,
   PlatformSelection,
   PluginConfigSchemaField,
   Scope,
@@ -232,6 +235,165 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   valueJson?: boolean;
   yes?: boolean;
   local?: boolean;
+}
+
+type ReceiptWriteCommand = RebuildReceiptJson['command'];
+
+class WriteCommandRequestError extends Error {
+  readonly code = 'invalidArguments';
+}
+
+function normalizeWriteRequest<T>(normalize: () => T): T {
+  try {
+    return normalize();
+  } catch (error) {
+    throw new WriteCommandRequestError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function writeCommandFailure(error: unknown): { code: string; message: string } {
+  const message = redactString(error instanceof Error ? error.message : String(error));
+  if (error instanceof CommanderError || error instanceof WriteCommandRequestError) {
+    return { code: 'invalidArguments', message };
+  }
+  const explicitCode = (error as { code?: unknown })?.code;
+  if (typeof explicitCode === 'string' && /^[A-Za-z][A-Za-z0-9]*$/u.test(explicitCode)) {
+    return { code: explicitCode, message };
+  }
+  const separator = message.indexOf(':');
+  const prefix = separator > 0 ? message.slice(0, separator) : '';
+  return {
+    code: /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'writeCommandFailed',
+    message,
+  };
+}
+
+interface PreparsedWriteReceiptRequest {
+  json: boolean;
+  plugins: string[];
+  platform?: string;
+  scope?: string;
+}
+
+function preparseWriteReceiptRequest(argv: string[]): PreparsedWriteReceiptRequest {
+  const request: PreparsedWriteReceiptRequest = { json: false, plugins: [] };
+  let positionalOnly = false;
+
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index]!;
+    if (positionalOnly) {
+      request.plugins.push(token);
+      continue;
+    }
+    if (token === '--') {
+      positionalOnly = true;
+      continue;
+    }
+    if (token === '--json') {
+      request.json = true;
+      continue;
+    }
+    if (token === '--platform' || token === '--scope') {
+      const value = argv[index + 1];
+      if (token === '--platform') request.platform = value;
+      else request.scope = value;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--platform=')) {
+      request.platform = token.slice('--platform='.length);
+      continue;
+    }
+    if (token.startsWith('--scope=')) {
+      request.scope = token.slice('--scope='.length);
+      continue;
+    }
+    if (token === '--dependency-scope' || token === '--script-timeout' || token === '--log-file') {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith('--')) continue;
+    if (token.startsWith('-') && token !== '-') {
+      const shortOptions = token.slice(1);
+      for (let offset = 0; offset < shortOptions.length; offset += 1) {
+        const option = shortOptions[offset]!;
+        if (option === 'j') {
+          request.json = true;
+          continue;
+        }
+        if (option === 'p' || option === 's') {
+          const value = shortOptions.slice(offset + 1) || argv[index + 1];
+          if (option === 'p') request.platform = value;
+          else request.scope = value;
+          if (shortOptions.length === offset + 1) index += 1;
+          break;
+        }
+      }
+      continue;
+    }
+    request.plugins.push(token);
+  }
+
+  return request;
+}
+
+function jsonWriteCommandRequest(argv: string[]): {
+  command: ReceiptWriteCommand;
+  plugins: string[];
+  platform: PlatformSelection;
+  scope: Scope;
+} | null {
+  const command = argv[0];
+  if (!['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup', 'sync'].includes(command ?? '')) {
+    return null;
+  }
+  const request = preparseWriteReceiptRequest(argv);
+  if (!request.json) return null;
+  const rawPlatform = request.platform;
+  const platform = rawPlatform === 'codex' || rawPlatform === 'claude' || rawPlatform === 'both'
+    ? rawPlatform
+    : 'codex';
+  return {
+    command: command as ReceiptWriteCommand,
+    plugins: request.plugins,
+    platform,
+    scope: request.scope === 'project' ? 'project' : 'user',
+  };
+}
+
+function writeCommandFailureReceipt(
+  write: (text: string) => void,
+  request: NonNullable<ReturnType<typeof jsonWriteCommandRequest>>,
+  error: unknown,
+): void {
+  const platforms: PlatformName[] = request.platform === 'both'
+    ? ['codex', 'claude']
+    : [request.platform];
+  writeJsonReceipt(write, buildRebuildReceiptJson(request.command, {
+    platforms,
+    plugins: request.plugins,
+    warnings: [],
+    overallState: 'failed',
+    errors: [writeCommandFailure(error)],
+    receiptTargets: request.plugins.flatMap((selector) => platforms.map((platform) => {
+      let pluginName = selector;
+      let sourceId: string | undefined;
+      try {
+        const parsed = parsePluginId(selector);
+        pluginName = parsed.pluginName;
+        sourceId = parsed.sourceId;
+      } catch {
+        // Keep the raw selector in the failed receipt.
+      }
+      return {
+        pluginName,
+        pluginId: selector,
+        ...(sourceId ? { sourceId } : {}),
+        platform,
+        scope: request.scope,
+      };
+    })),
+  }));
 }
 
 async function runAuthoringScript(options: {
@@ -357,6 +519,9 @@ export function buildEquivalentWriteCommandTokens(
     selection.scope ?? 'user',
     ...(rawOptions.allowManagedCodexInstall === true
       ? ['--allow-managed-codex-install']
+      : []),
+    ...(command === 'install'
+      ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
       : []),
     ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
     ...(!all && selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
@@ -675,6 +840,8 @@ interface RawWriteWizardOptions extends RawDiagnosticsOptions {
   json?: boolean;
   force?: boolean;
   allowManagedCodexInstall?: boolean;
+  dependencyScope?: string[];
+  yes?: boolean;
 }
 
 export function createManagedCodexAuthorizer(
@@ -698,9 +865,10 @@ async function executeWriteCommand(
   pluginNames: string[],
   rawOptions: RawWriteWizardOptions,
   context: CliExecutionContext,
+  directCli = false,
 ): Promise<RebuildCommandResult> {
   const raw = { cwd: context.cwd, ...rawOptions };
-  const commandOptions = command === 'install'
+  const commandOptions = normalizeWriteRequest(() => command === 'install'
     ? normalizeInstallCommandOptions(raw)
     : command === 'upgrade'
       ? normalizeUpgradeCommandOptions(raw)
@@ -708,7 +876,7 @@ async function executeWriteCommand(
         ? normalizeUninstallCommandOptions(raw)
         : command === 'cleanup'
           ? normalizeCleanupCommandOptions(raw)
-          : normalizeReinstallCommandOptions(raw);
+          : normalizeReinstallCommandOptions(raw));
   await emitCommandEvent(context, {
     type: 'options:normalized',
     data: { plugins: pluginNames, options: commandOptions },
@@ -716,6 +884,7 @@ async function executeWriteCommand(
   const managedCodexAuthorizer = createManagedCodexAuthorizer(rawOptions, context);
   const runtime = {
     ...context,
+    directCli,
     ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
   switch (command) {
@@ -734,9 +903,11 @@ async function runWriteCommandAction(
   context: CliExecutionContext,
 ): Promise<{ cancelled: true } | { cancelled: false; result: RebuildCommandResult }> {
   if ((command === 'cleanup' || command === 'reinstall') && pluginNames.length > 1) {
-    throw new Error(`${command} 命令当前只支持单个插件目标。`);
+    throw new WriteCommandRequestError(`${command} 命令当前只支持单个插件目标。`);
   }
-  if (command === 'upgrade') assertUpgradeAllConflict(pluginNames, rawOptions.all === true);
+  if (command === 'upgrade') {
+    normalizeWriteRequest(() => assertUpgradeAllConflict(pluginNames, rawOptions.all === true));
+  }
 
   const missingPlugin = pluginNames.length === 0 && !(command === 'upgrade' && rawOptions.all === true);
   const missingPlatform = rawOptions.platform === undefined;
@@ -754,11 +925,11 @@ async function runWriteCommandAction(
   if (!missing) {
     return {
       cancelled: false,
-      result: await executeWriteCommand(command, pluginNames, rawOptions, context),
+      result: await executeWriteCommand(command, pluginNames, rawOptions, context, true),
     };
   }
   if (!isWizardAvailable(context, rawOptions)) {
-    throw new Error(writeCommandUsage(command));
+    throw new WriteCommandRequestError(writeCommandUsage(command));
   }
 
   const loaded = await loadConsoleItemsResult({
@@ -1441,7 +1612,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--skill <name...>', 'install only selected Skill names')
     .option('--agent <id...>', 'install to explicit Agent IDs')
     .option('-y, --yes', 'confirm the reviewed install', false)
-    .option('-j, --json', 'emit one receipt v4 JSON object', false)
+    .option('-j, --json', 'emit one receipt v5 JSON object', false)
     .action(async (selector: string, rawOptions: {
       scope: string;
       skill?: string[];
@@ -1457,7 +1628,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ? error.code
           : 'portableInstallFailed');
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'skill:install',
           ok: false,
           status: 'failed',
@@ -1548,7 +1719,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .requiredOption('-s, --scope <scope>', 'project or user')
     .requiredOption('--out <dir>', 'output directory')
     .option('--skill <name...>', 'write only selected Skill names')
-    .option('-j, --json', 'emit one receipt v4 JSON object', false)
+    .option('-j, --json', 'emit one receipt v5 JSON object', false)
     .action(async (selector: string, rawOptions: {
       scope: string;
       out: string;
@@ -1577,7 +1748,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ? error.code
           : 'portableMaterializeFailed');
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'skill:materialize',
           ok: false,
           plugin: { id: selector },
@@ -2076,7 +2247,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const message = failure instanceof Error ? failure.message : String(error);
     if (json) {
       writeJsonReceipt(io.stdout, {
-        receiptSchemaVersion: 4,
+        receiptSchemaVersion: 5,
         command,
         ok: false,
         changed: false,
@@ -2135,7 +2306,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             : message.split(':', 1)[0] || 'configMutationFailed';
     if (json && !message.includes('Usage:')) {
       writeJsonReceipt(io.stdout, {
-        receiptSchemaVersion: 4,
+        receiptSchemaVersion: 5,
         command,
         ok: false,
         overallState: 'failed',
@@ -2516,12 +2687,79 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     });
 
   program
+    .command('sync')
+    .description('Reconcile Codex actual state from existing desired intent')
+    .argument('[plugins...]')
+    .requiredOption('-s, --scope <scope>', 'project or user')
+    .requiredOption('-p, --platform <platform>', 'codex')
+    .option('-a, --all', 'reconcile every desired plugin in the selected scope', false)
+    .option('-y, --yes', 'authorize shared native replacement or forced repair', false)
+    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-j, --json', 'print sync receipt as JSON', false)
+    .option('-v, --verbose', 'show command diagnostics', false)
+    .option('-D, --debug', 'write debug diagnostics to a log file', false)
+    .option('--log-file <path>', 'write debug diagnostics to the specified file')
+    .action(async (
+      plugins: string[],
+      rawOptions: {
+        scope: string;
+        platform: string;
+        all?: boolean;
+        yes?: boolean;
+        allowManagedCodexInstall?: boolean;
+        json?: boolean;
+      } & RawDiagnosticsOptions,
+    ) => {
+      const context = createActionContext('sync', rawOptions);
+      const normalized = normalizeWriteRequest(() => normalizeInstallCommandOptions({
+          cwd: context.cwd,
+          scope: rawOptions.scope,
+          platform: rawOptions.platform,
+          allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
+        }));
+      if (normalized.platform !== 'codex') {
+        throw new Error('syncPlatformUnsupported: sync requires --platform codex.');
+      }
+      const syncPlatform = normalized.platform;
+      const result = await runActionWithContext(context, () => syncCommand(
+        plugins ?? [],
+        {
+          cwd: context.cwd,
+          env: context.env,
+          platform: syncPlatform,
+          scope: normalized.scope,
+          all: rawOptions.all,
+          yes: rawOptions.yes,
+          json: rawOptions.json,
+          interactive: context.interactive && context.isTty && !context.isCi,
+          prompt: context.prompt,
+          allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
+        },
+        context,
+      ));
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('sync', result));
+      } else {
+        for (const line of renderRebuildReceipt('sync', result)) writeLine(io.stdout, line);
+      }
+      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
+      commandExitState.exitCode = resolveCommandReceiptExitCode(result);
+    });
+
+  program
     .command('install')
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
+    .option(
+      '--dependency-scope <pluginId[#platform]=scope>',
+      'place one dependency at project or user scope; repeat for more dependencies',
+      (value: string, previous: string[]) => [...previous, value],
+      [],
+    )
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-y, --yes', 'authorize shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2532,8 +2770,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         rawOptions: {
           scope?: string;
           platform?: string;
+          dependencyScope?: string[];
           scriptTimeout?: string;
           allowManagedCodexInstall?: boolean;
+          yes?: boolean;
           json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
@@ -2599,6 +2839,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-y, --yes', 'authorize shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2612,6 +2853,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform?: string;
           scriptTimeout?: string;
           allowManagedCodexInstall?: boolean;
+          yes?: boolean;
           json?: boolean;
         } & RawDiagnosticsOptions,
       ) => {
@@ -2651,6 +2893,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         json?: boolean;
         force?: boolean;
         allowManagedCodexInstall?: boolean;
+        yes?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('cleanup', rawOptions);
@@ -2676,6 +2919,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
+    .option('-y, --yes', 'authorize shared Codex native replacement or forced reinstall', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2687,6 +2931,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         platform?: string;
         scriptTimeout?: string;
         allowManagedCodexInstall?: boolean;
+        yes?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
@@ -2911,7 +3156,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'config:set',
           ...writeReceipt,
           plugin: plugin.manifest.name,
@@ -3071,7 +3316,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'config:unset',
           ...writeReceipt,
           plugin: plugin.manifest.name,
@@ -3203,7 +3448,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: resetReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'config:reset',
           ...resetReceipt,
           plugin: plugin.manifest.name,
@@ -3341,7 +3586,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('status', rawOptions);
       const result = await runActionWithContext(
         context,
-        () => statusCommandV5({
+        () => statusCommandV6({
           plugins: plugins ?? [],
           cwd,
           env: context.env,
@@ -3407,6 +3652,7 @@ export async function runCli(
     && ['activate', 'status', 'deactivate'].includes(argv[2] ?? '')
     ? argv[2] as 'activate' | 'status' | 'deactivate'
     : null;
+  const jsonWriteRequest = jsonWriteCommandRequest(argv);
 
   try {
     const authoringScriptByCommand: Record<string, string> = {
@@ -3476,7 +3722,7 @@ export async function runCli(
       const message = 'option --subdir cannot be used with option --no-subdir';
       if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 4,
+          receiptSchemaVersion: 5,
           command: 'catalog:source:update',
           ok: false,
           changed: false,
@@ -3510,7 +3756,9 @@ export async function runCli(
     }
     const program = buildProgram({
       ...options,
-      io: jsonCatalogDevCommand ? { ...io, stderr: () => undefined } : io,
+      io: jsonCatalogDevCommand || jsonWriteRequest
+        ? { ...io, stderr: () => undefined }
+        : io,
       diagnostics: {
         ...options.diagnostics,
         metadata: {
@@ -3543,6 +3791,10 @@ export async function runCli(
         sourceId,
         ...failure,
       }));
+      return 1;
+    }
+    if (jsonWriteRequest) {
+      writeCommandFailureReceipt(io.stdout, jsonWriteRequest, error);
       return 1;
     }
     if (jsonAuthoringCommand && !(error instanceof CommanderError)) {

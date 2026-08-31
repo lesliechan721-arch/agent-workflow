@@ -13,6 +13,7 @@
 | Performance | `pnpm test:perf` | 独立性能预算；不进入普通 unit |
 | Performance gate | `pnpm test:perf:gate` | 预算结果和 fast unit wall-time 门禁 |
 | Smoke | 见下方命令表 | 真实 build、stage、pack、fetch 和插件脚本产物 |
+| Native qualification | `pnpm qualification:codex-project-native` | 显式验证精确 Codex CLI 的 shared native 与 project activation 行为；不进入普通测试或构建 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
 
@@ -29,10 +30,16 @@
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
+| `pnpm test:qualification:codex-project-native:harness` | 使用 fake executable 验证 qualification harness 的解析、隔离、脱敏、精确版本门禁和 schema；不提供 native 支持证据 |
+| `pnpm qualification:codex-project-native` | 使用 PATH 中精确 `codex-cli 0.151.0` 运行离线真实 qualification，并输出单个 schema 1 JSON report |
 
 `release:verify:cli` 包含真实 plugin-scripts staging smoke，以及使用临时本地 bare Git remote 的 `test:smoke:fetch` publish/fetch/provider smoke。该 plugin smoke 固定 packageRoot 的 pnpm 版本，通过隔离 store 视图复用 workspace install 记录的 pnpm 内容，并在移除 `npm_execpath`、PATH 中的 Corepack/pnpm 和 pnpm 在线解析后运行；fetch smoke 不访问真实网络。
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
+
+Codex project native qualification 是显式 suite。它不得由 `pnpm test`、unit、integration、build 或 release 默认链隐式调用。runner 必须覆盖真实用户 home 环境变量，使用自己的临时 Codex home、AW home、项目和本地 marketplace，只执行本地命令，并在成功或失败后清理。报告不得包含真实或临时绝对路径、credential 或 native stderr；退出码反映最低 qualification 合同。报告是一次性兼容性证据，不是 installed ledger。macOS 报告只证明该次 macOS 运行；Windows 必须在 Windows 上独立运行，未运行时保留明确的 evidence gap。
+
+Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runner 本身。native kind 的 `supported` 结果、project activation 和 trust 行为只能来自显式真实 qualification；无法从 `0.151.0` 离线 JSON 或行为证明的 kind 必须报告 `unsupported`。
 
 含 `buildImports` 或 `skillRuntimeFiles.import` 的 synthetic fixture 必须显式构造同一 source set 的 catalog runtime resolver。`plugin:test` 和 eval materialization 通过真实入口验证 resolver 注入；单插件 helper 缺 resolver 的 fail-closed 行为在最低 unit 层验证，不建立 sibling layout fallback。
 
@@ -93,6 +100,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | 第三方作者公开闭环与 tarball dependency closure | Smoke | `pnpm test:smoke:authoring:external`；它不得通过 monorepo cwd、`NODE_PATH` 或 workspace symlink 取得依赖 |
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
+| Codex shared native/project activation qualification | 独立 qualification | `pnpm test:qualification:codex-project-native:harness`，并在支持的本机运行 `pnpm qualification:codex-project-native`；Windows 未实跑时必须报告证据缺口 |
 
 所有文档或代码改动最后运行 `git diff --check`。
 

@@ -52,7 +52,7 @@ async function setEmbeddedRootOverride(rootDir: string | null): Promise<void> {
 
 afterEach(async () => {
   vi.resetModules();
-  vi.doUnmock('../../src/commands/status-v5.js');
+  vi.doUnmock('../../src/commands/status-v6.js');
   vi.doUnmock('../../src/commands/write-commands.js');
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -60,7 +60,110 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('CLI JSON v4 harness', () => {
+describe('CLI JSON Status v6 and Receipt v5 harness', () => {
+  it.each([
+    ['install', 'add', '-jy'],
+    ['upgrade', 'keep', '-jy'],
+    ['reinstall', 'keep', '-jy'],
+    ['uninstall', 'remove', '-j'],
+    ['cleanup', 'keep', '-j'],
+    ['sync', 'keep', '-jy'],
+  ] as const)('emits one exact Receipt v5 when %s short options fail during Commander parsing', async (
+    command,
+    action,
+    jsonOption,
+  ) => {
+    const result = await runCliEntry([
+      command, 'official/git-commit', '-sproject', '-pcodex', jsonOption, '--unknown',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(result.parseJsonStdout()).toEqual({
+      ok: false,
+      command,
+      receiptSchemaVersion: 5,
+      overallState: 'failed',
+      layers: {
+        projectIntent: [{
+          pluginId: 'official/git-commit',
+          platform: 'codex',
+          scope: 'project',
+          relation: 'requested',
+          action,
+          requiredBy: [],
+        }],
+        userIntent: [],
+        sharedCodexNative: [],
+        userActivation: [],
+        projectActivation: [],
+        awExtensions: [],
+      },
+      targets: [{
+        pluginName: 'git-commit',
+        pluginId: 'official/git-commit',
+        sourceId: 'official',
+        platform: 'codex',
+        scope: 'project',
+        status: 'failed',
+        cleanupAttempted: false,
+        actions: [],
+        removed: [],
+        absent: [],
+        residual: [],
+        quarantined: [],
+        failures: [],
+        desired: { scope: 'project', relation: 'requested' },
+        recovery: [`correct the ${command} request and retry`],
+      }],
+      warnings: [],
+      errors: [{ code: 'invalidArguments', message: "error: unknown option '--unknown'" }],
+    });
+  });
+
+  it('projects attached short option values in a JSON failure receipt', async () => {
+    const result = await runCliEntry([
+      'install', 'official/git-commit', '-sproject', '-pclaude', '-j', '--unknown',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(result.parseJsonStdout()).toMatchObject({
+      errors: [{ code: 'invalidArguments' }],
+      layers: {
+        projectIntent: [expect.objectContaining({
+          pluginId: 'official/git-commit', platform: 'claude', scope: 'project',
+        })],
+      },
+      targets: [expect.objectContaining({ platform: 'claude', scope: 'project' })],
+    });
+  });
+
+  it.each([
+    [['install', 'official/git-commit', '-sproject', '-pinvalid', '-j'], 'invalidArguments'],
+    [['upgrade', 'official/git-commit', '--all', '-p', 'codex', '--json'], 'invalidArguments'],
+    [['sync', 'official/git-commit', '-p', 'claude', '--json'], 'invalidArguments'],
+  ] as const)('uses a stable early failure code for %j', async (argv, code) => {
+    const result = await runCliEntry([...argv]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: false,
+      receiptSchemaVersion: 5,
+      overallState: 'failed',
+      errors: [{ code, message: expect.any(String) }],
+      layers: {
+        projectIntent: expect.any(Array),
+        userIntent: expect.any(Array),
+        sharedCodexNative: [],
+        userActivation: [],
+        projectActivation: [],
+        awExtensions: [],
+      },
+    });
+  });
+
   it('publishes the runtime plugin capability contract with isolated stdout', async () => {
     const result = await runCliEntry([
       'plugin', 'capabilities', '--surface', 'artifacts', '--json',
@@ -79,14 +182,14 @@ describe('CLI JSON v4 harness', () => {
     });
   });
 
-  it('keeps status v5 JSON on stdout', async () => {
+  it('keeps exact status v6 JSON on stdout', async () => {
     vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v5.js', () => ({
-      statusCommandV5: vi.fn(async () => {
+    vi.doMock('../../src/commands/status-v6.js', () => ({
+      statusCommandV6: vi.fn(async () => {
         const payload = {
-          schemaVersion: 5,
+          schemaVersion: 6,
           catalog: {
             primarySourceId: 'official',
             configDigest: 'sha256:config',
@@ -108,9 +211,12 @@ describe('CLI JSON v4 harness', () => {
             platform: 'codex',
             scope: 'project',
             cwd: tempDir,
+            desired: { enabled: true, scopes: ['project'], relation: 'root' },
+            actual: { state: 'drifted' },
             state: 'partial',
             components: [],
             errors: [],
+            recovery: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
           }],
           errors: [],
         };
@@ -129,9 +235,24 @@ describe('CLI JSON v4 harness', () => {
     );
 
     expect(result.exitCode, result.stderr).toBe(0);
-    expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 5,
-      targets: [{ state: 'partial' }],
+    expect(result.parseJsonStdout()).toEqual({
+      schemaVersion: 6,
+      catalog: {
+        primarySourceId: 'official', configDigest: 'sha256:config',
+        compositeDigest: 'sha256:composite', sources: [],
+      },
+      filters: {
+        plugins: ['git-commit'], platform: 'codex', scope: 'project', cwd: tempDir,
+      },
+      targets: [{
+        pluginName: 'git-commit', pluginId: 'official/git-commit', sourceId: 'official',
+        sourceIdentity: 'sha256:source', version: '1.0.0', platform: 'codex',
+        scope: 'project', cwd: tempDir,
+        desired: { enabled: true, scopes: ['project'], relation: 'root' },
+        actual: { state: 'drifted' }, state: 'partial', components: [], errors: [],
+        recovery: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+      }],
+      errors: [],
     });
     expect(result.stdout).not.toContain('调试：');
     expect(result.stderr).toContain('调试：command:start');
@@ -140,8 +261,8 @@ describe('CLI JSON v4 harness', () => {
   it('returns empty stdout, stderr error text, and exit 1 for a status execution error', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-error-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status-v5.js', () => ({
-      statusCommandV5: vi.fn(async () => {
+    vi.doMock('../../src/commands/status-v6.js', () => ({
+      statusCommandV6: vi.fn(async () => {
         throw new Error('status inspection failed');
       }),
     }));
@@ -157,12 +278,15 @@ describe('CLI JSON v4 harness', () => {
   });
 
   it.each([
-    ['install', []],
-    ['upgrade', []],
-    ['reinstall', []],
-    ['uninstall', []],
-    ['cleanup', []],
-  ])('emits a namespaced %s receipt with the explicit qualified target', async (command) => {
+    ['install', 'add'],
+    ['upgrade', 'keep'],
+    ['reinstall', 'keep'],
+    ['uninstall', 'remove'],
+    ['cleanup', 'keep'],
+  ] as const)('emits a namespaced successful %s receipt with the explicit desired intent', async (
+    command,
+    intentAction,
+  ) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-v3-'));
     tempDirs.push(tempDir);
     const result = {
@@ -172,8 +296,10 @@ describe('CLI JSON v4 harness', () => {
       rebuildResults: [],
       targetResults: [],
       overallState: 'succeeded',
-      nativePlugins: {},
-      repoManagedArtifacts: [],
+      layers: {
+        projectIntent: [], userIntent: [], sharedCodexNative: [],
+        userActivation: [], projectActivation: [], awExtensions: [],
+      },
       receiptTargets: [{
         pluginName: 'git-commit',
         pluginId: 'official/git-commit',
@@ -202,8 +328,13 @@ describe('CLI JSON v4 harness', () => {
     expect(success.parseJsonStdout()).toMatchObject({
       ok: true,
       command,
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       overallState: 'succeeded',
+      layers: {
+        projectIntent: [expect.objectContaining({
+          pluginId: 'official/git-commit', action: intentAction,
+        })],
+      },
       targets: [{
         pluginName: 'git-commit',
         pluginId: 'official/git-commit',
@@ -211,13 +342,51 @@ describe('CLI JSON v4 harness', () => {
         platform: 'codex',
         scope: 'project',
         status: 'succeeded',
+        desired: { scope: 'project', relation: 'requested' },
+        recovery: [],
       }],
       errors: [],
     });
     expect(commands[`${command}WriteCommand` as keyof typeof commands]).toHaveBeenCalledOnce();
   });
 
-  it('emits a fail-closed config mutation receipt v4', async () => {
+  it.each([
+    'codexProjectPluginVersionTooLow',
+    'codexProjectPluginUnsupported',
+    'codexSystemCliUnsupported',
+  ])('emits only the official system Codex CLI recovery for %s', async (code) => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-codex-recovery-'));
+    tempDirs.push(tempDir);
+    const error = Object.assign(new Error(`${code}: consumer probe failed`), { code });
+    const installWriteCommand = vi.fn(async () => {
+      throw error;
+    });
+    vi.doMock('../../src/commands/write-commands.js', async (importOriginal) => ({
+      ...await importOriginal<typeof import('../../src/commands/write-commands.js')>(),
+      installWriteCommand,
+    }));
+
+    const result = await runCliEntry(
+      ['install', 'official/demo', '-p', 'codex', '-s', 'project', '-jy'],
+      { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toBe('');
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: false,
+      errors: [{ code }],
+      targets: [{
+        pluginId: 'official/demo',
+        recovery: [
+          'upgrade or repair the official system Codex CLI, then retry the original operation',
+        ],
+      }],
+    });
+    expect(installWriteCommand).toHaveBeenCalledOnce();
+  });
+
+  it('emits a fail-closed config mutation receipt v5', async () => {
     const workspace = await makeWorkspace();
     await setEmbeddedRootOverride(workspace.embeddedRoot);
 
@@ -229,7 +398,7 @@ describe('CLI JSON v4 harness', () => {
     expect(noOp.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:reset',
-      receiptSchemaVersion: 4,
+      receiptSchemaVersion: 5,
       plugin: 'git-commit',
       overallState: 'failed',
       errors: [expect.objectContaining({ code: 'sourceMissing' })],
