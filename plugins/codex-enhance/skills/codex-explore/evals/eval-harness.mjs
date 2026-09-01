@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
   access,
@@ -21,6 +22,12 @@ import { fileURLToPath } from 'node:url';
 import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
+const EXPLORE_ROLE_NAMES = [
+  'codex-explore-custom',
+  'codex-explore-deep',
+  'codex-explore-quick',
+  'codex-explore-standard',
+];
 export const PROVIDER_CREDENTIAL_ENVIRONMENT = [
   'ALL_PROXY',
   'AW_SKILL_EVAL_CODEX_BIN',
@@ -47,6 +54,39 @@ export async function readEvalResource(relativePath) {
   }
   return readFile(path.join(evalDir, normalized), 'utf8');
 }
+
+export async function inspectExploreRoleContract(root) {
+  const agentsRoot = path.join(root, '.codex', 'agents');
+  const entries = await readdir(agentsRoot, { withFileTypes: true });
+  const roles = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.toml')) continue;
+    const relativePath = path.posix.join('.codex', 'agents', entry.name);
+    const bytes = await readFile(path.join(agentsRoot, entry.name));
+    const text = bytes.toString('utf8');
+    const name = text.match(/^name\s*=\s*"(codex-explore-[a-z]+)"\s*$/mu)?.[1];
+    if (!EXPLORE_ROLE_NAMES.includes(name)) continue;
+    roles.push({
+      name,
+      path: relativePath,
+      digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    });
+  }
+  roles.sort((left, right) => left.name.localeCompare(right.name));
+  if (
+    roles.length !== EXPLORE_ROLE_NAMES.length ||
+    roles.some((role, index) => role.name !== EXPLORE_ROLE_NAMES[index])
+  ) {
+    throw new Error('Materialized workspace does not contain the four Codex Explore roles.');
+  }
+  return {
+    digest: `sha256:${createHash('sha256')
+      .update(JSON.stringify(roles.map(({ name, digest }) => ({ name, digest }))))
+      .digest('hex')}`,
+    roles,
+  };
+}
+
 export async function createEvalWorkspace({ configValues = {}, sourceRoot } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-eval-'));
   try {
@@ -279,6 +319,16 @@ function agentMessageText(payload) {
     .join('\n');
 }
 
+function agentMessagePayload(text) {
+  const marker = text.match(/^Payload:\s*$/mu);
+  if (!marker || !Number.isInteger(marker.index)) return null;
+  const payload = text
+    .slice(marker.index + marker[0].length)
+    .replace(/^\r?\n/u, '')
+    .trim();
+  return payload || null;
+}
+
 function agentUpdate(payload, rolloutFile, codexHome, lineNumber) {
   if (payload?.type !== 'agent_message') {
     return null;
@@ -297,6 +347,7 @@ function agentUpdate(payload, rolloutFile, codexHome, lineNumber) {
       message_type: messageType,
       status: text.match(/\bstatus=(progress|blocked)\b/u)?.[1] ?? null,
       task_name: text.match(/^Task name:\s*(.+)\s*$/mu)?.[1] ?? null,
+      payload: messageType === 'FINAL_ANSWER' ? agentMessagePayload(text) : null,
     },
     rollout_file: path.relative(codexHome, rolloutFile),
     line_number: lineNumber,
@@ -464,6 +515,41 @@ export function buildCollaborationTimeline(
   }
 
   return calls;
+}
+
+export function collectFinalAgentResults(calls) {
+  const results = [];
+  const identities = new Set();
+  const add = (source, taskName, value) => {
+    if (typeof value !== 'string' || value.trim() === '') return;
+    const result = {
+      source,
+      task_name: typeof taskName === 'string' && taskName.trim() !== '' ? taskName : null,
+      text: value.trim(),
+    };
+    const identity = JSON.stringify({ task_name: result.task_name, text: result.text });
+    if (identities.has(identity)) return;
+    identities.add(identity);
+    results.push(result);
+  };
+
+  for (const call of calls ?? []) {
+    if (call?.tool === 'agent_message' && call.output?.message_type === 'FINAL_ANSWER') {
+      add('agent_message', call.output.task_name, call.output.payload);
+    }
+    if (
+      call?.tool !== 'wait_agent' ||
+      !call.output?.status ||
+      typeof call.output.status !== 'object' ||
+      Array.isArray(call.output.status)
+    ) {
+      continue;
+    }
+    for (const [taskName, status] of Object.entries(call.output.status)) {
+      add('wait_agent', taskName, status?.completed);
+    }
+  }
+  return results;
 }
 
 function rolloutIdentity(lines) {

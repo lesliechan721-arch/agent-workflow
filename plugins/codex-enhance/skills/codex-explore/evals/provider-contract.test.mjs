@@ -34,8 +34,23 @@ async function writeFakeCodex(root, marker) {
 
 async function writeWorkspace(root) {
   const skillRoot = path.join(root, '.agents', 'skills', 'codex-explore');
-  await mkdir(skillRoot, { recursive: true });
-  await writeFile(path.join(skillRoot, 'SKILL.md'), '# Codex Explore\n');
+  const agentsRoot = path.join(root, '.codex', 'agents');
+  await Promise.all([
+    mkdir(skillRoot, { recursive: true }),
+    mkdir(agentsRoot, { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(path.join(skillRoot, 'SKILL.md'), '# Codex Explore\n'),
+    ...[
+      'codex-explore-custom',
+      'codex-explore-deep',
+      'codex-explore-quick',
+      'codex-explore-standard',
+    ].map((name) => writeFile(
+      path.join(agentsRoot, `${name}.toml`),
+      `name = ${JSON.stringify(name)}\ndeveloper_instructions = "Inspect evidence."\n`,
+    )),
+  ]);
 }
 
 async function copyPreparedFixtures(source, destination, manifest) {
@@ -109,7 +124,7 @@ test('Codex Explore custom-process commands run only the selected case', async (
     const providerSuites = manifest.suites.filter((suite) => suite.kind === 'custom-process');
     assert.deepEqual(
       providerSuites.map((suite) => suite.id),
-      ['model-selection', 'workflow', 'liveness'],
+      ['model-selection', 'workflow', 'output-contract', 'liveness'],
     );
     for (const [index, suite] of providerSuites.entries()) {
       const document = JSON.parse(await readFile(path.join(evalRoot, suite.cases), 'utf8'));
@@ -144,7 +159,10 @@ test('Codex Explore custom-process commands run only the selected case', async (
         return true;
       },
     );
-    assert.equal((await readFile(marker, 'utf8')).trim().split('\n').length, 3);
+    assert.equal(
+      (await readFile(marker, 'utf8')).trim().split('\n').length,
+      providerSuites.length,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

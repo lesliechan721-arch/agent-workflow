@@ -676,7 +676,7 @@ describe('EvalSpec v1 execution', () => {
         }
       }
     }
-    expect({ manifests: manifests.length, suites: suiteCount }).toEqual({ manifests: 27, suites: 69 })
+    expect({ manifests: manifests.length, suites: suiteCount }).toEqual({ manifests: 27, suites: 70 })
     expect(conversationCount).toBeGreaterThan(0)
     expect(caseCount).toBeGreaterThan(0)
   })

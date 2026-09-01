@@ -152,11 +152,34 @@ function assertRoleArtifact(plan, expected) {
   assert.match(instructions, /不得委派或管理代理/);
   assert.match(instructions, /保持只读/);
   assert.match(instructions, /不得向外部发送密钥、个人数据、私有代码或用户材料原文/);
-  for (const heading of ['## Status', '## Findings', '## Gaps']) {
-    assert.match(instructions, new RegExp(heading));
+  for (const status of [
+    'Status: completed',
+    'Status: blocked — <原因>',
+    'Status: insufficient — <缺失证据>',
+  ]) {
+    assert.ok(instructions.includes(status));
   }
-  for (const field of ['**kind:**', '**claim:**', '**evidence:**', '**locator:**']) {
-    assert.ok(instructions.includes(field));
+  for (const kind of ['[direct]', '[inference]', '[conflict]']) {
+    assert.ok(instructions.includes(kind));
+  }
+  assert.match(instructions, /实际读取且可核验的来源定位/);
+  assert.match(instructions, /inference 给出所依据的直接证据/);
+  assert.match(instructions, /conflict 给出冲突双方/);
+  assert.match(instructions, /时间敏感来源在定位后附来源时间/);
+  assert.match(instructions, /只在确有[^\n]+时输出 `## Gaps`/);
+  assert.match(instructions, /不要复述调查过程/);
+  assert.ok(instructions.includes('`## Findings`'));
+  assert.ok(instructions.includes('`- [kind] <claim> — <locator(s)>`'));
+  assert.equal(instructions.includes('## Status'), false);
+  for (const legacyField of [
+    '**kind:**',
+    '**claim:**',
+    '**evidence:**',
+    '**locator:**',
+    '**support:**',
+    '没有时写“无”',
+  ]) {
+    assert.equal(instructions.includes(legacyField), false);
   }
 }
 
