@@ -41,7 +41,7 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite trigger-composi
 
 ## Routing 参数评估
 
-`provider-evals.json` 的 36 个独立 case 覆盖四档复杂度 preset、复杂只读任务不误入 simple、范围有限的 plan/review 使用 general、高难系统任务使用 advanced、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、多子任务间 override 隔离、V1/V2 干净上下文、V2 部分历史与 override、全历史与 routing 字段的版本差异、来自 AGENTS.md 或其它 skill 的 context 要求、显式参数冲突和缺失 role。provider 每次只处理 engine 传入的一个 case、variant 和 attempt，不在 provider 内执行语料或运行次数循环。显式 `$skill` 作为宿主注入证据，隐式加载只接受实际 `SKILL.md` 读取事件。spawn 路由只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据 query、最终说明或调用摘要猜测证据。零 spawn 仍是阻断用例的硬门禁；解释只检查非空，并用单行 `ROUTING_BLOCK_REASON=<枚举>` 记录结构化原因，不维护自然语言同义词表。V1 通过 rollout 中的 `exec` 工具调用源码读取同一原始参数，并只接受内联的 JSON-like 字面量参数；spawn 事件先到但原始参数尚不可用时，runner 等待 rollout 输出元数据，仍无法机械取证才保持 incomplete。明确的模型传输瞬断最多重试两次，普通 timeout 或行为错误不重试。
+`provider-evals.json` 的 36 个独立 case 覆盖四档复杂度 preset、复杂只读任务不误入 simple、范围有限的 plan/review 使用 general、高难系统任务使用 advanced、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、多子任务间 override 隔离、V1/V2 干净上下文、V2 部分历史与 override、全历史与 routing 字段的版本差异、来自 AGENTS.md 或其它 skill 的 context 要求、显式参数冲突和缺失 role。Engine 每次只把一个 case、variant 和 attempt 交给 adapter。prepare 只生成 `CodexWorkflowRequest v1`；grade 只使用 Engine normalized evidence。显式 `$skill` 从 case 机械重建；隐式加载只接受 `skillLoads` evidence。spawn 路由只用 normalized evidence 中保留的原始 `spawn_agent` arguments、output 和 status 评分，不根据 query、最终说明或调用摘要猜测证据。零 spawn 仍是阻断用例的硬门禁；解释只检查非空，并用单行 `ROUTING_BLOCK_REASON=<枚举>` 记录结构化原因。Engine 或 grade 失败会停止 batch，不重试。
 
 ```bash
 aw skill eval prepare codex-enhance codex-subagent-guide --suite routing --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-subagent-guide-routing --json
@@ -55,11 +55,11 @@ aw skill eval prepare codex-enhance codex-subagent-guide --suite routing --profi
 
 `provider-evals.json` 的 36 个展开 case 都是独立的 routing 输入；V1/V2 的期望值直接绑定各自 case，不依赖 provider 内部参数或额外组合。
 
-如果 stdout 只给出简化的协作事件，却没有可读取的隔离 rollout 原始参数，runner 也会标记 `raw_evidence_missing` 和 `complete: false`；最终说明或调用事件不能替代参数证据。
+如果 normalized evidence 缺少原始参数、skill load、thread lineage 或完成状态，grade 会 fail closed；它不读取 `workflow-trace.json` 来补证。最终说明不能替代参数证据。
 
 ## 等待与清理评估
 
-两份 lifecycle case 文档各提供一条最小真实 timeline 用例。`lifecycle-evals.json` 的正常路径要求模型启动一个 simple 子代理，首次等待不少于 10 分钟，并且只有观察到真实终态结果才完成。`lifecycle-timeout-evals.json` 使用独立的 1 分钟 profile；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后再次等待到真实终态。如果当前 schema 提供清理工具，清理必须在结果已保留之后。runner 从隔离 rollout 读取真实 collaboration timeline，不用最终文案代替工具证据。
+两份 lifecycle case 文档各提供一条最小真实 timeline 用例。`lifecycle-evals.json` 的正常路径要求模型启动一个 simple 子代理，首次等待不少于 10 分钟，并且只有观察到真实终态结果才完成。`lifecycle-timeout-evals.json` 使用独立的 1 分钟 profile；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后再次等待到真实终态。如果当前 schema 提供清理工具，清理必须在结果已保留之后。grade 只从 `workflow-evidence.json` 读取 collaboration order、wait output/status、terminal result 和 Engine cleanup 确认，不用最终文案或 raw trace 代替工具证据。
 
 ```bash
 aw skill eval prepare codex-enhance codex-subagent-guide --suite lifecycle --profile project-default --runs 1 --output /tmp/aw-eval-specs/codex-subagent-guide-lifecycle --json

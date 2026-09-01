@@ -30,7 +30,9 @@ export interface AwSkillEvalManifestV1Suite {
   timeoutMs?: number
   requiredForRelease?: boolean
   releaseSplits?: string[]
-  provider?: { type: 'custom-process'; command: [string, ...string[]] }
+  provider?:
+    | { type: 'custom-process'; command: [string, ...string[]] }
+    | { type: 'codex-workflow'; command: [string, ...string[]]; allowedModels: string[] }
 }
 
 export interface AwSkillEvalManifestV1 {
@@ -154,8 +156,12 @@ function parseProfiles(value: unknown, ownerPlugin: string): AwSkillEvalManifest
 
 function parseProvider(value: unknown, label: string): AwSkillEvalManifestV1Suite['provider'] {
   const row = record(value, label)
-  onlyKeys(row, ['type', 'command'], label)
-  if (row.type !== 'custom-process') throw new Error(`${label}.type must be custom-process.`)
+  if (row.type === 'custom-process') onlyKeys(row, ['type', 'command'], label)
+  else if (row.type === 'codex-workflow') {
+    onlyKeys(row, ['type', 'command', 'allowedModels'], label)
+  } else {
+    throw new Error(`${label}.type must be custom-process or codex-workflow.`)
+  }
   if (
     !Array.isArray(row.command) || row.command.length === 0 ||
     row.command.some((entry) => typeof entry !== 'string' || entry.trim() === '' || entry.includes('\0'))
@@ -174,7 +180,26 @@ function parseProvider(value: unknown, label: string): AwSkillEvalManifestV1Suit
       || /(?:^|=)(?:\/|[A-Za-z]:\/)/u.test(argument)
     ) throw new Error(`${label}.command[${index}] must not escape the Skill eval directory.`)
   }
-  return { type: 'custom-process', command: row.command as [string, ...string[]] }
+  if (row.type === 'custom-process') {
+    return { type: 'custom-process', command: row.command as [string, ...string[]] }
+  }
+  if (!Array.isArray(row.allowedModels)) {
+    throw new Error(`${label}.allowedModels must be an array.`)
+  }
+  const allowedModels = row.allowedModels.map((entry, index) => {
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      throw new Error(`${label}.allowedModels[${index}] must be a non-empty string.`)
+    }
+    return entry
+  })
+  if (new Set(allowedModels).size !== allowedModels.length) {
+    throw new Error(`${label}.allowedModels must contain unique values.`)
+  }
+  return {
+    type: 'codex-workflow',
+    command: row.command as [string, ...string[]],
+    allowedModels,
+  }
 }
 
 function looksLikeLocalPath(value: string): boolean {
@@ -243,8 +268,13 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
       'releaseSplits', 'provider',
     ], label)
     const id = safeId(row.id, `${label}.id`)
-    if (row.kind !== 'trigger' && row.kind !== 'conversation' && row.kind !== 'custom-process') {
-      throw new Error(`${label}.kind must be trigger, conversation, or custom-process.`)
+    if (
+      row.kind !== 'trigger'
+      && row.kind !== 'conversation'
+      && row.kind !== 'custom-process'
+      && row.kind !== 'codex-workflow'
+    ) {
+      throw new Error(`${label}.kind must be trigger, conversation, custom-process, or codex-workflow.`)
     }
     const profiles = row.profiles === undefined ? undefined : safeIdArray(row.profiles, `${label}.profiles`)
     const unknownProfile = profiles?.find((profile) => !profileIds.has(profile))
@@ -256,8 +286,15 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
       ? undefined
       : safeIdArray(row.releaseSplits, `${label}.releaseSplits`, true)
     const provider = row.provider === undefined ? undefined : parseProvider(row.provider, `${label}.provider`)
-    if (row.kind === 'custom-process' && !provider) throw new Error(`${label} custom-process requires provider.`)
-    if (row.kind !== 'custom-process' && provider) throw new Error(`${label} built-in kind must not declare provider.`)
+    if ((row.kind === 'custom-process' || row.kind === 'codex-workflow') && !provider) {
+      throw new Error(`${label} ${row.kind} requires provider.`)
+    }
+    if (provider && provider.type !== row.kind) {
+      throw new Error(`${label} provider.type must match suite kind.`)
+    }
+    if (row.kind !== 'custom-process' && row.kind !== 'codex-workflow' && provider) {
+      throw new Error(`${label} built-in kind must not declare provider.`)
+    }
     return {
       id,
       kind: row.kind,

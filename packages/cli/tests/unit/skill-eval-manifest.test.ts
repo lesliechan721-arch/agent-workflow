@@ -166,4 +166,65 @@ describe('AwSkillEvalManifest v1 reader', () => {
       manifest: null,
     })
   })
+
+  it('accepts only the strict codex-workflow provider shape', async () => {
+    const fixture = await createFixture()
+    await Promise.all([
+      fs.writeFile(path.join(fixture.evalRoot, 'workflow.mjs'), 'export {}\n'),
+      fs.writeJson(path.join(fixture.evalRoot, 'selected-cases.json'), {
+        version: 1,
+        suite: { kind: 'codex-workflow', unitUnderTest: 'owner-skill' },
+        cases: [{
+          id: 'workflow',
+          split: 'validation',
+          tags: [],
+          input: { prompt: 'Run the workflow.' },
+          expected: { passed: true },
+          assertions: ['The workflow completes.'],
+        }],
+      }),
+    ])
+    const base = manifest()
+    base.suites = [{
+      id: 'workflow',
+      kind: 'codex-workflow',
+      cases: 'selected-cases.json',
+      provider: {
+        type: 'codex-workflow',
+        command: ['node', 'workflow.mjs'],
+        allowedModels: [],
+      },
+    }]
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), base)
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: true,
+      manifest: {
+        suites: [{
+          kind: 'codex-workflow',
+          provider: { type: 'codex-workflow', allowedModels: [] },
+        }],
+      },
+    })
+
+    const suite = (base.suites as Record<string, unknown>[])[0]!
+    for (const provider of [
+      { type: 'codex-workflow', command: ['node', 'workflow.mjs'] },
+      { type: 'codex-workflow', command: [], allowedModels: [] },
+      { type: 'codex-workflow', command: ['node', 'workflow.mjs'], allowedModels: ['gpt', 'gpt'] },
+      { type: 'codex-workflow', command: ['node', 'workflow.mjs'], allowedModels: [], config: {} },
+      { type: 'unknown', command: ['node', 'workflow.mjs'], allowedModels: [] },
+    ]) {
+      await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
+        ...base,
+        suites: [{ ...suite, provider }],
+      })
+      await expect(validateAwSkillEvalManifest({
+        plugin: fixture.plugin,
+        skill: 'owner-skill',
+      })).resolves.toMatchObject({ valid: false, manifest: null })
+    }
+  })
 })

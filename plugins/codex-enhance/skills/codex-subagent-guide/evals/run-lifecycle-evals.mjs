@@ -1,17 +1,20 @@
-import { rm } from 'node:fs/promises';
-import process from 'node:process';
-
 import {
-  createProviderOutput,
-  createEvalWorkspace,
-  PROVIDER_CREDENTIAL_ENVIRONMENT,
-  runCodexOnce,
-} from './eval-harness.mjs';
-import { runCustomProcessMain } from './custom-process-protocol.mjs';
+  ROOT_DEVELOPER_INSTRUCTIONS,
+  evidenceRun,
+  legacyCase,
+  readWorkflowEvidence,
+  runCodexWorkflowAdapterMain,
+  workflowProfile,
+  workflowRoles,
+} from './codex-workflow-adapter.mjs';
+import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 function waitTimedOut(call) {
   if (call?.output && typeof call.output === 'object') {
-    return call.output.timed_out === true;
+    return call.output.timed_out === true ||
+      call.output.timedOut === true ||
+      call.output.status === 'timeout' ||
+      call.output.status === 'timed_out';
   }
   return typeof call?.output === 'string' && /timed[ _-]?out/iu.test(call.output);
 }
@@ -111,50 +114,49 @@ function validateLifecycleCase(evalCase) {
   return evalCase;
 }
 
-export async function runEvalProvider(input) {
-  const evalCase = validateLifecycleCase(input.case);
-  if (evalCase.id !== input.caseId) {
-    throw new Error('Provider case id does not match input.caseId.');
-  }
-  const workspace = await createEvalWorkspace({
-    sourceRoot: input.workspacePath,
-    withSkill: input.skillMode !== 'without-skill',
+export async function prepareLifecycle(input) {
+  const evalCase = validateLifecycleCase(legacyCase(input.case));
+  await setupTriggerWorkspace({
+    workspaceRoot: input.paths.workspace,
+    evalCase: { workspace_fixture: 'default' },
   });
-  try {
-    const run = await runCodexOnce(workspace, {
-      query: evalCase.prompt,
-      explicit_skill: true,
-      should_load_skill: true,
-      should_spawn_agent: true,
-      wait_for_completion: true,
-      codex_config: {},
-    }, {
-      profile: 'v2',
-      model: process.env.AW_SKILL_EVAL_CODEX_MODEL ?? 'gpt-5.6-luna',
-      codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
-      captureTrace: true,
-      sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
-    });
-    const evaluation = evaluateLifecycleTimeline(
-      run.collaboration_timeline,
-      evalCase.expected,
-    );
-    return createProviderOutput({
-      providerId: 'codex-subagent-lifecycle',
-      graderId: 'codex-subagent-lifecycle-mechanical',
-      run,
-      result: {
-        caseId: input.caseId,
-        configuration: input.configuration,
-        skillMode: input.skillMode,
-        complete: !run.execution_error && run.collaboration_timeline?.length > 0,
-        ...evaluation,
-      },
-      outputDir: input.outputDir,
-    });
-  } finally {
-    await rm(workspace.root, { recursive: true, force: true });
-  }
+  return {
+    version: 1,
+    prompt: evalCase.prompt,
+    sandbox: 'read-only',
+    model: 'gpt-5.6-luna',
+    developerInstructions: ROOT_DEVELOPER_INSTRUCTIONS,
+    roles: await workflowRoles(input.paths.workspace),
+    multiAgent: workflowProfile('v2'),
+  };
 }
 
-await runCustomProcessMain(import.meta.url, runEvalProvider);
+export async function gradeLifecycle(input) {
+  const evalCase = validateLifecycleCase(legacyCase(input.case));
+  const evidence = await readWorkflowEvidence(input.paths.evidence);
+  const run = evidenceRun(evidence, input.case, input.variant);
+  const evaluation = evaluateLifecycleTimeline(run.collaboration_timeline, evalCase.expected);
+  evaluation.assertions.push({
+    name: 'engine_cleanup_confirmed',
+    passed: run.cleanup_confirmed === true,
+    evidence: `confirmed=${run.cleanup_confirmed === true}`,
+  });
+  evaluation.passed = evaluation.assertions.every((entry) => entry.passed === true);
+  const complete = run.collaboration_timeline.length > 0 && run.cleanup_confirmed === true;
+  const passed = complete && evaluation.passed;
+  return {
+    passed,
+    score: passed ? 1 : 0,
+    details: {
+      caseId: evalCase.id,
+      variant: input.variant,
+      complete,
+      ...evaluation,
+    },
+  };
+}
+
+await runCodexWorkflowAdapterMain(import.meta.url, {
+  prepare: prepareLifecycle,
+  grade: gradeLifecycle,
+});

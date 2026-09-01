@@ -219,6 +219,106 @@ describe('independent Eval v1 contracts', () => {
     await expect(validateEvalResult({ ...result, unexpected: true })).resolves.toMatchObject({ valid: false })
   })
 
+  it('accepts only the strict codex-workflow provider and validates its result artifacts', async () => {
+    const { spec } = await createSpecFixture()
+    const provider = {
+      type: 'codex-workflow' as const,
+      command: ['node', 'workflow.mjs'],
+      allowedModels: ['gpt-allowed'],
+    }
+    await expect(validateEvalSpec({ ...spec, provider })).resolves.toMatchObject({ valid: true })
+    await expect(validateEvalSpec({
+      ...spec,
+      provider: { type: 'codex-workflow', command: ['node'], allowedModels: [] },
+    })).resolves.toMatchObject({ valid: true })
+    for (const invalidProvider of [
+      { type: 'codex-workflow', command: [], allowedModels: [] },
+      { type: 'codex-workflow', command: ['node'] },
+      { type: 'codex-workflow', command: ['node'], allowedModels: ['gpt', 'gpt'] },
+      { type: 'codex-workflow', command: ['node'], allowedModels: [], config: {} },
+      { type: 'unknown-workflow', command: ['node'], allowedModels: [] },
+    ]) {
+      await expect(validateEvalSpec({ ...spec, provider: invalidProvider }))
+        .resolves.toMatchObject({ valid: false })
+    }
+
+    const binding: EvalResultBinding = {
+      specDigest: spec.target.digest,
+      auditDigest: spec.target.digest,
+      targetDigest: spec.target.digest,
+      caseDigest: spec.cases.digest,
+      provider,
+      selectedCaseIds: ['case-1'],
+      allowedVariants: ['current'],
+      runs: 1,
+    }
+    const run = {
+      caseId: 'case-1',
+      variant: 'current' as const,
+      attempt: 1,
+      status: 'completed' as const,
+      durationMs: 1,
+      outputDir: 'output/case-1/current/attempt-1/output',
+      usage: { inputTokens: 3, outputTokens: 2 },
+      grade: { passed: true, score: 1 },
+      error: null,
+      artifacts: [
+        { path: 'workflow-evidence.json', role: 'evidence' },
+        { path: 'workflow-trace.json', role: 'trace' },
+        { path: 'model-output.txt', role: 'output' },
+        { path: 'provider-result.json', role: 'result' },
+      ],
+    }
+    const result: EvalResult = {
+      version: 1,
+      specDigest: binding.specDigest,
+      auditDigest: binding.auditDigest,
+      targetDigest: binding.targetDigest,
+      caseDigest: binding.caseDigest,
+      provider,
+      startedAt: '2026-08-30T00:00:00Z',
+      finishedAt: '2026-08-30T00:00:01Z',
+      runs: [run],
+      summary: { passed: 1, failed: 0, timeout: 0, error: 0 },
+    }
+    await expect(validateEvalResult(result, binding)).resolves.toMatchObject({ valid: true })
+    await expect(validateEvalResult({
+      ...result,
+      runs: [{ ...run, artifacts: run.artifacts.slice(0, 2) }],
+    }, binding)).resolves.toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining([expect.stringContaining('artifacts')]),
+    })
+    await expect(validateEvalResult({
+      ...result,
+      runs: [{ ...run, usage: null }],
+    })).resolves.toMatchObject({ valid: false })
+    await expect(validateEvalResult({
+      ...result,
+      runs: [{
+        ...run,
+        artifacts: run.artifacts.map((artifact, index) => index === 0
+          ? { ...artifact, role: 'wrong-role' }
+          : artifact),
+      }],
+    })).resolves.toMatchObject({ valid: false })
+    await expect(validateEvalResult({
+      ...result,
+      provider: { type: 'custom-process', command: ['node', 'provider.mjs'] },
+    })).resolves.toMatchObject({ valid: false })
+    await expect(validateEvalResult({
+      ...result,
+      runs: [{
+        ...run,
+        status: 'failed',
+        usage: null,
+        grade: null,
+        error: { message: 'provider failed' },
+      }],
+      summary: { passed: 0, failed: 0, timeout: 0, error: 1 },
+    })).resolves.toMatchObject({ valid: false })
+  })
+
   it('rejects path escape, input symlinks, and symlinked output components', async () => {
     const fixture = await createSpecFixture()
     await writeFile(fixture.specPath, JSON.stringify({

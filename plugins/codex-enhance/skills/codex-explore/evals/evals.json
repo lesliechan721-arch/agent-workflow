@@ -1,7 +1,7 @@
 {
   "version": 1,
   "suite": {
-    "kind": "custom-process",
+    "kind": "codex-workflow",
     "unitUnderTest": "codex-explore",
     "participants": [
       "codex-subagent-guide"

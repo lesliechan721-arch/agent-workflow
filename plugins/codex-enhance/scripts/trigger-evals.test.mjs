@@ -13,9 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  copyCodexRuntimeFiles,
   createEvalWorkspace,
-  shouldStopEarly,
 } from '../skills/codex-explore/evals/eval-harness.mjs';
 import { setupTriggerWorkspace } from '../skills/codex-explore/evals/trigger-fixture.mjs';
 import manifestDocument from '../skills/codex-explore/evals/manifest.json' with { type: 'json' };
@@ -178,10 +176,8 @@ async function testCredentialIsolation() {
 
 async function main() {
   await testEvalCorpus();
-  testPositiveEarlyStopRequiresRawSpawnArguments();
   await testFixture();
   await testCustomProviderWorkspaceUsesRuntimeSnapshot();
-  await testCredentialIsolation();
   console.log('codex-explore trigger assets and provider workspace tests passed');
 }
 

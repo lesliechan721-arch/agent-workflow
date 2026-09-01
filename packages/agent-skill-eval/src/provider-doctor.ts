@@ -2,7 +2,7 @@ import { constants as fsConstants } from 'node:fs'
 import { access } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
-import { cleanCodexEvalRuntimeConfig } from './codex-eval-runtime-config.js'
+import { resolveCodexEvalRuntimeConfig } from './codex-eval-runtime-config.js'
 import { BUILTIN_EVAL_PROVIDER_IDS, type BuiltinEvalProviderId } from './providers.js'
 import { CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST } from './custom-process.js'
 import { credentialEnvironmentNames } from './credentials.js'
@@ -75,7 +75,11 @@ export async function doctorEvalProviders(
   const sourceEnv = options.sourceEnv ?? process.env
   const platform = options.platform ?? process.platform
   const requestedExecutable = options.codexBin ?? sourceEnv.AW_SKILL_EVAL_CODEX_BIN ?? 'codex'
-  const runtime = cleanCodexEvalRuntimeConfig(sourceEnv, options.model)
+  const runtime = await resolveCodexEvalRuntimeConfig({
+    inheritUserConfig: true,
+    sourceEnv,
+    modelOverride: options.model ?? sourceEnv.AW_SKILL_EVAL_CODEX_MODEL,
+  })
   const resolvedExecutable = await resolveExecutable({
     executable: requestedExecutable,
     sourceEnv,
@@ -107,7 +111,10 @@ export async function doctorEvalProviders(
         credentialSource: runtime.credentialSource,
       },
     },
-    credentials: credentialEnvironmentNames(CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST).map((name) => ({
+    credentials: [...new Set([
+      ...credentialEnvironmentNames(CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST),
+      ...Object.keys(runtime.providerEnvironment),
+    ])].sort().map((name) => ({
       name,
       present: sourceEnv[name] !== undefined && sourceEnv[name] !== '',
     })),

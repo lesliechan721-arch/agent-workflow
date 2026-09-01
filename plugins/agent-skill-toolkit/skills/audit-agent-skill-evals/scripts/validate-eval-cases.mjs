@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
-const SUITE_KINDS = new Set(['trigger', 'conversation', 'custom-process']);
+const SUITE_KINDS = new Set(['trigger', 'conversation', 'custom-process', 'codex-workflow']);
 const CONDITIONAL_AUDIT_FIELDS = new Map([
   ['boundary', ['rationale', 'minimalCounterexample']],
   ['regression', ['rationale', 'minimalCounterexample']],
@@ -66,7 +66,12 @@ function validateSuite(suite, diagnostics, strict) {
     return null;
   }
   if (!SUITE_KINDS.has(suite.kind)) {
-    add(diagnostics, 'error', 'suite.kind', 'suite.kind must be trigger, conversation, or custom-process.');
+    add(
+      diagnostics,
+      'error',
+      'suite.kind',
+      'suite.kind must be trigger, conversation, custom-process, or codex-workflow.',
+    );
   }
   if (!hasText(suite.unitUnderTest)) {
     add(diagnostics, 'error', 'suite.unit-under-test', 'suite.unitUnderTest must be non-empty.');
@@ -144,6 +149,27 @@ function validateCustom(evalCase, diagnostics, caseId) {
   }
 }
 
+function validateCodexWorkflow(evalCase, diagnostics, caseId) {
+  if (!isRecord(evalCase.input)) {
+    add(
+      diagnostics,
+      'error',
+      'case.codex-workflow-input',
+      'Codex-workflow case requires provider input.',
+      caseId,
+    );
+  }
+  if (![evalCase.expected, evalCase.assertions].some((value) => value !== undefined)) {
+    add(
+      diagnostics,
+      'error',
+      'case.codex-workflow-contract',
+      'Codex-workflow case requires expected data or assertions.',
+      caseId,
+    );
+  }
+}
+
 function validateCase(evalCase, kind, index, seen, diagnostics) {
   if (!isRecord(evalCase)) {
     add(diagnostics, 'error', 'case.type', `Case #${index} must be an object.`);
@@ -161,6 +187,7 @@ function validateCase(evalCase, kind, index, seen, diagnostics) {
   if (kind === 'trigger') validateTrigger(evalCase, diagnostics, caseId);
   else if (kind === 'conversation') validateConversation(evalCase, diagnostics, caseId);
   else if (kind === 'custom-process') validateCustom(evalCase, diagnostics, caseId);
+  else if (kind === 'codex-workflow') validateCodexWorkflow(evalCase, diagnostics, caseId);
   validateConditionalAudit(evalCase, tags, diagnostics, caseId);
 }
 
