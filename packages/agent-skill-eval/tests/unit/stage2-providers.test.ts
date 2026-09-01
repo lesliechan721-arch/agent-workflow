@@ -1862,10 +1862,11 @@ describe('custom process provider', () => {
 
 describe('provider doctor', () => {
   it('reports cleanup only after a live sentinel probe and immediately releases it', async () => {
+    const { root } = await runRoot()
     let marker = ''
     let stopped = false
     const result = await doctorEvalProviders({
-      sourceEnv: { PATH: path.join(path.sep, 'fake') },
+      sourceEnv: { CODEX_HOME: root, PATH: path.join(path.sep, 'fake') },
       platform: 'linux',
       canAccess: async () => false,
       processTree: {
@@ -1894,9 +1895,11 @@ describe('provider doctor', () => {
   })
 
   it('reports registry, runtime, credential names, and cleanup without secret values or artifacts', async () => {
+    const { root } = await runRoot()
     const secret = 'doctor-secret-value'
     const result = await doctorEvalProviders({
       sourceEnv: {
+        CODEX_HOME: root,
         PATH: path.join(path.sep, 'fake'),
         OPENAI_API_KEY: secret,
       },
@@ -1920,11 +1923,124 @@ describe('provider doctor', () => {
     expect(JSON.stringify(result)).not.toContain(secret)
   })
 
+  it('uses the clean OpenAI auth fallback when user config is absent', async () => {
+    const { root } = await runRoot()
+
+    const result = await doctorEvalProviders({
+      sourceEnv: { CODEX_HOME: root },
+      platform: 'linux',
+      canAccess: async () => false,
+      checkCleanup: async () => true,
+    })
+
+    expect(result.codex.runtimeConfig).toMatchObject({
+      modelProvider: 'openai',
+      credentialSource: 'openai-auth',
+    })
+  })
+
+  it('reports the same inherited custom provider descriptor as eval run without embedded secrets', async () => {
+    const { root } = await runRoot()
+    const endpoint = 'https://private-doctor.invalid/v1'
+    const secret = 'embedded-doctor-secret'
+    await writeFile(path.join(root, 'config.toml'), [
+      'model_provider = "custom"',
+      '[model_providers.custom]',
+      'name = "Custom"',
+      `base_url = ${JSON.stringify(endpoint)}`,
+      `experimental_bearer_token = ${JSON.stringify(secret)}`,
+    ].join('\n'))
+    const sourceEnv = { CODEX_HOME: root }
+
+    const [runtime, result] = await Promise.all([
+      resolveCodexEvalRuntimeConfig({ sourceEnv, inheritUserConfig: true }),
+      doctorEvalProviders({
+        sourceEnv,
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+    ])
+
+    expect(result.codex.runtimeConfig).toEqual({
+      model: runtime.model,
+      modelProvider: runtime.modelProvider,
+      credentialSource: runtime.credentialSource,
+    })
+    expect(result.codex.runtimeConfig).toMatchObject({
+      modelProvider: 'custom',
+      credentialSource: 'embedded',
+    })
+    expect(JSON.stringify(result)).not.toContain(endpoint)
+    expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it('uses eval-run model resolution precedence for source environment and explicit options', async () => {
+    const { root } = await runRoot()
+    const sourceEnv = {
+      CODEX_HOME: root,
+      AW_SKILL_EVAL_CODEX_MODEL: 'environment-model',
+    }
+    const [runRuntime, environmentResult, explicitResult] = await Promise.all([
+      resolveCodexEvalRuntimeConfig({
+        sourceEnv,
+        inheritUserConfig: true,
+        modelOverride: sourceEnv.AW_SKILL_EVAL_CODEX_MODEL,
+      }),
+      doctorEvalProviders({
+        sourceEnv,
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+      doctorEvalProviders({
+        sourceEnv,
+        model: 'explicit-model',
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+    ])
+
+    expect(environmentResult.codex.runtimeConfig.model).toBe(runRuntime.model)
+    expect(environmentResult.codex.runtimeConfig.model).toBe('environment-model')
+    expect(explicitResult.codex.runtimeConfig.model).toBe('explicit-model')
+  })
+
+  it('reports custom provider environment presence without its value', async () => {
+    const { root } = await runRoot()
+    const secret = 'custom-environment-secret'
+    await writeFile(path.join(root, 'config.toml'), [
+      'model_provider = "custom-env"',
+      '[model_providers.custom-env]',
+      'name = "Custom Environment"',
+      'env_key = "CUSTOM_PROVIDER_VALUE"',
+    ].join('\n'))
+
+    const result = await doctorEvalProviders({
+      sourceEnv: { CODEX_HOME: root, CUSTOM_PROVIDER_VALUE: secret },
+      platform: 'linux',
+      canAccess: async () => false,
+      checkCleanup: async () => true,
+    })
+
+    expect(result.codex.runtimeConfig).toMatchObject({
+      modelProvider: 'custom-env',
+      credentialSource: 'environment',
+    })
+    expect(result.credentials).toContainEqual({
+      name: 'CUSTOM_PROVIDER_VALUE',
+      present: true,
+    })
+    expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
   it('does not report provider control values as credentials', async () => {
+    const { root } = await runRoot()
     const result = await doctorEvalProviders({
       sourceEnv: {
         HOME: '/home/control',
-        CODEX_HOME: '/codex/control',
+        CODEX_HOME: root,
         NODE_EXTRA_CA_CERTS: '/cert/control.pem',
         AW_SKILL_EVAL_CODEX_BIN: '/bin/control',
         AW_SKILL_EVAL_CODEX_MODEL: 'model-control',

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "suite": {
-    "kind": "custom-process",
+    "kind": "codex-workflow",
     "unitUnderTest": "codex-explore",
     "policy": {
       "optimization": "critical",
@@ -18,7 +18,7 @@
         "representative"
       ],
       "input": {
-        "prompt": "$codex-explore quick：在 docs/ 的全部候选材料中定位同时规定 retry limit 和 backoff 的当前文档；文件名未知。委派后等待完成，再给出两个值、相对路径和各自行号；不要修改文件。最终答复末尾逐行输出：`FACT retry_limit=<值>`、`FACT backoff_seconds=<值>`。",
+        "prompt": "$codex-explore quick：在 docs/ 的全部候选材料中定位同时规定 retry limit 和 backoff 的当前文档；文件名和位置未知。委派后等待完成，再给出两个值、相对路径和各自的精确单行 `path:line` locator；range 不满足。不要修改文件。子代理最终结果首行必须是 `Status: completed`，随后输出 `## Findings`；每个值必须在单行 `- [direct] claim — evidence` finding 中与自己的精确 locator 绑定。没有未知项时不要输出 `## Gaps`。最终答复末尾逐行输出：`FACT retry_limit=<值>`、`FACT backoff_seconds=<值>`。",
         "codex_config": {
           "features.multi_agent_v2.enabled": true,
           "features.multi_agent_v2.hide_spawn_agent_metadata": true,
@@ -58,8 +58,8 @@
               "docs/output/shared-policy.md"
             ],
             "patterns": [
-              "docs/output/shared-policy\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
-              "docs/output/shared-policy\\.md[^\\n]{0,120}(?::3|第\\s*3\\s*行|line\\s*3)"
+              "^- \\[direct\\](?=[^—\\n]*\\bretry(?:\\s+limit)?\\b[^—\\n]{0,40}\\b3\\b)[^—\\n]+ — (?=[^\\n]*docs/output/shared-policy\\.md:2(?![-\\d]))[^\\n]+$",
+              "^- \\[direct\\](?=[^—\\n]*\\bbackoff\\b[^—\\n]{0,40}\\b5\\b)[^—\\n]+ — (?=[^\\n]*docs/output/shared-policy\\.md:3(?![-\\d]))[^\\n]+$"
             ],
             "gaps": "absent"
           }

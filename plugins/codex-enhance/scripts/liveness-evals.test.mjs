@@ -50,11 +50,15 @@ function passingTimeline({ withProbe = false } = {}) {
       task_name: '/root/evidence',
     }));
   }
-  timeline.push(event('agent_message', null, {
-    message_type: 'FINAL_ANSWER',
-    status: null,
-    task_name: '/root/evidence',
-  }));
+  timeline.push({
+    ...event('agent_message', null, {
+      message_type: 'FINAL_ANSWER',
+      status: null,
+      task_name: '/root',
+      payload: 'terminal result',
+    }),
+    linked_thread_id: 'child-thread',
+  });
   return timeline;
 }
 
@@ -65,6 +69,7 @@ function runResult(finalMessage, timeline) {
     exit_code: 0,
     duration_ms: 90_000,
     usage: { input_tokens: 100, output_tokens: 50 },
+    cleanup_confirmed: true,
     spawn_calls: [timeline[0]],
     collaboration_timeline: timeline,
     leaf_trace_available: true,
@@ -81,7 +86,7 @@ function runResult(finalMessage, timeline) {
 function testCorpusShape() {
   const spec = livenessCorpusDocument;
   assert.equal(spec.version, 1);
-  assert.equal(spec.suite.kind, 'custom-process');
+  assert.equal(spec.suite.kind, 'codex-workflow');
   assert.equal(spec.suite.unitUnderTest, 'codex-explore');
   assert.equal(spec.suite.policy.optimization, 'balanced');
   assert.equal(spec.cases.length > 0, true);
@@ -159,6 +164,15 @@ function testEvaluation() {
         },
       },
     ),
+    {
+      ...event('agent_message', null, {
+        message_type: 'FINAL_ANSWER',
+        status: null,
+        task_name: '/root',
+        payload: 'Status: completed',
+      }),
+      linked_thread_id: 'agent-id',
+    },
   ];
   assert.equal(
     evaluateLivenessRun(

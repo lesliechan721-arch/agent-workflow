@@ -4,7 +4,7 @@ import type { SelectedCaseSuiteKind } from './selected-cases.js'
 function providerSuiteKind(provider: EvalProvider): SelectedCaseSuiteKind {
   if (provider === 'codex-trigger') return 'trigger'
   if (provider === 'codex-conversation') return 'conversation'
-  return 'custom-process'
+  return provider.type
 }
 
 export function validateEvalProviderSuiteKind(

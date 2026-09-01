@@ -13,6 +13,7 @@ export type EvalProvider =
   | 'codex-trigger'
   | 'codex-conversation'
   | { type: 'custom-process'; command: string[] }
+  | { type: 'codex-workflow'; command: string[]; allowedModels: string[] }
 
 export interface EvalSpecPathDigest {
   path: string

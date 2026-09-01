@@ -53,6 +53,9 @@
                 "additionalProperties": false
               }
             ]
+          },
+          "artifacts": {
+            "$ref": "#/$defs/workflowArtifacts"
           }
         },
         "additionalProperties": false
@@ -70,6 +73,38 @@
       "additionalProperties": false
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "type": "object",
+            "required": ["type"],
+            "properties": { "type": { "const": "codex-workflow" } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runs": {
+            "items": {
+              "if": { "properties": { "status": { "const": "completed" } } },
+              "then": {
+                "required": ["artifacts"],
+                "properties": { "usage": { "type": "object" } }
+              },
+              "else": { "not": { "required": ["artifacts"] } }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "runs": { "items": { "not": { "required": ["artifacts"] } } }
+        }
+      }
+    }
+  ],
   "$defs": {
     "digest": {
       "type": "string",
@@ -79,6 +114,52 @@
       "type": "string",
       "minLength": 1,
       "pattern": "^(?![\\\\/])(?![A-Za-z]:[\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$)).+"
+    },
+    "workflowArtifacts": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["path", "role"],
+            "properties": {
+              "path": { "const": "workflow-evidence.json" },
+              "role": { "const": "evidence" }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["path", "role"],
+            "properties": {
+              "path": { "const": "workflow-trace.json" },
+              "role": { "const": "trace" }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["path", "role"],
+            "properties": {
+              "path": { "const": "model-output.txt" },
+              "role": { "const": "output" }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["path", "role"],
+            "properties": {
+              "path": { "const": "provider-result.json" },
+              "role": { "const": "result" }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
     },
     "provider": {
       "oneOf": [
@@ -92,6 +173,24 @@
               "type": "array",
               "minItems": 1,
               "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "command", "allowedModels"],
+          "properties": {
+            "type": { "const": "codex-workflow" },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "allowedModels": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
             }
           },
           "additionalProperties": false

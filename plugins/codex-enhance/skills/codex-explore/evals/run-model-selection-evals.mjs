@@ -1,13 +1,13 @@
-import { rm } from 'node:fs/promises';
-import process from 'node:process';
-
 import {
-  createProviderOutput,
-  createEvalWorkspace,
-  PROVIDER_CREDENTIAL_ENVIRONMENT,
-  runCodexOnce,
-} from './eval-harness.mjs';
-import { runCustomProcessMain } from './custom-process-protocol.mjs';
+  EXPLORE_DEVELOPER_INSTRUCTIONS,
+  evidenceRun,
+  legacyCase,
+  readWorkflowEvidence,
+  runCodexWorkflowAdapterMain,
+  workflowProfile,
+  workflowRoles,
+} from './codex-workflow-adapter.mjs';
+import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 function validateExpected(expected, id) {
   const range = expected?.spawn_calls;
@@ -135,7 +135,9 @@ function spawnRejected(call) {
     !Array.isArray(call.output) &&
     (
       (typeof call.output.task_name === 'string' && call.output.task_name.trim() !== '') ||
-      (typeof call.output.agent_id === 'string' && call.output.agent_id.trim() !== '')
+      (typeof call.output.agent_id === 'string' && call.output.agent_id.trim() !== '') ||
+      (typeof call.output.taskName === 'string' && call.output.taskName.trim() !== '') ||
+      (typeof call.output.agentId === 'string' && call.output.agentId.trim() !== '')
     )
   ) {
     return false;
@@ -145,7 +147,10 @@ function spawnRejected(call) {
     : true;
 }
 
-function commandLoadedSkill(calls, skill) {
+function commandLoadedSkill(calls, skill, loads = [], threadId = null) {
+  if (loads.some((load) => load.skill === skill && (threadId === null || load.threadId === threadId))) {
+    return true;
+  }
   const suffix = `.agents/skills/${skill}/SKILL.md`;
   return (calls ?? []).some((call) => {
     const command = call?.tool === 'exec_command'
@@ -155,6 +160,16 @@ function commandLoadedSkill(calls, skill) {
         : null;
     return typeof command === 'string' && command.replaceAll('\\', '/').includes(suffix);
   });
+}
+
+export function callLinkedToThread(call, thread) {
+  if (!call || !thread || typeof thread.thread_id !== 'string') return false;
+  const agentId = call.output?.agent_id ?? call.output?.agentId;
+  if (typeof agentId === 'string' && agentId === thread.thread_id) return true;
+  const callId = call.call_id;
+  const linkedCallId = thread.initial_opaque_link?.linkedCallId;
+  return typeof callId === 'string' && callId !== '' &&
+    typeof linkedCallId === 'string' && linkedCallId === callId;
 }
 
 function evaluateNestedDelegation(run, expected) {
@@ -171,6 +186,11 @@ function evaluateNestedDelegation(run, expected) {
     : [];
   const grandchildAttempts = directChildCalls.filter((call) => call?.tool === 'spawn_agent');
   const grandchildSpawns = grandchildAttempts.filter((call) => !spawnRejected(call));
+  const grandchildThreads = directChild
+    ? (run.leaf_trace?.child_threads ?? []).filter((thread) =>
+      thread.parent_thread_id === directChild.thread_id &&
+      thread.agent_role === nested.child_agent_type)
+    : [];
   const childContext = directChild?.developer_context;
   const rootChildFollowups = (run.collaboration_timeline ?? []).filter((call) =>
     ['send_input', 'send_message', 'followup_task'].includes(call?.tool));
@@ -178,12 +198,22 @@ function evaluateNestedDelegation(run, expected) {
     {
       name: 'nested.root_skill_load',
       passed: nested.root_skill_explicitly_invoked ||
-        commandLoadedSkill(run.collaboration_timeline, nested.root_skill),
+        commandLoadedSkill(
+          run.collaboration_timeline,
+          nested.root_skill,
+          run.skill_loads,
+          run.root_thread_id,
+        ),
       evidence: `skill=${nested.root_skill} explicitly_invoked=${nested.root_skill_explicitly_invoked}`,
     },
     {
       name: 'nested.child_skill_load',
-      passed: commandLoadedSkill(directChildCalls, nested.child_skill),
+      passed: commandLoadedSkill(
+        directChildCalls,
+        nested.child_skill,
+        run.skill_loads,
+        directChild?.thread_id,
+      ),
       evidence: `skill=${nested.child_skill}`,
     },
     {
@@ -225,12 +255,15 @@ function evaluateNestedDelegation(run, expected) {
     });
   }
   if (nested.child_initial_encrypted_link === true) {
+    const spawnMessage = run.spawn_calls?.[0]?.arguments?.message;
     assertions.push({
       name: 'nested.child_initial_encrypted_link',
-      passed: typeof directChild?.initial_encrypted_message === 'string' &&
-        directChild.initial_encrypted_message !== '' &&
-        directChild.initial_encrypted_message === run.spawn_calls?.[0]?.arguments?.message,
-      evidence: `child_encrypted=${directChild?.initial_encrypted_message ? '<present>' : '<absent>'} root_match=${directChild?.initial_encrypted_message === run.spawn_calls?.[0]?.arguments?.message}`,
+      passed: directChild?.initial_opaque_link?.kind === 'opaque-link' &&
+        typeof directChild.initial_opaque_link.sha256 === 'string' &&
+        directChild.initial_opaque_link.linkedCallId === run.spawn_calls?.[0]?.call_id &&
+        spawnMessage?.kind === 'opaque' &&
+        spawnMessage.sha256 === directChild.initial_opaque_link.sha256,
+      evidence: `child_link=${directChild?.initial_opaque_link ? '<present>' : '<absent>'} root_match=${spawnMessage?.sha256 === directChild?.initial_opaque_link?.sha256}`,
     });
   }
   if (nested.forbid_root_child_followup === true) {
@@ -241,10 +274,35 @@ function evaluateNestedDelegation(run, expected) {
     });
   }
   if (nested.expect_early_termination === true) {
+    const rootSpawn = run.spawn_calls?.[0];
+    const linkedGrandchildSpawns = grandchildSpawns.filter((call) =>
+      grandchildThreads.some((thread) => callLinkedToThread(call, thread)));
+    const completeNestedTerminal =
+      run.termination === 'completed' &&
+      typeof run.final_message === 'string' &&
+      run.final_message.trim() !== '' &&
+      run.descendant_cleanup_confirmed === true &&
+      directChild !== null &&
+      rootSpawn?.status === 'completed' &&
+      callLinkedToThread(rootSpawn, directChild) &&
+      grandchildThreads.length >= nested.grandchild_spawn_calls.min &&
+      grandchildThreads.length <= nested.grandchild_spawn_calls.max &&
+      linkedGrandchildSpawns.length === grandchildSpawns.length &&
+      grandchildSpawns.every((call) => call.status === 'completed');
     assertions.push({
       name: 'nested.early_termination',
-      passed: run.termination === 'expected_nested_outcome_observed',
-      evidence: `expected=expected_nested_outcome_observed actual=${run.termination}`,
+      passed: completeNestedTerminal,
+      evidence: JSON.stringify({
+        termination: run.termination,
+        final_message_present: typeof run.final_message === 'string' && run.final_message.trim() !== '',
+        cleanup_confirmed: run.descendant_cleanup_confirmed === true,
+        root_spawn_terminal: rootSpawn?.status === 'completed',
+        root_spawn_linked: callLinkedToThread(rootSpawn, directChild),
+        grandchild_threads: grandchildThreads.length,
+        terminal_linked_grandchild_spawns: linkedGrandchildSpawns.filter(
+          (call) => call.status === 'completed',
+        ).length,
+      }),
     }, {
       name: 'nested.descendant_cleanup',
       passed: run.descendant_cleanup_confirmed === true,
@@ -366,39 +424,40 @@ export function modelEvalRunCase(entry) {
   };
 }
 
-export async function runEvalProvider(input) {
-  const entry = validateEvalCase(input.case, 0);
-  if (entry.id !== input.caseId) {
-    throw new Error('Provider case id does not match input.caseId.');
-  }
-  const workspace = await createEvalWorkspace({
-    sourceRoot: input.workspacePath,
-    configValues: entry.config_values,
-  });
-  try {
-    const run = await runCodexOnce(workspace, modelEvalRunCase(entry), {
-      codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
-      model: process.env.AW_SKILL_EVAL_CODEX_MODEL,
-      captureTrace: true,
-      sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
-    });
-    const evaluation = evaluateModelSelectionRun(run, entry.expected);
-    return createProviderOutput({
-      providerId: 'codex-explore-model-selection',
-      graderId: 'codex-explore-model-selection-mechanical',
-      run,
-      result: {
-        caseId: input.caseId,
-        configuration: input.configuration,
-        skillMode: input.skillMode,
-        complete: !run.execution_error && !evaluation.skipped,
-        ...evaluation,
-      },
-      outputDir: input.outputDir,
-    });
-  } finally {
-    await rm(workspace.root, { recursive: true, force: true });
-  }
+export async function prepareModelSelection(input) {
+  const entry = validateEvalCase(legacyCase(input.case), 0);
+  await setupTriggerWorkspace({ workspaceRoot: input.paths.workspace });
+  return {
+    version: 1,
+    prompt: entry.prompt,
+    sandbox: 'read-only',
+    model: entry.parent_model ?? null,
+    developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
+    roles: await workflowRoles(input.paths.workspace),
+    multiAgent: workflowProfile(entry),
+  };
 }
 
-await runCustomProcessMain(import.meta.url, runEvalProvider);
+export async function gradeModelSelection(input) {
+  const entry = validateEvalCase(legacyCase(input.case), 0);
+  const evidence = await readWorkflowEvidence(input.paths.evidence);
+  const run = evidenceRun(evidence);
+  run.requested_explicitly = entry.prompt.includes('$codex-explore');
+  const evaluation = evaluateModelSelectionRun(run, entry.expected);
+  const passed = evaluation.passed === true && !evaluation.skipped;
+  return {
+    passed,
+    score: passed ? 1 : 0,
+    details: {
+      caseId: entry.id,
+      variant: input.variant,
+      complete: !run.execution_error && !evaluation.skipped,
+      ...evaluation,
+    },
+  };
+}
+
+await runCodexWorkflowAdapterMain(import.meta.url, {
+  prepare: prepareModelSelection,
+  grade: gradeModelSelection,
+});
