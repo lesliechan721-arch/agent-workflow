@@ -207,6 +207,8 @@ Config v2 控制台固定使用同一单栈流程：设置总览 → 顶层字�
 
 Object 编辑器同时显示固定 `properties` 和 `additionalProperties` 动态键值，child 只允许 scalar。固定属性、动态 key、child choices、必填项、unknown property 和 property 数量限制全部复用 Core validator。写入层没有该 Object 时，草稿从当前完整 effective object 开始，并明确说明保存会在所选层写入完整对象、覆盖继承对象；一次保存只提交一个完整 top-level value。unset 仍删除整个顶层字段。Object preset 用 canonical deep equality 匹配实际值；摘要只显示稳定 preset/自定义状态、属性数量和安全键名，顶层或 child 标为 sensitive 时不显示值 bytes。
 
+`codex-enhance` 的七个角色配置固定为 `quickProfile`、`standardProfile`、`deepProfile`、`simpleTaskProfile`、`generalTaskProfile`、`complexTaskProfile` 和 `advancedTaskProfile`。每个 profile 是包含必填 `model` 与 `reasoningEffort` 的单层 object，按顶层字段原子覆盖。旧 store 和旧扁平 key 不读取、不迁移，也不自动删除；无效配置层通过显式 reset 恢复，遗留 AW-owned 输出通过 cleanup 后重新安装恢复。
+
 Config Review 按顶层字段和写入层显示变更，并在同一顶层项内保留结构化 child 差异；Object unset 和有效整层 reset 也使用 raw fallback 在内部匹配继承 preset，但只把脱敏 child 差异交给 Review，不保留或输出 raw fallback。它不建立深层来源树或 JSON Patch。Review evidence 继续绑定 session Catalog、affected targets、目标 fingerprint 和所选 store digest。无效 store 不进入普通 edit、unset 或 renderer；effective 读取返回按 user、project 排序的 typed invalid-store evidence，每项只含实际 scope、安全路径摘要和 code。TUI 只为重新读取后仍为 `invalid` 的实际层提供 reset Review；两层同时无效时在同一动作列表中分别选择，ready 层不能从该入口 reset。reset 不创建备份。配置已保存但平台应用失败时，Result 明确保留配置，提供返回修改、显式 unset/reset 或保留退出，并只给出 cleanup 后 reinstall/sync 的恢复指引；不提供 journal restore、自动 cleanup 或自动回滚。
 
 控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 Active snapshot、目标 fingerprint 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；Review 分别显示设置变更、应用影响和保持不变。个人默认变更重新应用当前目录中已安装的 user 与 project 目标；项目变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。

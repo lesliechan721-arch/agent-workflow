@@ -36,7 +36,7 @@ Manifest 配置只使用 `config.fields` 定义字段，并可用 `config.presen
 
 `string` 可用 `minLength`、`maxLength`、`pattern` 和 `identifier|slug|semver|url|hostname|email|path` 格式校验。`number` 可用 `integer`、`minimum`、`maximum` 和 `multipleOf`。非 boolean 字段可声明 `choices: { allowCustom, presets }`。每个 preset 使用稳定 `id`、显示 `title` 和实际 `value`；同一字段最多一个 preset 可设 `recommended: true`。`allowCustom: false` 时，default 和写入值必须与一个 preset 的实际值相同。sensitive 字段不能声明 choices。
 
-`object` 可声明固定 `properties` 和标量 `additionalProperties`。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，动态 child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供稳定对象序列化、preset 匹配、结构化校验 issue 和一层 sensitive child 脱敏；CLI 当前只保证扁平标量配置的完整交互。
+`object` 可声明固定 `properties` 和标量 `additionalProperties`。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，动态 child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供稳定对象序列化、preset 匹配、结构化校验 issue 和一层 sensitive child 脱敏；CLI 和控制台支持标量及一层 object 的完整编辑。
 
 AW 只提供 `default < user < project` 两个持久写入层。Store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --preset <id>)`。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的独立 `scripts/aw-config.mjs`；不要维护第二份字段 validator。
 

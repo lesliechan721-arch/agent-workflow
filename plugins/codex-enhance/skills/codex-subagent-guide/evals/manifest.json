@@ -28,14 +28,22 @@
       "scope": "project",
       "plugins": {
         "codex-enhance": {
-          "simpleTaskModel": "eval-simple-model",
-          "simpleTaskReasoningEffort": "high",
-          "generalTaskModel": "eval-general-model",
-          "generalTaskReasoningEffort": "xhigh",
-          "complexTaskModel": "eval-complex-model",
-          "complexTaskReasoningEffort": "max",
-          "advancedTaskModel": "eval-advanced-model",
-          "advancedTaskReasoningEffort": "high",
+          "simpleTaskProfile": {
+            "model": "eval-simple-model",
+            "reasoningEffort": "high"
+          },
+          "generalTaskProfile": {
+            "model": "eval-general-model",
+            "reasoningEffort": "xhigh"
+          },
+          "complexTaskProfile": {
+            "model": "eval-complex-model",
+            "reasoningEffort": "max"
+          },
+          "advancedTaskProfile": {
+            "model": "eval-advanced-model",
+            "reasoningEffort": "high"
+          },
           "subagentMinimumInitialWaitMinutes": 2
         }
       }
@@ -44,14 +52,22 @@
       "scope": "user",
       "plugins": {
         "codex-enhance": {
-          "simpleTaskModel": "eval-simple-model",
-          "simpleTaskReasoningEffort": "high",
-          "generalTaskModel": "eval-general-model",
-          "generalTaskReasoningEffort": "xhigh",
-          "complexTaskModel": "eval-complex-model",
-          "complexTaskReasoningEffort": "max",
-          "advancedTaskModel": "eval-advanced-model",
-          "advancedTaskReasoningEffort": "high",
+          "simpleTaskProfile": {
+            "model": "eval-simple-model",
+            "reasoningEffort": "high"
+          },
+          "generalTaskProfile": {
+            "model": "eval-general-model",
+            "reasoningEffort": "xhigh"
+          },
+          "complexTaskProfile": {
+            "model": "eval-complex-model",
+            "reasoningEffort": "max"
+          },
+          "advancedTaskProfile": {
+            "model": "eval-advanced-model",
+            "reasoningEffort": "high"
+          },
           "subagentMinimumInitialWaitMinutes": 2
         }
       }

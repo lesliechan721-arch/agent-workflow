@@ -219,9 +219,9 @@ Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使�
 
 ```bash
 aw config list codex-enhance -s user
-aw config set codex-enhance standardModel -s user --value-json '"gpt-5.6-terra"'
-aw config set codex-enhance standardReasoningEffort -s user --value-json '"high"'
-aw config set codex-enhance minimumInitialWaitMinutes -s user --value-json '15'
+aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-5.6-terra","reasoningEffort":"high"}'
+aw config set codex-enhance exploreMinimumInitialWaitMinutes -s user --value-json '15'
+aw config set codex-enhance subagentMinimumInitialWaitMinutes -s user --value-json '15'
 ```
 
 具体配置项和行为见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
