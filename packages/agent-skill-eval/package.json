@@ -24,8 +24,8 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/embed-schemas.mjs",
-    "test": "pnpm run build && vitest run",
-    "test:unit": "pnpm run build && vitest run tests/unit",
+    "test": "pnpm run build && node ../../scripts/test/run-vitest.mjs run",
+    "test:unit": "pnpm run build && node ../../scripts/test/run-vitest.mjs run tests/unit",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
   },
   "dependencies": {
