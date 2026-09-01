@@ -446,7 +446,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).rejects.toThrow();
   });
 
-  it('emits config receipt 5 and keeps a namespaced store after its source is removed', async () => {
+  it('resets a namespaced config store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const primaryRoot = path.join(isolation.layout.fixtureCwd, 'primary-source');
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
@@ -547,14 +547,39 @@ describe('phase 3B namespaced runtime stores', () => {
         }),
       ]),
     });
+    const otherConfig = {
+      sourceId: 'other',
+      sourceIdentity: `sha256:${'2'.repeat(64)}`,
+      pluginName: 'demo',
+      scope: 'user' as const,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    };
+    await writePluginConfigStore({ ...otherConfig, values: { retained: true } });
+    const ambiguousResetOutput = createCapturedCliIo();
+    expect(await runCli(['config', 'reset', 'demo', '--yes', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: ambiguousResetOutput.io,
+      interactive: false,
+    })).toBe(1);
+    expect(JSON.parse(ambiguousResetOutput.readStdout())).toMatchObject({
+      errors: [expect.objectContaining({ code: 'configTargetAmbiguous' })],
+    });
     const blockedResetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: blockedResetOutput.io,
       interactive: false,
-    })).toBe(1);
-    expect(blockedResetOutput.readStderr()).toContain('sourceMissing');
+    })).toBe(0);
+    expect(JSON.parse(blockedResetOutput.readStdout())).toMatchObject({
+      ok: true,
+      command: 'config:reset',
+      pluginId: 'team/demo',
+      deleted: true,
+      removedKeys: ['mode'],
+    });
     expect(await fs.pathExists(resolvePluginConfigStorePath({
       sourceId: 'team',
       sourceIdentity: setReceipt.sourceIdentity,
@@ -562,7 +587,8 @@ describe('phase 3B namespaced runtime stores', () => {
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    }))).toBe(true);
+    }))).toBe(false);
+    expect(await fs.pathExists(resolvePluginConfigStorePath(otherConfig))).toBe(true);
     const ownerMarker = path.join(skillRoot, '.agent-workflows-owner.json');
     await fs.remove(ownerMarker);
     await writeSkillOwnerMarker({
@@ -579,14 +605,6 @@ describe('phase 3B namespaced runtime stores', () => {
         scope: 'user',
       },
     });
-    const changedResetOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: changedResetOutput.io,
-      interactive: false,
-    })).toBe(1);
-    expect(changedResetOutput.readStderr()).toContain('sourceMissing');
     await fs.remove(ownerMarker);
     await writeSkillOwnerMarker({
       skillRoot,
@@ -602,6 +620,7 @@ describe('phase 3B namespaced runtime stores', () => {
         scope: 'user',
       },
     });
+    const payloadBeforeCleanup = await fs.readFile(ownerMarker);
 
     const uninstall = await uninstallWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
@@ -664,28 +683,13 @@ describe('phase 3B namespaced runtime stores', () => {
     })).resolves.toMatchObject({
       overallState: 'succeeded',
       rebuildResults: [expect.objectContaining({
-        removed: expect.arrayContaining([expect.any(String)]),
+        removed: [],
         status: 'succeeded',
       })],
     });
-    expect(await fs.pathExists(skillRoot)).toBe(false);
+    expect(await fs.pathExists(skillRoot)).toBe(true);
+    await expect(fs.readFile(ownerMarker)).resolves.toEqual(payloadBeforeCleanup);
 
-    const resetOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: resetOutput.io,
-      interactive: false,
-    })).toBe(1);
-    expect(resetOutput.readStderr()).toContain('sourceMissing');
-    expect(await fs.pathExists(resolvePluginConfigStorePath({
-      sourceId: 'team',
-      sourceIdentity: setReceipt.sourceIdentity,
-      pluginName: 'demo',
-      scope: 'user',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    }))).toBe(true);
   });
 
   it('preserves a lost-source shared native consumer for explicit reconciliation', async () => {

@@ -401,7 +401,7 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
       receiptSchemaVersion: 5,
       plugin: 'git-commit',
       overallState: 'failed',
-      errors: [expect.objectContaining({ code: 'sourceMissing' })],
+      errors: [expect.objectContaining({ code: 'configStoreMissing' })],
     });
   });
 });

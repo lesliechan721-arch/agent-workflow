@@ -555,11 +555,14 @@ export async function applyPluginConfigWrite(
 
 type ResetPluginConfigWriteOptions = {
   pluginName: string;
+  sourceId?: string;
+  sourceIdentity?: string;
   scope: Scope;
   projectLayer?: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  plugin: PluginMeta;
+  plugin?: PluginMeta | null;
+  pluginError?: Error | null;
   applyTargets?: ReceiptTargetIdentity[];
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
@@ -573,21 +576,20 @@ async function resetPluginConfigWithHelperUnlocked(
 ): Promise<ResetPluginConfigWriteReceipt> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
-  if (!options.plugin) {
-    throw new Error(`sourceMissing: Plugin "${pluginName}" is unavailable; config reset was not applied.`);
-  }
-  const schemaAccess = await resolvePluginConfigSchemaAccess({
-    pluginName,
-    currentPlugin: options.plugin,
-    scope: options.scope,
-    projectLayer,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  if (!schemaAccess.plugin?.manifest.config?.schema) {
-    throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
-  }
-  const configIdentity = options.plugin.sourceId ? {
+  const schemaAccess = options.plugin
+    ? await resolvePluginConfigSchemaAccess({
+        pluginName,
+        currentPlugin: options.plugin,
+        scope: options.scope,
+        projectLayer,
+        cwd: options.cwd,
+        env: options.env,
+      })
+    : { pluginName, plugin: null, schema: undefined };
+  const configIdentity = options.sourceId ? {
+    sourceId: options.sourceId,
+    sourceIdentity: options.sourceIdentity,
+  } : options.plugin?.sourceId ? {
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
   } : {};
@@ -673,10 +675,7 @@ async function resetPluginConfigWithHelperUnlocked(
 export async function resetPluginConfigWithHelper(
   options: ResetPluginConfigWriteOptions,
 ): Promise<ResetPluginConfigWriteReceipt> {
-  const pluginName = assertSafePluginConfigSegment(options.pluginName);
-  if (!options.plugin) {
-    throw new Error(`sourceMissing: Plugin "${pluginName}" is unavailable; config reset was not applied.`);
-  }
+  assertSafePluginConfigSegment(options.pluginName);
   return withAwHomeMutationLock({
     env: options.env,
     token: options.awHomeMutationToken,

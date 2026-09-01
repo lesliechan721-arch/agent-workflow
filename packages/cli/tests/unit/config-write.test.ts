@@ -819,7 +819,7 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).toHaveBeenCalledOnce();
   });
 
-  it('keeps an unknown catalog plugin store when reset cannot validate the plugin', async () => {
+  it('resets a located store without a catalog plugin or schema', async () => {
     const fixture = await createFixture('unknown-plugin');
     await writePluginConfigStore({
       pluginName: 'unknown-plugin',
@@ -838,7 +838,7 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
       reinstallCommandImpl: reinstall,
-    })).rejects.toThrow('sourceMissing');
+    })).resolves.toMatchObject({ deleted: true, removedKeys: ['secret'] });
 
     expect(reinstall).not.toHaveBeenCalled();
     expect((await readPluginConfigStore({
@@ -846,7 +846,7 @@ describe('config write full reinstall apply', () => {
       scope: 'user',
       cwd: fixture.cwd,
       env: fixture.env,
-    }))).toMatchObject({ exists: true, values: { secret: 'kept-only-in-store' } });
+    }))).toMatchObject({ exists: false, values: {} });
   });
 
   it.each([

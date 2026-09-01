@@ -4026,6 +4026,10 @@ export function createRebuildIntegration(options: {
           ...(write.component ? [write.component] : []),
         ]);
       const optionalComponentKeys = new Set(optionalComponents.map(componentIdentityKey));
+      const preserveCodexSharedNativePayload = input.platform === 'codex'
+        && (input.command === 'cleanup'
+          || input.command === 'uninstall'
+          || input.preserveCodexSharedNativePayload === true);
       const configDir = input.platform === 'codex'
         ? resolveCodexPaths(input.cwd, input.scope, options.context.env).configDir
         : resolveClaudePaths(input.cwd, input.scope, options.context.env).configDir;
@@ -4045,7 +4049,7 @@ export function createRebuildIntegration(options: {
           ? []
           : [
               path.join(getCodexHome(options.context.env), 'skills'),
-              ...(input.preserveCodexSharedNativePayload
+              ...(preserveCodexSharedNativePayload
                 ? []
                 : [await canonicalizePathThroughExistingAncestor(path.join(
                     input.marketplaceRoot ?? resolveAwHome(options.context.env),
@@ -4075,7 +4079,7 @@ export function createRebuildIntegration(options: {
         artifacts: historicalArtifacts,
         command: input.command,
       });
-      if (input.preserveCodexSharedNativePayload) {
+      if (preserveCodexSharedNativePayload) {
         const nativePluginRoots = await Promise.all([
           path.join(
             input.marketplaceRoot ?? resolveAwHome(options.context.env),

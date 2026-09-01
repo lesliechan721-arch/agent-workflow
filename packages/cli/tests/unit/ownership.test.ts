@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { OwnerIdentity, OwnedComponent } from '../../src/utils/ownership.js';
 import {
@@ -11,7 +11,6 @@ import {
   parseOwnedTextHeader,
   readSkillOwnerMarker,
   renderOwnedTextFile,
-  setAtomicReplaceBeforeRenameHookForTests,
   SKILL_OWNER_MARKER,
   writeOwnedTextFile,
   writeSkillOwnerMarker,
@@ -37,8 +36,6 @@ function userIdentity(artifactKey = 'review'): OwnerIdentity {
 }
 
 afterEach(async () => {
-  setAtomicReplaceBeforeRenameHookForTests(undefined);
-  vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -487,36 +484,6 @@ describe('ownership inspection and cleanup', () => {
       allowedRoot: skillsRoot,
       expectedIdentity: userIdentity(),
     })).resolves.toMatchObject({ owner: 'agent-workflows' });
-  });
-
-  it('rejects atomic replace when the stable parent identity changes before rename', async () => {
-    const root = await makeTempRoot();
-    const allowedRoot = path.join(root, 'rules');
-    const ownedPath = path.join(allowedRoot, 'aw-owned.rules');
-    await fs.outputFile(ownedPath, 'old content\n');
-    const originalLstat = fs.lstat.bind(fs);
-    let reportChangedParent = false;
-    vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
-      const stats = await originalLstat(candidate);
-      if (reportChangedParent && path.resolve(String(candidate)) === path.resolve(allowedRoot)) {
-        const changed = Object.create(stats) as typeof stats;
-        Object.defineProperty(changed, 'ino', { value: stats.ino + 1 });
-        return changed;
-      }
-      return stats;
-    });
-    setAtomicReplaceBeforeRenameHookForTests(async () => {
-      reportChangedParent = true;
-    });
-
-    await expect(writeOwnedTextFile({
-      path: ownedPath,
-      allowedRoot,
-      identity: userIdentity('owned'),
-      content: 'new content\n',
-    })).rejects.toThrow('identity 在 atomic rename 前发生变化');
-    await expect(fs.readFile(ownedPath, 'utf8')).resolves.toBe('old content\n');
-    expect((await fs.readdir(allowedRoot)).filter((entry) => entry.includes('.owner-'))).toEqual([]);
   });
 
   it('retains the exact quarantine path for a concurrent foreign replacement', async () => {

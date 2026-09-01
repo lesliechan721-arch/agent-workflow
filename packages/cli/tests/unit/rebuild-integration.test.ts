@@ -3374,7 +3374,7 @@ describe('rebuild adapter integration', () => {
     expect(await fs.readFile(configPath, 'utf8')).toContain(`${pluginB}@aw`);
   });
 
-  it('scans and cleans the custom Codex user skills root from the platform manifest', async () => {
+  it('preserves the custom Codex user payload root from the platform manifest during cleanup', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const pluginRoot = path.join(isolation.layout.rootDir, 'custom-root-plugin');
     const plugin = {
@@ -3450,7 +3450,11 @@ describe('rebuild adapter integration', () => {
       command: 'cleanup', target, driver: integration.driver, activeStore,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(await fs.pathExists(skillRoot)).toBe(false);
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# Custom\n');
+    await expect(fs.readJson(path.join(skillRoot, '.agent-workflows-owner.json'))).resolves.toMatchObject({
+      owner: 'agent-workflows',
+      plugin: plugin.manifest.name,
+    });
   });
 
   it('does not materialize unsupported slash commands into a Codex project', async () => {

@@ -8,7 +8,7 @@
 
 - AW 是个人本地工具。一个 `AW_HOME` 写锁足以保护强配置；不要为未证明的并发增加全局协调协议。
 - Catalog 是公开产品，支持 Git 和本地路径等多个来源。来源独立解析、独立报告错误；一个来源失败不要求其它来源回滚，也不要求 npm 与 Git 形成强一致事务。
-- `catalog-sources.json`、`catalog-state.json` 和 plugin config 是强配置。它们必须以原子替换提交。version-scoped publication journal 是强恢复和门禁状态，也必须原子写入。插件输出、依赖现场、lifecycle snapshot、Catalog store snapshot 和 release prepared 目录都是弱状态，可删除和重建。
+- `catalog-sources.json`、`catalog-state.json` 和 plugin config 是强配置。它们必须以原子替换提交。普通配置和 owner marker 写入只在 allowed root 内检查现有祖先的 symlink/type，使用同目录独占临时文件，关闭后 rename。version-scoped publication journal 是强恢复和门禁状态，也必须原子写入。插件输出、依赖现场、lifecycle snapshot、Catalog store snapshot 和 release prepared 目录都是弱状态，可删除和重建。
 - 外部平台和用户编辑的插件目录不受 AW 完全控制。写操作应提供可观察结果和恢复入口，不建立无法兑现的全局补偿或完全正确保证。
 
 ## CLI Source Layout (`packages/cli/src`)
@@ -147,9 +147,9 @@ TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 ma
 - `install`：按当前 Catalog 安装请求插件和缺失依赖；已存在且完整的依赖使用 `keep`，不重复安装。
 - `upgrade`：按当前 Catalog 重建选择的目标和完整依赖闭包；`--all` 从 live owner 发现目标。依赖按稳定的依赖优先顺序重建。
 - `reinstall`：先只清理 AW-owned 组件，再按当前 Catalog 完整重建。
-- `uninstall`：删除 AW-owned 组件；可用时从 lifecycle active snapshot 重放历史 uninstall lifecycle。source 不可用且无法安全重放时，命令失败并提示 `cleanup`。
-- `cleanup`：不运行 uninstall lifecycle。它可在 source 或 Catalog 不可用时，根据 live AW owner 现场清理。它保留 plugin config。
-- `cleanup --force`：用于跳过依赖保护，或恢复专属且已损坏的 AW-owned 输出。它可能让 dependent 的依赖 readiness 变为未就绪，但不改写 dependent 自身的 ownership health；它不得删除 foreign 或 shared 内容，且保留配置。
+- `uninstall`：删除 AW-owned 组件；可用时从 lifecycle active snapshot 重放历史 uninstall lifecycle。uninstall hook 失败不阻止后续 owner cleanup，结果保留 hook warning、残留和恢复动作。source 不可用且无法安全重放时，命令失败并提示 `cleanup`。
+- `cleanup`：不运行 uninstall lifecycle，也不读取依赖图或安装门槛。它只清理明确选择目标中可由 live owner marker/token 证明属于 AW 的 activation 和 extension，保留 plugin config、依赖 placement、foreign 内容和 shared native payload。
+- `cleanup --force`：用于恢复专属且已损坏的 AW-owned 输出；它不扩大到依赖 placement、foreign 内容或 shared native payload，且保留配置。
 
 TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为 offline cleanup。Review 不解析缺失的 bundle，而是绑定包含来源身份、目标位置和 live ownership fingerprint 的 typed evidence。Execute 在同一个 `AW_HOME` mutation lock 内重新读取 owner marker/header、shared owner 和 native registration；evidence 漂移时在写入前返回 stale Review。synthetic cleanup target 只使用这些 live evidence 发现的 matching-owner 组件，且普通 TUI 不启用 force。
 
@@ -189,13 +189,13 @@ Status v6 对已检查的直接依赖继续公开 `ready | absent | blockedByCol
 
 TUI placement 在 ownership health 之外投影 collision blocker，但不能把 foreign-only collision 计为 installed。foreign-only placement 使用 `blocked`；`present` 或 `partial` placement 保留 installed ownership health，并同时保留 collision blocker。每个平台 placement 独立判断：混合平台仍可进入添加并只列可用 target；所有平台都阻断时，Preview 和平台菜单先提供“查看输出冲突”，且不显示添加、升级或重新安装。installed collision 仍提供安全移除入口，删除只处理 AW-owned 内容并保留 foreign 内容。
 
-TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理 AW-owned live 内容、保留 plugin config 且不运行 uninstall lifecycle，并显示不含 `--force` 的等价命令。普通 cleanup 继续执行 dependent 保护；成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
+TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理所选目标中 AW-owned 的 live activation 和 extension，保留 plugin config、依赖 placement、foreign 内容和 shared native payload，不运行 uninstall lifecycle，也不读取 dependent 图，并显示不含 `--force` 的等价命令。成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
 
 TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。
 
 ownership health 只表示当前 live 组件是否完整。Status v6 的 shared native version 比较进入 `needsSync` 和 `codexSharedNativeUpdateRequired`。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v6 JSON。
 
-配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
+配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。`config set/unset` 继续要求当前 schema；`config reset` 只删除已定位 layer，不要求 source、manifest、schema 或安装现场。完整 plugin ID 直接定位；裸名只在所选 scope/layer 的 store 中唯一时允许。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user、project shared 或 project local 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
 

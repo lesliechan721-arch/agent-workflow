@@ -85,6 +85,7 @@ import {
   findConfigFieldEntry,
   listNamespacedPluginConfigStores,
   listPluginConfigStorePluginNames,
+  readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
@@ -748,6 +749,60 @@ async function resolveStoredOnlyConfigIdentity(options: {
     pluginId: options.selector,
     sourceId: parsed.sourceId,
     sourceIdentity,
+  };
+}
+
+async function resolveStoredConfigResetIdentity(options: {
+  selector: string;
+  context: CliExecutionContext;
+  scope: Scope;
+  projectLayer: 'shared' | 'local';
+}): Promise<{
+  pluginName: string;
+  pluginId: string;
+  sourceId: string;
+  sourceIdentity: string;
+}> {
+  const parsed = parsePluginId(options.selector);
+  if (parsed.sourceId) {
+    const located = await readNamespacedPluginConfigStoreIdentity({
+      sourceId: parsed.sourceId,
+      pluginName: parsed.pluginName,
+      scope: options.scope,
+      projectLayer: options.projectLayer,
+      cwd: options.context.cwd,
+      env: options.context.env,
+    });
+    if (!located) {
+      throw new Error(`configStoreMissing: ${options.selector} has no config in the selected store.`);
+    }
+    return {
+      pluginName: parsed.pluginName,
+      pluginId: options.selector,
+      sourceId: parsed.sourceId,
+      sourceIdentity: located.sourceIdentity,
+    };
+  }
+  const matches = (await listNamespacedPluginConfigStores({
+    cwd: options.context.cwd,
+    env: options.context.env,
+    scope: options.scope,
+    projectLayer: options.projectLayer,
+  })).filter((store) => store.pluginName === parsed.pluginName);
+  if (matches.length === 0) {
+    throw new Error(`configStoreMissing: ${options.selector} has no config in the selected store.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `configTargetAmbiguous: ${options.selector} exists in multiple source namespaces: ${matches.map((store) => store.pluginId).join(', ')}. Use a full pluginId.`,
+    );
+  }
+  const [match] = matches;
+  return {
+    pluginName: match!.pluginName,
+    pluginId: match!.pluginId,
+    sourceId: match!.sourceId,
+    sourceIdentity: match!.sourceIdentity,
   };
 }
 
@@ -3377,58 +3432,72 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
             );
           }
-          return withResolvedConfigMutationPlugin(
+          const located = await resolveStoredConfigResetIdentity({
+            selector: selectedPlugin,
             context,
-            selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        const affectedFields = await describeResetAffectedFields({
-          pluginName: plugin.manifest.name,
-          plugin,
-          scope: selectedScope,
-          projectLayer,
-          cwd: context.cwd,
-          env: context.env,
-        });
-        const resetReceipt = await resetPluginConfigWithHelper({
-          pluginName: plugin.manifest.name,
-          scope: selectedScope,
-          projectLayer,
-          cwd: context.cwd,
-          env: context.env,
-          nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: {
-            ...context,
-            awHomeMutationToken,
-            catalogOperationContext,
-            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
-          },
-          awHomeMutationToken,
-          plugin,
-        });
-        return {
-          ok: resetReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 5,
-          command: 'config:reset',
-          ...resetReceipt,
-          plugin: plugin.manifest.name,
-          pluginName: plugin.manifest.name,
-          pluginId,
-          sourceId: source.sourceId,
-          sourceIdentity: source.sourceIdentity,
-          affectedFields,
-        };
-            },
-          ).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Catalog source')
-            || message.startsWith('Cannot resolve required catalog sources:')) {
-            throw new Error(`sourceMissing: ${selectedPlugin} source is unavailable; config store was not changed.`);
-          }
-          if (message.includes('does not exist in the required catalog source set')) {
-            throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" is unavailable; config store was not changed.`);
-          }
-          throw error;
+            scope: selectedScope,
+            projectLayer,
           });
+          const resetLocatedStore = async (
+            plugin: ResolvedCatalogPlugin['plugin'] | null,
+            pluginError: Error | null,
+          ) => {
+            const affectedFields = await describeResetAffectedFields({
+              sourceId: located.sourceId,
+              sourceIdentity: located.sourceIdentity,
+              pluginName: located.pluginName,
+              plugin,
+              pluginError,
+              scope: selectedScope,
+              projectLayer,
+              cwd: context.cwd,
+              env: context.env,
+            });
+            const resetReceipt = await resetPluginConfigWithHelper({
+              sourceId: located.sourceId,
+              sourceIdentity: located.sourceIdentity,
+              pluginName: located.pluginName,
+              scope: selectedScope,
+              projectLayer,
+              cwd: context.cwd,
+              env: context.env,
+              plugin,
+              pluginError,
+            });
+            return {
+              ok: resetReceipt.overallState === 'succeeded',
+              receiptSchemaVersion: 5,
+              command: 'config:reset',
+              ...resetReceipt,
+              plugin: located.pluginName,
+              pluginName: located.pluginName,
+              pluginId: located.pluginId,
+              sourceId: located.sourceId,
+              sourceIdentity: located.sourceIdentity,
+              affectedFields,
+            };
+          };
+          let resetStarted = false;
+          try {
+            return await withResolvedCatalogPlugin({
+              selector: located.pluginId,
+              cliVersion: resolveCliVersion(),
+              env: context.env,
+              consume: async ({ source, plugin }) => {
+                if (source.sourceIdentity !== located.sourceIdentity) {
+                  throw new Error('sourceChanged: the stored config belongs to an older source identity.');
+                }
+                resetStarted = true;
+                return resetLocatedStore(plugin, null);
+              },
+            });
+          } catch (error) {
+            if (resetStarted) throw error;
+            return resetLocatedStore(
+              null,
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          }
         };
 
         const scope = resolveConfigWriteScope(rawOptions.scope);

@@ -1054,7 +1054,7 @@ describe('uninstall safety and dependency boundary', () => {
     expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
   });
 
-  it('retains target and snapshot when historical uninstall lifecycle fails', async () => {
+  it('continues owner cleanup when historical uninstall lifecycle fails', async () => {
     const fixture = createFixture({ initial: 'present' });
     fixture.setActive('valid');
     fixture.fail.add('lifecycle.uninstall');
@@ -1062,8 +1062,35 @@ describe('uninstall safety and dependency boundary', () => {
       command: 'uninstall', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
     });
     expect(result.status).toBe('failed');
-    expect(fixture.states).toEqual({ native: 'present', artifact: 'present' });
-    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+    if (result.status === 'failed') {
+      expect(result.error.message).toContain('Owner cleanup completed');
+      expect(result.error.message).toContain('reinstall or sync');
+    }
+    expect(fixture.states).toEqual({ native: 'absent', artifact: 'absent' });
+    expect(fixture.cleanupCalls).toEqual({ native: 1, artifact: 1, active: 1 });
+  });
+
+  it('reports lifecycle and owner cleanup failures together with residual recovery', async () => {
+    const fixture = createFixture({ initial: 'present' });
+    fixture.setActive('valid');
+    fixture.fail.add('lifecycle.uninstall');
+    fixture.fail.add('cleanup');
+
+    const result = await executeRebuildOperation({
+      command: 'uninstall', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') {
+      expect(result.failures).toEqual(expect.arrayContaining([
+        expect.objectContaining({ phase: 'lifecycle.uninstall', message: 'uninstall lifecycle failed' }),
+        expect.objectContaining({ phase: 'cleanup.owned', message: 'cleanup failed' }),
+      ]));
+      expect(result.residual.length).toBeGreaterThan(0);
+      expect(result.error.message).toContain('cleanup or cleanup --force');
+      expect(result.error.message).toContain('reinstall or sync');
+    }
+    expect(fixture.cleanupCalls.active).toBe(0);
   });
 
   it('retains snapshot when historical lifecycle succeeds but owner cleanup fails', async () => {

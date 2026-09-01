@@ -27,6 +27,11 @@ import {
   resolveAwHome,
   resolveRepoRootSync,
 } from './paths.js';
+import {
+  assertRealFileParentWithinRoot,
+  assertSafeFileMutationPath,
+  atomicReplaceSafeFile,
+} from './safe-fs.js';
 
 export type PluginConfigValue = string | number | boolean;
 export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
@@ -238,12 +243,6 @@ export interface ResolvedPluginConfigSchemaAccess {
 const CONFIG_DIR = 'plugin-config';
 const CONFIG_FILE = 'config.json';
 
-interface ConfigDirectoryIdentity {
-  dev: number;
-  ino: number;
-  realPath: string;
-}
-
 let atomicConfigBeforeRenameHookForTests:
   | ((targetPath: string, temporaryPath: string) => Promise<void>)
   | undefined;
@@ -346,40 +345,6 @@ async function inspectConfigInventoryStoreRoot(
   return true;
 }
 
-async function readConfigDirectoryIdentity(
-  directoryPath: string,
-): Promise<ConfigDirectoryIdentity> {
-  const stats = await fs.lstat(directoryPath);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new Error(`Config parent must be a real directory: ${directoryPath}`);
-  }
-  return {
-    dev: stats.dev,
-    ino: stats.ino,
-    realPath: await fs.realpath(directoryPath),
-  };
-}
-
-function assertConfigDirectoryStable(
-  label: string,
-  before: ConfigDirectoryIdentity,
-  after: ConfigDirectoryIdentity,
-): void {
-  if (before.dev !== after.dev || before.ino !== after.ino || before.realPath !== after.realPath) {
-    throw new Error(`${label} identity changed before atomic config replacement.`);
-  }
-}
-
-function assertRealConfigBoundary(
-  root: ConfigDirectoryIdentity,
-  parent: ConfigDirectoryIdentity,
-): void {
-  const relative = path.relative(root.realPath, parent.realPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error('Config parent realpath escapes its allowed root.');
-  }
-}
-
 async function prepareConfigFileParent(filePath: string, allowedRoot: string): Promise<void> {
   assertConfigPathBoundary(allowedRoot, filePath);
   await assertNoConfigSymlink(allowedRoot, filePath);
@@ -403,67 +368,15 @@ export async function atomicReplaceConfigFile(options: {
   content: string;
   mode?: number;
 }): Promise<void> {
-  await prepareConfigFileParent(options.filePath, options.allowedRoot);
-  const rootPath = path.resolve(options.allowedRoot);
-  const parentPath = path.dirname(path.resolve(options.filePath));
-  const rootIdentity = await readConfigDirectoryIdentity(rootPath);
-  const parentIdentity = await readConfigDirectoryIdentity(parentPath);
-  assertRealConfigBoundary(rootIdentity, parentIdentity);
-
-  const currentTarget = await lstatIfExists(options.filePath);
-  if (currentTarget && (!currentTarget.isFile() || currentTarget.isSymbolicLink())) {
-    throw new Error(`Config target must be a regular file: ${options.filePath}`);
-  }
-  const temporaryPath = path.join(
-    parentPath,
-    `.${path.basename(options.filePath)}.tmp-${process.pid}-${crypto.randomUUID()}`,
-  );
-  assertConfigPathBoundary(options.allowedRoot, temporaryPath);
-  let handle: nodeFs.FileHandle | undefined;
-  try {
-    handle = await nodeFs.open(
-      temporaryPath,
-      'wx',
-      options.mode ?? (currentTarget ? currentTarget.mode & 0o777 : 0o600),
-    );
-    await handle.writeFile(options.content, 'utf8');
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-
-    await atomicConfigBeforeRenameHookForTests?.(options.filePath, temporaryPath);
-    await assertNoConfigSymlink(options.allowedRoot, options.filePath);
-    const currentRootIdentity = await readConfigDirectoryIdentity(rootPath);
-    const currentParentIdentity = await readConfigDirectoryIdentity(parentPath);
-    assertRealConfigBoundary(currentRootIdentity, currentParentIdentity);
-    assertConfigDirectoryStable('Config allowed root', rootIdentity, currentRootIdentity);
-    assertConfigDirectoryStable('Config parent', parentIdentity, currentParentIdentity);
-    const targetBeforeRename = await lstatIfExists(options.filePath);
-    if (targetBeforeRename && (!targetBeforeRename.isFile() || targetBeforeRename.isSymbolicLink())) {
-      throw new Error(`Config target must be a regular file: ${options.filePath}`);
-    }
-
-    await nodeFs.rename(temporaryPath, options.filePath);
-    // rename is the commit point. Diagnostics and durability work after it are best effort,
-    // because reporting failure here would leave the new generation on disk without giving
-    // the caller a safe way to restore the old generation.
-    await atomicConfigAfterRenameHookForTests?.(options.filePath).catch(() => undefined);
-    await (async () => {
-      const finalTarget = await fs.lstat(options.filePath);
-      if (!finalTarget.isFile() || finalTarget.isSymbolicLink()) {
-        throw new Error('Atomic config replacement produced an invalid target.');
-      }
-      if (await fs.readFile(options.filePath, 'utf8') !== options.content) {
-        throw new Error('Atomic config replacement content differs from the committed content.');
-      }
-    })().catch(() => undefined);
-    const directoryHandle = await nodeFs.open(parentPath, 'r').catch(() => null);
-    await directoryHandle?.sync().catch(() => undefined);
-    await directoryHandle?.close().catch(() => undefined);
-  } finally {
-    await handle?.close().catch(() => undefined);
-    await nodeFs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
+  await atomicReplaceSafeFile({
+    ...options,
+    label: 'Config path',
+    temporaryTag: 'tmp',
+    beforeRename: atomicConfigBeforeRenameHookForTests,
+    afterRename: async (targetPath) => {
+      await atomicConfigAfterRenameHookForTests?.(targetPath).catch(() => undefined);
+    },
+  });
 }
 
 export async function atomicRemoveConfigFile(options: {
@@ -471,11 +384,16 @@ export async function atomicRemoveConfigFile(options: {
   allowedRoot: string;
 }): Promise<boolean> {
   await prepareConfigFileParent(options.filePath, options.allowedRoot);
-  const rootPath = path.resolve(options.allowedRoot);
-  const parentPath = path.dirname(path.resolve(options.filePath));
-  const rootIdentity = await readConfigDirectoryIdentity(rootPath);
-  const parentIdentity = await readConfigDirectoryIdentity(parentPath);
-  assertRealConfigBoundary(rootIdentity, parentIdentity);
+  await assertSafeFileMutationPath({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
+  await assertRealFileParentWithinRoot({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
   const currentTarget = await lstatIfExists(options.filePath);
   if (!currentTarget) return false;
   if (!currentTarget.isFile() || currentTarget.isSymbolicLink()) {
@@ -483,12 +401,16 @@ export async function atomicRemoveConfigFile(options: {
   }
 
   await atomicConfigBeforeRenameHookForTests?.(options.filePath, options.filePath);
-  await assertNoConfigSymlink(options.allowedRoot, options.filePath);
-  const currentRootIdentity = await readConfigDirectoryIdentity(rootPath);
-  const currentParentIdentity = await readConfigDirectoryIdentity(parentPath);
-  assertRealConfigBoundary(currentRootIdentity, currentParentIdentity);
-  assertConfigDirectoryStable('Config allowed root', rootIdentity, currentRootIdentity);
-  assertConfigDirectoryStable('Config parent', parentIdentity, currentParentIdentity);
+  await assertSafeFileMutationPath({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
+  await assertRealFileParentWithinRoot({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
   const targetBeforeRemove = await lstatIfExists(options.filePath);
   if (!targetBeforeRemove) return false;
   if (!targetBeforeRemove.isFile() || targetBeforeRemove.isSymbolicLink()) {
@@ -497,9 +419,6 @@ export async function atomicRemoveConfigFile(options: {
 
   await nodeFs.unlink(options.filePath);
   await atomicConfigAfterRenameHookForTests?.(options.filePath).catch(() => undefined);
-  const directoryHandle = await nodeFs.open(parentPath, 'r').catch(() => null);
-  await directoryHandle?.sync().catch(() => undefined);
-  await directoryHandle?.close().catch(() => undefined);
   return true;
 }
 

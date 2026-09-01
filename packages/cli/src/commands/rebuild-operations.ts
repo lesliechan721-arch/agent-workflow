@@ -900,26 +900,56 @@ async function executeUninstall(options: {
   } catch (error) {
     lifecycleError = error;
   }
-  if (lifecycleError !== undefined) {
-    return failed(
-      'uninstall',
-      target,
-      accumulator,
-      'lifecycle.uninstall',
-      errorMessage(lifecycleError),
-    );
-  }
 
   const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned', events);
   if (cleanupError) {
+    if (lifecycleError !== undefined) {
+      const lifecycleMessage = errorMessage(lifecycleError);
+      accumulator.failures.unshift({ phase: 'lifecycle.uninstall', message: lifecycleMessage });
+      return {
+        status: 'failed',
+        command: 'uninstall',
+        target: target.identity,
+        ...accumulator,
+        error: {
+          phase: cleanupError.phase,
+          message: `${cleanupError.message} The uninstall lifecycle also failed: ${lifecycleMessage}. Retry cleanup or cleanup --force for residual ownership, then use reinstall or sync to restore the target.`,
+        },
+      };
+    }
     return failed('uninstall', target, accumulator, cleanupError.phase, cleanupError.message);
   }
   if (driver.finalizeCleanup) {
     try {
       await driver.finalizeCleanup(target);
     } catch (error) {
+      if (lifecycleError !== undefined) {
+        const lifecycleMessage = errorMessage(lifecycleError);
+        const cleanupMessage = errorMessage(error);
+        accumulator.failures.unshift({ phase: 'lifecycle.uninstall', message: lifecycleMessage });
+        accumulator.failures.push({ phase: 'cleanup.owned', message: cleanupMessage });
+        return {
+          status: 'failed',
+          command: 'uninstall',
+          target: target.identity,
+          ...accumulator,
+          error: {
+            phase: 'cleanup.owned',
+            message: `${cleanupMessage} The uninstall lifecycle also failed: ${lifecycleMessage}. Retry cleanup or cleanup --force for residual ownership, then use reinstall or sync to restore the target.`,
+          },
+        };
+      }
       return failed('uninstall', target, accumulator, 'cleanup.owned', errorMessage(error));
     }
+  }
+  if (lifecycleError !== undefined) {
+    return failed(
+      'uninstall',
+      target,
+      accumulator,
+      'lifecycle.uninstall',
+      `${errorMessage(lifecycleError)} Owner cleanup completed; use reinstall or sync to restore the target if needed.`,
+    );
   }
   return succeeded('uninstall', target, accumulator);
 }

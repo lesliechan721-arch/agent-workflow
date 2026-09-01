@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import { atomicReplaceSafeFile } from './safe-fs.js';
+
 import type { PlatformName, Scope, SourceIdentity } from '../types.js';
 
 export const SKILL_OWNER_MARKER = '.agent-workflows-owner.json';
@@ -128,14 +130,6 @@ export interface CleanupResult {
 }
 
 class OwnershipSymlinkError extends Error {}
-
-let atomicReplaceBeforeRenameHookForTests: (() => Promise<void>) | undefined;
-
-export function setAtomicReplaceBeforeRenameHookForTests(
-  hook: (() => Promise<void>) | undefined,
-): void {
-  atomicReplaceBeforeRenameHookForTests = hook;
-}
 
 function isMissing(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
@@ -299,79 +293,19 @@ async function assertNoSymlinkInPath(allowedRoot: string, candidatePath: string)
   }
 }
 
-interface DirectoryIdentity {
-  dev: number;
-  ino: number;
-  realPath: string;
-}
-
-async function readDirectoryIdentity(directoryPath: string): Promise<DirectoryIdentity> {
-  const stats = await fs.lstat(directoryPath);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new OwnershipSymlinkError(`Ownership 稳定目录必须是真实目录：${directoryPath}`);
-  }
-  return {
-    dev: stats.dev,
-    ino: stats.ino,
-    realPath: await fs.realpath(directoryPath),
-  };
-}
-
-function assertStableDirectory(
-  label: string,
-  before: DirectoryIdentity,
-  after: DirectoryIdentity,
-): void {
-  if (before.dev !== after.dev || before.ino !== after.ino || before.realPath !== after.realPath) {
-    throw new Error(`${label} identity 在 atomic rename 前发生变化。`);
-  }
-}
-
-function assertRealDirectoryBoundary(root: DirectoryIdentity, parent: DirectoryIdentity): void {
-  const relative = path.relative(root.realPath, parent.realPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error('Ownership parent realpath 不在 allowedRoot realpath 内。');
-  }
-}
-
 async function atomicReplaceFile(options: {
   path: string;
   allowedRoot: string;
   content: string;
 }): Promise<void> {
-  await assertNoSymlinkInPath(options.allowedRoot, options.path);
-  await fs.ensureDir(path.dirname(options.path));
-  await assertNoSymlinkInPath(options.allowedRoot, options.path);
-  const rootIdentity = await readDirectoryIdentity(path.resolve(options.allowedRoot));
-  const parentIdentity = await readDirectoryIdentity(path.dirname(path.resolve(options.path)));
-  assertRealDirectoryBoundary(rootIdentity, parentIdentity);
-  const temporaryPath = path.join(
-    path.dirname(options.path),
-    `.${path.basename(options.path)}.owner-${process.pid}-${crypto.randomUUID()}`,
-  );
-  assertPathBoundary(options.allowedRoot, temporaryPath);
-  let handle: nodeFs.FileHandle | undefined;
-  try {
-    handle = await nodeFs.open(temporaryPath, 'wx', 0o666);
-    await handle.writeFile(options.content, 'utf8');
-    await handle.close();
-    handle = undefined;
-    await atomicReplaceBeforeRenameHookForTests?.();
-    // Threat model: this blocks pre-existing symlinks/hardlinks, traversal, and callers that use
-    // this API concurrently. Node has no portable dirfd/openat/renameat2 sequence, so this does not
-    // claim to stop a process with the same file permissions from swapping a directory after this
-    // final check and before rename; that process can already edit or delete the user's files.
-    await assertNoSymlinkInPath(options.allowedRoot, options.path);
-    const currentRootIdentity = await readDirectoryIdentity(path.resolve(options.allowedRoot));
-    const currentParentIdentity = await readDirectoryIdentity(path.dirname(path.resolve(options.path)));
-    assertRealDirectoryBoundary(currentRootIdentity, currentParentIdentity);
-    assertStableDirectory('allowedRoot', rootIdentity, currentRootIdentity);
-    assertStableDirectory('parent', parentIdentity, currentParentIdentity);
-    await nodeFs.rename(temporaryPath, options.path);
-  } finally {
-    await handle?.close().catch(() => undefined);
-    await nodeFs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
+  await atomicReplaceSafeFile({
+    filePath: options.path,
+    allowedRoot: options.allowedRoot,
+    content: options.content,
+    mode: 0o666,
+    label: 'Ownership path',
+    temporaryTag: 'owner',
+  });
 }
 
 export async function assertOwnedSkillPath(options: {
