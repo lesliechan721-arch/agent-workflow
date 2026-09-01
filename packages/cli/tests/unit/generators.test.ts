@@ -1155,7 +1155,7 @@ describe('local-plugin generator', () => {
     ).rejects.toThrow('build changed plugin name');
   });
 
-  it('copies lifecycle selectors, helper/runtime closure, and production package files into the bundle', async () => {
+  it('copies postApply, helper/runtime closure, and production package files into the bundle', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
@@ -1168,20 +1168,12 @@ describe('local-plugin generator', () => {
       },
     });
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'linux.mjs'), 'import chalk from "chalk";\nimport "./shared.mjs";\n', 'utf8');
-    await fs.writeFile(path.join(pluginRoot, 'scripts', 'darwin.mjs'), 'import "./shared.mjs";\n', 'utf8');
-    await fs.writeFile(path.join(pluginRoot, 'scripts', 'windows.mjs'), 'import "./shared.mjs";\n', 'utf8');
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'aw-config.mjs'), 'import "./config-shared.mjs";\n', 'utf8');
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'shared.mjs'), 'export const shared = true;\n', 'utf8');
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'config-shared.mjs'), 'export const config = true;\n', 'utf8');
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.test.mjs'), 'throw new Error("test-only");\n', 'utf8');
     manifest.scripts = {
-      lifecycle: {
-        install: {
-          linux: { runner: 'node', path: './scripts/linux.mjs' },
-          darwin: { runner: 'node', path: './scripts/darwin.mjs' },
-          win32: { runner: 'node', path: './scripts/windows.mjs' },
-        },
-      },
+      postApply: { path: './scripts/linux.mjs' },
       helpers: {
         config: './scripts/aw-config.mjs',
       },
@@ -1202,8 +1194,6 @@ describe('local-plugin generator', () => {
     });
 
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'linux.mjs'))).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'darwin.mjs'))).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'windows.mjs'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'shared.mjs'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'config-shared.mjs'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'package.json'))).resolves.toBe(true);
@@ -1221,13 +1211,7 @@ describe('local-plugin generator', () => {
       fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       scripts: {
-        lifecycle: {
-          install: {
-            linux: { path: './scripts/linux.mjs' },
-            darwin: { path: './scripts/darwin.mjs' },
-            win32: { path: './scripts/windows.mjs' },
-          },
-        },
+        postApply: { path: './scripts/linux.mjs' },
         helpers: {
           config: './scripts/aw-config.mjs',
         },
@@ -1261,9 +1245,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-      },
+      postApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1350,9 +1332,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-      },
+      postApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1387,9 +1367,7 @@ describe('local-plugin generator', () => {
     });
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "runtime-host";\n', 'utf8');
     manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-      },
+      postApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1433,9 +1411,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-      },
+      postApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1495,9 +1471,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-      },
+      postApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1555,9 +1529,7 @@ describe('local-plugin generator', () => {
     });
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "runtime-host";\n', 'utf8');
     manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-      },
+      postApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1591,9 +1563,7 @@ describe('local-plugin generator', () => {
     });
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import bad from "bad-install-script";\n', 'utf8');
     manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-      },
+      postApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },

@@ -60,10 +60,8 @@ export interface PluginConfigStore {
 }
 
 interface NamespacedPluginConfigEnvelope {
-  schemaVersion: 2;
-  sourceId: string;
-  sourceIdentity: string;
-  pluginName: string;
+  schemaVersion: 3;
+  pluginId: string;
   values: Record<string, unknown>;
 }
 
@@ -592,18 +590,14 @@ async function readStoreFile(filePath: string): Promise<Record<string, unknown>>
 async function readNamespacedStoreFile(options: {
   filePath: string;
   sourceId: string;
-  sourceIdentity: string;
   pluginName: string;
 }): Promise<Record<string, unknown>> {
   const raw = await fs.readJson(options.filePath) as unknown;
-  if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)) {
-    throw new Error(`legacyStateUnsupported: invalid or legacy plugin config store "${options.filePath}".`);
+  if (!isRecord(raw) || raw.schemaVersion !== 3 || !isRecord(raw.values)) {
+    throw new Error(`legacyStateUnsupported: plugin config store "${options.filePath}" is not schema 3. This beta hard cut requires a new AW_HOME, or cleanup with the old CLI before rebuilding strong config.`);
   }
-  if (raw.sourceId !== options.sourceId || raw.pluginName !== options.pluginName) {
+  if (raw.pluginId !== `${options.sourceId}/${options.pluginName}`) {
     throw new Error('Plugin config target identity does not match its namespaced path.');
-  }
-  if (raw.sourceIdentity !== options.sourceIdentity) {
-    throw new Error('sourceChanged: plugin config source identity does not match the configured source.');
   }
   return raw.values;
 }
@@ -615,12 +609,9 @@ function namespacedConfigContent(options: {
   values: Record<string, unknown>;
 }): string {
   if (!options.sourceId) return `${JSON.stringify(options.values, null, 2)}\n`;
-  if (!options.sourceIdentity) throw new Error('sourceIdentity is required for namespaced plugin config.');
   const envelope: NamespacedPluginConfigEnvelope = {
-    schemaVersion: 2,
-    sourceId: options.sourceId,
-    sourceIdentity: options.sourceIdentity,
-    pluginName: options.pluginName,
+    schemaVersion: 3,
+    pluginId: `${options.sourceId}/${options.pluginName}`,
     values: options.values,
   };
   return `${JSON.stringify(envelope, null, 2)}\n`;
@@ -663,7 +654,6 @@ export async function readPluginConfigStore(options: {
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
   if (options.sourceId) {
-    if (!options.sourceIdentity) throw new Error('sourceIdentity is required for namespaced plugin config.');
     const legacyPath = resolvePluginConfigStorePath({
       pluginName: options.pluginName,
       scope: options.scope,
@@ -691,7 +681,6 @@ export async function readPluginConfigStore(options: {
       ? await readNamespacedStoreFile({
           filePath,
           sourceId: options.sourceId,
-          sourceIdentity: options.sourceIdentity!,
           pluginName: options.pluginName,
         })
       : await readStoreFile(filePath),
@@ -705,20 +694,19 @@ export async function readNamespacedPluginConfigStoreIdentity(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
-}): Promise<{ sourceIdentity: string; store: PluginConfigStore } | null> {
+}): Promise<{ pluginId: string; store: PluginConfigStore } | null> {
   const filePath = resolvePluginConfigStorePath({
     ...options,
     ...(options.scope === 'project' ? { access: 'read' as const } : {}),
   });
   if (!await inspectConfigReadTarget(resolvePluginConfigAllowedRoot(options), filePath)) return null;
   const raw = await fs.readJson(filePath) as unknown;
-  if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)
-    || raw.sourceId !== options.sourceId || raw.pluginName !== options.pluginName
-    || typeof raw.sourceIdentity !== 'string') {
-    throw new Error('legacyStateUnsupported: invalid namespaced plugin config store.');
+  if (!isRecord(raw) || raw.schemaVersion !== 3 || !isRecord(raw.values)
+    || raw.pluginId !== `${options.sourceId}/${options.pluginName}`) {
+    throw new Error('legacyStateUnsupported: namespaced plugin config must use schema 3. Use a new AW_HOME, or cleanup with the old CLI before rebuilding strong config.');
   }
   return {
-    sourceIdentity: raw.sourceIdentity,
+    pluginId: raw.pluginId,
     store: { path: filePath, exists: true, values: raw.values },
   };
 }
@@ -779,7 +767,6 @@ export async function listPluginConfigStorePluginNames(options: {
 
 export interface NamespacedPluginConfigStoreInventoryEntry {
   sourceId: string;
-  sourceIdentity: string;
   pluginName: string;
   pluginId: string;
   values: Record<string, unknown>;
@@ -826,14 +813,12 @@ export async function listNamespacedPluginConfigStores(options: {
       const filePath = path.join(storeRoot, sourceId, pluginName, CONFIG_FILE);
       if (!await inspectConfigReadTarget(storeRoot, filePath)) continue;
       const raw = await fs.readJson(filePath) as unknown;
-      if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)
-        || raw.sourceId !== sourceId || raw.pluginName !== pluginName
-        || typeof raw.sourceIdentity !== 'string') {
-        throw new Error(`legacyStateUnsupported: invalid namespaced plugin config store "${filePath}".`);
+      if (!isRecord(raw) || raw.schemaVersion !== 3 || !isRecord(raw.values)
+        || raw.pluginId !== `${sourceId}/${pluginName}`) {
+        throw new Error(`legacyStateUnsupported: plugin config store "${filePath}" must use schema 3. Use a new AW_HOME, or cleanup with the old CLI before rebuilding strong config.`);
       }
       output.push({
         sourceId,
-        sourceIdentity: raw.sourceIdentity,
         pluginName,
         pluginId: `${sourceId}/${pluginName}`,
         values: raw.values,
@@ -907,7 +892,6 @@ export async function patchPluginConfigStore(options: {
           ? await readNamespacedStoreFile({
               filePath,
               sourceId: options.sourceId,
-              sourceIdentity: options.sourceIdentity!,
               pluginName: options.pluginName,
             })
           : await readStoreFile(filePath)
@@ -968,13 +952,9 @@ export async function resetPluginConfigStore(options: {
         throw new Error(`Config target must be a regular file: ${filePath}`);
       }
       if (options.sourceId) {
-        if (!options.sourceIdentity) {
-          throw new Error('sourceIdentity is required for namespaced plugin config.');
-        }
         await readNamespacedStoreFile({
           filePath,
           sourceId: options.sourceId,
-          sourceIdentity: options.sourceIdentity,
           pluginName: options.pluginName,
         });
       } else {
@@ -1024,13 +1004,9 @@ export async function resetPluginConfigStores(options: {
       throw new Error(`Config target must be a regular file: ${target.path}`);
     }
     if (options.sourceId) {
-      if (!options.sourceIdentity) {
-        throw new Error('sourceIdentity is required for namespaced plugin config.');
-      }
       await readNamespacedStoreFile({
         filePath: target.path,
         sourceId: options.sourceId,
-        sourceIdentity: options.sourceIdentity,
         pluginName: options.pluginName,
       });
     } else {

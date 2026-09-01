@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "slash-commands-invalid-icon",
   "version": "0.1.0",
   "description": "Negative fixture for slashCommands icon path validation.",

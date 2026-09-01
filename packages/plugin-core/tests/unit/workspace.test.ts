@@ -30,7 +30,7 @@ async function createWorkspace(): Promise<string> {
 async function writeSourcePlugin(root: string, name = 'atomic-plugin'): Promise<Record<string, unknown>> {
   const pluginRoot = path.join(root, 'plugins', name)
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name,
     version: '0.1.0',
     description: 'Atomic plugin.',
@@ -50,7 +50,7 @@ async function writeSourcePlugin(root: string, name = 'atomic-plugin'): Promise<
 async function writeBundle(outputRoot: string, manifest: Record<string, unknown>): Promise<void> {
   const bundleManifest = {
     ...manifest,
-    requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+    requires: { aw: { capabilities: ['aw.plugin-manifest.v3'] } },
   }
   await fs.ensureDir(path.join(outputRoot, '.agents-plugin'))
   await fs.writeJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'), bundleManifest)
@@ -74,7 +74,7 @@ async function writeNativeAndPortableSkillBundle(
 ): Promise<void> {
   await writeBundle(outputRoot, manifest)
   const capabilities = [
-    'aw.plugin-manifest.v2',
+    'aw.plugin-manifest.v3',
     'aw.plugin-skills.v1',
     'aw.portable-skills.v1',
   ]
@@ -209,7 +209,7 @@ describe('AW Catalog Workspace v1', () => {
       workspaceIdentity: '',
     }],
     ['unsupported schema', {
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'aw-catalog-workspace',
       workspaceIdentity: 'stable-workspace-id',
     }],
@@ -364,7 +364,7 @@ describe('AW Catalog Workspace v1', () => {
     })
   })
 
-  it('builds a complete schema 6 snapshot for an empty plugin inventory', async () => {
+  it('builds a complete schema 7 snapshot for an empty plugin inventory', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     let adapterCalls = 0
@@ -378,7 +378,7 @@ describe('AW Catalog Workspace v1', () => {
     expect(built.pluginNames).toEqual([])
     await expect(fs.readdir(path.join(built.outputRoot, 'plugins'))).resolves.toEqual([])
     await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
-      manifest: { schemaVersion: 6, catalogVersion: '0.1.0', entries: [] },
+      manifest: { schemaVersion: 7, catalogVersion: '0.1.0', entries: [] },
     })
   })
 
@@ -431,7 +431,7 @@ describe('AW Catalog Workspace v1', () => {
       adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
     })
     await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
-      manifest: { schemaVersion: 6, catalogVersion: '0.1.0' },
+      manifest: { schemaVersion: 7, catalogVersion: '0.1.0' },
     })
     const agentsPath = path.join(built.outputRoot, '.agents', 'plugins', 'marketplace.json')
     const validMarketplace = await fs.readFile(agentsPath)
@@ -503,7 +503,7 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: '1'.repeat(40),
     })
     await expect(fs.pathExists(path.join(first.outputRoot, 'plugin-release-ledger.json'))).resolves.toBe(false)
-    await fs.writeJson(path.join(first.outputRoot, 'plugin-release-ledger.json'), { schemaVersion: 2, records: [] })
+    await fs.writeJson(path.join(first.outputRoot, 'plugin-release-ledger.json'), { schemaVersion: 3, records: [] })
     await expect(validateCatalogSnapshotComplete(first.outputRoot)).rejects.toThrow(/root layout/u)
     await fs.remove(path.join(first.outputRoot, 'plugin-release-ledger.json'))
 
@@ -563,7 +563,7 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: '5'.repeat(40),
       previousSnapshotRoot: first.outputRoot,
       adapter: { build: async () => { buildCalled = true } },
-    })).rejects.toThrow(/schemaVersion: expected 6/u)
+    })).rejects.toThrow(/schemaVersion: expected 7/u)
     expect(buildCalled).toBe(false)
   })
 
@@ -648,7 +648,7 @@ describe('AW Catalog Workspace v1', () => {
       ))).resolves.toMatchObject({
         plugin: { name: 'atomic-plugin', version: '0.1.0-beta.1' },
         requiredCapabilities: [
-          'aw.plugin-manifest.v2',
+          'aw.plugin-manifest.v3',
           'aw.plugin-skills.v1',
           'aw.portable-skills.v1',
         ],

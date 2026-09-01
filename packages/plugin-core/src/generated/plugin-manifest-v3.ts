@@ -1,36 +1,24 @@
 /* This file is generated. Run `pnpm generate` in packages/plugin-core to update it. */
 
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "semver".
  */
 export type Semver = string
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "pluginPath".
  */
 export type PluginPath = string
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "stringArray".
  */
 export type StringArray = string[]
 export type Capabilities = string[]
-/**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
- * via the `definition` "lifecycleDefinition".
- */
-export type LifecycleDefinition = (string | {
-default?: ScriptEntry
-unix?: ScriptEntry
-windows?: ScriptEntry
-linux?: ScriptEntry
-darwin?: ScriptEntry
-win32?: ScriptEntry
-})
 
-export interface PluginManifestSourceV2 {
-schemaVersion: 2
+export interface PluginManifestSourceV3 {
+schemaVersion: 3
 name: string
 version: Semver
 description: string
@@ -53,7 +41,7 @@ scripts?: Scripts
 config?: Config
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "requires".
  */
 export interface Requires {
@@ -62,7 +50,7 @@ capabilities?: string[]
 }
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "distributions".
  */
 export interface Distributions {
@@ -71,7 +59,7 @@ skills?: PluginPath
 }
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "marketplace".
  */
 export interface Marketplace {
@@ -85,7 +73,7 @@ products?: string[]
 }
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "interface".
  */
 export interface Interface {
@@ -94,7 +82,7 @@ shortDescription?: string
 capabilities?: string[]
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "extensions".
  */
 export interface Extensions {
@@ -108,7 +96,7 @@ codex?: NativeHook[]
 agents?: Agent[]
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "instruction".
  */
 export interface Instruction {
@@ -119,7 +107,7 @@ paths?: StringArray
 agentOverrides?: PlatformOverrides
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "platformOverrides".
  */
 export interface PlatformOverrides {
@@ -131,7 +119,7 @@ codex?: ({
 } | null)
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "permission".
  */
 export interface Permission {
@@ -142,7 +130,7 @@ deny?: StringArray
 agentOverrides?: PlatformOverrides
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "hook".
  */
 export interface Hook {
@@ -152,7 +140,7 @@ command: string
 agentOverrides?: PlatformOverrides
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "nativeHook".
  */
 export interface NativeHook {
@@ -161,7 +149,7 @@ matcher?: string
 command: string
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "agent".
  */
 export interface Agent {
@@ -172,14 +160,14 @@ tools?: StringArray
 agentOverrides?: PlatformOverrides
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "artifacts".
  */
 export interface Artifacts {
 targets?: ArtifactTarget[]
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "artifactTarget".
  */
 export interface ArtifactTarget {
@@ -212,7 +200,7 @@ capabilitySetDigest: string
 }[]
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "buildConfig".
  */
 export interface BuildConfig {
@@ -264,7 +252,7 @@ distributions?: ("agent-skills")[]
 }[]
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "platformTemplateValue".
  */
 export interface PlatformTemplateValue {
@@ -272,7 +260,7 @@ claude: (string | boolean)
 codex: (string | boolean)
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "fileRules".
  */
 export interface FileRules {
@@ -280,7 +268,7 @@ include: StringArray
 exclude: StringArray
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "runtimeExportRequires".
  */
 export interface RuntimeExportRequires {
@@ -289,7 +277,7 @@ capabilities: Capabilities
 }
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "importReference".
  */
 export interface ImportReference {
@@ -297,16 +285,11 @@ plugin: string
 export: string
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "scripts".
  */
 export interface Scripts {
-timeoutMs?: number
-lifecycle?: {
-install?: LifecycleDefinition
-upgrade?: LifecycleDefinition
-uninstall?: LifecycleDefinition
-}
+postApply?: PostApply
 helpers?: {
 config: string
 }
@@ -322,16 +305,24 @@ node?: StringArray
 }
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "postApply".
+ */
+export interface PostApply {
+path: PluginPath
+timeoutMs?: number
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "scriptEntry".
  */
 export interface ScriptEntry {
-runner: ("node" | "sh" | "bash" | "pwsh" | "powershell" | "cmd" | "auto")
+runner: "node"
 path: string
 args?: StringArray
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "config".
  */
 export interface Config {
@@ -368,7 +359,7 @@ values: {
 }
 }
 /**
- * This interface was referenced by `PluginManifestSourceV2`'s JSON-Schema
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
  */
 export interface ConfigField {

@@ -166,6 +166,8 @@ describe('upgrade --all live discovery', () => {
       allowedRoot: rulesRoot,
       identity: {
         owner: 'agent-workflows',
+        sourceId: 'official',
+        pluginId: 'official/codex-project-residue',
         plugin: 'codex-project-residue',
         artifactKey: 'owned-rule',
         platform: 'codex',

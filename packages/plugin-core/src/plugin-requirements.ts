@@ -44,11 +44,11 @@ export function deriveAwCapabilitiesFromManifest(
   manifest: PluginManifestSource | NormalizedPluginManifest,
 ): AwCapabilityId[] {
   const capabilities: RegisteredAwCapabilityId[] = []
-  if ((manifest as { schemaVersion?: number }).schemaVersion === 2) capabilities.push('aw.plugin-manifest.v2')
+  if ((manifest as { schemaVersion?: number }).schemaVersion === 3) capabilities.push('aw.plugin-manifest.v3')
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
   if (manifest.config) capabilities.push('aw.plugin-config.v1')
-  if (manifest.scripts?.lifecycle) capabilities.push('aw.plugin-lifecycle.v1')
+  if (manifest.scripts?.postApply) capabilities.push('aw.plugin-post-apply.v1')
   if ((manifest.artifacts?.targets?.length ?? 0) > 0) capabilities.push('aw.dynamic-artifacts.v2')
   if (manifest.distributions?.agentSkills) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')

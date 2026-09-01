@@ -6,7 +6,7 @@ import fs from 'fs-extra';
 import { CATALOG_STORE_DIRECTORY, CATALOG_STORE_METADATA_FILE } from '../constants.js';
 import type {
   CatalogGenerationMetadataV1,
-  CatalogManifestV6,
+  CatalogManifestV7,
   CatalogSourceResolution,
 } from '../types.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
@@ -34,7 +34,7 @@ export interface CatalogStoreEntry {
   entryDir: string;
   snapshotRoot: string;
   metadata: CatalogGenerationMetadataV1;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   reused: boolean;
 }
 

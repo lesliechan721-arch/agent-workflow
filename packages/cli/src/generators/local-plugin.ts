@@ -64,7 +64,6 @@ import {
 import type {
   AgentDefinition,
   DistributionName,
-  PluginLifecycleScriptEntry,
   PlatformName,
   PlatformPluginManifest,
   PluginMeta,
@@ -766,38 +765,16 @@ async function addDeclaredLspServerFiles(
   return value;
 }
 
-function isNodeRuntimeEntry(entry: PluginLifecycleScriptEntry): boolean {
-  return entry.runner === 'node' || (
-    entry.runner === 'auto' &&
-    NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(entry.path).toLowerCase())
-  );
-}
-
-function addLifecycleRuntimeEntries(
+function addPostApplyRuntimeEntry(
   plugin: PluginMeta,
   rootFiles: Set<string>,
   nodeEntries: Set<string>,
 ): void {
-  const lifecycle = plugin.manifest.scripts?.lifecycle;
-  if (!lifecycle) {
-    return;
-  }
-
-  for (const selector of Object.values(lifecycle)) {
-    if (!selector) {
-      continue;
-    }
-    for (const entry of Object.values(selector)) {
-      if (!entry) {
-        continue;
-      }
-      const filePath = stripDotSlash(entry.path);
-      rootFiles.add(filePath);
-      if (isNodeRuntimeEntry(entry)) {
-        nodeEntries.add(filePath);
-      }
-    }
-  }
+  const entry = plugin.manifest.scripts?.postApply;
+  if (!entry) return;
+  const filePath = stripDotSlash(entry.path);
+  rootFiles.add(filePath);
+  nodeEntries.add(filePath);
 }
 
 function addHelperRuntimeEntries(
@@ -906,7 +883,7 @@ async function collectRuntimeClosureFiles(
 async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   const rootFiles = new Set<string>();
   const nodeEntries = new Set<string>();
-  addLifecycleRuntimeEntries(plugin, rootFiles, nodeEntries);
+  addPostApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
 

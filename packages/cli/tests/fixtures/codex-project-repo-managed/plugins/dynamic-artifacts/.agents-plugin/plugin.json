@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "dynamic-artifacts",
   "version": "0.1.0",
   "description": "Fixture plugin with Codex dynamic artifact metadata.",

@@ -104,7 +104,6 @@ import {
 import {
   parsePluginId,
   withResolvedCatalogPlugin,
-  withResolvedMultiSourceCatalog,
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
@@ -662,7 +661,6 @@ async function loadStoredConfigWizardCandidates(
   }
   const storesByPlugin = new Map<string, {
     sourceId: string;
-    sourceIdentity: string;
     keys: Set<string>;
   }>();
   for (const location of locations) {
@@ -677,12 +675,8 @@ async function loadStoredConfigWizardCandidates(
       if (keys.length === 0 && options.includeEmptyStores !== true) continue;
       const existing = storesByPlugin.get(store.pluginId) ?? {
         sourceId: store.sourceId,
-        sourceIdentity: store.sourceIdentity,
         keys: new Set<string>(),
       };
-      if (existing.sourceIdentity !== store.sourceIdentity) {
-        throw new Error(`sourceChanged: ${store.pluginId} config stores have different source identities.`);
-      }
       for (const key of keys) existing.keys.add(key);
       storesByPlugin.set(store.pluginId, existing);
     }
@@ -693,7 +687,6 @@ async function loadStoredConfigWizardCandidates(
       pluginName: pluginId,
       pluginId,
       sourceId: store.sourceId,
-      sourceIdentity: store.sourceIdentity,
       targets: [],
       configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
     }));
@@ -718,7 +711,7 @@ async function resolveStoredOnlyConfigIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   locations: ConfigWizardStoreLocation[];
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity: string }> {
+}): Promise<{ pluginName: string; pluginId: string; sourceId: string }> {
   const parsed = parsePluginId(options.selector);
   if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
   const stores = (await Promise.all(options.locations.map((location) =>
@@ -729,26 +722,10 @@ async function resolveStoredOnlyConfigIdentity(options: {
       ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
     })))).flat().filter((store) => store.pluginId === options.selector);
   if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
-  const identities = new Set(stores.map((store) => store.sourceIdentity));
-  if (identities.size !== 1) throw new Error(`sourceChanged: ${options.selector} config stores have different source identities.`);
-  const sourceIdentity = [...identities][0]!;
-  await withResolvedMultiSourceCatalog({
-    cliVersion: resolveCliVersion(),
-    sourceIds: [parsed.sourceId],
-    env: options.context.env,
-    consume: async (catalog) => {
-      const source = catalog.sources.find((entry) => entry.sourceId === parsed.sourceId);
-      if (!source?.resolution) throw source?.error ?? new Error(`Catalog source "${parsed.sourceId}" is unavailable.`);
-      if (source.resolution.sourceIdentity !== sourceIdentity) {
-        throw new Error(`sourceChanged: ${options.selector} config source identity does not match the current source.`);
-      }
-    },
-  });
   return {
     pluginName: parsed.pluginName,
     pluginId: options.selector,
     sourceId: parsed.sourceId,
-    sourceIdentity,
   };
 }
 
@@ -761,7 +738,7 @@ async function resolveStoredConfigResetIdentity(options: {
   pluginName: string;
   pluginId: string;
   sourceId: string;
-  sourceIdentity: string;
+  sourceIdentity?: string;
 }> {
   const parsed = parsePluginId(options.selector);
   if (parsed.sourceId) {
@@ -780,7 +757,6 @@ async function resolveStoredConfigResetIdentity(options: {
       pluginName: parsed.pluginName,
       pluginId: options.selector,
       sourceId: parsed.sourceId,
-      sourceIdentity: located.sourceIdentity,
     };
   }
   const matches = (await listNamespacedPluginConfigStores({
@@ -802,7 +778,6 @@ async function resolveStoredConfigResetIdentity(options: {
     pluginName: match!.pluginName,
     pluginId: match!.pluginId,
     sourceId: match!.sourceId,
-    sourceIdentity: match!.sourceIdentity,
   };
 }
 
@@ -815,7 +790,7 @@ async function resolveMultiSourceConfigRead(options: {
   pluginName: string;
   pluginId: string;
   sourceId: string;
-  sourceIdentity: string;
+  sourceIdentity?: string;
   result: Awaited<ReturnType<typeof resolveConfigRead>>;
 }> {
   const inventory = await inventoryLegacyConfigReferences({
@@ -864,7 +839,6 @@ async function resolveMultiSourceConfigRead(options: {
     });
     const result = await resolveConfigRead({
       sourceId: stored.sourceId,
-      sourceIdentity: stored.sourceIdentity,
       pluginName: stored.pluginName,
       plugin: null,
       scope: options.rawOptions.local
@@ -1308,7 +1282,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   plugin
     .command('capabilities')
     .description('Show the current plugin manifest authoring surface')
-    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | lifecycle | artifacts')
+    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | post-apply | artifacts')
     .option('--json', 'emit one machine-readable JSON object', false)
     .action((rawOptions: { surface?: string; json?: boolean }) => {
       try {
@@ -1849,7 +1823,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
     .option('--with-config-api', 'add AW config schema and helper', false)
-    .option('--with-lifecycle', 'add a lifecycle script sample', false);
+    .option('--with-post-apply', 'add a Node postApply script sample', false);
 
   plugin
     .command('add-skill')
@@ -2771,7 +2745,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       (value: string, previous: string[]) => [...previous, value],
       [],
     )
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-y, --yes', 'authorize shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -2813,7 +2787,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -2851,7 +2825,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-a, --all', 'upgrade all plugins', false)
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-y, --yes', 'authorize shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -2931,7 +2905,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-y, --yes', 'authorize shared Codex native replacement or forced reinstall', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -3483,10 +3457,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               selector: located.pluginId,
               cliVersion: resolveCliVersion(),
               env: context.env,
-              consume: async ({ source, plugin }) => {
-                if (source.sourceIdentity !== located.sourceIdentity) {
-                  throw new Error('sourceChanged: the stored config belongs to an older source identity.');
-                }
+              consume: async ({ plugin }) => {
                 resetStarted = true;
                 return resetLocatedStore(plugin, null);
               },

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "native-only",
   "version": "0.1.0",
   "description": "Fixture plugin without Codex project repo-managed artifacts.",

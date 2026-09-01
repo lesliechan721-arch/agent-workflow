@@ -16,7 +16,7 @@
 
 具体目录由 manifest 声明。所有 source path 必须留在插件根内，不能进入任意深度的 `.git` 或 `node_modules`。只维护 source 文件；`.aw/plugins/`、Catalog snapshot、digest 和 platform marketplace 是生成物，不手改。
 
-每个 source manifest 必须使用 Plugin Manifest v2，即显式写入 `schemaVersion: 2`。当前作者工具不接受早期 manifest schema。不要混淆：
+每个 source manifest 必须使用 Plugin Manifest v3，即显式写入 `schemaVersion: 3`。当前作者工具不接受早期 manifest schema。不要混淆：
 
 - `schemaVersion`：manifest 结构版本。
 - `version`：单插件稳定 artifact 版本。
@@ -89,7 +89,7 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 
 Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
 
-插件可以声明 executable build/test/lifecycle code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership，但不承诺独立的 permission UI 或 sandbox。安装或执行前必须评审 source 和 trust boundary。
+插件可以声明 executable build/test/postApply code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership，但不承诺独立的 permission UI 或 sandbox。安装或执行前必须评审 source 和 trust boundary。
 
 ## 版本与恢复
 

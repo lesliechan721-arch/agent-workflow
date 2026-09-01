@@ -7,7 +7,6 @@ import type {
   PlatformName,
   PluginMeta,
   PlatformPluginManifest,
-  PluginLifecycleScriptEntry,
   PluginManifestSource,
 } from '../types.js';
 import {
@@ -417,13 +416,6 @@ async function validateCodexSkillsTree(
   }
 }
 
-function isNodeRuntimeEntry(entry: PluginLifecycleScriptEntry): boolean {
-  return entry.runner === 'node' || (
-    entry.runner === 'auto' &&
-    NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(entry.path).toLowerCase())
-  );
-}
-
 async function listFilesRecursively(rootDir: string): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
   const files: string[] = [];
@@ -540,25 +532,12 @@ async function validateAwRuntimeLayout(
 
   const runtimeFiles = new Set<string>();
   const nodeEntries = new Set<string>();
-  const lifecycle = manifest.scripts?.lifecycle;
-  if (lifecycle) {
-    for (const [event, selector] of Object.entries(lifecycle)) {
-      if (!selector) {
-        continue;
-      }
-      for (const [osSelector, entry] of Object.entries(selector)) {
-        if (!entry) {
-          continue;
-        }
-        const fieldName = `scripts.lifecycle.${event}.${osSelector}.path`;
-        await assertBundlePathExists(pluginRoot, entry.path, fieldName, './');
-        const filePath = stripDotSlash(entry.path);
-        runtimeFiles.add(filePath);
-        if (isNodeRuntimeEntry(entry)) {
-          nodeEntries.add(filePath);
-        }
-      }
-    }
+  const postApply = manifest.scripts?.postApply;
+  if (postApply) {
+    await assertBundlePathExists(pluginRoot, postApply.path, 'scripts.postApply.path', './');
+    const filePath = stripDotSlash(postApply.path);
+    runtimeFiles.add(filePath);
+    nodeEntries.add(filePath);
   }
 
   const configHelper = manifest.scripts?.helpers?.config;

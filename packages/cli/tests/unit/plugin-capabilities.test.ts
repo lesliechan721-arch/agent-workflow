@@ -63,7 +63,7 @@ describe('plugin capabilities command', () => {
     expect(result.surface).toBeNull();
     expect(Object.keys(result.capabilities)).toEqual([
       'manifest', 'build-config', 'extensions', 'slash-commands',
-      'mcp-apps', 'config', 'lifecycle', 'artifacts',
+      'mcp-apps', 'config', 'post-apply', 'artifacts',
     ]);
     expect(output.stderr()).toBe('');
   });
@@ -79,14 +79,14 @@ describe('plugin capabilities command', () => {
 
   it('renders a compact human view', async () => {
     const output = capture();
-    expect(await runCli(['plugin', 'capabilities', '--surface', 'lifecycle'], {
+    expect(await runCli(['plugin', 'capabilities', '--surface', 'post-apply'], {
       io: output.io,
     })).toBe(0);
     expect(output.stdout()).toContain('Plugin authoring capabilities');
-    expect(output.stdout()).toContain('lifecycle:');
-    expect(output.stdout()).toContain('scripts.lifecycle');
+    expect(output.stdout()).toContain('post-apply:');
+    expect(output.stdout()).toContain('scripts.postApply');
     expect(output.stdout()).toContain('values=1000..300000');
-    expect(output.stdout()).toContain('requires=An executable entry inside the plugin root.');
+    expect(output.stdout()).toContain('requires=A Node entry inside the plugin root.');
     expect(output.stderr()).toBe('');
   });
 });

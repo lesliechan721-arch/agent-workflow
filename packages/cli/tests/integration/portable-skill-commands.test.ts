@@ -10,7 +10,7 @@ import {
   preparePortableInstall,
   setPortableCommandTestHooksForTests,
 } from '../../src/portable/commands.js';
-import { createCatalogManifestV6, createCatalogManifestV6Entry } from '../../src/utils/catalog-manifest-v6.js';
+import { createCatalogManifestV7, createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
@@ -85,17 +85,17 @@ async function configurePortableCatalog(options: {
   const pluginNames = options.dependencyCapability ? ['future', 'portable'] : ['portable'];
   const entries = await Promise.all(pluginNames.map(async (name) => {
     const root = path.join(sourceRoot, 'plugins', name);
-    return createCatalogManifestV6Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
+    return createCatalogManifestV7Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
   }));
-  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV6({
+  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV7({
     catalogVersion: '1.0.0',
     channel: 'latest',
     marketplace: {
       owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
       interface: { displayName: 'Fixture Marketplace' },
     },
-    schemaVersion: 6,
-    requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
+    schemaVersion: 7,
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v7'] } },
     release: { state: 'development' },
     entries,
   }));
@@ -202,7 +202,7 @@ describe('portable skill public commands', () => {
       );
       await fs.outputFile(path.join(externalRoot, 'leaked-skill', 'README.md'), '# Private\n');
       const plugin = await readPluginManifest(fixture.pluginRoot, { mode: 'bundle' });
-      const entry = await createCatalogManifestV6Entry(plugin, fixture.pluginRoot);
+      const entry = await createCatalogManifestV7Entry(plugin, fixture.pluginRoot);
       if (malformedNode === 'root symlink') {
         await fs.remove(skillsRoot);
         await fs.symlink(externalRoot, skillsRoot, 'dir');
@@ -215,15 +215,15 @@ describe('portable skill public commands', () => {
           'dir',
         );
       }
-      await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV6({
+      await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV7({
         catalogVersion: '1.0.0',
         channel: 'latest',
         marketplace: {
           owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
           interface: { displayName: 'Fixture Marketplace' },
         },
-        schemaVersion: 6,
-        requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
+        schemaVersion: 7,
+        requires: { aw: { capabilities: ['aw.catalog-snapshot.v7'] } },
         release: { state: 'development' },
         entries: [entry],
       }));
@@ -575,7 +575,7 @@ describe('portable skill public commands', () => {
         code: 'awCapabilityUnsupported',
         plugin: 'local/portable',
         missingCapabilities: ['aw.future-portable.v1'],
-        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v6']),
+        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v7']),
       }],
     });
   });
@@ -594,7 +594,7 @@ describe('portable skill public commands', () => {
         code: 'awCapabilityUnsupported',
         plugin: 'local/future',
         missingCapabilities: ['aw.future-dependency.v1'],
-        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v6']),
+        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v7']),
       }],
     });
   });

@@ -153,7 +153,7 @@ describe('command wizard', () => {
     let nativeState: 'absent' | 'present' = 'absent';
     const target: DesiredTarget = {
       plugin,
-      lifecycleSource: plugin,
+      postApplySource: plugin,
       identity: {
         pluginName: 'real-chain',
         pluginVersion: '1.0.0',
@@ -183,7 +183,7 @@ describe('command wizard', () => {
         throw new Error(unsafeTuiText);
       },
       writeArtifacts: async () => undefined,
-      runLifecycle: async () => undefined,
+      runPostApply: async () => undefined,
     };
     const activeStore: RebuildActiveStore = {
       prepare: async () => ({}) as never,

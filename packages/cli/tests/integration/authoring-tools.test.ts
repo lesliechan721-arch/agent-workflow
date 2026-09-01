@@ -36,7 +36,7 @@ function withManifestSchema<T extends Record<string, unknown>>(manifest: T): T {
 
   return {
     ...manifest,
-    schemaVersion: 2,
+    schemaVersion: 3,
   };
 }
 
@@ -162,7 +162,7 @@ function createBaseManifest(
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name,
     version: '0.1.0',
     description: `${name} test plugin.`,
@@ -505,7 +505,7 @@ describe('authoring tools', () => {
       path.join(tempRepo, 'plugins', 'repo-check', '.agents-plugin', 'plugin.json'),
     );
     expect(scaffoldManifest).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'repo-check',
       version: '0.1.0',
       description: '检查仓库状态并输出诊断结论。',
@@ -2237,7 +2237,7 @@ describe('authoring tools', () => {
     await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
   });
 
-  it('scaffolds an explicit manifest v2 without a version compatibility field', async () => {
+  it('scaffolds an explicit manifest v3 without a version compatibility field', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-'));
     tempDirs.push(tempRoot);
 
@@ -2252,7 +2252,7 @@ describe('authoring tools', () => {
         scriptPath,
         'catalog-aware',
         '--description',
-        '用于验证 Manifest v2 的示例插件。',
+        '用于验证 Manifest v3 的示例插件。',
         '--no-skills',
         '--workspace-root',
         tempRepo,
@@ -2267,7 +2267,7 @@ describe('authoring tools', () => {
     await expect(
       fs.readJson(path.join(tempRepo, 'plugins', 'catalog-aware', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
     });
     await expect(fs.readJson(
       path.join(tempRepo, 'plugins', 'catalog-aware', '.agents-plugin', 'plugin.json'),
@@ -2298,7 +2298,7 @@ describe('authoring tools', () => {
       },
     );
     await expect(runValidatePlugin(oldSchemaDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('Unsupported plugin manifest schemaVersion: expected 2'),
+      stdout: expect.stringContaining('Unsupported plugin manifest schemaVersion: expected 3'),
     });
 
     const futureCapabilityDir = path.join(pluginsRoot, 'future-capability');
@@ -2475,14 +2475,11 @@ describe('authoring tools', () => {
       'aw-config.mjs',
     );
     const contextPath = path.join(tempRoot, 'context.json');
-    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
     const userStorePath = path.join(tempRoot, 'user-config.json');
     const projectStorePath = path.join(tempRoot, 'project-config.json');
     await fs.writeJson(userStorePath, {
-      schemaVersion: 2,
-      sourceId: 'team',
-      sourceIdentity,
-      pluginName: 'context-helper',
+      schemaVersion: 3,
+      pluginId: 'team/context-helper',
       values: {
         apiKey: 'user-store-secret',
         mode: 'standard',
@@ -2490,14 +2487,12 @@ describe('authoring tools', () => {
       },
     });
     await fs.writeJson(projectStorePath, {
-      schemaVersion: 2,
-      sourceId: 'team',
-      sourceIdentity,
-      pluginName: 'context-helper',
+      schemaVersion: 3,
+      pluginId: 'team/context-helper',
       values: { mode: 'strict' },
     });
     await fs.writeJson(contextPath, {
-      plugin: { name: 'context-helper', sourceId: 'team', sourceIdentity },
+      plugin: { name: 'context-helper', sourceId: 'team', pluginId: 'team/context-helper' },
       config: {
         values: {
           apiKey: 'context-secret',
@@ -2538,7 +2533,6 @@ describe('authoring tools', () => {
     expect(payload).toMatchObject({
       pluginName: 'context-helper',
       sourceId: 'team',
-      sourceIdentity,
       pluginId: 'team/context-helper',
       scope: 'effective',
       values: {
@@ -2584,7 +2578,6 @@ describe('authoring tools', () => {
 
     const awHome = path.join(tempRoot, 'aw-home');
     const sourceId = 'team';
-    const sourceIdentity = `sha256:${'2'.repeat(64)}`;
     const marketplaceRoot = path.join(awHome, 'marketplaces', sourceId);
     const bundleRoot = path.join(marketplaceRoot, 'plugins', 'config-demo');
     await fs.ensureDir(path.join(bundleRoot, '.agents-plugin'));
@@ -2627,7 +2620,6 @@ describe('authoring tools', () => {
     await fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
       schemaVersion: 2,
       sourceId,
-      sourceIdentity,
       marketplaceName: `aw-${sourceId}`,
     });
     await fs.ensureDir(projectSubdir);
@@ -2637,10 +2629,8 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(awHome, 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 2,
-        sourceId,
-        sourceIdentity,
-        pluginName: 'config-demo',
+        schemaVersion: 3,
+        pluginId: `${sourceId}/config-demo`,
         values: {
           token: 'user-secret',
           staleUserSecret: 'do-not-print-user',
@@ -2654,10 +2644,8 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 2,
-        sourceId,
-        sourceIdentity,
-        pluginName: 'config-demo',
+        schemaVersion: 3,
+        pluginId: `${sourceId}/config-demo`,
         values: {
           token: 'project-secret',
           mode: 'strict',
@@ -2687,7 +2675,6 @@ describe('authoring tools', () => {
     expect(payload).toMatchObject({
       pluginName: 'config-demo',
       sourceId,
-      sourceIdentity,
       pluginId: `${sourceId}/config-demo`,
     });
     const expectedConfigFile = await fs.realpath(path.join(projectRoot, 'config.txt'));
@@ -2730,9 +2717,7 @@ describe('authoring tools', () => {
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
         schemaVersion: 2,
-        sourceId,
-        sourceIdentity: `sha256:${'3'.repeat(64)}`,
-        pluginName: 'config-demo',
+        pluginId: `${sourceId}/config-demo`,
         values: { token: 'wrong-source-secret' },
       },
       { spaces: 2 },
@@ -2745,7 +2730,7 @@ describe('authoring tools', () => {
         env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
       },
     )).rejects.toMatchObject({
-      stderr: expect.stringContaining('schema 2 source identity'),
+      stderr: expect.stringContaining('schema 3 plugin identity'),
     });
   });
 
@@ -2795,7 +2780,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('scaffolds config helper, lifecycle, config schema, and plugin script tests on demand', async () => {
+  it('scaffolds config helper, postApply, config schema, and plugin script tests on demand', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-scripts-'));
     tempDirs.push(tempRoot);
 
@@ -2811,10 +2796,10 @@ describe('authoring tools', () => {
         initScriptPath,
         'script-ready',
         '--description',
-        'Plugin with AW config helper and lifecycle scripts.',
+        'Plugin with AW config helper and postApply script.',
         '--no-skills',
         '--with-config-api',
-        '--with-lifecycle',
+        '--with-post-apply',
         '--workspace-root',
         tempRepo,
       ],
@@ -2829,11 +2814,7 @@ describe('authoring tools', () => {
     const manifest = await fs.readJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'));
     expect(manifest).toMatchObject({
       scripts: {
-        lifecycle: {
-          install: './scripts/lifecycle.mjs',
-          upgrade: './scripts/lifecycle.mjs',
-          uninstall: './scripts/lifecycle.mjs',
-        },
+        postApply: { path: './scripts/postApply.mjs' },
         helpers: {
           config: './scripts/aw-config.mjs',
         },
@@ -2852,7 +2833,7 @@ describe('authoring tools', () => {
       },
     });
     await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'aw-config.mjs'))).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'lifecycle.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'postApply.mjs'))).resolves.toBe(true);
     await expect(
       fs.pathExists(path.join(pluginDir, 'scripts', 'generated-script.test.mjs')),
     ).resolves.toBe(true);
@@ -3002,11 +2983,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.txt',
         },
-        lifecycle: {
-          install: {
-            linux: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          },
-        },
+        postApply: { path: './scripts/lifecycle.mjs' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3037,13 +3014,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.mjs',
         },
-        lifecycle: {
-          install: {
-            linux: { runner: 'auto', path: './scripts/lifecycle.py' },
-            darwin: { runner: 'node', path: './scripts/lifecycle.mjs' },
-            win32: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          },
-        },
+        postApply: { path: './scripts/lifecycle.py' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3064,7 +3035,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('runner "auto"'),
+      stdout: expect.stringContaining('scripts.postApply.path must use a Node runnable extension'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -3073,11 +3044,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.mjs',
         },
-        lifecycle: {
-          install: {
-            linux: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          },
-        },
+        postApply: { path: './scripts/lifecycle.mjs' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3091,15 +3058,6 @@ describe('authoring tools', () => {
       },
     }, { spaces: 2 });
 
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.lifecycle.install must include an entry that resolves on win32'),
-    });
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -3277,9 +3235,7 @@ describe('authoring tools', () => {
       'import-scan-test',
       createBaseManifest('import-scan-test', {
         scripts: {
-          lifecycle: {
-            install: './scripts/entry.mjs',
-          },
+          postApply: { path: './scripts/entry.mjs' },
         },
       }),
       {
@@ -3411,7 +3367,7 @@ describe('authoring tools', () => {
       { 'shared.txt': providerBytes },
     );
     const invalidManifest = createBaseManifest('surface-consumer', {
-      schemaVersion: 2,
+      schemaVersion: 3,
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       skills: './skills',
       distributions: { agentSkills: { skills: './portable-skills' } },
@@ -3521,7 +3477,7 @@ describe('authoring tools', () => {
       path.join(tempRoot, 'plugins'),
       'portable-authoring',
       createBaseManifest('portable-authoring', {
-        schemaVersion: 2,
+        schemaVersion: 3,
         extensions: {
           instructions: [{ name: 'native', title: 'Native surface', content: 'Native.' }],
         },
@@ -5727,7 +5683,7 @@ describe('authoring tools', () => {
         name: 'fallback-dependency',
         version: '1.0.0',
         description: 'Fallback dependency fixture.',
-        schemaVersion: 2,
+        schemaVersion: 3,
         dependencies: ['shared'],
         marketplace: {
           category: 'workflow',
@@ -5746,7 +5702,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v9 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
     });
   });
 
@@ -5777,7 +5733,7 @@ describe('authoring tools', () => {
     await Promise.all([
       fs.outputJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'), {
         ...createBaseManifest('stale-portable'),
-        schemaVersion: 2,
+        schemaVersion: 3,
         extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
         distributions: { agentSkills: { skills: './portable-skills' } },
       }),
@@ -5795,7 +5751,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v9 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -5808,7 +5764,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v9 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
     });
   });
 

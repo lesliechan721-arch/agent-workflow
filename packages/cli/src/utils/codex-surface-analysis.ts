@@ -20,8 +20,7 @@ export type CodexExtensionKind =
   | 'instruction'
   | 'permission'
   | 'agent'
-  | 'config'
-  | 'lifecycle';
+  | 'config';
 export type CodexSurfaceClassification =
   | 'empty'
   | 'native'
@@ -97,7 +96,6 @@ const EXTENSION_KIND_ORDER: CodexExtensionKind[] = [
   'permission',
   'agent',
   'config',
-  'lifecycle',
 ];
 
 function compareText(left: string, right: string): number {
@@ -205,15 +203,6 @@ export function analyzeCodexSurface(
     addAwComponent(components, {
       key: 'manifest.config',
       kind: 'config',
-      scopes: [...BOTH_SCOPES],
-      dynamic: true,
-    });
-  }
-  if (manifest.scripts?.lifecycle && Object.keys(manifest.scripts.lifecycle).length > 0) {
-    extensionKinds.add('lifecycle');
-    addAwComponent(components, {
-      key: 'manifest.scripts.lifecycle',
-      kind: 'lifecycle',
       scopes: [...BOTH_SCOPES],
       dynamic: true,
     });

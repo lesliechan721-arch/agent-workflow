@@ -6,4 +6,4 @@
 
 源码版本使用稳定 SemVer。日常修改遵守目标工作区的版本策略；需要发布时先检查该工作区公开的 release 帮助和维护文档。不要从本 Skill 推断 Catalog floor、ledger、tag、registry 或 publisher 恢复步骤。
 
-每个路径声明必须位于插件根内。静态能力、动态能力和构建输入必须各有单一 owner，不用 lifecycle 直接写 AW 管理的平台输出。
+每个路径声明必须位于插件根内。静态能力、动态能力和构建输入必须各有单一 owner，不用 postApply 直接写 AW 管理的平台输出。

@@ -1,7 +1,7 @@
 ---
 name: author-aw-plugin
 description: >-
-  当用户要在既有合法 AW Catalog Workspace 中创建或维护一个 Plugin Source 的 manifest、Skill、extension、MCP/App、slash command、config、lifecycle、dynamic artifact、插件版本或单插件验证时使用。只有 `author-aw-catalog` 已明确交接删除任务时才删除；只负责该插件内部源码，不初始化、维护、构建、验证或发布 Catalog。
+  当用户要在既有合法 AW Catalog Workspace 中创建或维护一个 Plugin Source 的 manifest、Skill、extension、MCP/App、slash command、config、postApply、dynamic artifact、插件版本或单插件验证时使用。只有 `author-aw-catalog` 已明确交接删除任务时才删除；只负责该插件内部源码，不初始化、维护、构建、验证或发布 Catalog。
 compatibility: 需要 Node.js 22+、提供所需公开作者命令的已安装 aw CLI、目标工作区依赖、agent-content-toolkit 和 agent-skill-toolkit。
 user-invocable: true
 metadata:
@@ -48,5 +48,5 @@ AW CLI/Core 是机器规范。本 Skill 是单 Plugin Source 的 Agent-facing De
 | Node/build | `references/build-config-spec.md` 与 `references/aw-script-testing.md` |
 | config/helper | `references/aw-config-and-helper.md` |
 | dynamic artifact；含 `agent-skills.skill` 与 `runtimeImports` | `references/aw-artifact-renderer.md`；从 live capability receipt 选择实际存在的领域 |
-| lifecycle | `references/aw-lifecycle.md` |
+| postApply | `references/aw-post-apply.md` |
 | 用户可观察变化 | `references/aw-readme-authoring.md` |

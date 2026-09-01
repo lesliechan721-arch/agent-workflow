@@ -213,6 +213,10 @@ describe('public AW_HOME mutation command lock', () => {
       'team',
       'demo',
       'config.json',
-    ))).resolves.toMatchObject({ sourceIdentity: oldIdentity, values: { mode: 'safe' } });
+    ))).resolves.toEqual({
+      schemaVersion: 3,
+      pluginId: 'team/demo',
+      values: { mode: 'safe' },
+    });
   });
 });

@@ -782,7 +782,6 @@ function reviewChanges(
       const actionLabels: Record<OfflineCleanupTargetEvidence['plan']['actions'][number]['action'], string> = {
         removeOwnedOutput: '移除 AW-owned 输出',
         removeNativeRegistration: '移除原生插件注册',
-        removeLifecycleSnapshot: '移除 lifecycle snapshot',
       };
       changes.push(...evidence.offlineCleanup.plan.actions.map((action): OperationReviewChange => ({
         kind: 'remove',

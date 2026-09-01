@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,10 +6,9 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import {
-  buildLifecycleSpawnEnv,
+  buildPluginScriptSpawnEnv,
   bundleLocalPlugin,
   collectSensitivePluginConfigValues,
-  coercePluginConfigValue,
   discoverPlugins,
   formatMarketplaceProductsForError,
   formatSupportedPlatforms,
@@ -31,7 +29,6 @@ import {
 } from '../src/utils/catalog-runtime-projection.js';
 import type {
   PlatformName,
-  PluginConfigSchemaField,
   PluginConfigValue,
   PluginMeta,
   Scope,
@@ -390,27 +387,6 @@ async function copyTestPackageNodeModules(options: {
   await fs.copy(sourceNodeModules, targetNodeModules, { dereference: false });
 }
 
-async function resolveConfigDefaults(options: {
-  manifest: NormalizedPluginManifest;
-  cwd: string;
-}): Promise<Record<string, string | number | boolean>> {
-  const values: Record<string, string | number | boolean> = {};
-  const schema = options.manifest.config?.schema ?? {};
-  for (const [key, field] of Object.entries(schema)) {
-    const typedField = field as PluginConfigSchemaField;
-    if (typedField.default === undefined) {
-      continue;
-    }
-    values[key] = await coercePluginConfigValue({
-      key,
-      field: typedField,
-      value: typedField.default,
-      projectRoot: options.cwd,
-    });
-  }
-  return values;
-}
-
 async function writeTestContext(options: {
   bundleRoot: string;
   sourceRoot: string;
@@ -422,9 +398,7 @@ async function writeTestContext(options: {
   tempDir: string;
 }): Promise<{ contextPath: string; sensitiveValues: string[] }> {
   const sourceId = 'plugin-test';
-  const sourceIdentity = `sha256:${crypto.createHash('sha256')
-    .update(`${sourceId}/${options.manifest.name}`, 'utf8')
-    .digest('hex')}`;
+  const pluginId = `${sourceId}/${options.manifest.name}`;
   const configStores = {
     user: resolvePluginConfigStorePath({
       sourceId,
@@ -451,29 +425,18 @@ async function writeTestContext(options: {
   };
   if (options.manifest.config?.schema) {
     await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
-      schemaVersion: 2,
-      sourceId,
-      sourceIdentity,
-      pluginName: options.manifest.name,
+      schemaVersion: 3,
+      pluginId,
       values: {},
     }, { spaces: 2 })));
   }
   const effective = options.manifest.config?.schema
     ? await resolveEffectivePluginConfig({
         sourceId,
-        sourceIdentity,
         manifest: options.manifest,
         cwd: options.projectRoot,
         env: options.env,
-      }).catch(async () => ({
-        values: await resolveConfigDefaults({
-          manifest: options.manifest,
-          cwd: options.projectRoot,
-        }),
-        sources: Object.fromEntries(Object.keys(options.manifest.config?.schema ?? {}).map((key) => [key, 'default'])),
-        schema: options.manifest.config?.schema,
-        issues: [],
-      }))
+      })
     : { values: {}, sources: {}, schema: undefined, issues: [] };
   const contextPath = path.join(options.tempDir, 'context.json');
   await fs.writeJson(contextPath, {
@@ -484,8 +447,7 @@ async function writeTestContext(options: {
       version: options.manifest.version,
       rootDir: options.bundleRoot,
       sourceId,
-      sourceIdentity,
-      pluginId: `${sourceId}/${options.manifest.name}`,
+      pluginId,
     },
     sourceRoot: options.sourceRoot,
     platform: options.platform,
@@ -613,7 +575,7 @@ async function runPreparedPluginTests(options: {
       env,
       tempDir,
     });
-    const spawnEnv = buildLifecycleSpawnEnv({
+    const spawnEnv = buildPluginScriptSpawnEnv({
       commandEnv: env,
       contextPath: writtenContext.contextPath,
       tempDir,

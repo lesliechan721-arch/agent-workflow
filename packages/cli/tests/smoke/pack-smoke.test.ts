@@ -11,7 +11,7 @@ import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { createCatalogManifestV6Entry } from '../../src/utils/catalog-manifest-v6.js';
+import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import {
   createAwPluginRequirementsReceipt,
   readPluginManifest,
@@ -967,7 +967,7 @@ describe('pack smoke', () => {
     const portableCatalogManifestPath = path.join(portableCatalog, 'catalog-manifest.json');
     const portableCatalogManifest = await fs.readJson(portableCatalogManifestPath);
     portableCatalogManifest.entries = [
-      await createCatalogManifestV6Entry(portablePlugin, portablePlugin.rootDir),
+      await createCatalogManifestV7Entry(portablePlugin, portablePlugin.rootDir),
     ];
     await fs.writeJson(portableCatalogManifestPath, portableCatalogManifest, { spaces: 2 });
     const portableCwd = path.join(tempRoot, 'portable-project');

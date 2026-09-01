@@ -50,7 +50,7 @@ describe('real ConsoleAppV4 progress chain', () => {
     };
     const desired: DesiredTarget = {
       plugin,
-      lifecycleSource: plugin,
+      postApplySource: plugin,
       identity: {
         pluginName: plugin.manifest.name,
         pluginVersion: plugin.manifest.version,
@@ -78,7 +78,7 @@ describe('real ConsoleAppV4 progress chain', () => {
       removeNative: async () => { live = 'absent'; },
       writeNative: async () => { await nextTurn(); live = 'present'; },
       writeArtifacts: async () => undefined,
-      runLifecycle: async () => undefined,
+      runPostApply: async () => undefined,
     };
     const activeStore: RebuildActiveStore = {
       prepare: async () => ({}) as never,

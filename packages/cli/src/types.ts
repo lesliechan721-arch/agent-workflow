@@ -3,7 +3,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   CatalogChannel,
-  CatalogManifestV6,
+  CatalogManifestV7,
   CatalogSourceId,
   CliVersion,
   DistributionName,
@@ -11,7 +11,6 @@ import type {
   ManagedArtifactId,
   PlatformName,
   PluginId,
-  PluginLifecycleEvent,
   PluginVersion,
   Scope,
   SourceIdentity,
@@ -37,17 +36,12 @@ export type RebuildActionName =
   | 'stale.cleanup'
   | 'native.write'
   | 'artifacts.write'
-  | 'active.prepare'
-  | 'active.discard'
-  | `lifecycle.${PluginLifecycleEvent}`
-  | 'active.promote'
+  | 'postApply'
   | 'postcheck.inspect'
   | 'marketplace.commit'
   | 'marketplace.rollback'
   | 'recovery.cleanup'
   | 'cleanup.owned'
-  | 'active.read'
-  | 'active.remove';
 export type RebuildActionEventData =
   | {
       name: RebuildActionName;
@@ -127,7 +121,7 @@ export interface CatalogSourceResolution {
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   manifestDigest: string;
   snapshotDigest: string;
   transport: 'git' | 'path';
@@ -206,7 +200,7 @@ export interface CatalogGenerationSetSource {
   snapshotDigest: string;
   storeKey: string;
   snapshotPath: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
 }
 
 export interface CatalogGenerationSet {

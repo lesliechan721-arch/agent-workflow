@@ -1,42 +1,6 @@
 import { builtinModules } from 'node:module';
 import path from 'node:path';
 
-import type {
-  PluginLifecycleRuntimeOs,
-  PluginLifecycleScriptEntry,
-  PluginLifecycleScriptRunner,
-  PluginLifecycleScriptSelector,
-} from './types.js';
-
-export const PLUGIN_LIFECYCLE_EVENTS = ['install', 'upgrade', 'uninstall'] as const;
-export const PLUGIN_LIFECYCLE_OS_SELECTORS = [
-  'default',
-  'unix',
-  'windows',
-  'linux',
-  'darwin',
-  'win32',
-] as const;
-export const PLUGIN_SCRIPT_RUNNERS = [
-  'node',
-  'sh',
-  'bash',
-  'pwsh',
-  'powershell',
-  'cmd',
-  'auto',
-] as const;
-
-export const PLUGIN_AUTO_RUNNER_EXTENSIONS = [
-  '.js',
-  '.mjs',
-  '.cjs',
-  '.sh',
-  '.ps1',
-  '.cmd',
-  '.bat',
-] as const;
-
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 30_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 300_000;
@@ -77,60 +41,6 @@ function compilePluginTestEntryGlob(glob: string): RegExp {
 
 export function matchesPluginTestEntryGlob(filePath: string, glob: string): boolean {
   return compilePluginTestEntryGlob(glob).test(normalizePluginTestEntryPath(filePath));
-}
-
-export function isPluginLifecycleOsSelector(value: string): boolean {
-  return (PLUGIN_LIFECYCLE_OS_SELECTORS as readonly string[]).includes(value);
-}
-
-export function isPluginScriptRunner(value: string): value is PluginLifecycleScriptRunner {
-  return (PLUGIN_SCRIPT_RUNNERS as readonly string[]).includes(value);
-}
-
-export function getLifecycleSelectorOrder(os: PluginLifecycleRuntimeOs): readonly string[] {
-  if (os === 'linux') {
-    return ['linux', 'unix', 'default'];
-  }
-
-  if (os === 'darwin') {
-    return ['darwin', 'unix', 'default'];
-  }
-
-  return ['win32', 'windows', 'default'];
-}
-
-export function resolveLifecycleScriptForOs(
-  selector: PluginLifecycleScriptSelector,
-  os: PluginLifecycleRuntimeOs,
-): PluginLifecycleScriptEntry | undefined {
-  for (const key of getLifecycleSelectorOrder(os)) {
-    const entry = selector[key as keyof PluginLifecycleScriptSelector];
-    if (entry) {
-      return entry;
-    }
-  }
-
-  return undefined;
-}
-
-export function inferLifecycleScriptRunnerFromPath(
-  scriptPath: string,
-): Exclude<PluginLifecycleScriptRunner, 'auto'> | undefined {
-  const extension = path.posix.extname(scriptPath).toLowerCase();
-  if (extension === '.js' || extension === '.mjs' || extension === '.cjs') {
-    return 'node';
-  }
-  if (extension === '.sh') {
-    return 'sh';
-  }
-  if (extension === '.ps1') {
-    return 'powershell';
-  }
-  if (extension === '.cmd' || extension === '.bat') {
-    return 'cmd';
-  }
-
-  return undefined;
 }
 
 export interface ImportSpecifierReference {

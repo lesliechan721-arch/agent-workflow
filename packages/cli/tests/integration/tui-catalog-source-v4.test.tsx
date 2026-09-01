@@ -308,10 +308,8 @@ describe('TUI v4 real catalog source boundary', () => {
       env: isolation.env,
     });
     await fs.outputJson(path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'two', 'config.json'), {
-      schemaVersion: 2,
-      sourceId: 'team',
-      sourceIdentity: `sha256:${'3'.repeat(64)}`,
-      pluginName: 'two',
+      schemaVersion: 3,
+      pluginId: 'team/two',
       values: {},
     });
     await fs.outputFile(

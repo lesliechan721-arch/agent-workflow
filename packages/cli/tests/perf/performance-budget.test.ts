@@ -269,7 +269,6 @@ describe('multi-source performance budgets', () => {
       cwd: root,
       command: 'install',
       catalog: { rootDir: sourceRoot, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     await integration.driver.writeNative(target);
     await expect(fs.pathExists(path.join(marketplaceRoot, 'config.json'))).resolves.toBe(true);

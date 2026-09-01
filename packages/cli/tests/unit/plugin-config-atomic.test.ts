@@ -42,6 +42,24 @@ afterEach(async () => {
 });
 
 describe('plugin config atomic writes', () => {
+  it('writes the exact schema 3 namespaced envelope without source identity', async () => {
+    const fixture = await makeFixture();
+    const options = {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      pluginName: 'demo',
+      scope: 'user' as const,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    };
+    await writePluginConfigStore({ ...options, values: { enabled: true } });
+    await expect(fs.readJson(resolvePluginConfigStorePath(options))).resolves.toEqual({
+      schemaVersion: 3,
+      pluginId: 'official/demo',
+      values: { enabled: true },
+    });
+  });
+
   it('reads and lists user config without creating config state', async () => {
     const fixture = await makeFixture();
     const options = {
@@ -312,7 +330,7 @@ describe('plugin config atomic writes', () => {
       pluginName: foreignOptions.pluginName,
       values: { retained: true },
     });
-    await expect(resetPluginConfigStore(foreignOptions)).rejects.toThrow('identity');
+    await expect(resetPluginConfigStore(foreignOptions)).rejects.toThrow('legacyStateUnsupported');
     await expect(fs.pathExists(foreignPath)).resolves.toBe(true);
   });
 
@@ -343,7 +361,7 @@ describe('plugin config atomic writes', () => {
       values: { local: true },
     });
 
-    await expect(resetPluginConfigStores(base)).rejects.toThrow('source identity');
+    await expect(resetPluginConfigStores(base)).rejects.toThrow('legacyStateUnsupported');
     await expect(fs.pathExists(sharedPath)).resolves.toBe(true);
     await expect(fs.pathExists(localPath)).resolves.toBe(true);
   });

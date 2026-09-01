@@ -131,7 +131,7 @@ describe('build smoke', () => {
       },
       requires: {
         aw: {
-          capabilities: ['aw.plugin-manifest.v2'],
+          capabilities: ['aw.plugin-manifest.v3'],
         },
       },
     }, { spaces: 2 });
@@ -518,9 +518,9 @@ describe('build smoke', () => {
           contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }))),
     });
-    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v6']);
+    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v7']);
     expect(catalogManifest.entries.every((entry) =>
-      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v2'))).toBe(true);
+      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v3'))).toBe(true);
     expect(catalogManifest).not.toHaveProperty('history');
     expect(catalogManifest).not.toHaveProperty('packages');
     expect((await fs.readdir(outputRoot)).sort()).toEqual([

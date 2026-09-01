@@ -82,7 +82,6 @@ import { resolveArtifactRenderConfig, runArtifactRenderer } from '../utils/artif
 import { validateArtifactPlan, type ValidatedArtifactPlanArtifact } from '../utils/artifact-plan.js';
 import {
   createAwPluginRequirementsReceipt,
-  readPluginManifest,
 } from '../utils/manifest.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
@@ -92,7 +91,7 @@ import {
   resolveRepoRoot,
   getCodexHome,
 } from '../utils/paths.js';
-import { runLifecycleScript } from '../utils/plugin-scripts.js';
+import { runPostApplyScript } from '../utils/plugin-scripts.js';
 import {
   atomicRemoveConfigFile,
   atomicReplaceConfigFile,
@@ -124,7 +123,7 @@ import {
 } from '../utils/codex-roles.js';
 import type {
   DesiredTarget,
-  RebuildLifecycleInvocation,
+  RebuildPostApplyInvocation,
   RebuildTargetIdentity,
   RebuildTargetDriver,
 } from './rebuild-operations.js';
@@ -168,8 +167,6 @@ export interface RebuildIntegration {
     cwd: string;
     command: 'install' | 'upgrade' | 'reinstall' | 'cleanup' | 'uninstall';
     catalog: CatalogResolution;
-    includeHistoricalLifecycleArtifacts: boolean;
-    expectedLifecycleMetadataIntegrityDigest?: string;
     readOnlyInspectionPlan?: boolean;
     includeNativeCleanupCandidate?: boolean;
     codexActivationCleanup?: Array<{
@@ -349,7 +346,6 @@ function pluginOwnerIdentity(
     ...ownerIdentity(plugin.manifest.name, artifactKey, platform, scope),
     ...(plugin.sourceId ? {
       sourceId: plugin.sourceId,
-      sourceIdentity: plugin.sourceIdentity,
       pluginId: plugin.pluginId,
     } : {}),
   };
@@ -357,12 +353,11 @@ function pluginOwnerIdentity(
 
 function bindNamespacedOwnerIdentity(
   components: readonly OwnedComponent[],
-  source: { sourceId?: string; sourceIdentity?: string; pluginId?: string },
+  source: { sourceId?: string; pluginId?: string },
 ): void {
   if (!source.sourceId) return;
   for (const component of components) {
     component.identity.sourceId = source.sourceId;
-    component.identity.sourceIdentity = source.sourceIdentity;
     component.identity.pluginId = source.pluginId;
   }
 }
@@ -797,7 +792,6 @@ function createCodexRoleRegistrationComponent(options: {
 function sameOwnerIdentity(left: OwnerIdentity, right: OwnerIdentity): boolean {
   return left.owner === right.owner
     && left.sourceId === right.sourceId
-    && left.sourceIdentity === right.sourceIdentity
     && left.pluginId === right.pluginId
     && left.plugin === right.plugin
     && left.artifactKey === right.artifactKey
@@ -824,7 +818,6 @@ async function scanCodexSharedComponents(options: {
     ...ownerIdentity(options.pluginName, artifactKey, 'codex', options.scope),
     ...(options.sourceId ? {
       sourceId: options.sourceId,
-      sourceIdentity: options.sourceIdentity,
       pluginId: options.pluginId,
     } : {}),
   });
@@ -900,7 +893,6 @@ async function scanClaudeSharedComponents(options: {
     ...ownerIdentity(options.pluginName, 'permissions', 'claude', options.scope),
     ...(options.sourceId ? {
       sourceId: options.sourceId,
-      sourceIdentity: options.sourceIdentity,
       pluginId: options.pluginId,
     } : {}),
   };
@@ -941,8 +933,6 @@ async function scanOwnedTextFiles(options: {
       if (
         parsed?.identity.plugin !== options.pluginName
         || (options.sourceId !== undefined && parsed.identity.sourceId !== options.sourceId)
-        || (options.sourceIdentity !== undefined
-          && parsed.identity.sourceIdentity !== options.sourceIdentity)
         || parsed.identity.platform !== options.platform
         || parsed.identity.scope !== options.scope
       ) continue;
@@ -980,7 +970,6 @@ async function scanOwnedSkills(options: {
       if (
         marker?.plugin === options.pluginName
         && (options.sourceId === undefined || marker.sourceId === options.sourceId)
-        && (options.sourceIdentity === undefined || marker.sourceIdentity === options.sourceIdentity)
         && marker.platform === options.platform
         && marker.scope === options.scope
       ) {
@@ -1997,7 +1986,6 @@ async function buildHistoricalComponents(options: {
     ...ownerIdentity(options.pluginName, artifactKey, options.platform, options.scope),
     ...(options.sourceId ? {
       sourceId: options.sourceId,
-      sourceIdentity: options.sourceIdentity,
       pluginId: options.pluginId,
     } : {}),
   });
@@ -3879,18 +3867,32 @@ function createNativeDriver(options: {
       };
       return writeAll();
     },
-    runLifecycle: async (invocation: RebuildLifecycleInvocation) => {
-      await runLifecycleScript({
-        event: invocation.event,
-        pluginName: invocation.plugin.manifest.name,
+    runPostApply: async (invocation: RebuildPostApplyInvocation) => {
+      try {
+        await runPostApplyScript({
+        plugin: invocation.plugin,
         platform: invocation.target.identity.platform,
         scope: invocation.target.identity.scope,
         cwd: invocation.target.identity.cwd,
         context: options.context as never,
-        currentPlugin: invocation.plugin,
         artifacts: [...invocation.artifacts],
+        components: invocation.components,
         scriptTimeoutMs: options.scriptTimeoutMs,
       });
+      } catch (error) {
+        await options.context.reporter.notice({
+          level: 'warning',
+          message: error instanceof Error ? error.message : String(error),
+          source: {
+            plugin: invocation.plugin.manifest.name,
+            platform: invocation.target.identity.platform,
+            scope: invocation.target.identity.scope,
+            action: 'postApply',
+          },
+          target: 'stderr',
+        });
+        throw error;
+      }
     },
   };
 }
@@ -3917,6 +3919,12 @@ export function createRebuildIntegration(options: {
   return {
     driver,
     buildTarget: async (input) => {
+      input = {
+        ...input,
+        sourceId: input.sourceId ?? input.plugin.sourceId,
+        sourceIdentity: input.sourceIdentity ?? input.plugin.sourceIdentity,
+        pluginId: input.pluginId ?? input.plugin.pluginId,
+      };
       const materializing = input.command !== 'cleanup'
         && input.command !== 'uninstall'
         && input.readOnlyInspectionPlan !== true;
@@ -3939,33 +3947,7 @@ export function createRebuildIntegration(options: {
         });
       }
       const event = input.command === 'upgrade' ? 'upgrade' : 'install';
-      let historicalArtifacts: GeneratedArtifact[] = [];
-      if (input.includeHistoricalLifecycleArtifacts) {
-        const loadPlugin = (bundleRoot: string) => readPluginManifest(bundleRoot, { mode: 'bundle' });
-        const { readLifecycleActiveSnapshot } = await import('../utils/lifecycle-active-store.js');
-        const active = await readLifecycleActiveSnapshot({
-          ...(input.sourceId ? {
-            sourceId: input.sourceId,
-            sourceIdentity: input.sourceIdentity,
-          } : {}),
-          pluginName: input.plugin.manifest.name,
-          platform: input.platform,
-          scope: input.scope,
-          cwd: input.cwd,
-          env: options.context.env,
-          loadPlugin,
-        });
-        if (
-          input.expectedLifecycleMetadataIntegrityDigest !== undefined
-          && active?.metadata.metadataIntegrityDigest
-            !== input.expectedLifecycleMetadataIntegrityDigest
-        ) {
-          throw new Error(
-            'stateInventoryFailed: lifecycle active generation changed after verified inventory.',
-          );
-        }
-        historicalArtifacts = active?.artifacts ?? [];
-      }
+      const historicalArtifacts: GeneratedArtifact[] = [];
       let writes: PlannedWrite[] = [];
       let currentRemovalComponents: OwnedComponent[] = [];
       if (input.command !== 'cleanup' && input.command !== 'uninstall') {
@@ -4262,13 +4244,7 @@ export function createRebuildIntegration(options: {
         requiresNative: nativeDesired,
         writeNativeRequired: materializeNativeRequired,
         artifacts: writes.map((write) => write.artifact),
-        lifecycleSource: input.plugin,
-        ...(input.expectedLifecycleMetadataIntegrityDigest
-          ? {
-              historicalLifecycleMetadataIntegrityDigest:
-                input.expectedLifecycleMetadataIntegrityDigest,
-            }
-          : {}),
+        postApplySource: input.plugin,
       };
       plans.set(target, {
         catalog: input.catalog,
@@ -4321,7 +4297,6 @@ export async function inspectRebuildTarget(options: {
     cwd: options.cwd,
     command: 'install',
     catalog: options.catalog,
-    includeHistoricalLifecycleArtifacts: false,
     readOnlyInspectionPlan: true,
   });
   const inspection = await inspectOwnedComponents({

@@ -75,7 +75,6 @@ import {
   targetCanBeUninstalled,
   targetHasArtifactCollision,
 } from '../utils/target-eligibility.js';
-import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
@@ -1510,25 +1509,12 @@ export function createTuiControllerDependencies(
       });
       signal.throwIfAborted();
       if (!identity) return { exists: false, sourceIdentityPresent: false };
-      const configured = await readCatalogSourcesConfigSnapshot(context.env);
-      const source = configured.config.sources.find((entry) => entry.id === sourceId);
-      const configuredIdentity = source
-        ? await calculateCatalogSourceIdentity(source)
-        : undefined;
-      if (identity.sourceIdentity !== configuredIdentity) {
-        return {
-          exists: true,
-          sourceIdentityPresent: false,
-          sourceIdentity: identity.sourceIdentity,
-        };
-      }
       return {
         exists: true,
         sourceIdentityPresent: true,
-        sourceIdentity: identity.sourceIdentity,
         storeDigest: digest({
           exists: identity.store.exists,
-          sourceIdentity: identity.sourceIdentity,
+          pluginId: identity.pluginId,
           values: identity.store.values,
         }),
       };

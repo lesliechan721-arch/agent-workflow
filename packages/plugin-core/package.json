@@ -19,7 +19,7 @@
       "types": "./dist/manifest.d.ts",
       "import": "./dist/manifest.js"
     },
-    "./schemas/plugin-manifest-v2.json": "./schemas/plugin-manifest-v2.json"
+    "./schemas/plugin-manifest-v3.json": "./schemas/plugin-manifest-v3.json"
   },
   "files": [
     "dist/",

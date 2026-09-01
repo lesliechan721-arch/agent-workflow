@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { OwnerIdentity, OwnedComponent } from '../../src/utils/ownership.js';
 import {
   cleanupOwnedComponents,
+  createSharedOwnerToken,
   inspectOwnedComponents,
   parseOwnedTextHeader,
+  parseSharedOwnerToken,
   readSkillOwnerMarker,
   renderOwnedTextFile,
   SKILL_OWNER_MARKER,
@@ -28,6 +30,8 @@ async function makeTempRoot(): Promise<string> {
 function userIdentity(artifactKey = 'review'): OwnerIdentity {
   return {
     owner: 'agent-workflows',
+    sourceId: 'official',
+    pluginId: 'official/ownership-test',
     plugin: 'ownership-test',
     artifactKey,
     platform: 'codex',
@@ -40,6 +44,19 @@ afterEach(async () => {
 });
 
 describe('ownership marker and header', () => {
+  it('uses the v3 stable owner token and does not read a v2 token', () => {
+    const identity = userIdentity();
+    const token = createSharedOwnerToken(identity);
+    expect(token.startsWith('aw-owner-v3:')).toBe(true);
+    expect(parseSharedOwnerToken(token)).toEqual(identity);
+    const legacy = `aw-owner-v2:${Buffer.from(JSON.stringify({
+      schemaVersion: 2,
+      ...identity,
+      sourceIdentity: `sha256:${'a'.repeat(64)}`,
+    })).toString('base64url')}`;
+    expect(parseSharedOwnerToken(legacy)).toBeNull();
+  });
+
   it('roundtrips a project marker without machine-local paths', async () => {
     const root = await makeTempRoot();
     const projectRoot = path.join(root, 'repo');
@@ -57,7 +74,7 @@ describe('ownership marker and header', () => {
       skillRoot,
       allowedRoot: skillsRoot,
       expectedIdentity: identity,
-    })).resolves.toEqual({ schemaVersion: 1, ...identity });
+    })).resolves.toEqual({ schemaVersion: 3, ...identity });
     await expect(fs.readFile(path.join(skillRoot, SKILL_OWNER_MARKER), 'utf8'))
       .resolves.not.toContain(projectRoot);
   });
@@ -91,7 +108,7 @@ describe('ownership marker and header', () => {
       skillRoot,
       allowedRoot: skillsRoot,
       expectedIdentity: userIdentity(),
-    })).rejects.toThrow('schemaVersion 必须是 1');
+    })).rejects.toThrow('schema 3 stable plugin identity');
   });
 
   it('rejects a symlink skill directory and symlink marker', async () => {
@@ -182,7 +199,7 @@ describe('ownership inspection and cleanup', () => {
           reason: 'unownedContent',
           artifactKind: 'owned-text-file',
           artifactKey: 'foreign',
-          expectedOwner: 'ownership-test',
+          expectedOwner: 'official/ownership-test',
         },
       }],
     });
@@ -197,7 +214,11 @@ describe('ownership inspection and cleanup', () => {
     await writeOwnedTextFile({
       path: ownerMismatchPath,
       allowedRoot,
-      identity: { ...userIdentity('owner-mismatch'), plugin: 'other-owner' },
+      identity: {
+        ...userIdentity('owner-mismatch'),
+        plugin: 'other-owner',
+        pluginId: 'official/other-owner',
+      },
       content: 'allow\n',
     });
     await fs.outputFile(unownedPath, 'foreign\n');
@@ -217,15 +238,15 @@ describe('ownership inspection and cleanup', () => {
     expect(result.components.map((entry) => entry.collision)).toEqual([
       {
         reason: 'ownerMismatch', artifactKind: 'owned-text-file', artifactKey: 'owner-mismatch',
-        expectedOwner: 'ownership-test', actualOwner: 'other-owner',
+        expectedOwner: 'official/ownership-test', actualOwner: 'official/other-owner',
       },
       {
         reason: 'unownedContent', artifactKind: 'owned-text-file', artifactKey: 'unowned',
-        expectedOwner: 'ownership-test',
+        expectedOwner: 'official/ownership-test',
       },
       {
         reason: 'typeMismatch', artifactKind: 'owned-text-file', artifactKey: 'type-mismatch',
-        expectedOwner: 'ownership-test',
+        expectedOwner: 'official/ownership-test',
       },
     ]);
     expect(JSON.stringify(result.components.map((entry) => entry.collision))).not.toContain(root);

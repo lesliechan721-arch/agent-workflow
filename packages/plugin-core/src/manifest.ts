@@ -1,18 +1,18 @@
 import { Ajv2020, type ErrorObject } from 'ajv/dist/2020.js'
 
-import schema from '../schemas/plugin-manifest-v2.json' with { type: 'json' }
-import type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js'
+import schema from '../schemas/plugin-manifest-v3.json' with { type: 'json' }
+import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 
-export type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js'
+export type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js'
 
-export const PLUGIN_MANIFEST_SCHEMA_VERSION = 2 as const
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 9
+export const PLUGIN_MANIFEST_SCHEMA_VERSION = 3 as const
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 10
 
 const ajv = new Ajv2020({
   allErrors: true,
   strict: true,
 })
-const validateV2 = ajv.compile<PluginManifestSourceV2>(schema)
+const validateV3 = ajv.compile<PluginManifestSourceV3>(schema)
 
 export class PluginManifestStructureError extends Error {
   readonly issues: ErrorObject[]
@@ -37,7 +37,7 @@ function formatIssue(issue: ErrorObject): string {
 
 export function assertPluginManifestStructure(
   value: unknown,
-): asserts value is PluginManifestSourceV2 {
+): asserts value is PluginManifestSourceV3 {
   if (
     value !== null
     && typeof value === 'object'
@@ -49,8 +49,8 @@ export function assertPluginManifestStructure(
       `Unsupported plugin manifest schemaVersion: expected ${PLUGIN_MANIFEST_SCHEMA_VERSION}.`,
     )
   }
-  if (!validateV2(value)) {
-    const issues = validateV2.errors ?? []
+  if (!validateV3(value)) {
+    const issues = validateV3.errors ?? []
     throw new PluginManifestStructureError(
       `Invalid plugin manifest structure: ${issues.map(formatIssue).join('; ')}`,
       issues,
@@ -60,7 +60,7 @@ export function assertPluginManifestStructure(
 
 export function normalizePluginManifestSchemaVersion(
   value: unknown,
-): PluginManifestSourceV2 {
+): PluginManifestSourceV3 {
   assertPluginManifestStructure(value)
   return {
     ...value,
