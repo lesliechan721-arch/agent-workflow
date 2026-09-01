@@ -280,6 +280,49 @@ describe('performance gate process tree cleanup', () => {
     expect(isProcessAlive(childPid)).toBe(false);
   });
 
+  itOnPosix('rejects new descendants from a reused POSIX root', async () => {
+    const childSource = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    const newChildPid = 900_002;
+    const descendantSignals = [];
+    let snapshotCalls = 0;
+    let newChildKilled = false;
+    const snapshotPosixProcessTree = async (rootPid) => {
+      snapshotCalls += 1;
+      const rootStart = snapshotCalls === 1 ? 'original-root' : 'reused-root';
+      return parsePosixProcessTree(rootPid, [
+        `${rootPid} 1 ${rootStart}`,
+        ...(snapshotCalls === 1 || newChildKilled
+          ? []
+          : [`${newChildPid} ${rootPid} new-child-start`]),
+      ].join('\n'));
+    };
+
+    await expect(runProcessTree({
+      label: 'POSIX reused root fixture',
+      command: process.execPath,
+      args: ['-e', childSource],
+      env: process.env,
+      timeoutMs: 300,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 50,
+      cleanupSettleMs: 100,
+    }, {
+      snapshotPosixProcessTree,
+      verifyPosixProcessTree: snapshotPosixProcessTree,
+      killPosixProcess: (pid, signal) => {
+        if (pid === newChildPid) {
+          descendantSignals.push(signal);
+          if (signal === 'SIGKILL') {
+            newChildKilled = true;
+          }
+        }
+      },
+    })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+
+    expect(snapshotCalls).toBeGreaterThanOrEqual(3);
+    expect(descendantSignals).toEqual([]);
+  });
+
   itOnPosix('discovers root and detached grandchild on the third snapshot', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-third-snapshot-root-'));
     roots.push(root);

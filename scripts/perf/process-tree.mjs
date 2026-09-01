@@ -438,7 +438,7 @@ export function runProcessTree(options, dependencies = {}) {
         observedDescendants.set(identityKey(identity), identity);
       }
     };
-    const rememberWindowsSnapshot = (snapshot) => {
+    const rememberCurrentRootSnapshot = (snapshot) => {
       if (!rootIdentity) {
         if (childClosed || childHasExited(child) || !snapshot.rootIdentity) {
           return false;
@@ -460,11 +460,7 @@ export function runProcessTree(options, dependencies = {}) {
       monitorTimer = setTimeout(() => {
         monitorInFlight = captureSnapshot().then((snapshot) => {
           if (snapshot) {
-            if (platform === 'win32') {
-              rememberWindowsSnapshot(snapshot);
-            } else {
-              rememberSnapshot(snapshot);
-            }
+            rememberCurrentRootSnapshot(snapshot);
           }
           scheduleMonitor(snapshot ? monitorIntervalMs : Math.max(monitorIntervalMs, 1_000));
         }).catch(() => scheduleMonitor(Math.max(monitorIntervalMs, 1_000)));
@@ -573,7 +569,7 @@ export function runProcessTree(options, dependencies = {}) {
       if (platform === 'win32') {
         const termSnapshot = await captureSnapshot();
         if (termSnapshot) {
-          rememberWindowsSnapshot(termSnapshot);
+          rememberCurrentRootSnapshot(termSnapshot);
           const currentRoot = termSnapshot.identitiesByPid.get(child.pid);
           if (!childHasExited(child) && sameIdentity(rootIdentity, currentRoot)) {
             const succeeded = await runWindowsSignal(child.pid, false);
@@ -589,7 +585,7 @@ export function runProcessTree(options, dependencies = {}) {
         await delay(terminationGraceMs);
         const killSnapshot = await captureSnapshot();
         if (killSnapshot) {
-          rememberWindowsSnapshot(killSnapshot);
+          rememberCurrentRootSnapshot(killSnapshot);
           const currentRoot = killSnapshot.identitiesByPid.get(child.pid);
           if (!childHasExited(child) && sameIdentity(rootIdentity, currentRoot)) {
             const succeeded = await runWindowsSignal(child.pid, true);
@@ -605,7 +601,7 @@ export function runProcessTree(options, dependencies = {}) {
       } else {
         const termSnapshot = await captureSnapshot();
         if (termSnapshot) {
-          rememberSnapshot(termSnapshot);
+          rememberCurrentRootSnapshot(termSnapshot);
           signalPosixIdentities({
             child,
             observedDescendants,
@@ -625,7 +621,7 @@ export function runProcessTree(options, dependencies = {}) {
         await delay(terminationGraceMs);
         const killSnapshot = await captureSnapshot();
         if (killSnapshot) {
-          rememberSnapshot(killSnapshot);
+          rememberCurrentRootSnapshot(killSnapshot);
           const killResult = signalPosixIdentities({
             child,
             observedDescendants,
