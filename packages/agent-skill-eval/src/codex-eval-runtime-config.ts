@@ -485,13 +485,14 @@ export async function materializeCodexEvalRuntimeHome(
     const source = path.join(runtime.sourceCodexHome, name);
     if (!(await fs.pathExists(source))) continue;
     const target = path.join(destination, name);
-    const content = await fs.readFile(source, 'utf8');
+    const bytes = await fs.readFile(source);
+    const content = bytes.toString('utf8');
     try {
       addSensitiveValues(runtime, jsonStringValues(JSON.parse(content)));
     } catch {
       addSensitiveValues(runtime, [content.trim()]);
     }
-    await fs.copyFile(source, target);
+    await fs.writeFile(target, bytes, { flag: 'wx', mode: 0o600 });
     await fs.chmod(target, 0o600).catch(() => undefined);
   }
 }

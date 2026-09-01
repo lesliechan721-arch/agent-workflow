@@ -1,6 +1,11 @@
-import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import {
+  applyCodexEvalProviderEnvironment,
+  materializeCodexEvalRuntimeHome,
+  type CodexEvalRuntimeConfig,
+} from './codex-eval-runtime-config.js'
 import { credentialValues, redactSecrets, secretVariants } from './credentials.js'
 import type { ProcessTreeDependencies } from './process-tree.js'
 import { ProviderProcessCleanupError, runProviderProcess } from './process.js'
@@ -190,7 +195,6 @@ function containsSecret(value: string, variants: readonly string[]): boolean {
 }
 
 async function redactOutputTree(root: string, variants: readonly string[]): Promise<string[]> {
-  if (variants.length === 0) return []
   const rootInfo = await lstat(root)
   if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
     throw new Error('custom process credential cleanup requires an ordinary owned directory.')
@@ -201,11 +205,8 @@ async function redactOutputTree(root: string, variants: readonly string[]): Prom
     const info = await lstat(target)
     const sensitiveName = containsSecret(entry.name, variants)
     if (info.isSymbolicLink()) {
-      const sensitiveTarget = containsSecret(await readlink(target), variants)
-      if (sensitiveName || sensitiveTarget) {
-        await removeSensitiveFile(target, rootInfo.mode)
-        diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
-      }
+      await removeSensitiveFile(target, rootInfo.mode)
+      diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
       continue
     }
     if (info.isDirectory()) {
@@ -220,7 +221,13 @@ async function redactOutputTree(root: string, variants: readonly string[]): Prom
       diagnostics.push(...await redactOutputTree(target, variants))
       continue
     }
-    if (!info.isFile()) continue
+    if (!info.isFile()) {
+      if (sensitiveName) {
+        await removeSensitiveFile(target, rootInfo.mode)
+        diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
+      }
+      continue
+    }
     if (sensitiveName) {
       await removeSensitiveFile(target, rootInfo.mode)
       diagnostics.push(REMOVED_SENSITIVE_ARTIFACT_DIAGNOSTIC)
@@ -258,31 +265,38 @@ async function makeOwnedTreeRemovable(root: string): Promise<void> {
 }
 
 async function cleanupCustomProcessAttempt(
-  evalRoot: string,
+  outputDir: string,
   temporaryRoots: readonly string[],
   variants: readonly string[],
 ): Promise<string[]> {
   const temporaryResults = await Promise.allSettled(
-    temporaryRoots.map((root) => rm(root, { recursive: true, force: true })),
+    temporaryRoots.map(async (root) => {
+      try {
+        await rm(root, { recursive: true, force: true })
+      } catch {
+        await makeOwnedTreeRemovable(root)
+        await rm(root, { recursive: true, force: true })
+      }
+    }),
   )
-  const redactionResult = await Promise.allSettled([redactOutputTree(evalRoot, variants)])
-  if (
-    temporaryResults.some((result) => result.status === 'rejected') ||
-    redactionResult.some((result) => result.status === 'rejected')
-  ) {
+  const redactionResult = await Promise.allSettled([redactOutputTree(outputDir, variants)])
+  if (redactionResult[0]!.status === 'rejected') {
     let removalError: unknown
     try {
-      await makeOwnedTreeRemovable(evalRoot)
-      await rm(evalRoot, { recursive: true, force: true })
+      await makeOwnedTreeRemovable(outputDir)
+      await rm(outputDir, { recursive: true, force: true })
     } catch (error) {
       removalError = error
     }
     if (removalError) {
-      throw new Error('custom process credential cleanup could not clear the attempt after an artifact cleanup failure.')
+      throw new Error('custom process credential cleanup could not clear the output directory after an artifact cleanup failure.')
     }
-    throw new Error('custom process credential cleanup removed the attempt after an artifact cleanup failure.')
+    throw new Error('custom process credential cleanup removed the output directory after an artifact cleanup failure.')
   }
-  return redactionResult[0]!.status === 'fulfilled' ? redactionResult[0]!.value : []
+  if (temporaryResults.some((result) => result.status === 'rejected')) {
+    throw new Error('custom process credential cleanup could not remove temporary provider state.')
+  }
+  return redactionResult[0].value
 }
 
 function cleanEnvironment(
@@ -315,6 +329,7 @@ export interface CustomProcessExecutorOptions {
   evalRoot: string
   input: EvalProviderRunInput
   sourceEnv?: NodeJS.ProcessEnv
+  codexRuntime?: CodexEvalRuntimeConfig
   maxBufferBytes?: number
   processTree?: ProcessTreeDependencies
 }
@@ -346,9 +361,10 @@ export async function executeCustomProcessProvider(
     outputDir: options.input.outputDir,
   }
   const sourceEnv = options.sourceEnv ?? process.env
-  const secrets = credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
-  const variants = secretVariants(secrets)
+  const runtimeHome = path.join(evalRoot, '.custom-provider-runtime')
   const stdin = JSON.stringify(input)
+  let secrets = credentialValues(sourceEnv, CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST)
+  let variants = secretVariants(secrets)
   if (containsSecret(stdin, variants)) {
     throw new Error('custom process input contains an allowlisted credential value.')
   }
@@ -356,8 +372,33 @@ export async function executeCustomProcessProvider(
   if (cleanupPlatform !== 'darwin' && cleanupPlatform !== 'linux') {
     throw new Error(`custom process cleanup is unsupported on ${cleanupPlatform}.`)
   }
-  const env = cleanEnvironment(sourceEnv, evalRoot)
-  const temporaryRoots: string[] = []
+  if (options.codexRuntime) {
+    try {
+      await materializeCodexEvalRuntimeHome(options.codexRuntime, runtimeHome)
+      secrets = [...secrets, ...options.codexRuntime.sensitiveValues]
+      variants = secretVariants(secrets)
+      if (containsSecret(stdin, variants)) {
+        throw new Error('custom process input contains a runtime credential value.')
+      }
+    } catch (error) {
+      await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+  let env = cleanEnvironment(sourceEnv, evalRoot)
+  if (options.codexRuntime) {
+    env = applyCodexEvalProviderEnvironment({
+      ...env,
+      CODEX_HOME: runtimeHome,
+      AW_SKILL_EVAL_CODEX_MODEL: options.codexRuntime.model ?? undefined,
+      AW_CODEX_EVAL_RUNTIME_HOME: runtimeHome,
+      AW_CODEX_EVAL_MODEL_PROVIDER: options.codexRuntime.modelProvider,
+      AW_CODEX_EVAL_SENSITIVE_ENV_NAMES: JSON.stringify(
+        options.codexRuntime.sensitiveEnvironmentNames,
+      ),
+    }, options.codexRuntime)
+  }
+  const temporaryRoots: string[] = options.codexRuntime ? [runtimeHome] : []
   let processResult: Awaited<ReturnType<typeof runProviderProcess>> | undefined
   let processCleanupError: unknown
   let providerResult: EvalProviderRunResult | undefined
@@ -421,7 +462,7 @@ export async function executeCustomProcessProvider(
   let cleanupError: unknown
   try {
     cleanupDiagnostics = await cleanupCustomProcessAttempt(
-      evalRoot,
+      options.input.outputDir,
       temporaryRoots,
       variants,
     )

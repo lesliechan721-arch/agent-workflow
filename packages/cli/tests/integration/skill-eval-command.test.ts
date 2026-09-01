@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import {
+  computeCanonicalDirectoryDigest,
   computeSkillDigest,
   validateEvalSpecFile,
 } from '@lesliechan721/agent-skill-eval'
@@ -268,7 +269,48 @@ describe('aw skill eval commands', () => {
     await expect(fs.pathExists(blockedOutput)).resolves.toBe(false)
     expect(await treeDigests(fixture.ownerRoot)).toEqual(sourceBefore)
 
-    const output = path.join(fixture.outputRoot, 'prepared-v1')
+    const workspaceEvalRoot = path.join(fixture.root, '.aw', 'evals')
+    await fs.ensureDir(workspaceEvalRoot)
+    const existingOutput = path.join(workspaceEvalRoot, 'existing')
+    await fs.ensureDir(existingOutput)
+    const linkedOutput = path.join(workspaceEvalRoot, 'linked')
+    await fs.symlink(fixture.outputRoot, linkedOutput)
+    for (const [label, rejectedOutput] of [
+      ['workspace eval root', workspaceEvalRoot],
+      ['other workspace path', path.join(fixture.root, '.aw', 'other', 'prepared')],
+      ['plugin path', path.join(fixture.ownerRoot, 'prepared')],
+      ['existing target', existingOutput],
+      ['symlink component', path.join(linkedOutput, 'prepared')],
+      ['broad workspace target', fixture.root],
+    ] as const) {
+      const rejected = capture()
+      expect(await runCli([
+        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        '--suite', 'trigger-suite',
+        '--workspace-root', fixture.root,
+        '--output', rejectedOutput,
+        '--json',
+      ], { cwd: fixture.root, env: fixture.env, io: rejected.io }), label).toBe(1)
+    }
+
+    const aliasRoot = path.join(
+      path.dirname(fixture.root),
+      path.basename(fixture.root).toUpperCase(),
+    )
+    const resolvedAlias = await fs.realpath(aliasRoot).catch(() => null)
+    if (resolvedAlias === fixture.root && aliasRoot !== fixture.root) {
+      const aliased = capture()
+      expect(await runCli([
+        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        '--suite', 'trigger-suite',
+        '--workspace-root', fixture.root,
+        '--output', path.join(aliasRoot, 'case-alias-bypass'),
+        '--json',
+      ], { cwd: fixture.root, env: fixture.env, io: aliased.io })).toBe(1)
+      await expect(fs.pathExists(path.join(fixture.root, 'case-alias-bypass'))).resolves.toBe(false)
+    }
+
+    const output = path.join(workspaceEvalRoot, 'prepared-v1')
     const command = capture()
     expect(await runCli([
       'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
@@ -312,7 +354,7 @@ describe('aw skill eval commands', () => {
     expect(spec).toMatchObject({
       version: 1,
       source: { plugin: 'eval-owner', skill: 'owner-skill', suite: 'trigger-suite', profile: 'project-default' },
-      workspace: 'workspace',
+      workspace: { path: 'workspace', digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u) },
       provider: 'codex-trigger',
       runs: 3,
       timeoutMs: 9000,
@@ -323,6 +365,7 @@ describe('aw skill eval commands', () => {
       version: 1,
       cases: [{ id: 'validation_case' }],
     })
+    expect(await computeCanonicalDirectoryDigest(path.join(output, 'workspace'))).toBe(spec.workspace.digest)
     expect(await computeSkillDigest(path.join(output, 'targets', 'current'))).toBe(spec.target.digest)
     expect(await treeDigests(fixture.ownerRoot)).toEqual(sourceBefore)
 

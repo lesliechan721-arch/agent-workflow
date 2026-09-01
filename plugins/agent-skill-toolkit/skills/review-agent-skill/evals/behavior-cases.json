@@ -8,7 +8,6 @@
       "review-agent-workflow",
       "audit-agent-skill-evals"
     ],
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

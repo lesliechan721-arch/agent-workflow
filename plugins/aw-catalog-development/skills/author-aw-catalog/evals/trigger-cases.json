@@ -10,7 +10,6 @@
       "review-aw-plugin",
       "review-aw-workflow"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

@@ -72,14 +72,6 @@ function validateSuite(suite, diagnostics, strict) {
     add(diagnostics, 'error', 'suite.unit-under-test', 'suite.unitUnderTest must be non-empty.');
   }
   validatePolicy(suite, diagnostics);
-  if (!hasText(suite.defaultGrader)) {
-    add(
-      diagnostics,
-      strict ? 'error' : 'warning',
-      'suite.default-grader',
-      'suite.defaultGrader is absent; confirm that the provider has an intentional default.',
-    );
-  }
   if (suite.runtime !== undefined && !isRecord(suite.runtime)) {
     add(diagnostics, 'error', 'suite.runtime', 'suite.runtime must be an object when present.');
   }

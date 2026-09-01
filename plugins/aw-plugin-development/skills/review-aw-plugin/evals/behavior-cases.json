@@ -9,7 +9,6 @@
       "review-agent-workflow",
       "review-aw-workflow"
     ],
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

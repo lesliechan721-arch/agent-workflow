@@ -3,7 +3,6 @@
   "suite": {
     "kind": "conversation",
     "unitUnderTest": "decision-prototype",
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

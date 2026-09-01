@@ -8,6 +8,7 @@ import {
   validateEvalAuditFile,
   validateEvalResultFile,
   validateEvalSpecFile,
+  validateEvalProviderSuiteKind,
   validateSelectedCasesFile,
 } from './index.js'
 
@@ -48,6 +49,11 @@ async function boundSpec(specPath: string): Promise<{
   if (cases.calculated.suite.unitUnderTest !== validation.calculated.spec.source.skill) {
     throw new Error('Selected cases unitUnderTest does not match EvalSpec source.skill.')
   }
+  const providerErrors = validateEvalProviderSuiteKind(
+    validation.calculated.spec.provider,
+    cases.calculated.suite.kind,
+  )
+  if (providerErrors.length > 0) throw new Error(providerErrors.join('; '))
   return { spec: validation.calculated, cases: cases.calculated }
 }
 
@@ -93,6 +99,12 @@ async function main(argv: string[]): Promise<void> {
     const unitMatches = !validation.calculated || !cases?.calculated ||
       cases.calculated.suite.unitUnderTest === validation.calculated.spec.source.skill
     if (!unitMatches) errors.push('Selected cases unitUnderTest does not match EvalSpec source.skill.')
+    if (validation.calculated && cases?.calculated) {
+      errors.push(...validateEvalProviderSuiteKind(
+        validation.calculated.spec.provider,
+        cases.calculated.suite.kind,
+      ))
+    }
     const result = {
       valid: errors.length === 0,
       errors,

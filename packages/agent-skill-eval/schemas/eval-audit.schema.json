@@ -3,9 +3,11 @@
   "$id": "https://agent-skill-eval.invalid/schemas/eval-audit.schema.json",
   "title": "EvalAudit",
   "type": "object",
-  "required": ["version", "targets", "caseDigest", "status", "approvedCaseIds", "blockedCases", "issues"],
+  "required": ["version", "workspaceDigest", "providerDigest", "targets", "caseDigest", "status", "approvedCaseIds", "blockedCases", "issues"],
   "properties": {
     "version": { "const": 1 },
+    "workspaceDigest": { "$ref": "#/$defs/digest" },
+    "providerDigest": { "$ref": "#/$defs/digest" },
     "targets": {
       "type": "array",
       "minItems": 1,

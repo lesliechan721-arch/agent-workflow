@@ -15,33 +15,30 @@ import {
   type AwSkillEvalTriggerSuiteCaseContract,
   type CodexEvalRuntimeConfig,
 } from '../../dist/index.js'
-import { CodexEvalAttemptControl } from '../../dist/codex-eval-app-server.js'
 import { createDirectChildProcessMonitor } from '../../dist/index.js'
+import { CodexEvalAttemptControl } from '../../dist/codex-eval-app-server.js'
 
 describe('Codex provider app-server process boundary', () => {
-  it('uses the full evaluation budget while preserving RPC limits and shorter deadlines', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'))
-    const longAttempt = new CodexEvalAttemptControl({
-      label: 'long evaluation',
-      timeoutMs: 300_000,
-    })
-    const shortAttempt = new CodexEvalAttemptControl({
-      label: 'short evaluation',
-      timeoutMs: 5_000,
-    })
+  it('keeps the attempt budget separate from the 30 second RPC cap', () => {
+    vi.useFakeTimers({ now: new Date('2026-08-31T00:00:00.000Z') })
     try {
-      expect(longAttempt.remaining('evaluation', 300_000)).toBe(300_000)
-      expect(longAttempt.remaining('initialize')).toBe(30_000)
-      expect(longAttempt.remaining('thread/start')).toBe(30_000)
-      expect(shortAttempt.remaining('evaluation', 300_000)).toBe(5_000)
-      expect(shortAttempt.remaining('initialize')).toBe(5_000)
-      vi.advanceTimersByTime(1_000)
-      expect(longAttempt.remaining('evaluation', 300_000)).toBe(299_000)
-      expect(shortAttempt.remaining('evaluation', 300_000)).toBe(4_000)
+      const long = new CodexEvalAttemptControl({ label: 'long', timeoutMs: 180_000 })
+      expect(long.remaining('evaluation')).toBe(180_000)
+      expect(long.rpcTimeout('initialize')).toBe(30_000)
+      long.dispose()
+
+      const partial = new CodexEvalAttemptControl({ label: 'partial', timeoutMs: 60_000 })
+      vi.advanceTimersByTime(35_000)
+      expect(partial.timeoutExpired).toBe(false)
+      expect(partial.remaining('evaluation')).toBe(25_000)
+      expect(partial.rpcTimeout('turn/start')).toBe(25_000)
+      partial.dispose()
+
+      const unmanaged = new CodexEvalAttemptControl({ label: 'unmanaged' })
+      expect(unmanaged.rpcTimeout('initialize')).toBe(30_000)
+      expect(() => unmanaged.remaining('evaluation')).toThrow('has no deadline')
+      unmanaged.dispose()
     } finally {
-      longAttempt.dispose()
-      shortAttempt.dispose()
       vi.useRealTimers()
     }
   })

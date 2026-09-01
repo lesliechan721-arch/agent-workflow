@@ -6,7 +6,6 @@
     "participants": [
       "codex-subagent-guide"
     ],
-    "defaultGrader": "provider",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

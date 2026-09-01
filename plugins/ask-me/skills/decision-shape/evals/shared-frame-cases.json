@@ -7,7 +7,6 @@
       "decision-grill",
       "decision-prototype"
     ],
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

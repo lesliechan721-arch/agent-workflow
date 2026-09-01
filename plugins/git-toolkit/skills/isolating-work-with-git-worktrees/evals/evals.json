@@ -7,7 +7,6 @@
       "reconciling-git-merges",
       "git-commit"
     ],
-    "defaultGrader": "provider",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

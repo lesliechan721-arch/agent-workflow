@@ -5,7 +5,7 @@
 ## 适合使用
 
 - 建立 materially distinct 的代表、回归、边界、挑战和诊断场景。
-- 把 unit、default grader、错误成本 policy 和 runtime 条件放在 suite 级。
+- 把 unit、participants、错误成本 policy 和 runtime 条件放在 suite 级。
 - 为关键边界增加有理由的 Oracle、允许方差或 minimal counterexample。
 
 ## 结果

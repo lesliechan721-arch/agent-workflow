@@ -273,10 +273,18 @@ export class CodexEvalAttemptControl {
     throw new Error(`${this.options.label} stopped during ${stage}.`);
   }
 
-  remaining(stage: string, fallbackMs = 30_000): number {
+  remaining(stage: string): number {
     this.throwIfStopped(stage);
-    if (this.deadlineAt === undefined) return fallbackMs;
-    return Math.max(1, Math.min(fallbackMs, this.deadlineAt - Date.now()));
+    if (this.deadlineAt === undefined) {
+      throw new Error(`${this.options.label} has no deadline during ${stage}.`);
+    }
+    return Math.max(1, this.deadlineAt - Date.now());
+  }
+
+  rpcTimeout(stage: string, capMs = 30_000): number {
+    this.throwIfStopped(stage);
+    if (this.deadlineAt === undefined) return capMs;
+    return Math.max(1, Math.min(capMs, this.deadlineAt - Date.now()));
   }
 
   stopError(stage: string): Error {
@@ -942,11 +950,11 @@ async function collectStrictIsolationEvidence(options: {
     options.session.sendRequest('config/read', {
       includeLayers: true,
       cwd: options.workspaceRoot,
-    }, options.control?.remaining('config/read') ?? 30_000),
+    }, options.control?.rpcTimeout('config/read') ?? 30_000),
     options.session.sendRequest(
       'configRequirements/read',
       {},
-      options.control?.remaining('configRequirements/read') ?? 30_000,
+      options.control?.rpcTimeout('configRequirements/read') ?? 30_000,
     ),
   ]);
   validateCodexEvalConfigIsolation({
@@ -959,13 +967,13 @@ async function collectStrictIsolationEvidence(options: {
     options.session.sendRequest('skills/list', {
       cwds: [options.workspaceRoot],
       forceReload: true,
-    }, options.control?.remaining('skills/list') ?? 30_000),
+    }, options.control?.rpcTimeout('skills/list') ?? 30_000),
     options.session.sendRequest('mcpServerStatus/list', {
       cursor: null,
       limit: 100,
       detail: 'toolsAndAuthOnly',
       threadId: null,
-    }, options.control?.remaining('mcpServerStatus/list') ?? 30_000),
+    }, options.control?.rpcTimeout('mcpServerStatus/list') ?? 30_000),
   ]);
   return validateCodexEvalRpcIsolation({
     config,
@@ -1411,7 +1419,7 @@ async function runConversationOnce(options: {
       }
     });
 
-    await session.initialize(control.remaining('initialize'));
+    await session.initialize(control.rpcTimeout('initialize'));
     control.throwIfStopped('initialize');
     options.onStage?.('session-initialized');
     if (options.isolation === 'strict') {
@@ -1430,7 +1438,7 @@ async function runConversationOnce(options: {
       sandbox: options.evalCase.sandbox,
       ephemeral: false,
       ...(options.model ? { model: options.model } : {}),
-    }, control.remaining('thread/start'));
+    }, control.rpcTimeout('thread/start'));
     const threadId = extractAppServerThreadId(threadResult);
     options.onStage?.('thread-started');
     let nextTurnText = options.evalCase.prompt;
@@ -1454,7 +1462,7 @@ async function runConversationOnce(options: {
           networkAccess: 'enabled' as const,
         },
         ...(options.model ? { model: options.model } : {}),
-      }, control.remaining('turn/start'));
+      }, control.rpcTimeout('turn/start'));
       options.onStage?.('turn-started');
       completed = await turnDone;
       control.throwIfStopped('turn wait');
@@ -1710,7 +1718,7 @@ export async function runCodexEvalIsolationProbe(options: {
       control.signal.addEventListener('abort', abort, { once: true });
       removeAbortHandler = () => control.signal.removeEventListener('abort', abort);
     }
-    await session.initialize(control.remaining('initialize'));
+    await session.initialize(control.rpcTimeout('initialize'));
     control.throwIfStopped('initialize');
     const evidence = await collectStrictIsolationEvidence({
       session,

@@ -255,7 +255,6 @@ export function renderTriggerCases(skillName, skillDescription, invocation) {
     suite: {
       kind: 'trigger',
       unitUnderTest: skillName,
-      defaultGrader: 'mechanical',
       policy: renderTriggerPolicy(invocation),
       runtime: {
         observeSpawnAgent: false,
@@ -332,7 +331,6 @@ export function renderBehaviorCases(skillName, skillDescription) {
     suite: {
       kind: 'conversation',
       unitUnderTest: skillName,
-      defaultGrader: 'independent-llm',
       policy: {
         optimization: 'precision-first',
         falseNegativeCost: 'medium',

@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
-import { access, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
+const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pluginContext = process.env.AW_PLUGIN_CONTEXT
   ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
@@ -18,6 +22,21 @@ async function readRuntime(relativePath) {
 
 async function exists(relativePath) {
   return access(path.join(runtimeSkillRoot, relativePath)).then(() => true, () => false);
+}
+
+async function materializeHandoffFiles(workspaceFiles) {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-runner-handoff-contract-'));
+  for (const [relative, contents] of Object.entries(workspaceFiles)) {
+    const destination = path.join(temporary, relative);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, contents);
+  }
+  return temporary;
+}
+
+async function runEval(args, cwd) {
+  const bin = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/bin.js');
+  return execFileAsync(process.execPath, [bin, ...args], { cwd, encoding: 'utf8' });
 }
 
 test('Runner declares the Auditor dependency and v2 runtime capability', async () => {
@@ -116,4 +135,40 @@ test('trigger cases route direct selection and reject Audit-only requests', asyn
   assert.equal(cases.find((entry) => entry.id === 'prepare_selection')?.input.expectedLoad, true);
   assert.equal(cases.find((entry) => entry.id === 'unaudited')?.input.expectedLoad, true);
   assert.equal(cases.find((entry) => entry.id === 'audit')?.input.expectedLoad, false);
+});
+
+test('nested Runner handoff fixtures reach their intended admission states', async () => {
+  const cases = JSON.parse(await readFile(
+    path.join(sourceRoot, 'skills/run-aw-skill-evals/evals/behavior-cases.json'),
+    'utf8',
+  )).cases;
+  const unknownAudit = cases.find((entry) => entry.id === 'missing-audit-blocks-model-run');
+  const audited = cases.find((entry) => entry.id === 'audited-run-validates-and-triages');
+  assert.ok(unknownAudit);
+  assert.ok(audited);
+
+  for (const entry of [unknownAudit, audited]) {
+    const temporary = await materializeHandoffFiles(entry.input.workspaceFiles);
+    try {
+      const specPath = path.join(temporary, 'spec.json');
+      const auditPath = path.join(temporary, 'audit.json');
+      assert.equal(JSON.parse((await runEval(['spec', 'validate', specPath], temporary)).stdout).valid, true);
+      if (entry.id === unknownAudit.id) {
+        await assert.rejects(
+          runEval(['audit', 'validate', auditPath, '--spec', specPath], temporary),
+          (error) => JSON.parse(error.stdout).errors.includes('Audit status is unknown; execution is blocked'),
+        );
+      } else {
+        const resultPath = path.join(temporary, 'result.json');
+        assert.equal(JSON.parse((await runEval([
+          'audit', 'validate', auditPath, '--spec', specPath,
+        ], temporary)).stdout).valid, true);
+        assert.equal(JSON.parse((await runEval([
+          'result', 'validate', resultPath, '--spec', specPath, '--audit', auditPath,
+        ], temporary)).stdout).valid, true);
+      }
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  }
 });

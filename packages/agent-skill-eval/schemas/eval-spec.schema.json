@@ -17,7 +17,7 @@
       },
       "additionalProperties": false
     },
-    "workspace": { "$ref": "#/$defs/relativePath" },
+    "workspace": { "$ref": "#/$defs/pathDigest" },
     "target": { "$ref": "#/$defs/pathDigest" },
     "cases": { "$ref": "#/$defs/pathDigest" },
     "provider": {

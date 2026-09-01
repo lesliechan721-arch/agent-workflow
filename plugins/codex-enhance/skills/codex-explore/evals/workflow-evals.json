@@ -3,7 +3,6 @@
   "suite": {
     "kind": "custom-process",
     "unitUnderTest": "codex-explore",
-    "defaultGrader": "provider",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

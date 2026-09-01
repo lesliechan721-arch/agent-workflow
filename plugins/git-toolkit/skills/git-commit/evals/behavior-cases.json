@@ -3,7 +3,6 @@
   "suite": {
     "kind": "custom-process",
     "unitUnderTest": "git-commit",
-    "defaultGrader": "provider",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",
