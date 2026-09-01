@@ -3,9 +3,11 @@ import { resolveActiveCatalogGeneration } from '../utils/catalog-generation-reso
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import {
   createCatalogStoreKey,
+  readCatalogStoreEntry,
   type CatalogStoreEntry,
 } from '../utils/catalog-generation-store.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import { calculateCatalogSourceConfigFingerprint } from '../utils/catalog-source-identity.js';
 
 export interface CatalogGenerationViewModel {
   catalogVersion: string;
@@ -22,7 +24,9 @@ export interface CatalogSourceGenerationViewModel {
   active?: CatalogGenerationViewModel;
   errorCode?: string;
   recoveryEntryPath?: string;
-  syncInstruction: string;
+  state?: 'ready' | 'activationRequired' | 'repairRequired' | 'configMismatch'
+    | 'stateInvalid' | 'unavailable';
+  technicalCommand?: string;
 }
 
 export type CatalogGenerationLoadStageEvent =
@@ -91,15 +95,34 @@ export async function loadCatalogGenerationViewModels(options: {
           storeKey: active.storeKey,
           digestShort: shortDigest(active.snapshotDigest),
         },
-        syncInstruction: instruction,
+        state: 'ready',
+        technicalCommand: instruction,
       };
     } catch (error) {
-      const errorCode = error instanceof CatalogGenerationError
+      let errorCode = error instanceof CatalogGenerationError
         ? error.code
         : 'catalogGenerationUnavailable';
       let recoveryEntryPath: string | undefined;
+      let state: CatalogSourceGenerationViewModel['state'] = 'unavailable';
+      const sourceState = await readCatalogGenerationState(env)
+        .then((value) => value.sources[source.id])
+        .catch(() => undefined);
+      const activeEntryDamaged = sourceState?.active
+        ? await readCatalogStoreEntry({
+            logicalIdentity: sourceState.active.logicalIdentity,
+            snapshotDigest: sourceState.active.snapshotDigest,
+            env,
+          }).then(() => false).catch(() => true)
+        : false;
+      if (activeEntryDamaged) errorCode = 'catalogGenerationMetadataInvalid';
+      if (errorCode === 'catalogGenerationStateInvalid') state = 'stateInvalid';
+      else if (errorCode === 'catalogGenerationMetadataInvalid') state = 'repairRequired';
+      else if (!sourceState?.active) state = 'activationRequired';
+      else if (sourceState.active.sourceConfigFingerprint
+        !== calculateCatalogSourceConfigFingerprint(source)) state = 'configMismatch';
+      else state = 'repairRequired';
       if (errorCode === 'catalogGenerationMetadataInvalid') {
-        const active = (await readCatalogGenerationState(env)).sources[source.id]?.active;
+        const active = sourceState?.active;
         if (active) {
           recoveryEntryPath = `catalog-store/${createCatalogStoreKey(
             active.logicalIdentity,
@@ -111,8 +134,9 @@ export async function loadCatalogGenerationViewModels(options: {
         sourceId: source.id,
         sourceType: source.type,
         errorCode,
+        state,
         ...(recoveryEntryPath ? { recoveryEntryPath } : {}),
-        syncInstruction: instruction,
+        technicalCommand: instruction,
       };
     }
   }));

@@ -42,7 +42,7 @@ function dependencies(loadStatus: TuiControllerDependencies['loadStatus']): TuiC
 }
 
 describe('TUI Active Catalog session', () => {
-  it('shows the sync recovery command when a source has no Active snapshot', async () => {
+  it('shows the in-TUI activation action when a source has no Active snapshot', async () => {
     const controller = new TuiController(dependencies(async () => ({
       payload,
       pluginSummaries: [],
@@ -50,7 +50,6 @@ describe('TUI Active Catalog session', () => {
         sourceId: 'official',
         sourceType: 'git',
         errorCode: 'catalogGenerationUnavailable',
-        syncInstruction: 'aw catalog source sync official',
       }],
       sourceDetails: [{
         id: 'official',
@@ -69,7 +68,8 @@ describe('TUI Active Catalog session', () => {
     await controller.load();
     controller.push({ name: 'sourceDetail', sourceId: 'official' });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(instance.lastFrame()).toContain('aw catalog source sync official');
+    expect(instance.lastFrame()).toContain('获取并启用');
+    expect(instance.lastFrame()).not.toContain('aw catalog source sync official');
   });
 
   it('reloads the TUI explicitly without any refresh dependency', async () => {

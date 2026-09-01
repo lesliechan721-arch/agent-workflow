@@ -19,7 +19,11 @@ import {
   resolveCatalogStoreLocation,
   type CatalogStoreEntry,
 } from './catalog-generation-store.js';
-import { readCatalogGenerationState, withCatalogGenerationStateTransaction } from './catalog-generation-state.js';
+import {
+  readCatalogGenerationState,
+  replaceInvalidCatalogGenerationState,
+  withCatalogGenerationStateTransaction,
+} from './catalog-generation-state.js';
 export { removeCatalogSourceGenerationState } from './catalog-generation-state.js';
 import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
 import { calculateCatalogSourceConfigFingerprint, calculateCatalogSourceIdentity } from './catalog-source-identity.js';
@@ -112,13 +116,14 @@ async function resolveProvider(options: {
 
 async function resolveCandidate(options: {
   sourceId: string;
+  source?: CatalogSource;
   cliVersion: string;
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
 }): Promise<ResolvedCandidate> {
-  const config = await readCatalogSourcesConfigSnapshot(options.env);
-  const source = config.config.sources.find((entry) => entry.id === options.sourceId);
+  const source = options.source ?? (await readCatalogSourcesConfigSnapshot(options.env)).config.sources
+    .find((entry) => entry.id === options.sourceId);
   if (!source) throw new CatalogGenerationError({
     code: 'catalogGenerationSourceMissing', sourceId: options.sourceId,
     message: `Catalog source "${options.sourceId}" is not configured.`,
@@ -308,6 +313,7 @@ async function readCandidateContinuity(
 
 export async function probeCatalogSourceGeneration(options: {
   sourceId: string;
+  source?: CatalogSource;
   cliVersion: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
@@ -441,9 +447,76 @@ export async function activateCatalogSourceGeneration(options: {
   }
 }
 
+export async function recoverCatalogGenerationStateAndActivate(options: {
+  sourceId: string;
+  cliVersion: string;
+  expectedCandidate: CatalogGenerationCandidateEvidence;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  runtime?: CatalogGenerationServiceRuntime;
+}): Promise<CatalogGenerationSyncResult> {
+  const env = options.env ?? process.env;
+  let resolved: ResolvedCandidate | undefined;
+  try {
+    resolved = await resolveCandidate({ ...options, env });
+    if (!compareCatalogGenerationCandidates(options.expectedCandidate, resolved.candidate).matches) {
+      throw new CatalogGenerationError({
+        code: 'catalogGenerationReviewStale', sourceId: options.sourceId,
+        message: `Catalog source "${options.sourceId}" changed after review. Review it again.`,
+      });
+    }
+    const store = await publishCatalogStoreEntry({
+      resolution: resolved.resolution, env, signal: options.signal,
+    });
+    assertStoreMatchesCandidate(options.sourceId, store, resolved.candidate);
+    return withAwHomeMutationLock({
+      env,
+      signal: options.signal,
+      action: async () => {
+        await assertCurrentSource({ sourceId: options.sourceId, candidate: resolved!.candidate, env });
+        const syncedAt = now(options.runtime);
+        const candidate = resolved!.candidate;
+        const active: CatalogGenerationActiveV1 = {
+          sourceConfigFingerprint: candidate.sourceConfigFingerprint,
+          sourceIdentity: candidate.sourceIdentity,
+          requestedRef: candidate.requestedRef,
+          resolvedCommit: candidate.resolvedCommit,
+          logicalIdentity: store.metadata.logicalIdentity,
+          manifestDigest: store.metadata.manifestDigest,
+          snapshotDigest: store.metadata.snapshotDigest,
+          activatedAt: syncedAt,
+        };
+        const lastSync: CatalogGenerationLastSyncV1 = {
+          syncedAt, mode: 'sync', state: 'succeeded', resolvedCommit: candidate.resolvedCommit,
+        };
+        await replaceInvalidCatalogGenerationState({
+          env,
+          state: { schemaVersion: 1, sources: { [options.sourceId]: { active, lastSync } } },
+          beforeReplace: () => assertCurrentSource({
+            sourceId: options.sourceId, candidate, env,
+          }),
+        });
+        return {
+          catalogGenerationSchemaVersion: 1,
+          sourceId: options.sourceId,
+          mode: 'sync',
+          outcome: 'activated',
+          activeChanged: true,
+          resolution: publicEvidence(candidate),
+          active,
+          lastSync,
+        };
+      },
+    });
+  } finally {
+    if (resolved) await resolved.resolution.cleanup().catch(() => warnCleanupFailure(options.sourceId));
+  }
+}
+
 export async function repairCatalogSourceGeneration(options: {
   sourceId: string;
   cliVersion: string;
+  expectedCandidate?: CatalogGenerationCandidateEvidence;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
@@ -457,6 +530,13 @@ export async function repairCatalogSourceGeneration(options: {
   let resolved: ResolvedCandidate | undefined;
   try {
     resolved = await resolveCandidate({ ...options, env });
+    if (options.expectedCandidate
+      && !compareCatalogGenerationCandidates(options.expectedCandidate, resolved.candidate).matches) {
+      throw new CatalogGenerationError({
+        code: 'catalogGenerationReviewStale', sourceId: options.sourceId,
+        message: `Catalog source "${options.sourceId}" changed after review. Review it again.`,
+      });
+    }
     assertLogicalContinuity(options.sourceId, target, resolved.candidate);
     let store: CatalogStoreEntry;
     const candidateStoreKey = createCatalogStoreKey(

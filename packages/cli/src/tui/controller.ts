@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 
 import type {
   CatalogSource,
+  CatalogGenerationActiveV1,
+  CatalogGenerationCandidateEvidence,
   DependencyScopeOverride,
   PlatformName,
   Scope,
@@ -124,6 +126,15 @@ export type OperationIntent =
       update?: CatalogSourceUpdate;
       changes?: Array<{ title: string; before?: string; after?: string; private?: boolean }>;
     }
+  | {
+      kind: 'catalogGeneration';
+      action: 'activate' | 'update' | 'repair' | 'recoverState';
+      sourceId: string;
+      sourceMutation?:
+        | { action: 'add'; source: CatalogSource }
+        | { action: 'update'; update: CatalogSourceUpdate };
+      setPrimaryAfterActivation?: boolean;
+    }
   ;
 
 export interface OperationEvidence {
@@ -167,6 +178,16 @@ export interface OperationEvidence {
     inventoryDigest: string;
     referenceCount: number;
     inventoryComplete: boolean;
+  };
+  catalogGeneration?: {
+    action: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
+    previousActive?: CatalogGenerationActiveV1;
+    candidate: CatalogGenerationCandidateEvidence;
+    configDigest: string;
+    proposedConfigDigest?: string;
+    proposedSource?: CatalogSource;
+    sourceMutation?: Extract<OperationIntent, { kind: 'catalogGeneration' }>['sourceMutation'];
+    setPrimaryAfterActivation?: boolean;
   };
   portable?: PortableReview;
 }
@@ -388,6 +409,7 @@ export interface TuiControllerDependencies {
   executeIntent: (
     intent: OperationIntent,
     expectedEvidence: OperationEvidence,
+    signal?: AbortSignal,
   ) => Promise<unknown>;
   getConfigGroups?: (
     pluginId: string,
@@ -491,6 +513,28 @@ function deepFreeze<T>(value: T): T {
 
 function cloneFrozen<T>(value: T): T {
   return deepFreeze(structuredClone(value));
+}
+
+function publicReviewPreparation(
+  snapshot: ReviewPreparationSnapshot,
+): ReviewPreparationSnapshot {
+  if (snapshot.intent.kind !== 'catalogGeneration' || !snapshot.intent.sourceMutation) return snapshot;
+  const mutation = snapshot.intent.sourceMutation;
+  const sourceMutation = mutation.action === 'add'
+    ? {
+        ...mutation,
+        source: mutation.source.type === 'path'
+          ? { ...mutation.source, path: '<private>' }
+          : { ...mutation.source, url: '<private>' },
+      }
+    : {
+        ...mutation,
+        update: 'url' in mutation.update
+          ? { ...mutation.update, ...(mutation.update.url ? { url: '<private>' } : {}) }
+          : { ...mutation.update, ...('path' in mutation.update && mutation.update.path
+            ? { path: '<private>' } : {}) },
+      };
+  return { ...snapshot, intent: { ...snapshot.intent, sourceMutation } };
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
@@ -611,6 +655,16 @@ function operationLabels(intent: OperationIntent): {
     } as const;
     const [title, description, primaryLabel, destructive] = labels[intent.action];
     return { title, description, primaryLabel, destructive };
+  }
+  if (intent.kind === 'catalogGeneration') {
+    const labels = {
+      activate: ['获取并启用 Catalog', '验证候选后启用。不会升级已安装 Plugin，也不会修改其他来源。', '获取并启用'],
+      update: ['验证并切换 Catalog', '验证候选后切换 Active。失败时保留旧 Active。', '验证并切换'],
+      repair: ['重新下载并修复 Catalog', '只修复这个来源的 Active 条目，不删除其他 digest。', '重新下载并修复'],
+      recoverState: ['恢复 Catalog 状态并启用', '重建无效 generation state，并只激活已确认的目标来源。来源配置和 Catalog store 保持不变。', '恢复状态并启用'],
+    } as const;
+    const [title, description, primaryLabel] = labels[intent.action];
+    return { title, description, primaryLabel, destructive: false };
   }
   throw new TuiOperationBlockedError(
     'operationNotImplemented',
@@ -861,6 +915,45 @@ function reviewChanges(
     if (intent.action === 'remove') changes.push({ kind: 'keep', title: '保留其他来源' });
     return changes;
   }
+  if (intent.kind === 'catalogGeneration') {
+    const generation = evidence?.catalogGeneration;
+    if (!generation) {
+      throw new TuiOperationBlockedError('catalogGenerationUnavailable', '缺少 Catalog 候选证据。');
+    }
+    return [
+      ...(generation.previousActive ? [{
+        kind: 'keep' as const,
+        title: '当前 Active',
+        description: `${generation.previousActive.resolvedCommit.slice(0, 8)} · ${generation.previousActive.snapshotDigest.slice(0, 15)}`,
+      }] : []),
+      {
+        kind: intent.action === 'activate' ? 'add' as const : 'change' as const,
+        title: `候选 Catalog ${generation.candidate.catalogVersion}`,
+        description: `${generation.candidate.resolvedCommit.slice(0, 8)} · ${generation.candidate.snapshotDigest.slice(0, 15)}`,
+      },
+      ...(generation.sourceMutation ? [{
+        kind: generation.sourceMutation.action === 'add' ? 'add' as const : 'change' as const,
+        title: generation.sourceMutation.action === 'add' ? '保存来源配置'
+          : 'url' in generation.sourceMutation.update ? 'Git URL'
+            : 'path' in generation.sourceMutation.update ? '本地目录'
+              : 'refPolicy' in generation.sourceMutation.update
+                && generation.sourceMutation.update.refPolicy ? 'Git ref policy'
+                : 'subdir' in generation.sourceMutation.update
+                  && generation.sourceMutation.update.subdir !== undefined ? 'Catalog 子目录'
+                  : '更新来源配置',
+        description: `${generation.configDigest.slice(0, 8)} → ${generation.proposedConfigDigest?.slice(0, 8) ?? '未知'}`,
+      }] : []),
+      { kind: 'keep', title: '不会升级已安装 Plugin' },
+      { kind: 'keep', title: intent.action === 'recoverState'
+        ? '不会修改其他来源配置或 store' : '不会修改其他来源' },
+      { kind: 'keep', title: '失败时保留旧 Active' },
+      ...(intent.action === 'recoverState' ? [{
+        kind: 'warning' as const,
+        title: '无效 state 中的其他 Active 指针不会被信任或保留',
+        description: '其他来源配置和 store 内容不会删除；可分别重新启用。',
+      }] : []),
+    ];
+  }
   if (intent.kind !== 'configSave') {
     throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
   }
@@ -934,6 +1027,12 @@ function technicalDetails(evidence: OperationEvidence): string[] {
   if (evidence.sourceWrite) {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
     details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
+  }
+  if (evidence.catalogGeneration) {
+    const generation = evidence.catalogGeneration;
+    details.push(`候选版本：${generation.candidate.catalogVersion}`);
+    details.push(`候选 commit：${short(generation.candidate.resolvedCommit)}`);
+    details.push(`候选 digest：${short(generation.candidate.snapshotDigest)}`);
   }
   if (evidence.portable) {
     details.push(`Portable 候选：${evidence.portable.selected.length} 个`);
@@ -1057,7 +1156,9 @@ export class TuiController {
       progress: this.#progress,
       progressTargets: this.#progressTargets,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
-      ...(this.#reviewPreparation ? { reviewPreparation: this.#reviewPreparation.snapshot } : {}),
+      ...(this.#reviewPreparation
+        ? { reviewPreparation: publicReviewPreparation(this.#reviewPreparation.snapshot) }
+        : {}),
       ...(this.#result ? { result: this.#result } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
       ...(this.#portableDraft ? { portableDraft: this.#portableDraft } : {}),
@@ -2109,6 +2210,14 @@ export class TuiController {
 
   #validateReviewIntent(intent: OperationIntent): void {
     this.#assertIssueOrigin(intent);
+    const primaryGeneration = intent.kind === 'sourceMutation' && intent.action === 'setPrimary'
+      ? this.#catalogGenerations.get(intent.sourceId) : undefined;
+    if (primaryGeneration && !primaryGeneration.active && primaryGeneration.state !== 'ready') {
+      throw new TuiOperationBlockedError(
+        'catalogGenerationUnavailable',
+        '来源尚未 ready。请先获取、修复或切换 Active Catalog。',
+      );
+    }
     if (intent.kind === 'pluginWrite'
       && (intent.action === 'uninstall' || intent.action === 'cleanup')
       && intent.force !== true
@@ -2173,11 +2282,22 @@ export class TuiController {
       if (!this.#reviewPreparationIsCurrent(token)) return;
       const code = issueCode(error);
       const active = this.#reviewPreparation!;
+      if (code === 'catalogLogicalIdentityChanged'
+        && intent.kind === 'catalogGeneration') {
+        const generation = this.#catalogGenerations.get(intent.sourceId);
+        if (generation) this.#catalogGenerations.set(intent.sourceId, {
+          ...generation,
+          state: 'unavailable',
+          errorCode: code,
+        });
+      }
       active.snapshot.state = 'failed';
       active.snapshot.stages = active.snapshot.stages.map((stage) =>
         stage.state === 'running' ? { ...stage, state: 'failed' } : stage);
       active.snapshot.code = 'reviewPreparationFailed';
-      active.snapshot.message = code === 'catalogGenerationUnavailable'
+      active.snapshot.message = code === 'catalogLogicalIdentityChanged'
+        ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
+        : code === 'catalogGenerationUnavailable'
         ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
         : '无法准备确认信息。请返回检查选择，或重试。';
       this.#publish();
@@ -2248,7 +2368,9 @@ export class TuiController {
       reviewToken,
       expiresAt,
       operationKind: intent.kind,
-      ...(intent.kind === 'sourceMutation' ? { sourceAction: intent.action } : {}),
+      ...(intent.kind === 'sourceMutation' ? { sourceAction: intent.action }
+        : intent.kind === 'catalogGeneration' && intent.sourceMutation
+          ? { sourceAction: intent.sourceMutation.action } : {}),
       ...(intent.kind === 'pluginWrite' ? { pluginAction: intent.action } : {}),
       ...(intent.kind === 'pluginWrite' && intent.originIssue
         ? { originIssue: intent.originIssue }
@@ -2407,14 +2529,20 @@ export class TuiController {
         return this.#rebuildStaleReview(ticket, operationId, current, generation);
       }
     }
-    if (ticket.intent.kind === 'sourceMutation') {
+    if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration') {
       generation = ++this.#generation;
     }
     try {
-      const execution = await this.dependencies.executeIntent(
-        structuredClone(ticket.intent),
-        structuredClone(ticket.evidence),
-      );
+      const execution = ticket.intent.kind === 'catalogGeneration'
+        ? await this.dependencies.executeIntent(
+            structuredClone(ticket.intent),
+            structuredClone(ticket.evidence),
+            this.#abort.signal,
+          )
+        : await this.dependencies.executeIntent(
+            structuredClone(ticket.intent),
+            structuredClone(ticket.evidence),
+          );
       const executionTargets = operationResultSummary(ticket.intent, execution).targets ?? [];
       this.#progressTargets = this.#progressTargets.map((target) => {
         const completed = executionTargets.find((candidate) =>
@@ -2424,14 +2552,14 @@ export class TuiController {
       });
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       generation = ++this.#generation;
-      if (ticket.intent.kind === 'sourceMutation') {
-        this.dependencies.beginCatalogSession?.({
+      if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration') {
+        this.dependencies.beginCatalogSession?.(ticket.intent.kind === 'sourceMutation' ? {
           reuseValidatedGenerations: true,
-        });
+        } : undefined);
         try {
           this.#progressFeed?.setCurrent(
-            { target: 'Catalog 来源配置', phase: '读取最终状态' },
-            '来源操作：读取最终状态',
+            { target: 'Catalog 来源', phase: '读取最终状态' },
+            'Catalog 操作：读取最终状态',
           );
         } catch {
           // Progress diagnostics must not replace the completed source write.
@@ -2565,6 +2693,8 @@ export class TuiController {
             ? { name: 'sourceList' }
             : ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update'
               ? { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
+              : ticket.intent.kind === 'catalogGeneration'
+                ? { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
               : ticket.returnRoute,
         )),
       };
@@ -2839,6 +2969,29 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogGeneration') {
+    const result = execution as {
+      status?: 'succeeded' | 'partial';
+      partialReason?: 'activation' | 'primary';
+      configSaved?: boolean;
+      errorCode?: string;
+    };
+    return {
+      code: result.status === 'partial' ? 'operationPartial' : 'operationSucceeded',
+      message: result.status === 'partial'
+        ? result.partialReason === 'primary'
+          ? 'Catalog 已启用，但主来源尚未切换。可在 TUI 中重试。'
+          : '来源配置已保存，但 Catalog 尚未启用。可在 TUI 中立即重试。'
+        : intent.action === 'repair' ? 'Catalog 已重新下载并修复。'
+          : intent.action === 'recoverState' ? 'Catalog generation state 已恢复，目标来源已启用。'
+            : 'Catalog 已验证并启用。',
+      messages: result.status === 'partial'
+        ? [result.partialReason === 'primary'
+            ? `新的 Active 可用；主来源保持不变。错误：${result.errorCode ?? 'catalogSourcePrimaryFailed'}`
+            : `旧 Active 保持不变。错误：${result.errorCode ?? 'catalogGenerationRefreshFailed'}`]
+        : ['Plugin 列表已从新的 Active Catalog 重新加载。'],
+    };
+  }
   if (intent.kind === 'pluginWrite' && intent.dependencyPlacementOnly === 'desired') {
     return {
       code: 'operationSucceeded',

@@ -80,12 +80,23 @@ import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
+  calculateCatalogGenerationSetDigest,
+} from '../utils/catalog-generation-resolver.js';
+import {
   resolveCatalogOperationContext,
   resolvePartialCatalogOperationContext,
   selectCatalogOperationContext,
   type CatalogOperationContext,
 } from '../utils/catalog-operation-context.js';
 import type { CatalogStoreEntry } from '../utils/catalog-generation-store.js';
+import {
+  activateCatalogSourceGeneration,
+  probeCatalogSourceGeneration,
+  recoverCatalogGenerationStateAndActivate,
+  repairCatalogSourceGeneration,
+} from '../utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { loadCatalogGenerationViewModels } from './catalog-generation.js';
 import {
   installPortableSkills,
@@ -142,6 +153,7 @@ export interface TuiControllerRuntimeTestHooks {
   beforeMutationEvidenceCapture?: () => Promise<void>;
   afterMutationEvidenceCapture?: () => Promise<void>;
   onCatalogSourceProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
+  afterCatalogSourceConfigCommit?: () => Promise<void>;
 }
 
 let tuiControllerRuntimeTestHooks: TuiControllerRuntimeTestHooks | undefined;
@@ -730,7 +742,35 @@ export function createTuiControllerDependencies(
         signal,
         validatedStoreEntries,
         validatingStoreEntries,
-      }).catch(() => undefined);
+      }).catch(async (error): Promise<CatalogOperationContext | undefined> => {
+        if (!(error instanceof CatalogGenerationError)
+          || error.code !== 'catalogGenerationStateInvalid') return undefined;
+        const snapshot = await readCatalogSourcesConfigSnapshot(context.env);
+        const primarySourceId = snapshot.config.sources.find((source) => source.primary)!.id;
+        const generationSetDigest = calculateCatalogGenerationSetDigest(
+          snapshot.digest,
+          primarySourceId,
+          [],
+        );
+        return {
+          generationSet: {
+            generationSetDigest,
+            configDigest: snapshot.digest,
+            primarySourceId,
+            sources: [],
+          },
+          generationSetDigest,
+          catalog: {
+            sources: snapshot.config.sources.map((source) => ({
+              sourceId: source.id,
+              error,
+            })),
+            primarySourceId,
+            configDigest: snapshot.digest,
+            compositeDigest: generationSetDigest,
+          },
+        };
+      });
     if (catalogOperationContext) sessionCatalogOperationContext = catalogOperationContext;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await statusCommandV6({
@@ -818,6 +858,69 @@ export function createTuiControllerDependencies(
     operationInventory = createOperationInventoryReader(),
     freshCatalog = false,
   ): Promise<OperationEvidence> => {
+    if (intent.kind === 'catalogGeneration') {
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('validate');
+      const packageInfo = await readCliPackageInfo();
+      const config = await readCatalogSourcesConfigSnapshot(context.env);
+      let proposedSource: import('../types.js').CatalogSource | undefined;
+      let proposedConfigDigest: string | undefined;
+      if (intent.sourceMutation) {
+        const preview = await preflightCatalogSourceMutation({
+          request: intent.sourceMutation.action === 'add'
+            ? intent.sourceMutation
+            : { action: 'update', sourceId: intent.sourceId, update: intent.sourceMutation.update },
+          cwd: context.cwd,
+          env: context.env,
+        });
+        proposedSource = preview.proposedSource;
+        proposedConfigDigest = preview.proposedConfigDigest;
+      }
+      const probe = await probeCatalogSourceGeneration({
+        sourceId: intent.sourceId,
+        ...(proposedSource ? { source: proposedSource } : {}),
+        cliVersion: packageInfo.version,
+        env: context.env,
+        signal,
+      });
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('evidence');
+      let previousActive: import('../types.js').CatalogGenerationActiveV1 | undefined;
+      try {
+        previousActive = (await readCatalogGenerationState(context.env))
+          .sources[intent.sourceId]?.active;
+      } catch (error) {
+        if (intent.action !== 'recoverState'
+          || !(error instanceof CatalogGenerationError)
+          || error.code !== 'catalogGenerationStateInvalid') throw error;
+      }
+      if (previousActive
+        && previousActive.sourceConfigFingerprint === probe.candidate.sourceConfigFingerprint
+        && previousActive.sourceIdentity === probe.candidate.sourceIdentity
+        && previousActive.logicalIdentity !== probe.candidate.logicalIdentity) {
+        throw new CatalogGenerationError({
+          code: 'catalogLogicalIdentityChanged',
+          sourceId: intent.sourceId,
+          message: `Catalog source "${intent.sourceId}" changed logical identity. Edit or remove and re-add the source.`,
+        });
+      }
+      return {
+        catalog: {
+          configDigest: config.digest,
+          compositeDigest: probe.candidate.snapshotDigest,
+        },
+        catalogGeneration: {
+          action: intent.action,
+          ...(previousActive ? { previousActive } : {}),
+          candidate: probe.candidate,
+          configDigest: config.digest,
+          ...(proposedConfigDigest ? { proposedConfigDigest } : {}),
+          ...(proposedSource ? { proposedSource } : {}),
+          ...(intent.sourceMutation ? { sourceMutation: intent.sourceMutation } : {}),
+          ...(intent.setPrimaryAfterActivation ? { setPrimaryAfterActivation: true } : {}),
+        },
+      };
+    }
     if (intent.kind === 'sourceMutation') {
       signal?.throwIfAborted();
       if (intent.action === 'add' && !intent.source
@@ -1298,6 +1401,10 @@ export function createTuiControllerDependencies(
       return evidence.dependencyPlan;
     },
     async validateIntent(intent, signal) {
+      if (intent.kind === 'catalogGeneration') {
+        signal.throwIfAborted();
+        return;
+      }
       if (intent.kind === 'sourceMutation') {
         const evidence = await captureEvidence(intent, signal);
         if (evidence.sourceWrite?.configDigest === evidence.sourceWrite?.proposedConfigDigest) {
@@ -1533,7 +1640,90 @@ export function createTuiControllerDependencies(
         }),
       };
     },
-    async executeIntent(intent, expectedEvidence) {
+    async executeIntent(intent, expectedEvidence, signal) {
+      if (intent.kind === 'catalogGeneration') {
+        signal?.throwIfAborted();
+        const expected = expectedEvidence.catalogGeneration;
+        if (!expected) throw new TuiOperationBlockedError(
+          'catalogGenerationReviewStale',
+          '确认信息缺少 Catalog candidate。',
+        );
+        const packageInfo = await readCliPackageInfo();
+        let configSaved = false;
+        if (intent.sourceMutation) {
+          const common = {
+            cwd: context.cwd,
+            env: context.env,
+            cliVersion: packageInfo.version,
+            expectedConfigDigest: expected.configDigest,
+          };
+          if (intent.sourceMutation.action === 'add') {
+            await addCatalogSourceCommand({ ...common, source: intent.sourceMutation.source });
+          } else {
+            await updateCatalogSourceCommand({
+              ...common,
+              sourceId: intent.sourceId,
+              update: intent.sourceMutation.update,
+            });
+          }
+          configSaved = true;
+          await tuiControllerRuntimeTestHooks?.afterCatalogSourceConfigCommit?.();
+        }
+        try {
+          const generation = intent.action === 'recoverState'
+            ? await recoverCatalogGenerationStateAndActivate({
+                sourceId: intent.sourceId,
+                cliVersion: packageInfo.version,
+                expectedCandidate: expected.candidate,
+                env: context.env,
+                signal,
+              })
+            : intent.action === 'repair'
+            ? await repairCatalogSourceGeneration({
+                sourceId: intent.sourceId,
+                cliVersion: packageInfo.version,
+                expectedCandidate: expected.candidate,
+                env: context.env,
+                signal,
+              })
+            : await activateCatalogSourceGeneration({
+                sourceId: intent.sourceId,
+                cliVersion: packageInfo.version,
+                expectedCandidate: expected.candidate,
+                env: context.env,
+                signal,
+              });
+          let primaryChanged = false;
+          if (intent.setPrimaryAfterActivation) {
+            try {
+              await setPrimaryCatalogSourceCommand({
+                sourceId: intent.sourceId,
+                cwd: context.cwd,
+                env: context.env,
+              });
+              primaryChanged = true;
+            } catch (error) {
+              return {
+                status: 'partial',
+                partialReason: 'primary',
+                configSaved,
+                generation,
+                activeAvailable: true,
+                errorCode: error instanceof Error ? error.name : 'catalogSourcePrimaryFailed',
+              };
+            }
+          }
+          return { status: 'succeeded', generation, configSaved, primaryChanged };
+        } catch (error) {
+          if (!configSaved) throw error;
+          return {
+            status: 'partial',
+            partialReason: 'activation',
+            configSaved: true,
+            errorCode: error instanceof CatalogGenerationError ? error.code : 'catalogGenerationRefreshFailed',
+          };
+        }
+      }
       if (intent.kind === 'portableInstall') {
         if (!expectedEvidence.portable) {
           throw operationReviewStale('确认信息缺少 Portable evidence。');

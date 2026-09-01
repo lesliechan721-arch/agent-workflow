@@ -175,7 +175,7 @@ aw reinstall git -p codex -s user
 
 `cleanup`、`uninstall` 和 `reinstall` 不会删除 AW 保存的插件配置；配置只由 `aw config reset` 删除。
 
-普通 install、upgrade、reinstall、uninstall、status、config、TUI 和 Portable 操作只读取本地 Active Catalog snapshot，完全离线。没有 Active 或 Active 损坏时，命令停止并提示 `aw catalog source sync <id>`。`cleanup` 和 `cleanup --force` 不读取 Active；它们可只凭 live ownership 或离线 evidence 清理 AW-owned 输出。source 或 Catalog store 缺失或损坏不能永久阻止 cleanup，且两者仍保留 foreign 或 shared 内容。`catalog source add` 和 `update` 只改 config；`sync --check` fetch 并验证但不写 store 或 Active，普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 回退改 ref 后再 sync；Path source 恢复目录后再 sync。TUI 不自动联网同步。
+普通 install、upgrade、reinstall、uninstall、status、config、TUI 初始 load 和 Portable 操作只读取本地 Active Catalog snapshot。没有 Active 或 Active 损坏时，CLI 命令停止并提示 `aw catalog source sync <id>`；TUI 来源详情可显式获取、修复或验证并切换 Active。TUI 不自动检查或激活 Catalog。`cleanup` 和 `cleanup --force` 不读取 Active；它们可只凭 live ownership 或离线 evidence 清理 AW-owned 输出。source 或 Catalog store 缺失或损坏不能永久阻止 cleanup，且两者仍保留 foreign 或 shared 内容。CLI 的 `catalog source add` 和 `update` 只改 config；TUI add/update 的默认 Review 会保存配置并启用已确认候选。`sync --check` fetch 并验证但不写 store 或 Active，普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 回退改 ref 后再 sync；Path source 恢复目录后再 sync。
 
 除 `cleanup` 和 `cleanup --force` 外，普通写操作在锁内复用一次 ordinary live inventory，并只对依赖计划中的目标执行 ownership、native、config 和 Active snapshot 重验。删除保护需要历史 project consumer 时，会使用独立范围的 inventory。需要定位耗时时，使用 `--debug --log-file <path>`，查看 `review.prepare.*`、`native:success|error` 和 `rebuild:action` 的 `durationMs`。原生事件只包含 agent、稳定 operation、退出状态和固定 reason，不包含 args、cwd、stdout、stderr 或未知错误文本。原生 CLI 时间单独记录，不计入 Catalog 读取时间。
 

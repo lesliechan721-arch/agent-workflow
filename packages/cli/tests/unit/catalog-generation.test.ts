@@ -142,6 +142,25 @@ describe('Catalog Active store and state', () => {
     await expect(fs.readdir(path.join(isolation.env.AW_HOME!, 'tmp'))).resolves.toEqual([]);
   });
 
+  it('probes an explicit prospective source without saving source config, state, or store', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('prospective-probe');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+
+    const result = await probeCatalogSourceGeneration({
+      sourceId: 'prospective',
+      source: { id: 'prospective', type: 'path', path: sourceRoot, primary: false },
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
+
+    expect(result).toMatchObject({ sourceId: 'prospective', candidate: { requestedRef: 'path' } });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
+    await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-state.json'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
+  });
+
   it('blocks a logical identity change while source config identity is continuous', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('logical-continuity');
@@ -316,6 +335,35 @@ describe('Catalog Active store and state', () => {
     await expect(fs.readFile(sibling, 'utf8')).resolves.toBe('keep');
     await expect(readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env }))
       .resolves.toMatchObject({ sources: [{ activeReady: true }] });
+  });
+
+  it('rejects a changed repair candidate before replacing the damaged Active entry', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('stale-repair');
+    await createCatalogSnapshotFixture(sourceRoot);
+    await configurePathSource(sourceRoot);
+    const synced = await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: synced.active!.logicalIdentity,
+      snapshotDigest: synced.active!.snapshotDigest,
+      env: isolation.env,
+    });
+    await fs.writeFile(location.metadataPath, 'damaged');
+    const probe = await probeCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const markerPath = path.join(sourceRoot, '.aw-generated.json');
+    const marker = await fs.readJson(markerPath) as Record<string, unknown>;
+    await fs.writeJson(markerPath, { ...marker, workspaceIdentity: 'changed-after-repair-review' });
+
+    await expect(repairCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', expectedCandidate: probe.candidate,
+      env: isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogGenerationReviewStale' });
+    await expect(fs.readFile(location.metadataPath, 'utf8')).resolves.toBe('damaged');
+    expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(synced.active);
   });
 
   it('publishes the candidate store key when source config changes to equal content with a new workspace identity', async () => {

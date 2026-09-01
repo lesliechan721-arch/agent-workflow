@@ -68,6 +68,7 @@ export interface CatalogSourceMutationPreflight {
   proposedConfigDigest: string;
   sourceIdentity?: string;
   identityChanged: boolean;
+  proposedSource?: CatalogSource;
   references: CatalogSourcePreflightInventory;
 }
 
@@ -200,6 +201,7 @@ export async function preflightCatalogSourceMutation(options: {
     proposedConfigDigest: calculateCatalogSourcesConfigDigest(proposedConfig),
     ...(sourceIdentity ? { sourceIdentity } : {}),
     identityChanged: changedIdentity,
+    ...(after ? { proposedSource: after } : {}),
     references: { inventorySchemaVersion: 1, references: [], errors: [] },
   };
 }
