@@ -4,14 +4,12 @@
 
 ## 用户流程
 
-1. 页面先说明现在需要决定什么，以及本次目标、比较重点和约束。
-2. 候选默认使用 tabs 和一个大 Preview；静态小卡片可以按需并排。
-3. 用户查看候选后给出总体判断。方向选择默认单选；只有候选允许组合时使用多选；单一候选不显示选择控件。
-4. 页面根据总体判断和 Prototype 配置，再显示需要的引导问题、标注、受控参数或原因输入。
-5. 页面只提供一个“提交反馈”动作。提交后显示 Agent 已收到反馈，并停止编辑。
-6. `wait` 收到反馈后返回，agent 自动继续。
-
-命令和 receipt 见 [Prototype Review 运行时接口](prototype-review-runtime.md)。详细布局见 [Review Shell UX](../assets/review-shell/UX-SPEC.md)。
+1. 页面先说明“现在需要决定什么”和“本次比较重点”。
+2. 候选默认使用 tabs 和一个大 Preview；静态小卡片可以并排。
+3. 方向选择默认单选。只有候选允许组合时使用多选；单一候选不显示选择控件。
+4. 用户先给总体判断，再按需回答引导问题、添加标注或修改受控参数。
+5. 页面只提供一个“提交反馈”动作。提交后显示“Agent 已收到反馈，可以关闭本页”。
+6. `wait` 命令收到反馈后返回，agent 自动继续。
 
 ## 反馈层级
 
@@ -32,6 +30,8 @@
 - `rejected` 和 `new-material-question` 要求用户说明原因或新问题。
 - 页面可用键盘完成候选查看、选择、填写和提交。
 
+详细布局见 [Review Shell UX](../assets/review-shell/UX-SPEC.md)。
+
 ## 工件
 
 Prototype 目录只包含：
@@ -45,8 +45,6 @@ verdict.md
 ```
 
 Review Shell 由已安装 Skill 的 assets 直接提供；server/session 位于临时运行目录。不要生成 `review/`。
-
-所有候选必须位于 `artifact/`，并指向普通非符号链接文件。会话只服务 Review Shell 和当前 Prototype 的 `artifact/`，不服务 Prototype 根中的其它文件。
 
 ## 标注
 
