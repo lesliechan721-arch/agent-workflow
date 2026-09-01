@@ -13,22 +13,9 @@ import {
 } from '@lesliechan721/aw-plugin-core';
 
 import {
-  CatalogPublicationInspectionError,
-  disposeCatalogPublicationInspection,
-  prepareCatalogPublicationInspection,
-  sanitizedGitEnvironment,
-  type CatalogPublicationIssue,
-} from './catalog-publication-inspection.js';
-import { catalogPublicationDescriptorDigest } from './catalog-publish.js';
-import {
   resolveCatalogWorkspaceRoot,
   type CatalogWorkspaceResolvedFrom,
 } from './catalog-workspace-resolution.js';
-import {
-  resolveCatalogPublicationTarget,
-  type CatalogBranchResolvedFrom,
-  type CatalogRemoteResolvedFrom,
-} from './catalog-publication-target.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 
 const execFileAsync = promisify(execFile);
@@ -76,26 +63,7 @@ export interface CatalogStatusReceipt {
     snapshotDigest: string | null;
     sourceIdentityMatches: boolean | null;
   };
-  publication: {
-    checked: boolean;
-    remote: string | null;
-    remoteResolvedFrom: CatalogRemoteResolvedFrom | null;
-    remoteUrl: string | null;
-    fetchUrl: string | null;
-    pushUrl: string | null;
-    branch: string | null;
-    branchResolvedFrom: CatalogBranchResolvedFrom | null;
-    publishedVersion: string | null;
-    parent: string | null;
-    tag: string | null;
-    tagAvailable: boolean | null;
-    attemptAvailable: boolean | null;
-    snapshotDigest: string | null;
-    planId: string | null;
-    descriptorDigest: string | null;
-    publishable: boolean | null;
-  };
-  issues: CatalogPublicationIssue[];
+  issues: Array<{ code: string; message: string; blocking: boolean }>;
 }
 
 function safeIssueMessage(message: string, workspaceRoot: string): string {
@@ -207,7 +175,8 @@ async function inspectGit(workspaceRoot: string, env: NodeJS.ProcessEnv): Promis
   sourceHead: string | null;
   clean: boolean | null;
 }> {
-  const gitEnv = { ...sanitizedGitEnvironment(env), GIT_OPTIONAL_LOCKS: '0' };
+  const gitEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('GIT_')));
+  gitEnv.GIT_OPTIONAL_LOCKS = '0';
   try {
     const repoRoot = (await execFileAsync('git', ['rev-parse', '--show-toplevel'], {
       cwd: workspaceRoot,
@@ -233,7 +202,7 @@ async function inspectGit(workspaceRoot: string, env: NodeJS.ProcessEnv): Promis
   }
 }
 
-function emptyReceipt(workspaceRoot: string, preflight: boolean): CatalogStatusReceipt {
+function emptyReceipt(workspaceRoot: string): CatalogStatusReceipt {
   return {
     schemaVersion: 2,
     command: 'catalog:status',
@@ -260,25 +229,6 @@ function emptyReceipt(workspaceRoot: string, preflight: boolean): CatalogStatusR
       snapshotDigest: null,
       sourceIdentityMatches: null,
     },
-    publication: {
-      checked: preflight,
-      remote: null,
-      remoteResolvedFrom: null,
-      remoteUrl: null,
-      fetchUrl: null,
-      pushUrl: null,
-      branch: null,
-      branchResolvedFrom: null,
-      publishedVersion: null,
-      parent: null,
-      tag: null,
-      tagAvailable: null,
-      attemptAvailable: null,
-      snapshotDigest: null,
-      planId: null,
-      descriptorDigest: null,
-      publishable: preflight ? false : null,
-    },
     issues: [],
   };
 }
@@ -286,9 +236,6 @@ function emptyReceipt(workspaceRoot: string, preflight: boolean): CatalogStatusR
 export async function getCatalogStatus(options: {
   cwd: string;
   workspaceRoot?: string;
-  remote?: string;
-  branch?: string;
-  preflight?: boolean;
   env: NodeJS.ProcessEnv;
 }): Promise<CatalogStatusReceipt> {
   const requestedRoot = path.resolve(options.cwd, options.workspaceRoot ?? '.');
@@ -303,20 +250,9 @@ export async function getCatalogStatus(options: {
     // Preserve a structured status receipt below.
   }
   const workspaceRoot = resolution?.workspaceRoot ?? requestedRoot;
-  const receipt = emptyReceipt(workspaceRoot, options.preflight === true);
+  const receipt = emptyReceipt(workspaceRoot);
   receipt.workspace.resolvedFrom = resolution?.workspaceRootResolvedFrom ?? null;
   receipt.workspaceRootResolvedFrom = resolution?.workspaceRootResolvedFrom ?? null;
-  const target = await resolveCatalogPublicationTarget({
-    workspaceRoot,
-    remote: options.remote,
-    branch: options.branch,
-    env: options.env,
-  });
-  receipt.publication.remote = target.remote;
-  receipt.publication.remoteResolvedFrom = target.remoteResolvedFrom;
-  receipt.publication.branch = target.branch;
-  receipt.publication.branchResolvedFrom = target.branchResolvedFrom;
-  let catalogWorkspace: CatalogWorkspace | null = null;
   try {
     if (!resolution) {
       await resolveCatalogWorkspaceRoot({
@@ -326,7 +262,6 @@ export async function getCatalogStatus(options: {
       });
     }
     const workspace = await readCatalogWorkspace(workspaceRoot, { reservedImports: CLI_RESERVED_IMPORTS });
-    catalogWorkspace = workspace;
     applyWorkspaceFacts(receipt, workspace, workspace.workspaceRoot, resolution?.workspaceRootResolvedFrom ?? null);
     await inspectSnapshot(receipt, workspace);
   } catch (error) {
@@ -337,107 +272,7 @@ export async function getCatalogStatus(options: {
     });
   }
   receipt.git = await inspectGit(workspaceRoot, options.env);
-  if (options.preflight && receipt.git.checked && receipt.git.clean === false) {
-    receipt.issues.push({ code: 'sourceDirty', message: 'The complete source Git worktree is not clean.', blocking: true });
-  }
-  if (!options.preflight) {
-    receipt.ok = !receipt.issues.some((issue) => issue.blocking);
-    return receipt;
-  }
-  if (!receipt.git.checked) {
-    receipt.issues.push({
-      code: 'gitUnavailable',
-      message: 'Publication preflight requires a committed Git HEAD and a readable source worktree.',
-      blocking: true,
-    });
-  }
-  if (receipt.git.clean !== true || !catalogWorkspace) {
-    receipt.ok = false;
-    return receipt;
-  }
-  if (target.remote === null) {
-    const invalidExplicit = target.remoteResolvedFrom === 'invalid-explicit';
-    receipt.issues.push({
-      code: invalidExplicit ? 'remoteInvalid' : target.ambiguous ? 'remoteAmbiguous' : 'remoteUnavailable',
-      message: invalidExplicit
-        ? 'Explicit Catalog publication remote must name an existing Git remote exactly.'
-        : target.ambiguous
-        ? 'Catalog publication remote is ambiguous. Use --remote.'
-        : 'Catalog publication remote is unavailable. Configure a Git remote or use --remote.',
-      blocking: true,
-    });
-    receipt.ok = false;
-    return receipt;
-  }
-  if (!target.branchValid) {
-    receipt.issues.push({
-      code: 'branchInvalid',
-      message: 'Explicit Catalog publication branch is not a safe Git branch name.',
-      blocking: true,
-    });
-    receipt.ok = false;
-    return receipt;
-  }
-  try {
-    const inspection = await prepareCatalogPublicationInspection({
-      workspaceRoot,
-      remote: target.remote,
-      branch: target.branch,
-      env: options.env,
-    });
-    try {
-      applyWorkspaceFacts(receipt, inspection.catalogWorkspace, inspection.catalogWorkspaceRoot, receipt.workspace.resolvedFrom);
-      receipt.publication = {
-        checked: true,
-        remote: inspection.remote,
-        remoteResolvedFrom: target.remoteResolvedFrom,
-        remoteUrl: inspection.safeFetchUrl,
-        fetchUrl: inspection.safeFetchUrl,
-        pushUrl: inspection.safePushUrl,
-        branch: inspection.branch,
-        branchResolvedFrom: target.branchResolvedFrom,
-        publishedVersion: inspection.publishedVersion,
-        parent: inspection.parent,
-        tag: inspection.tag,
-        tagAvailable: inspection.tagAvailable,
-        attemptAvailable: inspection.attemptAvailable,
-        snapshotDigest: inspection.prepared.snapshotDigest,
-        planId: inspection.prepared.planId,
-        descriptorDigest: catalogPublicationDescriptorDigest(inspection.descriptor),
-        publishable: inspection.tagAvailable && inspection.attemptAvailable,
-      };
-      if (!inspection.tagAvailable) {
-        receipt.issues.push({
-          code: 'tagUnavailable',
-          message: `Remote Catalog tag ${inspection.tag} already exists. Increase the Catalog version.`,
-          blocking: true,
-        });
-      }
-      if (!inspection.attemptAvailable) {
-        receipt.issues.push({
-          code: 'attemptUnavailable',
-          message: `Catalog ${inspection.prepared.catalogVersion} already has an attempted publication record. Increase the Catalog version.`,
-          blocking: true,
-        });
-      }
-    } finally {
-      await disposeCatalogPublicationInspection(inspection);
-    }
-  } catch (error) {
-    const code = error instanceof CatalogPublicationInspectionError
-      ? error.code
-      : 'catalogPreflightFailed';
-    if (!receipt.issues.some((issue) => issue.code === code)) {
-      receipt.issues.push({
-        code,
-        message: safeIssueMessage(error instanceof Error ? error.message : String(error), workspaceRoot),
-        blocking: true,
-      });
-    }
-    if (code === 'tagUnavailable') receipt.publication.tagAvailable = false;
-    if (code === 'attemptUnavailable') receipt.publication.attemptAvailable = false;
-  }
-  receipt.ok = !receipt.issues.some((issue) => issue.blocking) && receipt.publication.publishable === true;
+  receipt.ok = !receipt.issues.some((issue) => issue.blocking);
   return receipt;
 }
 
@@ -449,18 +284,7 @@ export function renderCatalogStatus(receipt: CatalogStatusReceipt): string {
     `Dependency graph: ${receipt.dependencyGraph.valid ? 'valid' : 'invalid'}`,
     `Git: ${receipt.git.checked ? `${receipt.git.sourceHead} (${receipt.git.clean ? 'clean' : 'dirty'})` : 'not checked'}`,
   ];
-  if (receipt.publication.checked) {
-    lines.push('Publication preflight: checked (plugin validation and build code executed)');
-    lines.push(`Publishable: ${receipt.publication.publishable === true ? 'yes' : 'no'}`);
-    if (receipt.publication.remote) {
-      lines.push(`Remote: ${receipt.publication.remote}${receipt.publication.remoteUrl ? ` (${receipt.publication.remoteUrl})` : ''}`);
-      lines.push(`Branch: refs/heads/${receipt.publication.branch}`);
-    }
-    if (receipt.publication.tag) lines.push(`Tag: refs/tags/${receipt.publication.tag}`);
-    if (receipt.publication.snapshotDigest) lines.push(`Snapshot: ${receipt.publication.snapshotDigest}`);
-  } else {
-    lines.push('Publication preflight: not checked (use --preflight; it executes plugin validation and build code)');
-  }
+  lines.push(`Snapshot: ${receipt.snapshot.state}${receipt.snapshot.snapshotDigest ? ` (${receipt.snapshot.snapshotDigest})` : ''}`);
   for (const issue of receipt.issues) lines.push(`Issue ${issue.code}: ${issue.message}`);
   return `${lines.join('\n')}\n`;
 }

@@ -1,8 +1,8 @@
 ---
 name: author-aw-catalog
 description: >-
-  当用户要初始化、日常维护或安全删除 AW Catalog Workspace 中的 Plugin Source，并维护 identity、marketplace-source metadata、插件 inventory、依赖 composition、精确 Catalog 版本或聚合验证时使用。插件内部源码修改交给 author-aw-plugin；本 Skill 不评审，也绝不发布 Catalog。
-compatibility: 需要 Node.js 22+、当前 PATH 中提供所需 catalog/plugin 作者命令的 aw CLI，以及 aw-plugin-development。
+  当用户要初始化、维护或安全删除 AW Catalog Workspace，维护 identity、metadata、plugin inventory、依赖 composition、精确 Catalog 版本，或把 Workspace 作为本地 development source 时使用。插件内部源码交给 author-aw-plugin；本 Skill 不评审，也绝不发布 Catalog。
+compatibility: 需要 Node.js 22+、可用的 aw CLI，以及 aw-plugin-development。
 user-invocable: true
 metadata:
   short-description: 维护 AW Catalog Workspace、编排安全删除并聚合验证
@@ -12,19 +12,50 @@ metadata:
 
 AW CLI/Core 是 Workspace、metadata、snapshot 和 validator 的机器真值。本 Skill 只拥有 Catalog composition，不复制字段表或发布算法。
 
-## 工作流
+## Runtime gate
 
-1. 明确 `<workspace-root>` 和允许修改范围。运行 `aw --version` 和相关命令的 `--help`。检查 `.aw-workspace.json` 与 `plugins/marketplace-source.json`。缺少合法 Catalog Workspace 时，取得用户对目标根的确认后运行 `aw catalog init --workspace-root <workspace-root>`；已有合法 identity 时不得重建或替换它。
-2. 读取 `references/catalog-composition.md`。读取当前 canonical plugin inventory 和每个 manifest `dependencies` 所形成的同 source 图，检查缺失节点、环和目标的反向依赖。维护 marketplace-source metadata、inventory、依赖 composition 和精确 `catalog.version`。版本变更只使用当前 PATH 的 `aw catalog version --help` 与公开 mutation。
-3. 用户明确要求删除或移除插件时，Catalog Author 是唯一直接入口，并拥有删除意图和 Workspace 编排。确认其明确给出 `<workspace-root>` 和 `<plugin-name>`，不从 inventory 推测目标。先用当前 inventory 和 manifest 依赖图确认目标与反向依赖；根据目标 Workspace 的版本策略和已有发布证据决定删除是否关联 Catalog version。`aw plugin remove` 不修改 Catalog version；策略或授权不足时报告该未决决定，不猜测 version mutation。把实际单插件删除交给 `author-aw-plugin`，传递 canonical root、明确的 Workspace/插件名、只执行公开删除命令和返回结构化 receipt 的验收条件。Catalog Author 不直接删除插件目录，也不新增 tombstone、retirement metadata 或 release ledger。
-4. 新增或修改插件时，把每个插件的 manifest、Skill、extension、MCP/App、config、lifecycle、build、artifact 和其它插件内文件修改交给 `author-aw-plugin`。传递 canonical plugin root、允许路径、意图和验收条件。Catalog Author 不直接修改这些内容。
-5. Plugin Author 返回后重新读取 canonical inventory 和 manifest dependency graph。逐个对所有剩余 canonical plugin 运行当前公开的 `aw plugin validate` 和 `aw plugin test`；需要单插件 bundle 或 Git 比较证据时才运行 `aw plugin build` 或 `aw plugin status`。删除成功后不得对已删除目标运行 validate、test、build 或 status。若 inventory 为空，记录 empty inventory，不运行任何 plugin 命令。随后确认依赖图没有缺失节点或环。
-6. 运行 `aw catalog build --workspace-root <workspace-root> --json`，再运行 `aw catalog validate <workspace-root>/.aw/catalog --json`。不得手改 snapshot、digest、platform marketplace、ledger、attempt 或 cache。
-7. 返回 Workspace identity、metadata/inventory/依赖变化、被委托的插件修改或删除摘要、删除 receipt、逐插件结果、聚合 build/validate 结果和未完成项。绝不运行 `aw catalog publish`。
+在本 Skill 的每次调用中，在首次 AW 命令前，从平台提供的本 Skill 实际根取得 `<skill-root>`：使用 Skill locator 或当前加载的 `SKILL.md` 所在根，绝不从 cwd 猜测。随后运行：
+
+```bash
+aw self check --from <skill-root> --json
+```
+
+找不到 `aw` 或 `aw self check` 命令时立即停止，并精确报告 `missing: aw` 或 `missing: aw self check`。若 JSON 的 `ok` 为 `false`，立即停止并逐项报告 `missingCapabilities`；不添加 `--require`、不维护 Skill 内 capability 列表，也不固定 executable。
+
+## Workspace 定位
+
+1. 用户明确给出 Workspace root 时，所有 Catalog 命令都传 `--workspace-root <root>`。
+2. 用户给出 canonical `<root>/plugins/<name>` target 时，从该路径推导 `<root>`，并保持所有 Catalog 命令绑定该 root。
+3. 其它维护请求让对应公开命令从 cwd 或自己的 target 自动发现最近的合法 Workspace。
+4. 只有输入不能唯一确定 root，且公开命令也不能安全自动发现时才询问。不得发明 resolved root、identity 或 receipt。
+5. 初始化“当前项目”时，从用户明确 cwd 或明确 Git worktree root 选择安全 root。若两者可能指向不同目标，先询问。运行 `aw catalog init --workspace-root <selected-root> --json`，再用静态 `aw catalog status --workspace-root <selected-root> --json` 确认 marker、identity 和初始 inventory。已有合法 Workspace 只维护，不重建 identity。
+
+## 维护工作流
+
+1. 读取 `references/catalog-composition.md`。用静态 `aw catalog status [--workspace-root <root>] --json` 取得 metadata、inventory、依赖图和 snapshot evidence。维护 `plugins/marketplace-source.json`、inventory、manifest dependency composition 和精确 `catalog.version`；版本 mutation 只使用公开 `aw catalog version`。
+2. 插件内 manifest、Skill、extension、MCP/App、config、lifecycle、build 或 artifact 修改都交给 `author-aw-plugin`。传递 canonical `<workspace-root>/plugins/<name>`、允许路径、意图和验收条件；本 Skill 不直接修改插件内部文件。
+3. 删除请求由本 Skill 编排。canonical plugin path 可直接确定目标；只给名称时，使用当前 inventory 的唯一匹配。先检查反向依赖，再把实际删除交给 `author-aw-plugin` 的公开删除分支。不得直接删除目录，也不新增 tombstone 或 retirement metadata。
+4. Plugin Author 返回后重新运行静态 status。按实际改动风险，对受影响插件及其反向依赖闭包运行 `aw plugin validate`、`aw plugin test`，并只在插件合同需要时运行 `aw plugin build`。删除目标不在闭包中；inventory 为空时不运行 plugin 命令。
+5. 普通维护运行：
+
+   ```bash
+   aw catalog build [--workspace-root <root>] --json
+   aw catalog validate <workspace-root>/.aw/catalog --json
+   ```
+
+   Catalog build 覆盖完整 inventory。不得手改 snapshot、digest 或 platform marketplace。
+6. 只有用户明确要求把 Workspace 用于本地 CLI 时，改为运行：
+
+   ```bash
+   aw catalog dev activate [--workspace-root <root>] --json
+   ```
+
+   `activate` 自行完成 Catalog build、complete validate、managed Path source 注册、sync 和 readiness 检查；不要在它前后再组成显式 `build → validate → activate → status` 链。只有用户单独要求查看或停用时才运行 `aw catalog dev status` 或 `aw catalog dev deactivate`。不得调用低层 `catalog source add/update`。
+7. 返回实际 Workspace identity、metadata/inventory/依赖变化、插件委托摘要、闭包验证、Catalog build/validate 或 dev activation receipt，以及未完成项。绝不运行 Catalog publication 命令。
 
 ## 完成条件
 
-- Workspace marker 合法且 identity 未被意外替换。
-- inventory 与依赖图中的每个剩余插件已由 Plugin Author 完成其内部修改，并通过所需的单插件验证；empty inventory 不尝试验证已删除对象。
-- Catalog build 和 validate 通过；生成物没有手工修改。
+- Workspace marker 合法，identity 未被意外替换。
+- 受影响插件及其反向依赖闭包已完成与风险相称的单插件验证；empty inventory 不验证不存在的对象。
+- 普通维护的 Catalog build/validate 通过，或显式本地使用的 dev activate receipt 报告 ready；生成物没有手工修改。
 - 发布明确标为范围外。

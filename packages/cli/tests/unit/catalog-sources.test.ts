@@ -36,6 +36,7 @@ import {
 import {
   setAtomicConfigBeforeRenameHookForTests,
 } from '../../src/utils/plugin-config.js';
+import { CatalogGenerationError } from '../../src/utils/catalog-generation-error.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
@@ -220,7 +221,11 @@ describe('catalog sources config v2', () => {
       return originalReadJson(...args);
     });
 
-    await expect(readCatalogSourcesConfigSnapshot(isolation.env)).rejects.toBe(failure);
+    const error = await readCatalogSourcesConfigSnapshot(isolation.env).catch((caught) => caught);
+    expect(error).toBeInstanceOf(CatalogGenerationError);
+    if (!(error instanceof CatalogGenerationError)) throw error;
+    expect(error.code).toBe('catalogSourcesConfigInvalid');
+    expect(error.cause).toBe(failure);
   });
 
   it('applies add, update, set-primary, and remove without changing type or update primary', async () => {

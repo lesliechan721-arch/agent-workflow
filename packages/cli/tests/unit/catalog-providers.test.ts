@@ -1,493 +1,326 @@
 import { execFile } from 'node:child_process';
-import crypto from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import type { CatalogSourceProviderSet } from '../../src/utils/multi-source-catalog.js';
-import {
-  catalogSourceCacheInternal,
-  cleanupLegacyCatalogSourceCache,
-} from '../../src/utils/catalog-source-cache.js';
-import {
-  validateCatalogSnapshotComplete,
-  validateCatalogSnapshotTransport,
-} from '../../src/utils/catalog-snapshot.js';
-import { createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
-import { calculateCatalogSourcesConfigDigest } from '../../src/utils/catalog-sources.js';
+import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import {
-  formatPluginId,
-  parsePluginId,
-  preflightDesiredArtifactCollisions,
-  withResolvedMultiSourceCatalog,
-} from '../../src/utils/multi-source-catalog.js';
+  NativeCliError,
+  setNativeCliRunnerOverrideForTests,
+} from '../../src/utils/native-cli.js';
+import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
-import { readPluginManifest } from '../../src/utils/manifest.js';
 
-const {
-  publishCatalogSourceCacheEntry,
-  readCatalogSourceCache,
-  resolveCatalogSourceCacheLocation,
-} = catalogSourceCacheInternal;
-const identity = `sha256:${'1'.repeat(64)}`;
 const execFileAsync = promisify(execFile);
 
-describe('catalog Git authentication environment', () => {
-  it('uses local Git credentials and SSH config without allowing interactive or proxy commands', () => {
+function fixturePath(name: string): string {
+  return path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, name);
+}
+
+describe('Catalog providers', () => {
+  it('removes foreign repository namespaces and keeps user connection settings without prompts', () => {
     const env = catalogGitProviderInternal.gitEnvironment({
       HOME: '/isolated-home',
       SSH_AUTH_SOCK: '/auth/socket',
       GIT_DIR: '/foreign/repository',
-      GIT_SSH_COMMAND: 'ssh -F /foreign/config',
+      GIT_WORK_TREE: '/foreign/worktree',
+      GIT_INDEX_FILE: '/foreign/index',
+      GIT_OBJECT_DIRECTORY: '/foreign/objects',
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: '/foreign/alternates',
+      GIT_COMMON_DIR: '/foreign/common',
+      gIt_NaMeSpAcE: 'foreign',
+      gIt_TeRmInAl_PrOmPt: '1',
+      GiT_AsKpAsS: '/user/git-askpass-secret',
+      GIT_SSH_COMMAND: 'ssh -F /user/ssh-config',
+      GIT_SSH_VARIANT: 'plink',
+      GIT_CONFIG_GLOBAL: '/user/gitconfig',
+      gCm_InTeRaCtIvE: 'Always',
+      SsH_AsKpAsS: '/user/ssh-askpass-secret',
+      SsH_AsKpAsS_ReQuIrE: 'prefer',
+      HTTPS_PROXY: 'http://proxy.example.invalid',
     });
 
     expect(env).toMatchObject({
       HOME: '/isolated-home',
       SSH_AUTH_SOCK: '/auth/socket',
       GIT_TERMINAL_PROMPT: '0',
+      GIT_SSH_COMMAND: 'ssh -F /user/ssh-config',
+      GIT_SSH_VARIANT: 'plink',
+      GIT_CONFIG_GLOBAL: '/user/gitconfig',
       GCM_INTERACTIVE: 'Never',
-      GIT_ASKPASS: '',
-      SSH_ASKPASS: '',
-      SSH_ASKPASS_REQUIRE: 'never',
+      HTTPS_PROXY: 'http://proxy.example.invalid',
     });
     expect(env.GIT_DIR).toBeUndefined();
-    expect(env.GIT_SSH_COMMAND).toContain('-oBatchMode=yes');
-    expect(env.GIT_SSH_COMMAND).toContain('-oPermitLocalCommand=no');
-    expect(env.GIT_SSH_COMMAND).toContain('-oProxyCommand=none');
-    expect(env.GIT_SSH_COMMAND).not.toMatch(/(?:^|\s)-F(?:\s|$)/u);
-  });
-});
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) =>
-      `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sha256(value: unknown): string {
-  return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`;
-}
-
-async function publishFixtureManifest(root: string): Promise<void> {
-  const manifestPath = path.join(root, 'catalog-manifest.json');
-  const manifest = await fs.readJson(manifestPath);
-  const contentDigest = sha256({
-    schemaIdentity: { schemaVersion: manifest.schemaVersion },
-    marketplaceMetadata: { name: 'aw', ...manifest.marketplace },
-    requires: manifest.requires,
-    plugins: manifest.entries.map((entry: Record<string, string>) => ({
-      name: entry.name,
-      targetVersion: entry.version,
-      contentDigest: entry.contentDigest,
-    })),
-  });
-  manifest.release = {
-    state: 'published',
-    targetVersion: manifest.catalogVersion,
-    planId: contentDigest,
-    sourceHead: '1'.repeat(40),
-    contentDigest,
-  };
-  await Promise.all([
-    fs.writeJson(manifestPath, manifest),
-    fs.writeJson(path.join(root, 'plugin-release-ledger.json'), {
-      schemaVersion: 2,
-      records: manifest.entries.map((entry: Record<string, string>) => ({
-        plugin: entry.name,
-        version: entry.version,
-        contentDigest: entry.contentDigest,
-        artifactDigest: entry.artifactDigest,
-        manifestDigest: entry.manifestDigest,
-        channel: manifest.channel,
-        catalogVersion: manifest.catalogVersion,
-      })),
-    }),
-  ]);
-}
-
-function fixturePath(name: string): string {
-  return path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, name);
-}
-
-async function publish(root: string, resolvedCommit: string): Promise<ReturnType<typeof resolveCatalogSourceCacheLocation>> {
-  const isolation = getCurrentSourceTestIsolation();
-  const validation = await validateCatalogSnapshotTransport(root);
-  const location = resolveCatalogSourceCacheLocation({ sourceId: 'team', sourceIdentity: identity, env: isolation.env });
-  await publishCatalogSourceCacheEntry({
-    location,
-    sourceId: 'team',
-    sourceIdentity: identity,
-    requestedRef: 'refs/heads/catalog/latest',
-    cliVersion: '1.0.0',
-    resolvedCommit,
-    snapshotRoot: root,
-    validation,
-  });
-  return location;
-}
-
-describe('catalog source current and last-good cache', () => {
-  it('rejects a cached published snapshot after its required ledger is removed', async () => {
-    const root = fixturePath('cache-published-ledger');
-    await createCatalogSnapshotFixture(root);
-    await publishFixtureManifest(root);
-    const location = await publish(root, '1'.repeat(40));
-    await fs.remove(path.join(location.currentDir, 'snapshot', 'plugin-release-ledger.json'));
-    await expect(readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    })).resolves.toBeNull();
-  });
-  it('publishes complete validated snapshots and rotates current to last-good', async () => {
-    const first = fixturePath('cache-first');
-    const second = fixturePath('cache-second');
-    await createCatalogSnapshotFixture(first, 'demo', [], 'first\n');
-    await createCatalogSnapshotFixture(second, 'demo', [], 'second\n');
-    const location = await publish(first, '1'.repeat(40));
-    const firstDigest = (await readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    }))!.validation.snapshotDigest;
-    await publish(second, '2'.repeat(40));
-    expect(await fs.pathExists(path.join(location.currentDir, 'metadata.json'))).toBe(true);
-    expect(await fs.pathExists(path.join(location.lastGoodDir, 'metadata.json'))).toBe(true);
-    expect((await readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    }))!.validation.snapshotDigest).not.toBe(firstDigest);
-  });
-
-  it('serializes concurrent publications for one source', async () => {
-    const roots = await Promise.all(Array.from({ length: 6 }, async (_value, index) => {
-      const root = fixturePath(`cache-concurrent-${index}`);
-      await createCatalogSnapshotFixture(root, 'demo', [], `${index}\n`);
-      return root;
-    }));
-    const location = await publish(roots[0]!, '1'.repeat(40));
-    await publish(roots[1]!, '2'.repeat(40));
-
-    await expect(Promise.all(roots.slice(2).map((root, index) =>
-      publish(root, String(index + 3).repeat(40))))).resolves.toHaveLength(4);
-
-    for (const entryDir of [location.currentDir, location.lastGoodDir]) {
-      await expect(validateCatalogSnapshotTransport(path.join(entryDir, 'snapshot'))).resolves.toBeDefined();
-    }
-  });
-
-  it('falls back to matching last-good when current is corrupt', async () => {
-    const first = fixturePath('fallback-first');
-    const second = fixturePath('fallback-second');
-    await createCatalogSnapshotFixture(first, 'demo', [], 'first\n');
-    await createCatalogSnapshotFixture(second, 'demo', [], 'second\n');
-    const location = await publish(first, '1'.repeat(40));
-    const expected = (await validateCatalogSnapshotTransport(first)).snapshotDigest;
-    await publish(second, '2'.repeat(40));
-    await fs.writeFile(path.join(location.currentDir, 'snapshot', 'catalog-manifest.json'), '{}\n');
-    const fallback = await readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    });
-    expect(fallback?.entryDir).toBe(location.lastGoodDir);
-    expect(fallback?.validation.snapshotDigest).toBe(expected);
-  });
-
-  it.each([
-    ['identity', `sha256:${'2'.repeat(64)}`, 'refs/heads/catalog/latest', '1.0.0'],
-    ['ref', identity, 'refs/heads/catalog/beta', '1.0.0'],
-  ])('rejects last-good when %s does not match', async (_label, sourceIdentity, requestedRef, cliVersion) => {
-    const first = fixturePath(`mismatch-first-${_label}`);
-    const second = fixturePath(`mismatch-second-${_label}`);
-    await createCatalogSnapshotFixture(first, 'demo', [], 'first\n');
-    await createCatalogSnapshotFixture(second, 'demo', [], 'second\n');
-    const location = await publish(first, '1'.repeat(40));
-    await publish(second, '2'.repeat(40));
-    await fs.writeFile(path.join(location.currentDir, 'snapshot', 'catalog-manifest.json'), '{}\n');
-    await expect(readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity, requestedRef, cliVersion,
-    })).resolves.toBeNull();
-  });
-
-  it('keeps current unchanged when candidate validation fails', async () => {
-    const first = fixturePath('stable-current');
-    const broken = fixturePath('broken-candidate');
-    await createCatalogSnapshotFixture(first);
-    await createCatalogSnapshotFixture(broken);
-    const location = await publish(first, '1'.repeat(40));
-    const before = (await readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    }))!.metadata.entryKey;
-    const validation = await validateCatalogSnapshotTransport(broken);
-    await fs.writeFile(path.join(broken, 'catalog-manifest.json'), '{}\n');
-    await expect(publishCatalogSourceCacheEntry({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', resolvedCommit: '2'.repeat(40),
-      cliVersion: '1.0.0',
-      snapshotRoot: broken, validation,
-    })).rejects.toThrow();
-    expect((await readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    }))!.metadata.entryKey).toBe(before);
-  });
-
-  it('keeps callback evidence and content on one generation while cache identity and ref advance', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const first = fixturePath('callback-generation-first');
-    const second = fixturePath('callback-generation-second');
-    await createCatalogSnapshotFixture(first, 'demo', [], 'first generation\n');
-    await createCatalogSnapshotFixture(second, 'demo', [], 'second generation\n');
-    const location = await publish(first, '1'.repeat(40));
-    const cached = (await readCatalogSourceCache({
-      location, sourceId: 'team', sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest', cliVersion: '1.0.0',
-    }))!;
-    let callbackEntered!: () => void;
-    const entered = new Promise<void>((resolve) => { callbackEntered = resolve; });
-    let releaseCallback!: () => void;
-    const released = new Promise<void>((resolve) => { releaseCallback = resolve; });
-    const config = {
-      schemaVersion: 2 as const,
-      sources: [{ id: 'team', type: 'path' as const, path: first, primary: true }],
-    };
-    const providers: CatalogSourceProviderSet = {
-      git: async () => { throw new Error('unused'); },
-      path: async () => ({
-        sourceId: 'team', sourceIdentity: identity,
-        requestedRef: 'refs/heads/catalog/latest', resolvedCommit: cached.metadata.resolvedCommit,
-        rootDir: cached.snapshotRoot, manifest: cached.validation.manifest,
-        manifestDigest: cached.validation.manifestDigest, snapshotDigest: cached.validation.snapshotDigest,
-        cacheEntryKey: cached.metadata.entryKey, source: 'cache', cacheFallback: false,
-      }),
-    };
-    const consuming = withResolvedMultiSourceCatalog({
-      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', providers,
-      configSnapshot: { config, digest: calculateCatalogSourcesConfigDigest(config), materialized: true },
-      consume: async (catalog) => {
-        const source = catalog.sources[0]!.resolution!;
-        const before = await fs.readFile(path.join(source.rootDir, 'plugins', 'demo', 'README.md'), 'utf8');
-        callbackEntered();
-        await released;
-        const after = await fs.readFile(path.join(source.rootDir, 'plugins', 'demo', 'README.md'), 'utf8');
-        return {
-          sourceIdentity: source.sourceIdentity,
-          requestedRef: source.requestedRef,
-          snapshotDigest: source.snapshotDigest,
-          manifestDigest: source.manifestDigest,
-          contentDigest: source.manifest.entries[0]!.contentDigest,
-          before,
-          after,
-        };
-      },
-    });
-    await entered;
-    const advancedIdentity = `sha256:${'2'.repeat(64)}`;
-    const advancedValidation = await validateCatalogSnapshotTransport(second);
-    const advancedLocation = resolveCatalogSourceCacheLocation({
-      sourceId: 'team', sourceIdentity: advancedIdentity, env: isolation.env,
-    });
-    await publishCatalogSourceCacheEntry({
-      location: advancedLocation, sourceId: 'team', sourceIdentity: advancedIdentity,
-      requestedRef: 'refs/heads/catalog/beta', cliVersion: '1.0.0', resolvedCommit: '2'.repeat(40),
-      snapshotRoot: second, validation: advancedValidation,
-    });
-    releaseCallback();
-    await expect(consuming).resolves.toEqual({
-      sourceIdentity: identity,
-      requestedRef: 'refs/heads/catalog/latest',
-      snapshotDigest: cached.validation.snapshotDigest,
-      manifestDigest: cached.validation.manifestDigest,
-      contentDigest: cached.validation.manifest.entries[0]!.contentDigest,
-      before: 'first generation\n',
-      after: 'first generation\n',
+    expect(env.GIT_WORK_TREE).toBeUndefined();
+    expect(env.GIT_INDEX_FILE).toBeUndefined();
+    expect(env.GIT_OBJECT_DIRECTORY).toBeUndefined();
+    expect(env.GIT_ALTERNATE_OBJECT_DIRECTORIES).toBeUndefined();
+    expect(env.GIT_COMMON_DIR).toBeUndefined();
+    expect(env.gIt_NaMeSpAcE).toBeUndefined();
+    expect(env.GiT_AsKpAsS).toBeUndefined();
+    expect(env.SsH_AsKpAsS).toBeUndefined();
+    expect(env.SsH_AsKpAsS_ReQuIrE).toBeUndefined();
+    expect(Object.values(env)).not.toContain('/user/git-askpass-secret');
+    expect(Object.values(env)).not.toContain('/user/ssh-askpass-secret');
+    expect(catalogGitProviderInternal.gitEnvironment({})).toMatchObject({
+      GIT_TERMINAL_PROMPT: '0',
+      GCM_INTERACTIVE: 'Never',
     });
   });
 
-  it('does not follow a catalog-cache symlink during legacy cleanup', async () => {
+  it('returns a transport-validated Path staging snapshot and removes it on cleanup', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const victim = fixturePath('legacy-cleanup-victim');
-    const cacheRoot = path.join(isolation.env.AW_HOME!, 'catalog-cache');
-    await Promise.all([fs.ensureDir(victim), fs.ensureDir(isolation.env.AW_HOME!)]);
-    await fs.outputFile(path.join(victim, 'selectors', 'keep.json'), '{}\n');
-    await fs.symlink(victim, cacheRoot, 'dir');
-
-    await expect(cleanupLegacyCatalogSourceCache(isolation.env)).resolves.toContain(
-      '旧 Catalog cache 根不是普通目录，已跳过清理。',
-    );
-    await expect(fs.readFile(path.join(victim, 'selectors', 'keep.json'), 'utf8')).resolves.toBe('{}\n');
-  });
-});
-
-describe('multi-source resolver public behavior', () => {
-  it('rejects published CLI and path source validation without the release ledger', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const root = fixturePath('published-without-ledger');
-    await createCatalogSnapshotFixture(root);
-    await publishFixtureManifest(root);
-    await fs.remove(path.join(root, 'plugin-release-ledger.json'));
-
-    await expect(validateCatalogSnapshotTransport(root)).rejects.toThrow(/must include plugin-release-ledger/u);
-    await expect(catalogPathProviderInternal.resolve({
-      id: 'missing-ledger', type: 'path', primary: true, path: root,
-    }, {
-      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
-    })).rejects.toThrow(/must include plugin-release-ledger/u);
-  });
-
-  it('rejects joint marketplace root metadata changes against the canonical manifest identity', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const root = fixturePath('joint-marketplace-metadata');
-    await createCatalogSnapshotFixture(root);
-    for (const marketplacePath of [
-      path.join(root, '.agents', 'plugins', 'marketplace.json'),
-      path.join(root, '.claude-plugin', 'marketplace.json'),
-    ]) {
-      const marketplace = await fs.readJson(marketplacePath);
-      marketplace.owner = { name: 'Tampered Owner', url: 'https://example.invalid/tampered' };
-      marketplace.interface = { displayName: 'Tampered Marketplace' };
-      await fs.writeJson(marketplacePath, marketplace);
-    }
-
-    await expect(catalogPathProviderInternal.resolve({
-      id: 'joint-metadata', type: 'path', primary: true, path: root,
-    }, {
-      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
-    })).rejects.toThrow(/marketplace metadata or plugin inventory/u);
-  });
-  it('rejects a path source with a tampered Codex marketplace projection', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const root = fixturePath('tampered-path-marketplace');
-    await createCatalogSnapshotFixture(root);
-    const marketplacePath = path.join(root, '.agents', 'plugins', 'marketplace.json');
-    const marketplace = await fs.readJson(marketplacePath);
-    marketplace.plugins[0].description = 'tampered';
-    await fs.writeJson(marketplacePath, marketplace);
-
-    await expect(catalogPathProviderInternal.resolve({
-      id: 'tampered-path', type: 'path', primary: true, path: root,
-    }, {
-      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
-    })).rejects.toThrow(/Codex marketplace metadata or plugin inventory/u);
-  });
-
-  it('loads a transport-valid path source while complete validation catches a platform mismatch', async () => {
-    const root = fixturePath('tampered-path-platform-manifest');
-    await createCatalogSnapshotFixture(root);
-    const pluginRoot = path.join(root, 'plugins', 'demo');
-    const platformManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
-    const platformManifest = await fs.readJson(platformManifestPath);
-    platformManifest.version = '9.9.9';
-    await fs.writeJson(platformManifestPath, platformManifest);
-    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    const catalogManifestPath = path.join(root, 'catalog-manifest.json');
-    const catalogManifest = await fs.readJson(catalogManifestPath);
-    catalogManifest.entries = [await createCatalogManifestV5Entry(plugin, pluginRoot)];
-    await fs.writeJson(catalogManifestPath, catalogManifest);
-
-    await expect(catalogPathProviderInternal.resolve({
-      id: 'tampered-platform', type: 'path', primary: true, path: root,
-    }, {
-      cliVersion: '99.0.0',
-      freshnessPolicy: 'forceRemote',
-      env: getCurrentSourceTestIsolation().env,
-    })).resolves.toMatchObject({ sourceId: 'tampered-platform' });
-    await expect(validateCatalogSnapshotComplete(root))
-      .rejects.toThrow(/codex platform manifest projection/u);
-  });
-
-  it('rejects a Git source with a tampered Claude marketplace projection', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = fixturePath('tampered-git-source');
-    const remoteRoot = fixturePath('tampered-git-remote.git');
+    const sourceRoot = fixturePath('path-staging');
     await createCatalogSnapshotFixture(sourceRoot);
-    for (const marketplacePath of [
-      path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'),
-      path.join(sourceRoot, '.claude-plugin', 'marketplace.json'),
-    ]) {
-      const marketplace = await fs.readJson(marketplacePath);
-      marketplace.owner = { name: 'Tampered Owner', url: 'https://example.invalid/tampered' };
-      marketplace.interface = { displayName: 'Tampered Marketplace' };
-      await fs.writeJson(marketplacePath, marketplace);
+
+    const resolution = await catalogPathProviderInternal.resolve({
+      id: 'local', type: 'path', primary: true, path: sourceRoot,
+    }, { cliVersion: '1.0.0', env: isolation.env });
+
+    expect(resolution).toMatchObject({ sourceId: 'local', transport: 'path' });
+    expect(resolution.rootDir).not.toBe(sourceRoot);
+    await expect(fs.pathExists(resolution.rootDir)).resolves.toBe(true);
+    await resolution.cleanup();
+    await expect(fs.pathExists(resolution.rootDir)).resolves.toBe(false);
+  });
+
+  it('rejects a Path snapshot that changes between the copy digests', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('path-race');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const originalCopy = fs.copy.bind(fs);
+    const copy = vi.spyOn(fs, 'copy').mockImplementation(async (...args) => {
+      await originalCopy(...args);
+      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'changed during copy\n');
+    });
+
+    try {
+      await expect(catalogPathProviderInternal.resolve({
+        id: 'local', type: 'path', primary: true, path: sourceRoot,
+      }, { cliVersion: '1.0.0', env: isolation.env }))
+        .rejects.toThrow(/changed during snapshot copy/u);
+    } finally {
+      copy.mockRestore();
     }
+  });
+
+  it('materializes and validates a local Git ref without persisting a provider snapshot', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('git-source');
+    const remoteRoot = fixturePath('git-remote.git');
+    await createCatalogSnapshotFixture(sourceRoot);
     await execFileAsync('git', ['init'], { cwd: sourceRoot });
     await execFileAsync('git', ['add', '.'], { cwd: sourceRoot });
     await execFileAsync('git', [
       '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
-      'commit', '-m', 'tampered snapshot',
+      'commit', '-m', 'snapshot',
     ], { cwd: sourceRoot });
     await execFileAsync('git', ['init', '--bare', remoteRoot]);
     await execFileAsync('git', ['remote', 'add', 'origin', remoteRoot], { cwd: sourceRoot });
     await execFileAsync('git', ['push', 'origin', 'HEAD:refs/heads/catalog/latest'], { cwd: sourceRoot });
 
-    await expect(catalogGitProviderInternal.resolve({
-      id: 'tampered-git', type: 'git', primary: true, url: remoteRoot,
+    const resolution = await catalogGitProviderInternal.resolve({
+      id: 'remote', type: 'git', primary: true, url: remoteRoot,
+      refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+    }, { cliVersion: '1.0.0', env: isolation.env });
+
+    expect(resolution).toMatchObject({
+      sourceId: 'remote',
+      requestedRef: 'refs/heads/catalog/latest',
+      transport: 'git',
+    });
+    expect(resolution.resolvedCommit).toMatch(/^[0-9a-f]{40}$/u);
+    await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-cache'))).resolves.toBe(false);
+    const stagingRoot = path.dirname(resolution.rootDir);
+    await resolution.cleanup();
+    await expect(fs.pathExists(stagingRoot)).resolves.toBe(false);
+  });
+
+  it('resolves a local Git ref outside a foreign parent namespace', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('git-namespace-source');
+    const remoteRoot = fixturePath('git-namespace-remote.git');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'default namespace\n');
+    await execFileAsync('git', ['init'], { cwd: sourceRoot });
+    await execFileAsync('git', ['add', '.'], { cwd: sourceRoot });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-m', 'default namespace snapshot',
+    ], { cwd: sourceRoot });
+    const defaultCommit = (await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      cwd: sourceRoot,
+    })).stdout.trim();
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'foreign namespace\n');
+    await execFileAsync('git', ['add', '.'], { cwd: sourceRoot });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-m', 'foreign namespace snapshot',
+    ], { cwd: sourceRoot });
+    const foreignCommit = (await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      cwd: sourceRoot,
+    })).stdout.trim();
+    await execFileAsync('git', ['init', '--bare', remoteRoot]);
+    await execFileAsync('git', ['remote', 'add', 'origin', remoteRoot], { cwd: sourceRoot });
+    await execFileAsync('git', [
+      'push', 'origin',
+      `${defaultCommit}:refs/heads/catalog/latest`,
+      `${foreignCommit}:refs/namespaces/foreign/refs/heads/catalog/latest`,
+    ], { cwd: sourceRoot });
+
+    const resolution = await catalogGitProviderInternal.resolve({
+      id: 'remote', type: 'git', primary: true, url: remoteRoot,
       refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
     }, {
-      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env: isolation.env,
-    })).rejects.toThrow(/marketplace metadata or plugin inventory/u);
-  });
-
-  it('isolates one source failure and preserves the other source result', async () => {
-    const root = fixturePath('resolver-good');
-    await createCatalogSnapshotFixture(root);
-    const validation = await validateCatalogSnapshotTransport(root);
-    const config = {
-      schemaVersion: 2 as const,
-      sources: [
-        { id: 'bad', type: 'path' as const, path: fixturePath('missing'), primary: false },
-        { id: 'good', type: 'path' as const, path: root, primary: true },
-      ],
-    };
-    const providers: CatalogSourceProviderSet = {
-      git: async () => { throw new Error('unused'); },
-      path: async (source) => {
-        if (source.id === 'bad') throw new Error('source unavailable');
-        return {
-          sourceId: source.id,
-          sourceIdentity: identity,
-          requestedRef: 'path',
-          resolvedCommit: `path:${validation.snapshotDigest}`,
-          rootDir: root,
-          manifest: validation.manifest,
-          manifestDigest: validation.manifestDigest,
-          snapshotDigest: validation.snapshotDigest,
-          cacheEntryKey: 'good',
-          source: 'path',
-          cacheFallback: false,
-        };
-      },
-    };
-    const result = await withResolvedMultiSourceCatalog({
-      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', providers,
-      configSnapshot: { config, digest: calculateCatalogSourcesConfigDigest(config), materialized: true },
-      consume: (catalog) => catalog.sources.map((item) => ({
-        id: item.sourceId,
-        error: Boolean(item.error),
-        message: item.error?.message,
-      })),
+      cliVersion: '1.0.0',
+      env: { ...isolation.env, GIT_NAMESPACE: 'foreign' },
     });
-    expect(result).toEqual([
-      { id: 'bad', error: true, message: expect.any(String) },
-      { id: 'good', error: false, message: undefined },
-    ]);
+
+    expect(resolution.resolvedCommit).toBe(defaultCommit);
+    expect(resolution.resolvedCommit).not.toBe(foreignCommit);
+    await resolution.cleanup();
   });
 
-  it('keeps qualified IDs, bare selector parsing, and artifact collision preflight', () => {
-    expect(parsePluginId('team/demo')).toEqual({ sourceId: 'team', pluginName: 'demo' });
-    expect(parsePluginId('demo')).toEqual({ pluginName: 'demo' });
-    expect(formatPluginId({ sourceId: 'team', pluginName: 'demo' })).toBe('team/demo');
-    expect(preflightDesiredArtifactCollisions([
-      { pluginId: 'one/a', targetKey: 'codex:user', artifactKeys: ['same'] },
-      { pluginId: 'two/b', targetKey: 'codex:user', artifactKeys: ['same'] },
-    ])).toEqual([expect.objectContaining({ artifactKey: 'same', pluginIds: ['one/a', 'two/b'] })]);
+  it('redacts the configured Git transport from validation diagnostics', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const remoteRoot = fixturePath('missing-secret-remote.git');
+
+    let failure: unknown;
+    try {
+      await catalogGitProviderInternal.resolve({
+        id: 'remote', type: 'git', primary: true, url: remoteRoot,
+        refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+      }, { cliVersion: '1.0.0', env: isolation.env });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    const messages: string[] = [];
+    let current = failure;
+    while (current instanceof Error) {
+      messages.push(current.message);
+      current = current.cause;
+    }
+    expect(messages.join('\n')).toContain('<catalog-git-source>');
+    expect(messages.join('\n')).not.toContain(remoteRoot);
+  });
+
+  it('uses insteadOf for transport while keeping identity bound to the configured URL', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('git-instead-of-source');
+    const remoteRoot = fixturePath('git-instead-of-remote.git');
+    const gitConfig = fixturePath('git-instead-of-config');
+    const configuredUrl = 'https://catalog.example.invalid/team/catalog.git';
+    await createCatalogSnapshotFixture(sourceRoot);
+    await execFileAsync('git', ['init'], { cwd: sourceRoot });
+    await execFileAsync('git', ['add', '.'], { cwd: sourceRoot });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '-m', 'snapshot',
+    ], { cwd: sourceRoot });
+    await execFileAsync('git', ['init', '--bare', remoteRoot]);
+    await execFileAsync('git', ['remote', 'add', 'origin', remoteRoot], { cwd: sourceRoot });
+    await execFileAsync('git', ['push', 'origin', 'HEAD:refs/heads/catalog/latest'], { cwd: sourceRoot });
+    await execFileAsync('git', [
+      'config', '--file', gitConfig, `url.${remoteRoot}.insteadOf`, configuredUrl,
+    ]);
+    const source = {
+      id: 'mirror', type: 'git', primary: true, url: configuredUrl,
+      refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+    } as const;
+
+    const resolution = await catalogGitProviderInternal.resolve(source, {
+      cliVersion: '1.0.0',
+      env: {
+        ...isolation.env,
+        GIT_CONFIG_GLOBAL: gitConfig,
+        GIT_CONFIG_NOSYSTEM: '1',
+      },
+    });
+
+    expect(resolution.sourceIdentity).toBe(await calculateCatalogSourceIdentity(source));
+    expect(resolution.resolvedCommit).toMatch(/^[0-9a-f]{40}$/u);
+    await resolution.cleanup();
+  });
+
+  it('redacts an effective URL selected by insteadOf', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const gitConfig = fixturePath('git-secret-rewrite-config');
+    const configuredUrl = 'https://catalog.example.invalid/team/catalog.git';
+    const effectiveUrl = 'https://user:effective-secret@example.invalid/mirror.git';
+    await execFileAsync('git', [
+      'config', '--file', gitConfig, `url.${effectiveUrl}.insteadOf`, configuredUrl,
+    ]);
+
+    let failure: unknown;
+    try {
+      await catalogGitProviderInternal.resolve({
+        id: 'remote', type: 'git', primary: true, url: configuredUrl,
+        refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+      }, {
+        cliVersion: '1.0.0',
+        env: {
+          ...isolation.env,
+          GIT_CONFIG_GLOBAL: gitConfig,
+          GIT_CONFIG_NOSYSTEM: '1',
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    const messages: string[] = [];
+    let current = failure;
+    while (current instanceof Error) {
+      messages.push(current.message);
+      current = current.cause;
+    }
+    const rendered = messages.join('\n');
+    expect(rendered).not.toContain(effectiveUrl);
+    expect(rendered).not.toContain('effective-secret');
+  });
+
+  it('rejects embedded Git credentials before transport access', async () => {
+    await expect(catalogGitProviderInternal.resolve({
+      id: 'remote', type: 'git', primary: true,
+      url: 'https://user:secret@example.invalid/catalog.git',
+      refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+    }, { cliVersion: '1.0.0', env: getCurrentSourceTestIsolation().env }))
+      .rejects.toThrow(/embedded credentials are not allowed/u);
+  });
+
+  it('reports unconfirmed process cleanup as the current failure and removes provider temp', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    let failure: unknown;
+    setNativeCliRunnerOverrideForTests(async (invocation) => {
+      throw new NativeCliError({
+        invocation,
+        exitCode: 1,
+        stdout: '',
+        stderr: 'transport failed',
+        cleanupError: new Error('cleanup unconfirmed'),
+      });
+    });
+    try {
+      await catalogGitProviderInternal.resolve({
+        id: 'cleanup', type: 'git', primary: true,
+        url: 'https://catalog.example.invalid/team/catalog.git',
+        refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+      }, { cliVersion: '1.0.0', env: isolation.env });
+    } catch (error) {
+      failure = error;
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe('Error');
+    expect((failure as Error).message).toContain('Cannot resolve catalog Git source');
+    const temporaryRoot = path.join(isolation.env.AW_HOME!, 'tmp');
+    const entries = await fs.readdir(temporaryRoot);
+    expect(entries.filter((entry) => entry.startsWith('catalog-git-'))).toEqual([]);
   });
 });

@@ -5,16 +5,12 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
-  CatalogFreshnessPolicy,
   ArtifactRuntimeImportDefinition,
   PluginMeta,
   PortablePluginRelation,
   PortableSkillCandidate,
   Scope,
 } from '../types.js';
-import type {
-  CatalogSourceProviderSet,
-} from '../utils/multi-source-catalog.js';
 import { validateArtifactPlan } from '../utils/artifact-plan.js';
 import { runArtifactRenderer, resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
@@ -84,11 +80,9 @@ export interface MaterializePortableSkillsFromCatalogOptions {
   scope: Scope;
   cwd: string;
   cliVersion: string;
-  freshnessPolicy?: CatalogFreshnessPolicy;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   configSnapshot?: CatalogSourcesConfigSnapshot;
-  providers?: CatalogSourceProviderSet;
   catalogOperationContext?: CatalogOperationContext;
 }
 
@@ -427,11 +421,9 @@ export async function materializePortableSkillsFromCatalog(
     const metadata = await withResolvedCatalogPlugin({
       selector: options.selector,
       cliVersion: options.cliVersion,
-      freshnessPolicy: options.freshnessPolicy ?? 'cacheFirst',
       ...(options.env ? { env: options.env } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
-      ...(options.providers ? { providers: options.providers } : {}),
       ...(options.catalogOperationContext
         ? { operationContext: options.catalogOperationContext }
         : {}),

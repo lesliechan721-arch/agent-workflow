@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -8,55 +7,49 @@ import type {
   CatalogSourceResolution,
   PathCatalogSource,
 } from '../types.js';
-import { calculateCatalogSourceIdentity } from './catalog-source-identity.js';
-import {
-  catalogSourceCacheInternal,
-} from './catalog-source-cache.js';
-import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
-import { checkAwCapabilitySupport } from './manifest.js';
-import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
-
-const {
-  ensureCatalogSourceCacheLocation,
-  publishCatalogSourceCacheEntry,
-  resolveCatalogSourceCacheLocation,
-} = catalogSourceCacheInternal;
+import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
+import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
+import { calculateCatalogSourceIdentity } from './catalog-source-identity.js';
+import { checkAwCapabilitySupport } from './manifest.js';
+import {
+  canonicalizePathThroughExistingAncestorSync,
+  ensureRegularDirectoryPath,
+  resolveAwHome,
+} from './state-paths.js';
 
 async function resolvePathCatalogSource(
   source: PathCatalogSource,
   options: CatalogProviderRuntimeOptions,
 ): Promise<CatalogSourceResolution> {
-  return resolvePathCatalogSourceDirect(source, options);
-}
-
-/** @internal Provider bridge for the multi-source resolver. */
-export const catalogPathProviderInternal = {
-  resolve: resolvePathCatalogSource,
-};
-
-async function resolvePathCatalogSourceDirect(
-  source: PathCatalogSource,
-  options: CatalogProviderRuntimeOptions,
-): Promise<CatalogSourceResolution> {
   const env = options.env ?? process.env;
-  if (options.signal?.aborted) throw options.signal.reason;
+  options.signal?.throwIfAborted();
   const sourceIdentity = await calculateCatalogSourceIdentity(source);
-  const location = resolveCatalogSourceCacheLocation({ sourceId: source.id, sourceIdentity, env });
-  await ensureCatalogSourceCacheLocation(location);
-  const stagingRoot = path.join(location.rootDir, `.path-${crypto.randomUUID()}.tmp`);
-  let published = false;
+  const temporaryRoot = path.join(
+    canonicalizePathThroughExistingAncestorSync(resolveAwHome(env)),
+    'tmp',
+  );
+  await ensureRegularDirectoryPath(temporaryRoot, 'Catalog provider temporary directory');
+  const stagingDir = await fs.mkdtemp(path.join(temporaryRoot, 'catalog-path-'));
+  let returned = false;
   try {
-    const initial = await validateCatalogSnapshotTransport(await fs.realpath(source.path));
-    const sourceRoot = initial.rootDir;
-    await fs.copy(sourceRoot, stagingRoot, { dereference: false, preserveTimestamps: true });
-    const copied = await validateCatalogSnapshotTransport(stagingRoot);
-    const current = await validateCatalogSnapshotTransport(sourceRoot);
+    const sourceRoot = await fs.realpath(source.path);
+    const before = await validateCatalogSnapshotTransport(sourceRoot);
+    await fs.copy(sourceRoot, stagingDir, {
+      dereference: false,
+      preserveTimestamps: true,
+      filter: () => {
+        options.signal?.throwIfAborted();
+        return true;
+      },
+    });
+    const copied = await validateCatalogSnapshotTransport(stagingDir);
+    const after = await validateCatalogSnapshotTransport(sourceRoot);
     if (
-      initial.manifestDigest !== copied.manifestDigest
-      || initial.snapshotDigest !== copied.snapshotDigest
-      || current.manifestDigest !== copied.manifestDigest
-      || current.snapshotDigest !== copied.snapshotDigest
+      before.manifestDigest !== copied.manifestDigest
+      || before.snapshotDigest !== copied.snapshotDigest
+      || after.manifestDigest !== copied.manifestDigest
+      || after.snapshotDigest !== copied.snapshotDigest
     ) throw new Error(`Catalog path source "${source.id}" changed during snapshot copy.`);
     const requiredCapabilities = copied.manifest.requires.aw.capabilities ?? [];
     const support = checkAwCapabilitySupport(requiredCapabilities, IMPLEMENTED_AW_CAPABILITIES);
@@ -68,45 +61,30 @@ async function resolvePathCatalogSourceDirect(
         availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
       });
     }
-    const entry = await publishCatalogSourceCacheEntry({
-      location,
-      sourceId: source.id,
-      sourceIdentity,
-      requestedRef: 'path',
-      cliVersion: options.cliVersion,
-      resolvedCommit: `path:${copied.snapshotDigest}`,
-      snapshotRoot: stagingRoot,
-      validation: copied,
-      signal: options.signal,
-    });
-    published = true;
+    returned = true;
+    let cleaned = false;
     return {
       sourceId: source.id,
       sourceIdentity,
       requestedRef: 'path',
-      resolvedCommit: entry.metadata.resolvedCommit,
-      rootDir: entry.snapshotRoot,
-      manifest: entry.validation.manifest,
-      manifestDigest: entry.validation.manifestDigest,
-      snapshotDigest: entry.validation.snapshotDigest,
-      cacheEntryKey: entry.metadata.entryKey,
-      source: 'path',
-      cacheFallback: false,
+      resolvedCommit: `path:${copied.snapshotDigest}`,
+      rootDir: stagingDir,
+      manifest: copied.manifest,
+      manifestDigest: copied.manifestDigest,
+      snapshotDigest: copied.snapshotDigest,
+      transport: 'path',
+      async cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        await fs.remove(stagingDir);
+      },
     };
   } finally {
-    try {
-      await fs.remove(stagingRoot);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? '';
-      if (!published || (code !== 'EBUSY' && code !== 'EPERM')) throw error;
-      try {
-        process.emitWarning(
-          `Catalog path source was published, but staging cleanup failed with ${code}.`,
-          { code: 'AW_CATALOG_PROVIDER_CLEANUP_FAILED' },
-        );
-      } catch {
-        // Diagnostics cannot replace a published cache result.
-      }
-    }
+    if (!returned) await fs.remove(stagingDir).catch(() => undefined);
   }
 }
+
+/** @internal Provider bridge for source sync. */
+export const catalogPathProviderInternal = {
+  resolve: resolvePathCatalogSource,
+};

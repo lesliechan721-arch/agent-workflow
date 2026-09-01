@@ -92,24 +92,25 @@ describe('command receipt v5', () => {
     }
   });
 
-  it('projects init multi-source evidence without cache paths', () => {
+  it('projects offline Catalog readiness without warmup terminology', () => {
     expect(buildInitReceiptJson({
       ok: true,
-      changed: true,
-      warnings: [],
       primarySourceId: 'official',
       configDigest: 'sha256:config',
       compositeDigest: 'sha256:composite',
+      recovery: [],
       sources: [{
         id: 'official',
         ok: true,
+        activeReady: true,
         requestedRef: 'refs/heads/catalog/latest',
         resolvedCommit: 'abc',
         catalogVersion: '1.0.0',
         channel: 'latest',
-        freshness: 'cache',
       }],
-    })).toMatchObject({ command: 'init', receiptSchemaVersion: 5, ok: true });
+    })).toMatchObject({
+      command: 'init', receiptSchemaVersion: 6, receiptKind: 'catalogReadiness', ok: true,
+    });
   });
 
   it.each([

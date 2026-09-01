@@ -63,38 +63,38 @@ async function loadCatalogPublicationService(options = {}) {
 
 export async function prepareCatalogRelease(mode, options = {}) {
   if (mode !== 'latest' && mode !== 'beta') throw new Error('Catalog mode must be latest or beta.');
+  const sourceVersion = await readCatalogSourceVersion(options);
+  if ((mode === 'beta') !== sourceVersion.includes('-beta.')) {
+    throw new Error(`Catalog source version does not match the ${mode} release channel.`);
+  }
   const service = await loadCatalogPublicationService(options);
-  const preparation = await service.prepareCatalogPublicationInspection({
+  const plan = await service.prepareCatalogPublicationPlan({
     workspaceRoot: options.repoRoot ?? defaultRepoRoot,
     remoteUrl: resolveCatalogMaintenanceRemote(options),
     branch: CATALOG_CHANNEL_BRANCHES[mode],
     env: options.env ?? process.env,
-    failOnUnavailable: true,
   });
-  if (preparation.descriptor.channel !== mode) {
-    await service.disposeCatalogPublicationInspection(preparation);
+  if (plan.channel !== mode) {
     throw new Error(`Catalog source version does not match the ${mode} release channel.`);
   }
-  return preparation;
+  return plan;
 }
 
-export async function disposeCatalogRelease(preparation, options = {}) {
-  const service = await loadCatalogPublicationService(options);
-  await service.disposeCatalogPublicationInspection(preparation);
-}
-
-export async function publishCatalogRelease({ descriptor, stagedRoot }, options = {}) {
-  const branch = CATALOG_CHANNEL_BRANCHES[descriptor?.channel];
-  if (branch === undefined || descriptor.branch !== branch) {
-    throw new Error('Prepared Catalog descriptor does not match the official channel branch.');
+export async function publishCatalogRelease({ channel, expectedPlanDigest }, options = {}) {
+  const mode = channel === 'stable' ? 'latest' : channel;
+  const branch = CATALOG_CHANNEL_BRANCHES[mode];
+  if (branch === undefined) {
+    throw new Error('Prepared Catalog plan does not match an official release channel.');
+  }
+  if (!/^sha256:[0-9a-f]{64}$/u.test(expectedPlanDigest ?? '')) {
+    throw new Error('Prepared Catalog plan digest is invalid.');
   }
   const service = await loadCatalogPublicationService(options);
-  return service.publishPreparedCatalogPublication({
+  return service.applyCatalogPublicationPlan({
     workspaceRoot: options.repoRoot ?? defaultRepoRoot,
     remoteUrl: resolveCatalogMaintenanceRemote(options),
     branch,
-    descriptor,
-    snapshotRoot: stagedRoot,
+    expectedPlanDigest,
     env: options.env ?? process.env,
     beforeRemoteWrite: options.beforeRemoteWrite,
   });
@@ -129,15 +129,14 @@ export async function readCatalogSourceVersion(options = {}) {
 }
 
 export async function readCatalogAttemptVersions(options = {}) {
-  const attemptsRoot = path.join(
+  const journalsRoot = path.join(
     path.resolve(options.repoRoot ?? defaultRepoRoot),
     '.aw',
     'publish',
-    'attempts',
   );
   let entries;
   try {
-    entries = await fs.readdir(attemptsRoot);
+    entries = await fs.readdir(journalsRoot);
   } catch (error) {
     if (error?.code === 'ENOENT') return [];
     throw error;
@@ -151,13 +150,30 @@ export async function readCatalogAttemptVersions(options = {}) {
   });
 }
 
-export async function assertCatalogTagAvailable(catalogVersion, options = {}) {
-  const versions = await readCatalogVersions(options);
-  if (versions.includes(catalogVersion)) {
-    throw new Error(
-      `Catalog tag refs/tags/catalog-v${catalogVersion} already exists; `
-      + 'bump the Catalog version and prepare again.',
-    );
+export async function readReusableCatalogAttempt(channel, currentVersion, options = {}) {
+  const mode = channel === 'stable' ? 'latest' : channel;
+  if (
+    (mode !== 'latest' && mode !== 'beta')
+    || (mode === 'latest' && currentVersion.includes('-beta.'))
+    || (mode === 'beta' && !currentVersion.includes('-beta.'))
+  ) return null;
+  const journalPath = path.join(
+    path.resolve(options.repoRoot ?? defaultRepoRoot),
+    '.aw',
+    'publish',
+    `${currentVersion}.json`,
+  );
+  try {
+    await fs.lstat(journalPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
   }
-  return { remoteUrl: resolveCatalogMaintenanceRemote(options), versions };
+  const plan = await prepareCatalogRelease(mode, options);
+  if (plan.catalogVersion !== currentVersion) {
+    throw new Error('Catalog publication plan does not match the current exact version.');
+  }
+  return plan.state === 'prepared' || plan.state === 'uncertain'
+    ? currentVersion
+    : null;
 }

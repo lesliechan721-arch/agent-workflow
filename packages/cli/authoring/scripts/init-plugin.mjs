@@ -289,7 +289,7 @@ Options:
 Note:
   During development, keep the current stable target when production content changes.
   Next, run aw plugin validate, aw plugin test, aw plugin build, and aw catalog build.
-  Publish only as an explicit later step; inspect aw catalog publish --help first.
+  Publish only as an explicit later step; inspect aw catalog publish plan --help first.
   New skill scaffolds default to model invocation and generate an eval starter.
 `);
 }
@@ -580,7 +580,7 @@ function main() {
   console.log(`[NEXT] aw plugin test ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
   console.log(`[NEXT] aw plugin build ${printablePluginRoot} --workspace-root ${printableRepoRoot}`);
   console.log(`[NEXT] aw catalog build --workspace-root ${printableRepoRoot}`);
-  console.log(`[LATER] Publish only when explicitly requested: aw catalog publish --workspace-root ${printableRepoRoot}`);
+  console.log(`[LATER] Publish only when explicitly requested: aw catalog publish plan --workspace-root ${printableRepoRoot}`);
 }
 
 main();

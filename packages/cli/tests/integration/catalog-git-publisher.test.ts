@@ -7,19 +7,14 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  CATALOG_CHANNEL_REFS,
-  disposeCatalogRelease,
-  prepareCatalogRelease,
-  publishCatalogRelease,
-} from '../../../../scripts/release/catalog-publication.mjs';
-import * as inspectionService from '../../src/commands/catalog-publication-inspection.js';
-import * as publicationService from '../../src/commands/catalog-publish.js';
+  applyCatalogPublicationPlan,
+  prepareCatalogPublicationPlan,
+  type CatalogPublishPlanReceipt,
+} from '../../src/commands/catalog-publish.js';
 import { runCli } from '../../src/index.js';
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
-const service = { ...inspectionService, ...publicationService };
-const placeholderDescriptorDigest = `sha256:${'0'.repeat(64)}`;
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)));
@@ -35,17 +30,21 @@ function quietIo() {
   return { stdout: () => undefined, stderr: () => undefined };
 }
 
-async function createWorkspace(version = '0.1.0'): Promise<{ root: string; remote: string }> {
-  const root = await temporaryRoot('aw-common-catalog-publisher-');
-  const remote = await temporaryRoot('aw-common-catalog-remote-');
+async function git(cwd: string, args: string[]): Promise<string> {
+  return (await execFileAsync('git', args, { cwd })).stdout.trim();
+}
+
+async function createWorkspace(version = '1.0.0'): Promise<{ root: string; remote: string }> {
+  const root = await temporaryRoot('aw-catalog-journal-workspace-');
+  const remote = await temporaryRoot('aw-catalog-journal-remote-');
   await execFileAsync('git', ['init', '--bare', '--quiet', remote]);
   await execFileAsync('git', ['init', '--quiet'], { cwd: root });
   await runCli([
     'catalog', 'init', '--workspace-root', root, '--catalog-version', version,
-    '--owner-url', 'https://catalog.example.com/publisher-demo',
+    '--owner-url', 'https://catalog.example.com/journal-test',
   ], { cwd: root, io: quietIo() });
   await runCli([
-    'plugin', 'init', 'publisher-demo', '--description', 'Publisher demo.', '--no-skills',
+    'plugin', 'init', 'journal-test', '--description', 'Journal test.', '--no-skills',
     '--workspace-root', root,
   ], { cwd: root, io: quietIo() });
   await execFileAsync('git', ['add', '.'], { cwd: root });
@@ -57,349 +56,282 @@ async function createWorkspace(version = '0.1.0'): Promise<{ root: string; remot
   return { root, remote };
 }
 
-async function commitCatalogVersion(root: string, version: string): Promise<void> {
-  await runCli([
-    'catalog', 'version', version, '--workspace-root', root,
-  ], { cwd: root, io: quietIo() });
-  await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], { cwd: root });
-  await execFileAsync('git', [
-    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
-    'commit', '--quiet', '-m', 'catalog version',
-  ], { cwd: root });
+async function plan(root: string): Promise<CatalogPublishPlanReceipt> {
+  return prepareCatalogPublicationPlan({
+    workspaceRoot: root,
+    remote: 'origin',
+    branch: 'catalog/latest',
+    env: process.env,
+  });
 }
 
-async function changeRemoteBranchSchema(remote: string, branch: string, schemaVersion: number): Promise<void> {
-  const checkout = await temporaryRoot('aw-invalid-catalog-parent-');
-  await execFileAsync('git', ['clone', '--quiet', '--branch', branch, remote, checkout]);
-  const manifestPath = path.join(checkout, 'catalog-manifest.json');
-  const manifest = await fs.readJson(manifestPath);
-  await fs.writeJson(manifestPath, { ...manifest, schemaVersion });
-  await execFileAsync('git', ['add', 'catalog-manifest.json'], { cwd: checkout });
-  await execFileAsync('git', [
-    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
-    'commit', '--quiet', '-m', 'invalid catalog parent schema',
-  ], { cwd: checkout });
-  await execFileAsync('git', ['push', '--quiet', 'origin', `HEAD:${branch}`], { cwd: checkout });
+async function apply(root: string, publication: CatalogPublishPlanReceipt) {
+  return applyCatalogPublicationPlan({
+    workspaceRoot: root,
+    remote: 'origin',
+    branch: 'catalog/latest',
+    expectedPlanDigest: publication.planDigest,
+    env: process.env,
+  });
 }
 
-describe('common Catalog publisher used by official release', () => {
-  it('prepares identical public and official snapshots and publishes an official channel', async () => {
-    const { root, remote } = await createWorkspace('2.0.0');
-    const publicPreparation = await inspectionService.prepareCatalogPublicationInspection({
-      workspaceRoot: root,
-      remoteUrl: remote,
+async function pushPreparedRef(
+  publication: CatalogPublishPlanReceipt,
+  ref: 'branch' | 'tag',
+): Promise<void> {
+  const repository = publication.repositoryPath!;
+  const source = ref === 'branch'
+    ? `${publication.expectedCommit}:refs/heads/${publication.branch}`
+    : `refs/tags/${publication.tag}:refs/tags/${publication.tag}`;
+  await execFileAsync('git', ['push', '--quiet', publication.pushUrl, source], { cwd: repository });
+}
+
+describe('version-scoped Catalog publication journal', () => {
+  it('plans from committed HEAD and persists a reduced authorization identity and pending repo', async () => {
+    const { root } = await createWorkspace('1.2.3');
+    const publication = await plan(root);
+
+    expect(publication).toMatchObject({
+      command: 'catalog:publish:plan',
+      state: 'prepared',
+      catalogVersion: '1.2.3',
       branch: 'catalog/latest',
-      env: process.env,
-      failOnUnavailable: true,
+      tag: 'catalog-v1.2.3',
     });
-    const officialPreparation = await prepareCatalogRelease('latest', {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
+    expect(Object.keys(publication.descriptor).sort()).toEqual([
+      'branch', 'parent', 'remote', 'schemaVersion', 'snapshotDigest', 'sourceHead', 'tag',
+      'workspaceIdentity',
+    ]);
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({
+      state: 'prepared',
+      planDigest: publication.planDigest,
+      expectedCommit: publication.expectedCommit,
+      repository: '1.2.3.repo',
     });
-    try {
-      expect(officialPreparation.descriptor).toEqual(publicPreparation.descriptor);
-      await expect(fs.readFile(path.join(
-        officialPreparation.prepared.outputRoot,
-        'catalog-manifest.json',
-      ))).resolves.toEqual(await fs.readFile(path.join(
-        publicPreparation.prepared.outputRoot,
-        'catalog-manifest.json',
-      )));
-      await expect(fs.readFile(path.join(
-        officialPreparation.prepared.outputRoot,
-        'plugin-release-ledger.json',
-      ))).resolves.toEqual(await fs.readFile(path.join(
-        publicPreparation.prepared.outputRoot,
-        'plugin-release-ledger.json',
-      )));
+    await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(true);
+    expect(await git(publication.repositoryPath!, ['remote'])).toBe('');
+    expect(await git(root, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe('');
+    await expect(plan(root)).resolves.toMatchObject({
+      state: 'prepared',
+      planDigest: publication.planDigest,
+      expectedCommit: publication.expectedCommit,
+    });
+  });
 
-      const published = await publishCatalogRelease({
-        descriptor: officialPreparation.descriptor,
-        stagedRoot: officialPreparation.prepared.outputRoot,
-      }, {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-      });
-      const branchCommit = (await execFileAsync('git', [
-        '--git-dir', remote, 'rev-parse', CATALOG_CHANNEL_REFS.latest,
-      ])).stdout.trim();
-      expect(branchCommit).toBe(published.commit);
-      expect((await execFileAsync('git', [
-        '--git-dir', remote, 'cat-file', '-t', 'refs/tags/catalog-v2.0.0',
-      ])).stdout.trim()).toBe('tag');
-      await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '2.0.0.json')))
-        .resolves.toMatchObject({
-          state: 'published',
-          workspaceIdentity: officialPreparation.descriptor.workspaceIdentity,
-          branch: 'catalog/latest',
-          parent: null,
-          planId: officialPreparation.descriptor.planId,
-        });
+  it('rejects a dirty source before it creates publication state', async () => {
+    const { root } = await createWorkspace();
+    await fs.outputFile(path.join(root, 'dirty.txt'), 'dirty\n');
 
-      const blocked = quietIo();
-      expect(await runCli([
-        'catalog', 'publish', '--workspace-root', root, '--branch', 'catalog/latest',
-        '--expected-descriptor-digest', placeholderDescriptorDigest,
-        '--yes', '--json',
-      ], { cwd: root, interactive: false, io: blocked })).toBe(1);
-
-      await commitCatalogVersion(root, '2.0.1');
-      const updatedSourceHead = (await execFileAsync('git', ['rev-parse', 'HEAD'], {
-        cwd: root,
-      })).stdout.trim();
-      const update = await prepareCatalogRelease('latest', {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-      });
-      try {
-        expect(update.descriptor.sourceHead).toBe(updatedSourceHead);
-        expect(update.descriptor.catalogVersion).toBe('2.0.1');
-        const updated = await publishCatalogRelease({
-          descriptor: update.descriptor,
-          stagedRoot: update.prepared.outputRoot,
-        }, {
-          repoRoot: root,
-          remoteUrl: remote,
-          catalogPublicationService: service,
-        });
-        expect((await execFileAsync('git', [
-          '--git-dir', remote, 'show', '-s', '--format=%P', updated.commit,
-        ])).stdout.trim()).toBe(branchCommit);
-      } finally {
-        await disposeCatalogRelease(update, { catalogPublicationService: service });
-      }
-    } finally {
-      await inspectionService.disposeCatalogPublicationInspection(publicPreparation);
-      await disposeCatalogRelease(officialPreparation, { catalogPublicationService: service });
-    }
+    await expect(plan(root)).rejects.toThrow(/clean|dirty/u);
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish'))).resolves.toBe(false);
   });
 
   it.each([
-    ['latest', 'catalog/latest', '3.0.0'],
-    ['beta', 'catalog/beta', '3.1.0-beta.1'],
-  ] as const)('publishes %s through the same branch-parameterized service', async (mode, branch, version) => {
-    const { root, remote } = await createWorkspace(version);
-    const preparation = await prepareCatalogRelease(mode, {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
+    ['both missing', [] as const, 'atomic'],
+    ['both correct', ['branch', 'tag'] as const, 'already-remote'],
+    ['tag missing', ['branch'] as const, 'tag'],
+    ['branch missing', ['tag'] as const, 'branch'],
+  ])('reconciles %s remote refs', async (_name, refs, reconciliation) => {
+    const { root, remote } = await createWorkspace();
+    const publication = await plan(root);
+    for (const ref of refs) await pushPreparedRef(publication, ref);
+
+    const result = await apply(root, publication);
+
+    expect(result.reconciliation).toBe(reconciliation);
+    expect(await git(remote, ['rev-parse', `refs/heads/${publication.branch}`]))
+      .toBe(publication.expectedCommit);
+    expect(await git(remote, ['rev-parse', `${publication.tag}^{commit}`]))
+      .toBe(publication.expectedCommit);
+    expect(await git(remote, ['cat-file', '-t', `refs/tags/${publication.tag}`])).toBe('tag');
+    await expect(fs.readdir(path.dirname(publication.journalPath)))
+      .resolves.toEqual(['1.0.0.json']);
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({
+      state: 'published',
+      repository: null,
+      expectedCommit: publication.expectedCommit,
     });
-    try {
-      expect(preparation.descriptor.branch).toBe(branch);
-      const published = await publishCatalogRelease({
-        descriptor: preparation.descriptor,
-        stagedRoot: preparation.prepared.outputRoot,
-      }, {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-      });
-      expect((await execFileAsync('git', [
-        '--git-dir', remote, 'rev-parse', `refs/heads/${branch}`,
-      ])).stdout.trim()).toBe(published.commit);
-    } finally {
-      await disposeCatalogRelease(preparation, { catalogPublicationService: service });
-    }
   });
 
-  it('rejects a schema 4 remote publication parent', async () => {
-    const { root, remote } = await createWorkspace('0.1.0-beta.1');
-    const initial = await prepareCatalogRelease('beta', {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
-    });
-    try {
-      await publishCatalogRelease({
-        descriptor: initial.descriptor,
-        stagedRoot: initial.prepared.outputRoot,
-      }, {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-      });
-    } finally {
-      await disposeCatalogRelease(initial, { catalogPublicationService: service });
-    }
-    await changeRemoteBranchSchema(remote, 'catalog/beta', 4);
-    await commitCatalogVersion(root, '0.1.0-beta.2');
+  it('rejects a remote ref conflict without changing the prepared journal', async () => {
+    const { root } = await createWorkspace();
+    const publication = await plan(root);
+    await execFileAsync('git', [
+      'push', '--quiet', 'origin', `HEAD:refs/heads/${publication.branch}`,
+    ], { cwd: root });
 
-    await expect(prepareCatalogRelease('beta', {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
-    })).rejects.toThrow(/schemaVersion: expected 5/u);
+    await expect(apply(root, publication)).rejects.toThrow(/conflict|Increase/u);
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({ state: 'prepared' });
+    await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(true);
   });
 
-  it('rejects invalid direct publication targets before source archive and build', async () => {
-    const root = await temporaryRoot('aw-invalid-publication-target-');
-    await execFileAsync('git', ['init', '--quiet'], { cwd: root });
+  it('writes uncertain before returning a remote failure, then retries the same plan', async () => {
+    const { root, remote } = await createWorkspace();
+    const publication = await plan(root);
+    const hook = path.join(remote, 'hooks', 'pre-receive');
+    await fs.writeFile(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 
-    await expect(inspectionService.prepareCatalogPublicationInspection({
-      workspaceRoot: root,
-      remote: 'missing',
-      branch: 'catalog',
-      env: process.env,
-    })).rejects.toMatchObject({ code: 'remoteInvalid' });
-    await execFileAsync('git', ['remote', 'add', 'unsafe', 'bad url'], { cwd: root });
-    await expect(inspectionService.prepareCatalogPublicationInspection({
-      workspaceRoot: root,
-      remote: 'unsafe',
-      branch: 'catalog',
-      env: process.env,
-    })).rejects.toMatchObject({ code: 'remoteInvalid' });
-    await expect(inspectionService.prepareCatalogPublicationInspection({
-      workspaceRoot: root,
-      remoteUrl: '/valid/local/path',
-      branch: 'bad..branch',
-      env: process.env,
-    })).rejects.toMatchObject({ code: 'branchInvalid' });
-  });
+    await expect(apply(root, publication)).rejects.toThrow('result is uncertain');
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({
+      state: 'uncertain',
+      planDigest: publication.planDigest,
+    });
+    await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(true);
 
-  it('blocks an official release after a public publication result is uncertain', async () => {
-    const { root, remote } = await createWorkspace('3.2.0');
-    await fs.writeFile(path.join(remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', {
-      mode: 0o755,
+    await expect(plan(root)).resolves.toMatchObject({
+      state: 'uncertain',
+      planDigest: publication.planDigest,
     });
 
-    const inspection = await inspectionService.prepareCatalogPublicationInspection({
+    await fs.remove(hook);
+    const retried = await apply(root, publication);
+    expect(retried.state).toBe('published');
+    await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(false);
+  });
+
+  it('returns the published result for the same plan and rejects a different authorization', async () => {
+    const { root } = await createWorkspace();
+    const publication = await plan(root);
+    await apply(root, publication);
+
+    await expect(applyCatalogPublicationPlan({
       workspaceRoot: root,
+      remote: 'origin',
       branch: 'catalog/latest',
+      expectedPlanDigest: `sha256:${'f'.repeat(64)}`,
       env: process.env,
+    })).rejects.toThrow(/authorized|different plan/u);
+    await expect(apply(root, publication)).resolves.toMatchObject({
+      state: 'published',
+      reconciliation: 'already-published',
     });
-    try {
-      expect(await runCli([
-        'catalog', 'publish', '--workspace-root', root, '--branch', 'catalog/latest',
-        '--expected-descriptor-digest', publicationService.catalogPublicationDescriptorDigest(
-          inspection.descriptor,
-        ),
-        '--yes', '--json',
-      ], { cwd: root, interactive: false, io: quietIo() })).toBe(1);
-    } finally {
-      await inspectionService.disposeCatalogPublicationInspection(inspection);
-    }
-    await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '3.2.0.json')))
-      .resolves.toMatchObject({ state: 'attempted', branch: 'catalog/latest' });
-    await expect(prepareCatalogRelease('latest', {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
-    })).rejects.toThrow('attempted publication record');
+    await expect(prepareCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/beta',
+      env: process.env,
+    })).rejects.toThrow(/identity changed|Increase/u);
   });
 
-  it.each(['descriptor', 'snapshot', 'source'] as const)(
-    'rejects prepared %s drift before an attempt or remote write',
-    async (drift) => {
-      const { root, remote } = await createWorkspace('4.0.0');
-      const preparation = await prepareCatalogRelease('latest', {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-      });
-      try {
-        const descriptor = drift === 'descriptor'
-          ? { ...preparation.descriptor, planId: `sha256:${'f'.repeat(64)}` }
-          : preparation.descriptor;
-        if (drift === 'snapshot') {
-          await fs.outputFile(path.join(preparation.prepared.outputRoot, 'tampered.txt'), 'tampered\n');
-        }
-        if (drift === 'source') await fs.outputFile(path.join(root, 'dirty.txt'), 'dirty\n');
+  it('returns the published result when a stale pending repository is damaged', async () => {
+    const { root } = await createWorkspace();
+    const publication = await plan(root);
+    await apply(root, publication);
+    await fs.outputFile(path.join(publication.repositoryPath!, '.git', 'config'), '[damaged\n');
 
-        await expect(publishCatalogRelease({
-          descriptor,
-          stagedRoot: preparation.prepared.outputRoot,
-        }, {
-          repoRoot: root,
-          remoteUrl: remote,
-          catalogPublicationService: service,
-        })).rejects.toThrow(drift === 'source' ? 'worktree to be clean' : /descriptor|snapshot|identity/iu);
-        await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '4.0.0.json')))
-          .resolves.toBe(false);
-        expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
-      } finally {
-        await disposeCatalogRelease(preparation, { catalogPublicationService: service });
-      }
+    await expect(apply(root, publication)).resolves.toMatchObject({
+      state: 'published',
+      reconciliation: 'already-published',
+    });
+  });
+
+  it('rechecks the clean source immediately before the first remote write', async () => {
+    const { root, remote } = await createWorkspace();
+    const publication = await plan(root);
+
+    await expect(applyCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      expectedPlanDigest: publication.planDigest,
+      env: process.env,
+      beforeRemoteWrite: async () => {
+        await fs.outputFile(path.join(root, 'late-drift.txt'), 'drift\n');
+      },
+    })).rejects.toThrow(/clean|dirty/u);
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({ state: 'prepared' });
+    expect(await git(root, ['ls-remote', remote])).toBe('');
+  });
+
+  it.each(['journal', 'damaged journal', 'repository', 'damaged repository'] as const)(
+    'stops when the pending %s is missing or damaged',
+    async (missing) => {
+      const { root } = await createWorkspace();
+      const publication = await plan(root);
+      if (missing === 'journal') await fs.remove(publication.journalPath);
+      else if (missing === 'damaged journal') await fs.writeFile(publication.journalPath, '{ damaged');
+      else if (missing === 'repository') await fs.remove(publication.repositoryPath!);
+      else await fs.remove(path.join(publication.repositoryPath!, '.git', 'HEAD'));
+
+      await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
     },
   );
 
-  it('rejects a prepared descriptor that changes the official channel branch', async () => {
-    const { root, remote } = await createWorkspace('4.1.0');
-    const preparation = await prepareCatalogRelease('latest', {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
-    });
-    try {
-      await expect(publishCatalogRelease({
-        descriptor: { ...preparation.descriptor, branch: 'catalog/unexpected' },
-        stagedRoot: preparation.prepared.outputRoot,
-      }, {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-      })).rejects.toThrow('official channel branch');
-      await expect(fs.pathExists(path.join(root, '.aw', 'publish', 'attempts', '4.1.0.json')))
-        .resolves.toBe(false);
-      expect((await execFileAsync('git', ['ls-remote', remote])).stdout).toBe('');
-    } finally {
-      await disposeCatalogRelease(preparation, { catalogPublicationService: service });
-    }
+  it('rejects a pending repository URL rewrite before any remote write', async () => {
+    const { root, remote } = await createWorkspace();
+    const evilRemote = await temporaryRoot('aw-catalog-journal-evil-remote-');
+    await execFileAsync('git', ['init', '--bare', '--quiet', evilRemote]);
+    const publication = await plan(root);
+    await git(publication.repositoryPath!, [
+      'config', `url.${evilRemote}.insteadOf`, publication.pushUrl,
+    ]);
+
+    await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
+    expect(await git(root, ['ls-remote', remote])).toBe('');
+    expect(await git(root, ['ls-remote', evilRemote])).toBe('');
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({ state: 'prepared' });
   });
 
-  it('rejects a branch parent that disappears after the final remote check', async () => {
-    const { root, remote } = await createWorkspace('5.0.0');
-    const initial = await prepareCatalogRelease('latest', {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
-    });
-    try {
-      await publishCatalogRelease({
-        descriptor: initial.descriptor,
-        stagedRoot: initial.prepared.outputRoot,
-      }, {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-      });
-    } finally {
-      await disposeCatalogRelease(initial, { catalogPublicationService: service });
-    }
+  it('rechecks pending repository config immediately before the first remote write', async () => {
+    const { root, remote } = await createWorkspace();
+    const evilRemote = await temporaryRoot('aw-catalog-journal-late-evil-remote-');
+    await execFileAsync('git', ['init', '--bare', '--quiet', evilRemote]);
+    const publication = await plan(root);
 
-    await commitCatalogVersion(root, '5.0.1');
-    const update = await prepareCatalogRelease('latest', {
-      repoRoot: root,
-      remoteUrl: remote,
-      catalogPublicationService: service,
-    });
-    try {
-      expect(update.descriptor.parent).not.toBeNull();
-      await expect(publishCatalogRelease({
-        descriptor: update.descriptor,
-        stagedRoot: update.prepared.outputRoot,
-      }, {
-        repoRoot: root,
-        remoteUrl: remote,
-        catalogPublicationService: service,
-        beforeRemoteWrite: async () => {
-          await execFileAsync('git', [
-            '--git-dir', remote, 'update-ref', '-d', CATALOG_CHANNEL_REFS.latest,
-          ]);
-        },
-      })).rejects.toThrow('uncertain');
-      await expect(fs.readJson(path.join(root, '.aw', 'publish', 'attempts', '5.0.1.json')))
-        .resolves.toMatchObject({ state: 'attempted', parent: update.descriptor.parent });
-      await expect(execFileAsync('git', [
-        '--git-dir', remote, 'rev-parse', '--verify', CATALOG_CHANNEL_REFS.latest,
-      ])).rejects.toBeDefined();
-      await expect(execFileAsync('git', [
-        '--git-dir', remote, 'rev-parse', '--verify', 'refs/tags/catalog-v5.0.1',
-      ])).rejects.toBeDefined();
-    } finally {
-      await disposeCatalogRelease(update, { catalogPublicationService: service });
-    }
+    await expect(applyCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      expectedPlanDigest: publication.planDigest,
+      env: process.env,
+      beforeRemoteWrite: async () => {
+        await git(publication.repositoryPath!, [
+          'config', `url.${evilRemote}.insteadOf`, publication.pushUrl,
+        ]);
+      },
+    })).rejects.toThrow(/missing|damaged|Increase/u);
+    expect(await git(root, ['ls-remote', remote])).toBe('');
+    expect(await git(root, ['ls-remote', evilRemote])).toBe('');
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({ state: 'prepared' });
+  });
+
+  it.each(['config symlink', 'object alternates'] as const)(
+    'rejects pending repository %s before any remote write',
+    async (damage) => {
+      const { root, remote } = await createWorkspace();
+      const publication = await plan(root);
+      const gitRoot = path.join(publication.repositoryPath!, '.git');
+      if (damage === 'config symlink') {
+        const originalConfig = path.join(gitRoot, 'config.original');
+        await fs.rename(path.join(gitRoot, 'config'), originalConfig);
+        await fs.symlink(originalConfig, path.join(gitRoot, 'config'));
+      } else {
+        await fs.outputFile(path.join(gitRoot, 'objects', 'info', 'alternates'), `${root}\n`);
+      }
+
+      await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
+      expect(await git(root, ['ls-remote', remote])).toBe('');
+    },
+  );
+
+  it('does not reuse an immutable tag when its published journal is missing', async () => {
+    const { root } = await createWorkspace();
+    const publication = await plan(root);
+    await pushPreparedRef(publication, 'tag');
+    await fs.remove(publication.journalPath);
+    await fs.remove(publication.repositoryPath!);
+
+    await expect(plan(root)).rejects.toThrow(/tag|version/u);
+  });
+
+  it('does not rebuild a plan when a partial branch write lost its journal and repo', async () => {
+    const { root } = await createWorkspace();
+    const publication = await plan(root);
+    await pushPreparedRef(publication, 'branch');
+    await fs.remove(publication.journalPath);
+    await fs.remove(publication.repositoryPath!);
+
+    await expect(plan(root)).rejects.toThrow(/without its journal|Increase/u);
+    await expect(apply(root, publication)).rejects.toThrow(/missing|occupied|Increase/u);
   });
 });

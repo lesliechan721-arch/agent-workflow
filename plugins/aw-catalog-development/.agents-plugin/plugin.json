@@ -36,8 +36,11 @@
   "requires": {
     "aw": {
       "capabilities": [
+        "aw.catalog-authoring.v1",
         "aw.catalog-dev-source.v1",
-        "aw.plugin-authoring.v1"
+        "aw.catalog-publication.v1",
+        "aw.plugin-authoring.v1",
+        "aw.self-check.v1"
       ]
     }
   }

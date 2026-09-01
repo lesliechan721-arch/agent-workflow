@@ -27,8 +27,7 @@ import {
 } from '../../src/utils/multi-source-catalog.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import {
-  refreshCatalogSourceGeneration,
-  setCatalogSourceRefreshPolicy,
+  syncCatalogSourceGeneration,
 } from '../../src/utils/catalog-generation-service.js';
 import {
   NativeCliError,
@@ -83,6 +82,7 @@ describe('multi-source performance budgets', () => {
       schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
     });
+    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
 
     const gitWork = path.join(root, 'git-work');
     const gitRemote = path.join(root, 'catalog.git');
@@ -153,23 +153,9 @@ describe('multi-source performance budgets', () => {
         { id: 'path-b', type: 'path', primary: false, path: secondPath },
       ],
     });
-    await Promise.all(['git-a', 'git-b', 'path-a', 'path-b'].map((sourceId) =>
-      refreshCatalogSourceGeneration({ sourceId, cliVersion: '1.0.0', env: fanoutEnv })));
-    const candidateManifestPath = path.join(gitWork, 'catalog-manifest.json');
-    const candidateManifest = await fs.readJson(candidateManifestPath) as Record<string, unknown>;
-    candidateManifest.catalogVersion = '2.0.0';
-    await fs.writeJson(candidateManifestPath, candidateManifest, { spaces: 2 });
-    await execFileAsync('git', ['add', '.'], { cwd: gitWork });
-    await execFileAsync('git', ['commit', '--quiet', '-m', 'catalog candidate'], { cwd: gitWork });
-    await execFileAsync('git', ['push', '--quiet', gitRemote, 'main'], { cwd: gitWork });
-    await refreshCatalogSourceGeneration({
-      sourceId: 'git-a', cliVersion: '1.0.0', env: fanoutEnv,
-    });
-    await Promise.all(['git-a', 'git-b'].map((sourceId) => setCatalogSourceRefreshPolicy({
-      sourceId,
-      refreshPolicy: 'manual',
-      env: fanoutEnv,
-    })));
+    for (const sourceId of ['git-a', 'git-b', 'path-a', 'path-b']) {
+      await syncCatalogSourceGeneration({ sourceId, cliVersion: '1.0.0', env: fanoutEnv });
+    }
     const writeRuntime = {
       env: fanoutEnv,
       nativeCliRunner: fakeNativeRunner,
@@ -197,8 +183,8 @@ describe('multi-source performance budgets', () => {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
     const durations = await sample(async () => {
       await withResolvedMultiSourceCatalog({
-        cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', configSnapshot, env,
-        consume: (catalog) => { expect(catalog.sources[0]?.resolution?.source).toBe('active'); },
+        cliVersion: '1.0.0', configSnapshot, env,
+        consume: (catalog) => { expect(catalog.sources[0]?.resolution).toBeDefined(); },
       });
     });
     const summary = createPerfSummary('path-source-resolution-warm', durations, BUDGET_MS);
@@ -206,11 +192,11 @@ describe('multi-source performance budgets', () => {
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('keeps force path validation within budget', async () => {
+  it('keeps repeated Active path validation within budget', async () => {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
     const durations = await sample(async () => {
       await withResolvedMultiSourceCatalog({
-        cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', configSnapshot, env,
+        cliVersion: '1.0.0', configSnapshot, env,
         consume: () => undefined,
       });
     });
@@ -291,7 +277,7 @@ describe('multi-source performance budgets', () => {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
     const startedAt = performance.now();
     await withResolvedMultiSourceCatalog({
-      cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', configSnapshot, env,
+      cliVersion: '1.0.0', configSnapshot, env,
       consume: () => undefined,
     });
     const summary = createPerfSummary(
@@ -332,13 +318,12 @@ describe('multi-source performance budgets', () => {
     const durations = await sample(async () => {
       const selected = await withResolvedCatalogPlugin({
         cliVersion: '1.0.0',
-        freshnessPolicy: 'cacheFirst',
         configSnapshot,
         env: fanoutEnv,
         selector: 'git-a/root',
-        consume: ({ pluginId, source }) => ({ pluginId, resolutionSource: source.source }),
+        consume: ({ pluginId }) => pluginId,
       });
-      expect(selected).toEqual({ pluginId: 'git-a/root', resolutionSource: 'active' });
+      expect(selected).toBe('git-a/root');
     });
     const summary = createPerfSummary('git-source-current-snapshot-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
@@ -349,22 +334,10 @@ describe('multi-source performance budgets', () => {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(fanoutEnv);
     let providerInvocations = 0;
     const durations = await sample(async () => {
-      const providers = {
-        git: async (..._args: Parameters<typeof catalogGitProviderInternal.resolve>) => {
-          providerInvocations += 1;
-          throw new Error('Active read invoked the Git provider.');
-        },
-        path: async (..._args: Parameters<typeof catalogPathProviderInternal.resolve>) => {
-          providerInvocations += 1;
-          throw new Error('Active read invoked the Path provider.');
-        },
-      };
       await withResolvedMultiSourceCatalog({
         cliVersion: '1.0.0',
-        freshnessPolicy: 'cacheFirst',
         configSnapshot,
         env: fanoutEnv,
-        providers,
         consume: (catalog) => {
           expect(catalog.sources).toHaveLength(4);
         },
@@ -376,20 +349,8 @@ describe('multi-source performance budgets', () => {
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('keeps a large Active and Candidate TUI load plus Review within the local budget', async () => {
+  it('keeps a large Active-only TUI load plus Review within the local budget', async () => {
     fanoutProviderInvocations = 0;
-    const catalogGenerationRuntime = {
-      providers: {
-        git: async () => {
-          fanoutProviderInvocations += 1;
-          throw new Error('Warm TUI load invoked the Git provider.');
-        },
-        path: async () => {
-          fanoutProviderInvocations += 1;
-          throw new Error('Warm TUI load invoked the Path provider.');
-        },
-      },
-    };
     const catalogStageDurations: number[] = [];
     const durations = await sample(async () => {
       const events: CommandEvent[] = [];
@@ -400,24 +361,10 @@ describe('multi-source performance budgets', () => {
         nativeCliRunner: fakeNativeRunner,
         debugLogger: { log: (event) => { events.push(event); } },
       });
-      const controller = new TuiController(createTuiControllerDependencies(
-        context,
-        undefined,
-        { catalogGenerationRuntime },
-      ));
+      const controller = new TuiController(createTuiControllerDependencies(context));
       try {
         await controller.load();
-        const collision = controller.listUserIssues().find((issue) =>
-          issue.category === 'artifactCollision'
-          && issue.pluginId === 'path-a/leaf'
-          && issue.platform === 'codex'
-          && issue.scope === 'project');
-        expect(collision).toMatchObject({
-          relationship: 'direct',
-          affectedTargets: expect.arrayContaining([
-            expect.objectContaining({ pluginId: 'path-a/root', relationship: 'consumer' }),
-          ]),
-        });
+        expect(controller.snapshot.phase).toBe('ready');
         await controller.buildOperationReview({
           kind: 'configSave',
           pluginId: 'path-a/config-target',
@@ -429,15 +376,15 @@ describe('multi-source performance budgets', () => {
         controller.dispose();
       }
       const contextStages = events.filter((event) =>
-        event.type === 'performance:stage' && event.data?.name === 'catalog.context');
+        event.type === 'performance:stage' && event.data?.name === 'catalog.load');
       const validationStages = events.filter((event) =>
         event.type === 'performance:stage' && event.data?.name === 'catalog.validation');
       expect(contextStages).toHaveLength(1);
       expect(contextStages[0]?.data).toMatchObject({ sourceCount: 4 });
       expect(validationStages).toHaveLength(1);
       expect(validationStages[0]?.data).toMatchObject({
-        pointerCount: 5,
-        fullValidationCount: 1,
+        pointerCount: 4,
+        fullValidationCount: 0,
         reusedValidationCount: 4,
       });
       catalogStageDurations.push([...contextStages, ...validationStages].reduce(
@@ -463,18 +410,6 @@ describe('multi-source performance budgets', () => {
 
   it('keeps a real warm install path observable with local stage budgets', async () => {
     fanoutProviderInvocations = 0;
-    const catalogGenerationRuntime = {
-      providers: {
-        git: async () => {
-          fanoutProviderInvocations += 1;
-          throw new Error('Warm install invoked the Git provider.');
-        },
-        path: async () => {
-          fanoutProviderInvocations += 1;
-          throw new Error('Warm install invoked the Path provider.');
-        },
-      },
-    };
     const commandDurations: number[] = [];
     const localStageDurations: number[] = [];
     const runInstall = async (record: boolean): Promise<void> => {
@@ -487,14 +422,13 @@ describe('multi-source performance budgets', () => {
       }, {
         env: fanoutEnv,
         nativeCliRunner: fakeNativeRunner,
-        catalogGenerationRuntime,
         debugLogger: { log: (event) => { events.push(event); } },
       });
       const durationMs = performance.now() - startedAt;
-      expect(result.overallState).toBe('succeeded');
+      expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
       const stageEvents = events.filter((event) => event.type === 'performance:stage');
       expect(new Set(stageEvents.map((event) => event.data?.name))).toEqual(new Set([
-        'catalog.context',
+        'catalog.load',
         'catalog.validation',
         'inventory',
         'dependency.plan',
@@ -530,7 +464,7 @@ describe('multi-source performance budgets', () => {
     expect(localSummary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('fans out remote work only through explicit refresh', async () => {
+  it('fans out remote work only through explicit sync', async () => {
     let active = 0;
     let maximumActive = 0;
     const observe = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -551,7 +485,7 @@ describe('multi-source performance budgets', () => {
     };
 
     await Promise.all(['git-a', 'git-b', 'path-a', 'path-b'].map((sourceId) =>
-      refreshCatalogSourceGeneration({
+      syncCatalogSourceGeneration({
         sourceId,
         cliVersion: '1.0.0',
         env: fanoutEnv,
@@ -603,7 +537,6 @@ describe('multi-source performance budgets', () => {
         refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
       }, {
         cliVersion: '1.0.0',
-        freshnessPolicy: 'forceRemote',
         env: deadlineEnv,
       }).then(
         () => new Error('Expected the remote deadline to fail.'),

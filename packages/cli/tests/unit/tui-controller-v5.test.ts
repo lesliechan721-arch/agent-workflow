@@ -23,7 +23,7 @@ import { TuiRouter } from '../../src/tui/router.js';
 
 function source(
   id: string,
-  options: { primary?: boolean; freshness?: 'remote' | 'cache' | 'path' | 'active'; error?: string; type?: 'git' | 'path' } = {},
+  options: { primary?: boolean; error?: string; type?: 'git' | 'path' } = {},
 ): StatusV6Payload['catalog']['sources'][number] {
   return {
     id,
@@ -31,7 +31,7 @@ function source(
     type: options.type ?? 'git',
     primary: options.primary ?? id === 'official',
     requestedRef: options.type === 'path' ? 'path' : 'refs/heads/catalog/latest',
-    ...(options.freshness ? { freshness: options.freshness } : {}),
+    ...(!options.error ? { freshness: 'active' as const } : {}),
     ...(options.error ? { error: options.error, errorCode: 'catalogSourceUnavailable' } : {}),
   };
 }
@@ -47,7 +47,7 @@ function status(options: {
       primarySourceId: 'official',
       configDigest: 'sha256:config',
       compositeDigest: 'sha256:composite',
-      sources: options.sources ?? [source('official', { freshness: 'cache' })],
+      sources: options.sources ?? [source('official')],
     },
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
     targets: options.targets ?? [],
@@ -90,13 +90,6 @@ function summaries(...entries: Array<[string, string]>): StatusV6PluginSummary[]
   }));
 }
 
-function sourceCheck(sourceId: string): { sourceIdentity: string; requestedRef: string } {
-  return {
-    sourceIdentity: `identity:${sourceId}`,
-    requestedRef: 'refs/heads/catalog/latest',
-  };
-}
-
 const baseEvidence: OperationEvidence = {
   catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
   source: {
@@ -114,7 +107,6 @@ function dependencies(overrides: Partial<TuiControllerDependencies> = {}): TuiCo
       payload: status(),
       pluginSummaries: summaries(['official', 'demo']),
     }),
-    checkSource: vi.fn(async (sourceId: string) => sourceCheck(sourceId)),
     captureEvidence: vi.fn().mockResolvedValue(baseEvidence),
     executeIntent: vi.fn().mockResolvedValue({ ok: true }),
     createToken: vi.fn()
@@ -904,8 +896,8 @@ describe('TUI v4 router and ViewModel', () => {
     const view = buildTuiViewModel({
       status: status({
         sources: [
-          source('official', { freshness: 'cache' }),
-          source('team', { freshness: 'cache', primary: false }),
+          source('official'),
+          source('team', { primary: false }),
         ],
         targets: [
           target({ sourceId: 'team', pluginName: 'review-gate', scope: 'user', state: 'absent' }),
@@ -1079,8 +1071,8 @@ describe('TUI v4 router and ViewModel', () => {
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official',
-        state: 'degraded',
-        issueId: 'source:official:cache',
+        state: 'unavailable',
+        issueId: 'source:official:unavailable',
       }]]),
     });
 
@@ -1091,7 +1083,7 @@ describe('TUI v4 router and ViewModel', () => {
       'target:official/changed:codex:user:error': 'sourceIdentityChanged',
       'config:official/required:required': 'requiredConfigMissing',
       'status:legacyStateUnsupported': 'legacyState',
-      'source:official:cache': 'sourceDegraded',
+      'source:official:unavailable': 'sourceUnavailable',
     });
     expect(JSON.stringify(view.issues)).not.toContain('arbitrary text');
     const collision = view.issues.find((issue) => issue.category === 'artifactCollision');
@@ -1101,11 +1093,11 @@ describe('TUI v4 router and ViewModel', () => {
       actions: [{ id: 'viewTechnical' }, { id: 'retryLater' }],
       technicalDetails: [{ code: 'artifactCollision', message: '目标包含没有 AW owner 标记的内容。' }],
     });
-    expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.actions.map((action) => action.id))
-      .toContain('continueWithCache');
+    expect(view.issues.find((issue) => issue.category === 'sourceUnavailable')?.actions.map((action) => action.id))
+      .toEqual(['editSource', 'refreshSource', 'viewTechnical']);
     expect(view.issues.filter((issue) => issue.sourceId === 'official'
-      && (issue.category === 'sourceUnavailable' || issue.category === 'sourceDegraded'))).toHaveLength(1);
-    expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.impact).toContain(
+      && issue.category === 'sourceUnavailable')).toHaveLength(1);
+    expect(view.issues.find((issue) => issue.category === 'sourceUnavailable')?.impact).toContain(
       '2 个安装位置受此来源根问题影响。',
     );
     expect(view.issues.find((issue) => issue.category === 'sourceMissing')?.actions.map((action) => action.id))
@@ -1170,7 +1162,7 @@ describe('TUI v4 router and ViewModel', () => {
         },
       ],
       sourceHealth: new Map([['official', {
-        sourceId: 'official', state: 'degraded', issueId: 'source:official:cache',
+        sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
       }]]),
       dependencyOverviews: [{
         pluginId: 'team/graph',
@@ -1206,7 +1198,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(view.plugins.find((plugin) => plugin.pluginId === 'team/configured')?.primaryAttention?.code)
       .toBe('invalidConfig');
     expect(view.plugins.find((plugin) => plugin.pluginId === 'official/available')?.primaryAttention)
-      .toMatchObject({ severity: 'warning', code: 'sourceUnavailable' });
+      .toMatchObject({ severity: 'error', code: 'sourceUnavailable' });
     expect(view.plugins.find((plugin) => plugin.pluginId === 'official/incomplete')?.primaryAttention?.code)
       .toBe('sourceUnavailable');
     expect(view.plugins.find((plugin) => plugin.pluginId === 'official/dependency')?.primaryAttention?.code)
@@ -1342,7 +1334,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
-  it('keeps bundleUnavailable as a plugin target issue beside a degraded source root', () => {
+  it('keeps bundleUnavailable as a plugin target issue beside an unavailable source root', () => {
     const unavailableTarget = target({
       pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable',
     });
@@ -1351,7 +1343,7 @@ describe('TUI v4 router and ViewModel', () => {
       status: status({ targets: [unavailableTarget] }),
       pluginSummaries: [],
       sourceHealth: new Map([['official', {
-        sourceId: 'official', state: 'degraded', issueId: 'source:official:cache',
+        sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
       }]]),
     });
 
@@ -1359,7 +1351,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(view.home.issueCount).toBe(2);
     expect(view.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        issueId: 'source:official:cache', category: 'sourceDegraded',
+        issueId: 'source:official:unavailable', category: 'sourceUnavailable',
         impact: expect.arrayContaining(['1 个安装位置受此来源根问题影响。']),
       }),
       expect.objectContaining({
@@ -1374,10 +1366,10 @@ describe('TUI v4 router and ViewModel', () => {
       }),
     ]));
     expect(view.issues.find((issue) => issue.rootCode === 'bundleUnavailable')?.impact)
-      .toContain('可以清理可信的 AW 现场；这不表示来源缓存整体不可用。');
+      .toContain('可以清理可信的 AW 现场；这不表示来源整体可用。');
     expect(view.plugins).toContainEqual(expect.objectContaining({
       pluginId: 'official/offline',
-      aggregateStatus: 'needsAttention',
+      aggregateStatus: 'unavailable',
       installedPlacements: [expect.objectContaining({ state: 'installed', health: 'error' })],
     }));
   });
@@ -1414,592 +1406,6 @@ describe('TUI v4 router and ViewModel', () => {
         technical: { code: 'configReadFailed', stage: 'read-config' },
       },
     });
-  });
-});
-
-describe('TUI v4 background source checks', () => {
-  it('combines source, installation, and query filters without treating error placement as uninstalled', async () => {
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn().mockResolvedValue({
-        payload: status({
-          sources: [source('official'), source('team', { primary: false })],
-          targets: [
-            target({ pluginName: 'matching-tool', sourceId: 'official', scope: 'user', state: 'absent' }),
-            target({ pluginName: 'installed-matching-tool', sourceId: 'official', scope: 'user', state: 'present' }),
-            target({ pluginName: 'error-matching-tool', sourceId: 'official', scope: 'user', state: 'error' }),
-            target({ pluginName: 'matching-tool', sourceId: 'team', scope: 'user', state: 'absent' }),
-          ],
-        }),
-        pluginSummaries: summaries(
-          ['official', 'matching-tool'],
-          ['official', 'installed-matching-tool'],
-          ['official', 'error-matching-tool'],
-          ['team', 'matching-tool'],
-        ),
-      }),
-    }));
-    await controller.load();
-
-    expect(controller.listPlugins({
-      mode: 'browse',
-      sourceId: 'official',
-      installFilter: 'uninstalled',
-      query: 'matching-tool',
-    }).map((plugin) => plugin.pluginId)).toEqual(['official/matching-tool']);
-    expect(controller.listPlugins({
-      mode: 'browse',
-      installFilter: 'uninstalled',
-    }).map((plugin) => plugin.pluginId)).toEqual(['official/matching-tool', 'team/matching-tool']);
-  });
-
-  it('publishes a safe terminal state when the initial status load fails', async () => {
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn().mockRejectedValue(new Error('nativeStateUnreadable: /private/path')),
-    }));
-
-    await expect(controller.load()).resolves.toBeUndefined();
-
-    expect(controller.snapshot).toMatchObject({
-      phase: 'error',
-      loadError: { code: 'nativeStateUnreadable' },
-    });
-    expect(JSON.stringify(controller.snapshot)).not.toContain('/private/path');
-  });
-
-  it('returns the cache-first page before a successful remote check refreshes its data', async () => {
-    const remote = deferred<void>();
-    const initial = { payload: status(), pluginSummaries: summaries(['official', 'demo']) };
-    const refreshed = {
-      payload: status({
-        sources: [source('official', { freshness: 'remote' })],
-        targets: [target({ scope: 'user', state: 'absent' })],
-      }),
-      pluginSummaries: summaries(['official', 'demo'], ['official', 'new-plugin']),
-    };
-    const deps = dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce(initial)
-        .mockResolvedValueOnce(refreshed),
-      checkSource: vi.fn(async (sourceId: string) => {
-        await remote.promise;
-        return sourceCheck(sourceId);
-      }),
-    });
-    const controller = new TuiController(deps);
-
-    await controller.load();
-    expect(controller.snapshot.phase).toBe('ready');
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'checking' });
-    expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId)).toEqual(['official/demo']);
-
-    remote.resolve();
-    await nextTurn();
-    await nextTurn();
-    expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId)).toEqual([
-      'official/demo', 'official/new-plugin',
-    ]);
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
-  });
-
-  it('accepts checked evidence that matches a concurrently replaced authoritative source', async () => {
-    const remote = deferred<void>();
-    const initialSource = {
-      ...source('official', { freshness: 'cache' }),
-      identity: 'identity:official-old',
-      requestedRef: 'refs/heads/catalog/old',
-    };
-    const replacedSource = {
-      ...source('official', { freshness: 'remote' }),
-      identity: 'identity:official-new',
-      requestedRef: 'refs/heads/catalog/new',
-    };
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status({ sources: [initialSource] }), pluginSummaries: [] })
-        .mockResolvedValueOnce({ payload: status({ sources: [replacedSource] }), pluginSummaries: [] }),
-      checkSource: vi.fn(async () => {
-        await remote.promise;
-        return {
-          sourceIdentity: replacedSource.identity,
-          requestedRef: replacedSource.requestedRef,
-        };
-      }),
-    }));
-
-    await controller.load();
-    remote.resolve();
-    await nextTurn();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
-    expect(controller.listUserIssues()).toEqual([]);
-  });
-
-  it('rejects old checked evidence after the authoritative source identity and ref change', async () => {
-    const remote = deferred<void>();
-    const betaPath = source('beta', { type: 'path', freshness: 'path', primary: false });
-    const initialSource = {
-      ...source('official', { freshness: 'cache' }),
-      identity: 'identity:official-old',
-      requestedRef: 'refs/heads/catalog/old',
-    };
-    const replacedSource = {
-      ...source('official', { freshness: 'remote' }),
-      identity: 'identity:official-new',
-      requestedRef: 'refs/heads/catalog/new',
-    };
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status({ sources: [initialSource, betaPath] }), pluginSummaries: [] })
-        .mockResolvedValueOnce({ payload: status({ sources: [replacedSource, betaPath] }), pluginSummaries: [] })
-        .mockResolvedValueOnce({
-          payload: status({ sources: [
-            { ...initialSource, freshness: 'cache' },
-            source('beta', { freshness: 'cache', primary: false }),
-          ] }),
-          pluginSummaries: [],
-        }),
-      checkSource: vi.fn(async (sourceId: string) => {
-        if (sourceId === 'beta') return sourceCheck(sourceId);
-        await remote.promise;
-        return {
-          sourceIdentity: initialSource.identity,
-          requestedRef: initialSource.requestedRef,
-        };
-      }),
-    }));
-
-    await controller.load();
-    remote.resolve();
-    await nextTurn();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toContainEqual(expect.objectContaining({
-      sourceId: 'official',
-      state: 'unavailable',
-    }));
-    expect(controller.listUserIssues()).toContainEqual(expect.objectContaining({
-      issueId: 'source:official:unavailable',
-    }));
-
-    await controller.refreshSource('beta');
-
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'cache' });
-  });
-
-  it('keeps cached plugins and creates a degraded issue after remote failure', async () => {
-    const controller = new TuiController(dependencies({
-      checkSource: vi.fn().mockRejectedValue(new Error('remote unavailable')),
-    }));
-    await controller.load();
-    await nextTurn();
-
-    expect(controller.listPlugins({ mode: 'browse' })).toHaveLength(1);
-    expect(controller.snapshot.sourceHealth).toEqual([expect.objectContaining({
-      sourceId: 'official',
-      state: 'degraded',
-    })]);
-    expect(controller.listUserIssues()).toEqual([expect.objectContaining({
-      issueId: 'source:official:cache',
-    })]);
-  });
-
-  it('marks a source unavailable when cache-first load had no usable data', async () => {
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn().mockResolvedValue({
-        payload: status({ sources: [source('official', { error: 'no cache' })] }),
-        pluginSummaries: [],
-      }),
-      checkSource: vi.fn().mockRejectedValue(new Error('remote unavailable')),
-    }));
-    await controller.load();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toEqual([expect.objectContaining({
-      sourceId: 'official',
-      state: 'unavailable',
-    })]);
-    expect(controller.listUserIssues()[0]?.issueId).toBe('source:official:unavailable');
-  });
-
-  it('does not treat a previously usable path source as cache after refresh fails', async () => {
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({
-          payload: status({ sources: [source('local', { type: 'path', freshness: 'path', primary: true })] }),
-          pluginSummaries: summaries(['local', 'demo']),
-        })
-        .mockRejectedValueOnce(new Error('/private/local source disappeared')),
-      checkSource: vi.fn().mockRejectedValue(new Error('/private/local source disappeared')),
-    }));
-    await controller.load();
-    await controller.refreshSource('local');
-
-    expect(controller.snapshot.sourceHealth).toContainEqual(expect.objectContaining({
-      sourceId: 'local', state: 'unavailable',
-    }));
-    expect(controller.listUserIssues().find((issue) => issue.sourceId === 'local')?.actions)
-      .not.toContainEqual(expect.objectContaining({ id: 'continueWithCache' }));
-    expect(JSON.stringify(controller.snapshot)).not.toContain('/private/local');
-  });
-
-  it('does not carry old cache evidence into a replaced source with no authoritative data', async () => {
-    const initialSource = {
-      ...source('official', { freshness: 'cache' }),
-      identity: 'identity:official-old',
-      requestedRef: 'refs/heads/catalog/old',
-    };
-    const replacedSource = {
-      ...source('official', { error: 'new source unavailable' }),
-      identity: 'identity:official-new',
-      requestedRef: 'refs/heads/catalog/new',
-    };
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status({ sources: [initialSource] }), pluginSummaries: [] })
-        .mockResolvedValueOnce({ payload: status({ sources: [replacedSource] }), pluginSummaries: [] }),
-      checkSource: vi.fn().mockRejectedValue(new Error('remote check failed')),
-    }));
-
-    await controller.load();
-    await nextTurn();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toEqual([{
-      sourceId: 'official',
-      state: 'unavailable',
-      issueId: 'source:official:unavailable',
-      message: '远端检查失败，并且没有可用缓存数据。',
-    }]);
-    expect(controller.listUserIssues()[0]).toMatchObject({
-      issueId: 'source:official:unavailable',
-      actions: expect.not.arrayContaining([expect.objectContaining({ id: 'continueWithCache' })]),
-    });
-  });
-
-  it('keeps a matching authoritative cache after the remote check fails', async () => {
-    const cachedSource = source('official', { freshness: 'cache' });
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn().mockResolvedValue({
-        payload: status({ sources: [cachedSource] }),
-        pluginSummaries: summaries(['official', 'demo']),
-      }),
-      checkSource: vi.fn().mockRejectedValue(new Error('remote check failed')),
-    }));
-
-    await controller.load();
-    await nextTurn();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toContainEqual({
-      sourceId: 'official',
-      state: 'degraded',
-      issueId: 'source:official:cache',
-      message: '远端检查失败。当前仍使用已验证的缓存数据。',
-    });
-    expect(controller.listUserIssues()[0]?.actions).toContainEqual(
-      expect.objectContaining({ id: 'continueWithCache' }),
-    );
-  });
-
-  it('does not carry a successful source marker across a requested ref replacement', async () => {
-    const initialSources = [
-      source('alpha', { type: 'path', freshness: 'path', primary: true }),
-      source('beta', { type: 'path', freshness: 'path', primary: false }),
-    ];
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status({ sources: initialSources }), pluginSummaries: [] })
-        .mockRejectedValueOnce(new Error('alpha reload failed'))
-        .mockResolvedValueOnce({
-          payload: status({ sources: [
-            { ...source('alpha', { type: 'git', freshness: 'cache', primary: true }), identity: 'identity:alpha-replaced' },
-            source('beta', { type: 'git', freshness: 'cache', primary: false }),
-          ] }),
-          pluginSummaries: [],
-        }),
-      checkSource: vi.fn(async (sourceId: string) => sourceCheck(sourceId)),
-    }));
-    await controller.load();
-    await controller.refreshSource('alpha');
-    await controller.refreshSource('beta');
-
-    expect(controller.snapshot.sourceHealth).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sourceId: 'alpha', state: 'cache' }),
-      expect.objectContaining({ sourceId: 'beta', state: 'ready' }),
-    ]));
-  });
-
-  it('aborts the active source check on dispose and does not publish a late result', async () => {
-    let observedSignal: AbortSignal | undefined;
-    const checkSource = vi.fn((_sourceId: string, signal: AbortSignal) => {
-      observedSignal = signal;
-      return new Promise<void>((_resolve, reject) => {
-        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-      });
-    });
-    const controller = new TuiController(dependencies({ checkSource }));
-    await controller.load();
-    const listener = vi.fn();
-    controller.subscribe(listener);
-    const callsBeforeDispose = listener.mock.calls.length;
-
-    controller.dispose();
-    await nextTurn();
-
-    expect(observedSignal?.aborted).toBe(true);
-    expect(listener).toHaveBeenCalledTimes(callsBeforeDispose);
-    expect(controller.snapshot.phase).toBe('disposed');
-  });
-
-  it('does not let an older failed check overwrite a newer successful refresh', async () => {
-    const first = deferred<void>();
-    const second = deferred<void>();
-    const checks = [first, second];
-    const deps = dependencies({
-      checkSource: vi.fn(async (sourceId: string) => {
-        await checks.shift()!.promise;
-        return sourceCheck(sourceId);
-      }),
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status(), pluginSummaries: summaries(['official', 'demo']) })
-        .mockResolvedValue({
-          payload: status({ sources: [source('official', { freshness: 'remote' })] }),
-          pluginSummaries: summaries(['official', 'demo']),
-        }),
-    });
-    const controller = new TuiController(deps);
-    await controller.load();
-    const newer = controller.refreshSource('official');
-    second.resolve();
-    await newer;
-    first.reject(new Error('old remote failure'));
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
-  });
-
-  it('does not let an older full reload for another source overwrite newer status', async () => {
-    const older = deferred<TuiStatusLoadResult>();
-    const newer = deferred<TuiStatusLoadResult>();
-    const initial = {
-      payload: status({ sources: [
-        source('alpha', { type: 'path', freshness: 'path', primary: true }),
-        source('beta', { type: 'path', freshness: 'path', primary: false }),
-      ] }),
-      pluginSummaries: summaries(['alpha', 'old']),
-    };
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce(initial)
-        .mockImplementationOnce(() => older.promise)
-        .mockImplementationOnce(() => newer.promise),
-    }));
-    await controller.load();
-
-    const alpha = controller.refreshSource('alpha');
-    const beta = controller.refreshSource('beta');
-    const refreshedPayload = status({ sources: [
-      source('alpha', { type: 'git', freshness: 'cache', primary: true }),
-      source('beta', { type: 'git', freshness: 'cache', primary: false }),
-    ] });
-    newer.resolve({ payload: refreshedPayload, pluginSummaries: summaries(['beta', 'newer']) });
-    await beta;
-    older.resolve({ payload: refreshedPayload, pluginSummaries: summaries(['alpha', 'stale']) });
-    await alpha;
-
-    expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId)).toEqual([
-      'beta/newer',
-    ]);
-    expect(controller.snapshot.sourceHealth).toEqual(expect.arrayContaining([
-      { sourceId: 'alpha', state: 'ready' },
-      { sourceId: 'beta', state: 'ready' },
-    ]));
-    const payloadSourceIds = new Set(controller.snapshot.viewModel?.sourceTabs.map((source) => source.id));
-    expect(controller.snapshot.sourceHealth.every((health) => payloadSourceIds.has(health.sourceId))).toBe(true);
-    expect(controller.snapshot.sourceHealth.some((health) => health.state === 'degraded')).toBe(false);
-  });
-
-  it('keeps per-source ready evidence when a concurrent full reload is rejected', async () => {
-    const alphaCheck = deferred<void>();
-    const betaCheck = deferred<void>();
-    const alphaReload = deferred<TuiStatusLoadResult>();
-    const betaReload = deferred<TuiStatusLoadResult>();
-    const sources = [
-      source('alpha', { freshness: 'cache', primary: true }),
-      source('beta', { freshness: 'cache', primary: false }),
-    ];
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status({ sources }), pluginSummaries: [] })
-        .mockImplementationOnce(() => alphaReload.promise)
-        .mockImplementationOnce(() => betaReload.promise),
-      checkSource: vi.fn(async (sourceId: string) => {
-        await (sourceId === 'alpha' ? alphaCheck.promise : betaCheck.promise);
-        return sourceCheck(sourceId);
-      }),
-    }));
-    await controller.load();
-    alphaCheck.resolve();
-    await nextTurn();
-    betaCheck.resolve();
-    await nextTurn();
-
-    betaReload.resolve({ payload: status({ sources }), pluginSummaries: [] });
-    await nextTurn();
-    alphaReload.resolve({ payload: status({ sources }), pluginSummaries: [] });
-    await nextTurn();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toEqual(expect.arrayContaining([
-      { sourceId: 'alpha', state: 'ready' },
-      { sourceId: 'beta', state: 'ready' },
-    ]));
-    expect(controller.snapshot.viewModel?.sourceTabs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'alpha', state: 'ready' }),
-      expect.objectContaining({ id: 'beta', state: 'ready' }),
-    ]));
-    expect(controller.listUserIssues()).toEqual([]);
-  });
-
-  it('does not inherit rejected refresh evidence after the authoritative source identity changes', async () => {
-    const alphaCheck = deferred<void>();
-    const betaCheck = deferred<void>();
-    const alphaReload = deferred<TuiStatusLoadResult>();
-    const betaReload = deferred<TuiStatusLoadResult>();
-    const initialSources = [
-      source('alpha', { freshness: 'cache', primary: true }),
-      source('beta', { freshness: 'cache', primary: false }),
-    ];
-    const replacedSources = [
-      { ...source('alpha', { freshness: 'cache', primary: true }), identity: 'identity:alpha-replaced' },
-      source('beta', { freshness: 'cache', primary: false }),
-    ];
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status({ sources: initialSources }), pluginSummaries: [] })
-        .mockImplementationOnce(() => alphaReload.promise)
-        .mockImplementationOnce(() => betaReload.promise),
-      checkSource: vi.fn(async (sourceId: string) => {
-        await (sourceId === 'alpha' ? alphaCheck.promise : betaCheck.promise);
-        return sourceCheck(sourceId);
-      }),
-    }));
-    await controller.load();
-    alphaCheck.resolve();
-    await nextTurn();
-    betaCheck.resolve();
-    await nextTurn();
-
-    betaReload.resolve({ payload: status({ sources: replacedSources }), pluginSummaries: [] });
-    await nextTurn();
-    alphaReload.resolve({ payload: status({ sources: initialSources }), pluginSummaries: [] });
-    await nextTurn();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toEqual(expect.arrayContaining([
-      { sourceId: 'alpha', state: 'cache' },
-      { sourceId: 'beta', state: 'ready' },
-    ]));
-    expect(controller.snapshot.viewModel?.sourceTabs).toContainEqual(expect.objectContaining({
-      id: 'alpha', state: 'cache',
-    }));
-  });
-
-  it('cancels an older refresh and removes stale source health after a source write reload', async () => {
-    const oldRefresh = deferred<void>();
-    const initial = {
-      payload: status({ sources: [
-        source('alpha', { type: 'path', freshness: 'path', primary: true }),
-        source('removed', { type: 'path', freshness: 'path', primary: false, error: 'old failure' }),
-      ] }),
-      pluginSummaries: summaries(['alpha', 'old']),
-    };
-    const afterWrite = {
-      payload: status({ sources: [source('alpha', { type: 'path', freshness: 'path', primary: true })] }),
-      pluginSummaries: summaries(['alpha', 'new']),
-    };
-    const sourceEvidence: OperationEvidence = {
-      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:candidate' },
-      sourceWrite: { configDigest: 'sha256:before', candidateDigest: 'sha256:candidate', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
-    };
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce(initial)
-        .mockResolvedValueOnce(afterWrite)
-        .mockResolvedValue(initial),
-      checkSource: vi.fn(async (sourceId: string) => {
-        await oldRefresh.promise;
-        return sourceCheck(sourceId);
-      }),
-      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
-      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
-    }));
-    await controller.load();
-    const refresh = controller.refreshSource('removed');
-    const review = await controller.buildOperationReview({
-      kind: 'sourceMutation',
-      action: 'remove',
-      sourceId: 'removed',
-    });
-    await controller.executeOperation(review.reviewToken);
-    oldRefresh.resolve();
-    await refresh;
-
-    expect(controller.listSources().map((entry) => entry.id)).toEqual(['alpha']);
-    expect(controller.snapshot.sourceHealth).toEqual([{ sourceId: 'alpha', state: 'path' }]);
-    expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId)).toEqual(['alpha/new']);
-  });
-
-  it('aborts an older generation when the same source is refreshed again', async () => {
-    const signals: AbortSignal[] = [];
-    const checks: Array<ReturnType<typeof deferred<void>>> = [];
-    const checkSource = vi.fn((_sourceId: string, signal: AbortSignal) => {
-      signals.push(signal);
-      const pending = deferred<void>();
-      checks.push(pending);
-      signal.addEventListener('abort', () => pending.reject(signal.reason), { once: true });
-      return pending.promise.then(() => sourceCheck(_sourceId));
-    });
-    const controller = new TuiController(dependencies({ checkSource }));
-    await controller.load();
-
-    const newer = controller.refreshSource('official');
-    expect(signals[0]?.aborted).toBe(true);
-    checks[1]!.resolve();
-    await newer;
-  });
-
-  it.each([
-    ['missing', undefined, 'unavailable'],
-    ['error without authoritative data', source('official', { error: 'raw private error' }), 'unavailable'],
-    ['active', source('official', { freshness: 'active' }), 'ready'],
-    ['cache', source('official', { freshness: 'cache' }), 'ready'],
-    ['path', source('official', { freshness: 'path', type: 'path' }), 'path'],
-  ] as const)('projects a successful remote reload with %s data as %s', async (_label, refreshed, expected) => {
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({ payload: status(), pluginSummaries: summaries(['official', 'demo']) })
-        .mockResolvedValue({
-          payload: status({ sources: refreshed ? [refreshed] : [] }),
-          pluginSummaries: summaries(['official', 'demo']),
-        }),
-    }));
-    await controller.load();
-    await nextTurn();
-    await nextTurn();
-
-    expect(controller.snapshot.sourceHealth).toEqual(refreshed
-      ? [expect.objectContaining({ sourceId: 'official', state: expected })]
-      : []);
-    expect(controller.snapshot.sourceHealth.every((health) =>
-      controller.snapshot.viewModel?.sourceTabs.some((source) => source.id === health.sourceId))).toBe(true);
-    if (expected === 'ready') {
-      expect(controller.snapshot.viewModel?.sourceTabs).toContainEqual(expect.objectContaining({
-        id: 'official', state: 'ready',
-      }));
-    }
-    expect(JSON.stringify(controller.snapshot)).not.toContain('raw private error');
   });
 });
 
@@ -2579,7 +1985,7 @@ describe('TUI v4 Review safety', () => {
     }, {
       catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:candidate' },
       sourceWrite: {
-        configDigest: 'sha256:before', candidateDigest: 'sha256:candidate',
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:candidate',
         inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
       },
     }, { name: 'sourceAdd' as const, step: 'location' as const, owner: 'draft-1' }],
@@ -2594,7 +2000,6 @@ describe('TUI v4 Review safety', () => {
         .mockResolvedValueOnce({ payload: status(), pluginSummaries: summaries(['official', 'demo']) })
         .mockRejectedValueOnce(new Error('/private/reload failed')),
       captureEvidence: vi.fn().mockResolvedValue(evidence),
-      checkSource: vi.fn(() => new Promise(() => undefined)),
       executeIntent: vi.fn().mockResolvedValue({
         targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
       }),
@@ -2687,99 +2092,10 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.result).toBeUndefined();
   });
 
-  it.each([
-    ['plugin', {
-      kind: 'pluginWrite' as const, action: 'upgrade' as const, pluginId: 'official/demo',
-      platform: 'codex' as const, scope: 'user' as const,
-    }, { targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }] }],
-    ['config', {
-      kind: 'configSave' as const, pluginId: 'official/demo', scope: 'user' as const,
-      projectLayer: 'shared' as const, updates: { level: 'strict' },
-    }, { configWrite: 'succeeded', targetResults: [] }],
-  ])('starts a Git refresh after the accepted %s write status is published', async (_label, intent, execution) => {
-    const check = deferred<void>();
-    const cached = {
-      payload: status({ sources: [source('official', { freshness: 'cache' })] }),
-      pluginSummaries: summaries(['official', 'demo']),
-    };
-    const ready = {
-      payload: status({ sources: [source('official', { freshness: 'remote' })] }),
-      pluginSummaries: summaries(['official', 'demo']),
-    };
-    const checkSource = vi.fn((sourceId: string) => check.promise.then(() => sourceCheck(sourceId)));
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({
-          payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
-          pluginSummaries: summaries(['official', 'demo']),
-        })
-        .mockResolvedValueOnce(cached)
-        .mockResolvedValueOnce(ready),
-      checkSource,
-      executeIntent: vi.fn().mockResolvedValue(execution),
-    }));
-    const observed: Array<{ result: boolean; health?: string }> = [];
-    controller.subscribe((snapshot) => observed.push({
-      result: snapshot.result?.state === 'succeeded',
-      health: snapshot.sourceHealth.find((entry) => entry.sourceId === 'official')?.state,
-    }));
-    await controller.load();
-    const review = await controller.buildOperationReview(intent);
-    expect(await controller.executeOperation(review.reviewToken)).toMatchObject({ state: 'succeeded' });
-
-    expect(checkSource).toHaveBeenCalledWith('official', expect.any(AbortSignal));
-    expect(observed).toEqual(expect.arrayContaining([
-      { result: true, health: 'cache' },
-      { result: true, health: 'checking' },
-    ]));
-    check.resolve();
-    await nextTurn();
-    await nextTurn();
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
-  });
-
-  it('starts a refresh for a new Git source after an accepted source add', async () => {
-    const check = deferred<void>();
-    const teamCache = source('team', { freshness: 'cache', primary: false });
-    const teamReady = source('team', { freshness: 'remote', primary: false });
-    const checkSource = vi.fn((sourceId: string) => check.promise.then(() => sourceCheck(sourceId)));
-    const controller = new TuiController(dependencies({
-      loadStatus: vi.fn()
-        .mockResolvedValueOnce({
-          payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
-          pluginSummaries: summaries(['official', 'demo']),
-        })
-        .mockResolvedValueOnce({
-          payload: status({ sources: [source('official', { type: 'path', freshness: 'path' }), teamCache] }),
-          pluginSummaries: [...summaries(['official', 'demo']), ...summaries(['team', 'new'])],
-        })
-        .mockResolvedValueOnce({
-          payload: status({ sources: [source('official', { type: 'path', freshness: 'path' }), teamReady] }),
-          pluginSummaries: [...summaries(['official', 'demo']), ...summaries(['team', 'new'])],
-        }),
-      checkSource,
-      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
-    }));
-    await controller.load();
-    const review = await controller.buildOperationReview({
-      kind: 'sourceMutation', action: 'add', sourceId: 'team',
-      source: { id: 'team', type: 'git', primary: false, url: 'https://example.test/team.git', refPolicy: { type: 'cliChannel' }, subdir: 'catalog' },
-    });
-    expect(await controller.executeOperation(review.reviewToken)).toMatchObject({ state: 'succeeded' });
-
-    expect(checkSource).toHaveBeenCalledWith('team', expect.any(AbortSignal));
-    expect(checkSource).toHaveBeenCalledTimes(1);
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'team', state: 'checking' });
-    check.resolve();
-    await nextTurn();
-    await nextTurn();
-    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'team', state: 'ready' });
-  });
-
   function issueWriteFixture(afterWrite: TuiStatusLoadResult | Error) {
     const initial: TuiStatusLoadResult = {
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -2816,7 +2132,7 @@ describe('TUI v4 Review safety', () => {
   it('reports issueStillPresent after a successful command when the typed issue remains', async () => {
     const fixture = issueWriteFixture({
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -2850,7 +2166,7 @@ describe('TUI v4 Review safety', () => {
     };
     const loaded: TuiStatusLoadResult = {
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'base'], ['official', 'toolkit'], ['official', 'demo']),
@@ -2909,7 +2225,7 @@ describe('TUI v4 Review safety', () => {
   it('reports issue success only after the typed issue disappears', async () => {
     const fixture = issueWriteFixture({
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'present' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -2923,14 +2239,14 @@ describe('TUI v4 Review safety', () => {
   it('reloads status and blocks an all-failed receipt as an unconfirmed write', async () => {
     const refreshed = {
       payload: status({
-        sources: [source('official', { type: 'path', freshness: 'path' })],
+        sources: [source('official', { type: 'path' })],
         targets: [target({ scope: 'user', state: 'partial' })],
       }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const loadStatus = vi.fn()
       .mockResolvedValueOnce({
-        payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
+        payload: status({ sources: [source('official', { type: 'path' })] }),
         pluginSummaries: summaries(['official', 'demo']),
       })
       .mockResolvedValue(refreshed);
@@ -3113,7 +2429,7 @@ describe('TUI v4 Review safety', () => {
 
   it('reports a reset as unconfirmed when the post-write status reload fails', async () => {
     const initial = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
+      payload: status({ sources: [source('official', { type: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const loadStatus = vi.fn()
@@ -3146,12 +2462,12 @@ describe('TUI v4 Review safety', () => {
 
   it('accepts a reset receipt when the refreshed plugin bundle is unavailable', async () => {
     const initial = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
+      payload: status({ sources: [source('official', { type: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const unavailable = {
       payload: status({
-        sources: [source('official', { freshness: 'cache' })],
+        sources: [source('official')],
         targets: [target({ scope: 'user', state: 'error', errorCode: 'bundleUnavailable' })],
       }),
       pluginSummaries: [],
@@ -3252,7 +2568,7 @@ describe('TUI v4 Review safety', () => {
 
   it('confirms reset when the source remains ready after execution', async () => {
     const readyStatus = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path', primary: true })] }),
+      payload: status({ sources: [source('official', { type: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const controller = new TuiController(dependencies({
@@ -3273,7 +2589,7 @@ describe('TUI v4 Review safety', () => {
 
   it('reloads status and reports uncertainty when config runtime apply throws', async () => {
     const loadStatus = vi.fn().mockResolvedValue({
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
+      payload: status({ sources: [source('official', { type: 'path' })] }),
       pluginSummaries: summaries(['official', 'demo']),
     });
     const controller = new TuiController(dependencies({
@@ -3544,7 +2860,7 @@ describe('TUI v4 Review safety', () => {
     expect(router.snapshot.current.route).toMatchObject({ layer: { projectLayer: 'shared' } });
 
     const loaded = {
-      payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
+      payload: status({ sources: [source('official', { type: 'path' })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
     const loadSnapshot = structuredClone(loaded);
@@ -3673,13 +2989,13 @@ describe('TUI v4 Review safety', () => {
     expect(JSON.stringify(secondResult)).not.toContain('demo · Codex');
   });
 
-  it('binds source writes to candidate and inventory evidence without exposing private input', async () => {
+  it('binds source writes to proposed config and inventory evidence without exposing private input', async () => {
     const privatePath = '/Users/private/catalog';
     const sourceEvidence: OperationEvidence = {
       catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:candidate' },
       sourceWrite: {
         configDigest: 'sha256:before',
-        candidateDigest: 'sha256:candidate',
+        proposedConfigDigest: 'sha256:candidate',
         sourceIdentity: 'sha256:identity',
         inventoryDigest: 'sha256:inventory',
         referenceCount: 0,
@@ -3699,7 +3015,7 @@ describe('TUI v4 Review safety', () => {
       changes: [{ title: '本地目录', private: true }],
     });
 
-    expect(review.technicalDetails).toContain('候选配置：candidat');
+    expect(review.technicalDetails).toContain('新配置：candidat');
     expect(review.technicalDetails).toContain('引用清单：inventor · 0 项');
     expect(JSON.stringify(controller.snapshot)).not.toContain(privatePath);
     await controller.executeOperation(review.reviewToken);
@@ -3710,11 +3026,11 @@ describe('TUI v4 Review safety', () => {
   it('rebuilds a source Review with zero writes when config evidence becomes stale', async () => {
     const first: OperationEvidence = {
       catalog: { configDigest: 'sha256:one', compositeDigest: 'sha256:candidate-one' },
-      sourceWrite: { configDigest: 'sha256:one', candidateDigest: 'sha256:candidate-one', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
+      sourceWrite: { configDigest: 'sha256:one', proposedConfigDigest: 'sha256:candidate-one', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
     };
     const second: OperationEvidence = {
       catalog: { configDigest: 'sha256:two', compositeDigest: 'sha256:candidate-two' },
-      sourceWrite: { configDigest: 'sha256:two', candidateDigest: 'sha256:candidate-two', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
+      sourceWrite: { configDigest: 'sha256:two', proposedConfigDigest: 'sha256:candidate-two', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
     };
     const executeIntent = vi.fn();
     const controller = new TuiController(dependencies({
@@ -3726,13 +3042,13 @@ describe('TUI v4 Review safety', () => {
 
     expect(result).toMatchObject({ state: 'stale' });
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(controller.snapshot.activeReview?.technicalDetails).toContain('候选配置：candidat');
+    expect(controller.snapshot.activeReview?.technicalDetails).toContain('新配置：candidat');
   });
 
   it('maps a source config CAS conflict to the same typed stale Review', async () => {
     const sourceEvidence: OperationEvidence = {
       catalog: { configDigest: 'sha256:one', compositeDigest: 'sha256:candidate' },
-      sourceWrite: { configDigest: 'sha256:one', candidateDigest: 'sha256:candidate', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
+      sourceWrite: { configDigest: 'sha256:one', proposedConfigDigest: 'sha256:candidate', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
     };
     const conflict = new Error('Catalog source config changed concurrently.');
     conflict.name = 'CatalogSourcesConfigConflictError';

@@ -1,6 +1,6 @@
 # AW Authoring Profile
 
-先从 `aw catalog context --json` receipt 取得工作区根，再确认支持产品、允许修改文件、现有能力和调用策略。Workspace v1 的 canonical 插件根固定为 `<workspace-root>/plugins/<name>`，`.agents-plugin/plugin.json` 是插件源码真值；generated runtime、Catalog 和 cache 不由作者手改。不要要求调用方预先提供 root。
+依次从用户明确的 Workspace root、canonical `<root>/plugins/<name>` target 或上游 handoff 确定工作区根，再确认支持产品、允许修改文件、现有能力和调用策略。Workspace v1 的 canonical 插件根固定为 `<workspace-root>/plugins/<name>`，`.agents-plugin/plugin.json` 是插件源码真值；generated runtime、Catalog 和 cache 不由作者手改。只有明确的 current Workspace 请求可让公开 plugin 命令从 target 或 cwd 自动发现 root；定位不确定或多个 canonical targets 不一致时停止询问。
 
 AW CLI/Core 拥有 Workspace metadata、bundle 和 Catalog snapshot 的机器合同。作者只使用已安装 CLI 的公开入口，不依赖私有脚本或任意 `--plugin-root` 布局。
 

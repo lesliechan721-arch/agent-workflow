@@ -251,7 +251,7 @@ export interface CatalogManifestEntry {
   dependencies: PluginId[]; requires: PluginRequirements;
   source: string; artifactDigest: string; manifestDigest: string;
 }
-export interface CatalogManifestV5Entry extends CatalogManifestEntry {
+export interface CatalogManifestV6Entry extends CatalogManifestEntry {
   name: PluginId;
   contentDigest: string;
 }
@@ -259,23 +259,20 @@ export interface CatalogMarketplaceIdentity {
   owner: MarketplaceOwner;
   interface: MarketplaceInterfaceMeta;
 }
-export type CatalogManifestV5Release =
+export type CatalogManifestV6Release =
   | { state: 'development' }
   | {
       state: 'published';
-      targetVersion: string;
-      planId: string;
       sourceHead: string;
-      contentDigest: string;
     };
-export interface CatalogManifestV5 {
-  schemaVersion: 5;
+export interface CatalogManifestV6 {
+  schemaVersion: 6;
   catalogVersion: string;
   channel: CatalogChannel;
   requires: PluginRequirements;
   marketplace: CatalogMarketplaceIdentity;
-  release: CatalogManifestV5Release;
-  entries: CatalogManifestV5Entry[];
+  release: CatalogManifestV6Release;
+  entries: CatalogManifestV6Entry[];
 }
 export interface PlatformPluginManifest {
   name: string; version: PluginVersion; description: string;

@@ -25,9 +25,11 @@
         "regression",
         "plugin-minimum-architecture"
       ],
-      "prompt": "完整只读评审 plugins/review-chain。两个 Skill 单独有效，请判断这个插件内部 common path 是否最小。",
+      "prompt": "Workspace root 已明确为当前 $PWD。完整只读评审 plugins/review-chain。两个 Skill 单独有效，请判断这个插件内部 common path 是否最小。",
       "input": {
         "workspaceFiles": {
+          ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"review-chain-fixture\"}\n",
+          "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Review Chain Fixture\",\"url\":\"https://example.invalid/review-chain\"},\"interface\":{\"displayName\":\"Review Chain Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
           "plugins/review-chain/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"review-chain\",\"version\":\"0.1.0\",\"description\":\"Inspect and review one plugin.\",\"skills\":\"./skills\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}}}\n",
           "plugins/review-chain/README.md": "# Review Chain\n\nInspect and review one plugin.\n",
           "plugins/review-chain/skills/inspect/README.md": "# Inspect\n\nInspect one plugin.\n",
@@ -43,6 +45,7 @@
         "workspaceUnchanged": true
       },
       "assertions": [
+        "trace 运行 aw plugin validate plugins/review-chain --workspace-root $PWD；不运行任何 aw catalog 命令",
         "插件 common path 由 review-aw-plugin 自己评审",
         "leaf review 只用于定位",
         "不使用 target_level=plugin 调用 review-agent-skill"

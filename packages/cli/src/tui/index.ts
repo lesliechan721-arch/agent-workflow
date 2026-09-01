@@ -45,13 +45,8 @@ export {
 export { resolveTuiKeyAction, type TuiInputMode, type TuiKeyContext } from './keys.js';
 export { resolveTuiSizePolicy, type TuiLayoutMode, type TuiSizePolicy } from './layout.js';
 export {
-  CatalogRefreshCoordinator,
-  countCatalogPluginChanges,
   loadCatalogGenerationViewModels,
-  type CatalogCandidateViewModel,
   type CatalogGenerationViewModel,
-  type CatalogPluginChangesViewModel,
-  type CatalogRefreshState,
   type CatalogSourceGenerationViewModel,
 } from './catalog-generation.js';
 export { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from './runner.js';

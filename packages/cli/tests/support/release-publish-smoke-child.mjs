@@ -2,19 +2,19 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { publishPreparedRelease } from '../../../../scripts/release/prepared-release.mjs';
+import { runRelease } from '../../../../scripts/release/release.mjs';
 
 const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
 const descriptor = JSON.parse(await fs.readFile(path.join(config.preparedRoot, 'descriptor.json'), 'utf8'));
 const events = [];
 
-async function catalogAttemptState() {
+async function catalogJournalState() {
   if (!descriptor.axes.catalog) return null;
   try {
     const attempt = JSON.parse(await fs.readFile(path.join(
       config.workspaceRoot,
       '.aw',
       'publish',
-      'attempts',
       `${descriptor.candidates.catalog}.json`,
     ), 'utf8'));
     return attempt.state;
@@ -34,7 +34,7 @@ async function releaseAttemptCandidates() {
 }
 
 try {
-  await publishPreparedRelease({
+  const options = {
     preparedRoot: config.preparedRoot,
     repoRoot: config.workspaceRoot,
     attemptPath: config.attemptPath,
@@ -63,11 +63,21 @@ try {
     beforeRemoteWrite: async (target) => {
       if (target === undefined) events.push('catalog');
     },
-  });
+  };
+  if (config.entry === 'release') {
+    await runRelease(['release', '--catalog'], {
+      ...options,
+      commitMetadata: async () => null,
+      runVerification: async () => undefined,
+      prepare: async () => descriptor,
+    });
+  } else {
+    await publishPreparedRelease(options);
+  }
   process.stdout.write(JSON.stringify({
     ok: true,
     events,
-    catalogAttempt: await catalogAttemptState(),
+    catalogJournal: await catalogJournalState(),
     releaseAttempt: await releaseAttemptCandidates(),
   }));
 } catch (error) {
@@ -75,7 +85,7 @@ try {
     ok: false,
     events,
     error: String(error?.message),
-    catalogAttempt: await catalogAttemptState(),
+    catalogJournal: await catalogJournalState(),
     releaseAttempt: await releaseAttemptCandidates(),
   }));
 }

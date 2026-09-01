@@ -1,6 +1,5 @@
 import os from 'node:os'
 import path from 'node:path'
-import crypto from 'node:crypto'
 
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -21,20 +20,6 @@ import { validateMarketplaceSourceMeta } from '../../src/manifest-contract.js'
 import { createAwPluginRequirementsReceipt } from '../../src/aw-capabilities.js'
 
 const temporaryRoots: string[] = []
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>
-    return `{${Object.keys(record).sort().map((key) =>
-      `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`
-  }
-  return JSON.stringify(value)
-}
-
-function sha256(value: unknown): string {
-  return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`
-}
 
 async function createWorkspace(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-core-workspace-'))
@@ -379,7 +364,7 @@ describe('AW Catalog Workspace v1', () => {
     })
   })
 
-  it('builds a complete schema 5 snapshot for an empty plugin inventory', async () => {
+  it('builds a complete schema 6 snapshot for an empty plugin inventory', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     let adapterCalls = 0
@@ -393,7 +378,7 @@ describe('AW Catalog Workspace v1', () => {
     expect(built.pluginNames).toEqual([])
     await expect(fs.readdir(path.join(built.outputRoot, 'plugins'))).resolves.toEqual([])
     await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
-      manifest: { schemaVersion: 5, catalogVersion: '0.1.0', entries: [] },
+      manifest: { schemaVersion: 6, catalogVersion: '0.1.0', entries: [] },
     })
   })
 
@@ -446,7 +431,7 @@ describe('AW Catalog Workspace v1', () => {
       adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
     })
     await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
-      manifest: { schemaVersion: 5, catalogVersion: '0.1.0' },
+      manifest: { schemaVersion: 6, catalogVersion: '0.1.0' },
     })
     const agentsPath = path.join(built.outputRoot, '.agents', 'plugins', 'marketplace.json')
     const validMarketplace = await fs.readFile(agentsPath)
@@ -502,7 +487,7 @@ describe('AW Catalog Workspace v1', () => {
     )
   })
 
-  it('prepares first and subsequent published snapshots with immutable ledger history', async () => {
+  it('prepares published snapshots with minimal release metadata and no ledger', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
@@ -513,20 +498,14 @@ describe('AW Catalog Workspace v1', () => {
       adapter,
     })
     const firstValidation = await validatePublishedCatalogSnapshot(first.outputRoot)
-    expect(firstValidation.manifest.release).toMatchObject({
+    expect(firstValidation.manifest.release).toEqual({
       state: 'published',
-      targetVersion: '0.1.0',
       sourceHead: '1'.repeat(40),
     })
-    expect(firstValidation.ledger.records).toHaveLength(1)
-    const firstLedgerPath = path.join(first.outputRoot, 'plugin-release-ledger.json')
-    const firstLedger = await fs.readFile(firstLedgerPath)
-    await fs.remove(firstLedgerPath)
-    await expect(validateCatalogSnapshotComplete(first.outputRoot)).rejects.toThrow(/must include plugin-release-ledger/u)
-    await fs.writeFile(firstLedgerPath, firstLedger)
-    await fs.writeJson(firstLedgerPath, { schemaVersion: 2, records: [] })
-    await expect(validateCatalogSnapshotComplete(first.outputRoot)).rejects.toThrow(/does not match catalog entry/u)
-    await fs.writeFile(firstLedgerPath, firstLedger)
+    await expect(fs.pathExists(path.join(first.outputRoot, 'plugin-release-ledger.json'))).resolves.toBe(false)
+    await fs.writeJson(path.join(first.outputRoot, 'plugin-release-ledger.json'), { schemaVersion: 2, records: [] })
+    await expect(validateCatalogSnapshotComplete(first.outputRoot)).rejects.toThrow(/root layout/u)
+    await fs.remove(path.join(first.outputRoot, 'plugin-release-ledger.json'))
 
     await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
     const second = await preparePublishedCatalogWorkspace({
@@ -536,12 +515,9 @@ describe('AW Catalog Workspace v1', () => {
       adapter,
     })
     const secondValidation = await validatePublishedCatalogSnapshot(second.outputRoot)
-    expect(secondValidation.ledger.records).toHaveLength(2)
-    expect(secondValidation.manifest.release).toMatchObject({
+    expect(secondValidation.manifest.release).toEqual({
       state: 'published',
-      targetVersion: '0.2.0',
-      planId: second.contentDigest,
-      contentDigest: second.contentDigest,
+      sourceHead: '2'.repeat(40),
     })
     await mutateCatalogWorkspaceVersion(root, { version: '0.1.0' })
     await expect(preparePublishedCatalogWorkspace({
@@ -560,31 +536,12 @@ describe('AW Catalog Workspace v1', () => {
       marketplace.interface = { displayName: 'Tampered Catalog' }
       await fs.writeJson(marketplacePath, marketplace)
     }
-    const manifestPath = path.join(second.outputRoot, 'catalog-manifest.json')
-    const publishedManifest = await fs.readJson(manifestPath)
-    const changedContentDigest = sha256({
-      schemaIdentity: { schemaVersion: publishedManifest.schemaVersion },
-      marketplaceMetadata: {
-        name: 'aw',
-        owner: { name: 'Tampered Owner', url: 'https://example.invalid/tampered' },
-        interface: { displayName: 'Tampered Catalog' },
-      },
-      requires: publishedManifest.requires,
-      plugins: publishedManifest.entries.map((entry: Record<string, string>) => ({
-        name: entry.name,
-        targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
-        contentDigest: entry.contentDigest,
-      })),
-    })
-    publishedManifest.release.contentDigest = changedContentDigest
-    publishedManifest.release.planId = changedContentDigest
-    await fs.writeJson(manifestPath, publishedManifest)
     await expect(validateCatalogSnapshotComplete(second.outputRoot)).rejects.toThrow(
       /marketplace metadata or plugin inventory/u,
     )
   })
 
-  it('rejects a schema 4 publication parent before building the next snapshot', async () => {
+  it('rejects a schema 5 publication parent before building the next snapshot', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
@@ -597,7 +554,7 @@ describe('AW Catalog Workspace v1', () => {
     })
     const manifestPath = path.join(first.outputRoot, 'catalog-manifest.json')
     const publishedManifest = await fs.readJson(manifestPath)
-    await fs.writeJson(manifestPath, { ...publishedManifest, schemaVersion: 4 })
+    await fs.writeJson(manifestPath, { ...publishedManifest, schemaVersion: 5 })
 
     await mutateCatalogWorkspaceVersion(root, { version: '0.1.0-beta.2' })
     let buildCalled = false
@@ -606,7 +563,7 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: '5'.repeat(40),
       previousSnapshotRoot: first.outputRoot,
       adapter: { build: async () => { buildCalled = true } },
-    })).rejects.toThrow(/schemaVersion: expected 5/u)
+    })).rejects.toThrow(/schemaVersion: expected 6/u)
     expect(buildCalled).toBe(false)
   })
 
@@ -627,8 +584,7 @@ describe('AW Catalog Workspace v1', () => {
       channel: 'beta',
       release: {
         state: 'published',
-        targetVersion: '2.0.0',
-        planId: prepared.planId,
+        sourceHead: '4'.repeat(40),
       },
     })
     await expect(readCatalogWorkspace(root)).resolves.toMatchObject({
@@ -713,6 +669,191 @@ describe('AW Catalog Workspace v1', () => {
     })
   })
 
+  it('increments beta versions from only the adjacent manifest and resets on a higher source base', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0-beta.1' })
+    const first = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '7'.repeat(40),
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0-beta.2' })
+    const changedAdapter = {
+      async build({ outputRoot }: { outputRoot: string }) {
+        await writeBundle(outputRoot, manifest)
+        await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'changed')
+      },
+    }
+    const second = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '8'.repeat(40),
+      previousSnapshotRoot: first.outputRoot,
+      adapter: changedAdapter,
+    })
+    await expect(validatePublishedCatalogSnapshot(second.outputRoot)).resolves.toMatchObject({
+      manifest: { entries: [{ version: '0.1.0-beta.2' }] },
+    })
+
+    manifest.version = '0.2.0'
+    await fs.writeJson(
+      path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
+      manifest,
+    )
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0-beta.3' })
+    const third = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '9'.repeat(40),
+      previousSnapshotRoot: second.outputRoot,
+      adapter: changedAdapter,
+    })
+    await expect(validatePublishedCatalogSnapshot(third.outputRoot)).resolves.toMatchObject({
+      manifest: { entries: [{ version: '0.2.0-beta.1' }] },
+    })
+
+    manifest.version = '0.1.0'
+    await fs.writeJson(
+      path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
+      manifest,
+    )
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0-beta.4' })
+    await expect(preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: 'a'.repeat(40),
+      previousSnapshotRoot: third.outputRoot,
+      adapter: changedAdapter,
+    })).rejects.toThrow(/must not be lower than previous base/u)
+  })
+
+  it('promotes a beta to stable and preserves an equal stable entry in a later beta Catalog', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const adapter = { build: ({ outputRoot }: { outputRoot: string }) => writeBundle(outputRoot, manifest) }
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0-beta.1' })
+    const beta = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: 'b'.repeat(40),
+      adapter,
+    })
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.0' })
+    const stable = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: 'c'.repeat(40),
+      previousSnapshotRoot: beta.outputRoot,
+      adapter,
+    })
+    await expect(validatePublishedCatalogSnapshot(stable.outputRoot)).resolves.toMatchObject({
+      manifest: { entries: [{ version: '0.1.0' }] },
+    })
+
+    await mutateCatalogWorkspaceVersion(root, { version: '1.0.1-beta.1' })
+    await expect(preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: 'd'.repeat(40),
+      previousSnapshotRoot: stable.outputRoot,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'changed')
+        },
+      },
+    })).rejects.toThrow(/stable version 0\.1\.0 maps to different content/u)
+    const laterBeta = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: 'd'.repeat(40),
+      previousSnapshotRoot: stable.outputRoot,
+      adapter,
+    })
+    await expect(validatePublishedCatalogSnapshot(laterBeta.outputRoot)).resolves.toMatchObject({
+      manifest: { entries: [{ version: '0.1.0' }] },
+    })
+  })
+
+  it('allows a higher stable Plugin version and rejects a later downgrade', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const first = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '1'.repeat(40),
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+
+    manifest.version = '0.2.0'
+    await fs.writeJson(
+      path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
+      manifest,
+    )
+    await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
+    const second = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '2'.repeat(40),
+      previousSnapshotRoot: first.outputRoot,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, manifest)
+          await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'changed')
+        },
+      },
+    })
+    await expect(validatePublishedCatalogSnapshot(second.outputRoot)).resolves.toMatchObject({
+      manifest: { entries: [{ version: '0.2.0' }] },
+    })
+
+    manifest.version = '0.1.0'
+    await fs.writeJson(
+      path.join(root, 'plugins', 'atomic-plugin', '.agents-plugin', 'plugin.json'),
+      manifest,
+    )
+    await mutateCatalogWorkspaceVersion(root, { version: '0.3.0' })
+    await expect(preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '3'.repeat(40),
+      previousSnapshotRoot: second.outputRoot,
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })).rejects.toThrow(/must not be lower than previous/u)
+  })
+
+  it('forgets a removed Plugin before it is added again', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const adapter = { build: ({ outputRoot }: { outputRoot: string }) => writeBundle(outputRoot, manifest) }
+    const first = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: 'e'.repeat(40),
+      adapter,
+    })
+    await fs.remove(path.join(root, 'plugins', 'atomic-plugin'))
+    await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
+    const removed = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: 'f'.repeat(40),
+      previousSnapshotRoot: first.outputRoot,
+      adapter,
+    })
+
+    const readded = await writeSourcePlugin(root)
+    await mutateCatalogWorkspaceVersion(root, { version: '0.3.0' })
+    const third = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '0'.repeat(40),
+      previousSnapshotRoot: removed.outputRoot,
+      adapter: {
+        async build({ outputRoot }) {
+          await writeBundle(outputRoot, readded)
+          await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'new history')
+        },
+      },
+    })
+    await expect(validatePublishedCatalogSnapshot(third.outputRoot)).resolves.toMatchObject({
+      manifest: { entries: [{ version: '0.1.0' }] },
+    })
+  })
+
   it('rejects a bundle runtime requirements receipt that does not match its manifest', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
@@ -770,7 +911,7 @@ describe('AW Catalog Workspace v1', () => {
           await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'changed')
         },
       },
-    })).rejects.toThrow(/maps to different digests/u)
+    })).rejects.toThrow(/maps to different content/u)
   })
 
   it('rejects foreign forced outputs without changing their bytes', async () => {

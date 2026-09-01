@@ -505,7 +505,7 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
     expect(catalogManifest).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       catalogVersion: sourceMetadata.catalog.version,
       channel: String(sourceMetadata.catalog.version).includes('-') ? 'beta' : 'latest',
       release: { state: 'development' },
@@ -518,7 +518,7 @@ describe('build smoke', () => {
           contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }))),
     });
-    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v5']);
+    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v6']);
     expect(catalogManifest.entries.every((entry) =>
       entry.requires.aw.capabilities.includes('aw.plugin-manifest.v2'))).toBe(true);
     expect(catalogManifest).not.toHaveProperty('history');
@@ -529,8 +529,74 @@ describe('build smoke', () => {
       'catalog-manifest.json',
       'plugins',
     ]);
-    await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json')))
-      .resolves.toBe(false);
+    expect(await fs.readdir(outputRoot)).not.toContain('plugin-release-ledger.json');
+  });
+
+  it('uses strict requirements for the official compiled bundle entry', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const tempRoot = await createSmokeTempRoot(
+      'aw-smoke-strict-requirements-',
+      'build smoke strict requirements temp root',
+    );
+    const tempRepo = path.join(tempRoot, 'repo');
+    const outputRoot = path.join(tempRoot, 'plugins-dist');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+    const pluginRoot = path.join(tempRepo, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.config = {
+      schema: {
+        mode: { type: 'string', default: 'standard' },
+      },
+    };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const skillPath = path.join(pluginRoot, 'skills', 'commit', 'SKILL.md');
+    await fs.appendFile(skillPath, '\n```bash\naw config list\n```\n', 'utf8');
+
+    const { bundlePlugins } = await importSmokeSnapshotModule<{
+      bundlePlugins: (options: {
+        repoRoot: string;
+        outputRoot: string;
+        strictRequirements: boolean;
+      }) => Promise<unknown>;
+    }>(path.join(snapshot.cliDistRoot, 'scripts', 'bundle-plugins.js'));
+    await expect(bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      strictRequirements: true,
+    })).resolves.toBeDefined();
+
+    await fs.appendFile(
+      skillPath,
+      '\n```bash\naw catalog publish plan --json\n```\n',
+      'utf8',
+    );
+    await expect(bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      strictRequirements: true,
+    })).rejects.toThrow(
+      /plugin="git-commit" path="skills\/commit\/SKILL\.md" command="aw catalog publish" capability="aw\.catalog-publication\.v1"/u,
+    );
+
+    manifest.requires = { aw: { capabilities: ['aw.catalog-publication.v1'] } };
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.appendFile(
+      skillPath,
+      '\n```bash\naw future command\naw "$GROUP" status\n```\n',
+      'utf8',
+    );
+    const warningError = await bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      strictRequirements: true,
+    }).catch((cause: unknown) => cause) as Error & { code?: string };
+    expect(warningError.code).toBe('awCapabilityStrictRequirements');
+    expect(warningError.message).toContain(
+      'plugin="git-commit" path="skills/commit/SKILL.md" command="aw future command" capability="<unmapped>"',
+    );
+    expect(warningError.message).toContain('$GROUP');
+    expect(warningError.message).toContain('capability="<dynamic>"');
   });
 
   it('reuses a warm build without changing key output mtimes', async () => {
@@ -552,7 +618,7 @@ describe('build smoke', () => {
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
   });
 
-  it('materializes and completely validates schema 5 from real build bundles', async () => {
+  it('materializes and completely validates schema 6 from real build bundles', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
     const { validateCatalogSnapshotComplete } = await importSmokeSnapshotModule<{
@@ -561,7 +627,7 @@ describe('build smoke', () => {
       }>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
     const validated = await validateCatalogSnapshotComplete(outputRoot);
-    expect(validated.manifest.schemaVersion).toBe(5);
+    expect(validated.manifest.schemaVersion).toBe(6);
     expect(validated.manifest.entries.map((entry) => entry.name).sort())
       .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
     expect(validated.manifest.entries.every((entry) =>
@@ -590,7 +656,7 @@ describe('build smoke', () => {
       });
       expect(help.stdout).toContain('aw plugin validate');
       expect(help.stdout).toContain('aw catalog build');
-      expect(help.stdout).toContain('aw catalog publish --help');
+      expect(help.stdout).toContain('aw catalog publish plan --help');
       expect(help.stdout).not.toContain('pnpm release');
     }
   });

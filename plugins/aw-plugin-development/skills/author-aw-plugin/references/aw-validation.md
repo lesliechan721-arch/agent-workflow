@@ -10,7 +10,7 @@
 
 ## 删除分支
 
-只有 `author-aw-catalog` 已明确交接删除任务并传入 `<plugin-name>` 时才删除。Workspace root 来自 context receipt。没有 handoff 时停止，并要求调用 `author-aw-catalog`。先运行 `aw plugin remove --help`，再只用帮助公开参数执行：
+只有 `author-aw-catalog` 已明确交接删除任务并传入 `<plugin-name>` 时才删除。Workspace root 必须是用户明确提供、从 canonical plugin target 推导或由上游 handoff 解析的同一 root。没有 handoff 时停止，并要求调用 `author-aw-catalog`。先运行 `aw plugin remove --help`，再只用帮助公开参数执行：
 
 ```bash
 aw plugin remove <plugin-name> --workspace-root <workspace-root> --yes --json

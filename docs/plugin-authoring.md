@@ -93,7 +93,7 @@ Portable Agent Skills 是插件的显式增量 distribution。其 native capabil
 
 ## 版本与恢复
 
-日常 source 修改是否改变 plugin `version`，由目标 workspace 的版本策略和 `aw plugin status` 证据决定。不要为生成 bundle 自动提高版本。Catalog candidate、release ledger、remote branch、tag、attempt 和 publication recovery 由 [Catalog 作者指南](catalog-authoring.md)定义。
+日常 source 修改是否改变 plugin `version`，由目标 workspace 的版本策略和 `aw plugin status` 证据决定。不要为生成 bundle 自动提高版本。Catalog 版本选择、publish plan/apply、version-scoped publication journal、pending repo、remote branch/tag 和 recovery 由 [Catalog 作者指南](catalog-authoring.md)定义。
 
 单插件生成输出是弱状态，可重新运行 `aw plugin build`。安装结果失败时使用 receipt、`aw status`、`aw reinstall` 或安全的 `aw cleanup` 恢复；`cleanup --force` 只用于可证明为专属 AW-owned 的损坏输出，不删除 foreign/shared 内容。
 
