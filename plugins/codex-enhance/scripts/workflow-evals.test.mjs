@@ -59,12 +59,16 @@ function waitEvent({ timedOut = false, timeoutMs = 600_000 } = {}) {
   );
 }
 
-function messageEvent(messageType = 'FINAL_ANSWER', status = null) {
-  return lifecycleEvent('agent_message', null, {
-    message_type: messageType,
-    status,
-    task_name: '/root/evidence',
-  });
+function messageEvent(messageType = 'FINAL_ANSWER', status = null, payload = 'terminal result') {
+  return {
+    ...lifecycleEvent('agent_message', null, {
+      message_type: messageType,
+      status,
+      task_name: '/root',
+      payload,
+    }),
+    linked_thread_id: 'child-evidence',
+  };
 }
 
 function passingMessage() {
@@ -97,6 +101,7 @@ function testCorpusAndAssertions() {
   assert.equal(spec.version, 1);
   assert.equal(spec.suite.kind, 'codex-workflow');
   assert.equal(spec.suite.unitUnderTest, 'codex-explore');
+  assert.equal(spec.suite.policy.optimization, 'precision-first');
   assert.equal(spec.cases.length > 0, true);
   assert.equal(spec.cases.every((entry) => (
     typeof entry.id === 'string' &&
@@ -117,6 +122,22 @@ function testCorpusAndAssertions() {
     Number.isInteger(entry.expected?.criteria?.lifecycle?.max_recoveries)
   )), true);
   assert.equal(new Set(spec.cases.map((entry) => entry.id)).size, spec.cases.length);
+  const versionedCase = spec.cases.find((entry) => entry.id === 'versioned_docs_outcome');
+  assert.equal(versionedCase.input.parent_model, 'gpt-5.6-luna');
+  assert.equal(versionedCase.expected.criteria.target_skill_loaded, true);
+  assert.equal(versionedCase.expected.criteria.clean_context_leaf_delegation, true);
+  assert.equal(nonEmptyStrings(versionedCase.expected.criteria.leaf_terminal_includes_all), true);
+  assert.equal(nonEmptyStrings(versionedCase.expected.criteria.leaf_terminal_patterns), true);
+  assert.equal(JSON.stringify(versionedCase).includes('verification_tag'), false);
+  for (const leakedAnswer of [
+    'v1_timeout_seconds=30',
+    'v2_timeout_seconds=45',
+    'migration_timeout_seconds=45',
+    'migration_matches=v2',
+    'docs/vendor/api-v1.md:2',
+  ]) {
+    assert.equal(versionedCase.input.prompt.includes(leakedAnswer), false);
+  }
   assert.equal(outputContractCorpusDocument.version, 1);
   assert.equal(outputContractCorpusDocument.suite.unitUnderTest, 'codex-explore');
   assert.equal(outputContractCorpusDocument.cases.length, 6);
@@ -202,21 +223,22 @@ function testCorpusAndAssertions() {
     evaluateParentScopeIsolation([
       spawnEvent(),
       waitEvent(),
+      messageEvent('MESSAGE', 'progress', 'progress cites docs/vendor/api-v1.md:2'),
       lifecycleEvent('update_plan', { step: 'wait for delegated work' }),
       messageEvent(),
     ], ['synthetic-source/']).passed,
     true,
   );
 
-  const minimalVerification = runResult(passingMessage(), [
+  const postTerminalDuplicateRead = runResult(passingMessage(), [
     spawnEvent(),
     waitEvent(),
     messageEvent(),
     lifecycleEvent('exec_command', { cmd: 'sed -n 2p synthetic-source/result.txt' }),
   ]);
   assert.equal(
-    evaluateWorkflowRun(minimalVerification, syntheticExpected).passed,
-    true,
+    evaluateWorkflowRun(postTerminalDuplicateRead, syntheticExpected).passed,
+    false,
   );
 
   const wrongFacts = passingMessage().replace(
@@ -238,6 +260,203 @@ function testCorpusAndAssertions() {
     )?.passed,
     false,
   );
+}
+
+function versionedOutcome() {
+  return [
+    '- [direct] v1 timeout is 30 seconds — docs/vendor/api-v1.md:2',
+    '- [direct] v2 timeout is 45 seconds — docs/vendor/api-v2.md:2',
+    '- [direct] migration timeout is 45 seconds — docs/vendor/migration.md:2',
+    '- [inference] migration matches v2 — docs/vendor/migration.md:2; docs/vendor/api-v2.md:2',
+    'FACT v1_timeout_seconds=30',
+    'FACT v2_timeout_seconds=45',
+    'FACT migration_timeout_seconds=45',
+    'FACT migration_matches=v2',
+  ].join('\n');
+}
+
+function versionedRun() {
+  const childId = 'child-versioned';
+  const result = versionedOutcome();
+  const spawn = {
+    tool: 'spawn_agent',
+    call_id: 'spawn-versioned',
+    arguments: {
+      agent_type: 'codex-explore-standard',
+      message: '调查 docs/ 中的 timeout 演进。',
+      fork_turns: 'none',
+    },
+    output: { task_name: '/root/vendor_timeout_docs' },
+  };
+  const wait = {
+    tool: 'wait_agent',
+    arguments: { timeout_ms: 600_000 },
+    output: { message: 'Wait completed.', timed_out: false },
+  };
+  const delivered = {
+    tool: 'agent_message',
+    linked_thread_id: childId,
+    arguments: null,
+    output: {
+      message_type: 'FINAL_ANSWER',
+      task_name: null,
+      payload: result,
+    },
+  };
+  return {
+    ...runResult(result, [spawn, wait, delivered]),
+    loaded: true,
+    spawn_calls: [spawn],
+    leaf_trace: {
+      child_threads: [{
+        thread_id: childId,
+        agent_role: 'codex-explore-standard',
+        initial_user_message: null,
+        initial_opaque_link: { linkedCallId: 'spawn-versioned' },
+      }],
+    },
+    leaf_tool_calls: [delivered],
+  };
+}
+
+function testVersionedWorkflowOracle() {
+  const expected = workflowCorpusDocument.cases.find(
+    (entry) => entry.id === 'versioned_docs_outcome',
+  ).expected.criteria;
+  const passing = versionedRun();
+  assert.equal(evaluateWorkflowRun(passing, expected).passed, true);
+
+  const snakeCaseAssignments = structuredClone(passing);
+  const toSnakeCaseAssignments = (value) => value
+    .replace('v1 timeout is 30 seconds', 'v1_timeout_seconds=30')
+    .replace('v2 timeout is 45 seconds', 'v2_timeout_seconds=45')
+    .replace('migration timeout is 45 seconds', 'migration_timeout_seconds=45')
+    .replace('migration matches v2', 'migration_matches=v2');
+  snakeCaseAssignments.final_message = toSnakeCaseAssignments(
+    snakeCaseAssignments.final_message,
+  );
+  snakeCaseAssignments.leaf_tool_calls[0].output.payload = toSnakeCaseAssignments(
+    snakeCaseAssignments.leaf_tool_calls[0].output.payload,
+  );
+  snakeCaseAssignments.collaboration_timeline[2].output.payload =
+    snakeCaseAssignments.leaf_tool_calls[0].output.payload;
+  assert.equal(evaluateWorkflowRun(snakeCaseAssignments, expected).passed, true);
+
+  const compressedOutcome = versionedOutcome().replace(
+    [
+      '- [direct] v1 timeout is 30 seconds — docs/vendor/api-v1.md:2\n',
+      '- [direct] v2 timeout is 45 seconds — docs/vendor/api-v2.md:2\n',
+      '- [direct] migration timeout is 45 seconds — docs/vendor/migration.md:2',
+    ].join(''),
+    '- [direct] v1 timeout is 30 seconds docs/vendor/api-v1.md:2; v2 timeout is 45 seconds docs/vendor/api-v2.md:2; migration timeout is 45 seconds docs/vendor/migration.md:2',
+  );
+  const compressedRootDirectLines = structuredClone(passing);
+  compressedRootDirectLines.final_message = compressedOutcome;
+  assert.equal(evaluateWorkflowRun(compressedRootDirectLines, expected).passed, false);
+
+  const compressedChildDirectLines = structuredClone(passing);
+  compressedChildDirectLines.leaf_tool_calls[0].output.payload = compressedOutcome;
+  compressedChildDirectLines.collaboration_timeline[2].output.payload = compressedOutcome;
+  assert.equal(evaluateWorkflowRun(compressedChildDirectLines, expected).passed, false);
+
+  const missingLoad = structuredClone(passing);
+  missingLoad.loaded = false;
+  assert.equal(evaluateWorkflowRun(missingLoad, expected).passed, false);
+
+  const wrongRole = structuredClone(passing);
+  wrongRole.leaf_trace.child_threads[0].agent_role = 'codex-explore-quick';
+  assert.equal(evaluateWorkflowRun(wrongRole, expected).passed, false);
+
+  const inheritedContext = structuredClone(passing);
+  delete inheritedContext.spawn_calls[0].arguments.fork_turns;
+  assert.equal(evaluateWorkflowRun(inheritedContext, expected).passed, false);
+
+  const overriddenPreset = structuredClone(passing);
+  overriddenPreset.spawn_calls[0].arguments.model = 'gpt-5.6-luna';
+  assert.equal(evaluateWorkflowRun(overriddenPreset, expected).passed, false);
+
+  const missingTerminal = structuredClone(passing);
+  missingTerminal.leaf_tool_calls = [];
+  assert.equal(evaluateWorkflowRun(missingTerminal, expected).passed, false);
+
+  const conflictingTerminal = structuredClone(passing);
+  const conflict = structuredClone(conflictingTerminal.leaf_tool_calls[0]);
+  conflict.output.payload += '\nconflicting child result';
+  conflictingTerminal.leaf_tool_calls.push(conflict);
+  conflictingTerminal.collaboration_timeline.push(conflict);
+  assert.equal(evaluateWorkflowRun(conflictingTerminal, expected).passed, false);
+
+  const duplicateTerminal = structuredClone(passing);
+  duplicateTerminal.leaf_tool_calls.push(structuredClone(duplicateTerminal.leaf_tool_calls[0]));
+  duplicateTerminal.collaboration_timeline.push(
+    structuredClone(duplicateTerminal.collaboration_timeline[2]),
+  );
+  assert.equal(evaluateWorkflowRun(duplicateTerminal, expected).passed, true);
+
+  const differentChildTerminal = structuredClone(passing);
+  const differentChild = structuredClone(differentChildTerminal.collaboration_timeline[2]);
+  differentChild.linked_thread_id = 'child-other';
+  differentChildTerminal.collaboration_timeline.push(differentChild);
+  assert.equal(evaluateWorkflowRun(differentChildTerminal, expected).passed, false);
+
+  const wrongRootFact = structuredClone(passing);
+  wrongRootFact.final_message = wrongRootFact.final_message.replace(
+    'FACT v1_timeout_seconds=30',
+    'FACT v1_timeout_seconds=31',
+  );
+  assert.equal(evaluateWorkflowRun(wrongRootFact, expected).passed, false);
+
+  const wrongChildLocator = structuredClone(passing);
+  for (const terminal of wrongChildLocator.leaf_tool_calls) {
+    terminal.output.payload = terminal.output.payload.replace(
+      'docs/vendor/api-v1.md:2',
+      'docs/vendor/api-v1.md:3',
+    );
+  }
+  assert.equal(evaluateWorkflowRun(wrongChildLocator, expected).passed, false);
+
+  const wrongInference = structuredClone(passing);
+  wrongInference.final_message = wrongInference.final_message.replace(
+    '[inference] migration matches v2',
+    '[direct] migration matches v2',
+  );
+  assert.equal(evaluateWorkflowRun(wrongInference, expected).passed, false);
+
+  const parentDocsRead = structuredClone(passing);
+  parentDocsRead.collaboration_timeline.splice(1, 0,
+    lifecycleEvent('exec_command', { cmd: 'rg timeout docs/' }));
+  assert.equal(evaluateWorkflowRun(parentDocsRead, expected).passed, false);
+
+  const parentDocsReadBeforeSpawn = structuredClone(passing);
+  parentDocsReadBeforeSpawn.collaboration_timeline.unshift(
+    lifecycleEvent('exec_command', { cmd: 'rg timeout docs/' }),
+  );
+  assert.equal(evaluateWorkflowRun(parentDocsReadBeforeSpawn, expected).passed, false);
+
+  const parentDocsReadAfterTerminal = structuredClone(passing);
+  parentDocsReadAfterTerminal.collaboration_timeline.push(
+    lifecycleEvent('exec_command', { cmd: 'sed -n 2p docs/vendor/api-v2.md' }),
+  );
+  assert.equal(evaluateWorkflowRun(parentDocsReadAfterTerminal, expected).passed, false);
+
+  const changedWorkspace = structuredClone(passing);
+  changedWorkspace.workspace_changes.modified.push('docs/vendor/api-v1.md');
+  assert.equal(evaluateWorkflowRun(changedWorkspace, expected).passed, false);
+
+  const shortInitialWait = structuredClone(passing);
+  shortInitialWait.collaboration_timeline[1].arguments.timeout_ms = 599_999;
+  assert.equal(evaluateWorkflowRun(shortInitialWait, expected).passed, false);
+
+  const earlyCleanup = structuredClone(passing);
+  earlyCleanup.collaboration_timeline.splice(1, 0,
+    lifecycleEvent('close_agent', { target: 'child-versioned' }));
+  assert.equal(evaluateWorkflowRun(earlyCleanup, expected).passed, false);
+
+  const cleanupAfterTerminal = structuredClone(passing);
+  cleanupAfterTerminal.collaboration_timeline.push(
+    lifecycleEvent('close_agent', { target: 'child-versioned' }),
+  );
+  assert.equal(evaluateWorkflowRun(cleanupAfterTerminal, expected).passed, true);
 }
 
 function rolloutLine(payload) {
@@ -444,19 +663,19 @@ function testLifecycleAssertions() {
       {
         timed_out: false,
         status: {
-          'agent-id': { completed: 'Status: completed' },
+          '/root/evidence': { completed: 'Status: completed' },
         },
       },
     ),
   ];
-  assert.equal(evaluateLifecycleTrace(v1CompletedWait, lifecycleContract).passed, true);
+  assertLifecycleFailure(v1CompletedWait, 'result_before_final');
   assert.equal(
     evaluateParentScopeIsolation(v1CompletedWait, ['docs/']).passed,
-    true,
+    false,
   );
   assert.deepEqual(collectFinalAgentResults(v1CompletedWait), [{
     source: 'wait_agent',
-    task_name: 'agent-id',
+    task_name: '/root/evidence',
     text: 'Status: completed',
   }]);
 
@@ -583,6 +802,7 @@ async function testRoleContractDigest() {
 
 async function main() {
   testCorpusAndAssertions();
+  testVersionedWorkflowOracle();
   testLeafOutputAssertions();
   testLifecycleAssertions();
   await testRoleContractDigest();

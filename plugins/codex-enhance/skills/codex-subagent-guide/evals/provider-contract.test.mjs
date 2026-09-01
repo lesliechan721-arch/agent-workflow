@@ -84,7 +84,7 @@ function evidence(calls) {
     workspaceDiff: { added: [], removed: [], modified: [] },
     skillLoads: [{ threadId: 'root', skill: 'codex-subagent-guide', callId: 'load' }],
     threadGraph: [{
-      threadId: 'root', parentThreadId: null, agentPath: null, agentRole: null,
+      threadId: 'root', parentThreadId: null, agentRole: null,
       initialMessage: { kind: 'plaintext', text: 'root' },
       developerContext: {
         present: true, messageCount: 1, sha256: 'sha256:root',
@@ -120,7 +120,7 @@ function v1RoutingEvidence() {
     workspaceDiff: { added: [], removed: [], modified: [] },
     skillLoads: [{ threadId: 'root', skill: 'codex-subagent-guide', callId: 'load' }],
     threadGraph: [{
-      threadId: 'root', parentThreadId: null, agentPath: null, agentRole: null,
+      threadId: 'root', parentThreadId: null, agentRole: null,
       initialMessage: { kind: 'plaintext', text: 'root' },
       developerContext: {
         present: true, messageCount: 1, sha256: 'sha256:root',
@@ -128,7 +128,7 @@ function v1RoutingEvidence() {
         hasCodexExploreDeveloperAuthorization: false,
       },
     }, {
-      threadId: 'child', parentThreadId: 'root', agentPath: '/root/child',
+      threadId: 'child', parentThreadId: 'root',
       agentRole: 'codex-subagent-simple',
       initialMessage: { kind: 'plaintext', text: 'work' },
       developerContext: {
@@ -173,6 +173,14 @@ test('all Subagent Guide commands prepare bounded requests without starting Code
         exposeSpawnAgentModelOverrides: !(suite.id === 'routing' && document.cases[0].input.runtimeProfile === 'v1'),
       });
     }
+    const routing = JSON.parse(await readFile(path.join(sourceEvalRoot, 'provider-evals.json'), 'utf8'));
+    const v2 = routing.cases.find((entry) => entry.id === 'simple_preset_fresh-v2');
+    const v2Request = JSON.parse((await invoke(
+      'run-routing-evals.mjs',
+      adapterInput('prepare', v2, root),
+      env,
+    )).stdout);
+    assert.match(v2Request.prompt, /固定单行最终确认 `ROUTING_SPAWNED`/u);
     await assert.rejects(readFile(marker));
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -162,10 +162,14 @@ function commandLoadedSkill(calls, skill, loads = [], threadId = null) {
   });
 }
 
-function callLinkedToThread(call, thread) {
-  return call?.output?.agent_id === thread?.thread_id ||
-    call?.output?.agentId === thread?.thread_id ||
-    thread?.initial_opaque_link?.linkedCallId === call?.call_id;
+export function callLinkedToThread(call, thread) {
+  if (!call || !thread || typeof thread.thread_id !== 'string') return false;
+  const agentId = call.output?.agent_id ?? call.output?.agentId;
+  if (typeof agentId === 'string' && agentId === thread.thread_id) return true;
+  const callId = call.call_id;
+  const linkedCallId = thread.initial_opaque_link?.linkedCallId;
+  return typeof callId === 'string' && callId !== '' &&
+    typeof linkedCallId === 'string' && linkedCallId === callId;
 }
 
 function evaluateNestedDelegation(run, expected) {

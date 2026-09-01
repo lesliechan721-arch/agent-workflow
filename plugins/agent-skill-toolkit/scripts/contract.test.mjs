@@ -261,6 +261,47 @@ test('Eval case validator admits exact trigger routes only at the trigger layer'
   }
 });
 
+test('Eval case validator admits first-class codex-workflow provider cases', async () => {
+  const validator = path.join(
+    runtimeRoot,
+    'skills/audit-agent-skill-evals/scripts/validate-eval-cases.mjs',
+  );
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-case-codex-workflow-'));
+  try {
+    const casesPath = path.join(temporary, 'cases.json');
+    await writeFile(casesPath, JSON.stringify({
+      version: 1,
+      suite: {
+        kind: 'codex-workflow',
+        unitUnderTest: 'codex-explore',
+        policy: {
+          optimization: 'precision-first',
+          falseNegativeCost: 'high',
+          falsePositiveCost: 'critical',
+          rationale: 'Delegation evidence must remain observable.',
+        },
+      },
+      cases: [{
+        id: 'versioned_docs_outcome',
+        split: 'validation',
+        tags: [],
+        input: { prompt: 'Inspect docs through one delegated role.' },
+        expected: { criteria: { spawn_count: 1 } },
+      }],
+    }));
+    const { stdout } = await execFileAsync(process.execPath, [
+      validator, casesPath, '--strict', '--format', 'json',
+    ], { encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(stdout), {
+      valid: true,
+      summary: { errors: 0, warnings: 0, cases: 1 },
+      diagnostics: [],
+    });
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test('EvalAudit v1 rejects removed v3 result fields', async () => {
   if (!context) return;
   const validator = path.join(sourceRoot, 'scripts/validate-json-contract.mjs');

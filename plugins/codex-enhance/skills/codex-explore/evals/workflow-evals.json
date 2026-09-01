@@ -4,7 +4,7 @@
     "kind": "codex-workflow",
     "unitUnderTest": "codex-explore",
     "policy": {
-      "optimization": "critical",
+      "optimization": "precision-first",
       "falseNegativeCost": "high",
       "falsePositiveCost": "critical",
       "rationale": "漏掉证据、终态或来源定位会使最终结论不可核验；越过只读边界、错误 role 或提前完成属于关键失败，不能由其它 case 抵消。"
@@ -16,7 +16,8 @@
       "split": "validation",
       "tags": [],
       "input": {
-        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请委派 standard role，在 docs/ 的全部候选文档中搜索并筛选与 vendor API timeout 演进及 migration 对齐版本有关的材料；相关文件名和位置未知。委派后等待探索完成，再说明 timeout 如何变化以及 migration 与哪个版本一致，给出文件与行号，区分直接证据和推断；不要修改文件。最终答复末尾逐行输出：`FACT v1_timeout_seconds=<值>`、`FACT v2_timeout_seconds=<值>`、`FACT migration_timeout_seconds=<值>`、`FACT migration_matches=<版本>`。",
+        "parent_model": "gpt-5.6-luna",
+        "prompt": "$codex-explore 当前没有其它可并行的本地工作。请以 clean context 委派 standard role，spawn 不要覆盖 model 或 reasoning；在 docs/ 的全部候选文档中搜索并筛选与 vendor API timeout 演进及 migration 对齐版本有关的材料，相关文件名和位置未知。等待 child 返回后再完成，不要修改文件，也不要由 parent 重复调查 docs/。child 结果和最终答复都必须用三行 `[direct]` 分别报告 v1 timeout、v2 timeout、migration timeout 及各自调查得到的精确 `relative/path:line` locator，再用一行 `[inference]` 报告 migration 与哪个版本一致及两个支持 locator。两份结果都逐行输出：`FACT v1_timeout_seconds=<整数>`、`FACT v2_timeout_seconds=<整数>`、`FACT migration_timeout_seconds=<整数>`、`FACT migration_matches=<版本>`。",
         "codex_config": {
           "features.multi_agent_v2.enabled": true,
           "features.multi_agent_v2.hide_spawn_agent_metadata": true,
@@ -27,20 +28,37 @@
         "criteria": {
           "spawn_count": 1,
           "agent_type": "codex-explore-standard",
+          "target_skill_loaded": true,
+          "clean_context_leaf_delegation": true,
+          "leaf_terminal_includes_all": [
+            "docs/vendor/api-v1.md:2",
+            "docs/vendor/api-v2.md:2",
+            "docs/vendor/migration.md:2",
+            "FACT v1_timeout_seconds=30",
+            "FACT v2_timeout_seconds=45",
+            "FACT migration_timeout_seconds=45",
+            "FACT migration_matches=v2"
+          ],
+          "leaf_terminal_patterns": [
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*direct\\s*\\](?=[^\\n]*(?:v1_timeout_seconds\\s*=\\s*30(?!\\d)|v1\\s+timeout(?:\\s*=\\s*30(?!\\d)|\\s+is\\s+30\\s+seconds?\\b)))(?=[^\\n]*docs/vendor/api-v1\\.md:2(?![-\\d]))[^\\n]+",
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*direct\\s*\\](?=[^\\n]*(?:v2_timeout_seconds\\s*=\\s*45(?!\\d)|v2\\s+timeout(?:\\s*=\\s*45(?!\\d)|\\s+is\\s+45\\s+seconds?\\b)))(?=[^\\n]*docs/vendor/api-v2\\.md:2(?![-\\d]))[^\\n]+",
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*direct\\s*\\](?=[^\\n]*(?:migration_timeout_seconds\\s*=\\s*45(?!\\d)|migration\\s+timeout(?:\\s*=\\s*45(?!\\d)|\\s+is\\s+45\\s+seconds?\\b)))(?=[^\\n]*docs/vendor/migration\\.md:2(?![-\\d]))[^\\n]+",
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*inference\\s*\\](?=[^\\n]*(?:migration_matches\\s*=\\s*v2(?![\\w-])|migration\\s+matches(?:\\s*=\\s*|\\s+)v2(?![\\w-])))(?=[^\\n]*docs/vendor/api-v2\\.md:2(?![-\\d]))(?=[^\\n]*docs/vendor/migration\\.md:2(?![-\\d]))[^\\n]+"
+          ],
           "final_message_includes_all": [
-            "docs/vendor/api-v1.md",
-            "docs/vendor/api-v2.md",
-            "docs/vendor/migration.md",
-            "直接证据",
+            "docs/vendor/api-v1.md:2",
+            "docs/vendor/api-v2.md:2",
+            "docs/vendor/migration.md:2",
             "FACT v1_timeout_seconds=30",
             "FACT v2_timeout_seconds=45",
             "FACT migration_timeout_seconds=45",
             "FACT migration_matches=v2"
           ],
           "final_message_patterns": [
-            "docs/vendor/api-v1\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
-            "docs/vendor/api-v2\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
-            "docs/vendor/migration\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*direct\\s*\\](?=[^\\n]*(?:v1_timeout_seconds\\s*=\\s*30(?!\\d)|v1\\s+timeout(?:\\s*=\\s*30(?!\\d)|\\s+is\\s+30\\s+seconds?\\b)))(?=[^\\n]*docs/vendor/api-v1\\.md:2(?![-\\d]))[^\\n]+",
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*direct\\s*\\](?=[^\\n]*(?:v2_timeout_seconds\\s*=\\s*45(?!\\d)|v2\\s+timeout(?:\\s*=\\s*45(?!\\d)|\\s+is\\s+45\\s+seconds?\\b)))(?=[^\\n]*docs/vendor/api-v2\\.md:2(?![-\\d]))[^\\n]+",
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*direct\\s*\\](?=[^\\n]*(?:migration_timeout_seconds\\s*=\\s*45(?!\\d)|migration\\s+timeout(?:\\s*=\\s*45(?!\\d)|\\s+is\\s+45\\s+seconds?\\b)))(?=[^\\n]*docs/vendor/migration\\.md:2(?![-\\d]))[^\\n]+",
+            "(?:^|\\n)\\s*(?:-\\s+)?\\[\\s*inference\\s*\\](?=[^\\n]*(?:migration_matches\\s*=\\s*v2(?![\\w-])|migration\\s+matches(?:\\s*=\\s*|\\s+)v2(?![\\w-])))(?=[^\\n]*docs/vendor/api-v2\\.md:2(?![-\\d]))(?=[^\\n]*docs/vendor/migration\\.md:2(?![-\\d]))[^\\n]+"
           ],
           "delegated_source_prefixes": [
             "docs/"

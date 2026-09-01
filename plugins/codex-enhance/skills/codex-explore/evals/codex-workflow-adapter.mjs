@@ -209,6 +209,12 @@ export async function readWorkflowEvidence(evidencePath) {
   for (const key of ['skillLoads', 'threadGraph', 'collaborationCalls', 'leafCalls']) {
     requiredArray(evidence[key], `workflow evidence.${key}`);
   }
+  for (const thread of evidence.threadGraph) {
+    const entry = record(thread, 'workflow evidence.threadGraph[]');
+    if (Object.hasOwn(entry, 'agentPath') || Object.hasOwn(entry, 'agent_path')) {
+      throw new Error('workflow evidence.threadGraph must not expose agent paths.');
+    }
+  }
   return evidence;
 }
 
@@ -225,6 +231,7 @@ function oldCall(call) {
     ordinal: call.ordinal,
     thread_id: call.threadId,
     parent_thread_id: call.parentThreadId,
+    linked_thread_id: call.linkedThreadId ?? null,
     call_id: call.callId,
     namespace: call.namespace,
     tool: call.tool,
@@ -234,17 +241,27 @@ function oldCall(call) {
   };
 }
 
-function collectFinalAgentResults(calls) {
+function collectFinalAgentResults(calls, descendantIds) {
   const results = [];
+  const terminalResults = new Set();
+  const add = (threadId, value) => {
+    if (!descendantIds.has(threadId)) return;
+    if (typeof value !== 'string' || value.trim() === '') return;
+    const text = value.trim();
+    const key = `${threadId}\0${text}`;
+    if (terminalResults.has(key)) return;
+    terminalResults.add(key);
+    results.push({ text });
+  };
   for (const call of calls) {
     if (call.tool === 'agent_message' && call.output?.message_type === 'FINAL_ANSWER') {
-      if (typeof call.output.payload === 'string') results.push({ text: call.output.payload });
+      add(call.linked_thread_id ?? call.thread_id, call.output.payload);
       continue;
     }
     if (call.tool !== 'wait_agent' || !call.output?.status || typeof call.output.status !== 'object') continue;
-    for (const status of Object.values(call.output.status)) {
+    for (const [threadId, status] of Object.entries(call.output.status)) {
       if (status && typeof status === 'object' && typeof status.completed === 'string') {
-        results.push({ text: status.completed });
+        add(threadId, status.completed);
       }
     }
   }
@@ -258,7 +275,9 @@ export function evidenceRun(evidence) {
     .filter((call) => call.threadId === evidence.rootThreadId)
     .map(oldCall);
   const leafCalls = evidence.leafCalls
-    .filter((call) => descendantIds.has(call.threadId))
+    .filter((call) =>
+      descendantIds.has(call.threadId)
+      || descendantIds.has(call.linkedThreadId))
     .map(oldCall);
   const loads = new Set(evidence.skillLoads.map((load) => `${load.threadId}\0${load.skill}`));
   const spawnCalls = calls.filter((call) => call.thread_id === evidence.rootThreadId && call.tool === 'spawn_agent');
@@ -270,14 +289,13 @@ export function evidenceRun(evidence) {
     spawn_calls: spawnCalls,
     collaboration_timeline: calls,
     leaf_tool_calls: leafCalls,
-    leaf_results: collectFinalAgentResults(leafCalls),
+    leaf_results: collectFinalAgentResults(leafCalls, descendantIds),
     leaf_trace_available: descendants.length > 0,
     leaf_trace: {
       parent_thread_ids: [evidence.rootThreadId],
       child_threads: descendants.map((thread) => ({
         thread_id: thread.threadId,
         parent_thread_id: thread.parentThreadId,
-        agent_path: thread.agentPath,
         agent_role: thread.agentRole,
         initial_user_message: thread.initialMessage?.kind === 'plaintext' ? thread.initialMessage.text : null,
         initial_opaque_link: thread.initialMessage?.kind === 'opaque-link' ? thread.initialMessage : null,

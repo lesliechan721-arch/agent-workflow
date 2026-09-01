@@ -15,6 +15,8 @@ import { spawn } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { evidenceRun } from './codex-workflow-adapter.mjs';
+
 const evalRoot = path.dirname(fileURLToPath(import.meta.url));
 const roles = [
   'codex-explore-custom',
@@ -84,7 +86,7 @@ function evidence(agentType = 'codex-explore-quick') {
     workspaceDiff: { added: [], removed: [], modified: [] },
     skillLoads: [{ threadId: 'root', skill: 'codex-explore', callId: 'load' }],
     threadGraph: [{
-      threadId: 'root', parentThreadId: null, agentPath: null, agentRole: null,
+      threadId: 'root', parentThreadId: null, agentRole: null,
       initialMessage: { kind: 'plaintext', text: 'root' },
       developerContext: {
         present: true, messageCount: 1, sha256: 'sha256:root',
@@ -109,7 +111,6 @@ function thread(threadId, parentThreadId, agentRole, initialMessage, developer =
   return {
     threadId,
     parentThreadId,
-    agentPath: parentThreadId ? `/root/${threadId}` : null,
     agentRole,
     initialMessage,
     developerContext: {
@@ -173,13 +174,13 @@ function scopeIsolationEvidence(finalMessage, leafResult) {
     ordinal: 1, threadId: 'root', parentThreadId: null, callId: 'spawn',
     namespace: 'multi_agent_v2', tool: 'spawn_agent', status: 'completed',
     arguments: { agent_type: 'codex-explore-quick', message: 'inspect', fork_turns: 'none' },
-    output: { agentId: 'child' },
+    output: { task_name: '/root/inspect' },
   };
   const rootWait = {
     ordinal: 2, threadId: 'root', parentThreadId: null, callId: 'wait',
     namespace: 'multi_agent_v2', tool: 'wait_agent', status: 'completed',
     arguments: { timeout_ms: 600_000 },
-    output: { status: { child: { completed: leafResult } } },
+    output: { message: 'Wait completed.', timed_out: false },
   };
   const leafRg = {
     ordinal: 3, threadId: 'child', parentThreadId: 'root', callId: 'rg',
@@ -192,9 +193,9 @@ function scopeIsolationEvidence(finalMessage, leafResult) {
     arguments: { cmd: 'sed -n 1,20p docs/output/shared-policy.md' }, output: { exitCode: 0 },
   };
   const leafFinal = {
-    ordinal: 5, threadId: 'child', parentThreadId: 'root', callId: null,
+    ordinal: 5, threadId: 'root', parentThreadId: null, linkedThreadId: 'child', callId: null,
     namespace: 'collaboration', tool: 'agent_message', status: 'completed', arguments: null,
-    output: { messageType: 'FINAL_ANSWER', status: null, taskName: 'child', payload: leafResult },
+    output: { messageType: 'FINAL_ANSWER', status: null, taskName: '/root', payload: leafResult },
   };
   return {
     version: 1,
@@ -243,7 +244,30 @@ test('all Explore workflow commands prepare bounded requests without starting Co
       ]);
       assert.equal(request.roles.every((role) => !path.isAbsolute(role.configFile)), true);
       assert.equal(request.model === null || suite.provider.allowedModels.includes(request.model), true);
+      if (suite.id === 'workflow') {
+        assert.equal(request.sandbox, 'read-only');
+        assert.equal(request.model, 'gpt-5.6-luna');
+        assert.match(request.prompt, /clean context/u);
+        assert.match(request.prompt, /spawn 不要覆盖 model 或 reasoning/u);
+        assert.match(request.prompt, /child 结果和最终答复/u);
+        assert.match(request.prompt, /FACT v1_timeout_seconds=<整数>/u);
+        assert.doesNotMatch(request.prompt, /v1_timeout_seconds=30/u);
+        assert.doesNotMatch(request.prompt, /docs\/vendor\/api-v1\.md:2/u);
+        assert.doesNotMatch(request.prompt, /verification tag/iu);
+      }
+      if (suite.id === 'output-contract') {
+        assert.match(request.prompt, /首行必须是 `Status: completed`/u);
+        assert.match(request.prompt, /`## Findings`/u);
+        assert.match(request.prompt, /`- \[direct\] claim — evidence`/u);
+        assert.match(request.prompt, /没有未知项时不要输出 `## Gaps`/u);
+        assert.doesNotMatch(request.prompt, /docs\/output\/shared-policy\.md/u);
+        assert.doesNotMatch(request.prompt, /(?<!path):[23]\b/u);
+      }
     }
+    assert.match(
+      await readFile(path.join(root, 'workspace', 'subject', 'docs', 'output', 'shared-policy.md'), 'utf8'),
+      /^# Shared policy — current version$/mu,
+    );
     await assert.rejects(readFile(marker));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -322,7 +346,7 @@ test('Explore grade consumes canonical V1 nested evidence and rejects authorizat
   }
 });
 
-test('Explore root timeline excludes child investigation while leaf evidence remains gradeable', async () => {
+test('Explore root-delivered child final is one leaf result and child investigation stays isolated', async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'explore-scope-grade-')));
   try {
     await Promise.all([
@@ -340,12 +364,79 @@ test('Explore root timeline excludes child investigation while leaf evidence rem
     const leafResult = [
       'Status: completed',
       '## Findings',
-      '- [direct] retry 3 at docs/output/shared-policy.md:2 and backoff 5 at docs/output/shared-policy.md:3 — direct policy.',
+      '- [direct] retry limit is 3 — docs/output/shared-policy.md:2',
+      '- [direct] backoff is 5 seconds — docs/output/shared-policy.md:3',
     ].join('\n');
     const input = adapterInput('grade', selectedCase, root);
+    const observed = scopeIsolationEvidence(finalMessage, leafResult);
     await Promise.all([
-      writeFile(input.paths.evidence, JSON.stringify(scopeIsolationEvidence(finalMessage, leafResult))),
+      writeFile(input.paths.evidence, JSON.stringify(observed)),
       writeFile(input.paths.modelOutput, `${finalMessage}\n`),
+    ]);
+    const result = await invoke('run-workflow-evals.mjs', input);
+    assert.equal(result.code, 0, result.stderr);
+    const grade = JSON.parse(result.stdout);
+    assert.equal(grade.passed, true);
+    assert.equal(
+      grade.details.assertions.find((entry) => entry.name === 'leaf:result_count').evidence,
+      'count=1',
+    );
+
+    const scattered = structuredClone(observed);
+    const terminal = scattered.leafCalls.find((call) => call.tool === 'agent_message');
+    terminal.output.payload = [
+      'Status: completed',
+      '## Findings',
+      '- [direct] current policy located — authoritative document',
+      'retry 3 at docs/output/shared-policy.md:2',
+      'backoff 5 at docs/output/shared-policy.md:3',
+    ].join('\n');
+    await writeFile(input.paths.evidence, JSON.stringify(scattered));
+    const scatteredGrade = JSON.parse((await invoke('run-workflow-evals.mjs', input)).stdout);
+    assert.equal(scatteredGrade.passed, false);
+
+    const unlinked = structuredClone(observed);
+    for (const call of unlinked.leafCalls) delete call.linkedThreadId;
+    await writeFile(input.paths.evidence, JSON.stringify(unlinked));
+    const rejected = JSON.parse((await invoke('run-workflow-evals.mjs', input)).stdout);
+    assert.equal(rejected.passed, false);
+    assert.equal(
+      rejected.details.assertions.find((entry) => entry.name === 'leaf:result_count').evidence,
+      'count=0',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Explore workflow grades the safe V2 versioned Result shape', async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'explore-versioned-grade-')));
+  try {
+    await Promise.all([
+      writeWorkspace(path.join(root, 'workspace', 'subject')),
+      mkdir(path.join(root, 'workspace', 'eval'), { recursive: true }),
+      mkdir(path.join(root, 'output')),
+    ]);
+    const document = JSON.parse(await readFile(path.join(evalRoot, 'workflow-evals.json'), 'utf8'));
+    const selectedCase = document.cases.find((entry) => entry.id === 'versioned_docs_outcome');
+    const outcome = [
+      '- [direct] v1 timeout is 30 seconds — docs/vendor/api-v1.md:2',
+      '- [direct] v2 timeout is 45 seconds — docs/vendor/api-v2.md:2',
+      '- [direct] migration timeout is 45 seconds — docs/vendor/migration.md:2',
+      '- [inference] migration matches v2 — docs/vendor/migration.md:2; docs/vendor/api-v2.md:2',
+      'FACT v1_timeout_seconds=30',
+      'FACT v2_timeout_seconds=45',
+      'FACT migration_timeout_seconds=45',
+      'FACT migration_matches=v2',
+    ].join('\n');
+    const observed = scopeIsolationEvidence(outcome, outcome);
+    observed.threadGraph[1].agentRole = 'codex-explore-standard';
+    observed.collaborationCalls[0].arguments.agent_type = 'codex-explore-standard';
+    observed.collaborationCalls[0].output.task_name = '/root/vendor_timeout_docs';
+    const input = adapterInput('grade', selectedCase, root);
+    await Promise.all([
+      writeFile(input.paths.evidence, JSON.stringify(observed)),
+      writeFile(input.paths.modelOutput, `${outcome}\n`),
     ]);
     const result = await invoke('run-workflow-evals.mjs', input);
     assert.equal(result.code, 0, result.stderr);
@@ -353,6 +444,30 @@ test('Explore root timeline excludes child investigation while leaf evidence rem
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('Explore keeps equal terminal text from different descendant threads', () => {
+  const observed = scopeIsolationEvidence('done', 'same terminal result');
+  observed.threadGraph.push(thread('child-two', 'root', 'codex-explore-quick', {
+    kind: 'opaque-link', sha256: 'sha256:child-two', linkedCallId: 'spawn-two',
+  }));
+  const first = observed.leafCalls.find((call) => call.tool === 'agent_message');
+  observed.leafCalls = [
+    first,
+    {
+      ...structuredClone(first),
+      ordinal: first.ordinal + 1,
+      linkedThreadId: 'child-two',
+    },
+  ];
+  assert.deepEqual(evidenceRun(observed).leaf_results, [
+    { text: 'same terminal result' },
+    { text: 'same terminal result' },
+  ]);
+  const serialized = JSON.stringify(evidenceRun(observed));
+  assert.equal(serialized.includes('agentPath'), false);
+  assert.equal(serialized.includes('agent_path'), false);
+  assert.equal(serialized.includes('/root/child'), false);
 });
 
 test('Explore V2 liveness keeps root waits and grades the child verifier call from leaf evidence', async () => {
@@ -387,7 +502,9 @@ test('Explore V2 liveness keeps root waits and grades the child verifier call fr
     const leafExec = observed.leafCalls.find((call) => call.tool === 'exec_command');
     leafExec.ordinal = 4;
     leafExec.arguments.cmd = 'node docs/liveness/verify-records.mjs';
-    observed.collaborationCalls = [spawn, timedOutWait, terminalWait, leafExec];
+    const leafFinal = observed.collaborationCalls.find((call) => call.tool === 'agent_message');
+    leafFinal.ordinal = 5;
+    observed.collaborationCalls = [spawn, timedOutWait, terminalWait, leafExec, leafFinal];
     observed.leafCalls = [leafExec];
     const input = adapterInput('grade', selectedCase, root);
     await Promise.all([

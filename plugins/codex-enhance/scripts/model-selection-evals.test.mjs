@@ -28,7 +28,7 @@ async function testProviderManifestComposition() {
   ]);
   const allowedModels = new Map([
     ['model-selection', ['gpt-5.6-luna', 'gpt-5.6-sol']],
-    ['workflow', ['gpt-5.5']],
+    ['workflow', ['gpt-5.5', 'gpt-5.6-luna']],
     ['output-contract', []],
     ['liveness', ['gpt-5.5']],
   ]);

@@ -108,7 +108,8 @@
           "run-workflow-evals.mjs"
         ],
         "allowedModels": [
-          "gpt-5.5"
+          "gpt-5.5",
+          "gpt-5.6-luna"
         ]
       }
     },

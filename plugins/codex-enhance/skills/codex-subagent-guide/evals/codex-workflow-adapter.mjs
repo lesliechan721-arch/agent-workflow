@@ -203,6 +203,12 @@ export async function readWorkflowEvidence(evidencePath) {
   for (const key of ['skillLoads', 'threadGraph', 'collaborationCalls', 'leafCalls']) {
     requiredArray(evidence[key], `workflow evidence.${key}`);
   }
+  for (const thread of evidence.threadGraph) {
+    const entry = record(thread, 'workflow evidence.threadGraph[]');
+    if (Object.hasOwn(entry, 'agentPath') || Object.hasOwn(entry, 'agent_path')) {
+      throw new Error('workflow evidence.threadGraph must not expose agent paths.');
+    }
+  }
   return evidence;
 }
 

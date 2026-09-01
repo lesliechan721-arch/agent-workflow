@@ -50,11 +50,15 @@ function passingTimeline({ withProbe = false } = {}) {
       task_name: '/root/evidence',
     }));
   }
-  timeline.push(event('agent_message', null, {
-    message_type: 'FINAL_ANSWER',
-    status: null,
-    task_name: '/root/evidence',
-  }));
+  timeline.push({
+    ...event('agent_message', null, {
+      message_type: 'FINAL_ANSWER',
+      status: null,
+      task_name: '/root',
+      payload: 'terminal result',
+    }),
+    linked_thread_id: 'child-thread',
+  });
   return timeline;
 }
 
@@ -160,6 +164,15 @@ function testEvaluation() {
         },
       },
     ),
+    {
+      ...event('agent_message', null, {
+        message_type: 'FINAL_ANSWER',
+        status: null,
+        task_name: '/root',
+        payload: 'Status: completed',
+      }),
+      linked_thread_id: 'agent-id',
+    },
   ];
   assert.equal(
     evaluateLivenessRun(

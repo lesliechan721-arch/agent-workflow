@@ -18,10 +18,12 @@ const BLOCK_REASONS = new Set([
   'preset_role_unavailable',
   'routing_override_conflict',
 ]);
-const ROUTING_ONLY_INSTRUCTION = [
-  '本用例只评估委派选择和 spawn_agent 参数，不需要子代理结果。',
-  '若发起委派，在 spawn_agent 返回后立即结束当前回复；不要等待或清理子代理。',
-].join('');
+const ROUTING_SCOPE_INSTRUCTION =
+  '本用例只评估委派选择和 spawn_agent 参数，不需要子代理结果。';
+const ROUTING_END_INSTRUCTION =
+  '若发起委派，在 spawn_agent 返回后立即结束当前回复；不要等待或清理子代理。';
+const ROUTING_FINAL_INSTRUCTION =
+  '若发起委派，在 spawn_agent 返回后输出固定单行最终确认 `ROUTING_SPAWNED`，然后立即结束当前回复；不要等待或清理子代理。';
 
 function validateExpected(expected, label) {
   if (!expected || typeof expected !== 'object' || Array.isArray(expected)) {
@@ -155,7 +157,14 @@ export function routingRunCase(entry, profile, variant) {
     ].join('')
     : '';
   return {
-    query: [entry.prompt, ROUTING_ONLY_INSTRUCTION, blockReasonInstruction]
+    query: [
+      entry.prompt,
+      ROUTING_SCOPE_INSTRUCTION,
+      entry.id === 'simple_preset_fresh-v2'
+        ? ROUTING_FINAL_INSTRUCTION
+        : ROUTING_END_INSTRUCTION,
+      blockReasonInstruction,
+    ]
       .filter(Boolean)
       .join('\n\n'),
     explicit_skill: true,

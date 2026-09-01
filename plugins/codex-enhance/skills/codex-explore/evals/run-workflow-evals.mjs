@@ -76,6 +76,12 @@ function validateCase(entry, index) {
     !expected ||
     expected.spawn_count !== 1 ||
     typeof expected.agent_type !== 'string' ||
+    (expected.target_skill_loaded !== undefined && expected.target_skill_loaded !== true) ||
+    (expected.clean_context_leaf_delegation !== undefined &&
+      expected.clean_context_leaf_delegation !== true) ||
+    (expected.clean_context_leaf_delegation === true &&
+      (!nonEmptyStrings(expected.leaf_terminal_includes_all) ||
+        !nonEmptyStrings(expected.leaf_terminal_patterns))) ||
     !nonEmptyStrings(expected.final_message_includes_all) ||
     !nonEmptyStrings(expected.final_message_patterns) ||
     !nonEmptyStrings(expected.delegated_source_prefixes) ||
@@ -89,6 +95,9 @@ function validateCase(entry, index) {
     validateLeafOutputContract(expected.leaf_output, entry.id);
   }
   for (const pattern of expected.final_message_patterns) {
+    new RegExp(pattern, 'iu');
+  }
+  for (const pattern of expected.leaf_terminal_patterns ?? []) {
     new RegExp(pattern, 'iu');
   }
   return entry;
@@ -110,12 +119,31 @@ function waitTimedOut(call) {
   return typeof call?.output === 'string' && /timed[ _-]?out/i.test(call.output);
 }
 
-function hasFinalAgentResult(call) {
+function spawnedTaskIdentity(call) {
+  return call?.output?.task_name ??
+    call?.output?.thread_id ??
+    call?.output?.threadId ??
+    call?.output?.agent_id ??
+    call?.output?.agentId ??
+    null;
+}
+
+function callLinksChild(call, childId) {
+  if (typeof childId !== 'string' || childId === '') return false;
+  return call?.linked_thread_id === childId ||
+    (call?.output?.status &&
+      typeof call.output.status === 'object' &&
+      !Array.isArray(call.output.status) &&
+      Object.hasOwn(call.output.status, childId));
+}
+
+function terminalText(call, childId) {
   if (
     call?.tool === 'agent_message' &&
-    call.output?.message_type === 'FINAL_ANSWER'
+    call.output?.message_type === 'FINAL_ANSWER' &&
+    callLinksChild(call, childId)
   ) {
-    return true;
+    return call.output.payload;
   }
   if (
     call?.tool !== 'wait_agent' ||
@@ -123,14 +151,50 @@ function hasFinalAgentResult(call) {
     typeof call.output.status !== 'object' ||
     Array.isArray(call.output.status)
   ) {
-    return false;
+    return null;
   }
-  return Object.values(call.output.status).some(
-    (status) =>
-      status &&
-      typeof status === 'object' &&
-      typeof status.completed === 'string',
-  );
+  return call.output.status[childId]?.completed ?? null;
+}
+
+function boundTerminalTexts(calls, childId) {
+  return [...new Set((Array.isArray(calls) ? calls : [])
+    .map((call) => terminalText(call, childId))
+    .filter((value) => typeof value === 'string' && value.trim() !== '')
+    .map((value) => value.trim()))];
+}
+
+function linkedTerminal(call) {
+  if (
+    call?.tool !== 'agent_message' ||
+    call.output?.message_type !== 'FINAL_ANSWER' ||
+    typeof call?.linked_thread_id !== 'string' ||
+    call.linked_thread_id === '' ||
+    typeof call.output?.payload !== 'string' ||
+    call.output.payload.trim() === ''
+  ) {
+    return null;
+  }
+  return {
+    childId: call.linked_thread_id,
+    text: call.output.payload.trim(),
+  };
+}
+
+function linkedTerminalState(calls) {
+  const terminals = [...new Map((Array.isArray(calls) ? calls : [])
+    .map((call, index) => ({ index, terminal: linkedTerminal(call) }))
+    .filter((entry) => entry.terminal !== null)
+    .map((entry) => [
+      `${entry.terminal.childId}\0${entry.terminal.text}`,
+      entry,
+    ])).values()];
+  const childIds = new Set(terminals.map((entry) => entry.terminal.childId));
+  return {
+    childId: childIds.size === 1 ? terminals[0]?.terminal.childId ?? null : null,
+    indexes: terminals.map((entry) => entry.index),
+    terminalCount: terminals.length,
+    childCount: childIds.size,
+  };
 }
 
 export function evaluateLifecycleTrace(calls, contract) {
@@ -143,6 +207,10 @@ export function evaluateLifecycleTrace(calls, contract) {
     (call, index) => call?.tool === tool ? [index] : [],
   );
   const spawnIndexes = indexes('spawn_agent');
+  const firstSpawn = spawnIndexes[0];
+  const targetTaskIdentity = Number.isInteger(firstSpawn)
+    ? spawnedTaskIdentity(timeline[firstSpawn])
+    : null;
   const waitIndexes = indexes('wait_agent');
   const probeIndexes = indexes('send_message');
   const statusIndexes = timeline.flatMap(
@@ -155,16 +223,20 @@ export function evaluateLifecycleTrace(calls, contract) {
   );
   const followupIndexes = indexes('followup_task');
   const closeIndexes = indexes('close_agent');
-  const resultIndexes = timeline.flatMap(
-    (call, index) => hasFinalAgentResult(call) ? [index] : [],
-  );
+  const terminalState = linkedTerminalState(timeline);
+  const resultIndexes = terminalState.indexes;
   const retrySpawnIndexes = spawnIndexes.slice(1);
   const recoveryIndexes = [...followupIndexes, ...retrySpawnIndexes].sort(
     (left, right) => left - right,
   );
 
   add('trace_present', timeline.length > 0, `calls=${timeline.length}`);
-  const firstSpawn = spawnIndexes[0];
+  add(
+    'target_child',
+    typeof targetTaskIdentity === 'string' && targetTaskIdentity !== '' &&
+      terminalState.childCount === 1 && terminalState.terminalCount === 1,
+    `task=${targetTaskIdentity ?? 'missing'} linked_child=${terminalState.childId ?? 'missing'} terminals=${terminalState.terminalCount}`,
+  );
   const firstWait = waitIndexes.find((index) => index > firstSpawn);
   add(
     'wait_after_spawn',
@@ -269,9 +341,10 @@ export function evaluateLifecycleTrace(calls, contract) {
 export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
   const timeline = Array.isArray(calls) ? calls : [];
   const firstSpawn = timeline.findIndex((call) => call?.tool === 'spawn_agent');
-  const firstFinalResult = timeline.findIndex(
-    (call, index) => index > firstSpawn && hasFinalAgentResult(call),
-  );
+  const terminalState = linkedTerminalState(timeline);
+  const firstFinalResult = terminalState.childCount === 1 && terminalState.terminalCount === 1
+    ? terminalState.indexes[0]
+    : -1;
   const normalizedPrefixes = delegatedSourcePrefixes.map((prefix) =>
     prefix.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+$/u, ''));
   const readableArguments = (call) => {
@@ -307,9 +380,6 @@ export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
         normalized.includes(`/${prefix}/`);
     });
   const duplicateCalls = timeline.flatMap((call, index) => {
-    if (index <= firstSpawn || index >= firstFinalResult) {
-      return [];
-    }
     const argumentsToCheck = readableArguments(call);
     return normalizedPrefixes.some((prefix) =>
       argumentsToCheck.some((value) => referencesPrefix(value, prefix)))
@@ -331,6 +401,71 @@ export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
       duplicate_calls: duplicateCalls,
     }),
   };
+}
+
+function distinctPatternLineIndexes(value, patterns) {
+  const lines = value.split(/\r?\n/u);
+  const candidates = patterns.map((pattern) => lines.flatMap(
+    (line, index) => new RegExp(pattern, 'iu').test(line) ? [index] : [],
+  ));
+  const assign = (patternIndex, used, selected) => {
+    if (patternIndex === candidates.length) return selected;
+    for (const lineIndex of candidates[patternIndex]) {
+      if (used.has(lineIndex)) continue;
+      const result = assign(
+        patternIndex + 1,
+        new Set([...used, lineIndex]),
+        [...selected, lineIndex],
+      );
+      if (result !== null) return result;
+    }
+    return null;
+  };
+  return assign(0, new Set(), []);
+}
+
+function textMatchesContract(value, includesAll, patterns) {
+  return includesAll.every((text) => value.includes(text)) &&
+    distinctPatternLineIndexes(value, patterns) !== null;
+}
+
+function evaluateCleanContextLeafDelegation(run, expected) {
+  const spawn = run.spawn_calls?.[0];
+  const spawnIdentity = spawnedTaskIdentity(spawn);
+  const child = (run.leaf_trace?.child_threads ?? []).find((entry) =>
+    entry?.agent_role === expected.agent_type &&
+    (entry.initial_opaque_link?.linkedCallId === spawn?.call_id ||
+      (typeof entry.initial_user_message === 'string' &&
+        entry.initial_user_message === spawn?.arguments?.message) ||
+      (spawn?.output?.task_name === undefined && entry.thread_id === spawnIdentity)));
+  const terminalResults = boundTerminalTexts(run.leaf_tool_calls, child?.thread_id);
+  const cleanContext = spawn?.arguments?.fork_context === false ||
+    spawn?.arguments?.fork_turns === 'none';
+  const noOverrides = ['model', 'reasoning_effort', 'reasoningEffort'].every(
+    (key) => !Object.hasOwn(spawn?.arguments ?? {}, key),
+  );
+  return [
+    {
+      name: 'leaf:target_child',
+      passed: child !== undefined,
+      evidence: `expected_role=${expected.agent_type} child=${child?.thread_id ?? 'missing'}`,
+    },
+    {
+      name: 'leaf:clean_context',
+      passed: cleanContext && noOverrides,
+      evidence: `fork_context=${String(spawn?.arguments?.fork_context)} fork_turns=${String(spawn?.arguments?.fork_turns)} model_override=${!noOverrides}`,
+    },
+    {
+      name: 'leaf:terminal_result',
+      passed: terminalResults.length === 1 &&
+        textMatchesContract(
+          terminalResults[0] ?? '',
+          expected.leaf_terminal_includes_all,
+          expected.leaf_terminal_patterns,
+        ),
+      evidence: `distinct_non_empty_results=${terminalResults.length}`,
+    },
+  ];
 }
 
 export function evaluateWorkflowRun(run, expected) {
@@ -363,6 +498,16 @@ export function evaluateWorkflowRun(run, expected) {
       evidence: `confirmed=${run.cleanup_confirmed === true}`,
     },
   ];
+  if (expected.target_skill_loaded === true) {
+    assertions.push({
+      name: 'target_skill_loaded',
+      passed: run.loaded === true,
+      evidence: `loaded=${run.loaded === true}`,
+    });
+  }
+  if (expected.clean_context_leaf_delegation === true) {
+    assertions.push(...evaluateCleanContextLeafDelegation(run, expected));
+  }
   for (const text of expected.final_message_includes_all) {
     assertions.push({
       name: `final_message_includes:${text}`,
@@ -375,6 +520,17 @@ export function evaluateWorkflowRun(run, expected) {
       name: `final_message_pattern:${pattern}`,
       passed: new RegExp(pattern, 'iu').test(finalMessage),
       evidence: `pattern=${JSON.stringify(pattern)}`,
+    });
+  }
+  if (expected.clean_context_leaf_delegation === true) {
+    const finalPatternLineIndexes = distinctPatternLineIndexes(
+      finalMessage,
+      expected.final_message_patterns,
+    );
+    assertions.push({
+      name: 'final_message_distinct_pattern_lines',
+      passed: finalPatternLineIndexes !== null,
+      evidence: `line_indexes=${JSON.stringify(finalPatternLineIndexes)}`,
     });
   }
   assertions.push({
@@ -484,7 +640,7 @@ export async function prepareWorkflow(input) {
   return {
     version: 1,
     prompt: entry.prompt,
-    sandbox: 'workspace-write',
+    sandbox: 'read-only',
     model: entry.parent_model ?? null,
     developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
     roles: await workflowRoles(input.paths.workspace),

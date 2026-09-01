@@ -15,7 +15,9 @@ import {
   type CodexWorkflowEvidence,
   type CodexWorkflowRequest,
   type CodexWorkflowTransport,
+  type ProcessTreeDependencies,
 } from '../../dist/index.js'
+import { codexWorkflowMissingFinalMessageDiagnostic } from '../../dist/codex-workflow.js'
 
 const roots: string[] = []
 
@@ -60,12 +62,36 @@ function request(protocol: 'v1' | 'v2' = 'v2'): CodexWorkflowRequest {
   }
 }
 
+function deterministicProcessTree(): ProcessTreeDependencies {
+  let marker = ''
+  let sentinelAlive = false
+  return {
+    platform: process.platform,
+    createSentinel: async (_markerEnvironmentVariable, value) => {
+      marker = value
+      sentinelAlive = true
+      return {
+        pid: 900_001,
+        stop: async () => { sentinelAlive = false },
+      }
+    },
+    execFile: (_command, args, _options, callback) => callback(null, args.includes('pid=,command=')
+      ? sentinelAlive
+        ? `900001 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
+        : ''
+      : sentinelAlive
+        ? '900001 1 900001 S Mon Aug 24 12:00:00 2026'
+        : ''),
+  }
+}
+
 async function adapterFixture(): Promise<{
   root: string
   workspace: string
   fixtures: string
   output: string
   adapter: string
+  processTree: ProcessTreeDependencies
 }> {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'codex-workflow-test-')))
   roots.push(root)
@@ -73,6 +99,7 @@ async function adapterFixture(): Promise<{
   const fixtures = path.join(root, 'fixtures')
   const output = path.join(root, 'output')
   const adapter = path.join(root, 'adapter.mjs')
+  const processTree = deterministicProcessTree()
   await Promise.all([
     mkdir(path.join(workspace, '.codex', 'agents'), { recursive: true }),
     mkdir(fixtures),
@@ -106,7 +133,7 @@ async function adapterFixture(): Promise<{
     '}',
     '',
   ].join('\n'))
-  return { root, workspace, fixtures, output, adapter }
+  return { root, workspace, fixtures, output, adapter, processTree }
 }
 
 function execution(secret = 'workflow-runtime-secret') {
@@ -202,6 +229,7 @@ describe('codex-workflow provider', () => {
           HTTPS_PROXY: 'http://must-not-reach-adapter.invalid',
         },
         codexRuntime: runtime(fixture.root),
+        processTree: fixture.processTree,
         transport,
       })
       expect(result).toEqual({
@@ -260,6 +288,7 @@ describe('codex-workflow provider', () => {
           timeoutMs: 5_000,
         },
         codexRuntime: runtime(prepareFailure.root),
+        processTree: prepareFailure.processTree,
         transport: unusedTransport,
       })).rejects.toThrow('missing')
       expect(unusedTransport.run).not.toHaveBeenCalled()
@@ -283,6 +312,7 @@ describe('codex-workflow provider', () => {
           timeoutMs: 5_000,
         },
         codexRuntime: runtime(codexFailure.root),
+        processTree: codexFailure.processTree,
         transport: failingTransport,
       })).rejects.toThrow('Codex failed')
       expect((await readFile(path.join(codexFailure.output, 'adapter-log.jsonl'), 'utf8'))
@@ -301,7 +331,7 @@ describe('codex-workflow provider', () => {
         },
         evalRoot: deadline.root,
         input: {
-          case: { gradeDelay: 2_000 },
+          case: { gradeDelay: 3_500 },
           variant: 'current', attempt: 1,
           workspacePath: deadline.workspace,
           fixturesPath: deadline.fixtures,
@@ -309,6 +339,7 @@ describe('codex-workflow provider', () => {
           timeoutMs: 4_000,
         },
         codexRuntime: runtime(deadline.root),
+        processTree: deadline.processTree,
         transport: delayedTransport,
       })).rejects.toThrow(/timed out|timeout/u)
       const phases = (await readFile(path.join(deadline.output, 'adapter-log.jsonl'), 'utf8'))
@@ -339,6 +370,7 @@ describe('codex-workflow provider', () => {
           timeoutMs: 5_000,
         },
         codexRuntime: runtime(fixture.root),
+        processTree: fixture.processTree,
         transport: { run: vi.fn(async () => missingUsage) },
       })).rejects.toThrow('required token usage evidence')
       const phases = (await readFile(path.join(fixture.output, 'adapter-log.jsonl'), 'utf8'))
@@ -387,6 +419,34 @@ describe('codex-workflow provider', () => {
       params: { turn: { status: 'completed' } },
     }, 'root')).toBe(false)
   })
+
+  it('reports only safe structural counts when a completed root turn has no final message', () => {
+    const secret = 'secret prompt /private/secret/workspace'
+    const diagnostic = codexWorkflowMissingFinalMessageDiagnostic({
+      rootThreadId: 'root',
+      turnStatus: 'completed',
+      usage: { inputTokens: 10 },
+      frames: [{
+        method: 'item/completed',
+        params: {
+          threadId: 'child',
+          item: { type: 'agentMessage', phase: 'final_answer', text: secret },
+        },
+      }, {
+        method: 'turn/completed',
+        params: { threadId: 'root', turn: { status: 'completed', prompt: secret } },
+      }],
+    })
+    expect(diagnostic).toEqual({
+      rootTurnStatus: 'completed',
+      rootFinalAgentMessageCount: 0,
+      otherThreadFinalAgentMessageCount: 1,
+      usagePresent: true,
+      frameCount: 2,
+    })
+    expect(JSON.stringify(diagnostic)).not.toContain(secret)
+    expect(JSON.stringify(diagnostic)).not.toContain('/private/secret/workspace')
+  })
 })
 
 async function writeRollout(
@@ -427,26 +487,467 @@ function session(threadId: string, parentThreadId?: string) {
   }
 }
 
+function v1CodeModeSpawn(options: {
+  outerCallId: string
+  innerCallId: string
+  senderThreadId: string
+  receiverThreadId: string
+  arguments: Record<string, unknown>
+  input?: string
+}): Record<string, unknown>[] {
+  const variable = 'result'
+  return [{
+    type: 'response_item',
+    payload: {
+      type: 'custom_tool_call', name: 'exec', call_id: options.outerCallId,
+      input: options.input
+        ?? `const ${variable} = await tools.multi_agent_v1__spawn_agent(${JSON.stringify(options.arguments)});\ntext(${variable});`,
+    },
+  }, {
+    type: 'event_msg',
+    payload: {
+      type: 'item_completed', thread_id: options.senderThreadId,
+      item: {
+        type: 'CollabAgentToolCall', id: options.innerCallId, tool: 'spawn_agent',
+        sender_thread_id: options.senderThreadId,
+        receiver_thread_ids: [options.receiverThreadId],
+        prompt: options.arguments.message,
+        status: 'completed',
+      },
+    },
+  }, {
+    type: 'response_item',
+    payload: {
+      type: 'custom_tool_call_output', call_id: options.outerCallId,
+      output: [{ type: 'input_text', text: 'spawned' }],
+    },
+  }]
+}
+
+async function normalizeV1CodeModeInput(
+  name: string,
+  input: string,
+  message: string,
+  options: {
+    spawnOverrides?: Record<string, unknown>
+    terminalRuntime?: { model?: string; reasoningEffort?: string }
+  } = {},
+): Promise<Awaited<ReturnType<typeof normalizeCodexWorkflowRollouts>>> {
+  const root = await mkdtemp(path.join(os.tmpdir(), `codex-workflow-v1-template-${name}-`))
+  roots.push(root)
+  await writeRollout(root, 'root', [
+    session('root'),
+    developer(),
+    ...v1CodeModeSpawn({
+      outerCallId: 'outer-spawn-1',
+      innerCallId: 'spawn-1',
+      senderThreadId: 'root',
+      receiverThreadId: 'child',
+      arguments: {
+        agent_type: 'explorer',
+        message,
+        ...options.spawnOverrides,
+        fork_context: false,
+      },
+      input,
+    }),
+  ])
+  await writeRollout(root, 'child', [
+    session('child', 'root'),
+    developer('child developer full text'),
+    {
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: message }] },
+    },
+  ])
+  return normalizeCodexWorkflowRollouts({
+    codexHome: root,
+    rootThreadId: 'root',
+    request: { ...request('v1'), model: null },
+    runtime: runtime(root),
+    appServerFrames: [{
+      method: 'item/completed',
+      params: {
+        threadId: 'root',
+        item: {
+          type: 'collabAgentToolCall', id: 'spawn-1', tool: 'spawnAgent', status: 'completed',
+          senderThreadId: 'root', receiverThreadId: 'child', prompt: message,
+          ...options.terminalRuntime,
+          agentsStates: { child: 'running' },
+        },
+      },
+    }],
+  })
+}
+
 describe('codex-workflow raw rollout normalization', () => {
+  it('parses a multiline V1 code-mode spawn message from a template literal', async () => {
+    const message = 'first line\nsecond `tick` \\ path \nnext\tcolumn 🚀 ! ${literal}'
+    const input = [
+      'const result = await tools.multi_agent_v1__spawn_agent({',
+      '  agent_type: "explorer",',
+      '  message: `first line',
+      'second \\`tick\\` \\\\ path \\nnext\\tcolumn \\u{1F680} \\x21 \\${literal}`,',
+      '  fork_context: false,',
+      '});',
+      'text(result);',
+    ].join('\n')
+    const normalized = await normalizeV1CodeModeInput('multiline', input, message)
+    expect(normalized.collaborationCalls[0]?.arguments).toEqual(expect.objectContaining({ message }))
+    expect(normalized.collaborationCalls[0]).not.toHaveProperty('effectiveRuntime')
+  })
+
+  it('parses the exact unawaited V1 wrapper with string and template messages', async () => {
+    const stringMessage = 'plain child prompt'
+    const stringInput = [
+      'const result = tools.multi_agent_v1__spawn_agent({',
+      '  agent_type: "explorer",',
+      `  message: ${JSON.stringify(stringMessage)},`,
+      '  fork_context: false,',
+      '});',
+      'text(result);',
+    ].join('\n')
+    const stringNormalized = await normalizeV1CodeModeInput(
+      'unawaited-string',
+      stringInput,
+      stringMessage,
+      { terminalRuntime: { model: 'effective-model', reasoningEffort: 'high' } },
+    )
+    expect(stringNormalized.collaborationCalls[0]).toEqual(expect.objectContaining({
+      arguments: {
+        agent_type: 'explorer',
+        message: stringMessage,
+        fork_context: false,
+      },
+      effectiveRuntime: { model: 'effective-model', reasoningEffort: 'high' },
+    }))
+
+    const templateMessage = 'first line\nsecond line'
+    const templateInput = [
+      'const result = tools.multi_agent_v1__spawn_agent({',
+      '  agent_type: "explorer",',
+      '  message: `first line',
+      'second line`,',
+      '  fork_context: false,',
+      '});',
+      'text(result);',
+    ].join('\n')
+    const templateNormalized = await normalizeV1CodeModeInput(
+      'unawaited-template',
+      templateInput,
+      templateMessage,
+    )
+    expect(templateNormalized.collaborationCalls[0]?.arguments).toEqual(expect.objectContaining({
+      message: templateMessage,
+    }))
+  })
+
+  it('rejects near-match unawaited V1 wrappers', async () => {
+    const message = 'child prompt'
+    const argumentsSource = `{ agent_type: "explorer", message: ${JSON.stringify(message)}, fork_context: false }`
+    const fixtures = [
+      {
+        name: 'alias',
+        input: `const spawn = tools.multi_agent_v1__spawn_agent;\nconst result = spawn(${argumentsSource});\ntext(result);`,
+      },
+      {
+        name: 'other-receiver',
+        input: `const result = runtime.multi_agent_v1__spawn_agent(${argumentsSource});\ntext(result);`,
+      },
+      {
+        name: 'destructure',
+        input: `const { result } = tools.multi_agent_v1__spawn_agent(${argumentsSource});\ntext(result);`,
+      },
+      {
+        name: 'extra-statement',
+        input: `const result = tools.multi_agent_v1__spawn_agent(${argumentsSource});\ntext(result);\nlog(result);`,
+      },
+    ] as const
+
+    for (const fixture of fixtures) {
+      const error = await normalizeV1CodeModeInput(fixture.name, fixture.input, message)
+        .then(() => '', (value: Error) => value.message)
+      expect(error, fixture.name).toMatch(/Codex V1 code-mode spawn (?:prefix|suffix) is invalid\./u)
+      if (fixture.name === 'destructure') {
+        expect(error).toContain(
+          '"await":"no","receiver":"tools","calleeFamily":"exact-v1-snake",'
+          + '"exactSpawnCallee":"yes"',
+        )
+      }
+    }
+  })
+
+  it('keeps explicit V1 spawn arguments separate from effective terminal runtime', async () => {
+    const message = 'child prompt'
+    const input = [
+      'const result = await tools.multi_agent_v1__spawn_agent({',
+      '  agent_type: "explorer",',
+      `  message: ${JSON.stringify(message)},`,
+      '  model: "explicit-model",',
+      '  reasoning_effort: "medium",',
+      '  fork_context: false,',
+      '});',
+      'text(result);',
+    ].join('\n')
+    const normalized = await normalizeV1CodeModeInput('runtime-layers', input, message, {
+      spawnOverrides: { model: 'explicit-model', reasoning_effort: 'medium' },
+      terminalRuntime: { model: 'effective-model', reasoningEffort: 'high' },
+    })
+    expect(normalized.collaborationCalls[0]).toEqual(expect.objectContaining({
+      arguments: {
+        agent_type: 'explorer',
+        message,
+        model: 'explicit-model',
+        reasoning_effort: 'medium',
+        fork_context: false,
+      },
+      effectiveRuntime: { model: 'effective-model', reasoningEffort: 'high' },
+    }))
+  })
+
+  it('rejects interpolation in a V1 code-mode spawn template literal', async () => {
+    const input = [
+      'const result = await tools.multi_agent_v1__spawn_agent({',
+      '  agent_type: "explorer",',
+      '  message: `unsafe ${expression}`,',
+      '  fork_context: false,',
+      '});',
+      'text(result);',
+    ].join('\n')
+    await expect(normalizeV1CodeModeInput('interpolation', input, 'unsafe value'))
+      .rejects.toThrow('template literal interpolation is unsupported')
+  })
+
+  it('reports distinct safe structural fingerprints for invalid V1 wrapper phases', async () => {
+    const secret = 'SECRET_MARKER /private/agents/root/explorer\nsecond secret line'
+    const prefixInput = [
+      '// @exec: {"yield_time_ms":30000}',
+      '```js',
+      `let privateVariable = await tools.multi_agent_v1__spawn_agent({ agent_type: "explorer", message: ${JSON.stringify(secret)}, fork_context: false });`,
+      'text(privateVariable);',
+      '```',
+    ].join('\n')
+    const prefixError = await normalizeV1CodeModeInput('invalid-prefix', prefixInput, secret)
+      .then(() => '', (error: Error) => error.message)
+    expect(prefixError).toBe(
+      'Codex V1 code-mode spawn prefix is invalid. fingerprint='
+      + '{"phase":"prefix","pragma":"yes","codeFence":"yes","declaration":"let",'
+      + '"bindingForm":"identifier","await":"yes","receiver":"tools",'
+      + '"calleeFamily":"exact-v1-snake","exactSpawnCallee":"yes","outputForm":"other"}',
+    )
+
+    const suffixInput = [
+      'const privateVariable = await tools.multi_agent_v1__spawn_agent({',
+      '  agent_type: "explorer",',
+      `  message: ${JSON.stringify(secret)},`,
+      '  fork_context: false,',
+      '})',
+      'return text(privateVariable);',
+      `text(${JSON.stringify(secret)});`,
+    ].join('\n')
+    const suffixError = await normalizeV1CodeModeInput('invalid-suffix', suffixInput, secret)
+      .then(() => '', (error: Error) => error.message)
+    expect(suffixError).toBe(
+      'Codex V1 code-mode spawn suffix is invalid. fingerprint='
+      + '{"phase":"suffix","spawnCallSemicolon":"no","outputForm":"return-text",'
+      + '"extraStatements":"yes"}',
+    )
+
+    for (const error of [prefixError, suffixError]) {
+      expect(error).not.toContain('SECRET_MARKER')
+      expect(error).not.toContain('/private/agents/root/explorer')
+      expect(error).not.toContain('privateVariable')
+      expect(error).not.toContain('second secret line')
+    }
+  })
+
+  it('classifies each safe V1 prefix fingerprint enum without exposing input tokens', async () => {
+    const secret = 'FINGERPRINT_SECRET /private/eval/agent.json'
+    const argumentsSource = `{ agent_type: "explorer", message: ${JSON.stringify(secret)}, fork_context: false }`
+    const fixtures = [
+      {
+        name: 'binding-identifier',
+        prefix: 'let privateBinding = await tools.multi_agent_v1__spawn_agent',
+        expected: { bindingForm: 'identifier', receiver: 'tools', calleeFamily: 'exact-v1-snake' },
+      },
+      {
+        name: 'binding-object',
+        prefix: 'const { privateBinding } = await tools.multi_agent_v1__spawn_agent',
+        expected: { bindingForm: 'object-destructure', receiver: 'tools', calleeFamily: 'exact-v1-snake' },
+      },
+      {
+        name: 'binding-array',
+        prefix: 'const [privateBinding] = await tools.multi_agent_v1__spawn_agent',
+        expected: { bindingForm: 'array-destructure', receiver: 'tools', calleeFamily: 'exact-v1-snake' },
+      },
+      {
+        name: 'binding-other',
+        prefix: 'const privateBinding: unknown = await tools.multi_agent_v1__spawn_agent',
+        expected: { bindingForm: 'other', receiver: 'tools', calleeFamily: 'exact-v1-snake' },
+      },
+      {
+        name: 'v1-namespaced-other',
+        prefix: 'const privateBinding = await tools.multi_agent_v1__spawnAgent',
+        expected: { bindingForm: 'identifier', receiver: 'tools', calleeFamily: 'v1-namespaced-other' },
+      },
+      {
+        name: 'spawn-family-other',
+        prefix: 'const privateBinding = await tools.multi_agent_v2__spawn_agent',
+        expected: { bindingForm: 'identifier', receiver: 'tools', calleeFamily: 'spawn-family-other' },
+      },
+      {
+        name: 'callee-other',
+        prefix: 'const privateBinding = await tools.delegate',
+        expected: { bindingForm: 'identifier', receiver: 'tools', calleeFamily: 'other' },
+      },
+      {
+        name: 'receiver-other',
+        prefix: 'const privateBinding = await runtime.multi_agent_v1__spawn_agent',
+        expected: { bindingForm: 'identifier', receiver: 'other', calleeFamily: 'exact-v1-snake' },
+      },
+    ] as const
+
+    for (const fixture of fixtures) {
+      const input = `${fixture.prefix}(${argumentsSource});\ntext(privateBinding);`
+      const message = await normalizeV1CodeModeInput(fixture.name, input, secret)
+        .then(() => '', (error: Error) => error.message)
+      const encoded = message.split('fingerprint=', 2)[1]
+      expect(encoded, fixture.name).toBeDefined()
+      const fingerprint = JSON.parse(encoded!) as Record<string, unknown>
+      expect(fingerprint, fixture.name).toEqual(expect.objectContaining({
+        phase: 'prefix',
+        declaration: fixture.name === 'binding-identifier' ? 'let' : 'const',
+        await: 'yes',
+        exactSpawnCallee: fixture.expected.receiver === 'tools'
+          && fixture.expected.calleeFamily === 'exact-v1-snake' ? 'yes' : 'no',
+        ...fixture.expected,
+      }))
+      expect(Object.keys(fingerprint), fixture.name).not.toEqual(expect.arrayContaining([
+        'callee', 'variable', 'string', 'raw', 'path', 'length', 'hash',
+      ]))
+      expect(message, fixture.name).not.toContain('FINGERPRINT_SECRET')
+      expect(message, fixture.name).not.toContain('/private/eval/agent.json')
+      expect(message, fixture.name).not.toContain('privateBinding')
+    }
+  })
+
+  it('rejects a terminal V1 spawn when its rollout call omits fork_context', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'codex-workflow-app-server-aliases-'))
+    roots.push(root)
+    await writeRollout(root, 'root', [session('root'), developer(), {
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'root prompt' }] },
+    }, ...v1CodeModeSpawn({
+      outerCallId: 'outer-spawn-1',
+      innerCallId: 'spawn-1',
+      senderThreadId: 'root',
+      receiverThreadId: 'child',
+      arguments: {
+        agent_type: 'explorer', message: 'child prompt',
+      },
+    })])
+    await writeRollout(root, 'child', [
+      session('child', 'root'),
+      developer('child developer full text'),
+      {
+        timestamp: '2026-08-30T00:00:04.000Z',
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'child prompt' }] },
+      },
+    ])
+    const shared = {
+      type: 'collabToolCall', status: 'completed', senderThreadId: 'root',
+      receiverThreadId: 'child', agentsStates: { child: 'completed' },
+    }
+    await expect(normalizeCodexWorkflowRollouts({
+      codexHome: root,
+      rootThreadId: 'root',
+      request: { ...request('v1'), model: null },
+      runtime: runtime(root),
+      appServerFrames: [{
+        method: 'item/completed',
+        params: {
+          threadId: 'root',
+          item: {
+            ...shared, id: 'spawn-1', tool: 'spawnAgent', prompt: 'child prompt',
+            agentsStates: { child: 'running' },
+          },
+        },
+      }],
+    })).rejects.toThrow('fork_context evidence must be boolean')
+  })
+
+  it('rejects ambiguous and lineage-conflicting V1 code-mode spawn evidence', async () => {
+    const normalize = async (
+      name: string,
+      spawnArguments: Record<string, unknown>,
+      repeated = false,
+    ) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), `codex-workflow-v1-${name}-`))
+      roots.push(root)
+      const spawn = v1CodeModeSpawn({
+        outerCallId: 'outer-spawn-1', innerCallId: 'spawn-1',
+        senderThreadId: 'root', receiverThreadId: 'child', arguments: spawnArguments,
+      })
+      await writeRollout(root, 'root', [session('root'), developer(), ...spawn,
+        ...(repeated ? v1CodeModeSpawn({
+          outerCallId: 'outer-spawn-2', innerCallId: 'spawn-1',
+          senderThreadId: 'root', receiverThreadId: 'child', arguments: spawnArguments,
+        }) : [])])
+      await writeRollout(root, 'child', [session('child', 'root'), developer('child developer'), {
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'child prompt' }] },
+      }])
+      return normalizeCodexWorkflowRollouts({
+        codexHome: root,
+        rootThreadId: 'root',
+        request: { ...request('v1'), model: null },
+        runtime: runtime(root),
+        appServerFrames: [{
+          method: 'item/completed',
+          params: {
+            threadId: 'root',
+            item: {
+              type: 'collabAgentToolCall', id: 'spawn-1', tool: 'spawnAgent', status: 'completed',
+              senderThreadId: 'root', receiverThreadId: 'child',
+              prompt: spawnArguments.message, agentsStates: { child: 'running' },
+            },
+          },
+        }],
+      })
+    }
+    const canonical = {
+      agent_type: 'explorer', message: 'child prompt', fork_context: false,
+    }
+    await expect(normalize('ambiguous', canonical, true)).rejects.toThrow('one exact rollout call id')
+    await expect(normalize('role-conflict', {
+      ...canonical, agent_type: 'wrong-role',
+    })).rejects.toThrow('role does not match')
+    await expect(normalize('message-conflict', {
+      ...canonical, message: 'wrong prompt',
+    })).rejects.toThrow('prompt does not match')
+  })
+
   it('merges terminal V1 app-server collaboration items with rollout lineage and terminal messages', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'codex-workflow-app-server-v1-'))
     roots.push(root)
     await writeRollout(root, 'root', [session('root'), developer(), {
       type: 'response_item',
       payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'root prompt' }] },
-    }, {
-      type: 'response_item',
-      payload: {
-        type: 'function_call', namespace: 'collaboration', name: 'spawn_agent', call_id: 'spawn-1',
-        arguments: JSON.stringify({
+    }, ...v1CodeModeSpawn({
+      outerCallId: 'outer-spawn-1',
+      innerCallId: 'spawn-1',
+      senderThreadId: 'root',
+      receiverThreadId: 'child',
+      arguments: {
           agent_type: 'explorer', message: 'child prompt', fork_context: false,
-        }),
       },
-    }])
+    })])
     await writeRollout(root, 'child', [
       session('child', 'root'),
       developer('child developer full text ### Codex Explore 子代理授权'),
       {
+        timestamp: '2026-08-30T00:00:05.000Z',
         type: 'response_item',
         payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'child prompt' }] },
       },
@@ -498,14 +999,15 @@ describe('codex-workflow raw rollout normalization', () => {
       expect.objectContaining({
         ordinal: 1, threadId: 'root', callId: 'spawn-1', tool: 'spawn_agent',
         arguments: {
-          agent_type: 'explorer', message: 'child prompt', model: 'gpt-test',
-          reasoning_effort: 'high', fork_context: false,
+          agent_type: 'explorer', message: 'child prompt', fork_context: false,
         },
+        effectiveRuntime: { model: 'gpt-test', reasoningEffort: 'high' },
         output: { agent_id: 'child', status: 'running' }, status: 'completed',
       }),
       expect.objectContaining({
         ordinal: 2, threadId: 'child', parentThreadId: 'root', callId: 'wait-1', tool: 'wait_agent',
-        arguments: {},
+        linkedThreadId: 'child',
+        arguments: { receiver_thread_ids: ['child'] },
         output: { status: { child: { completed: 'done' } } },
         status: 'completed',
       }),
@@ -523,6 +1025,112 @@ describe('codex-workflow raw rollout normalization', () => {
         }),
       }),
     ]))
+    const serialized = JSON.stringify(normalized)
+    expect(serialized).not.toContain('agentPath')
+    expect(serialized).not.toContain('agent_path')
+    expect(serialized).not.toContain('/root/child')
+    expect(serialized).not.toContain('tools.multi_agent_v1__spawn_agent')
+  })
+
+  it('links a root-delivered descendant final answer and rejects unlinked root messages as leaf evidence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'codex-workflow-root-delivered-final-'))
+    roots.push(root)
+    const ciphertext = 'linked-child-message'
+    await writeRollout(root, 'root', [
+      session('root'),
+      developer(),
+      {
+        type: 'response_item',
+        payload: {
+          type: 'function_call', namespace: 'collaboration', name: 'spawn_agent', call_id: 'spawn-v2',
+          arguments: JSON.stringify({ agent_type: 'explorer', message: ciphertext }),
+        },
+      },
+      {
+        type: 'response_item',
+        payload: { type: 'function_call_output', call_id: 'spawn-v2', output: '{"agent_id":"child"}' },
+      },
+      {
+        timestamp: '2026-08-30T00:00:03.500Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call', namespace: 'collaboration', name: 'wait_agent', call_id: 'wait-v2',
+          arguments: '{"timeout_ms":30000}',
+        },
+      },
+      {
+        timestamp: '2026-08-30T00:00:03.600Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output', call_id: 'wait-v2',
+          output: '{"status":{"child":{"completed":"done"}}}',
+        },
+      },
+      {
+        timestamp: '2026-08-30T00:00:04.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          content: [{
+            type: 'input_text',
+            text: 'Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/child\nPayload:\ndone',
+          }],
+        },
+      },
+      {
+        timestamp: '2026-08-30T00:00:05.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          content: [{
+            type: 'input_text',
+            text: 'Message Type: FINAL_ANSWER\nTask name: /root\nPayload:\nroot-owned',
+          }],
+        },
+      },
+    ])
+    await writeRollout(root, 'child', [
+      session('child', 'root'),
+      developer('child developer full text'),
+      {
+        type: 'response_item',
+        payload: {
+          type: 'agent_message',
+          content: [
+            { type: 'input_text', text: 'Message Type: NEW_TASK' },
+            { type: 'encrypted_content', encrypted_content: ciphertext },
+          ],
+        },
+      },
+      {
+        timestamp: '2026-08-30T00:00:03.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          item: {
+            type: 'CommandExecution', id: 'cmd-child', command: 'rg retry docs/output',
+            exit_code: 0, status: 'completed',
+          },
+        },
+      },
+    ])
+    const normalized = await normalizeCodexWorkflowRollouts({
+      codexHome: root,
+      rootThreadId: 'root',
+      request: request('v2'),
+      runtime: runtime(root),
+    })
+    const delivered = normalized.collaborationCalls.find((call) =>
+      call.tool === 'agent_message' && call.output?.payload === 'done')
+    expect(delivered).toEqual(expect.objectContaining({
+      threadId: 'root', linkedThreadId: 'child', tool: 'agent_message',
+    }))
+    expect(normalized.leafCalls.map((call) => [call.threadId, call.linkedThreadId, call.tool])).toEqual([
+      ['child', undefined, 'exec_command'],
+      ['root', 'child', 'wait_agent'],
+      ['root', 'child', 'agent_message'],
+    ])
+    expect(normalized.leafCalls.some((call) => call.output?.payload === 'root-owned')).toBe(false)
   })
 
   it('normalizes V1 plaintext lineage, calls, skill loads, and safe developer summaries', async () => {
@@ -694,6 +1302,7 @@ describe('codex-workflow raw rollout normalization', () => {
     const serialized = JSON.stringify(normalized)
     expect(serialized).not.toContain(ciphertext)
     expect(serialized).not.toContain('child developer full text')
+    expect(serialized).not.toContain('effectiveRuntime')
     expect(serialized).toContain('opaque-link')
   })
 
