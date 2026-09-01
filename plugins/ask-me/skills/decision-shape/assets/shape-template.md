@@ -6,11 +6,12 @@
 - 范围：
 - 非目标或边界：
 
-## Decision frame
+## Shared decision direction
 
-- 优先级：
-- 可接受代价：
-- 不可突破边界：
+- 优先保证：
+- 可以接受：
+- 不优先：
+- 不能接受：
 - 默认判断原则：
 
 ## Confirmed decisions

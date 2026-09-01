@@ -59,6 +59,20 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "shared-frame",
+      "kind": "conversation",
+      "cases": "shared-frame-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-workflow",
+    "participants": [
+      "decision-shape",
+      "decision-grill",
+      "decision-prototype"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "project-composed 体验必须先向用户展示可修正的共享方向，并用可理解的结果差异开始材料决定；过早讨论下游实现会固化错误前提。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "new-feature-shares-direction-before-decision",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "composed-frame",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "使用 dev-workflow 设计并实现新的批量导入功能。没有 Shape、Spec 或验收；我只说希望尽快上线，但不能产生不可恢复的数据错误。请开始。本轮只展示共享方向和第一个材料问题，不写文件。",
+      "assertions": [
+        "明确当前实现请求尚未 implementation-ready，本轮不进入 Spec、实现或文件修改",
+        "用户在回答第一个材料问题前或同轮看见 provisional 共享方向，并知道可以修正该方向",
+        "第一个材料问题停留在用户可观察结果或风险取舍，给出推荐和可快速理解的结果差异",
+        "共享方向未确定前，不提出队列、批次大小、存储或接口等下游实现选择，也不替用户决定"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "在 project-composed 上下文中先展示可修正的 provisional 共享方向，再提出一个用户可回答的材料问题；内部路由由既有 router-composed suite 验证。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "本 case 只验证 project-composed 下用户可见的决策体验；内部 Skill 路由由既有 router-composed suite 负责。没有 Shape 的材料性新功能必须先让用户看见并校准共享方向；直接讨论下游实现会把模型推断当成用户决定。",
+        "minimalCounterexample": "若用户可观察结果、范围、风险和验证均已明确，且没有材料决定或证据缺口，则低风险任务可以满足 Fast。",
+        "errorCost": "high",
+        "allowedVariance": "保障等级、共享方向和第一个材料问题的措辞可以不同；可见顺序、可修正性和暂缓下游实现选择必须保持。"
+      }
+    },
+    {
+      "id": "prototype-submit-resumes-shape-without-chat-roundtrip",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "prototype-session-composition",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "使用 dev-workflow 继续 approval-layout。Prototype Review 已在网页中提交 accepted；读取 session-results/approval-layout-wait.json 及其 feedback，更新当前 Shape 后停止。不要重新运行 start 或 wait，不要要求我另发“已完成”，也不要写 Spec。",
+      "assertions": [
+        "识别当前最早未满足 gate 仍是 Shape，并通过 decision-shape 消费 Prototype 结果",
+        "核对 submitted receipt、feedback 和 prototype 的 ID/revision 一致",
+        "自动把双栏与审批历史结论归一到当前 Shape，并保留 Prototype verdict 证据",
+        "不要求用户另发确认消息，不重新运行 start 或 wait",
+        "按用户要求停在 Shape，不创建 Spec 或修改生产代码"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "docs/dev/approval-layout/decisions.md": "# Shape：审批页面信息层级\n\n## Outcome and boundary\n\n- 让审批人快速核对当前状态和历史。\n\n## Decision frame\n\n- 优先保证：审批状态与历史清楚。\n- 可以接受：移动端使用折叠布局。\n\n## Confirmed decisions\n\n- 保留审批历史。\n\n## Evidence and prototype verdicts\n\n- 等待 approval-layout Prototype 结果。\n\n## Open decisions\n\n- 使用单栏还是双栏信息层级。\n",
+          "prototypes/approval-layout/prototype.json": "{\"schemaVersion\":2,\"id\":\"approval-layout\",\"revision\":2,\"question\":\"使用哪个审批布局？\",\"decisionContext\":{\"goal\":\"选择清楚的审批布局\",\"priorities\":[\"审批历史可见\"],\"constraints\":[\"移动端可阅读\"]},\"options\":[{\"id\":\"two-column\",\"label\":\"双栏\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户接受一个方向\"}\n",
+          "prototypes/approval-layout/artifact/index.html": "<!doctype html><main>审批摘要</main><aside>审批历史</aside>\n",
+          "prototypes/approval-layout/feedback.json": "{\"schemaVersion\":2,\"reviewShellVersion\":2,\"prototypeId\":\"approval-layout\",\"prototypeRevision\":2,\"verdict\":\"accepted\",\"selectedOptions\":[\"two-column\"],\"answers\":[],\"annotations\":[],\"cssVariableValues\":{},\"globalNotes\":\"双栏更容易同时核对摘要和审批历史。\"}\n",
+          "session-results/approval-layout-wait.json": "{\"ok\":true,\"status\":\"submitted\",\"prototypeId\":\"approval-layout\",\"revision\":2,\"verdict\":\"accepted\",\"selectedOptionCount\":1,\"annotationCount\":0,\"feedback\":\"prototypes/approval-layout/feedback.json\"}\n",
+          "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
+        }
+      },
+      "expected": {
+        "output": "消费已提交的 Prototype 结果，更新当前 Shape，并停在 Spec 之前。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/dev/approval-layout/decisions.md",
+          "prototypes/approval-layout/verdict.md"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/dev/approval-layout/decisions.md",
+            "exists": true,
+            "contains": [
+              "双栏",
+              "审批历史",
+              "prototypes/approval-layout/verdict.md"
+            ]
+          },
+          {
+            "path": "prototypes/approval-layout/verdict.md",
+            "exists": true,
+            "contains": [
+              "approval-layout",
+              "Revision: 2",
+              "accepted",
+              "双栏"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "网页提交必须直接恢复组合流程；预写 receipt 和 feedback 使 case 可执行，同时把真实浏览器生命周期留给确定性 smoke。",
+        "minimalCounterexample": "receipt 不是 submitted，或 feedback ID/revision 不匹配时，不得确认双栏决定。",
+        "errorCost": "high",
+        "allowedVariance": "Shape 标题和摘要措辞可以不同；必须保留决定、证据链接和停止边界。"
+      }
+    }
+  ]
+}
