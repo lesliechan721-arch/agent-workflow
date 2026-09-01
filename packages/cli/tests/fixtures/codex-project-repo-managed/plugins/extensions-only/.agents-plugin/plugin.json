@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "extensions-only",
   "version": "0.1.0",
   "description": "Fixture plugin with only Codex project repo-managed extensions.",

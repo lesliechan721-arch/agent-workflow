@@ -17,20 +17,20 @@ import {
 const require = createRequire(import.meta.url)
 
 describe('public package exports', () => {
-  it('exposes the manifest runtime and published v2 schema subpaths', async () => {
+  it('exposes the manifest runtime and published v3 schema subpaths', async () => {
     expect(DEFAULT_CATALOG_WORKSPACE_VERSION).toBe('0.1.0')
     expect(getAwCapabilityRegistry()).toContain('aw.self-check.v1')
     expect(computeAwCapabilitySetDigest(['aw.self-check.v1'])).toMatch(/^sha256:/u)
-    expect(PLUGIN_MANIFEST_SCHEMA_VERSION).toBe(2)
+    expect(PLUGIN_MANIFEST_SCHEMA_VERSION).toBe(3)
     expect(getPluginAuthoringCapabilities().schemaVersion).toBe(1)
     expect(getPluginAuthoringCapabilitySurface('manifest').surface).toBe('manifest')
     const schemaPath = require.resolve(
-      '@lesliechan721/aw-plugin-core/schemas/plugin-manifest-v2.json',
+      '@lesliechan721/aw-plugin-core/schemas/plugin-manifest-v3.json',
     )
     const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'))
     expect(schema).toMatchObject({
       $schema: 'https://json-schema.org/draft/2020-12/schema',
-      title: 'PluginManifestSourceV2',
+      title: 'PluginManifestSourceV3',
     })
   })
 })

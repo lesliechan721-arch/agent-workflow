@@ -30,7 +30,7 @@ async function tempRoot(label: string): Promise<string> {
 
 function baseManifest(name: string): PluginManifestSource {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name,
     version: '0.1.0',
     description: `${name} fixture`,
@@ -310,7 +310,7 @@ describe('portable materializer', () => {
 
     const secretManifest: PluginManifestSource = {
       ...baseManifest('secret'),
-      config: { schema: { token: { type: 'string', sensitive: true, default: 'plain-secret' } } },
+      config: { fields: { token: { type: 'string', sensitive: true, default: 'plain-secret' } } },
     };
     const secret = await pluginFixture(root, secretManifest);
     await writeSkill(secret.rootDir, 'leak', 'plain-secret');

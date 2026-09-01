@@ -26,7 +26,10 @@ import {
 import {
   resolveAwHome,
 } from './paths.js';
-import { resolveEffectivePluginConfig } from './plugin-config.js';
+import {
+  resolveEffectivePluginConfig,
+  type PluginConfigValue,
+} from './plugin-config.js';
 import { redactString } from '../output/redact.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import {
@@ -86,8 +89,8 @@ export interface LifecycleScriptContext {
     };
   };
   config: {
-    schema?: NonNullable<NormalizedPluginManifest['config']>['schema'];
-    values: Record<string, string | number | boolean>;
+    schema?: NonNullable<NormalizedPluginManifest['config']>['fields'];
+    values: Record<string, string | number | boolean | Record<string, string | number | boolean>>;
     sources: Record<string, string>;
     issues: unknown[];
   };
@@ -456,15 +459,29 @@ export function buildLifecycleSpawnEnv(options: {
 
 export function collectSensitivePluginConfigValues(
   manifest: NormalizedPluginManifest,
-  values: Record<string, string | number | boolean>,
+  values: Record<string, PluginConfigValue>,
 ): string[] {
-  const schema = manifest.config?.schema ?? {};
-  return Object.entries(schema)
-    .filter(([, field]) => field.sensitive)
-    .map(([key]) => values[key])
-    .filter((value) => value !== undefined)
-    .map((value) => String(value))
-    .filter((value) => value.length > 0);
+  const schema = manifest.config?.fields ?? {};
+  const sensitiveValues: string[] = [];
+  for (const [key, field] of Object.entries(schema)) {
+    const value = values[key];
+    if (value === undefined) continue;
+    if (field.sensitive) {
+      if (typeof value === 'object') {
+        sensitiveValues.push(...Object.values(value).map(String));
+      } else {
+        sensitiveValues.push(String(value));
+      }
+      continue;
+    }
+    if (field.type !== 'object' || typeof value !== 'object') continue;
+    for (const [property, childValue] of Object.entries(value)) {
+      const child = field.properties?.[property]
+        ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
+      if (child?.sensitive) sensitiveValues.push(String(childValue));
+    }
+  }
+  return sensitiveValues.filter((value) => value.length > 0);
 }
 
 export function redactPluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
@@ -502,13 +519,13 @@ export async function writeLifecycleScriptContext(options: {
   }
 
   let config: LifecycleScriptContext['config'] = {
-    schema: options.target.sourceManifest.config?.schema,
+    schema: options.target.sourceManifest.config?.fields,
     values: {},
     sources: {},
     issues: [],
   };
   let configStores: NonNullable<LifecycleScriptContext['paths']['configStores']> | undefined;
-  if (options.target.sourceManifest.config?.schema) {
+  if (options.target.sourceManifest.config?.fields) {
     const effective = await resolveEffectivePluginConfig({
       sourceId: options.sourceId,
       sourceIdentity: options.sourceIdentity,
@@ -528,7 +545,7 @@ export async function writeLifecycleScriptContext(options: {
       projectLocal: effective.stores.projectLocal.path,
     };
     config = {
-      schema: options.target.sourceManifest.config.schema,
+      schema: options.target.sourceManifest.config.fields,
       values: effective.values,
       sources: effective.sources,
       issues: effective.issues,

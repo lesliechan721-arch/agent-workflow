@@ -496,7 +496,7 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       name: 'linked-plugin',
       version: '0.1.0',
       description: 'Linked plugin.',
-      schemaVersion: 2,
+      schemaVersion: 3,
       scripts: { tests: { node: ['scripts/external.test.mjs'] } },
       marketplace: {
         category: 'workflow',

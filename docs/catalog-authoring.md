@@ -1,6 +1,6 @@
 # AW Catalog Workspace 作者指南
 
-本指南适用于官方和第三方 Catalog Workspace。当前合同是 Plugin Manifest v2、Catalog snapshot schema 6 和 Catalog Sources Config schema 2。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是机器真值。
+本指南适用于官方和第三方 Catalog Workspace。当前合同是 Plugin Manifest v3、Catalog snapshot schema 6 和 Catalog Sources Config schema 2。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是机器真值。
 
 ## Workspace 和聚合验证
 

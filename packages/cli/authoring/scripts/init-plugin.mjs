@@ -70,7 +70,7 @@ function parseStrictSemVer(value, fieldName) {
 
 function buildPluginManifest(pluginName, version, description, displayName, shortDescription, opts) {
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: pluginName,
     version,
     description,
@@ -116,15 +116,21 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
 
   if (opts.withConfigApi) {
     manifest.config = {
-      schema: {
+      fields: {
         apiKey: {
           type: 'string',
           required: true,
           sensitive: true,
         },
         mode: {
-          type: 'enum',
-          values: ['standard', 'strict'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [
+              { id: 'standard', title: 'Standard', value: 'standard', recommended: true },
+              { id: 'strict', title: 'Strict', value: 'strict' },
+            ],
+          },
           default: 'standard',
         },
       },
@@ -208,7 +214,17 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
       sources: { apiKey: 'user', mode: 'projectShared' },
       schema: {
         apiKey: { type: 'string', sensitive: true, required: true },
-        mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' }
+        mode: {
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [
+              { id: 'standard', title: 'Standard', value: 'standard', recommended: true },
+              { id: 'strict', title: 'Strict', value: 'strict' }
+            ]
+          },
+          default: 'standard'
+        }
       }
     },
     paths: {

@@ -393,9 +393,9 @@ async function copyTestPackageNodeModules(options: {
 async function resolveConfigDefaults(options: {
   manifest: NormalizedPluginManifest;
   cwd: string;
-}): Promise<Record<string, string | number | boolean>> {
-  const values: Record<string, string | number | boolean> = {};
-  const schema = options.manifest.config?.schema ?? {};
+}): Promise<Record<string, PluginConfigValue>> {
+  const values: Record<string, PluginConfigValue> = {};
+  const schema = options.manifest.config?.fields ?? {};
   for (const [key, field] of Object.entries(schema)) {
     const typedField = field as PluginConfigSchemaField;
     if (typedField.default === undefined) {
@@ -405,7 +405,6 @@ async function resolveConfigDefaults(options: {
       key,
       field: typedField,
       value: typedField.default,
-      projectRoot: options.cwd,
     });
   }
   return values;
@@ -449,7 +448,7 @@ async function writeTestContext(options: {
       projectLayer: 'local',
     }),
   };
-  if (options.manifest.config?.schema) {
+  if (options.manifest.config?.fields) {
     await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
       schemaVersion: 2,
       sourceId,
@@ -458,7 +457,7 @@ async function writeTestContext(options: {
       values: {},
     }, { spaces: 2 })));
   }
-  const effective = options.manifest.config?.schema
+  const effective = options.manifest.config?.fields
     ? await resolveEffectivePluginConfig({
         sourceId,
         sourceIdentity,
@@ -470,8 +469,8 @@ async function writeTestContext(options: {
           manifest: options.manifest,
           cwd: options.projectRoot,
         }),
-        sources: Object.fromEntries(Object.keys(options.manifest.config?.schema ?? {}).map((key) => [key, 'default'])),
-        schema: options.manifest.config?.schema,
+        sources: Object.fromEntries(Object.keys(options.manifest.config?.fields ?? {}).map((key) => [key, 'default'])),
+        schema: options.manifest.config?.fields,
         issues: [],
       }))
     : { values: {}, sources: {}, schema: undefined, issues: [] };

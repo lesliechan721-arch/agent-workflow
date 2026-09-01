@@ -23,7 +23,6 @@ import { resolveAwHome } from './paths.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
-  collectProjectArtifactConfigBoundaryIssues,
   patchPluginConfigStore,
   readPluginConfigStore,
   resetPluginConfigStore,
@@ -423,7 +422,7 @@ async function applyPluginConfigWriteUnlocked(
     env: options.env,
   });
   const schemaPlugin = schemaAccess.plugin;
-  const schema = schemaPlugin?.manifest.config?.schema;
+  const schema = schemaPlugin?.manifest.config?.fields;
   if (!schema || !schemaPlugin) {
     throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
   }
@@ -433,18 +432,6 @@ async function applyPluginConfigWriteUnlocked(
   }
 
   const updates = await coercePluginConfigUpdates({ schema, updates: requestedUpdates, cwd: options.cwd });
-  if (options.scope === 'project' && projectLayer === 'shared') {
-    for (const key of Object.keys(updates)) {
-      const field = schema[key]!;
-      if (field.type === 'file' || field.type === 'directory') {
-        throw new Error(
-          `Config "${key}" is a ${field.type} value and cannot be written into project shared config. `
-          + 'Use `--scope project --local` or user config instead.',
-        );
-      }
-    }
-  }
-
   const store = await readPluginConfigStore({
     ...configIdentity,
     pluginName,
@@ -464,18 +451,6 @@ async function applyPluginConfigWriteUnlocked(
   const removedKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(store.values, key));
   const updatedKeys = Object.keys(updates);
   const changedKeys = [...updatedKeys, ...removedKeys];
-  if (options.scope === 'project' && projectLayer === 'shared' && changedKeys.length > 0) {
-    const nextValues = { ...store.values, ...updates };
-    for (const key of requestedRemoveKeys) delete nextValues[key];
-    const boundaryIssues = collectProjectArtifactConfigBoundaryIssues({
-      schema,
-      sharedEntries: nextValues,
-    });
-    if (boundaryIssues.length > 0) {
-      throw new Error([...new Set(boundaryIssues.map((issue) => issue.message))].join(' '));
-    }
-  }
-
   if (changedKeys.length > 0) {
     await patchPluginConfigStore({
       ...configIdentity,
@@ -584,7 +559,7 @@ async function resetPluginConfigWithHelperUnlocked(
     cwd: options.cwd,
     env: options.env,
   });
-  if (!schemaAccess.plugin?.manifest.config?.schema) {
+  if (!schemaAccess.plugin?.manifest.config?.fields) {
     throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
   }
   const configIdentity = options.plugin.sourceId ? {
@@ -625,7 +600,7 @@ async function resetPluginConfigWithHelperUnlocked(
   };
   let effective: ReturnType<typeof summarizeEffectivePluginConfig> | undefined;
   if (schemaAccess.plugin) {
-    if (schemaAccess.plugin.manifest.config?.schema) {
+    if (schemaAccess.plugin.manifest.config?.fields) {
       effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
         ...configIdentity,
         pluginName,

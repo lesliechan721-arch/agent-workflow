@@ -114,7 +114,7 @@ export function trimBlock(text) {
 
 async function readManifestDefaults() {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
+  const schema = isRecord(manifest?.config?.fields) ? manifest.config.fields : {};
 
   return {
     exploreMinimumInitialWaitMinutes:

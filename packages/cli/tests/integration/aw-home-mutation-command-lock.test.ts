@@ -97,7 +97,18 @@ function configureDemoManifest(manifest: PluginMeta['manifest']): void {
     instructions: [{ name: 'demo', title: 'Demo', content: 'Demo.' }],
   };
   manifest.config = {
-    schema: { mode: { type: 'enum', values: ['safe', 'fast'] } },
+    fields: {
+      mode: {
+        type: 'string',
+        choices: {
+          allowCustom: false,
+          presets: [
+            { id: 'safe', title: 'Safe', value: 'safe' },
+            { id: 'fast', title: 'Fast', value: 'fast' },
+          ],
+        },
+      },
+    },
   };
 }
 

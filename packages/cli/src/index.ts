@@ -576,8 +576,6 @@ function configSetEquivalentOptions(
 
 function configFieldPlaceholder(field: PluginConfigSchemaField | undefined): string | undefined {
   if (field?.sensitive) return '<sensitive-value>';
-  if (field?.type === 'file') return '<file-path>';
-  if (field?.type === 'directory') return '<directory-path>';
   return undefined;
 }
 
@@ -786,7 +784,7 @@ async function resolveMultiSourceConfigRead(options: {
       });
       if (options.key !== undefined) {
         const field = findConfigFieldEntry(result.fields, options.key);
-        if (!field && plugin.manifest.config?.schema?.[options.key] === undefined) {
+        if (!field && plugin.manifest.config?.fields?.[options.key] === undefined) {
           throw new Error(`Unknown config key "${options.key}".`);
         }
         if (field) result.fields = [field];
@@ -3088,10 +3086,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             context,
             selectedPlugin,
             async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        if (!plugin.manifest.config?.schema) {
+        if (!plugin.manifest.config?.fields) {
           throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" does not declare an AW config schema.`);
         }
-        if (!plugin.manifest.config.schema[selectedKey]) {
+        if (!plugin.manifest.config.fields[selectedKey]) {
           throw new Error(`Unknown config key "${selectedKey}".`);
         }
         const writeReceipt = await applyPluginConfigWrite({
@@ -3125,7 +3123,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           sourceIdentity: source.sourceIdentity,
           affectedFields: [{
             key: selectedKey,
-            title: plugin?.manifest.config?.schema?.[selectedKey]?.title ?? selectedKey,
+            title: plugin?.manifest.config?.fields?.[selectedKey]?.title ?? selectedKey,
             kind: 'manifest' as const,
             reserved: false,
             action: 'set' as const,
@@ -3240,7 +3238,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             context,
             selectedPlugin,
             async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        if (plugin.manifest.config?.schema && !plugin.manifest.config.schema[selectedKey]) {
+        if (plugin.manifest.config?.fields && !plugin.manifest.config.fields[selectedKey]) {
           throw new Error(`Unknown config key "${selectedKey}".`);
         }
         const store = await readPluginConfigStore({
@@ -3287,7 +3285,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           existed,
           affectedFields: [{
             key: selectedKey,
-            title: plugin?.manifest.config?.schema?.[selectedKey]?.title ?? selectedKey,
+            title: plugin?.manifest.config?.fields?.[selectedKey]?.title ?? selectedKey,
             kind: 'manifest' as const,
             reserved: false,
             action: 'unset' as const,

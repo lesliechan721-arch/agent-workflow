@@ -34,15 +34,18 @@ describe('plugin authoring capability structure registry', () => {
   it('keeps accepted values equal to the public manifest schema', async () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
     const schema = JSON.parse(await fs.readFile(
-      path.join(root, 'schemas', 'plugin-manifest-v2.json'),
+      path.join(root, 'schemas', 'plugin-manifest-v3.json'),
       'utf8',
     ))
     expect(getPluginAuthoringAcceptedValues('manifest', 'marketplace.policy.installation'))
       .toEqual(schema.$defs.marketplace.properties.policy.properties.installation.enum)
     expect(getPluginAuthoringAcceptedValues('manifest', 'marketplace.policy.authentication'))
       .toEqual(schema.$defs.marketplace.properties.policy.properties.authentication.enum)
-    expect(getPluginAuthoringAcceptedValues('config', 'config.schema.<key>.type'))
-      .toEqual(schema.$defs.configField.properties.type.enum)
+    expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.type'))
+      .toEqual(schema.$defs.configField.oneOf.map((entry: { $ref: string }) => {
+        const definition = entry.$ref.split('/').at(-1)!
+        return schema.$defs[definition].properties.type.const
+      }))
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].platforms'))
       .toEqual(schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.platforms.items.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].distributions'))

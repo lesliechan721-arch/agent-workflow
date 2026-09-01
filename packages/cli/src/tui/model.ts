@@ -1,7 +1,6 @@
 import type {
   PlatformName,
   PluginConfigFieldType,
-  PluginConfigPresentationPreset,
   PluginConfigSchema,
   Scope,
 } from '../types.js';
@@ -225,7 +224,7 @@ export interface ConfigFieldViewModel {
   key: string;
   title: string;
   description?: string;
-  type: PluginConfigFieldType;
+  type: Exclude<PluginConfigFieldType, 'object'> | 'enum';
   displayValue: string;
   required: boolean;
   sensitive: boolean;
@@ -258,7 +257,10 @@ export interface ConfigGroupViewModel {
   fields: ConfigFieldViewModel[];
 }
 
-export interface ConfigPresetViewModel extends Omit<PluginConfigPresentationPreset, 'values'> {
+export interface ConfigPresetViewModel {
+  id: string;
+  title: string;
+  description?: string;
   values: Record<string, string | number | boolean>;
   privateFieldTitles?: string[];
 }
@@ -1745,10 +1747,12 @@ export function buildConfigGroups(options: {
   const layerEntry = (layer: keyof NonNullable<typeof options.layerReads>, key: string) =>
     options.layerReads?.[layer].fields.find((field) => field.key === key);
   const fieldModel = (key: string): ConfigFieldViewModel => {
-    const schema = options.schema.schema[key]!;
+    const schema = options.schema.fields[key]!;
+    if (schema.type === 'object') {
+      throw new Error(`Object config field "${key}" is not supported by the current settings editor.`);
+    }
     const entry = entryByKey.get(key);
     const effectiveEntry = effectiveEntryByKey.get(key);
-    const presentation = options.schema.presentation?.fields?.[key];
     const inherited = effectivePage
       ? false
       : entry?.storedSourceLayer === undefined;
@@ -1759,7 +1763,11 @@ export function buildConfigGroups(options: {
         && entry.effectiveValue !== null
         && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
-    const privateValue = schema.sensitive === true || schema.type === 'file' || schema.type === 'directory';
+    const privateValue = schema.sensitive === true;
+    const choices = schema.type === 'boolean'
+      ? undefined
+      : schema.choices;
+    const closedChoices = choices?.allowCustom === false ? choices.presets : undefined;
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
     const selectedStoredInvalid = !effectivePage
       && entry?.storedSourceLayer !== undefined
@@ -1783,7 +1791,7 @@ export function buildConfigGroups(options: {
       key,
       title: schema.title ?? key,
       ...(schema.description ? { description: schema.description } : {}),
-      type: schema.type,
+      type: closedChoices ? 'enum' : schema.type,
       displayValue: selectedStoredInvalid ? '值无效' : displayConfigValue({
         privateValue,
         inherited,
@@ -1821,16 +1829,14 @@ export function buildConfigGroups(options: {
         ? { effectiveValue: effectiveEntry.effectiveValue as string | number | boolean }
         : {}),
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
-      ...(schema.values ? { enumValues: [...schema.values] } : {}),
-      ...(presentation?.valueLabels ? { valueLabels: { ...presentation.valueLabels } } : {}),
-      ...(presentation?.recommendedValue !== undefined
-        ? { recommendedValue: presentation.recommendedValue }
+      ...(closedChoices ? { enumValues: closedChoices.map((preset) => String(preset.value)) } : {}),
+      ...(closedChoices ? { valueLabels: Object.fromEntries(closedChoices.map((preset) => [String(preset.value), preset.title])) } : {}),
+      ...(closedChoices?.find((preset) => preset.recommended)?.value !== undefined
+        ? { recommendedValue: closedChoices.find((preset) => preset.recommended)!.value }
         : {}),
-      ...(presentation?.placeholder ? { placeholder: presentation.placeholder } : {}),
-      ...(presentation?.unit ? { unit: presentation.unit } : {}),
-      ...(schema.min !== undefined ? { min: schema.min } : {}),
-      ...(schema.max !== undefined ? { max: schema.max } : {}),
-      advanced: presentation?.advanced === true,
+      ...(schema.type === 'number' && schema.validation?.minimum !== undefined ? { min: schema.validation.minimum } : {}),
+      ...(schema.type === 'number' && schema.validation?.maximum !== undefined ? { max: schema.validation.maximum } : {}),
+      advanced: false,
     };
   };
   const assigned = new Set<string>();
@@ -1841,7 +1847,7 @@ export function buildConfigGroups(options: {
       title: group.title,
       ...(group.description ? { description: group.description } : {}),
       advanced: group.advanced === true,
-      fields: group.fields.map(fieldModel),
+      fields: group.fields.filter((key) => options.schema.fields[key]?.type !== 'object').map(fieldModel),
     };
   });
   const syntheticGroupId = (preferred: string): string => {
@@ -1854,17 +1860,20 @@ export function buildConfigGroups(options: {
     }
     return id;
   };
-  const remaining = Object.keys(options.schema.schema).filter((key) => !assigned.has(key));
+  const remaining = Object.keys(options.schema.fields)
+    .filter((key) => options.schema.fields[key]?.type !== 'object' && !assigned.has(key));
   if (!options.schema.presentation) {
     groups.push({
       id: 'general',
       title: '插件设置',
       advanced: false,
-      fields: Object.keys(options.schema.schema).map(fieldModel),
+      fields: Object.keys(options.schema.fields)
+        .filter((key) => options.schema.fields[key]?.type !== 'object')
+        .map(fieldModel),
     });
   } else {
-    const ordinary = remaining.filter((key) => options.schema.presentation?.fields?.[key]?.advanced !== true);
-    const advanced = remaining.filter((key) => options.schema.presentation?.fields?.[key]?.advanced === true);
+    const ordinary = remaining;
+    const advanced: string[] = [];
     if (ordinary.length > 0) {
       groups.push({
         id: syntheticGroupId('general'),
@@ -1896,27 +1905,11 @@ export function buildConfigPage(options: {
     local: ResolvedConfigRead;
   };
 }): ConfigPageViewModel {
-  const privateFields = new Set(Object.entries(options.schema.schema)
-    .filter(([, field]) => field.sensitive === true || field.type === 'file' || field.type === 'directory')
-    .map(([key]) => key));
-  const presets = (options.schema.presentation?.presets ?? []).map((preset): ConfigPresetViewModel => {
-    const privateFieldTitles = Object.keys(preset.values)
-      .filter((key) => privateFields.has(key))
-      .map((key) => options.schema.schema[key]?.title ?? key);
-    return {
-      id: preset.id,
-      title: preset.title,
-      ...(preset.description ? { description: preset.description } : {}),
-      values: Object.fromEntries(Object.entries(preset.values)
-        .filter(([key]) => !privateFields.has(key))),
-      ...(privateFieldTitles.length > 0 ? { privateFieldTitles } : {}),
-    };
-  });
   return {
     pluginId: options.pluginId,
     layer: { scope: options.read.scope, projectLayer: options.read.projectLayer },
     groups: buildConfigGroups(options),
-    presets,
+    presets: [],
     storedCount: options.read.fields.filter((field) => field.storedSourceLayer !== undefined).length,
   };
 }

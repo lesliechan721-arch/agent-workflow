@@ -446,7 +446,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Warm.' }],
       };
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -531,7 +531,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Changed.' }],
       };
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
@@ -559,7 +559,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'transport', title: 'Transport', content: 'Transport.' }],
       };
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     };
     await Promise.all([
       createCatalogSnapshotFixture(httpsRoot, 'demo', [], 'https\n', configureManifest),
@@ -694,7 +694,7 @@ describe('five namespaced write commands', () => {
           instructions: [{ name: 'session', title: 'Session', content }],
         };
         manifest.config = {
-          schema: {
+          fields: {
             oldMode: { type: 'string', title: 'oldMode' },
             ...(field === 'oldMode' ? {} : { [field]: { type: 'string', title: field } }),
           },
@@ -2441,7 +2441,19 @@ describe('five namespaced write commands', () => {
         dependencies: ['leaf'],
         configureManifest: (manifest) => {
           manifest.config = {
-            schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
+            fields: {
+              mode: {
+                type: 'string',
+                default: 'safe',
+                choices: {
+                  allowCustom: false,
+                  presets: [
+                    { id: 'safe', title: 'Safe', value: 'safe' },
+                    { id: 'fast', title: 'Fast', value: 'fast' },
+                  ],
+                },
+              },
+            },
           };
         },
       },
@@ -3162,7 +3174,7 @@ describe('five namespaced write commands', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-removal-config-source');
     const configure = (manifest: PluginMeta['manifest']) => {
       manifest.marketplace.policy.products = ['CODEX'];
-      manifest.config = { schema: { mode: { type: 'string', required: true } } };
+      manifest.config = { fields: { mode: { type: 'string', required: true } } };
     };
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       { name: 'cleanup-target', configureManifest: configure },
@@ -3551,7 +3563,7 @@ describe('five namespaced write commands', () => {
         manifest.extensions = {
           instructions: [{ name: 'review', title: 'Review', content }],
         };
-        manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+        manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
       },
     );
     await writeSource('review B');
@@ -5944,16 +5956,24 @@ describe('five namespaced write commands', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-config-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
-        schema: {
-          level: { type: 'enum', values: ['fast', 'strict'], title: '审查级别' },
-          count: { type: 'number', min: 1, max: 10, title: '重试次数' },
+        fields: {
+          level: {
+            type: 'string',
+            title: '审查级别',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'fast', title: '快速', value: 'fast' },
+                { id: 'strict', title: '严格', value: 'strict', recommended: true },
+              ],
+            },
+          },
+          count: { type: 'number', validation: { minimum: 1, maximum: 10 }, title: '重试次数' },
           token: { type: 'string', sensitive: true, title: '令牌' },
-          rules: { type: 'file', title: '规则文件' },
+          rules: { type: 'string', sensitive: true, validation: { format: 'path' }, title: '规则文件' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules'] }],
-          fields: { level: { valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict' } },
-          presets: [{ id: 'strict', title: '严格方案', values: { level: 'strict', count: 7 } }],
         },
       };
     });
@@ -5987,24 +6007,20 @@ describe('five namespaced write commands', () => {
         ]),
       }),
     ]);
-    expect(page.presets).toEqual([{ id: 'strict', title: '严格方案', values: { level: 'strict', count: 7 } }]);
+    expect(page.presets).toEqual([]);
 
     const controller = new TuiController(dependencies);
     await controller.load();
     const privatePath = path.join(isolation.layout.fixtureCwd, 'private-secret-rules.json');
-    await expect(controller.buildOperationReview({
+    const privateSave = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'team/demo',
       scope: 'user',
       projectLayer: 'shared',
       updates: { rules: privatePath },
-      privateKeys: ['rules'],
-    })).rejects.toThrow('操作未建立。请检查当前设置后重试。');
-    expect(JSON.stringify(debugLog.mock.calls)).not.toContain(privatePath);
-    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({
-      message: 'TUI config operation failed.',
-      data: expect.objectContaining({ code: expect.any(String) }),
-    }));
+      sensitiveKeys: ['rules'],
+    });
+    expect(JSON.stringify(privateSave)).not.toContain(privatePath);
 
     const save = await controller.buildOperationReview({
       kind: 'configSave',
@@ -6106,7 +6122,7 @@ describe('five namespaced write commands', () => {
           skillKey: 'review',
         })),
       };
-      manifest.config = { schema: { mode: { type: 'string', title: '模式' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: '模式' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -6650,7 +6666,19 @@ describe('five namespaced write commands', () => {
       createCatalogSnapshotFixture(dualRoot, 'config-dual', [], 'dual\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
         manifest.config = {
-          schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
+          fields: {
+            mode: {
+              type: 'string',
+              default: 'safe',
+              choices: {
+                allowCustom: false,
+                presets: [
+                  { id: 'safe', title: 'Safe', value: 'safe' },
+                  { id: 'fast', title: 'Fast', value: 'fast' },
+                ],
+              },
+            },
+          },
         };
         manifest.scripts = {
           artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
@@ -6938,7 +6966,19 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'config-native', [], 'config\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.config = {
-        schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
+        fields: {
+          mode: {
+            type: 'string',
+            default: 'safe',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'safe', title: 'Safe', value: 'safe' },
+                { id: 'fast', title: 'Fast', value: 'fast' },
+              ],
+            },
+          },
+        },
       };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -7415,8 +7455,19 @@ describe('five namespaced write commands', () => {
     ].join('\n'));
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
-        schema: {
-          mode: { type: 'enum', values: ['safe', 'fast', 'fail'], default: 'safe' },
+        fields: {
+          mode: {
+            type: 'string',
+            default: 'safe',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'safe', title: 'Safe', value: 'safe' },
+                { id: 'fast', title: 'Fast', value: 'fast' },
+                { id: 'fail', title: 'Fail', value: 'fail' },
+              ],
+            },
+          },
         },
       };
       manifest.scripts = {

@@ -34,7 +34,7 @@ export async function createCatalogSnapshotFixture(
   const pluginRoot = path.join(rootDir, 'plugins', pluginName);
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest: PluginMeta['manifest'] = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: pluginName,
     version: '1.0.0',
     description: `${pluginName} plugin`,

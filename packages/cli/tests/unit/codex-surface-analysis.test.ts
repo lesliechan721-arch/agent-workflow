@@ -10,7 +10,7 @@ function manifest(
   overrides: Partial<NormalizedPluginManifest> = {},
 ): NormalizedPluginManifest {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'surface-fixture',
     version: '1.0.0',
     description: 'Surface fixture.',
@@ -50,7 +50,7 @@ describe('codex-surface-analysis', () => {
   it('keeps renderer output and instruction, permission, and agent extensions AW-owned', () => {
     const analysis = analyzeCodexSurface(manifest({
       skills: './skills',
-      config: { schema: { mode: { type: 'string' } } },
+      config: { fields: { mode: { type: 'string' } } },
       scripts: {
         artifacts: { render: { runner: 'node', path: './render.mjs' } },
       },
@@ -91,7 +91,7 @@ describe('codex-surface-analysis', () => {
 
   it('treats config and lifecycle local-state contracts as AW-owned evidence', () => {
     const configOnly = analyzeCodexSurface(manifest({
-      config: { schema: { mode: { type: 'string' } } },
+      config: { fields: { mode: { type: 'string' } } },
     }));
     expect(configOnly).toMatchObject({
       ok: true,
@@ -104,7 +104,7 @@ describe('codex-surface-analysis', () => {
 
     const nativeAndConfig = analyzeCodexSurface(manifest({
       skills: './skills',
-      config: { schema: { mode: { type: 'string' } } },
+      config: { fields: { mode: { type: 'string' } } },
     }));
     expect(nativeAndConfig).toMatchObject({
       ok: true,

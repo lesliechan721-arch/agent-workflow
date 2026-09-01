@@ -32,7 +32,7 @@ describe('current AW executable capabilities', () => {
       coreVersion: expect.any(String),
     })
     expect(result.capabilities).toEqual([...IMPLEMENTED_AW_CAPABILITIES].sort())
-    expect(result.capabilities).toContain('aw.plugin-manifest.v2')
+    expect(result.capabilities).toContain('aw.plugin-manifest.v3')
     expect(result.capabilities).toContain('aw.catalog-snapshot.v6')
     expect(result.capabilities).toContain('aw.catalog-source.v2')
     expect(result.capabilities).toContain('aw.catalog-dev-source.v1')

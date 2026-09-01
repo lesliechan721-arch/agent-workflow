@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "skills-mcp",
   "version": "0.1.0",
   "description": "Fixture plugin combining repo skills and MCP servers.",

@@ -282,7 +282,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
     manifest.config = {
-      schema: {
+      fields: {
         mode: {
           type: 'string',
           default: 'default-mode',
@@ -778,7 +778,7 @@ describe('plugin script test runner', () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
     manifest.config = {
-      schema: {
+      fields: {
         token: {
           type: 'string',
           sensitive: true,
@@ -844,7 +844,7 @@ describe('plugin script test runner', () => {
       name: 'registry-provider',
       version: '0.1.0',
       description: 'registry provider',
-      schemaVersion: 2,
+      schemaVersion: 3,
       marketplace: {
         category: 'workflow',
         strict: true,

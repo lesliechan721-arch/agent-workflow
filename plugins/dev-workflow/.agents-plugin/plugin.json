@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "dev-workflow",
   "version": "0.1.0",
   "description": "按保障等级和生命周期 gate 组织开发任务，并提供可独立使用的规格、实现与审查闭环。",

@@ -1134,7 +1134,7 @@ export async function statusCommandV6(options: {
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
               let effectiveConfig: Awaited<ReturnType<typeof resolveEffectivePluginConfig>> | undefined;
               let configDiagnostic: StatusV6PluginSummary['configDiagnostic'];
-              if (plugin.manifest.config?.schema) {
+              if (plugin.manifest.config?.fields) {
                 try {
                   effectiveConfig = await resolveEffectivePluginConfig({
                     sourceId: plugin.sourceId,
@@ -1606,15 +1606,15 @@ export async function statusCommandV6(options: {
                 shortDescription: plugin.manifest.interface?.shortDescription
                   ?? plugin.manifest.description,
                 description: plugin.manifest.description,
-                ...(plugin.manifest.config?.schema
-                  ? { configSchema: plugin.manifest.config.schema }
+                ...(plugin.manifest.config?.fields
+                  ? { configSchema: plugin.manifest.config.fields }
                   : {}),
                 ...(effectiveConfig?.issues.length
                   ? {
                       configIssues: effectiveConfig.issues.map((issue) => ({
                         type: issue.type,
                         key: issue.key,
-                        title: plugin.manifest.config!.schema[issue.key]?.title ?? issue.key,
+                        title: plugin.manifest.config!.fields[issue.key]?.title ?? issue.key,
                         source: issue.source ?? 'missing',
                       })),
                     }

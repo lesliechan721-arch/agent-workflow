@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "instructions-mcp",
   "version": "0.1.0",
   "description": "Fixture plugin combining managed instructions and MCP servers.",

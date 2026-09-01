@@ -2900,26 +2900,9 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'source-10' });
   });
 
-  it('masks absolute config and source paths in input frames while preserving editing', async () => {
-    const value = controller({ getConfigPage: vi.fn().mockResolvedValue(configPage()) });
+  it('masks absolute source paths in input frames while preserving editing', async () => {
+    const value = controller();
     await value.load();
-    value.push({
-      name: 'configFieldEditor',
-      pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
-      fieldKey: 'rules',
-      editor: 'path',
-    });
-    const config = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(3);
-    const privateConfigPath = '/Users/alice/private/team/rules.json';
-    await input(config, ...privateConfigPath.split(''));
-    expect(config.lastFrame()).toContain('已选择 / … / rules.json');
-    expect(config.lastFrame()).not.toContain('/Users/alice/private');
-    await input(config, '\u007f');
-    expect(config.lastFrame()).toContain('rules.jso');
-    config.unmount();
-
     value.push({ name: 'sourceList' });
     const source = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);

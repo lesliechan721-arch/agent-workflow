@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto'
 
 export const AW_CAPABILITY_IDS = [
-  'aw.plugin-manifest.v2',
+  'aw.plugin-manifest.v3',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
-  'aw.plugin-config.v1',
+  'aw.plugin-config.v2',
   'aw.plugin-lifecycle.v1',
   'aw.dynamic-artifacts.v2',
   'aw.portable-skills.v1',

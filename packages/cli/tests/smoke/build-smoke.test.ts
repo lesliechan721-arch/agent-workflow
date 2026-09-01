@@ -117,7 +117,7 @@ describe('build smoke', () => {
       },
     }, { spaces: 2 });
     await fs.writeJson(manifestPath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'version-gate-smoke',
       version: '0.1.0',
       description: 'Baseline version gate smoke plugin.',
@@ -131,7 +131,7 @@ describe('build smoke', () => {
       },
       requires: {
         aw: {
-          capabilities: ['aw.plugin-manifest.v2'],
+          capabilities: ['aw.plugin-manifest.v3'],
         },
       },
     }, { spaces: 2 });
@@ -520,7 +520,7 @@ describe('build smoke', () => {
     });
     expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v6']);
     expect(catalogManifest.entries.every((entry) =>
-      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v2'))).toBe(true);
+      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v3'))).toBe(true);
     expect(catalogManifest).not.toHaveProperty('history');
     expect(catalogManifest).not.toHaveProperty('packages');
     expect((await fs.readdir(outputRoot)).sort()).toEqual([

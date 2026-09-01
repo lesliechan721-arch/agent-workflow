@@ -35,7 +35,7 @@ async function createTempPlugin(
   await fs.writeJson(
     path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       ...manifest,
     },
     { spaces: 2 },
@@ -141,7 +141,7 @@ describe('slashCommands source and bundle contract', () => {
       schemaVersion: 1,
       kind: 'aw-plugin-requirements',
       plugin: { name: 'slash-commands-only', version: '0.1.0' },
-      requiredCapabilities: expect.arrayContaining(['aw.plugin-manifest.v2']),
+      requiredCapabilities: expect.arrayContaining(['aw.plugin-manifest.v3']),
       digest: expect.stringMatching(/^sha256:/u),
     });
 

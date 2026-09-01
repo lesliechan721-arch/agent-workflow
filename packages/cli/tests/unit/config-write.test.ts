@@ -97,7 +97,7 @@ async function createFixture(
     name: pluginName,
     version: '1.0.0',
     description: 'Config apply test plugin',
-    schemaVersion: 2,
+    schemaVersion: 3,
     marketplace: {
       category: 'test',
       strict: true,
@@ -108,11 +108,21 @@ async function createFixture(
       },
     },
     config: {
-      schema: {
+      fields: {
         token: { type: 'string', sensitive: true },
-        mode: { type: 'enum', values: ['fast', 'safe'], default: 'safe' },
-        workspace: { type: 'directory' },
-        certificate: { type: 'file' },
+        mode: {
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [
+              { id: 'fast', title: 'Fast', value: 'fast' },
+              { id: 'safe', title: 'Safe', value: 'safe' },
+            ],
+          },
+          default: 'safe',
+        },
+        workspace: { type: 'string', sensitive: true },
+        certificate: { type: 'string', sensitive: true },
       },
     },
     ...(options.codexProjectManaged === false ? {} : { skills: './skills' }),
@@ -229,7 +239,7 @@ describe('config write full reinstall apply', () => {
     },
   );
 
-  it('projects sensitive, file, and directory values without exposing stored bytes or paths', async () => {
+  it('projects sensitive string values without exposing stored bytes', async () => {
     const fixture = await createFixture();
     const privateDirectory = path.join(fixture.root, 'private-workspace');
     const privateFile = path.join(fixture.root, 'private-certificate.pem');
@@ -325,7 +335,7 @@ describe('config write full reinstall apply', () => {
       env: fixture.env,
       request: { updates: { mode: 'invalid' } },
       reinstallCommandImpl: reinstall,
-    })).rejects.toThrow('must be one of');
+    })).rejects.toThrow('Expected a declared preset value');
 
     expect(reinstall).not.toHaveBeenCalled();
     expect((await readPluginConfigStore({
@@ -920,8 +930,8 @@ describe('config write full reinstall apply', () => {
 
   it('keeps each selected layer value separate from the project local effective value', async () => {
     const fixture = await createFixture();
-    fixture.plugin.manifest.config!.schema.label = { type: 'string' };
-    fixture.plugin.manifest.config!.schema.count = { type: 'number' };
+    fixture.plugin.manifest.config!.fields.label = { type: 'string' };
+    fixture.plugin.manifest.config!.fields.count = { type: 'number' };
     await writePluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
       scope: 'user',
@@ -1027,8 +1037,8 @@ describe('config write full reinstall apply', () => {
 
   it('keeps missing optional and required fields unset through the real read-to-page projection', async () => {
     const fixture = await createFixture();
-    fixture.plugin.manifest.config!.schema.optional = { type: 'string' };
-    fixture.plugin.manifest.config!.schema.required = { type: 'string', required: true };
+    fixture.plugin.manifest.config!.fields.optional = { type: 'string' };
+    fixture.plugin.manifest.config!.fields.required = { type: 'string', required: true };
 
     const effectiveRead = await resolveConfigRead({
       pluginName: fixture.plugin.manifest.name,
@@ -1098,7 +1108,7 @@ describe('config write full reinstall apply', () => {
     effectiveSourceLabel,
   }) => {
     const fixture = await createFixture();
-    fixture.plugin.manifest.config!.schema.broken = { type: 'string', sensitive: true };
+    fixture.plugin.manifest.config!.fields.broken = { type: 'string', sensitive: true };
     const rawSecret = `PRIVATE_INVALID_${storedSourceLayer}`;
     await writePluginConfigStore({
       pluginName: fixture.plugin.manifest.name,

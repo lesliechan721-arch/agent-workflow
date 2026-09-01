@@ -24,10 +24,10 @@ function manifest(overrides: Record<string, unknown> = {}): Record<string, unkno
   }
 }
 
-describe('plugin manifest v2 structure', () => {
-  it('requires explicit v2 and accepts unknown valid capability IDs', () => {
+describe('plugin manifest v3 structure', () => {
+  it('requires explicit v3 and accepts unknown valid capability IDs', () => {
     const explicit = manifest({
-      schemaVersion: 2,
+      schemaVersion: 3,
       requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
     })
     expect(() => assertPluginManifestStructure(explicit)).not.toThrow()
@@ -36,21 +36,44 @@ describe('plugin manifest v2 structure', () => {
   })
 
   it('rejects unknown versions and invalid structures', () => {
-    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 1 })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2 })))
       .toThrow(/Unsupported plugin manifest schemaVersion/u)
-    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2, unexpected: true })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 3, unexpected: true })))
       .toThrow(PluginManifestStructureError)
-    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2, marketplace: [] })))
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 3, marketplace: [] })))
       .toThrow(/Invalid plugin manifest structure/u)
     expect(() => assertPluginManifestStructure(manifest({
-      schemaVersion: 2,
+      schemaVersion: 3,
       requires: { aw: { capabilities: ['future-feature'] } },
     }))).toThrow(/capabilities/u)
   })
 
+  it.each([
+    ['array default', { fields: { value: { type: 'string', default: [] } } }],
+    ['null default', { fields: { value: { type: 'string', default: null } } }],
+    ['nested object', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: { nested: { type: 'object', additionalProperties: false } },
+        },
+      },
+    }],
+    ['missing object shape', { fields: { value: { type: 'object' } } }],
+    ['removed presentation fields', {
+      fields: { value: { type: 'string' } },
+      presentation: { fields: {} },
+    }],
+  ])('rejects invalid Config v2 structure: %s', (_label, config) => {
+    expect(() => assertPluginManifestStructure(manifest({
+      schemaVersion: 3,
+      config,
+    }))).toThrow(PluginManifestStructureError)
+  })
+
   it('fails closed for reserved imports and accepts only injected exports', () => {
     const withImport = (exportName: string) => manifest({
-      schemaVersion: 2,
+      schemaVersion: 3,
       buildConfig: {
         buildImports: [{
           plugin: '@host/runtime',
@@ -105,7 +128,7 @@ describe('plugin manifest v2 structure', () => {
     }],
   ])('rejects ignored source segments in a %s declaration', (_label, override) => {
     expect(() => validatePluginManifest('/tmp/plugin', manifest({
-      schemaVersion: 2,
+      schemaVersion: 3,
       ...override,
     }))).toThrow(/source paths must not enter (?:\.git|node_modules)/u)
   })

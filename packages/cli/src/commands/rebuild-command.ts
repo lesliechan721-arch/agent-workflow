@@ -379,7 +379,7 @@ function createSyntheticPlugin(pluginName: string, env: NodeJS.ProcessEnv): Plug
     rootDir,
     manifestPath: path.join(rootDir, '.agents-plugin', 'plugin.json'),
     manifest: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: pluginName,
       version: '0.0.0',
       description: 'Cleanup-only target for a plugin missing from the current catalog.',
@@ -2149,7 +2149,7 @@ export async function runRebuildCommand(options: {
             state = resolvedInspection.state;
             errorCode ??= 'dependencyNotReady';
           }
-          if (entry.plugin.manifest.config?.schema
+          if (entry.plugin.manifest.config?.fields
             && (action === 'install' || action === 'upgrade' || action === 'reinstall')) {
             const effective = await resolveEffectivePluginConfig({
               sourceId: entry.source.sourceId,

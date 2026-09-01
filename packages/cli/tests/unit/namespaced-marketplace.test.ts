@@ -821,7 +821,7 @@ describe('namespaced marketplace root', () => {
           name: pluginName, version: '1.0.0', skills: './codex/skills',
         });
         await fs.outputJson(path.join(root, 'plugins', pluginName, '.agents-plugin', 'plugin.json'), {
-          name: pluginName, version: '1.0.0', description: pluginName, schemaVersion: 2,
+          name: pluginName, version: '1.0.0', description: pluginName, schemaVersion: 3,
           marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
         });
         await fs.outputFile(

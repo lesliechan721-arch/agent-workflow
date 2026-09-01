@@ -16,7 +16,7 @@
 
 具体目录由 manifest 声明。所有 source path 必须留在插件根内，不能进入任意深度的 `.git` 或 `node_modules`。只维护 source 文件；`.aw/plugins/`、Catalog snapshot、digest 和 platform marketplace 是生成物，不手改。
 
-每个 source manifest 必须使用 Plugin Manifest v2，即显式写入 `schemaVersion: 2`。当前作者工具不接受早期 manifest schema。不要混淆：
+每个 source manifest 必须使用 Plugin Manifest v3，即显式写入 `schemaVersion: 3`。当前作者工具拒绝 v2 和更早的 manifest schema。不要混淆：
 
 - `schemaVersion`：manifest 结构版本。
 - `version`：单插件稳定 artifact 版本。
@@ -29,6 +29,14 @@ aw plugin capabilities --surface manifest --json
 ```
 
 其它 surface 以当前 CLI 帮助为准。不要从 development plugin 文档缓存字段表。
+
+## Config v2 合同
+
+Manifest 配置只使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。字段类型只允许 `string`、`number`、`boolean` 和 `object`。配置值只允许标量或一层标量对象；数组、`null` 和嵌套对象无效。旧的 `config.schema`、`enum`、`file`、`directory`、`presentation.fields`、`presentation.presets`、`valueLabels` 和 `recommendedValue` 都无效。
+
+`string` 可用 `minLength`、`maxLength`、`pattern` 和 `identifier|slug|semver|url|hostname|email|path` 格式校验。`number` 可用 `integer`、`minimum`、`maximum` 和 `multipleOf`。非 boolean 字段可声明 `choices: { allowCustom, presets }`。每个 preset 使用稳定 `id`、显示 `title` 和实际 `value`；同一字段最多一个 preset 可设 `recommended: true`。`allowCustom: false` 时，default 和写入值必须与一个 preset 的实际值相同。sensitive 字段不能声明 choices。
+
+`object` 可声明固定 `properties` 和标量 `additionalProperties`。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，动态 child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供稳定对象序列化、preset 匹配、结构化校验 issue 和一层 sensitive child 脱敏；CLI 当前只保证扁平标量配置的完整交互。
 
 已安装 Author 在开始工作时运行 `aw self check --from <skill-root> --json`。CLI 优先读取同层 `aw-plugin-requirements.json` runtime receipt，再回退到 Manifest；`missingCapabilities` 非空时停止。`aw plugin requirements <plugin-directory> --json` 分开报告 declared、derived、detected 和 effective requirements。`requires.aw.capabilities` 只声明生产行为真正需要的最小集合，不能用 CLI 版本字符串替代 capability compatibility。
 

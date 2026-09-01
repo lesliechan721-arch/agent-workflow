@@ -43,7 +43,7 @@ function createManifestFixture() {
         authentication: 'ON_INSTALL',
       },
       dependencies: [],
-      requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+      requires: { aw: { capabilities: ['aw.plugin-manifest.v3'] } },
       source: './plugins/demo',
       artifactDigest: sha256('a'),
       manifestDigest: sha256('b'),
@@ -145,12 +145,12 @@ describe('catalog manifest schema 6', () => {
     tempDirs.push(pluginRoot);
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest: PluginMeta['manifest'] = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'demo',
       version: '1.2.0',
       description: 'demo plugin',
       dependencies: ['shared-runtime'],
-      requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+      requires: { aw: { capabilities: ['aw.plugin-manifest.v3'] } },
       marketplace: {
         category: 'workflow',
         strict: true,
@@ -170,7 +170,7 @@ describe('catalog manifest schema 6', () => {
     expect(entry.artifactDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(entry.manifestDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(entry.dependencies).toEqual(['shared-runtime']);
-    expect(entry.requires.aw.capabilities).toEqual(['aw.plugin-manifest.v2']);
+    expect(entry.requires.aw.capabilities).toEqual(['aw.plugin-manifest.v3']);
   });
 
   it('binds artifact and content digests to the canonical Git executable mode', async () => {

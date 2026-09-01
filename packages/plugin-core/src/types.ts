@@ -1,4 +1,4 @@
-import type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js';
+import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js';
 
 export type PlatformName = 'codex' | 'claude';
 export type DistributionName = 'agent-skills';
@@ -18,7 +18,7 @@ export type CodexProjectManagedKind =
   | 'hook'
   | 'agent';
 
-export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV2['interface']>;
+export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV3['interface']>;
 
 export interface MarketplaceOwner { name: string; url: string }
 export interface MarketplaceInterfaceMeta { displayName: string }
@@ -27,9 +27,9 @@ export interface MarketplaceSourceMeta {
   interface: MarketplaceInterfaceMeta;
   catalog: { version: string };
 }
-export type MarketplacePolicy = PluginManifestSourceV2['marketplace']['policy'];
+export type MarketplacePolicy = PluginManifestSourceV3['marketplace']['policy'];
 export type MarketplaceAuthenticationPolicy = MarketplacePolicy['authentication'];
-export type PluginMarketplaceMeta = PluginManifestSourceV2['marketplace'];
+export type PluginMarketplaceMeta = PluginManifestSourceV3['marketplace'];
 
 export type TemplateValue = string | boolean;
 export interface TemplateVarByPlatform { claude: TemplateValue; codex: TemplateValue }
@@ -103,19 +103,85 @@ export interface PluginScriptsConfig {
   tests?: PluginScriptTestsConfig;
 }
 
-export type PluginConfigFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'file' | 'directory';
-export interface PluginConfigSchemaField {
-  type: PluginConfigFieldType;
+export type PluginConfigScalar = string | number | boolean;
+export type PluginConfigObject = Record<string, PluginConfigScalar>;
+export type PluginConfigValue = PluginConfigScalar | PluginConfigObject;
+export type PluginConfigFieldType = 'string' | 'number' | 'boolean' | 'object';
+export type PluginConfigStringFormat =
+  | 'identifier'
+  | 'slug'
+  | 'semver'
+  | 'url'
+  | 'hostname'
+  | 'email'
+  | 'path';
+export interface PluginConfigPreset<Value extends PluginConfigValue = PluginConfigValue> {
+  id: string;
+  title: string;
+  description?: string;
+  value: Value;
+  recommended?: true;
+}
+export interface PluginConfigChoices<Value extends PluginConfigValue = PluginConfigValue> {
+  allowCustom: boolean;
+  presets: PluginConfigPreset<Value>[];
+}
+export interface PluginConfigStringValidation {
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  format?: PluginConfigStringFormat;
+}
+export interface PluginConfigNumberValidation {
+  integer?: boolean;
+  minimum?: number;
+  maximum?: number;
+  multipleOf?: number;
+}
+export interface PluginConfigObjectValidation {
+  minProperties?: number;
+  maxProperties?: number;
+  key?: PluginConfigStringValidation;
+}
+export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
   title?: string;
   description?: string;
-  default?: string | number | boolean;
+  default?: Value;
   required?: boolean;
   sensitive?: boolean;
-  values?: string[];
-  min?: number;
-  max?: number;
 }
-export type PluginConfigPresentationValue = string | number | boolean;
+export interface PluginConfigStringField extends PluginConfigFieldBase<string> {
+  type: 'string';
+  choices?: PluginConfigChoices<string>;
+  validation?: PluginConfigStringValidation;
+}
+export interface PluginConfigNumberField extends PluginConfigFieldBase<number> {
+  type: 'number';
+  choices?: PluginConfigChoices<number>;
+  validation?: PluginConfigNumberValidation;
+}
+export interface PluginConfigBooleanField extends PluginConfigFieldBase<boolean> {
+  type: 'boolean';
+}
+export type PluginConfigScalarField =
+  | PluginConfigStringField
+  | PluginConfigNumberField
+  | PluginConfigBooleanField;
+type DistributiveOmit<Value, Key extends PropertyKey> =
+  Value extends unknown ? Omit<Value, Key> : never;
+export type PluginConfigObjectPropertyField = PluginConfigScalarField;
+export type PluginConfigAdditionalPropertiesField = DistributiveOmit<
+  PluginConfigScalarField,
+  'default' | 'required'
+>;
+export interface PluginConfigObjectField extends PluginConfigFieldBase<PluginConfigObject> {
+  type: 'object';
+  choices?: PluginConfigChoices<PluginConfigObject>;
+  properties?: Record<string, PluginConfigObjectPropertyField>;
+  additionalProperties?: false | PluginConfigAdditionalPropertiesField;
+  validation?: PluginConfigObjectValidation;
+}
+export type PluginConfigSchemaField = PluginConfigScalarField | PluginConfigObjectField;
 export interface PluginConfigPresentationGroup {
   id: string;
   title: string;
@@ -123,27 +189,19 @@ export interface PluginConfigPresentationGroup {
   fields: string[];
   advanced?: boolean;
 }
-export interface PluginConfigPresentationField {
-  valueLabels?: Record<string, string>;
-  recommendedValue?: PluginConfigPresentationValue;
-  placeholder?: string;
-  unit?: string;
-  advanced?: boolean;
-}
-export interface PluginConfigPresentationPreset {
-  id: string;
-  title: string;
-  description?: string;
-  values: Record<string, PluginConfigPresentationValue>;
-}
 export interface PluginConfigPresentation {
   groups?: PluginConfigPresentationGroup[];
-  fields?: Record<string, PluginConfigPresentationField>;
-  presets?: PluginConfigPresentationPreset[];
 }
-export interface PluginConfigSchema {
-  schema: Record<string, PluginConfigSchemaField>;
+export interface PluginConfigDefinition {
+  fields: Record<string, PluginConfigSchemaField>;
   presentation?: PluginConfigPresentation;
+}
+export type PluginConfigSchema = PluginConfigDefinition;
+export interface PluginConfigValidationIssue {
+  code: string;
+  path: { field: string; property?: string };
+  message: string;
+  recoverable: true;
 }
 
 export interface PlatformAgentOverrides<T> { claude?: Partial<T> | null; codex?: Partial<T> | null }
@@ -216,9 +274,9 @@ export interface PluginAgentSkillsDistribution { skills?: string }
 export interface PluginDistributionsConfig { agentSkills?: PluginAgentSkillsDistribution }
 export interface PluginRequirements { aw: { capabilities?: string[] } }
 
-export type PluginManifestSource = PluginManifestSourceV2;
+export type PluginManifestSource = PluginManifestSourceV3;
 export type NormalizedPluginManifest = Omit<
-  PluginManifestSourceV2,
+  PluginManifestSourceV3,
   'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config'
 > & {
   requires?: PluginRequirements;

@@ -177,7 +177,7 @@ function createClaudeCleanupPlugin(root: string, name: string): PluginMeta {
       name,
       version: '0.0.0',
       description: 'Claude cleanup fixture',
-      schemaVersion: 2,
+      schemaVersion: 3,
       marketplace: {
         category: 'test',
         strict: true,
@@ -929,7 +929,7 @@ describe('rebuild adapter integration', () => {
         name: 'simple-plugin',
         version: '1.2.3',
         description: 'rebuild integration fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1038,7 +1038,7 @@ describe('rebuild adapter integration', () => {
         name: 'removed-plugin',
         version: '0.0.0',
         description: 'cleanup-only target',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'cleanup',
           strict: true,
@@ -1291,7 +1291,7 @@ describe('rebuild adapter integration', () => {
         name: 'read-only-plugin',
         version: '1.0.0',
         description: 'read-only inspection fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1415,7 +1415,7 @@ describe('rebuild adapter integration', () => {
         name: 'active-only-plugin',
         version: '1.0.0',
         description: 'active-only inspection fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1453,7 +1453,7 @@ describe('rebuild adapter integration', () => {
         name: 'renderer-read-only',
         version: '1.0.0',
         description: 'renderer read-only fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1909,7 +1909,7 @@ describe('rebuild adapter integration', () => {
         name: 'optional-plan',
         version: '1.0.0',
         description: 'optional planner fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2105,7 +2105,7 @@ describe('rebuild adapter integration', () => {
         name: 'symlink-boundary',
         version: '1.0.0',
         description: 'symlink boundary fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2149,7 +2149,7 @@ describe('rebuild adapter integration', () => {
         name: 'file-symlink-boundary',
         version: '1.0.0',
         description: 'file symlink boundary fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2197,7 +2197,7 @@ describe('rebuild adapter integration', () => {
       name: 'project-skill-plugin',
       version: '1.0.0',
       description: 'project skill fixture',
-      schemaVersion: 2,
+      schemaVersion: 3,
       marketplace: {
         category: 'test',
         strict: true,
@@ -2544,7 +2544,7 @@ describe('rebuild adapter integration', () => {
         name: 'foreign-collision-plugin',
         version: '1.0.0',
         description: 'foreign collision fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2655,7 +2655,7 @@ describe('rebuild adapter integration', () => {
         name: 'safety-plugin',
         version: '1.0.0',
         description: 'project safety fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2906,7 +2906,7 @@ describe('rebuild adapter integration', () => {
         name: 'stale-permission',
         version: '0.0.0',
         description: 'stale permission cleanup fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3172,7 +3172,7 @@ describe('rebuild adapter integration', () => {
         name: pluginName,
         version: '0.0.0',
         description: 'native residue fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3272,7 +3272,7 @@ describe('rebuild adapter integration', () => {
         name: 'orphan-plugin',
         version: '0.0.0',
         description: 'orphan marketplace fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3384,7 +3384,7 @@ describe('rebuild adapter integration', () => {
         name: 'custom-root-plugin',
         version: '1.0.0',
         description: 'custom root fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3972,7 +3972,7 @@ describe('rebuild adapter integration', () => {
       name: 'renderer-contract',
       version: '1.0.0',
       description: 'renderer contract fixture',
-      schemaVersion: 2,
+      schemaVersion: 3,
       marketplace: {
         category: 'test',
         strict: true,
@@ -4431,7 +4431,7 @@ describe('rebuild adapter integration', () => {
           name: 'corrupted-owned',
           version: '1.0.0',
           description: 'corrupted owned fixture',
-          schemaVersion: 2,
+          schemaVersion: 3,
           marketplace: {
             category: 'test', strict: true,
             policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
@@ -4507,7 +4507,7 @@ describe('rebuild adapter integration', () => {
       manifestPath: path.join(isolation.layout.rootDir, 'removed-claude', '.agents-plugin', 'plugin.json'),
       manifest: {
         name: 'removed-claude', version: '0.0.0', description: 'removed catalog fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test', strict: true,
           policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },

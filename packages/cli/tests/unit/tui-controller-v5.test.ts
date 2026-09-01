@@ -663,7 +663,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
-  it('projects manifest order, presentation groups, fallback fields, presets, and private values safely', () => {
+  it('projects manifest order, presentation groups, choices, and private values safely', () => {
     const fields = [
       { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
       { key: 'rules', title: '规则', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: '/Users/private/rules.json', sourceLayer: 'local' as const, storedValue: '/Users/private/rules.json', storedSourceLayer: 'local' as const },
@@ -672,19 +672,23 @@ describe('TUI v4 router and ViewModel', () => {
     const page = buildConfigPage({
       pluginId: 'official/demo',
       schema: {
-        schema: {
-          level: { type: 'enum', title: '级别', values: ['fast', 'strict'] },
-          rules: { type: 'file', title: '规则', default: '/Users/private/default-rules.json' },
+        fields: {
+          level: {
+            type: 'string',
+            title: '级别',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'fast', title: '快速', value: 'fast' },
+                { id: 'strict', title: '严格', value: 'strict', recommended: true },
+              ],
+            },
+          },
+          rules: { type: 'string', title: '规则', sensitive: true, default: '/Users/private/default-rules.json' },
           token: { type: 'string', title: '令牌', sensitive: true, default: 'default-secret' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level'] }],
-          fields: { level: { valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict', advanced: true } },
-          presets: [{
-            id: 'strict',
-            title: '严格方案',
-            values: { level: 'strict', rules: '/Users/private/preset-rules.json', token: 'preset-secret' },
-          }],
         },
       },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
@@ -700,19 +704,14 @@ describe('TUI v4 router and ViewModel', () => {
       recommendedValue: 'strict',
       value: 'strict',
     }));
-    expect(page.presets).toEqual([{
-      id: 'strict',
-      title: '严格方案',
-      values: { level: 'strict' },
-      privateFieldTitles: ['规则', '令牌'],
-    }]);
+    expect(page.presets).toEqual([]);
     const serialized = JSON.stringify(page);
     expect(serialized).not.toContain('/Users/private');
     expect(serialized).not.toContain('sk-private');
 
     const fallback = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum' }, rules: { type: 'file' }, token: { type: 'string', sensitive: true } } },
+      schema: { fields: { level: { type: 'string' }, rules: { type: 'string' }, token: { type: 'string', sensitive: true } } },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
     });
     expect(fallback.groups).toHaveLength(1);
@@ -722,8 +721,13 @@ describe('TUI v4 router and ViewModel', () => {
     const fieldAdvanced = buildConfigPage({
       pluginId: 'official/demo',
       schema: {
-        schema: { level: { type: 'enum' }, model: { type: 'string' } },
-        presentation: { fields: { model: { advanced: true } } },
+        fields: { level: { type: 'string' }, model: { type: 'string' } },
+        presentation: {
+          groups: [
+            { id: 'general', title: '插件设置', fields: ['level'] },
+            { id: 'advanced', title: '高级设置', fields: ['model'], advanced: true },
+          ],
+        },
       },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [fields[0]!, {
         key: 'model', title: '模型', kind: 'manifest', reserved: false, writable: true,
@@ -746,7 +750,7 @@ describe('TUI v4 router and ViewModel', () => {
     };
     const editable = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      schema: { fields: { level: { type: 'string' } } },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [{
         ...layeredField,
         effectiveValue: 'strict',
@@ -756,7 +760,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
     const effective = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      schema: { fields: { level: { type: 'string' } } },
       read: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
     });
     expect(editable.groups[0]!.fields[0]).toMatchObject({

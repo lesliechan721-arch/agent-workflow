@@ -43,7 +43,7 @@ try {
   await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
   await mkdir(path.join(plugin, 'scripts'), { recursive: true });
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'demo-plugin',
     version: '1.0.0',
     description: 'Demo',
@@ -65,7 +65,7 @@ try {
   const provider = path.join(temp, 'plugins', 'fixture-provider');
   await mkdir(path.join(provider, '.agents-plugin'), { recursive: true });
   await writeFile(path.join(provider, '.agents-plugin', 'plugin.json'), JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'fixture-provider',
     version: '1.0.0',
     description: 'Fixture provider.',
@@ -139,6 +139,22 @@ try {
     '--format', 'json'
   ], { encoding: 'utf8', env, cwd: os.tmpdir() });
   assert.equal(JSON.parse(run.stdout).ready, true);
+
+  const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
+  const currentManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  await writeFile(manifestPath, JSON.stringify({ ...currentManifest, schemaVersion: 2 }));
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      releaseCheck,
+      plugin,
+      '--workspace-root', temp,
+      '--review', review,
+      '--profile', 'codex-project',
+      '--final', `codex-project=${finalRoot}`,
+      '--format', 'json'
+    ], { encoding: 'utf8', env, cwd: os.tmpdir() }),
+  );
+  await writeFile(manifestPath, JSON.stringify(currentManifest));
 
   const executableOverrideSentinel = path.join(temp, 'executable-override-ran');
   const executableOverride = path.join(temp, 'executable-override.mjs');

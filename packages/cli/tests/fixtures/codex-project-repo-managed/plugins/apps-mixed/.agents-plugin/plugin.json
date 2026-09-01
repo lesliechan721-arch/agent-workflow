@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "apps-mixed",
   "version": "0.1.0",
   "description": "Fixture plugin combining a repo skill with Codex apps; project scope must reject the whole plugin.",

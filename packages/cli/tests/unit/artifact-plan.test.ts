@@ -38,7 +38,7 @@ function createManifest(overrides: Partial<PluginManifestSource> = {}): PluginMa
       },
     },
     config: {
-      schema: {
+      fields: {
         enableLightweightInstruction: {
           type: 'boolean',
           default: true,
@@ -48,8 +48,15 @@ function createManifest(overrides: Partial<PluginManifestSource> = {}): PluginMa
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
-          type: 'enum',
-          values: ['low', 'medium', 'high', 'xhigh'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
+              id: value,
+              title: value,
+              value,
+            })),
+          },
           default: 'medium',
         },
       },

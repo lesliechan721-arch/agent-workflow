@@ -8,7 +8,7 @@
 aw install aw-catalog-development -p both
 ```
 
-安装会解析其对 `aw-plugin-development` 的依赖。当前生产合同使用 Plugin Manifest v2、Catalog snapshot schema 6 和 Catalog Sources Config schema 2。消费端从内容寻址的 Catalog store 读取 `Active` snapshot。
+安装会解析其对 `aw-plugin-development` 的依赖。当前生产合同使用 Plugin Manifest v3、Catalog snapshot schema 6 和 Catalog Sources Config schema 2。消费端从内容寻址的 Catalog store 读取 `Active` snapshot。
 
 ## 包含的 Skill
 

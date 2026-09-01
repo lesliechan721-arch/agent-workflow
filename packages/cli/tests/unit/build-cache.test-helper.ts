@@ -42,7 +42,7 @@ async function createRepo(): Promise<string> {
     JSON.stringify({ name: '@lesliechan721/aw-plugin-core', type: 'module', files: ['dist/', 'schemas/'] }),
   );
   await fs.writeFile(
-    path.join(repoRoot, 'packages', 'plugin-core', 'schemas', 'plugin-manifest-v2.json'),
+    path.join(repoRoot, 'packages', 'plugin-core', 'schemas', 'plugin-manifest-v3.json'),
     '{}\n',
   );
   await fs.writeFile(

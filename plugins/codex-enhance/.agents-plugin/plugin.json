@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "codex-enhance",
   "version": "0.1.0",
   "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
@@ -54,7 +54,7 @@
     }
   },
   "config": {
-    "schema": {
+    "fields": {
       "quickModel": {
         "type": "string",
         "title": "Quick 探索模型",
@@ -62,18 +62,45 @@
         "description": "quick 探索 role 使用的模型。"
       },
       "quickReasoningEffort": {
-        "type": "enum",
+        "type": "string",
         "title": "Quick 探索推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "ultra"
-        ],
         "default": "medium",
-        "description": "quick 探索 role 使用的 model_reasoning_effort。"
+        "description": "quick 探索 role 使用的 model_reasoning_effort。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            },
+            {
+              "id": "ultra",
+              "title": "ultra",
+              "value": "ultra"
+            }
+          ]
+        }
       },
       "standardModel": {
         "type": "string",
@@ -82,18 +109,45 @@
         "description": "standard 探索 role 使用的模型。"
       },
       "standardReasoningEffort": {
-        "type": "enum",
+        "type": "string",
         "title": "Standard 探索推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "ultra"
-        ],
         "default": "high",
-        "description": "standard 探索 role 使用的 model_reasoning_effort。"
+        "description": "standard 探索 role 使用的 model_reasoning_effort。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            },
+            {
+              "id": "ultra",
+              "title": "ultra",
+              "value": "ultra"
+            }
+          ]
+        }
       },
       "deepModel": {
         "type": "string",
@@ -102,18 +156,45 @@
         "description": "deep 探索 role 使用的模型。"
       },
       "deepReasoningEffort": {
-        "type": "enum",
+        "type": "string",
         "title": "Deep 探索推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "ultra"
-        ],
         "default": "xhigh",
-        "description": "deep 探索 role 使用的 model_reasoning_effort。"
+        "description": "deep 探索 role 使用的 model_reasoning_effort。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            },
+            {
+              "id": "ultra",
+              "title": "ultra",
+              "value": "ultra"
+            }
+          ]
+        }
       },
       "simpleTaskModel": {
         "type": "string",
@@ -122,17 +203,40 @@
         "description": "简单任务 agent type 使用的模型，适用于低歧义、边界清晰、成功标准明确且可机械验证的任务。"
       },
       "simpleTaskReasoningEffort": {
-        "type": "enum",
+        "type": "string",
         "title": "简单任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
         "default": "max",
-        "description": "简单任务 agent type 使用的 model_reasoning_effort。"
+        "description": "简单任务 agent type 使用的 model_reasoning_effort。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            }
+          ]
+        }
       },
       "generalTaskModel": {
         "type": "string",
@@ -141,17 +245,40 @@
         "description": "通用任务 agent type 使用的模型，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。"
       },
       "generalTaskReasoningEffort": {
-        "type": "enum",
+        "type": "string",
         "title": "通用任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
         "default": "xhigh",
-        "description": "通用任务 agent type 使用的 model_reasoning_effort。"
+        "description": "通用任务 agent type 使用的 model_reasoning_effort。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            }
+          ]
+        }
       },
       "complexTaskModel": {
         "type": "string",
@@ -160,17 +287,40 @@
         "description": "复杂任务 agent type 使用的模型，适用于跨模块实现、未知根因、并发、生命周期、性能和复杂因果任务。"
       },
       "complexTaskReasoningEffort": {
-        "type": "enum",
+        "type": "string",
         "title": "复杂任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
         "default": "medium",
-        "description": "复杂任务 agent type 使用的 model_reasoning_effort。"
+        "description": "复杂任务 agent type 使用的 model_reasoning_effort。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            }
+          ]
+        }
       },
       "advancedTaskModel": {
         "type": "string",
@@ -179,33 +329,60 @@
         "description": "高难任务 agent type 使用的模型，适用于系统级、高歧义、高风险或要求极高完整性的任务。"
       },
       "advancedTaskReasoningEffort": {
-        "type": "enum",
+        "type": "string",
         "title": "高难任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
         "default": "xhigh",
-        "description": "高难任务 agent type 使用的 model_reasoning_effort。"
+        "description": "高难任务 agent type 使用的 model_reasoning_effort。",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            {
+              "id": "low",
+              "title": "low",
+              "value": "low"
+            },
+            {
+              "id": "medium",
+              "title": "medium",
+              "value": "medium"
+            },
+            {
+              "id": "high",
+              "title": "high",
+              "value": "high"
+            },
+            {
+              "id": "xhigh",
+              "title": "xhigh",
+              "value": "xhigh"
+            },
+            {
+              "id": "max",
+              "title": "max",
+              "value": "max"
+            }
+          ]
+        }
       },
       "exploreMinimumInitialWaitMinutes": {
         "type": "number",
         "title": "探索首次响应式等待窗口（分钟）",
         "default": 10,
-        "min": 1,
-        "max": 60,
-        "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。"
+        "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。",
+        "validation": {
+          "minimum": 1,
+          "maximum": 60
+        }
       },
       "subagentMinimumInitialWaitMinutes": {
         "type": "number",
         "title": "子代理首次响应式等待窗口（分钟）",
         "default": 10,
-        "min": 1,
-        "max": 60,
-        "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。"
+        "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。",
+        "validation": {
+          "minimum": 1,
+          "maximum": 60
+        }
       }
     },
     "presentation": {

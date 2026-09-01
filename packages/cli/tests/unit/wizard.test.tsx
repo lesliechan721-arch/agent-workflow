@@ -142,7 +142,7 @@ describe('command wizard', () => {
         name: 'real-chain',
         version: '1.0.0',
         description: 'fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -369,43 +369,6 @@ describe('command wizard', () => {
     expect(instance.frames.join('\n')).not.toContain('hunter2');
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ value: 'hunter2' }));
     expect(completed).toMatchObject({ cancelled: false });
-  });
-
-  it.each([
-    { type: 'file' as const, value: '/Users/alice/Private Project/private.json' },
-    { type: 'directory' as const, value: 'C:\\Users\\alice\\Private Project' },
-    { type: 'directory' as const, value: '\\\\server\\Private Share' },
-  ])('does not echo a $type path while preserving the submitted value', async ({ type, value }) => {
-    const execute = vi.fn(async () => ({ ok: true }));
-    const instance = render(<CommandWizard
-      request={{
-        command: 'config:set',
-        candidates: [{
-          pluginName: 'paths',
-          targets: [],
-          configSchema: { location: { type, sensitive: false } },
-        }],
-        initial: { plugins: [], scope: 'user', projectLayer: 'shared' },
-        pluginMode: 'single',
-        promptForKey: true,
-        promptForValue: true,
-        equivalentCommand: () => `aw config set paths location <${type}-path>`,
-        commandIsTemplate: () => true,
-        execute,
-      }}
-      onComplete={() => undefined}
-    />);
-    await nextTurn();
-    for (const input of ['\r', '\r', value, '\r', '\r']) {
-      instance.stdin.write(input);
-      await nextTurn();
-    }
-    await nextTurn();
-
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ value }));
-    expectTuiTextProjected(instance.frames.join('\n'));
-    expect(instance.frames.join('\n')).toContain(`<${type}-path>`);
-    expect(instance.frames.join('\n')).toContain('命令模板');
   });
 
   it('cancels before execution', async () => {

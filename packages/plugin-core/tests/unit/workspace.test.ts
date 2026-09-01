@@ -30,7 +30,7 @@ async function createWorkspace(): Promise<string> {
 async function writeSourcePlugin(root: string, name = 'atomic-plugin'): Promise<Record<string, unknown>> {
   const pluginRoot = path.join(root, 'plugins', name)
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name,
     version: '0.1.0',
     description: 'Atomic plugin.',
@@ -50,7 +50,7 @@ async function writeSourcePlugin(root: string, name = 'atomic-plugin'): Promise<
 async function writeBundle(outputRoot: string, manifest: Record<string, unknown>): Promise<void> {
   const bundleManifest = {
     ...manifest,
-    requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+    requires: { aw: { capabilities: ['aw.plugin-manifest.v3'] } },
   }
   await fs.ensureDir(path.join(outputRoot, '.agents-plugin'))
   await fs.writeJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'), bundleManifest)
@@ -74,7 +74,7 @@ async function writeNativeAndPortableSkillBundle(
 ): Promise<void> {
   await writeBundle(outputRoot, manifest)
   const capabilities = [
-    'aw.plugin-manifest.v2',
+    'aw.plugin-manifest.v3',
     'aw.plugin-skills.v1',
     'aw.portable-skills.v1',
   ]
@@ -209,7 +209,7 @@ describe('AW Catalog Workspace v1', () => {
       workspaceIdentity: '',
     }],
     ['unsupported schema', {
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'aw-catalog-workspace',
       workspaceIdentity: 'stable-workspace-id',
     }],
@@ -648,7 +648,7 @@ describe('AW Catalog Workspace v1', () => {
       ))).resolves.toMatchObject({
         plugin: { name: 'atomic-plugin', version: '0.1.0-beta.1' },
         requiredCapabilities: [
-          'aw.plugin-manifest.v2',
+          'aw.plugin-manifest.v3',
           'aw.plugin-skills.v1',
           'aw.portable-skills.v1',
         ],

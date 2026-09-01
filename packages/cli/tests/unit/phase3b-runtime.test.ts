@@ -454,7 +454,7 @@ describe('phase 3B namespaced runtime stores', () => {
       createCatalogSnapshotFixture(primaryRoot, 'primary-demo'),
       createCatalogSnapshotFixture(teamRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.config = {
-          schema: {
+          fields: {
             mode: { type: 'string', title: 'Mode' },
           },
         };

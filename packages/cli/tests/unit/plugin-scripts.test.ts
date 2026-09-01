@@ -45,7 +45,7 @@ async function makeTempRoot(prefix: string): Promise<string> {
 
 function createManifest(name = 'script-plugin'): PluginManifestSource {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name,
     version: '0.1.0',
     description: 'Lifecycle test plugin',
@@ -70,7 +70,7 @@ function createManifest(name = 'script-plugin'): PluginManifestSource {
       },
     },
     config: {
-      schema: {
+      fields: {
         token: {
           type: 'string',
           required: true,
@@ -563,12 +563,12 @@ describe('plugin lifecycle scripts', () => {
     const cwd = path.join(root, 'repo');
     await fs.ensureDir(cwd);
     const manifest = createManifest();
-    manifest.config!.schema.pin = {
+    manifest.config!.fields.pin = {
       type: 'number',
       sensitive: true,
       default: 8675309,
     };
-    manifest.config!.schema.enabled = {
+    manifest.config!.fields.enabled = {
       type: 'boolean',
       sensitive: true,
       default: true,

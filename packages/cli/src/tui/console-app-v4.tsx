@@ -1568,7 +1568,7 @@ export function ConsoleAppV4(props: {
     if (draftRemoves.includes(field.key)) return '恢复继承';
     if (Object.hasOwn(draftUpdates, field.key)) {
       const value = draftUpdates[field.key];
-      if (field.sensitive || field.type === 'file' || field.type === 'directory') return '将更新';
+      if (field.sensitive) return '将更新';
       if (field.type === 'enum') return field.valueLabels?.[String(value)] ?? String(value);
       if (field.type === 'boolean') return value ? '开启' : '关闭';
       return `${String(value)}${field.unit ? ` ${field.unit}` : ''}`;
@@ -1590,7 +1590,6 @@ export function ConsoleAppV4(props: {
   };
   const fieldEditor = (field: ConfigFieldViewModel): Extract<TuiRoute, { name: 'configFieldEditor' }>['editor'] => {
     if (field.sensitive) return 'sensitive';
-    if (field.type === 'file' || field.type === 'directory') return 'path';
     return field.type;
   };
   const updateDraft = (key: string, value: string | number | boolean): void => {
@@ -1729,7 +1728,7 @@ export function ConsoleAppV4(props: {
         updates: draftUpdates,
         removeKeys: draftRemoves,
         sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
-        privateKeys: fields.filter((field) => field.type === 'file' || field.type === 'directory').map((field) => field.key),
+        privateKeys: [],
         changes: configChanges(),
       });
       setConfigActionError(undefined);
@@ -3009,13 +3008,11 @@ export function ConsoleAppV4(props: {
       actions = [{ label: '开启', selected: draftUpdates[activeField.key] === true || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === true), run: () => { updateDraft(activeField.key, true); back(); } }, { label: '关闭', selected: draftUpdates[activeField.key] === false || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === false), run: () => { updateDraft(activeField.key, false); back(); } }];
       content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else {
-      title = route.editor === 'number' ? `输入${activeField.title}` : route.editor === 'path' ? `选择${activeField.title}` : route.editor === 'sensitive' ? '输入敏感值' : `输入${activeField.title}`;
+      title = route.editor === 'number' ? `输入${activeField.title}` : route.editor === 'sensitive' ? '输入敏感值' : `输入${activeField.title}`;
       description = route.editor === 'number'
         ? `允许范围：${activeField.min ?? '不限'}–${activeField.max ?? '不限'}${activeField.unit ? ` ${activeField.unit}` : ''}。`
-        : route.editor === 'path' ? `${activeField.type === 'file' ? '文件' : '目录'}路径会在保存前由现有 schema 路径验证。`
-          : route.editor === 'sensitive' ? '当前值不会回显；留空不会自动删除旧值。' : activeField.description ?? '';
-      const visibleInput = route.editor === 'path' ? privatePathInput(inputValue) : inputValue;
-      content = <InputCard focused title={<InputDisplay value={visibleInput} sensitive={route.editor === 'sensitive'} placeholder={activeField.placeholder} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? (route.editor === 'sensitive' ? '输入已隐藏。' : route.editor === 'path' ? '已隐藏父目录；Backspace 仍会编辑原始输入。' : activeField.placeholder ?? '按 Enter 使用输入值。')} status={inputError ? 'error' : undefined} />;
+        : route.editor === 'sensitive' ? '当前值不会回显；留空不会自动删除旧值。' : activeField.description ?? '';
+      content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={route.editor === 'sensitive'} placeholder={activeField.placeholder} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? (route.editor === 'sensitive' ? '输入已隐藏。' : activeField.placeholder ?? '按 Enter 使用输入值。')} status={inputError ? 'error' : undefined} />;
     }
   } else if (route.name === 'configUnavailable' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;

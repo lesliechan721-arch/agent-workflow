@@ -80,7 +80,7 @@ test('AW requirements receipt combines current declared and derived authoring ca
   ]);
   assert.deepEqual(result.derived, [
     'aw.plugin-build-config.v1',
-    'aw.plugin-manifest.v2',
+    'aw.plugin-manifest.v3',
     'aw.plugin-skills.v1',
     'aw.runtime-imports.v1',
   ]);

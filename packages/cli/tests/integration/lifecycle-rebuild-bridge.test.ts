@@ -80,7 +80,7 @@ async function writePlugin(options: {
     name: options.name,
     version: options.version,
     description: `${options.name} lifecycle bridge fixture`,
-    schemaVersion: 2,
+    schemaVersion: 3,
     marketplace: {
       category: 'test',
       strict: true,

@@ -23,7 +23,6 @@ import {
   coercePluginConfigValue,
   readPluginConfigStore,
   resolveProjectArtifactRenderConfig,
-  resolveAwProjectRoot,
 } from './plugin-config.js';
 import {
   buildLifecycleScriptInvocation,
@@ -46,7 +45,7 @@ export type ArtifactRenderEvent = 'install' | 'upgrade' | 'refresh' | 'materiali
 export interface ResolvedArtifactRenderConfig {
   mode: 'artifact-render';
   targetScope: Scope;
-  schema?: PluginConfigSchema['schema'];
+  schema?: PluginConfigSchema['fields'];
   values: Record<string, PluginConfigValue>;
   sources: Record<string, PluginConfigSource>;
   issues: PluginConfigIssue[];
@@ -67,7 +66,7 @@ export interface ArtifactRendererContext {
   config: {
     mode: 'artifact-render';
     targetScope: Scope;
-    schema?: PluginConfigSchema['schema'];
+    schema?: PluginConfigSchema['fields'];
     values: Record<string, PluginConfigValue>;
     sources: Record<string, PluginConfigSource>;
     issues: PluginConfigIssue[];
@@ -169,10 +168,9 @@ async function applyArtifactConfigLayer(options: {
   values: Record<string, PluginConfigValue>;
   sources: Record<string, PluginConfigSource>;
   invalidIssues: Map<string, PluginConfigIssue>;
-  schema: PluginConfigSchema['schema'];
+  schema: PluginConfigSchema['fields'];
   entries: Record<string, unknown>;
   source: PluginConfigSource;
-  projectRoot: string;
 }): Promise<void> {
   for (const [key, field] of Object.entries(options.schema)) {
     if (!Object.hasOwn(options.entries, key)) {
@@ -184,7 +182,6 @@ async function applyArtifactConfigLayer(options: {
         key,
         field,
         value: options.entries[key],
-        projectRoot: options.projectRoot,
       });
       options.values[key] = coerced;
       options.sources[key] = options.source;
@@ -234,8 +231,7 @@ export async function resolveArtifactRenderConfig(options: {
       },
     };
   }
-  const schema = options.manifest.config?.schema;
-  const projectRoot = resolveAwProjectRoot(options.cwd);
+  const schema = options.manifest.config?.fields;
   const [userStore, projectStore] = await Promise.all([
     readPluginConfigStore({
       sourceId: options.sourceId,
@@ -289,7 +285,6 @@ export async function resolveArtifactRenderConfig(options: {
       schema: { [key]: field },
       entries: { [key]: field.default },
       source: 'default',
-      projectRoot,
     });
   }
 
@@ -300,7 +295,6 @@ export async function resolveArtifactRenderConfig(options: {
     schema,
     entries: userStore.values,
     source: 'user',
-    projectRoot,
   });
 
   const issues = [...invalidIssues.values()];

@@ -52,7 +52,7 @@ function createManifest(options: {
     name: 'active-plugin',
     version: options.version ?? '1.0.0',
     description: 'Lifecycle active store fixture',
-    schemaVersion: 2,
+    schemaVersion: 3,
     marketplace: {
       category: 'test',
       strict: true,
@@ -65,7 +65,7 @@ function createManifest(options: {
       lifecycle,
     },
     config: {
-      schema: {
+      fields: {
         token: {
           type: 'string',
           sensitive: true,

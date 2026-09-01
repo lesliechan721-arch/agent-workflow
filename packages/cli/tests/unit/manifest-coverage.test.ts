@@ -74,7 +74,7 @@ function createCatalogManifestFixture() {
           authentication: 'ON_INSTALL',
         },
         dependencies: [],
-        requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+        requires: { aw: { capabilities: ['aw.plugin-manifest.v3'] } },
         source: './plugins/demo',
         artifactDigest: sha256('a'),
         manifestDigest: sha256('b'),
@@ -91,7 +91,7 @@ afterEach(async () => {
 describe('manifest coverage', () => {
   it('accepts object-based channels and rejects plugin paths that escape the root', () => {
     const manifest = validatePluginManifest('/tmp/plugin', {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'demo-object-channels',
       version: '0.1.0',
       description: 'demo',
@@ -124,7 +124,7 @@ describe('manifest coverage', () => {
 
     expect(() =>
       validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 2,
+        schemaVersion: 3,
         name: 'bad-demo',
         version: '0.1.0',
         description: 'demo',
@@ -142,7 +142,7 @@ describe('manifest coverage', () => {
 
     expect(() =>
       validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 2,
+        schemaVersion: 3,
         name: 'bad-demo-abs',
         version: '0.1.0',
         description: 'demo',
@@ -166,7 +166,7 @@ describe('manifest coverage', () => {
     await fs.writeJson(
       path.join(alphaRoot, '.agents-plugin', 'plugin.json'),
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         name: 'alpha-note',
         version: '0.1.0',
         description: 'alpha plugin',

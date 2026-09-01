@@ -7,7 +7,7 @@ describe('buildConfig validation', () => {
     name: 'demo',
     version: '0.1.0',
     description: 'demo',
-    schemaVersion: 2,
+    schemaVersion: 3,
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -20,7 +20,7 @@ describe('buildConfig validation', () => {
 
   it('accepts templates, file rules and Claude manifest overrides', () => {
     const manifest = validatePluginManifest('/tmp/plugin', {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'demo',
       version: '0.1.0',
       description: 'demo',
@@ -70,7 +70,7 @@ describe('buildConfig validation', () => {
   it('rejects deprecated Claude commands authoring entries', () => {
     expect(() =>
       validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 2,
+        schemaVersion: 3,
         name: 'demo',
         version: '0.1.0',
         description: 'demo',
@@ -96,7 +96,7 @@ describe('buildConfig validation', () => {
   it('rejects legacy Claude commands file rules', () => {
     expect(() =>
       validatePluginManifest('/tmp/plugin', {
-        schemaVersion: 2,
+        schemaVersion: 3,
         name: 'demo',
         version: '0.1.0',
         description: 'demo',
@@ -282,7 +282,7 @@ describe('buildConfig validation', () => {
   it('accepts the portable distribution without a dedicated AW feature floor', () => {
     expect(validatePluginManifest('/tmp/plugin', {
       ...baseManifest,
-      schemaVersion: 2,
+      schemaVersion: 3,
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       distributions: { agentSkills: { skills: './portable-skills' } },
     }).distributions?.agentSkills?.skills).toBe('./portable-skills');

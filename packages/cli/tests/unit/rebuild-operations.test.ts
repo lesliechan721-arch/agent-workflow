@@ -31,7 +31,7 @@ const plugin = (name = 'active-plugin', version = '2.0.0'): PluginMeta => ({
     name,
     version,
     description: 'rebuild fixture',
-    schemaVersion: 2,
+    schemaVersion: 3,
     marketplace: {
       category: 'test',
       strict: true,

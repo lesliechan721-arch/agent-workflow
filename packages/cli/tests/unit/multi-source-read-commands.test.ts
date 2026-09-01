@@ -216,7 +216,7 @@ describe('multi-source read commands', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('status-config-preflight');
     await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { schema: { rules: { type: 'string', title: '规则', required: true } } };
+      manifest.config = { fields: { rules: { type: 'string', title: '规则', required: true } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -1240,7 +1240,7 @@ describe('multi-source read commands', () => {
         [],
         'demo\n',
         (manifest) => {
-          manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };
+          manifest.config = { fields: { mode: { type: 'string', default: 'fast' } } };
         },
       );
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -1370,7 +1370,7 @@ describe('multi-source read commands', () => {
       [],
       'demo\n',
       (manifest) => {
-        manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };
+        manifest.config = { fields: { mode: { type: 'string', default: 'fast' } } };
       },
     );
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);

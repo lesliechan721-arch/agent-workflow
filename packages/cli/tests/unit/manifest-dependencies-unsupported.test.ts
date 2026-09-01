@@ -12,7 +12,7 @@ const marketplace = {
 describe('plugin manifest dependencies contract', () => {
   it('accepts canonical dependency names and rejects invalid declarations', () => {
     const source = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'parent',
       version: '1.0.0',
       description: 'parent',
@@ -46,7 +46,7 @@ describe('plugin manifest dependencies contract', () => {
 
   it('accepts dependencies without a dedicated AW feature floor', () => {
     const source = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'parent',
       version: '1.0.0',
       description: 'parent',
@@ -80,7 +80,7 @@ describe('plugin manifest dependencies contract', () => {
         category: 'workflow',
         strict: true,
         policy: marketplace.policy,
-        requires: { aw: { capabilities: ['aw.plugin-manifest.v2'] } },
+        requires: { aw: { capabilities: ['aw.plugin-manifest.v3'] } },
         dependencies: ['child'],
         source: './plugins/parent',
         artifactDigest: `sha256:${'0'.repeat(64)}`,

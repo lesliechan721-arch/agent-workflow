@@ -48,7 +48,7 @@ async function createFixture(): Promise<{
     name: 'claude-native-only',
     version: '1.0.0',
     description: 'Claude native-only config fixture',
-    schemaVersion: 2,
+    schemaVersion: 3,
     marketplace: {
       category: 'test',
       strict: true,
@@ -59,8 +59,18 @@ async function createFixture(): Promise<{
       },
     },
     config: {
-      schema: {
-        mode: { type: 'enum', values: ['fast', 'safe'], default: 'safe' },
+      fields: {
+        mode: {
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [
+              { id: 'fast', title: 'Fast', value: 'fast' },
+              { id: 'safe', title: 'Safe', value: 'safe' },
+            ],
+          },
+          default: 'safe',
+        },
       },
     },
   };

@@ -30,7 +30,7 @@ async function createPlugin(options: {
   const pluginRoot = path.join(options.root, options.name);
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
   await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: options.name,
     version: '0.1.0',
     description: options.name,

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "aw-skill-eval-runner",
   "version": "0.1.0",
   "description": "准备、审核并通过 aw-skill-eval 执行 Agent Skill Eval，验证 EvalResult。",

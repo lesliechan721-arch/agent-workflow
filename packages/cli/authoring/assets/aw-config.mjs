@@ -8,12 +8,20 @@ import { fileURLToPath } from 'node:url';
 const CONFIG_DIR = 'plugin-config';
 const LOCAL_CONFIG_DIR = 'plugin-config.local';
 const CONFIG_FILE = 'config.json';
-const SUPPORTED_TYPES = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
+const SUPPORTED_TYPES = new Set(['string', 'number', 'boolean', 'object']);
 const REDACTED = '[redacted]';
 const SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function createPropertyMap() {
+  return Object.create(null);
+}
+
+function ownProperty(value, property) {
+  return isRecord(value) && Object.hasOwn(value, property) ? value[property] : undefined;
 }
 
 function fail(message) {
@@ -59,7 +67,7 @@ function validateConfigSchema(rawSchema) {
     fail('Plugin manifest does not declare a valid AW config schema.');
   }
 
-  const schema = {};
+  const schema = createPropertyMap();
   for (const [key, rawField] of Object.entries(rawSchema)) {
     if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
       fail('Plugin manifest declares an invalid config key.');
@@ -75,9 +83,10 @@ function validateConfigSchema(rawSchema) {
       'default',
       'required',
       'sensitive',
-      'values',
-      'min',
-      'max',
+      'choices',
+      'validation',
+      'properties',
+      'additionalProperties',
     ]);
     for (const fieldKey of Object.keys(rawField)) {
       if (!allowed.has(fieldKey)) {
@@ -94,40 +103,7 @@ function validateConfigSchema(rawSchema) {
     if (rawField.sensitive !== undefined && typeof rawField.sensitive !== 'boolean') {
       fail(`Config schema field "${key}" has an invalid sensitive flag.`);
     }
-    if (rawField.values !== undefined) {
-      if (rawField.type !== 'enum' || !Array.isArray(rawField.values) || rawField.values.length === 0) {
-        fail(`Config schema field "${key}" has invalid enum values.`);
-      }
-      for (const value of rawField.values) {
-        if (typeof value !== 'string') {
-          fail(`Config schema field "${key}" has a non-string enum value.`);
-        }
-      }
-    }
-    if (rawField.type !== 'number' && (rawField.min !== undefined || rawField.max !== undefined)) {
-      fail(`Config schema field "${key}" uses min/max on a non-number field.`);
-    }
-    if (rawField.min !== undefined && (!Number.isFinite(rawField.min) || typeof rawField.min !== 'number')) {
-      fail(`Config schema field "${key}" has an invalid min.`);
-    }
-    if (rawField.max !== undefined && (!Number.isFinite(rawField.max) || typeof rawField.max !== 'number')) {
-      fail(`Config schema field "${key}" has an invalid max.`);
-    }
-    if (rawField.min !== undefined && rawField.max !== undefined && rawField.min > rawField.max) {
-      fail(`Config schema field "${key}" has min greater than max.`);
-    }
-
-    schema[key] = {
-      type: rawField.type,
-      title: rawField.title,
-      description: rawField.description,
-      default: rawField.default,
-      required: rawField.required,
-      sensitive: rawField.sensitive,
-      values: rawField.values,
-      min: rawField.min,
-      max: rawField.max,
-    };
+    schema[key] = structuredClone(rawField);
   }
   return schema;
 }
@@ -137,12 +113,12 @@ function validateManifest(rawManifest) {
     fail('Bundle manifest is not a JSON object.');
   }
   const pluginName = safePluginSegment(rawManifest.name);
-  if (!isRecord(rawManifest.config) || !isRecord(rawManifest.config.schema)) {
+  if (!isRecord(rawManifest.config) || !isRecord(rawManifest.config.fields)) {
     fail(`Plugin "${pluginName}" does not declare an AW config schema.`);
   }
   return {
     pluginName,
-    schema: validateConfigSchema(rawManifest.config.schema),
+    schema: validateConfigSchema(rawManifest.config.fields),
   };
 }
 
@@ -214,10 +190,42 @@ function readStore(filePath, identity) {
   return { path: filePath, exists: true, values: envelope.values };
 }
 
-function coerceValue(key, field, value, options = {}) {
+function stableValue(value) {
+  if (!isRecord(value)) return JSON.stringify(value);
+  return JSON.stringify(Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
+  ));
+}
+
+function validateChoices(key, field, value) {
+  if (
+    field.choices?.allowCustom === false &&
+    !field.choices.presets.some((preset) => stableValue(preset.value) === stableValue(value))
+  ) {
+    fail(`Config "${key}" must match a declared preset.`);
+  }
+}
+
+function validateString(key, field, value) {
+  if (typeof value !== 'string') fail(`Config "${key}" must be a string.`);
+  const length = [...value].length;
+  if (field.validation?.minLength !== undefined && length < field.validation.minLength) {
+    fail(`Config "${key}" is shorter than the allowed minimum.`);
+  }
+  if (field.validation?.maxLength !== undefined && length > field.validation.maxLength) {
+    fail(`Config "${key}" is longer than the allowed maximum.`);
+  }
+  if (field.validation?.pattern !== undefined && !new RegExp(field.validation.pattern, 'u').test(value)) {
+    fail(`Config "${key}" does not match the required pattern.`);
+  }
+  return value;
+}
+
+function coerceScalar(key, field, value) {
   if (field.type === 'string') {
-    if (typeof value !== 'string') fail(`Config "${key}" must be a string.`);
-    return value;
+    const stringValue = validateString(key, field, value);
+    validateChoices(key, field, stringValue);
+    return stringValue;
   }
   if (field.type === 'number') {
     const numberValue = typeof value === 'number'
@@ -226,12 +234,22 @@ function coerceValue(key, field, value, options = {}) {
         ? Number(value)
         : Number.NaN;
     if (!Number.isFinite(numberValue)) fail(`Config "${key}" must be a number.`);
-    if (field.min !== undefined && numberValue < field.min) {
+    if (field.validation?.integer === true && !Number.isInteger(numberValue)) {
+      fail(`Config "${key}" must be an integer.`);
+    }
+    if (field.validation?.minimum !== undefined && numberValue < field.validation.minimum) {
       fail(`Config "${key}" is smaller than the allowed minimum.`);
     }
-    if (field.max !== undefined && numberValue > field.max) {
+    if (field.validation?.maximum !== undefined && numberValue > field.validation.maximum) {
       fail(`Config "${key}" is greater than the allowed maximum.`);
     }
+    if (
+      field.validation?.multipleOf !== undefined &&
+      Math.abs(numberValue / field.validation.multipleOf - Math.round(numberValue / field.validation.multipleOf)) > 1e-9
+    ) {
+      fail(`Config "${key}" is not an allowed multiple.`);
+    }
+    validateChoices(key, field, numberValue);
     return numberValue;
   }
   if (field.type === 'boolean') {
@@ -243,62 +261,66 @@ function coerceValue(key, field, value, options = {}) {
     }
     fail(`Config "${key}" must be a boolean.`);
   }
-  if (field.type === 'enum') {
-    if (typeof value !== 'string' || !field.values?.includes(value)) {
-      fail(`Config "${key}" must be one of the declared enum values.`);
-    }
-    return value;
-  }
-  if (field.type === 'file' || field.type === 'directory') {
-    if (typeof value !== 'string' || value.trim() === '') {
-      fail(`Config "${key}" must be a path string.`);
-    }
-    if (options.skipPathValidation) {
-      return value;
-    }
-    const resolvedPath = path.isAbsolute(value)
-      ? value
-      : path.resolve(options.projectRoot || process.cwd(), value);
-    let realPath;
-    let stats;
-    try {
-      realPath = fs.realpathSync(resolvedPath);
-      stats = fs.statSync(realPath);
-    } catch {
-      fail(`Config "${key}" points to a missing path.`);
-    }
-    if (field.type === 'file' && !stats.isFile()) {
-      fail(`Config "${key}" must point to an existing file.`);
-    }
-    if (field.type === 'directory' && !stats.isDirectory()) {
-      fail(`Config "${key}" must point to an existing directory.`);
-    }
-    return realPath;
-  }
   fail(`Config "${key}" has an unsupported type.`);
 }
 
-function applyLayer(state, schema, entries, source, projectRoot, options = {}) {
+function coerceValue(key, field, value) {
+  if (field.type !== 'object') return coerceScalar(key, field, value);
+  if (!isRecord(value)) fail(`Config "${key}" must be an object.`);
+  const entries = Object.entries(value);
+  if (entries.length > 32) fail(`Config "${key}" has too many properties.`);
+  if (field.validation?.minProperties !== undefined && entries.length < field.validation.minProperties) {
+    fail(`Config "${key}" has fewer than the allowed properties.`);
+  }
+  if (field.validation?.maxProperties !== undefined && entries.length > field.validation.maxProperties) {
+    fail(`Config "${key}" has more than the allowed properties.`);
+  }
+  for (const [property, child] of Object.entries(field.properties ?? {})) {
+    if (child.required === true && !Object.hasOwn(value, property)) {
+      fail(`Config "${key}.${property}" is required.`);
+    }
+  }
+  const result = createPropertyMap();
+  for (const [property, childValue] of entries) {
+    if (field.validation?.key !== undefined) {
+      validateString(`${key}.${property}`, { type: 'string', validation: field.validation.key }, property);
+    }
+    const child = ownProperty(field.properties, property) ?? field.additionalProperties;
+    if (!child) fail(`Config "${key}.${property}" is not allowed.`);
+    result[property] = coerceScalar(`${key}.${property}`, child, childValue);
+  }
+  validateChoices(key, field, result);
+  return result;
+}
+
+function applyLayer(state, schema, entries, source) {
   for (const [key, field] of Object.entries(schema)) {
     if (!Object.hasOwn(entries, key)) continue;
-    const value = coerceValue(key, field, entries[key], {
-      projectRoot,
-      skipPathValidation: options.skipPathValidation,
-    });
+    const value = coerceValue(key, field, entries[key]);
     state.values[key] = value;
-    state.redactedValues[key] = field.sensitive ? REDACTED : value;
+    state.redactedValues[key] = field.sensitive
+      ? REDACTED
+      : field.type === 'object'
+        ? Object.fromEntries(Object.entries(value).map(([property, childValue]) => [
+            property,
+            ownProperty(field.properties, property)?.sensitive === true ||
+              (ownProperty(field.properties, property) === undefined && field.additionalProperties?.sensitive === true)
+              ? REDACTED
+              : childValue,
+          ]))
+        : value;
     state.sources[key] = source;
   }
 }
 
 function buildState(schema) {
-  const sources = {};
+  const sources = createPropertyMap();
   for (const key of Object.keys(schema)) {
     sources[key] = 'missing';
   }
   return {
-    values: {},
-    redactedValues: {},
+    values: createPropertyMap(),
+    redactedValues: createPropertyMap(),
     sources,
     ignoredUnknownKeys: [],
     issues: [],
@@ -327,12 +349,12 @@ function addMissingRequiredIssues(state, schema) {
   }
 }
 
-function resolveFromStores({ identity, schema, scope, stores, projectRoot }) {
+function resolveFromStores({ identity, schema, scope, stores }) {
   const state = buildState(schema);
   if (scope === 'effective') {
     for (const [key, field] of Object.entries(schema)) {
       if (field.default !== undefined) {
-        applyLayer(state, { [key]: field }, { [key]: field.default }, 'default', projectRoot);
+        applyLayer(state, { [key]: field }, { [key]: field.default }, 'default');
       }
     }
     for (const [storeKey, source] of [
@@ -341,12 +363,12 @@ function resolveFromStores({ identity, schema, scope, stores, projectRoot }) {
       ['projectLocal', 'projectLocal'],
     ]) {
       collectUnknownKeys(state, schema, stores[storeKey], source);
-      applyLayer(state, schema, stores[storeKey].values, source, projectRoot);
+      applyLayer(state, schema, stores[storeKey].values, source);
     }
     addMissingRequiredIssues(state, schema);
   } else {
     collectUnknownKeys(state, schema, stores[scope], scope);
-    applyLayer(state, schema, stores[scope].values, scope, projectRoot);
+    applyLayer(state, schema, stores[scope].values, scope);
   }
 
   return {
@@ -410,10 +432,11 @@ function resolveFromContext(scope) {
     const state = buildState(schema);
     const values = isRecord(context.config.values) ? context.config.values : {};
     const sources = isRecord(context.config.sources) ? context.config.sources : {};
-    applyLayer(state, schema, values, 'context', process.cwd(), { skipPathValidation: true });
+    applyLayer(state, schema, values, 'context');
     for (const key of Object.keys(schema)) {
-      if (typeof sources[key] === 'string') {
-        state.sources[key] = sources[key];
+      const source = ownProperty(sources, key);
+      if (typeof source === 'string') {
+        state.sources[key] = source;
       }
     }
     for (const key of Object.keys(values)) {
@@ -463,7 +486,6 @@ function resolveFromContext(scope) {
       project: scope === 'project' ? store : { path: '', exists: false, values: {} },
       projectLocal: scope === 'projectLocal' ? store : { path: '', exists: false, values: {} },
     },
-    projectRoot: context.cwd || process.cwd(),
   });
 }
 
@@ -504,7 +526,7 @@ function resolveFallback(scope) {
     project: readStore(resolveConfigStorePath(sourceId, pluginName, 'project', cwd), identity),
     projectLocal: readStore(resolveConfigStorePath(sourceId, pluginName, 'projectLocal', cwd), identity),
   };
-  return resolveFromStores({ identity, schema, scope, stores, projectRoot });
+  return resolveFromStores({ identity, schema, scope, stores });
 }
 
 function printUsage() {

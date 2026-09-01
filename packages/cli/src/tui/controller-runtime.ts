@@ -943,12 +943,12 @@ export function createTuiControllerDependencies(
           }
           if (intent.kind === 'configSave') {
             await coercePluginConfigUpdates({
-              schema: plugin.manifest.config.schema,
+              schema: plugin.manifest.config.fields,
               updates: intent.updates ?? {},
               cwd: context.cwd,
             });
             for (const key of intent.removeKeys ?? []) {
-              if (!plugin.manifest.config.schema[key]) {
+              if (!plugin.manifest.config.fields[key]) {
                 throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
               }
             }
@@ -1096,12 +1096,12 @@ export function createTuiControllerDependencies(
                 throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
               }
               await coercePluginConfigUpdates({
-                schema: plugin.manifest.config.schema,
+                schema: plugin.manifest.config.fields,
                 updates: intent.updates ?? {},
                 cwd: context.cwd,
               });
               for (const key of intent.removeKeys ?? []) {
-                if (!plugin.manifest.config.schema[key]) {
+                if (!plugin.manifest.config.fields[key]) {
                   throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
                 }
               }
@@ -1320,12 +1320,12 @@ export function createTuiControllerDependencies(
               throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
             }
             await coercePluginConfigUpdates({
-              schema: plugin.manifest.config.schema,
+              schema: plugin.manifest.config.fields,
               updates: intent.updates ?? {},
               cwd: context.cwd,
             });
             for (const key of intent.removeKeys ?? []) {
-              if (!plugin.manifest.config.schema[key]) {
+              if (!plugin.manifest.config.fields[key]) {
                 throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
               }
             }

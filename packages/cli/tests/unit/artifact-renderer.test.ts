@@ -46,7 +46,7 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
       },
     },
     config: {
-      schema: {
+      fields: {
         token: {
           type: 'string',
           sensitive: true,
@@ -60,8 +60,15 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
-          type: 'enum',
-          values: ['low', 'medium', 'high', 'xhigh'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
+              id: value,
+              title: value,
+              value,
+            })),
+          },
           default: 'medium',
         },
       },

@@ -284,12 +284,12 @@ async function testStaticManifestContract() {
 
   assert.equal(manifest.name, 'codex-enhance');
   for (const key of exploreConfigKeys) {
-    assert.ok(Object.hasOwn(manifest.config.schema, key), `Missing explore config key ${key}`);
+    assert.ok(Object.hasOwn(manifest.config.fields, key), `Missing explore config key ${key}`);
   }
   for (const role of expectedRoles.filter((entry) => entry.modelKey)) {
-    assert.equal(manifest.config.schema[role.modelKey].default, role.model);
-    assert.equal(manifest.config.schema[role.effortKey].default, role.effort);
-    assert.deepEqual(manifest.config.schema[role.effortKey].values, [
+    assert.equal(manifest.config.fields[role.modelKey].default, role.model);
+    assert.equal(manifest.config.fields[role.effortKey].default, role.effort);
+    assert.deepEqual(manifest.config.fields[role.effortKey].choices.presets.map((preset) => preset.value), [
       'low',
       'medium',
       'high',
@@ -298,9 +298,9 @@ async function testStaticManifestContract() {
       'ultra',
     ]);
   }
-  assert.equal(manifest.config.schema.exploreMinimumInitialWaitMinutes.default, 10);
-  assert.equal(manifest.config.schema.subagentMinimumInitialWaitMinutes.default, 10);
-  assert.equal(Object.hasOwn(manifest.config.schema, 'minimumInitialWaitMinutes'), false);
+  assert.equal(manifest.config.fields.exploreMinimumInitialWaitMinutes.default, 10);
+  assert.equal(manifest.config.fields.subagentMinimumInitialWaitMinutes.default, 10);
+  assert.equal(Object.hasOwn(manifest.config.fields, 'minimumInitialWaitMinutes'), false);
   assert.deepEqual(
     manifest.config.presentation.groups.map((group) => ({
       id: group.id,
