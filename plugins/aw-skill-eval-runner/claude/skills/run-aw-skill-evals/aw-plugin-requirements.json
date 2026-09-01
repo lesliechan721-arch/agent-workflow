@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "aw-skill-eval-runner",
+    "version": "0.1.0-beta.1"
+  },
+  "requiredCapabilities": [
+    "aw.plugin-manifest.v2",
+    "aw.plugin-skills.v1",
+    "aw.skill-eval.v2"
+  ],
+  "digest": "sha256:fd4a8c7d2dd721a0887afe78d29cbfcc083668ccd9dccbc800aafdc77c662206"
+}

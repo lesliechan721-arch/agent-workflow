@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "agent-skill-toolkit",
+    "version": "0.1.0-beta.1"
+  },
+  "requiredCapabilities": [
+    "aw.plugin-build-config.v1",
+    "aw.plugin-manifest.v2",
+    "aw.plugin-skills.v1",
+    "aw.review-publication.v1",
+    "aw.runtime-imports.v1",
+    "aw.skill-validation.v1"
+  ],
+  "digest": "sha256:2fb0bcfd8ddce80f14d23847d42fc78bbcc671209794c64e64142763a9ee0780"
+}
