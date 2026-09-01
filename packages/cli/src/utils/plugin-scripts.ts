@@ -85,12 +85,11 @@ export interface LifecycleScriptContext {
     configStores?: {
       user: string;
       project: string;
-      projectLocal: string;
     };
   };
   config: {
     schema?: NonNullable<NormalizedPluginManifest['config']>['fields'];
-    values: Record<string, string | number | boolean | Record<string, string | number | boolean>>;
+    values: Record<string, PluginConfigValue>;
     sources: Record<string, string>;
     issues: unknown[];
   };
@@ -542,7 +541,6 @@ export async function writeLifecycleScriptContext(options: {
     configStores = {
       user: effective.stores.user.path,
       project: effective.stores.project.path,
-      projectLocal: effective.stores.projectLocal.path,
     };
     config = {
       schema: options.target.sourceManifest.config.fields,

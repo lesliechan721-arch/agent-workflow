@@ -20,6 +20,7 @@ import type {
   PluginConfigValue,
 } from './plugin-config.js';
 import {
+  assertReadyPluginConfigStore,
   coercePluginConfigValue,
   readPluginConfigStore,
   resolveProjectArtifactRenderConfig,
@@ -240,6 +241,7 @@ export async function resolveArtifactRenderConfig(options: {
       scope: 'user',
       cwd: options.cwd,
       env: options.env,
+      schema,
     }),
     readPluginConfigStore({
       sourceId: options.sourceId,
@@ -248,8 +250,11 @@ export async function resolveArtifactRenderConfig(options: {
       scope: 'project',
       cwd: options.cwd,
       env: options.env,
+      schema,
     }),
   ]);
+  assertReadyPluginConfigStore(userStore);
+  assertReadyPluginConfigStore(projectStore);
 
   if (!schema) {
     return {

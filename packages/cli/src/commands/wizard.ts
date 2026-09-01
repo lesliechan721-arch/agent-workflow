@@ -26,7 +26,6 @@ export interface CommandWizardSelection {
   plugins: string[];
   platform?: PlatformSelection;
   scope?: Scope;
-  projectLayer?: 'shared' | 'local';
   key?: string;
   value?: unknown;
 }

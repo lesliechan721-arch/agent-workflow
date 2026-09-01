@@ -189,7 +189,7 @@ function helpRowsForRoute(
 function configOwnerKey(route: Extract<TuiRoute, {
   name: 'configFields' | 'configFieldEditor' | 'configFieldAction';
 }>): string {
-  return `${route.pluginId}\0${route.layer.scope}\0${route.layer.projectLayer}`;
+  return `${route.pluginId}\0${route.layer.scope}`;
 }
 
 function configPageMatches(
@@ -198,8 +198,7 @@ function configPageMatches(
 ): page is ConfigPageViewModel {
   return Boolean(page && route
     && page.pluginId === route.pluginId
-    && page.layer.scope === route.layer.scope
-    && page.layer.projectLayer === route.layer.projectLayer);
+    && page.layer.scope === route.layer.scope);
 }
 
 function platformLabel(platform: PlatformName): string {
@@ -466,7 +465,7 @@ function configUnavailableDiagnostic(
     title: 'Manifest 或来源不可用',
     userMessage: '当前无法取得可信的字段定义，因此不能验证新值。',
     impact: [
-      { state: 'blocked', message: '恢复可信字段定义前，不能编辑或重置这个插件的设置。' },
+      { state: 'blocked', message: '恢复可信字段定义前，不能编辑这个插件的字段设置。' },
       { state: 'preserved', message: '已保存的设置保持不变。' },
     ],
     nextStep: '重新检查来源，然后再次打开设置。',
@@ -997,6 +996,9 @@ export function ConsoleAppV4(props: {
   const [inputError, setInputError] = useState<string>();
   const [configActionError, setConfigActionError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
+  const [configResetAvailability, setConfigResetAvailability] = useState<
+    Awaited<ReturnType<TuiController['getConfigResetAvailability']>>
+  >();
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>();
   const [sourceInput, setSourceInput] = useState('');
   const [sourceInputError, setSourceInputError] = useState<string>();
@@ -1096,9 +1098,8 @@ export function ConsoleAppV4(props: {
     if (route.name !== 'configLayer') return;
     const abort = new AbortController();
     const layers = [
-      { key: 'user', layer: { scope: 'user' as const, projectLayer: 'shared' as const } },
-      { key: 'project', layer: { scope: 'project' as const, projectLayer: 'shared' as const } },
-      { key: 'local', layer: { scope: 'project' as const, projectLayer: 'local' as const } },
+      { key: 'user', layer: { scope: 'user' as const } },
+      { key: 'project', layer: { scope: 'project' as const } },
     ];
     void Promise.allSettled(layers.map(async ({ key, layer }) => ({
       key,
@@ -1135,7 +1136,7 @@ export function ConsoleAppV4(props: {
         if (!abort.signal.aborted) {
           const layer = configRoute.layer.scope === 'effective'
             ? undefined
-            : { scope: configRoute.layer.scope as Scope, projectLayer: configRoute.layer.projectLayer };
+            : { scope: configRoute.layer.scope as Scope };
           const code = typeof error === 'object' && error !== null && 'code' in error
             ? safeDiagnosticCode((error as { code?: unknown }).code, 'configUnavailable')
             : 'configUnavailable';
@@ -1149,7 +1150,29 @@ export function ConsoleAppV4(props: {
         }
       });
     return () => abort.abort();
-  }, [configRoute?.pluginId, configRoute?.layer.scope, configRoute?.layer.projectLayer, props.controller]);
+  }, [configRoute?.pluginId, configRoute?.layer.scope, props.controller]);
+
+  useEffect(() => {
+    if (route.name !== 'configUnavailable' || !route.layer) {
+      setConfigResetAvailability(undefined);
+      return;
+    }
+    const abort = new AbortController();
+    setConfigResetAvailability(undefined);
+    void props.controller.getConfigResetAvailability(route.pluginId, route.layer)
+      .then((availability) => {
+        if (!abort.signal.aborted) setConfigResetAvailability(availability);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setConfigResetAvailability(undefined);
+      });
+    return () => abort.abort();
+  }, [
+    props.controller,
+    route.name,
+    route.name === 'configUnavailable' ? route.pluginId : '',
+    route.name === 'configUnavailable' ? route.layer?.scope : '',
+  ]);
 
   useEffect(() => {
     if (route.name !== 'configFields' || !currentConfigPage) return;
@@ -1560,10 +1583,10 @@ export function ConsoleAppV4(props: {
         : { title: 'Catalog 子目录', before: detail.subdir ?? '未设置', after: draft.subdir || '未设置' };
     await beginReview({ kind: 'sourceMutation', action: 'update', sourceId: draft.sourceId, update, changes: [change] });
   };
-  const configLayerLabel = (layer: { scope: Scope | 'effective'; projectLayer: 'shared' | 'local' }): string =>
+  const configLayerLabel = (layer: { scope: Scope | 'effective' }): string =>
     layer.scope === 'effective' ? '有效设置'
       : layer.scope === 'user' ? '个人默认'
-        : layer.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
+        : '当前项目';
   const currentFieldDisplay = (field: ConfigFieldViewModel): string => {
     if (draftRemoves.includes(field.key)) return '恢复继承';
     if (Object.hasOwn(draftUpdates, field.key)) {
@@ -1672,7 +1695,7 @@ export function ConsoleAppV4(props: {
       : undefined);
   };
   const openConfigLayerTarget = (
-    layer: { scope: Scope; projectLayer: 'shared' | 'local' },
+    layer: { scope: Scope },
   ): void => {
     if (route.name !== 'configLayer') return;
     const field = route.fieldKey && configPage
@@ -1724,7 +1747,6 @@ export function ConsoleAppV4(props: {
         kind: 'configSave',
         pluginId: configRoute.pluginId,
         scope: configRoute.layer.scope,
-        projectLayer: configRoute.layer.projectLayer,
         updates: draftUpdates,
         removeKeys: draftRemoves,
         sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
@@ -1743,7 +1765,7 @@ export function ConsoleAppV4(props: {
       .find((candidate) => candidate.key === pendingLayerFieldKey);
     setPendingLayerFieldKey(undefined);
     if (!field) return;
-    const layer = { scope: route.layer.scope as Scope, projectLayer: route.layer.projectLayer };
+    const layer = { scope: route.layer.scope as Scope };
     props.controller.push(field.configured ? {
       name: 'configFieldAction',
       pluginId: route.pluginId,
@@ -2820,9 +2842,8 @@ export function ConsoleAppV4(props: {
       : selectedPreset ? '选择保存位置后，方案会应用到该位置的草稿。' : '选择修改保存到哪里。';
     help = '↑↓ 移动 · Enter 打开 · Esc 返回';
     actions = [
-      { label: '个人默认', description: '在所有项目中作为默认值', meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`, run: () => openConfigLayerTarget({ scope: 'user', projectLayer: 'shared' }) },
-      { label: '当前项目', description: '随仓库共享，适合团队约定', meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`, run: () => openConfigLayerTarget({ scope: 'project', projectLayer: 'shared' }) },
-      { label: '当前项目（仅本机）', description: '只保存在本机，不提交到仓库', meta: configLayerCounts.local === undefined ? undefined : configLayerCounts.local === 0 ? '未设置' : `${configLayerCounts.local} 个值`, run: () => openConfigLayerTarget({ scope: 'project', projectLayer: 'local' }) },
+      { label: '个人默认', description: '在所有项目中作为默认值', meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`, run: () => openConfigLayerTarget({ scope: 'user' }) },
+      { label: '当前项目', description: '随仓库共享，适合团队约定', meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`, run: () => openConfigLayerTarget({ scope: 'project' }) },
     ];
     content = <SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />;
   } else if (route.name === 'configFields' && plugin) {
@@ -2848,7 +2869,6 @@ export function ConsoleAppV4(props: {
         : undefined;
       const mutableLayer = {
         scope: route.layer.scope as Scope,
-        projectLayer: route.layer.projectLayer,
       };
       const tabActions: ActionItem[] = activeTab?.kind === 'presets'
         ? currentConfigPage.presets.map((preset) => ({
@@ -2896,14 +2916,13 @@ export function ConsoleAppV4(props: {
         ...(currentConfigPage.storedCount > 0 ? [{
           label: route.layer.scope === 'user'
             ? '清空个人默认…'
-            : route.layer.projectLayer === 'local' ? '删除本机设置…' : '清空当前项目共享设置…',
+            : '清空当前项目设置…',
           description: `删除${configLayerLabel(route.layer)}中的全部值并恢复继承；其他设置层保持不变`,
           status: 'error' as const,
           run: () => beginReview({
             kind: 'configReset',
             pluginId: plugin.pluginId,
             scope: route.layer.scope as Scope,
-            projectLayer: route.layer.projectLayer,
             changes: currentConfigPage.groups.flatMap((group) => group.fields)
               .filter((field) => field.configured)
               .map((field) => ({
@@ -2967,7 +2986,7 @@ export function ConsoleAppV4(props: {
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
     const deleteLabel = route.layer.scope === 'user'
       ? '删除个人默认中的值'
-      : route.layer.projectLayer === 'local' ? '删除本机设置中的值' : '删除当前项目中的值';
+      : '删除当前项目中的值';
     actions = [
       {
         label: '修改值…',
@@ -3021,6 +3040,19 @@ export function ConsoleAppV4(props: {
     title = diagnostic.title;
     description = '';
     actions = [
+      ...(route.layer
+        && configResetAvailability?.exists
+        && configResetAvailability.sourceIdentityPresent
+        ? [{
+            label: '重置无效设置层…',
+            status: 'error' as const,
+            run: () => beginReview({
+              kind: 'configReset',
+              pluginId: plugin.pluginId,
+              scope: route.layer!.scope,
+            }),
+          }]
+        : []),
       { label: `在终端运行 aw catalog source sync ${plugin.sourceId}`, description: '同步成功后重新加载 TUI', run: back },
       { label: showTechnical ? '返回问题摘要' : '技术详情', description: '查看脱敏错误代码和阶段', run: () => setShowTechnical((value) => !value) },
       { label: '返回', run: back },

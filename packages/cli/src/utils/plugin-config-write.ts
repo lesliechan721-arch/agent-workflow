@@ -21,6 +21,7 @@ import type {
 import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js';
 import { resolveAwHome } from './paths.js';
 import {
+  assertReadyPluginConfigStore,
   assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
   patchPluginConfigStore,
@@ -31,11 +32,6 @@ import {
   resolvePluginConfigSchemaAccess,
   summarizeEffectivePluginConfig,
 } from './plugin-config.js';
-import {
-  assertProjectSharedConfigPathVisible,
-  ensureProjectPrivateStateIgnore,
-  type ProjectBoundaryWarning,
-} from './project-boundary.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from './paths.js';
 import { supportsPlatform } from './platform-support.js';
 import {
@@ -55,7 +51,6 @@ export type ConfigApplySkippedReason =
 export interface PluginConfigWriteReceipt {
   plugin: string;
   scope: Scope;
-  projectLayer: 'shared' | 'local';
   schema?: ConfigSchemaEvidence;
   updatedKeys: string[];
   removedKeys: string[];
@@ -65,15 +60,12 @@ export interface PluginConfigWriteReceipt {
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
   otherProjectsRequireReinstall: boolean;
-  warnings: Array<ProjectBoundaryWarning | string>;
-  /** @deprecated Compatibility for the console until its config view moves to reinstall receipts. */
-  /** @deprecated Compatibility alias for the old console projection. */
+  warnings: string[];
 }
 
 export interface ResetPluginConfigWriteReceipt {
   plugin: string;
   scope: Scope;
-  projectLayer: 'shared' | 'local';
   schema?: ConfigSchemaEvidence;
   existed: boolean;
   deleted: boolean;
@@ -84,9 +76,7 @@ export interface ResetPluginConfigWriteReceipt {
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
   otherProjectsRequireReinstall: boolean;
-  warnings: Array<ProjectBoundaryWarning | string>;
-  /** @deprecated Compatibility for the console until its config view moves to reinstall receipts. */
-  /** @deprecated Compatibility alias for the old console projection. */
+  warnings: string[];
 }
 
 type ReinstallCommand = typeof reinstallWriteCommand;
@@ -325,7 +315,6 @@ function buildReceiptFieldEntry(options: {
   reserved: boolean;
   action: ConfigReceiptFieldEntry['action'];
   scope: Scope;
-  projectLayer: 'shared' | 'local';
   valueState?: ConfigReceiptFieldEntry['valueState'];
 }): ConfigReceiptFieldEntry {
   return {
@@ -335,7 +324,6 @@ function buildReceiptFieldEntry(options: {
     reserved: options.reserved,
     action: options.action,
     scope: options.scope,
-    ...(options.scope === 'project' ? { projectLayer: options.projectLayer } : {}),
     ...(options.valueState ? { valueState: options.valueState } : {}),
   };
 }
@@ -382,7 +370,6 @@ type ApplyPluginConfigWriteOptions = {
   pluginError?: Error | null;
   pluginName?: string;
   scope: Scope;
-  projectLayer?: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
   applyTargets?: ReceiptTargetIdentity[];
@@ -404,7 +391,6 @@ async function applyPluginConfigWriteUnlocked(
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
   } : {};
-  const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
   const requestedUpdates = options.request.updates ?? {};
   const requestedRemoveKeys = uniqueInOrder(options.request.removeKeys ?? []);
   const duplicateKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(requestedUpdates, key));
@@ -417,7 +403,6 @@ async function applyPluginConfigWriteUnlocked(
     currentPlugin: options.plugin,
     currentPluginError: options.pluginError,
     scope: options.scope,
-    projectLayer,
     cwd: options.cwd,
     env: options.env,
   });
@@ -436,18 +421,12 @@ async function applyPluginConfigWriteUnlocked(
     ...configIdentity,
     pluginName,
     scope: options.scope,
-    projectLayer,
     cwd: options.cwd,
     env: options.env,
+    schema,
   });
-  const warnings: Array<ProjectBoundaryWarning | string> = [];
-  if (options.scope === 'project' && projectLayer === 'shared') {
-    await assertProjectSharedConfigPathVisible({ cwd: options.cwd, targetPath: store.path });
-  }
-  if (options.scope === 'project' && projectLayer === 'local') {
-    const ignore = await ensureProjectPrivateStateIgnore({ cwd: options.cwd, targetPath: store.path });
-    if (ignore.warning) warnings.push(ignore.warning);
-  }
+  assertReadyPluginConfigStore(store);
+  const warnings: string[] = [];
   const removedKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(store.values, key));
   const updatedKeys = Object.keys(updates);
   const changedKeys = [...updatedKeys, ...removedKeys];
@@ -456,11 +435,11 @@ async function applyPluginConfigWriteUnlocked(
       ...configIdentity,
       pluginName,
       scope: options.scope,
-      projectLayer,
       cwd: options.cwd,
       env: options.env,
       updates,
       removeKeys: requestedRemoveKeys,
+      schema,
     });
   }
 
@@ -494,7 +473,6 @@ async function applyPluginConfigWriteUnlocked(
   return {
     plugin: pluginName,
     scope: options.scope,
-    projectLayer,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     updatedKeys,
     removedKeys,
@@ -531,7 +509,6 @@ export async function applyPluginConfigWrite(
 type ResetPluginConfigWriteOptions = {
   pluginName: string;
   scope: Scope;
-  projectLayer?: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
   plugin: PluginMeta;
@@ -547,7 +524,6 @@ async function resetPluginConfigWithHelperUnlocked(
   options: ResetPluginConfigWriteOptions,
 ): Promise<ResetPluginConfigWriteReceipt> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
-  const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
   if (!options.plugin) {
     throw new Error(`sourceMissing: Plugin "${pluginName}" is unavailable; config reset was not applied.`);
   }
@@ -555,7 +531,6 @@ async function resetPluginConfigWithHelperUnlocked(
     pluginName,
     currentPlugin: options.plugin,
     scope: options.scope,
-    projectLayer,
     cwd: options.cwd,
     env: options.env,
   });
@@ -570,25 +545,16 @@ async function resetPluginConfigWithHelperUnlocked(
     ...configIdentity,
     pluginName,
     scope: options.scope,
-    projectLayer,
     cwd: options.cwd,
     env: options.env,
   });
   const removedKeys = collectRemovedConfigKeys(store.values);
-  const warnings: Array<ProjectBoundaryWarning | string> = [];
-  if (options.scope === 'project' && projectLayer === 'shared' && store.exists) {
-    await assertProjectSharedConfigPathVisible({ cwd: options.cwd, targetPath: store.path });
-  }
-  if (options.scope === 'project' && projectLayer === 'local') {
-    const ignore = await ensureProjectPrivateStateIgnore({ cwd: options.cwd, targetPath: store.path });
-    if (ignore.warning) warnings.push(ignore.warning);
-  }
+  const warnings: string[] = [];
 
   const reset = await resetPluginConfigStore({
     ...configIdentity,
     pluginName,
     scope: options.scope,
-    projectLayer,
     cwd: options.cwd,
     env: options.env,
   });
@@ -630,7 +596,6 @@ async function resetPluginConfigWithHelperUnlocked(
   return {
     plugin: pluginName,
     scope: options.scope,
-    projectLayer,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     existed: reset.existed,
     deleted: reset.deleted,
@@ -673,18 +638,15 @@ export async function describeResetAffectedFields(options: {
   plugin?: PluginMeta | null;
   pluginError?: Error | null;
   scope: Scope;
-  projectLayer?: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<ConfigReceiptFieldEntry[]> {
-  const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
   try {
     const resolved = await resolveConfigRead({
       pluginName: options.pluginName,
       plugin: options.plugin,
       ...(options.pluginError ? { pluginError: options.pluginError } : {}),
       scope: options.scope,
-      projectLayer,
       cwd: options.cwd,
       env: options.env,
     });
@@ -695,7 +657,6 @@ export async function describeResetAffectedFields(options: {
       reserved: field.reserved,
       action: 'reset',
       scope: options.scope,
-      projectLayer,
       valueState: field.valueState,
     }));
   } catch {
@@ -709,7 +670,6 @@ export async function describeResetAffectedFields(options: {
       } : {}),
       pluginName: options.pluginName,
       scope: options.scope,
-      projectLayer,
       cwd: options.cwd,
       env: options.env,
     });
@@ -720,7 +680,6 @@ export async function describeResetAffectedFields(options: {
       reserved: false,
       action: 'reset',
       scope: options.scope,
-      projectLayer,
     }));
   }
 }

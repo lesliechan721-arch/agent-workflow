@@ -310,10 +310,19 @@ describe('portable materializer', () => {
 
     const secretManifest: PluginManifestSource = {
       ...baseManifest('secret'),
-      config: { fields: { token: { type: 'string', sensitive: true, default: 'plain-secret' } } },
+      config: {
+        fields: {
+          token: { type: 'string', sensitive: true, default: 'plain-secret' },
+          credentials: {
+            type: 'object',
+            properties: { accessKey: { type: 'string', sensitive: true } },
+            default: { accessKey: 'nested-portable-secret' },
+          },
+        },
+      },
     };
     const secret = await pluginFixture(root, secretManifest);
-    await writeSkill(secret.rootDir, 'leak', 'plain-secret');
+    await writeSkill(secret.rootDir, 'leak', 'plain-secret nested-portable-secret');
     await expect(materializePortableSkills({
       plugins: [secret], pluginId: secret.pluginId!, scope: 'user', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home-b') },

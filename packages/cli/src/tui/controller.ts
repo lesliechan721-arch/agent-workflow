@@ -14,7 +14,6 @@ import type {
   StatusV6PluginSummary,
   StatusTargetRevision,
 } from '../commands/status-v6.js';
-import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
@@ -97,7 +96,6 @@ export type OperationIntent =
       kind: 'configSave';
       pluginId: string;
       scope: Scope;
-      projectLayer: ProjectConfigStoreLayer;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
       sensitiveKeys?: string[];
@@ -113,7 +111,6 @@ export type OperationIntent =
       kind: 'configReset';
       pluginId: string;
       scope: Scope;
-      projectLayer: ProjectConfigStoreLayer;
       changes?: Array<{ key: string; title: string; before: string; after: string }>;
     }
   | {
@@ -155,7 +152,6 @@ export interface OperationEvidence {
   };
   config?: {
     scope: Scope;
-    projectLayer: ProjectConfigStoreLayer;
     schemaIdentity?: string;
     storeDigest: string;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
@@ -391,17 +387,17 @@ export interface TuiControllerDependencies {
   ) => Promise<unknown>;
   getConfigGroups?: (
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
     signal: AbortSignal,
   ) => Promise<ConfigGroupViewModel[]>;
   getConfigPage?: (
     pluginId: string,
-    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope | 'effective' },
     signal: AbortSignal,
   ) => Promise<ConfigPageViewModel>;
   getConfigResetAvailability?: (
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
     signal: AbortSignal,
   ) => Promise<ConfigResetAvailability>;
   logError?: (
@@ -829,7 +825,7 @@ function reviewChanges(
   if (intent.kind === 'configReset') {
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
-      : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
+      : '当前项目';
     return [
       ...(intent.changes?.map((change): OperationReviewChange => ({
         kind: 'remove', group: 'configChanges', title: `${layerLabel} · ${change.title}`,
@@ -840,7 +836,7 @@ function reviewChanges(
             kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
           }))
         : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
-      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
+      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目设置保持不变' : '个人默认保持不变' },
     ];
   }
   if (intent.kind === 'sourceMutation') {
@@ -930,7 +926,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.projectIntentDigest) details.push(`Project intent：${short(evidence.projectIntentDigest)}`);
-  if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${short(evidence.config.storeDigest)}`);
+  if (evidence.config) details.push(`设置层：${evidence.config.scope} · ${short(evidence.config.storeDigest)}`);
   if (evidence.sourceWrite) {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
     details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
@@ -1437,7 +1433,7 @@ export class TuiController {
     this.#router.push({
       name: 'configFields',
       pluginId,
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { scope: 'effective' },
     });
     this.#publish();
   }
@@ -1988,7 +1984,7 @@ export class TuiController {
 
   async getConfigGroups(
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
   ): Promise<ConfigGroupViewModel[]> {
     if (!this.dependencies.getConfigGroups) {
       throw new TuiOperationBlockedError('configUnavailable', '设置读取入口不可用。');
@@ -2002,7 +1998,7 @@ export class TuiController {
 
   async getConfigPage(
     pluginId: string,
-    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope | 'effective' },
     signal?: AbortSignal,
   ): Promise<ConfigPageViewModel> {
     if (!this.dependencies.getConfigPage) {
@@ -2020,7 +2016,7 @@ export class TuiController {
 
   async getConfigResetAvailability(
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
   ): Promise<ConfigResetAvailability> {
     if (!this.dependencies.getConfigResetAvailability) {
       throw new TuiOperationBlockedError(

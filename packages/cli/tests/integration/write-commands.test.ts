@@ -516,7 +516,6 @@ describe('five namespaced write commands', () => {
       kind: 'configSave',
       pluginId: 'team/demo',
       scope: 'project',
-      projectLayer: 'shared',
       updates: { mode: 'strict' },
     });
     expect(review.technicalDetails).toContainEqual(
@@ -540,7 +539,6 @@ describe('five namespaced write commands', () => {
       kind: 'configSave',
       pluginId: 'team/demo',
       scope: 'project',
-      projectLayer: 'shared',
       updates: { mode: 'new' },
     });
     expect(staleReview.technicalDetails).toContain(pinnedGeneration);
@@ -663,7 +661,7 @@ describe('five namespaced write commands', () => {
     ]);
     const captured = createCapturedCliIo();
     await expect(runCli([
-      'config', 'set', 'official/demo', 'mode', 'ssh', '--scope', 'project', '--json',
+      'config', 'set', 'official/demo', 'mode', '--value-json', '"ssh"', '--scope', 'project', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -2479,7 +2477,7 @@ describe('five namespaced write commands', () => {
 
     const captured = createCapturedCliIo();
     const exitCode = await runCli([
-      'config', 'set', 'team/root', 'mode', 'fast', '--scope', 'project', '--json',
+      'config', 'set', 'team/root', 'mode', '--value-json', '"fast"', '--scope', 'project', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -3222,7 +3220,7 @@ describe('five namespaced write commands', () => {
       await expect(readPluginConfigStore({
         sourceId: 'team', sourceIdentity, pluginName, scope: 'project',
         cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      })).resolves.toMatchObject({ exists: true, values: {} });
+      })).resolves.toMatchObject({ state: 'missing', exists: false, values: {} });
     }
   });
 
@@ -6927,7 +6925,7 @@ describe('five namespaced write commands', () => {
 
     const captured = createCapturedCliIo();
     expect(await runCli([
-      'config', 'set', 'dual/config-dual', 'mode', 'fast', '--scope', 'project', '--json',
+      'config', 'set', 'dual/config-dual', 'mode', '--value-json', '"fast"', '--scope', 'project', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -7049,7 +7047,7 @@ describe('five namespaced write commands', () => {
     const captured = createCapturedCliIo();
 
     expect(await runCli([
-      'config', 'set', 'team/config-native', 'mode', 'fast', '--scope', 'user', '--json',
+      'config', 'set', 'team/config-native', 'mode', '--value-json', '"fast"', '--scope', 'user', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -7530,7 +7528,7 @@ describe('five namespaced write commands', () => {
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
     const set = await runPublic([
-      'config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'project',
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project',
     ]);
     expect(set).toMatchObject({
       exitCode: 0,
@@ -7549,7 +7547,7 @@ describe('five namespaced write commands', () => {
     expect((await readStore()).values).toEqual({});
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
-    await runPublic(['config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'project']);
+    await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project']);
     const reset = await runPublic([
       'config', 'reset', 'team/demo', '--scope', 'project', '--yes',
     ]);
@@ -7560,9 +7558,9 @@ describe('five namespaced write commands', () => {
     expect((await readStore()).exists).toBe(false);
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
-    await runPublic(['config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'project']);
+    await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project']);
     const failed = await runPublic([
-      'config', 'set', 'team/demo', 'mode', 'fail', '--scope', 'project',
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--scope', 'project',
     ]);
     expect(failed).toMatchObject({
       exitCode: 1,

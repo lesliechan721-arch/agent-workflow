@@ -157,6 +157,93 @@ describe('plugin config atomic writes', () => {
     await expect(readNamespacedPluginConfigStoreIdentity(options)).rejects.toThrow('regular file');
   });
 
+  it.each([
+    {
+      code: 'invalidJson',
+      content: '{broken',
+    },
+    {
+      code: 'schemaVersionUnsupported',
+      content: JSON.stringify({
+        schemaVersion: 2,
+        sourceId: 'official',
+        sourceIdentity: `sha256:${'f'.repeat(64)}`,
+        pluginName: 'invalid-projection',
+        values: { mode: 'safe' },
+      }),
+    },
+    {
+      code: 'identityMismatch',
+      content: JSON.stringify({
+        schemaVersion: 3,
+        sourceId: 'other',
+        sourceIdentity: `sha256:${'f'.repeat(64)}`,
+        pluginName: 'invalid-projection',
+        values: { mode: 'safe' },
+      }),
+    },
+    {
+      code: 'invalidValues',
+      content: JSON.stringify({
+        schemaVersion: 3,
+        sourceId: 'official',
+        sourceIdentity: `sha256:${'f'.repeat(64)}`,
+        pluginName: 'invalid-projection',
+        values: { mode: { nested: { rejected: true } } },
+      }),
+    },
+  ])('projects $code without rewriting the invalid store', async ({ code, content }) => {
+    const fixture = await makeFixture();
+    const options = {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'f'.repeat(64)}`,
+      pluginName: 'invalid-projection',
+      scope: 'user' as const,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    };
+    const filePath = resolvePluginConfigStorePath(options);
+    await fs.outputFile(filePath, content);
+
+    await expect(readPluginConfigStore(options)).resolves.toMatchObject({
+      state: 'invalid',
+      invalidCode: code,
+      values: {},
+    });
+    await expect(fs.readFile(filePath, 'utf8')).resolves.toBe(content);
+  });
+
+  it('validates projection-shaped JSON as a namespaced store envelope', async () => {
+    const fixture = await makeFixture();
+    const options = {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'f'.repeat(64)}`,
+      pluginName: 'projection-shaped',
+      scope: 'user' as const,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    };
+    const filePath = resolvePluginConfigStorePath(options);
+    await fs.outputJson(filePath, {
+      path: '/attacker/controlled',
+      exists: true,
+      state: 'ready',
+      issues: [],
+      schemaVersion: 3,
+      sourceId: 'other',
+      sourceIdentity: options.sourceIdentity,
+      pluginName: options.pluginName,
+      values: { mode: 'safe' },
+    });
+
+    await expect(readPluginConfigStore(options)).resolves.toMatchObject({
+      path: filePath,
+      state: 'invalid',
+      invalidCode: 'identityMismatch',
+      values: {},
+    });
+  });
+
   it('keeps the old store and removes its temp when atomic commit fails', async () => {
     const fixture = await makeFixture();
     const options = {
@@ -278,7 +365,7 @@ describe('plugin config atomic writes', () => {
       .toEqual([]);
   });
 
-  it('resets through the atomic file boundary and rejects directory, symlink, and foreign stores', async () => {
+  it('resets invalid stores by path without parsing, backup, or symlink traversal', async () => {
     const fixture = await makeFixture();
     const base = {
       sourceId: 'official',
@@ -306,17 +393,22 @@ describe('plugin config atomic writes', () => {
     const foreignOptions = { ...base, pluginName: 'foreign-store' };
     const foreignPath = resolvePluginConfigStorePath(foreignOptions);
     await fs.outputJson(foreignPath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceId: 'someone-else',
       sourceIdentity: base.sourceIdentity,
       pluginName: foreignOptions.pluginName,
       values: { retained: true },
     });
-    await expect(resetPluginConfigStore(foreignOptions)).rejects.toThrow('identity');
-    await expect(fs.pathExists(foreignPath)).resolves.toBe(true);
+    await expect(readPluginConfigStore(foreignOptions)).resolves.toMatchObject({
+      state: 'invalid',
+      invalidCode: 'identityMismatch',
+    });
+    await expect(resetPluginConfigStore(foreignOptions)).resolves.toMatchObject({ deleted: true });
+    await expect(fs.pathExists(foreignPath)).resolves.toBe(false);
+    await expect(fs.readdir(path.dirname(foreignPath))).resolves.not.toContain('config.json.backup');
   });
 
-  it('validates every project store before reset and performs zero deletion on foreign state', async () => {
+  it('resets only the project shared store and leaves the removed local path untouched', async () => {
     const fixture = await makeFixture();
     const base = {
       sourceId: 'official',
@@ -326,10 +418,10 @@ describe('plugin config atomic writes', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     };
-    const sharedPath = resolvePluginConfigStorePath({ ...base, projectLayer: 'shared', access: 'write' });
-    const localPath = resolvePluginConfigStorePath({ ...base, projectLayer: 'local', access: 'write' });
+    const sharedPath = resolvePluginConfigStorePath({ ...base, access: 'write' });
+    const localPath = path.join(fixture.cwd, '.agent-workflows', 'plugin-config.local', 'official', base.pluginName, 'config.json');
     await fs.outputJson(sharedPath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceId: base.sourceId,
       sourceIdentity: base.sourceIdentity,
       pluginName: base.pluginName,
@@ -343,8 +435,8 @@ describe('plugin config atomic writes', () => {
       values: { local: true },
     });
 
-    await expect(resetPluginConfigStores(base)).rejects.toThrow('source identity');
-    await expect(fs.pathExists(sharedPath)).resolves.toBe(true);
+    await expect(resetPluginConfigStores(base)).resolves.toHaveLength(1);
+    await expect(fs.pathExists(sharedPath)).resolves.toBe(false);
     await expect(fs.pathExists(localPath)).resolves.toBe(true);
   });
 

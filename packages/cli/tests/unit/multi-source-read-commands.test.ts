@@ -988,7 +988,9 @@ describe('multi-source read commands', () => {
     });
 
     const config = createCapturedCliIo();
-    expect(await runCli(['config', 'set', 'good/demo', 'key', 'value', '--json'], {
+    expect(await runCli([
+      'config', 'set', 'good/demo', 'key', '--scope', 'user', '--value-json', '"value"', '--json',
+    ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: config.io,

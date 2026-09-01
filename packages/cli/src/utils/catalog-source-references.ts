@@ -247,9 +247,7 @@ function inventoryErrorRelevance(
     [path.join(awHome, 'plugin-config'), 'user'],
     [path.join(canonicalAwHome, 'plugin-config'), 'user'],
     [path.join(repoRoot, '.agent-workflows', 'plugin-config'), 'project'],
-    [path.join(repoRoot, '.agent-workflows', 'plugin-config.local'), 'project'],
     [path.join(canonicalRepoRoot, '.agent-workflows', 'plugin-config'), 'project'],
-    [path.join(canonicalRepoRoot, '.agent-workflows', 'plugin-config.local'), 'project'],
   ] as const) {
     const segments = pathSegmentsWithin(root, location);
     if (segments !== null) {
@@ -456,17 +454,15 @@ async function inventoryPluginConfigRoots(options: {
     env: options.env,
     cwd: options.cwd,
   })) {
-    for (const storeName of ['plugin-config', 'plugin-config.local']) {
-      const projectRoot = await inventoryCanonicalDescendantDirectory({
-        root: rawRepoRoot,
-        segments: ['.agent-workflows', storeName],
-        errors: options.errors,
-        kind: 'configDirectoryRead',
-        env: options.env,
-        cwd: options.cwd,
-      });
-      if (projectRoot) roots.push(projectRoot);
-    }
+    const projectConfigRoot = await inventoryCanonicalDescendantDirectory({
+      root: rawRepoRoot,
+      segments: ['.agent-workflows', 'plugin-config'],
+      errors: options.errors,
+      kind: 'configDirectoryRead',
+      env: options.env,
+      cwd: options.cwd,
+    });
+    if (projectConfigRoot) roots.push(projectConfigRoot);
   }
   return roots;
 }
@@ -927,14 +923,14 @@ function assertNamespacedConfigEnvelope(
   sourceId: string,
   pluginName: string,
 ): asserts value is {
-  schemaVersion: 2;
+  schemaVersion: 3;
   sourceId: string;
   sourceIdentity: string;
   pluginName: string;
   values: Record<string, unknown>;
 } {
   if (!isRecord(value)
-    || value.schemaVersion !== 2
+    || value.schemaVersion !== 3
     || typeof value.sourceId !== 'string'
     || typeof value.sourceIdentity !== 'string'
     || !/^sha256:[0-9a-f]{64}$/u.test(value.sourceIdentity)
@@ -943,7 +939,7 @@ function assertNamespacedConfigEnvelope(
     || Object.keys(value).some((key) => ![
       'schemaVersion', 'sourceId', 'sourceIdentity', 'pluginName', 'values',
     ].includes(key))) {
-    throw new Error('Namespaced plugin config is not a valid schema 2 envelope.');
+    throw new Error('Namespaced plugin config is not a valid schema 3 envelope.');
   }
   if (value.sourceId !== sourceId || value.pluginName !== pluginName) {
     throw new Error('Namespaced plugin config identity does not match its directory path.');

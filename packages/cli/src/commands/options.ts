@@ -65,12 +65,6 @@ export interface ReinstallCommandOptions extends InstallCommandOptions {
   json?: boolean;
 }
 
-export interface RawConfigProjectLayerOptions {
-  scope?: string;
-  local?: boolean;
-}
-
-
 export const SCRIPT_TIMEOUT_MIN_MS = 1000;
 export const SCRIPT_TIMEOUT_MAX_MS = 300000;
 export const SCRIPT_TIMEOUT_DEFAULT_MS = 30000;
@@ -193,18 +187,6 @@ export function resolveConfigWriteScope(scope: unknown): Scope {
 
 export function resolveConfigReadResolution(scope: unknown): ConfigReadResolution {
   return scope === undefined ? CONFIG_READ_DEFAULT_RESOLUTION : parseScopeValue(scope);
-}
-
-export function resolveConfigProjectLayer(
-  raw: RawConfigProjectLayerOptions = {},
-): 'shared' | 'local' {
-  if (!raw.local) {
-    return 'shared';
-  }
-  if (raw.scope !== 'project') {
-    throw new Error('`--local` 只能与 `--scope project` 一起使用。');
-  }
-  return 'local';
 }
 
 function resolveCwd(rawCwd: string | undefined, defaultCwd: string | undefined): string {

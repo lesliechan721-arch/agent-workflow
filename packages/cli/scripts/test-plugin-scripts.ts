@@ -10,7 +10,6 @@ import {
   buildLifecycleSpawnEnv,
   bundleLocalPlugin,
   collectSensitivePluginConfigValues,
-  coercePluginConfigValue,
   discoverPlugins,
   formatMarketplaceProductsForError,
   formatSupportedPlatforms,
@@ -31,7 +30,6 @@ import {
 } from '../src/utils/catalog-runtime-projection.js';
 import type {
   PlatformName,
-  PluginConfigSchemaField,
   PluginConfigValue,
   PluginMeta,
   Scope,
@@ -390,26 +388,6 @@ async function copyTestPackageNodeModules(options: {
   await fs.copy(sourceNodeModules, targetNodeModules, { dereference: false });
 }
 
-async function resolveConfigDefaults(options: {
-  manifest: NormalizedPluginManifest;
-  cwd: string;
-}): Promise<Record<string, PluginConfigValue>> {
-  const values: Record<string, PluginConfigValue> = {};
-  const schema = options.manifest.config?.fields ?? {};
-  for (const [key, field] of Object.entries(schema)) {
-    const typedField = field as PluginConfigSchemaField;
-    if (typedField.default === undefined) {
-      continue;
-    }
-    values[key] = await coercePluginConfigValue({
-      key,
-      field: typedField,
-      value: typedField.default,
-    });
-  }
-  return values;
-}
-
 async function writeTestContext(options: {
   bundleRoot: string;
   sourceRoot: string;
@@ -439,18 +417,10 @@ async function writeTestContext(options: {
       cwd: options.projectRoot,
       env: options.env,
     }),
-    projectLocal: resolvePluginConfigStorePath({
-      sourceId,
-      pluginName: options.manifest.name,
-      scope: 'project',
-      cwd: options.projectRoot,
-      env: options.env,
-      projectLayer: 'local',
-    }),
   };
   if (options.manifest.config?.fields) {
     await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceId,
       sourceIdentity,
       pluginName: options.manifest.name,
@@ -464,15 +434,7 @@ async function writeTestContext(options: {
         manifest: options.manifest,
         cwd: options.projectRoot,
         env: options.env,
-      }).catch(async () => ({
-        values: await resolveConfigDefaults({
-          manifest: options.manifest,
-          cwd: options.projectRoot,
-        }),
-        sources: Object.fromEntries(Object.keys(options.manifest.config?.fields ?? {}).map((key) => [key, 'default'])),
-        schema: options.manifest.config?.fields,
-        issues: [],
-      }))
+      })
     : { values: {}, sources: {}, schema: undefined, issues: [] };
   const contextPath = path.join(options.tempDir, 'context.json');
   await fs.writeJson(contextPath, {

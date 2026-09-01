@@ -211,7 +211,7 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
     plugin: { name: '${pluginName}' },
     config: {
       values: { apiKey: 'test-key', mode: 'strict' },
-      sources: { apiKey: 'user', mode: 'projectShared' },
+      sources: { apiKey: 'user', mode: 'project' },
       schema: {
         apiKey: { type: 'string', sensitive: true, required: true },
         mode: {
@@ -230,8 +230,7 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
     paths: {
       configStores: {
         user: join(tempDir, 'missing-user.json'),
-        project: join(tempDir, 'missing-project.json'),
-        projectLocal: join(tempDir, 'missing-project-local.json')
+        project: join(tempDir, 'missing-project.json')
       }
     }
   }), 'utf8');
@@ -241,7 +240,7 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
     cwd: tempDir,
     env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, AW_HOME: join(tempDir, 'unused-aw-home') }
   });
-  assert.equal(stdout.trim(), 'test-key');
+  assert.equal(stdout.trim(), '[redacted]');
 });
 `
     : '';

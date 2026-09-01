@@ -2992,7 +2992,6 @@ describe('ConsoleAppV4', () => {
     expect(chooserFrame).toContain('修改“level”');
     expect(chooserFrame).toContain('个人默认');
     expect(chooserFrame).toContain('当前项目');
-    expect(chooserFrame).toContain('当前项目（仅本机）');
     expect(chooserFrame).not.toContain('有效设置');
     const layerRoute = value.snapshot.router.current.route;
     await input(instance, '\t');
@@ -3015,7 +3014,7 @@ describe('ConsoleAppV4', () => {
     });
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user', projectLayer: 'shared' },
+      name: 'configFields', layer: { scope: 'user' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
     expect(instance.lastFrame()).toContain('› level');
@@ -3036,7 +3035,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({
       name: 'configFields',
       pluginId: 'official/review-gate',
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { scope: 'effective' },
     });
     expect(instance.lastFrame()).toContain('当前插件设置');
     expect(instance.lastFrame()).not.toContain('保存修改');
@@ -3064,14 +3063,14 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { scope: 'user' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
 
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { scope: 'effective' },
     });
     expect(value.snapshot.router.current.context.focusIndex).toBe(0);
     await input(instance, 'b');
@@ -3215,7 +3214,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
 
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user', projectLayer: 'shared' },
+      name: 'configFields', layer: { scope: 'user' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
     expect(instance.lastFrame()).toContain('2 项未保存');
@@ -3262,7 +3261,7 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, '\u001B[C', '\u001B[C', '\r', '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user', projectLayer: 'shared' },
+      name: 'configFields', layer: { scope: 'user' },
     });
     await input(instance, 'b');
     await nextTurn(2);
@@ -3348,14 +3347,14 @@ describe('ConsoleAppV4', () => {
 
     const resetScreens = new Set<ConsoleV4ScreenId>();
     const reset = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
-    reset.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'project', projectLayer: 'local' } });
+    reset.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'project' } });
     const resetInstance = render(<ConsoleAppV4 controller={reset} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => resetScreens.add(screen)} />);
     await nextTurn(4);
     await input(resetInstance, ...Array.from({ length: 7 }, () => '\u001B[B'), '\r');
     await nextTurn(3);
     expect(resetScreens).toContain('C16');
-    expect(resetInstance.lastFrame()).toContain('当前项目（仅本机）');
-    expect(resetInstance.lastFrame()).toContain('其他设置层保持不变');
+    expect(resetInstance.lastFrame()).toContain('当前项目');
+    expect(resetInstance.lastFrame()).toContain('个人默认保持不变');
 
     const unavailableScreens = new Set<ConsoleV4ScreenId>();
     const unavailable = controller({
@@ -3407,7 +3406,7 @@ describe('ConsoleAppV4', () => {
     expect((effectiveInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
-  it('keeps C17 read-only for a verified stored layer and keeps its details private', async () => {
+  it('offers invalid-layer reset through Review and keeps its details private', async () => {
     const sourceIdentity = `sha256:${'a'.repeat(64)}`;
     const storeDigest = `sha256:${'b'.repeat(64)}`;
     const value = controller({
@@ -3420,18 +3419,18 @@ describe('ConsoleAppV4', () => {
       captureEvidence: vi.fn().mockResolvedValue({
         ...evidence,
         source: { sourceId: 'team-tools', sourceIdentity },
-        config: { scope: 'user', projectLayer: 'shared', storeDigest },
+        config: { scope: 'user', storeDigest, affectedTargets: [] },
       }),
     });
     await value.load();
     value.push({
       name: 'configUnavailable',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { scope: 'user' },
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-    expect(instance.lastFrame()).not.toContain('重置此设置层');
+    expect(instance.lastFrame()).toContain('重置无效设置层');
     expect(instance.lastFrame()).toContain('技术详情');
     expect(instance.lastFrame()).not.toContain(sourceIdentity);
     expect(instance.lastFrame()).not.toContain(storeDigest);
@@ -3442,6 +3441,10 @@ describe('ConsoleAppV4', () => {
     expect(technicalFrame).toContain('read-config');
     expect(technicalFrame).not.toContain(sourceIdentity);
     expect(technicalFrame).not.toContain(storeDigest);
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
+    expect(instance.lastFrame()).toContain('重置插件设置');
   });
 
   it('does not let an aborted config layer response overwrite the newer layer page', async () => {

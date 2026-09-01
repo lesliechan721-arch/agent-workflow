@@ -38,6 +38,8 @@ Manifest 配置只使用 `config.fields` 定义字段，并可用 `config.presen
 
 `object` 可声明固定 `properties` 和标量 `additionalProperties`。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，动态 child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供稳定对象序列化、preset 匹配、结构化校验 issue 和一层 sensitive child 脱敏；CLI 当前只保证扁平标量配置的完整交互。
 
+AW 只提供 `default < user < project` 两个持久写入层。Store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --preset <id>)`。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的独立 `scripts/aw-config.mjs`；不要维护第二份字段 validator。
+
 已安装 Author 在开始工作时运行 `aw self check --from <skill-root> --json`。CLI 优先读取同层 `aw-plugin-requirements.json` runtime receipt，再回退到 Manifest；`missingCapabilities` 非空时停止。`aw plugin requirements <plugin-directory> --json` 分开报告 declared、derived、detected 和 effective requirements。`requires.aw.capabilities` 只声明生产行为真正需要的最小集合，不能用 CLI 版本字符串替代 capability compatibility。
 
 同一 Catalog source 内的运行时依赖只在 manifest `dependencies` 中声明，值为裸插件名。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。依赖集合、缺失节点和环由 Catalog 作者聚合验证；本指南只定义单插件声明。

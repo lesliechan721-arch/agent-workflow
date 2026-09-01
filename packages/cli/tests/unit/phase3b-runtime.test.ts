@@ -298,7 +298,7 @@ describe('phase 3B namespaced runtime stores', () => {
     const storePath = resolvePluginConfigStorePath(options);
     expect(storePath).toBe(path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'demo', 'config.json'));
     expect(await fs.readJson(storePath)).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceId: 'team',
       sourceIdentity: SOURCE_IDENTITY,
       pluginName: 'demo',
@@ -318,7 +318,11 @@ describe('phase 3B namespaced runtime stores', () => {
     await expect(readPluginConfigStore({
       ...options,
       sourceIdentity: `sha256:${'2'.repeat(64)}`,
-    })).rejects.toThrow('sourceChanged');
+    })).resolves.toMatchObject({
+      state: 'invalid',
+      invalidCode: 'identityMismatch',
+      values: {},
+    });
     await fs.outputJson(path.join(isolation.env.AW_HOME!, 'plugin-config', 'demo', 'config.json'), {
       mode: 'legacy',
     });
@@ -455,7 +459,14 @@ describe('phase 3B namespaced runtime stores', () => {
       createCatalogSnapshotFixture(teamRoot, 'demo', [], 'demo\n', (manifest) => {
         manifest.config = {
           fields: {
-            mode: { type: 'string', title: 'Mode' },
+            mode: {
+              type: 'string',
+              title: 'Mode',
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'fast', title: 'Fast', value: 'fast' }],
+              },
+            },
           },
         };
       }),
@@ -472,8 +483,25 @@ describe('phase 3B namespaced runtime stores', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
+    for (const args of [
+      ['--scope', 'user'],
+      ['--scope', 'user', '--value-json', '"fast"', '--preset', 'fast'],
+    ]) {
+      const invalidOutput = createCapturedCliIo();
+      expect(await runCli(['config', 'set', 'team/demo', 'mode', ...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: invalidOutput.io,
+        interactive: false,
+      })).toBe(1);
+      expect(JSON.parse(invalidOutput.readStdout())).toMatchObject({
+        command: 'config:set', ok: false, overallState: 'failed',
+      });
+    }
     const setOutput = createCapturedCliIo();
-    expect(await runCli(['config', 'set', 'team/demo', 'mode', 'fast', '--json'], {
+    expect(await runCli([
+      'config', 'set', 'team/demo', 'mode', '--preset', 'fast', '--scope', 'user', '--json',
+    ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: setOutput.io,
@@ -488,6 +516,59 @@ describe('phase 3B namespaced runtime stores', () => {
       sourceId: 'team',
       sourceIdentity: expect.stringMatching(/^sha256:/),
     });
+    const stored = await readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: setReceipt.sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(stored.values).toEqual({ mode: 'fast' });
+    expect(JSON.stringify(stored.values)).not.toContain('preset');
+    const getOutput = createCapturedCliIo();
+    expect(await runCli(['config', 'get', 'team/demo', 'mode', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: getOutput.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(getOutput.readStdout())).toMatchObject({
+      fields: [{
+        key: 'mode', value: 'fast', source: 'user', matchedPreset: 'fast', valid: true, issues: [],
+      }],
+    });
+    await fs.outputFile(stored.path, '{ invalid json');
+    const unconfirmedReset = createCapturedCliIo();
+    expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: unconfirmedReset.io,
+      interactive: false,
+    })).toBe(1);
+    await expect(fs.pathExists(stored.path)).resolves.toBe(true);
+    const confirmedReset = createCapturedCliIo();
+    expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--yes', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: confirmedReset.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(confirmedReset.readStdout())).toMatchObject({
+      command: 'config:reset', configWrite: 'succeeded', deleted: true,
+    });
+    await expect(fs.pathExists(stored.path)).resolves.toBe(false);
+    const remainingNames = await fs.readdir(path.dirname(stored.path)).catch(() => []);
+    expect(remainingNames.some((name) => /backup|journal/iu.test(name))).toBe(false);
+    const restoreOutput = createCapturedCliIo();
+    expect(await runCli([
+      'config', 'set', 'team/demo', 'mode', '--preset', 'fast', '--scope', 'user', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: restoreOutput.io,
+      interactive: false,
+    })).toBe(0);
     await expect(removeCatalogSourceCommand({
       sourceId: 'team',
       cliVersion: '1.0.0',

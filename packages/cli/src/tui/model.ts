@@ -267,7 +267,7 @@ export interface ConfigPresetViewModel {
 
 export interface ConfigPageViewModel {
   pluginId: string;
-  layer: { scope: Scope | 'effective'; projectLayer: 'shared' | 'local' };
+  layer: { scope: Scope | 'effective' };
   groups: ConfigGroupViewModel[];
   presets: ConfigPresetViewModel[];
   storedCount: number;
@@ -380,9 +380,9 @@ export interface UserIssueViewModel {
     key: string;
     title: string;
     type: 'missing-required' | 'invalid-config';
-    source: 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
+    source: 'default' | 'user' | 'project' | 'missing';
   }>;
-  configLayer?: { scope: Scope; projectLayer: 'shared' | 'local' };
+  configLayer?: { scope: Scope };
   actions: UserIssueActionViewModel[];
   technicalDetails: Array<{ code: string; message: string }>;
   diagnostic: DiagnosticSummaryViewModel;
@@ -1243,12 +1243,10 @@ function configIssues(pluginSummaries: StatusV6PluginSummary[]): UserIssueDraft[
     const sources = new Set(summary.configIssues.map((issue) => issue.source));
     const onlySource = sources.size === 1 ? [...sources][0] : undefined;
     const configLayer = onlySource === 'user'
-      ? { scope: 'user' as const, projectLayer: 'shared' as const }
+      ? { scope: 'user' as const }
       : onlySource === 'project'
-        ? { scope: 'project' as const, projectLayer: 'shared' as const }
-        : onlySource === 'projectLocal'
-          ? { scope: 'project' as const, projectLayer: 'local' as const }
-          : undefined;
+        ? { scope: 'project' as const }
+        : undefined;
     return [{
       issueId: `config:${summary.pluginId}:${invalid ? 'invalid' : 'required'}`,
       category: 'requiredConfigMissing' as const,
@@ -1724,7 +1722,6 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
     default: '默认值',
     user: '个人默认',
     project: '当前项目',
-    local: '当前项目（仅本机）',
   }[source];
 }
 
@@ -1735,7 +1732,6 @@ export function buildConfigGroups(options: {
   layerReads?: {
     user: ResolvedConfigRead;
     project: ResolvedConfigRead;
-    local: ResolvedConfigRead;
   };
   dirtyKeys?: ReadonlySet<string>;
 }): ConfigGroupViewModel[] {
@@ -1779,8 +1775,8 @@ export function buildConfigGroups(options: {
       && (effectiveEntry.valueState === 'configured' || effectiveEntry.valueState === 'default');
     const omittedLayer = options.read.scope === 'user'
       ? 'user'
-      : options.read.projectLayer === 'local' ? 'local' : 'project';
-    const fallback = (['local', 'project', 'user'] as const)
+      : 'project';
+    const fallback = (['project', 'user'] as const)
       .filter((layer) => layer !== omittedLayer)
       .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
       .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
@@ -1902,12 +1898,11 @@ export function buildConfigPage(options: {
   layerReads?: {
     user: ResolvedConfigRead;
     project: ResolvedConfigRead;
-    local: ResolvedConfigRead;
   };
 }): ConfigPageViewModel {
   return {
     pluginId: options.pluginId,
-    layer: { scope: options.read.scope, projectLayer: options.read.projectLayer },
+    layer: { scope: options.read.scope },
     groups: buildConfigGroups(options),
     presets: [],
     storedCount: options.read.fields.filter((field) => field.storedSourceLayer !== undefined).length,

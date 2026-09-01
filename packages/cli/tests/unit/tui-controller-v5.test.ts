@@ -1384,7 +1384,7 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: [
         {
           pluginName: 'invalid', pluginId: 'official/invalid', description: 'invalid',
-          configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'projectLocal' }],
+          configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'project' }],
         },
         {
           pluginName: 'unreadable', pluginId: 'official/unreadable', description: 'unreadable',
@@ -1395,8 +1395,8 @@ describe('TUI v4 router and ViewModel', () => {
 
     expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')).toMatchObject({
       title: 'invalid · 设置值无效',
-      configLayer: { scope: 'project', projectLayer: 'local' },
-      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'projectLocal' }],
+      configLayer: { scope: 'project' },
+      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'project' }],
       diagnostic: {
         technical: { code: 'invalid-config', stage: 'validate-config' },
       },
@@ -2857,11 +2857,11 @@ describe('TUI v4 Review safety', () => {
     const route = {
       name: 'configFields' as const,
       pluginId: 'official/demo',
-      layer: { scope: 'project' as const, projectLayer: 'shared' as const },
+      layer: { scope: 'project' as 'project' | 'user' },
     };
     router.push(route);
-    route.layer.projectLayer = 'local';
-    expect(router.snapshot.current.route).toMatchObject({ layer: { projectLayer: 'shared' } });
+    route.layer.scope = 'user';
+    expect(router.snapshot.current.route).toMatchObject({ layer: { scope: 'project' } });
 
     const loaded = {
       payload: status({ sources: [source('official', { type: 'path' })] }),

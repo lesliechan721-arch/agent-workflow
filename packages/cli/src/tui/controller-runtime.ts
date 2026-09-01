@@ -36,7 +36,6 @@ import {
 } from '../utils/multi-source-catalog.js';
 import {
   coercePluginConfigUpdates,
-  readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
   resolveConfigRead,
 } from '../utils/plugin-config.js';
@@ -75,7 +74,6 @@ import {
   targetCanBeUninstalled,
   targetHasArtifactCollision,
 } from '../utils/target-eligibility.js';
-import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
@@ -964,7 +962,6 @@ export function createTuiControllerDependencies(
         sourceIdentity: selected.source.sourceIdentity,
         pluginName: selected.pluginName,
         scope: intent.scope,
-        projectLayer: intent.projectLayer,
         cwd: context.cwd,
         env: context.env,
       });
@@ -989,9 +986,13 @@ export function createTuiControllerDependencies(
         targetFingerprint: statusTargetFingerprint(relevantTargets, relevantRevisions),
         config: {
           scope: intent.scope,
-          projectLayer: intent.projectLayer,
           schemaIdentity: selected.source.manifestDigest,
-          storeDigest: digest({ exists: store.exists, values: store.values }),
+          storeDigest: digest({
+            exists: store.exists,
+            state: store.state,
+            invalidCode: store.invalidCode,
+            values: store.values,
+          }),
           affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
         },
       };
@@ -1240,16 +1241,19 @@ export function createTuiControllerDependencies(
         sourceIdentity: selected.source.sourceIdentity,
         pluginName: selected.pluginName,
         scope: intent.scope,
-        projectLayer: intent.projectLayer,
         cwd: context.cwd,
         env: context.env,
       });
       signal?.throwIfAborted();
       evidence.config = {
         scope: intent.scope,
-        projectLayer: intent.projectLayer,
         schemaIdentity: selected.source.manifestDigest,
-        storeDigest: digest({ exists: store.exists, values: store.values }),
+        storeDigest: digest({
+          exists: store.exists,
+          state: store.state,
+          invalidCode: store.invalidCode,
+          values: store.values,
+        }),
         affectedTargets: evidenceTargets.map(({ platform, scope }) => ({ platform, scope })),
       };
     }
@@ -1414,7 +1418,6 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             plugin,
             scope: layer.scope,
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
@@ -1422,7 +1425,6 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             plugin,
             scope: 'effective',
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
@@ -1448,7 +1450,6 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             plugin,
             scope: layer.scope,
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
@@ -1456,7 +1457,6 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             plugin,
             scope: 'effective',
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
@@ -1465,7 +1465,6 @@ export function createTuiControllerDependencies(
               pluginName: plugin.manifest.name,
               plugin,
               scope: 'user',
-              projectLayer: 'shared',
               cwd: context.cwd,
               env: context.env,
             }),
@@ -1473,15 +1472,6 @@ export function createTuiControllerDependencies(
               pluginName: plugin.manifest.name,
               plugin,
               scope: 'project',
-              projectLayer: 'shared',
-              cwd: context.cwd,
-              env: context.env,
-            }),
-            local: await resolveConfigRead({
-              pluginName: plugin.manifest.name,
-              plugin,
-              scope: 'project',
-              projectLayer: 'local',
               cwd: context.cwd,
               env: context.env,
             }),
@@ -1497,41 +1487,38 @@ export function createTuiControllerDependencies(
       });
     },
     async getConfigResetAvailability(pluginId, layer, signal) {
-      signal.throwIfAborted();
-      const { sourceId, pluginName } = parsePluginId(pluginId);
-      if (!sourceId) return { exists: false, sourceIdentityPresent: false };
-      const identity = await readNamespacedPluginConfigStoreIdentity({
-        sourceId,
-        pluginName,
-        scope: layer.scope,
-        projectLayer: layer.projectLayer,
-        cwd: context.cwd,
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: pluginId,
+        cliVersion: packageInfo.version,
         env: context.env,
+        signal,
+        ...(sessionContextForPlugin(pluginId)
+          ? { operationContext: sessionContextForPlugin(pluginId)! }
+          : {}),
+        consume: async ({ plugin, source }) => {
+          const store = await readPluginConfigStore({
+            sourceId: source.sourceId,
+            sourceIdentity: source.sourceIdentity,
+            pluginName: plugin.manifest.name,
+            scope: layer.scope,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          signal.throwIfAborted();
+          return {
+            exists: store.exists,
+            sourceIdentityPresent: true,
+            sourceIdentity: source.sourceIdentity,
+            storeDigest: digest({
+              exists: store.exists,
+              state: store.state,
+              invalidCode: store.invalidCode,
+              values: store.values,
+            }),
+          };
+        },
       });
-      signal.throwIfAborted();
-      if (!identity) return { exists: false, sourceIdentityPresent: false };
-      const configured = await readCatalogSourcesConfigSnapshot(context.env);
-      const source = configured.config.sources.find((entry) => entry.id === sourceId);
-      const configuredIdentity = source
-        ? await calculateCatalogSourceIdentity(source)
-        : undefined;
-      if (identity.sourceIdentity !== configuredIdentity) {
-        return {
-          exists: true,
-          sourceIdentityPresent: false,
-          sourceIdentity: identity.sourceIdentity,
-        };
-      }
-      return {
-        exists: true,
-        sourceIdentityPresent: true,
-        sourceIdentity: identity.sourceIdentity,
-        storeDigest: digest({
-          exists: identity.store.exists,
-          sourceIdentity: identity.sourceIdentity,
-          values: identity.store.values,
-        }),
-      };
     },
     async executeIntent(intent, expectedEvidence) {
       if (intent.kind === 'portableInstall') {
@@ -1724,7 +1711,6 @@ export function createTuiControllerDependencies(
                       plugin,
                       pluginName: plugin.manifest.name,
                       scope: intent.scope,
-                      projectLayer: intent.projectLayer,
                       cwd: context.cwd,
                       env: context.env,
                       nativeCliRunner: context.nativeCliRunner,
@@ -1744,7 +1730,6 @@ export function createTuiControllerDependencies(
                       plugin,
                       pluginName: plugin.manifest.name,
                       scope: intent.scope,
-                      projectLayer: intent.projectLayer,
                       cwd: context.cwd,
                       env: context.env,
                       nativeCliRunner: context.nativeCliRunner,

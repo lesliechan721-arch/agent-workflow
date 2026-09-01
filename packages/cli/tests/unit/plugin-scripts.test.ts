@@ -230,17 +230,10 @@ describe('plugin lifecycle scripts', () => {
             cwd,
             env,
           }),
-          projectLocal: resolvePluginConfigStorePath({
-            sourceId,
-            pluginName: plugin.manifest.name,
-            scope: 'project',
-            cwd,
-            env,
-            projectLayer: 'local',
-          }),
         },
       },
     });
+    expect(Object.keys(contextJson.paths.configStores).sort()).toEqual(['project', 'user']);
     expect(contextJson.config.stores).toBeUndefined();
     expect(JSON.stringify(contextJson)).not.toContain('legacy-secret');
     if (process.platform !== 'win32') {
@@ -573,6 +566,12 @@ describe('plugin lifecycle scripts', () => {
       sensitive: true,
       default: true,
     };
+    manifest.config!.fields.credentials = {
+      type: 'object',
+      properties: {
+        accessKey: { type: 'string', sensitive: true },
+      },
+    };
     const plugin = await writePlugin(root, manifest);
     const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
     await writePluginConfigStore({
@@ -580,7 +579,7 @@ describe('plugin lifecycle scripts', () => {
       scope: 'user',
       cwd,
       env,
-      values: { token: 'secret-token' },
+      values: { token: 'secret-token', credentials: { accessKey: 'nested-secret-key' } },
     });
     const events: unknown[] = [];
     const context = createCommandExecutionContext({
@@ -608,21 +607,22 @@ describe('plugin lifecycle scripts', () => {
           return {
             exitCode: 7,
             signal: null,
-            stdout: 'stdout pin=8675309 enabled=true token=secret-token\n',
-            stderr: 'stderr pin=8675309 enabled=true token=secret-token\n',
+            stdout: 'stdout pin=8675309 enabled=true token=secret-token access=nested-secret-key\n',
+            stderr: 'stderr pin=8675309 enabled=true token=secret-token access=nested-secret-key\n',
             timedOut: false,
           };
         },
       },
-    })).rejects.toThrow('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED]');
+    })).rejects.toThrow('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED] access=[REDACTED]');
 
     const finishEvent = events.find((event) => (event as { type?: string }).type === 'lifecycle.finish') as {
       data?: { stdout?: string; stderr?: string };
     };
-    expect(finishEvent.data?.stdout).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED]');
-    expect(finishEvent.data?.stderr).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED]');
+    expect(finishEvent.data?.stdout).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED] access=[REDACTED]');
+    expect(finishEvent.data?.stderr).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED] access=[REDACTED]');
     expect(finishEvent.data?.stdout).not.toContain('8675309');
     expect(finishEvent.data?.stderr).not.toContain('enabled=true');
+    expect(JSON.stringify(events)).not.toContain('nested-secret-key');
   });
 
   it('reports timeouts with redacted stderr summaries', async () => {

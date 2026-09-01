@@ -1,5 +1,4 @@
 import type { PlatformName, Scope } from '../types.js';
-import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 
 export type PortableBlockerCode =
   | 'requiredConfigMissing'
@@ -63,25 +62,25 @@ export type TuiRoute =
   | {
       name: 'configFields';
       pluginId: string;
-      layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer };
+      layer: { scope: Scope | 'effective' };
     }
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      layer: { scope: Scope };
       fieldKey: string;
       editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
     }
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      layer: { scope: Scope };
       fieldKey: string;
     }
   | {
       name: 'configUnavailable';
       pluginId: string;
-      layer?: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      layer?: { scope: Scope };
       diagnosticCode?: string;
       diagnosticStage?: string;
     }

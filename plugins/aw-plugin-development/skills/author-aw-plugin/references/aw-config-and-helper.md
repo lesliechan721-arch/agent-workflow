@@ -8,6 +8,8 @@ object 使用固定 scalar `properties` 和可选 scalar `additionalProperties`�
 
 配置 helper 由公开 scaffolding 或目标插件源码拥有，不能复制本 Skill 的内部 helper。helper 优先读取 `AW_PLUGIN_CONTEXT` 的已验证 `config.values`、`sources`、`schema` 和 store paths。无 context fallback 必须验证 bundle 与 source identity；失败时关闭，不回退到裸插件名、其它 source 或无 schema store。
 
-敏感值不进入 stdout、stderr、日志或错误摘要。路径值按目标工作区规则解析；project shared、project local 和 user 的作用域不能混用。
+AW 只提供 `default < user < project`。namespaced store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。旧 store 和 `plugin-config.local` 不读取或迁移。无效 store 必须先通过明确确认的整层 reset 恢复，不能静默回退。
+
+写入命令是 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --preset <id>)`。preset 保存其实际值，不保存 ID。敏感标量和一层 object child 不进入 CLI 输出、stderr、日志或错误摘要。
 
 脚本化配置只使用当前 `aw config --help` 公布的命令。默认人类输出不作为机器协议解析；需要结构化结果时使用 help 声明的 JSON 选项。

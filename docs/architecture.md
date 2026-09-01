@@ -22,7 +22,7 @@
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存下一次 uninstall lifecycle 所需的弱状态。
 - `utils/multi-source-catalog.ts` 解析 Catalog Sources Config v2 的 Git/path source，并读取本地 Catalog store 中的 Active snapshot。
-- `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
+- `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store v3 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v5。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
 - Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
@@ -195,11 +195,15 @@ TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | e
 
 ownership health 只表示当前 live 组件是否完整。Status v6 的 shared native version 比较进入 `needsSync` 和 `codexSharedNativeUpdateRequired`。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v6 JSON。
 
-配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
+配置按 manifest default、user、project 合并。user store 位于 `<AW_HOME>/plugin-config/<source>/<plugin>/config.json`，project store 位于项目根的 `.agent-workflows/plugin-config/<source>/<plugin>/config.json`。namespaced envelope 固定为 schemaVersion 3，`values` 保存标量或一层标量对象。对象在层之间和写入时均完整覆盖，不做深合并；删除某层最后一个 key 时删除该 store 文件。旧 `plugin-config.local` 和 store v2 不读取、不迁移，也不自动删除。
 
-控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user、project shared 或 project local 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
+Store reader 投影 `missing | ready | invalid`。无效原因至少区分 `invalidJson`、`schemaVersionUnsupported`、`identityMismatch` 和 `invalidValues`。无效的高优先级层不能静默回退，也不能进入 renderer 或普通 edit/unset。用户必须通过带明确确认的 CLI reset 或 TUI Review 删除整个确定目标层；reset 不依赖成功解析 envelope，不生成备份或 journal。source config 和 plugin config 均使用原子替换。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
 
-控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 Active snapshot、目标 fingerprint 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；Review 分别显示设置变更、应用影响和保持不变。个人默认变更重新应用当前目录中已安装的 user 与 project 目标；项目 shared/local 变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
+`aw config set <plugin> <field> --scope <user|project>` 必须且只能使用 `--value-json <json>` 或 `--preset <id>` 之一。preset 从当前 manifest 解析并完整验证，store 保存实际值，不保存 preset ID。`list`、`get`、`unset` 和 `reset` 继续可用；JSON 读取公开 `value`、`source`、`matchedPreset`、`valid` 和 `issues`，默认对敏感标量和对象 child 脱敏。
+
+控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user 或 project 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
+
+控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 Active snapshot、目标 fingerprint 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；Review 分别显示设置变更、应用影响和保持不变。个人默认变更重新应用当前目录中已安装的 user 与 project 目标；项目变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
 
 Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。official HTTPS/SSH 切换只改变 transport location，并通过 source mutation Review 提交；Catalog logical identity 继续只来自 snapshot 的 Workspace identity，不修改 live owner identity。
 

@@ -264,9 +264,14 @@ export interface ConfigFieldEntry {
   writable: boolean;
   valueState: ConfigValueState;
   effectiveValue: unknown | null;
-  sourceLayer: 'default' | 'user' | 'project' | 'local' | null;
+  sourceLayer: 'default' | 'user' | 'project' | null;
   storedValue?: unknown;
-  storedSourceLayer?: 'user' | 'project' | 'local';
+  storedSourceLayer?: 'user' | 'project';
+  value: unknown | null;
+  source: 'default' | 'user' | 'project' | 'missing';
+  matchedPreset: string | null;
+  valid: boolean;
+  issues: unknown[];
 }
 
 export interface ConfigReceiptFieldEntry {
@@ -276,7 +281,6 @@ export interface ConfigReceiptFieldEntry {
   reserved: boolean;
   action: 'set' | 'unset' | 'reset';
   scope: Scope;
-  projectLayer?: 'shared' | 'local';
   valueState?: ConfigValueState;
 }
 

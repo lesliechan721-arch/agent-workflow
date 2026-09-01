@@ -2487,7 +2487,7 @@ describe('authoring tools', () => {
     const userStorePath = path.join(tempRoot, 'user-config.json');
     const projectStorePath = path.join(tempRoot, 'project-config.json');
     await fs.writeJson(userStorePath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceId: 'team',
       sourceIdentity,
       pluginName: 'context-helper',
@@ -2498,7 +2498,7 @@ describe('authoring tools', () => {
       },
     });
     await fs.writeJson(projectStorePath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sourceId: 'team',
       sourceIdentity,
       pluginName: 'context-helper',
@@ -2560,7 +2560,7 @@ describe('authoring tools', () => {
       pluginId: 'team/context-helper',
       scope: 'effective',
       values: {
-        apiKey: 'context-secret',
+        apiKey: '[redacted]',
         mode: 'strict',
       },
       sources: {
@@ -2587,7 +2587,7 @@ describe('authoring tools', () => {
       pluginName: 'context-helper',
       scope: 'user',
       values: {
-        apiKey: 'user-store-secret',
+        apiKey: '[redacted]',
         mode: 'standard',
       },
       diagnostics: {
@@ -2681,7 +2681,7 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(awHome, 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         sourceId,
         sourceIdentity,
         pluginName: 'config-demo',
@@ -2698,7 +2698,7 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         sourceId,
         sourceIdentity,
         pluginName: 'config-demo',
@@ -2744,14 +2744,14 @@ describe('authoring tools', () => {
       pluginId: `${sourceId}/config-demo`,
     });
     expect(payload.values).toMatchObject({
-      token: 'project-secret',
+      token: '[redacted]',
       mode: 'strict',
       configFile: './config.txt',
       constructor: 'declared-constructor',
     });
     expect(payload.sources).toMatchObject({
-      token: 'projectShared',
-      mode: 'projectShared',
+      token: 'project',
+      mode: 'project',
       configFile: 'default',
       constructor: 'default',
     });
@@ -2767,7 +2767,7 @@ describe('authoring tools', () => {
     expect(payload.diagnostics.ignoredUnknownKeys).toEqual(
       expect.arrayContaining([
         { scope: 'user', key: 'staleUserSecret' },
-        { scope: 'projectShared', key: 'staleProjectSecret' },
+        { scope: 'project', key: 'staleProjectSecret' },
       ]),
     );
 
@@ -2786,14 +2786,14 @@ describe('authoring tools', () => {
         },
       ),
     ).resolves.toMatchObject({
-      stdout: 'project-secret\n',
+      stdout: '[redacted]\n',
     });
 
     const extraValue = 'prototype-extra-must-not-leak';
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         sourceId,
         sourceIdentity,
         pluginName: 'config-demo',
@@ -2816,7 +2816,7 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         sourceId,
         sourceIdentity: `sha256:${'3'.repeat(64)}`,
         pluginName: 'config-demo',
@@ -2832,7 +2832,7 @@ describe('authoring tools', () => {
         env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
       },
     )).rejects.toMatchObject({
-      stderr: expect.stringContaining('schema 2 source identity'),
+      stderr: expect.stringContaining('identityMismatch'),
     });
   });
 
@@ -2943,6 +2943,16 @@ describe('authoring tools', () => {
     await expect(
       fs.pathExists(path.join(pluginDir, 'scripts', 'generated-script.test.mjs')),
     ).resolves.toBe(true);
+    const generatedTest = await execFileAsync(
+      process.execPath,
+      ['--test', path.join(pluginDir, 'scripts', 'generated-script.test.mjs')],
+      {
+        cwd: pluginDir,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    expect(generatedTest.stdout).toContain('pass 2');
     await expect(
       execFileAsync('node', [validateScriptPath, pluginDir], {
         cwd: repoRoot(),

@@ -51,6 +51,12 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
           type: 'string',
           sensitive: true,
         },
+        credentials: {
+          type: 'object',
+          properties: {
+            accessKey: { type: 'string', sensitive: true },
+          },
+        },
         enableLightweightInstruction: {
           type: 'boolean',
           default: true,
@@ -328,6 +334,7 @@ describe('artifact renderer runtime', () => {
     ]);
     expect(userContext.context.paths.configStores.user).toContain('/plugin-config/');
     expect(userContext.context.paths.configStores.project).toContain('/plugin-config/');
+    expect(Object.keys(userContext.context.paths.configStores).sort()).toEqual(['project', 'user']);
     if (process.platform !== 'win32') {
       expect((await fs.stat(userContext.contextPath)).mode & 0o777).toBe(0o600);
     }
@@ -444,10 +451,10 @@ describe('artifact renderer runtime', () => {
       scope: 'user',
       cwd,
       env,
-      values: { token: 'secret-token' },
+      values: { token: 'secret-token', credentials: { accessKey: 'nested-render-secret' } },
     });
 
-    await expect(runArtifactRenderer({
+    const error = await runArtifactRenderer({
       event: 'install',
       plugin,
       platform: 'codex',
@@ -459,13 +466,16 @@ describe('artifact renderer runtime', () => {
           return {
             exitCode: 0,
             signal: null,
-            stdout: 'not-json secret-token',
-            stderr: 'stderr secret-token',
+            stdout: 'not-json secret-token nested-render-secret',
+            stderr: 'stderr secret-token nested-render-secret',
             timedOut: false,
           };
         },
       },
-    })).rejects.toThrow('[REDACTED]');
+    }).then(() => undefined, (failure: unknown) => failure);
+    expect(String(error)).toContain('[REDACTED]');
+    expect(String(error)).not.toContain('secret-token');
+    expect(String(error)).not.toContain('nested-render-secret');
   });
 
   it('fails on unsupported versions, non-zero exit, and timeouts', async () => {

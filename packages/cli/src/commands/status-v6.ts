@@ -260,7 +260,7 @@ export interface StatusV6PluginSummary {
     type: 'missing-required' | 'invalid-config';
     key: string;
     title: string;
-    source: 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
+    source: 'default' | 'user' | 'project' | 'missing';
   }>;
   configDiagnostic?: { code: 'configReadFailed'; message: string };
   dependencyDirectCount?: number;
