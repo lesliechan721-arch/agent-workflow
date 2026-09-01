@@ -11,7 +11,7 @@ import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
+import { createCatalogManifestV6Entry } from '../../src/utils/catalog-manifest-v6.js';
 import {
   createAwPluginRequirementsReceipt,
   readPluginManifest,
@@ -812,15 +812,15 @@ describe('pack smoke', () => {
       cwd: standaloneWorkspace,
       env: process.env,
     });
-    const packedPreflight = await execFileAsync(awBin, [
-      'catalog', 'status', '--workspace-root', standaloneWorkspace,
-      '--preflight', '--remote', 'origin', '--branch', 'catalog', '--json',
+    const packedPlan = await execFileAsync(awBin, [
+      'catalog', 'publish', 'plan', '--workspace-root', standaloneWorkspace,
+      '--remote', 'origin', '--branch', 'catalog', '--json',
     ], { cwd: standaloneWorkspace, env: process.env });
-    const packedDescriptorDigest = JSON.parse(packedPreflight.stdout).publication.descriptorDigest;
+    const packedPlanDigest = JSON.parse(packedPlan.stdout).planDigest;
     const packedPublish = await execFileAsync(awBin, [
-      'catalog', 'publish', '--workspace-root', standaloneWorkspace,
+      'catalog', 'publish', 'apply', '--workspace-root', standaloneWorkspace,
       '--remote', 'origin', '--branch', 'catalog',
-      '--expected-descriptor-digest', packedDescriptorDigest, '--yes', '--json',
+      '--expected-plan-digest', packedPlanDigest, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: process.env });
     const packedPublishReceipt = JSON.parse(packedPublish.stdout) as { ok: boolean; commit: string };
     expect(packedPublishReceipt.ok).toBe(true);
@@ -839,6 +839,19 @@ describe('pack smoke', () => {
       '--ref', 'refs/heads/catalog', '--primary', '--json',
     ], { cwd: tempRoot, env: packedConsumerEnv });
     expect(JSON.parse(sourceAdd.stdout)).toMatchObject({ ok: true, sourceId: 'packed' });
+    const sourceSync = await execFileAsync(awBin, [
+      'catalog', 'source', 'sync', 'packed', '--json',
+    ], { cwd: tempRoot, env: packedConsumerEnv });
+    expect(JSON.parse(sourceSync.stdout)).toMatchObject({
+      command: 'catalog:source:sync',
+      ok: true,
+      sourceId: 'packed',
+      mode: 'sync',
+      outcome: 'activated',
+      activeChanged: true,
+      active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
+    });
+    expect(sourceSync.stderr).toBe('');
     const consumedStatus = await execFileAsync(awBin, ['status', 'packed/packed-build', '--json'], {
       cwd: tempRoot,
       env: packedConsumerEnv,
@@ -954,7 +967,7 @@ describe('pack smoke', () => {
     const portableCatalogManifestPath = path.join(portableCatalog, 'catalog-manifest.json');
     const portableCatalogManifest = await fs.readJson(portableCatalogManifestPath);
     portableCatalogManifest.entries = [
-      await createCatalogManifestV5Entry(portablePlugin, portablePlugin.rootDir),
+      await createCatalogManifestV6Entry(portablePlugin, portablePlugin.rootDir),
     ];
     await fs.writeJson(portableCatalogManifestPath, portableCatalogManifest, { spaces: 2 });
     const portableCwd = path.join(tempRoot, 'portable-project');
@@ -998,6 +1011,19 @@ describe('pack smoke', () => {
       FAKE_SKILLS_LOG: fakeLog,
       FAKE_SKILLS_STATE: fakeState,
     };
+    const portableSourceSync = await execFileAsync(awBin, [
+      'catalog', 'source', 'sync', 'local', '--json',
+    ], { cwd: portableCwd, env: portableEnv });
+    expect(JSON.parse(portableSourceSync.stdout)).toMatchObject({
+      command: 'catalog:source:sync',
+      ok: true,
+      sourceId: 'local',
+      mode: 'sync',
+      outcome: 'activated',
+      activeChanged: true,
+      active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
+    });
+    expect(portableSourceSync.stderr).toBe('');
     await execFileAsync(awBin, [
       'skill', 'materialize', 'local/portable-pack',
       '--scope', 'project', '--out', materializedOut,

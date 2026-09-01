@@ -9,12 +9,25 @@ import { applyCodexConfigTransactionFile, readCodexConfigFile } from '../../src/
 import { readPluginIntentState, writePluginIntentState } from '../../src/utils/plugin-intent-state.js';
 import {
   readCatalogSourcesConfigSnapshot,
-  replaceCatalogSourcesConfig,
+  replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import type { PluginMeta } from '../../src/types.js';
+
+async function replaceCatalogSourcesConfig(
+  options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
+) {
+  const result = await replaceCatalogSourcesConfigWithoutActive(options);
+  for (const source of options.config.sources) {
+    await syncCatalogSourceGeneration({
+      sourceId: source.id, cliVersion: '1.0.0', env: options.env,
+    });
+  }
+  return result;
+}
 
 async function createNativeSource(root: string): Promise<void> {
   const configure = (manifest: PluginMeta['manifest']) => {

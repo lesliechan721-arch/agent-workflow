@@ -60,7 +60,6 @@ export function sanitizeCatalogSourceErrorMessage(
     if (root.trim() !== '') output = replaceRoot(output, root, '[catalog-source]');
   }
   for (const [root, replacement] of [
-    [path.join(awHome, 'catalog-cache'), '[catalog-state]'],
     [path.join(path.dirname(awHome), '.aw-local-marketplace-staging'), '[catalog-staging]'],
     [awHome, '[aw-state]'],
   ] as const) {
@@ -76,9 +75,10 @@ export function sanitizeCatalogSourceErrorMessage(
   ].filter((value): value is string => Boolean(value)))) {
     output = replaceRoot(output, tempRoot, '[temporary]');
   }
-  return output
-    .replace(/\.(?:materialize|path)-[^/\\\s"']+\.tmp/gu, '[catalog-materialization]')
-    .replace(/catalog-cache/gu, '[catalog-state]');
+  return output.replace(
+    /\.(?:materialize|path)-[^/\\\s"']+\.tmp/gu,
+    '[catalog-materialization]',
+  );
 }
 
 export function catalogSourceErrorCode(error: unknown): string {

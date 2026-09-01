@@ -12,7 +12,6 @@ import {
   computePackageTarballTreeDigest,
   corePackageJsonPath,
   evalPackageJsonPath,
-  loadCatalogModules,
   packCli,
   packCore,
   packEval,
@@ -25,11 +24,10 @@ import {
   writePackageJson,
 } from './common.mjs';
 import {
-  assertCatalogTagAvailable,
-  disposeCatalogRelease,
   prepareCatalogRelease,
   publishCatalogRelease,
   readCatalogAttemptVersions,
+  readReusableCatalogAttempt,
   readCatalogSourceVersion,
   readCatalogVersions,
 } from './catalog-publication.mjs';
@@ -80,10 +78,6 @@ function attemptedCandidates(candidates) {
     typeof candidates?.[axis] === 'string' && candidates[axis] !== ''
       ? [[axis, candidates[axis]]]
       : []));
-}
-
-function sameCandidates(left, right) {
-  return left?.cli === right?.cli && left?.catalog === right?.catalog;
 }
 
 function reusesAttemptedCandidate(attempt, candidates) {
@@ -259,15 +253,25 @@ export function selectCatalogReleaseCandidate(channel, currentVersion, usedVersi
 }
 
 export async function resolveCatalogReleaseCandidate(channel, options = {}) {
-  const [currentVersion, publishedVersions, attemptedVersions] = await Promise.all([
-    (options.readCatalogVersion ?? readCatalogSourceVersion)(options),
+  const currentVersion = await (options.readCatalogVersion ?? readCatalogSourceVersion)(options);
+  const [publishedVersions, attemptedVersions] = await Promise.all([
     (options.readCatalogVersions ?? readCatalogVersions)(options),
     (options.readCatalogAttemptVersions ?? readCatalogAttemptVersions)(options),
   ]);
+  const reusableAttempt = attemptedVersions.includes(currentVersion)
+    ? await (options.readReusableCatalogAttempt ?? readReusableCatalogAttempt)(
+        channel,
+        currentVersion,
+        options,
+      )
+    : null;
   return selectCatalogReleaseCandidate(
     channel,
     currentVersion,
-    [...publishedVersions, ...attemptedVersions],
+    [
+      ...publishedVersions,
+      ...attemptedVersions.filter((version) => version !== reusableAttempt),
+    ],
   );
 }
 
@@ -414,30 +418,17 @@ export async function prepareLocalRelease(channel, options = {}) {
       let catalog = null;
       if (candidates.catalog !== null) {
         const mode = channel === 'stable' ? 'latest' : 'beta';
-        const preparation = await (options.prepareCatalog ?? prepareCatalogRelease)(mode, {
+        const plan = await (options.prepareCatalog ?? prepareCatalogRelease)(mode, {
           ...options,
           repoRoot,
         });
-        if (preparation.descriptor.catalogVersion !== candidates.catalog) {
-          await (options.disposeCatalog ?? disposeCatalogRelease)(preparation, options);
+        if (plan.catalogVersion !== candidates.catalog) {
           throw new Error('Prepared Catalog version does not match source metadata.');
         }
-        const catalogPath = path.join(artifactRoot, 'catalog');
-        try {
-          await fs.cp(preparation.prepared.outputRoot, catalogPath, {
-            recursive: true,
-            verbatimSymlinks: true,
-          });
-          catalog = {
-            version: candidates.catalog,
-            path: path.relative(temporaryRoot, catalogPath),
-            snapshotDigest: preparation.descriptor.snapshotDigest,
-            ledgerDigest: preparation.descriptor.ledgerDigest,
-            publication: preparation.descriptor,
-          };
-        } finally {
-          await (options.disposeCatalog ?? disposeCatalogRelease)(preparation, options);
-        }
+        catalog = {
+          version: candidates.catalog,
+          publication: { planDigest: plan.planDigest },
+        };
       }
       return {
         schemaVersion: 1,
@@ -498,10 +489,7 @@ export async function readPreparedDescriptor(options = {}) {
     || (!descriptor.axes.cli && descriptor.npm !== null)
     || (descriptor.axes.catalog && (
       descriptor.catalog?.version !== descriptor.candidates.catalog
-      || typeof descriptor.catalog?.ledgerDigest !== 'string'
-      || descriptor.catalog?.publication?.catalogVersion !== descriptor.candidates.catalog
-      || descriptor.catalog?.publication?.snapshotDigest !== descriptor.catalog?.snapshotDigest
-      || descriptor.catalog?.publication?.ledgerDigest !== descriptor.catalog?.ledgerDigest
+      || !/^sha256:[0-9a-f]{64}$/u.test(descriptor.catalog?.publication?.planDigest ?? '')
     ))
     || (!descriptor.axes.catalog && descriptor.catalog !== null)
   ) {
@@ -562,38 +550,6 @@ export async function assertPreparedCliArtifacts(root, descriptor, options = {})
   }
 }
 
-async function assertPreparedArtifacts(root, descriptor, options = {}) {
-  await assertPreparedCliArtifacts(root, descriptor, options);
-  if (descriptor.catalog) {
-    const modules = options.catalogModules ?? await loadCatalogModules(options.cliDistRoot);
-    const catalogRoot = resolvePreparedPath(root, descriptor.catalog.path);
-    const [stats, realPath, realRoot] = await Promise.all([
-      fs.lstat(catalogRoot), fs.realpath(catalogRoot), fs.realpath(root),
-    ]);
-    if (
-      !stats.isDirectory()
-      || stats.isSymbolicLink()
-      || realPath !== path.resolve(realRoot, descriptor.catalog.path)
-    ) {
-      throw new Error('Prepared Catalog path is not a regular local directory; prepare again.');
-    }
-    const validation = await modules.catalogSnapshot.validateCatalogSnapshotComplete(catalogRoot);
-    const ledgerPath = path.join(catalogRoot, 'plugin-release-ledger.json');
-    const ledgerBytes = await fs.readFile(ledgerPath);
-    const ledger = JSON.parse(ledgerBytes);
-    modules.pluginStaging.validatePluginReleaseLedgerAgainstManifest(ledger, validation.manifest);
-    if (validation.snapshotDigest !== descriptor.catalog.snapshotDigest) {
-      throw new Error('Prepared Catalog snapshot digest changed; prepare again.');
-    }
-    if (
-      digest(ledgerBytes) !== descriptor.catalog.ledgerDigest
-      || descriptor.catalog.publication.ledgerDigest !== descriptor.catalog.ledgerDigest
-    ) {
-      throw new Error('Prepared Catalog ledger digest changed; prepare again.');
-    }
-  }
-}
-
 async function assertCandidatesUnavailable(descriptor, options = {}) {
   if (descriptor.axes.cli) {
     const readVersions = options.readPackageVersions ?? readPackageVersions;
@@ -608,20 +564,16 @@ async function assertCandidatesUnavailable(descriptor, options = {}) {
       { ...options, repoRoot: options.repoRoot ?? defaultRepoRoot },
     );
   }
-  if (descriptor.axes.catalog) {
-    await (options.assertCatalogTagAvailable ?? assertCatalogTagAvailable)(
-      descriptor.candidates.catalog, options,
-    );
-  }
 }
 
 async function assertRemoteCandidateGate(descriptor, targets, options = {}) {
+  if (!descriptor.axes.cli) return;
   const live = await (options.resolveCandidates ?? resolvePreparedCandidates)(
     descriptor.channel,
     targets,
-    { ...options, axes: descriptor.axes },
+    { ...options, axes: { cli: true, catalog: false } },
   );
-  if (!sameCandidates(live, descriptor.candidates)) {
+  if (live.cli !== descriptor.candidates.cli) {
     throw new Error('Published channel state changed after prepare; bump the involved target and prepare again.');
   }
 }
@@ -760,7 +712,7 @@ export async function publishPreparedRelease(options = {}) {
   assertPreparedChannelCandidates(descriptor);
   await assertLiveSourceBinding(descriptor, repoRoot, options);
   await assertPreparedBuildBinding(descriptor, repoRoot, options);
-  await assertPreparedArtifacts(root, descriptor, options);
+  await assertPreparedCliArtifacts(root, descriptor, options);
   const targets = descriptor.axes.cli
     ? await (options.readTargets ?? readVersionTargets)(repoRoot)
     : null;
@@ -798,8 +750,8 @@ export async function publishPreparedRelease(options = {}) {
   }
   if (descriptor.axes.catalog) {
     await (options.publishCatalog ?? publishCatalogRelease)({
-      descriptor: descriptor.catalog.publication,
-      stagedRoot: resolvePreparedPath(root, descriptor.catalog.path),
+      channel: descriptor.channel,
+      expectedPlanDigest: descriptor.catalog.publication.planDigest,
     }, { ...publicationOptions, repoRoot });
   }
   return descriptor;

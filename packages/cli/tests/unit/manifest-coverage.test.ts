@@ -17,7 +17,7 @@ import {
   validateMarketplaceSourceMeta,
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
-import { validateCatalogManifestV5 } from '../../src/utils/catalog-manifest-v5.js';
+import { validateCatalogManifestV6 } from '../../src/utils/catalog-manifest-v6.js';
 import type { PluginMeta } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -53,10 +53,10 @@ function sha256(char: string): string {
 
 function createCatalogManifestFixture() {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     catalogVersion: '1.2.3',
     channel: 'latest',
-    requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
     marketplace: {
       owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
       interface: { displayName: 'Fixture Marketplace' },
@@ -300,43 +300,43 @@ describe('manifest coverage', () => {
     });
   });
 
-  it('accepts schema 5 and rejects schema 1 or history fields', () => {
-    expect(validateCatalogManifestV5(createCatalogManifestFixture()).schemaVersion).toBe(5);
+  it('accepts schema 6 and rejects schema 1 or history fields', () => {
+    expect(validateCatalogManifestV6(createCatalogManifestFixture()).schemaVersion).toBe(6);
 
     const schemaOne = createCatalogManifestFixture();
     schemaOne.schemaVersion = 1;
-    expect(() => validateCatalogManifestV5(schemaOne)).toThrow('schemaVersion: expected 5');
+    expect(() => validateCatalogManifestV6(schemaOne)).toThrow('schemaVersion: expected 6');
 
     const schemaOneWithHistory = createCatalogManifestFixture() as Record<string, unknown>;
     schemaOneWithHistory.schemaVersion = 1;
     schemaOneWithHistory.history = {};
-    expect(() => validateCatalogManifestV5(schemaOneWithHistory)).toThrow();
+    expect(() => validateCatalogManifestV6(schemaOneWithHistory)).toThrow();
 
     const withHistory = createCatalogManifestFixture() as Record<string, unknown>;
     withHistory.history = {};
-    expect(() => validateCatalogManifestV5(withHistory)).toThrow('unknown field "history"');
+    expect(() => validateCatalogManifestV6(withHistory)).toThrow('unknown field "history"');
   });
 
   it('rejects invalid catalog manifest channel, prerelease, and digest', () => {
 
     const badDigest = createCatalogManifestFixture();
     badDigest.entries[0]!.manifestDigest = 'sha256:not-hex';
-    expect(() => validateCatalogManifestV5(badDigest)).toThrow('manifestDigest');
+    expect(() => validateCatalogManifestV6(badDigest)).toThrow('manifestDigest');
 
     const betaStableCatalog = createCatalogManifestFixture();
     betaStableCatalog.channel = 'beta';
-    expect(() => validateCatalogManifestV5(betaStableCatalog)).toThrow('beta catalog requires a prerelease catalog version');
+    expect(() => validateCatalogManifestV6(betaStableCatalog)).toThrow('beta catalog requires a prerelease catalog version');
   });
 
   it('accepts unknown entry capabilities and rejects duplicate snapshot names', () => {
     const future = createCatalogManifestFixture();
     future.entries[0]!.requires.aw.capabilities.push('aw.future-feature.v3');
-    expect(validateCatalogManifestV5(future).entries[0]!.requires.aw.capabilities)
+    expect(validateCatalogManifestV6(future).entries[0]!.requires.aw.capabilities)
       .toContain('aw.future-feature.v3');
 
     const duplicateEntry = createCatalogManifestFixture();
     duplicateEntry.entries.push(structuredClone(duplicateEntry.entries[0]!));
-    expect(() => validateCatalogManifestV5(duplicateEntry)).toThrow('duplicate plugin "demo"');
+    expect(() => validateCatalogManifestV6(duplicateEntry)).toThrow('duplicate plugin "demo"');
   });
 
 });

@@ -16,6 +16,9 @@ import {
 import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
+import type { CatalogPublicationDescriptor } from './catalog-publication-journal.js';
+
+export type { CatalogPublicationDescriptor } from './catalog-publication-journal.js';
 
 const execFileAsync = promisify(execFile);
 const INHERITED_GIT_AUTH_ENV = new Set([
@@ -63,9 +66,6 @@ export interface CatalogPublicationPreparation {
   safePushUrl: string;
   remoteIdentityDigest: string;
   parent: string | null;
-  publishedVersion: string | null;
-  attemptPath: string;
-  attemptAvailable: boolean;
   tagAvailable: boolean;
   catalogWorkspace: CatalogWorkspace;
   prepared: {
@@ -74,31 +74,9 @@ export interface CatalogPublicationPreparation {
     channel: 'latest' | 'beta';
     pluginNames: string[];
     snapshotDigest: string;
-    contentDigest: string;
-    planId: string;
   };
   descriptor: CatalogPublicationDescriptor;
   env: NodeJS.ProcessEnv;
-}
-
-export interface CatalogPublicationDescriptor {
-  schemaVersion: 1;
-  workspaceIdentity: string;
-  catalogVersion: string;
-  channel: 'latest' | 'beta';
-  sourceHead: string;
-  remote: {
-    name: string | null;
-    identityDigest: string;
-  };
-  branch: string;
-  parent: string | null;
-  tag: string;
-  snapshotDigest: string;
-  contentDigest: string;
-  planId: string;
-  ledgerDigest: string;
-  pluginNames: string[];
 }
 
 function digest(value: string | Buffer): string {
@@ -166,10 +144,6 @@ function assertSafeBranchValue(value: string): string {
   return value;
 }
 
-export function catalogAttemptPath(catalogWorkspaceRoot: string, catalogVersion: string): string {
-  return path.join(catalogWorkspaceRoot, '.aw', 'publish', 'attempts', `${catalogVersion}.json`);
-}
-
 export async function publicationGit(
   cwd: string,
   args: readonly string[],
@@ -178,7 +152,7 @@ export async function publicationGit(
   label: string,
 ): Promise<string> {
   try {
-    const result = await execFileAsync('git', [...args], {
+    const result = await execFileAsync('git', ['-c', `core.hooksPath=${os.devNull}`, ...args], {
       cwd,
       env,
       encoding: 'utf8',
@@ -196,7 +170,11 @@ export async function publicationGitExit(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   try {
-    await execFileAsync('git', [...args], { cwd, env, encoding: 'utf8' });
+    await execFileAsync('git', ['-c', `core.hooksPath=${os.devNull}`, ...args], {
+      cwd,
+      env,
+      encoding: 'utf8',
+    });
     return true;
   } catch {
     return false;
@@ -302,7 +280,6 @@ export async function prepareCatalogPublicationInspection(options: {
   remoteUrl?: string;
   branch?: string;
   env: NodeJS.ProcessEnv;
-  failOnUnavailable?: boolean;
 }): Promise<CatalogPublicationPreparation> {
   if (options.remote !== undefined && options.remoteUrl !== undefined) {
     throw new CatalogPublicationInspectionError(
@@ -426,36 +403,21 @@ export async function prepareCatalogPublicationInspection(options: {
       'tagInvalid',
       'Invalid Catalog publication tag.',
     );
-    const attemptPath = catalogAttemptPath(catalogWorkspaceRoot, catalogVersion);
-    const attemptAvailable = !(await fs.pathExists(attemptPath));
-    if (!attemptAvailable && options.failOnUnavailable) {
-      throw new CatalogPublicationInspectionError(
-        'attemptUnavailable',
-        `Catalog ${catalogVersion} already has an attempted publication record. Run aw catalog version <higher> before publishing again.`,
-      );
-    }
     const remoteIdentityDigest = digest(JSON.stringify({ fetchUrl, pushUrl }));
     const branchRef = `refs/heads/${branch}`;
     const tagRef = `refs/tags/${tag}`;
     const repositoryRoot = path.join(temporaryRoot, 'repository');
     await fs.ensureDir(repositoryRoot);
     await publicationGit(repositoryRoot, ['init', '--quiet'], env, 'temporaryRepositoryFailed', 'Could not create the isolated publication repository.');
-    await publicationGit(repositoryRoot, ['config', 'core.hooksPath', path.join(temporaryRoot, 'disabled-hooks')], env, 'temporaryRepositoryFailed', 'Could not disable publication hooks.');
+    await publicationGit(repositoryRoot, ['config', 'core.hooksPath', os.devNull], env, 'temporaryRepositoryFailed', 'Could not disable publication hooks.');
     await publicationGit(repositoryRoot, ['config', 'core.symlinks', 'true'], env, 'temporaryRepositoryFailed', 'Could not configure the isolated publication repository.');
     await publicationGit(repositoryRoot, ['remote', 'add', 'publish', pushUrl], env, 'temporaryRepositoryFailed', 'Could not configure the publication remote.');
     const initialRefs = parseRemoteRefs(await publicationGit(repositoryRoot, [
       'ls-remote', 'publish', branchRef, tagRef, `${tagRef}^{}`,
     ], env, 'remoteReadFailed', 'Could not inspect the Catalog publication remote.'));
     const tagAvailable = !initialRefs.has(tagRef) && !initialRefs.has(`${tagRef}^{}`);
-    if (!tagAvailable && options.failOnUnavailable) {
-      throw new CatalogPublicationInspectionError(
-        'tagUnavailable',
-        `Remote Catalog tag ${tag} already exists. Increase the Catalog version.`,
-      );
-    }
     const parent = initialRefs.get(branchRef) ?? null;
     let previousSnapshotRoot: string | undefined;
-    let publishedVersion: string | null = null;
     if (parent) {
       await publicationGit(repositoryRoot, [
         'fetch', '--quiet', '--no-tags', 'publish', `${branchRef}:refs/aw/catalog-parent`,
@@ -466,8 +428,7 @@ export async function prepareCatalogPublicationInspection(options: {
         '--work-tree', previousSnapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
       ], env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
       try {
-        const previous = await validatePublishedCatalogSnapshot(previousSnapshotRoot);
-        publishedVersion = previous.manifest.catalogVersion;
+        await validatePublishedCatalogSnapshot(previousSnapshotRoot);
       } catch (error) {
         throw inspectionError('remoteSnapshotInvalid', error);
       }
@@ -507,16 +468,10 @@ export async function prepareCatalogPublicationInspection(options: {
         'Catalog remote changed during preparation. Increase the Catalog version before publishing again.',
       );
     }
-    const [, ledgerBytes] = await Promise.all([
-      validatePublishedCatalogSnapshot(prepared.outputRoot),
-      fs.readFile(path.join(prepared.outputRoot, 'plugin-release-ledger.json')),
-    ]);
-    const ledgerDigest = digest(ledgerBytes);
+    await validatePublishedCatalogSnapshot(prepared.outputRoot);
     const descriptor: CatalogPublicationDescriptor = {
       schemaVersion: 1,
       workspaceIdentity: catalogWorkspace.workspaceIdentity,
-      catalogVersion: prepared.catalogVersion,
-      channel: prepared.channel,
       sourceHead,
       remote: {
         name: options.remoteUrl === undefined ? remote : null,
@@ -526,10 +481,6 @@ export async function prepareCatalogPublicationInspection(options: {
       parent,
       tag,
       snapshotDigest: prepared.snapshotDigest,
-      contentDigest: prepared.contentDigest,
-      planId: prepared.planId,
-      ledgerDigest,
-      pluginNames: [...prepared.pluginNames],
     };
     return {
       temporaryRoot,
@@ -549,9 +500,6 @@ export async function prepareCatalogPublicationInspection(options: {
       safePushUrl,
       remoteIdentityDigest,
       parent,
-      publishedVersion,
-      attemptPath,
-      attemptAvailable,
       tagAvailable,
       catalogWorkspace,
       prepared,
@@ -568,6 +516,177 @@ export async function prepareCatalogPublicationInspection(options: {
       throw new CatalogPublicationInspectionError(error.code, safeMessage, { cause: error.cause });
     }
     throw new CatalogPublicationInspectionError('catalogPreflightFailed', safeMessage, { cause: error });
+  }
+}
+
+export interface CatalogPublicationLiveContext {
+  catalogWorkspaceRoot: string;
+  repoRoot: string;
+  workspaceIdentity: string;
+  catalogVersion: string;
+  sourceHead: string;
+  remote: string;
+  remoteName: string | null;
+  branch: string;
+  branchRef: string;
+  tag: string;
+  tagRef: string;
+  fetchUrl: string;
+  pushUrl: string;
+  safeFetchUrl: string;
+  safePushUrl: string;
+  remoteIdentityDigest: string;
+  env: NodeJS.ProcessEnv;
+}
+
+export async function inspectCatalogPublicationLiveContext(options: {
+  workspaceRoot: string;
+  remote?: string;
+  remoteUrl?: string;
+  branch?: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<CatalogPublicationLiveContext> {
+  if (options.remote !== undefined && options.remoteUrl !== undefined) {
+    throw new CatalogPublicationInspectionError(
+      'remoteInvalid',
+      'Catalog publication accepts a configured remote name or a direct remote URL, not both.',
+    );
+  }
+  const remote = options.remoteUrl === undefined
+    ? assertSafeRemoteName(options.remote ?? 'origin')
+    : 'direct';
+  const remoteName = options.remoteUrl === undefined ? remote : null;
+  const branch = assertSafeBranchValue(options.branch ?? 'catalog');
+  const env = options.remoteUrl === undefined
+    ? sanitizedGitEnvironment(options.env)
+    : directRemoteGitEnvironment(options.env);
+  let fetchUrl = '';
+  let pushUrl = '';
+  let safeFetchUrl = '';
+  let safePushUrl = '';
+  try {
+    const catalogWorkspaceRoot = await fs.realpath(path.resolve(options.workspaceRoot));
+    const repoRoot = await publicationGit(
+      catalogWorkspaceRoot,
+      ['rev-parse', '--show-toplevel'],
+      env,
+      'gitWorkspaceInvalid',
+      'Catalog Workspace must be inside a real Git worktree.',
+    );
+    await publicationGit(
+      repoRoot,
+      ['check-ref-format', '--branch', branch],
+      env,
+      'branchInvalid',
+      'Invalid Catalog publication branch name.',
+    );
+    const sourceHead = await publicationGit(
+      repoRoot,
+      ['rev-parse', '--verify', 'HEAD'],
+      env,
+      'sourceHeadMissing',
+      'Catalog Workspace Git HEAD must be committed and not unborn.',
+    );
+    const status = await publicationGit(repoRoot, [
+      'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none',
+    ], env, 'sourceStatusFailed', 'Could not inspect the source worktree.');
+    if (status !== '') {
+      throw new CatalogPublicationInspectionError(
+        'sourceDirty',
+        'Catalog publish requires the complete source Git worktree to be clean.',
+      );
+    }
+    const catalogWorkspaceRelative = path.relative(repoRoot, catalogWorkspaceRoot);
+    if (
+      catalogWorkspaceRelative === '..'
+      || catalogWorkspaceRelative.startsWith(`..${path.sep}`)
+      || path.isAbsolute(catalogWorkspaceRelative)
+    ) {
+      throw new CatalogPublicationInspectionError(
+        'workspaceOutsideRepository',
+        'Catalog Workspace must stay inside its Git worktree root.',
+      );
+    }
+    const catalogWorkspace = await readCatalogWorkspace(catalogWorkspaceRoot, {
+      reservedImports: CLI_RESERVED_IMPORTS,
+    });
+    const ownerUrl = catalogWorkspace.metadata.owner.url;
+    if (URL.canParse(ownerUrl) && new URL(ownerUrl).hostname === 'example.invalid') {
+      throw new CatalogPublicationInspectionError(
+        'catalogMetadataIncomplete',
+        'Catalog owner URL still uses the example.invalid placeholder. Set plugins/marketplace-source.json owner.url before publication.',
+      );
+    }
+    if (options.remoteUrl !== undefined) {
+      fetchUrl = assertSafeRemoteUrl(options.remoteUrl);
+      pushUrl = fetchUrl;
+    } else {
+      const configuredRemotes = (await publicationGit(
+        repoRoot,
+        ['remote'],
+        env,
+        'remoteMissing',
+        'Could not inspect configured Git remotes.',
+      )).split('\n').filter(Boolean);
+      if (!configuredRemotes.includes(remote)) {
+        throw new CatalogPublicationInspectionError(
+          'remoteInvalid',
+          `Git remote ${JSON.stringify(remote)} is not configured.`,
+        );
+      }
+      fetchUrl = assertSafeRemoteUrl(await publicationGit(
+        repoRoot,
+        ['remote', 'get-url', remote],
+        env,
+        'remoteMissing',
+        `Git remote ${JSON.stringify(remote)} is not configured.`,
+      ), { allowCredentials: true });
+      pushUrl = assertSafeRemoteUrl(await publicationGit(
+        repoRoot,
+        ['remote', 'get-url', '--push', remote],
+        env,
+        'remoteMissing',
+        `Git remote ${JSON.stringify(remote)} has no push URL.`,
+      ), { allowCredentials: true });
+    }
+    safeFetchUrl = safeRemoteIdentity(fetchUrl);
+    safePushUrl = safeRemoteIdentity(pushUrl);
+    const catalogVersion = catalogWorkspace.metadata.catalog.version;
+    const tag = `catalog-v${catalogVersion}`;
+    await publicationGit(
+      repoRoot,
+      ['check-ref-format', `refs/tags/${tag}`],
+      env,
+      'tagInvalid',
+      'Invalid Catalog publication tag.',
+    );
+    return {
+      catalogWorkspaceRoot,
+      repoRoot,
+      workspaceIdentity: catalogWorkspace.workspaceIdentity,
+      catalogVersion,
+      sourceHead,
+      remote,
+      remoteName,
+      branch,
+      branchRef: `refs/heads/${branch}`,
+      tag,
+      tagRef: `refs/tags/${tag}`,
+      fetchUrl,
+      pushUrl,
+      safeFetchUrl,
+      safePushUrl,
+      remoteIdentityDigest: digest(JSON.stringify({ fetchUrl, pushUrl })),
+      env,
+    };
+  } catch (error) {
+    let safeMessage = error instanceof Error ? error.message : String(error);
+    if (fetchUrl) safeMessage = safeMessage.replaceAll(fetchUrl, safeFetchUrl);
+    if (pushUrl) safeMessage = safeMessage.replaceAll(pushUrl, safePushUrl);
+    if (error instanceof CatalogPublicationInspectionError) {
+      throw new CatalogPublicationInspectionError(error.code, safeMessage, { cause: error.cause });
+    }
+    throw new CatalogPublicationInspectionError('catalogInspectionFailed', safeMessage, { cause: error });
   }
 }
 
@@ -634,7 +753,6 @@ export async function readCatalogPublicationBranchState(options: {
   commit: string;
   version: string;
   manifest: Awaited<ReturnType<typeof validatePublishedCatalogSnapshot>>['manifest'];
-  ledger: Awaited<ReturnType<typeof validatePublishedCatalogSnapshot>>['ledger'];
   snapshotDigest: string;
 } | null> {
   assertSafeBranchValue(options.branch);
@@ -666,7 +784,6 @@ export async function readCatalogPublicationBranchState(options: {
       commit,
       version: validation.manifest.catalogVersion,
       manifest: validation.manifest,
-      ledger: validation.ledger,
       snapshotDigest: validation.snapshotDigest,
     };
   } finally {

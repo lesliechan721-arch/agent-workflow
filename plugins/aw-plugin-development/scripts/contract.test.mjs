@@ -72,94 +72,57 @@ async function materializeWorkspaceFiles(root, workspaceFiles) {
   }
 }
 
-test('non-Publisher Skills preserve an explicit Workspace target across context and commands', async () => {
+test('plugin Skills preserve one explicit Workspace root without Catalog commands', async () => {
   const skills = await Promise.all([
     'author-aw-plugin',
     'review-aw-plugin',
     'review-aw-workflow',
   ].map((name) => readFile(path.join(runtimeRoot, 'skills', name, 'SKILL.md'), 'utf8')));
 
-  // Static contract exception: a target outside cwd must reach the first context command and all later public commands unchanged; behavior execution is covered by the explicit-target Eval fixture because this package test only receives final instruction text.
+  // Static contract exception: an external target must keep one root across later public commands without using the removed Catalog locator; behavior execution is covered by the explicit-root Eval fixtures because this package test only receives final instruction text.
   for (const skill of skills) {
-    assert.match(skill, /aw catalog context \[--workspace-root <target-root>\] --json/u);
-    assert.match(skill, /用户明确的 Workspace root.*canonical.*上游 handoff.*current Workspace/su);
-    assert.match(skill, /receipt 的 `workspace\.root` 必须与所选 target 一致/u);
-    assert.match(skill, /canonical targets? 或 handoff paths? 时?与其一致|所有 canonical targets 或 handoff paths 一致/u);
-    assert.match(skill, /不一致时停止/u);
-    assert.match(skill, /只在 root 缺失或歧义时询问/u);
+    assert.match(skill, /用户明确的 Workspace root.*canonical.*上游 handoff/su);
+    assert.match(skill, /多个.*root.*root 缺失.*定位有歧义时停止并询问/su);
     assert.match(
       skill,
       /--workspace-root <workspace-root>|--plugin <workspace-root>\/plugins/u,
     );
+    assert.doesNotMatch(skill, /aw catalog(?:\s|`)/u);
   }
 });
 
-test('Plugin Author keeps a legal degraded Workspace repairable', async () => {
+test('Plugin Author limits automatic root discovery to current Workspace plugin commands', async () => {
   const author = await readFile(
     path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'SKILL.md'),
     'utf8',
   );
 
-  // Static contract exception: stopping on a non-blocking Context v3 issue would prevent repair of an already located plugin; behavior execution depends on model routing while this test only receives final instruction text.
-  assert.match(author, /合法 marker 使 `workspace\.found` 为 true/u);
-  assert.match(author, /`workspace\.health` 为 `degraded`/u);
-  assert.match(author, /非阻断的 `workspace-content` 或 `development-source` issue 不阻止插件修复/u);
-  assert.match(author, /只有 blocking 的 workspace marker issue 才阻止定位/u);
+  // Static contract exception: silent cwd fallback can target the wrong Workspace; behavior execution depends on model routing while this test only receives final instruction text.
+  assert.match(author, /只有任务明确指向 current Workspace 且没有可选 root 时/u);
+  assert.match(author, /公开 plugin 命令从 canonical target 或 cwd 自动发现/u);
+  assert.match(author, /aw plugin status --all --json/u);
+  assert.match(author, /Workspace 缺失或非法时停止.*公开 plugin 命令的错误证据/su);
+  assert.match(author, /初始化 Catalog 时路由 `author-aw-catalog`/u);
 });
 
-test('Author Eval fixtures report their intended Context v3 Workspace health', async () => {
-  const evalRoot = path.join(sourceRoot, 'skills', 'author-aw-plugin', 'evals');
-  const behaviorCases = JSON.parse(await readFile(
-    path.join(evalRoot, 'behavior-cases.json'),
-    'utf8',
-  )).cases;
-  const lightweightCases = JSON.parse(await readFile(
-    path.join(evalRoot, 'lightweight-delta-cases.json'),
-    'utf8',
-  )).cases;
-  const expectedContexts = new Map([
-    ['new-plugin-with-two-skills', { identity: 'team-status-new-fixture', health: 'healthy' }],
-    ['mcp-and-app-composition', { identity: 'mcp-app-degraded-fixture', health: 'degraded' }],
-    ['slash-command-and-readme', { identity: 'release-helper-slash-fixture', health: 'degraded' }],
-    ['config-driven-instructions-artifact', { identity: 'incident-policy-artifact-fixture', health: 'degraded' }],
-    ['manifest-version-and-build-repair', { identity: 'runtime-card-build-fixture', health: 'degraded' }],
-    ['skill-and-eval-assets-handoff', { identity: 'query-tools-skill-eval-fixture', health: 'healthy' }],
-    ['portable-static-projection-and-dynamic-skill', { identity: 'portable-observer-projection-fixture', health: 'degraded' }],
-    ['existing-skill-small-delta-skips-aw-authoring-context', { identity: 'notes-lightweight-delta-fixture', health: 'healthy' }],
-  ]);
-  const evalCases = [...behaviorCases, ...lightweightCases]
-    .filter((entry) => expectedContexts.has(entry.id));
-  assert.equal(evalCases.length, expectedContexts.size);
+test('Eval fixtures observe explicit roots and omit Catalog commands', async () => {
+  const cases = [
+    ['author-aw-plugin', 'behavior-cases.json', 'mcp-and-app-composition'],
+    ['review-aw-plugin', 'composition-cases.json', 'locally-valid-skills-still-require-plugin-composition-review'],
+    ['review-aw-workflow', 'behavior-cases.json', 'dependency-cycle-is-machine-fact'],
+  ];
 
-  for (const evalCase of evalCases) {
-    const temp = await mkdtemp(path.join(tmpdir(), `aw-author-context-${evalCase.id}-`));
-    temps.push(temp);
-    await materializeWorkspaceFiles(temp, evalCase.input.workspaceFiles);
-    const result = await execFileAsync(process.execPath, [
-      skillValidatorBin,
-      'catalog',
-      'context',
-      '--workspace-root', temp,
-      '--json',
-    ], {
-      cwd: temp,
-      encoding: 'utf8',
-      maxBuffer: 20 * 1024 * 1024,
-      env: {
-        ...process.env,
-        AW_HOME: path.join(temp, '.aw-home'),
-      },
-    });
-    const receipt = JSON.parse(result.stdout);
-    assert.equal(receipt.schemaVersion, 3, evalCase.id);
-    assert.equal(receipt.workspace.found, true, evalCase.id);
-    assert.equal(receipt.workspace.root, path.resolve(temp), evalCase.id);
-    const expected = expectedContexts.get(evalCase.id);
-    assert.equal(receipt.workspace.identity, expected.identity, evalCase.id);
-    assert.equal(receipt.workspace.health, expected.health, evalCase.id);
-    assert.deepEqual(receipt.issues.map((issue) => [issue.scope, issue.blocking]), expected.health === 'degraded'
-      ? [['workspace-content', false]]
-      : [], evalCase.id);
+  // Static contract exception: these Eval assertions are the observable model trace contract; deterministic execution does not run the model.
+  for (const [skillName, fileName, caseId] of cases) {
+    const evalCases = JSON.parse(await readFile(
+      path.join(sourceRoot, 'skills', skillName, 'evals', fileName),
+      'utf8',
+    )).cases;
+    const evalCase = evalCases.find((entry) => entry.id === caseId);
+    assert.ok(evalCase, caseId);
+    assert.match(evalCase.prompt, /Workspace root 已明确为当前 \$PWD/u);
+    assert.ok(evalCase.assertions.some((entry) => entry.includes('不运行任何 aw catalog 命令')));
+    assert.ok(evalCase.assertions.some((entry) => entry.includes('$PWD')));
   }
 });
 
@@ -185,13 +148,6 @@ test('new-plugin Eval fixture allows only its source and real build output', asy
   temps.push(temp);
   await materializeWorkspaceFiles(temp, evalCase.input.workspaceFiles);
   const env = { AW_HOME: path.join(temp, '.aw-home') };
-
-  const status = await runPublicJson([
-    'catalog', 'status', '--workspace-root', temp, '--json',
-  ], { cwd: temp, env });
-  assert.equal(status.schemaVersion, 2);
-  assert.equal(status.command, 'catalog:status');
-  assert.equal(status.ok, true);
 
   await execFileAsync(process.execPath, [skillValidatorBin,
     'plugin', 'init', 'team-status', '--description', 'Team status fixture.',

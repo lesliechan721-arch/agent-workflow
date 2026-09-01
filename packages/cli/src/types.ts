@@ -3,7 +3,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   CatalogChannel,
-  CatalogManifestV5,
+  CatalogManifestV6,
   CatalogSourceId,
   CliVersion,
   DistributionName,
@@ -127,56 +127,35 @@ export interface CatalogSourceResolution {
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
   manifestDigest: string;
   snapshotDigest: string;
-  cacheEntryKey: string;
-  source: 'remote' | 'cache' | 'path' | 'active';
-  cacheFallback: boolean;
-  remoteFailure?: string;
+  transport: 'git' | 'path';
+  cleanup(): Promise<void>;
 }
 
-export type CatalogGenerationRefreshPolicy = 'startup' | 'manual';
-export type CatalogGenerationCandidateKind = 'upgrade' | 'refChange';
-export type CatalogGenerationCheckState =
-  | 'upToDate'
-  | 'activeReady'
-  | 'candidateReady'
-  | 'failed'
-  | 'immutableViolation'
-  | 'channelRollback';
-
-export interface CatalogGenerationPointerV1 {
+export interface CatalogGenerationActiveV1 {
   sourceConfigFingerprint: string;
   sourceIdentity: SourceIdentity;
-  catalogVersion: string;
-  channel: CatalogChannel;
   requestedRef: string;
   resolvedCommit: string;
+  logicalIdentity: string;
   manifestDigest: string;
   snapshotDigest: string;
-  generationKey: string;
-  activatedAt?: string;
+  activatedAt: string;
 }
 
-export interface CatalogGenerationCandidateV1 extends CatalogGenerationPointerV1 {
-  candidateKind: CatalogGenerationCandidateKind;
-  downloadedAt: string;
-}
-
-export interface CatalogGenerationLastCheckV1 {
-  checkedAt: string;
-  state: CatalogGenerationCheckState;
-  remoteCommit?: string;
+export interface CatalogGenerationLastSyncV1 {
+  syncedAt: string;
+  mode: 'check' | 'sync';
+  state: 'succeeded' | 'failed';
+  resolvedCommit?: string;
   errorCode?: string;
 }
 
 export interface CatalogSourceGenerationStateV1 {
-  logicalIdentity?: string;
-  refreshPolicy: CatalogGenerationRefreshPolicy;
-  active?: CatalogGenerationPointerV1;
-  candidate?: CatalogGenerationCandidateV1;
-  lastCheck?: CatalogGenerationLastCheckV1;
+  active?: CatalogGenerationActiveV1;
+  lastSync?: CatalogGenerationLastSyncV1;
 }
 
 export interface CatalogGenerationStateFileV1 {
@@ -191,36 +170,29 @@ export interface CatalogGenerationMetadataV1 {
   channel: CatalogChannel;
   manifestDigest: string;
   snapshotDigest: string;
-  generationKey: string;
   requiredAwCapabilities: string[];
-  publishedAt: string;
 }
 
-export type CatalogGenerationRefreshOutcome =
-  | 'activeReady'
-  | 'candidateReady'
-  | 'upToDate'
-  | 'channelRollback';
-
-export interface CatalogGenerationRefreshResult {
-  catalogGenerationSchemaVersion: 1;
-  sourceId: CatalogSourceId;
+export interface CatalogGenerationSyncEvidence {
   sourceIdentity: SourceIdentity;
   logicalIdentity: string;
-  outcome: CatalogGenerationRefreshOutcome;
-  activeChanged: boolean;
-  activeGenerationKey?: string;
-  active?: CatalogGenerationPointerV1;
-  candidate?: CatalogGenerationCandidateV1;
-  lastCheck: CatalogGenerationLastCheckV1;
+  catalogVersion: string;
+  channel: CatalogChannel;
+  requestedRef: string;
+  resolvedCommit: string;
+  manifestDigest: string;
+  snapshotDigest: string;
 }
 
-export interface CatalogGenerationActivationResult {
+export interface CatalogGenerationSyncResult {
   catalogGenerationSchemaVersion: 1;
   sourceId: CatalogSourceId;
-  logicalIdentity: string;
-  outcome: 'activated';
-  active: CatalogGenerationPointerV1;
+  mode: 'check' | 'sync';
+  outcome: 'checked' | 'activated' | 'unchanged';
+  activeChanged: boolean;
+  resolution: CatalogGenerationSyncEvidence;
+  active?: CatalogGenerationActiveV1;
+  lastSync: CatalogGenerationLastSyncV1;
 }
 
 export interface CatalogGenerationSetSource {
@@ -232,9 +204,9 @@ export interface CatalogGenerationSetSource {
   resolvedCommit: string;
   manifestDigest: string;
   snapshotDigest: string;
-  generationKey: string;
+  storeKey: string;
   snapshotPath: string;
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
 }
 
 export interface CatalogGenerationSet {
@@ -246,7 +218,6 @@ export interface CatalogGenerationSet {
 
 export interface CatalogProviderRuntimeOptions {
   cliVersion: CliVersion;
-  freshnessPolicy: CatalogFreshnessPolicy;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
 }
@@ -555,12 +526,9 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
   );
 }
 
-
-export type CatalogFreshnessPolicy = 'cacheFirst' | 'forceRemote';
-
 export interface CatalogResolution {
   rootDir: string;
-  source: 'local' | 'embedded' | 'remote' | 'cache';
+  source: 'local' | 'embedded';
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
 }

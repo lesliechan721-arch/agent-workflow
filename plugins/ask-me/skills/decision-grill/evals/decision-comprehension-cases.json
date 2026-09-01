@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-grill",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "问题必须让用户快速、正确地作决定；过度技术说明和重复同类长文本会降低决策质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "nontechnical-user-gets-outcome-scenario",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "decision-comprehension",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "用户不熟悉队列和 worker。现在要决定导入任务是在请求内完成还是在后台处理。现有真实样本中，大批量导入需要 45–90 秒，而网关会在 30 秒终止请求；用户可以接受提交后离开页面，并要求稍后能查看成功、失败和重试状态。本轮必须定下来，因为提交后的页面流程和 API 响应合同都依赖这个选择。请只问这一题，帮助用户快速作出决定。",
+      "assertions": [
+        "首屏使用导入需要 45–90 秒、网关 30 秒终止请求，以及页面流程和 API 响应合同依赖本决定这些已给事实，说明当前决定和为何现在决定",
+        "先用非技术场景说明请求内等待可能被中断，与后台提交后离开并稍后查看成功、失败和重试状态的用户体验差异",
+        "不给出大段队列实现教学",
+        "基于这些已给事实推荐后台处理，并说明需要提供状态和重试体验这一主要代价，同时给出可直接回答的选项"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "用非技术场景对照请求内等待与后台提交；引用 45–90 秒导入、30 秒网关、可离开并查看状态，以及页面和 API 合同依赖本决定这些事实，说明为何现在决定并推荐后台处理，同时说明状态与重试体验的代价。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "lifecycle-question-uses-short-flow",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "flow",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "需要决定邀请过期后是否还能恢复。请用最快能看懂的方式呈现，不要做 Prototype。",
+      "assertions": [
+        "使用 3–5 步短流程或状态结果说明",
+        "突出决定点和用户后果",
+        "不展开内部调用链"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "用创建、过期、恢复窗口和最终失效的短流程帮助用户选择。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "transition-question-uses-timeline",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "timeline",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "我们需要决定旧 token 保留 7 天还是 30 天。已确认 Decision frame：优先降低消费者迁移失败，可以接受最多 30 天同时维护新旧 token 的成本。请用时间线提出这一题。",
+      "assertions": [
+        "使用时间线或时间结果对照",
+        "只包含影响选择的事实",
+        "推荐明确追溯到优先降低消费者迁移失败、可以接受 30 天维护成本的既定 frame，并说明维护代价"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "用 7 天和 30 天过渡窗口的迁移失败风险与维护成本时间线呈现，并给出与既定 frame 一致的推荐和代价。",
+        "workspaceUnchanged": true
+      }
+    },
+    {
+      "id": "no-context-dump",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "context-minimization",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "仓库有 20 个模块，但当前只需要决定审计日志是否允许管理员删除。审计日志是管理员权限变更的唯一留存记录；公司审计政策要求这些记录保留 365 天，并能证明未被事后篡改；误操作调查和恢复也依赖这些记录。请只问当前问题。",
+      "assertions": [
+        "不重复无关模块背景",
+        "明确说明审计日志是管理员权限变更的唯一留存记录，并且必须保留 365 天、证明未被事后篡改",
+        "明确说明允许管理员删除会损害误操作调查和恢复义务，并据此给出推荐和主要替代",
+        "问题保持一屏可理解"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "只使用唯一留存记录、365 天保留、不可事后篡改，以及误操作调查和恢复依赖这些日志的已知义务，呈现允许删除的直接后果、推荐和主要替代，不输出完整系统背景。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "充分上下文不等于复制所有已知事实；删除不可恢复的审计证据会破坏留存、不可篡改和恢复义务。",
+        "minimalCounterexample": "若模块关系会改变审计日志责任或删除后果，则应加入相关关系。",
+        "errorCost": "high",
+        "allowedVariance": "长度可以不同，但无关背景不能成为主体。"
+      }
+    },
+    {
+      "id": "unclear-switches-representation",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "representation-switch",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "继续 decision-grill。上一轮的明确 frame 是：为商品详情 API 选择缓存失效策略；目标是在流量突增时保持快速响应，同时避免用户长期看到过期价格；本题只决定缓存如何失效。候选 A 是 cache-aside 加 10 分钟 TTL，价格更新后最久可能显示 10 分钟旧价格；候选 B 是 cache-aside 加 24 小时 TTL，并在价格更新时发送失效事件，事件失败时旧价格可能保留到 TTL 结束。上一轮原说明是一段术语密集的技术段落：“候选 A 采用被动 TTL eviction，cache miss 触发回源和 repopulation，consistency window 上限为 10 分钟；候选 B 使用 event-driven invalidation 缩短正常路径的 consistency window，但 invalidation event 丢失会退化到 24 小时 TTL。”用户回复：“我还是没看懂这两个缓存策略的区别，不要再给我更长的技术解释。”下一轮请只改用一个具体场景、3–5 步短流程或简表，保持同一 frame 和两个候选，不要替用户选择。",
+      "assertions": [
+        "不重复或扩写上一轮术语密集的技术说明",
+        "改用一个具体场景、3–5 步短流程或简表",
+        "仍只比较商品详情 API 的两个既定缓存失效候选，不改变决定或 frame",
+        "换用新表现形式时准确保留候选 A 最多显示 10 分钟旧价格，以及候选 B 在价格更新时发送失效事件、事件失败时可能显示旧价格达 24 小时的语义",
+        "说明用户可观察的旧价格与失效结果，给出可直接回答的选择，但不替用户选择"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "换用一种更容易理解的表现形式，准确说明候选 A 的 10 分钟旧价格上限，以及候选 B 的事件失效和失败时 24 小时回退结果，并让用户自己选择。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "用户已明确表示术语说明没有帮助；继续同一种说明会妨碍其判断过期价格与失效可靠性的高影响取舍。",
+        "minimalCounterexample": "用户只指出缺少一个明确事实时，可以直接补充该事实。",
+        "errorCost": "high",
+        "allowedVariance": "可以使用任一具体场景、3–5 步流程或简表；措辞和例子可以不同，但必须保留既定 frame、两个候选和用户选择权。"
+      }
+    }
+  ]
+}

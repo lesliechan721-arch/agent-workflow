@@ -69,27 +69,28 @@ test('installed Skills pass the public AW self-check receipt', async () => {
   }
 });
 
-test('AW requirements receipt combines derived, detected, and dynamic authoring capabilities', async () => {
+test('AW requirements receipt combines current declared and derived authoring capabilities', async () => {
   const result = await runAw(['plugin', 'requirements', sourceRoot, '--json'], sourceRoot);
 
   assert.equal(result.command, 'plugin:requirements');
   assert.deepEqual(result.declared, [
-    'aw.catalog-context.v1',
     'aw.plugin-authoring.v1',
     'aw.self-check.v1',
     'aw.skill-validation.v1',
   ]);
+  assert.deepEqual(result.derived, [
+    'aw.plugin-build-config.v1',
+    'aw.plugin-manifest.v2',
+    'aw.plugin-skills.v1',
+    'aw.runtime-imports.v1',
+  ]);
+  assert.deepEqual(result.detected, []);
   assert.deepEqual(result.unsupportedByCurrentAw, []);
   for (const capability of [
-    'aw.catalog-context.v1',
     'aw.plugin-authoring.v1',
     'aw.self-check.v1',
     'aw.skill-validation.v1',
   ]) assert.ok(result.effective.includes(capability));
-  assert.ok(result.observations.some((entry) => (
-    entry.code === 'aw-command-dynamic'
-      && entry.path === 'scripts/check-aw-plugin-release.mjs'
-  )));
 });
 
 test('runtime capability lookup is a public JSON receipt', async () => {
@@ -120,19 +121,11 @@ test('the author bundle has no duplicate AW config helper or private repository 
   }
 });
 
-test('plugin review allows only the read-only Catalog context receipt', async () => {
+test('plugin review forbids every Catalog command', async () => {
   const reviewer = await readSkillFiles('review-aw-plugin');
   const boundary = reviewer.skill.split('## 边界\n\n', 2)[1];
 
   assert.ok(boundary, 'review skill must retain its boundary section');
-  assert.match(boundary, /`aw catalog context --json` 是唯一允许的 Catalog 命令/u);
-  for (const command of [
-    'Catalog mutation',
-    '`catalog build`',
-    '`catalog status`',
-    '`catalog validate`',
-    '`catalog publish`',
-  ]) {
-    assert.ok(boundary.includes(command), `boundary must forbid ${command}`);
-  }
+  assert.match(boundary, /不得运行任何 Catalog 命令/u);
+  assert.doesNotMatch(reviewer.skill, /aw catalog(?:\s|`)/u);
 });

@@ -6,9 +6,9 @@
 
 - 插件源码位于 `plugins/`，`plugins/<name>/.agents-plugin/plugin.json` 是源码 manifest 真值。
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
-- 内置插件作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、release ledger 或 source cache。
+- 内置插件作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、publication journal 或 Catalog store。
 - 作者用 Plugin Manifest v2 的 `requires.aw.capabilities` 声明真实要求。未知但语法合法的 capability 是合法数据；当前 AW 未实现时，validator 报告 `awCapabilityUnsupported`。
-- Catalog 生成和消费只使用 snapshot schema 5；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
+- Catalog 生成和消费只使用 snapshot schema 6；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
 
@@ -58,7 +58,8 @@ manifest `dependencies` 声明安装或升级某插件时必须同时满足的�
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
 - 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时，`unreleasedChanges` 是有效状态。
 - `pnpm release` 是本 monorepo 对 Eval、Core、CLI npm packages、CLI tag 和可选 Catalog publication 的 Product Release 编排。它不是第二套 Catalog schema、publisher 或恢复合同。
-- 选择 Catalog 轴时，`pnpm release` 通过公共 `aw catalog version` mutation 选择 metadata candidate，并最终调用与第三方 Workspace 相同的 Catalog publication service、attempt 门禁、ledger、tag 和失败恢复合同。具体 Catalog 行为以[Catalog 作者指南](catalog-authoring.md)和 Core validator 为准。
+- 本仓库官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖 strict 门禁。第三方公开 `aw catalog build` 默认只 advisory。
+- 选择 Catalog 轴时，`pnpm release` 通过公共 `aw catalog version` mutation 选择 metadata beta，并最终调用与第三方 Workspace 相同的 Catalog publish plan/apply、publication journal、tag 和失败恢复合同。具体 Catalog 行为以[Catalog 作者指南](catalog-authoring.md)和 Core validator 为准。
 - 正常产品发布只使用 `pnpm release`。它只提交指定的发布元数据，并从已提交的 source HEAD 生成和消费 immutable prepared state；npm repair 仍只属于 CLI package 轴。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。

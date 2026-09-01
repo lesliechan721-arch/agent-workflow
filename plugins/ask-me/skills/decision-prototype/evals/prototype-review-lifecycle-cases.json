@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-prototype",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "Review receipt 必须让 Agent 在已有结果上继续，同时不能把 timeout 当作用户决定或把 revise 应用到旧 revision。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "consume-submitted-feedback",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "submitted-receipt",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "Prototype Review 已结束。读取 session-results/approval-layout-wait.json 和它指向的 feedback.json，核对 Prototype ID 和 revision，然后自动继续形成本问题的 verdict。不要重新启动或等待会话。",
+      "assertions": [
+        "识别 submitted receipt，并核对 feedback 的 Prototype ID/revision 与 receipt 一致",
+        "根据 accepted feedback 继续形成 verdict",
+        "不要求用户回到聊天确认已经提交",
+        "不重新运行 start 或 wait"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "prototypes/approval-layout/prototype.json": "{\"schemaVersion\":2,\"id\":\"approval-layout\",\"revision\":2,\"question\":\"使用哪个布局？\",\"decisionContext\":{\"goal\":\"选择清楚的审批布局\",\"priorities\":[\"审批历史可见\"],\"constraints\":[]},\"options\":[{\"id\":\"two-column\",\"label\":\"双栏\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户接受一个方向\"}\n",
+          "prototypes/approval-layout/artifact/index.html": "<!doctype html><h1>双栏审批页</h1>\n",
+          "prototypes/approval-layout/feedback.json": "{\"schemaVersion\":2,\"reviewShellVersion\":2,\"prototypeId\":\"approval-layout\",\"prototypeRevision\":2,\"verdict\":\"accepted\",\"selectedOptions\":[\"two-column\"],\"answers\":[],\"annotations\":[],\"cssVariableValues\":{},\"globalNotes\":\"审批历史清楚。\"}\n",
+          "session-results/approval-layout-wait.json": "{\"ok\":true,\"status\":\"submitted\",\"prototypeId\":\"approval-layout\",\"revision\":2,\"verdict\":\"accepted\",\"selectedOptionCount\":1,\"annotationCount\":0,\"feedback\":\"prototypes/approval-layout/feedback.json\"}\n"
+        }
+      },
+      "expected": {
+        "output": "消费已有 submitted feedback，并记录当前决定。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "prototypes/approval-layout/verdict.md"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/approval-layout/verdict.md",
+            "exists": true,
+            "contains": [
+              "双栏",
+              "审批历史"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "提交已发生时，要求用户再发聊天消息会破坏工具闭环。",
+        "minimalCounterexample": "receipt 为 timeout，或 feedback 的 Prototype ID/revision 不匹配时，不能形成 accepted verdict。"
+      }
+    },
+    {
+      "id": "timeout-does-not-decide",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "timeout",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "读取 session-results/approval-layout-wait.json。Review wait 已经结束，请说明当前决定并处理下一步；不要启动真实服务。",
+      "assertions": [
+        "识别 timeout 而不是 submitted",
+        "不推断接受、修改或拒绝",
+        "保留 Prototype 和 artifact",
+        "说明以后可以重新启动 Review 会话"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "session-results/approval-layout-wait.json": "{\"ok\":true,\"status\":\"timeout\",\"prototypeId\":\"approval-layout\",\"revision\":2}\n",
+          "prototypes/approval-layout/artifact/index.html": "<!doctype html><h1>审批页候选</h1>\n"
+        }
+      },
+      "expected": {
+        "output": "报告尚无用户决定，并保留可重新启动的 Prototype。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "把超时当作决定会产生未经用户确认的产品方向。",
+        "minimalCounterexample": "receipt 为 submitted 且 feedback identity 匹配时，可以消费 feedback。"
+      }
+    },
+    {
+      "id": "revise-creates-new-revision",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "revision-loop",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "Review 已提交 revise。读取 session-results/approval-layout-wait.json 和 feedback.json，核对 Prototype ID 和 revision，再按反馈更新当前 artifact 和 prototype.json。不要启动或等待真实服务。",
+      "assertions": [
+        "读取 revision 2 的 revise feedback，并核对 Prototype ID/revision 一致",
+        "根据反馈更新 artifact",
+        "把 prototype revision 精确递增到 3",
+        "不创建 review/ 或把旧 feedback 伪装成 revision 3 feedback"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "prototypes/approval-layout/prototype.json": "{\"schemaVersion\":2,\"id\":\"approval-layout\",\"revision\":2,\"question\":\"使用哪个布局？\",\"decisionContext\":{\"goal\":\"选择清楚的审批布局\",\"priorities\":[\"审批历史可见\"],\"constraints\":[]},\"options\":[{\"id\":\"two-column\",\"label\":\"双栏\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户接受一个方向\"}\n",
+          "prototypes/approval-layout/artifact/index.html": "<!doctype html><aside>审批历史</aside><main>审批表单</main>\n",
+          "prototypes/approval-layout/feedback.json": "{\"schemaVersion\":2,\"reviewShellVersion\":2,\"prototypeId\":\"approval-layout\",\"prototypeRevision\":2,\"verdict\":\"revise\",\"selectedOptions\":[\"two-column\"],\"answers\":[],\"annotations\":[],\"cssVariableValues\":{},\"globalNotes\":\"把审批历史移到右侧。\"}\n",
+          "session-results/approval-layout-wait.json": "{\"ok\":true,\"status\":\"submitted\",\"prototypeId\":\"approval-layout\",\"revision\":2,\"verdict\":\"revise\",\"selectedOptionCount\":1,\"annotationCount\":0,\"feedback\":\"prototypes/approval-layout/feedback.json\"}\n"
+        }
+      },
+      "expected": {
+        "output": "生成反映反馈的 revision 3 Prototype，等待以后启动新会话。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "prototypes/approval-layout/prototype.json",
+          "prototypes/approval-layout/artifact/index.html"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/approval-layout/prototype.json",
+            "exists": true,
+            "contains": [
+              "\"revision\": 3"
+            ]
+          },
+          {
+            "path": "prototypes/approval-layout/artifact/index.html",
+            "exists": true,
+            "contains": [
+              "右侧"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "在旧 revision 上继续会使后续 feedback identity 和 artifact 状态不一致。",
+        "minimalCounterexample": "ID/revision 匹配的 accepted feedback 应形成 verdict，不需要创建下一 revision；identity 不匹配时不能修改 artifact。"
+      }
+    },
+    {
+      "id": "no-browser-capability-falls-back",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "session-fallback",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "当前环境可以启动 Prototype Review 服务，但没有浏览器或页面预览工具。继续完成反馈流程；本 case 不启动真实服务。",
+      "assertions": [
+        "说明会启动服务并取得 localhost URL",
+        "把最短手动打开方式交给用户",
+        "仍使用 wait 等待网页提交",
+        "不谎称页面已经打开，也不要求用户另发完成消息"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "prototypes/approval-layout/prototype.json": "{\"schemaVersion\":2,\"id\":\"approval-layout\",\"revision\":2,\"question\":\"使用哪个布局？\",\"decisionContext\":{\"goal\":\"选择清楚的审批布局\",\"priorities\":[\"审批历史可见\"],\"constraints\":[]},\"options\":[{\"id\":\"two-column\",\"label\":\"双栏\",\"kind\":\"html\",\"artifact\":\"artifact/index.html\"}],\"stopCondition\":\"用户接受一个方向\"}\n",
+          "prototypes/approval-layout/artifact/index.html": "<!doctype html><h1>双栏审批页</h1>\n"
+        }
+      },
+      "expected": {
+        "output": "安全降级为用户手动打开 URL，页面提交后由 wait 自动继续。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "浏览器能力缺失不应破坏 Review 闭环，也不能让 Agent 虚报已打开页面。",
+        "minimalCounterexample": "环境有明确的页面打开能力时，Agent 应直接使用它并继续 wait。"
+      }
+    }
+  ]
+}

@@ -13,8 +13,11 @@ import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import { getArtifactSourceBundleRelativePath } from '../../src/utils/artifact-sources.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
 import { createAwPluginRequirementsReceipt, readPluginManifest } from '../../src/utils/manifest.js';
-import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
-import { calculateCatalogSourcesConfigDigest } from '../../src/utils/catalog-sources.js';
+import {
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 
 const roots: string[] = [];
@@ -89,36 +92,35 @@ describe('portable materializer', () => {
         plugin.manifest.requires?.aw.capabilities ?? [],
       ),
     );
-    const { createCatalogManifestV5, createCatalogManifestV5Entry } = await import('../../src/utils/catalog-manifest-v5.js');
-    await fs.writeJson(path.join(snapshotRoot, 'catalog-manifest.json'), createCatalogManifestV5({
+    const { createCatalogManifestV6, createCatalogManifestV6Entry } = await import('../../src/utils/catalog-manifest-v6.js');
+    await fs.writeJson(path.join(snapshotRoot, 'catalog-manifest.json'), createCatalogManifestV6({
       catalogVersion: '1.0.0', channel: 'latest',
-      requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
       marketplace: {
         owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
         interface: { displayName: 'Fixture Marketplace' },
       },
       release: { state: 'development' },
-      entries: [await createCatalogManifestV5Entry(plugin, plugin.rootDir)],
+      entries: [await createCatalogManifestV6Entry(plugin, plugin.rootDir)],
     }));
-    const validation = await validateCatalogSnapshotTransport(snapshotRoot);
+    const env = { ...process.env, AW_HOME: path.join(root, 'home') };
     const config = {
       schemaVersion: 2 as const,
       sources: [{ id: 'fixture', type: 'path' as const, path: snapshotRoot, primary: true }],
     };
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({
+      config,
+      expectedDigest: configSnapshot.digest,
+      env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'fixture', cliVersion: '1.0.0', env,
+    });
     const materialized = await materializePortableSkillsFromCatalog({
       selector: 'portable', scope: 'user', cwd: root, cliVersion: '1.0.0',
-      freshnessPolicy: 'forceRemote',
-      configSnapshot: { config, digest: calculateCatalogSourcesConfigDigest(config), materialized: true },
-      providers: {
-        git: async () => { throw new Error('unused'); },
-        path: async () => ({
-          sourceId: 'fixture', sourceIdentity: 'fixture-generation', requestedRef: 'path',
-          resolvedCommit: `path:${validation.snapshotDigest}`, rootDir: snapshotRoot,
-          manifest: validation.manifest, manifestDigest: validation.manifestDigest,
-          snapshotDigest: validation.snapshotDigest, cacheEntryKey: 'fixture', source: 'path',
-          cacheFallback: false,
-        }),
-      },
+      configSnapshot: await readCatalogSourcesConfigSnapshot(env),
+      env,
     });
 
     await expect(fs.readFile(path.join(materialized.rootDir, 'skills', 'catalog-skill', 'SKILL.md'), 'utf8'))

@@ -8,7 +8,7 @@
 
 | 层 | 命令 | 责任 |
 |----|------|------|
-| Unit | `pnpm test:unit` | 纯函数、validator、renderer、cache、ownership、status、config 和编排逻辑 |
+| Unit | `pnpm test:unit` | 纯函数、validator、renderer、source state、ownership、status、config 和编排逻辑 |
 | Integration | `pnpm test:integration` | CLI 入口、作者工具、写命令和平台 adapter 组合 |
 | Performance | `pnpm test:perf` | 独立性能预算；不进入普通 unit |
 | Performance gate | `pnpm test:perf:gate` | 预算结果和 fast unit wall-time 门禁 |
@@ -23,17 +23,22 @@
 |------|------|
 | `pnpm test:coverage` | 运行默认 unit/integration 测试并生成覆盖率报告 |
 | `pnpm test:smoke` | 运行完整 smoke suite |
-| `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
+| `pnpm test:smoke:build` | 校验 `pnpm build` 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
-| `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
+| `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
+| `pnpm test:smoke:ask-me-browser` | 使用 Playwright Chromium 驱动真实 `decision-prototype` Review `start/wait` 会话，校验预览、标注、反馈校验、键盘提交和会话清理 |
 | `pnpm test:qualification:codex-project-native:harness` | 使用 fake executable 验证 qualification harness 的解析、隔离、脱敏、精确版本门禁和 schema；不提供 native 支持证据 |
 | `pnpm qualification:codex-project-native` | 使用 PATH 中精确 `codex-cli 0.151.0` 运行离线真实 qualification，并输出单个 schema 1 JSON report |
 
+首次运行 browser smoke 前，使用 `pnpm --filter @lesliechan721/aw exec playwright install chromium` 安装与当前 Playwright 版本匹配的 Chromium。browser smoke 属于完整 `pnpm test:smoke`，但不属于 `plugin:test` 或 `release:verify:cli:core`。
+
 `release:verify:cli` 包含真实 plugin-scripts staging smoke，以及使用临时本地 bare Git remote 的 `test:smoke:fetch` publish/fetch/provider smoke。该 plugin smoke 固定 packageRoot 的 pnpm 版本，通过隔离 store 视图复用 workspace install 记录的 pnpm 内容，并在移除 `npm_execpath`、PATH 中的 Corepack/pnpm 和 pnpm 在线解析后运行；fetch smoke 不访问真实网络。
+
+Catalog build 的 unit/integration 必须覆盖第三方公开 `aw catalog build` 的默认 advisory，以及官方 strict scanner 对不匹配 requirement 的阻断。`pnpm test:smoke:build` 必须证明官方 `pnpm build` 使用 `--strict-requirements` 语义；`release:verify:catalog:core` 通过该 build 覆盖此门禁。
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 
@@ -47,14 +52,14 @@ Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runn
 
 - Unit 使用 synthetic catalog 和 fake native runner。
 - Integration 覆盖 CLI 与真实模块桥接，但不访问用户 home。
-- 写命令测试只构造 current catalog、live owner 和平台组件 fixture。
-- Catalog cache 测试只构造 source、`current` 和 `last-good` fixture，不依赖安装状态 fixture。
-- Source mutation 测试验证 config 先提交；之后 refresh 失败只出现在 receipt，不撤销已提交 config。
+- 写命令测试只构造 Active catalog snapshot、live owner 和平台组件 fixture。
+- Catalog source 测试只构造 source、state、store 和 snapshot fixture，不依赖安装状态 fixture。
+- Source mutation 测试验证 add/update 只提交 config；sync 失败不撤销原 Active；`sync --check` 不写 store 或 Active。
 - Offline cleanup 测试验证 source 缺失时仍能删除可证明属于 AW 的输出。`cleanup --force` 测试还必须证明它只删除专属目标、保留 foreign/shared 内容，并报告 dependent 的 partial 风险。
 - TUI unit 和入口测试使用真实 Ink mount；不要用静态组件快照代替交互行为。
 - Platform tests 断言 MCP、apps、hooks、permissions、roles、instructions、Skill 和 command 的最终平台输出，不建立独立安装健康数据库。
 - JSON 测试同时断言 schema、单一 stdout 对象、stderr 诊断边界和退出码。
-- Eval case 声明 `workspace_valid: true` 时，contract test 必须 materialize `workspace_files`，通过公开 `aw catalog status --json` 验证 marker、metadata、inventory、依赖图和 snapshot evidence，并对预期有效插件运行 `aw plugin validate --json`。Prose 标记不能代替该 preflight。
+- Eval case 声明 `workspace_valid: true` 时，contract test 必须 materialize `workspace_files`，通过公开 `aw catalog status --json` 验证 marker、metadata、inventory、依赖图和 snapshot evidence，并对预期有效插件运行 `aw plugin validate --json`。Prose 标记不能代替该 fixture validation。
 - Conversation Eval 的 `environment.pathPrepend` 只能引用相对 suite/case Eval 根的已存在 fixture。Runner 测试必须证明路径不能逃逸或包含符号链接、只有已声明 fixture 被复制和设为 executable，且 PATH 不引用仓库私有 CLI。确定性 contract test 不运行模型 Eval，也不审核 Oracle。
 
 ## Test Value Gate
@@ -91,12 +96,12 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 |--------|----------|----------|
 | 纯函数、helper、validator、renderer | Unit | 相关定向 unit；交付前 `pnpm test:unit` |
 | CLI 入口、write、status、config、TUI | Unit + Integration | 相关定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` 和 `pnpm build` |
-| Catalog source cache 或 source mutation | Unit + Smoke | `packages/cli/tests/unit/catalog-providers.test.ts`、`packages/cli/tests/unit/catalog-source-command.test.ts`、`pnpm test:smoke:fetch` |
+| Catalog source state 或 source mutation | Unit + Smoke | `packages/cli/tests/unit/catalog-providers.test.ts`、`packages/cli/tests/unit/catalog-source-command.test.ts`、`pnpm test:smoke:fetch` |
 | Offline cleanup 或 `cleanup --force` 恢复 | Unit + Integration | 对应 ownership/rebuild 定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
 | Catalog 作者与 Publisher 合同 | Plugin test + Smoke | `pnpm plugin:test aw-catalog-development`、Catalog build/publish smoke 和 [Catalog 作者指南](catalog-authoring.md)要求的隔离验证；删除分支的 Agent-facing command/return boundary 与 empty inventory 指令只在已安装 Skill 的静态合同测试中覆盖，CLI 删除行为由 integration 覆盖 |
-| Eval schema、fixture environment 或 conversation runner | Unit + Plugin test | 定向 Eval contract/runner unit、`workspace_valid` fixture preflight 和相关 `pnpm plugin:test`；不运行昂贵 model Eval |
+| Eval schema、fixture environment 或 conversation runner | Unit + Plugin test | 定向 Eval contract/runner unit、`workspace_valid` fixture validation 和相关 `pnpm plugin:test`；不运行昂贵 model Eval |
 | 第三方作者公开闭环与 tarball dependency closure | Smoke | `pnpm test:smoke:authoring:external`；它不得通过 monorepo cwd、`NODE_PATH` 或 workspace symlink 取得依赖 |
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
@@ -108,18 +113,20 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `scripts/build/ensure-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
-Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Workspace Catalog attempt、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
+Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 
 一键发布还必须覆盖参数互斥、白名单元数据 commit、所选轴远端隔离、空远端首个 beta 候选、所选轴无候选短路，以及注解 CLI tag 的创建、幂等补发和冲突拒绝。tag integration 使用本地 bare Git remote；不得写真实 `origin`。
+
+Catalog publisher 测试必须覆盖 plan 的授权身份、`apply --expected-plan-digest --yes`、journal 的 `prepared|uncertain|published`、相同 journal plan 的对账或续跑、不同 plan 的 version 提升，以及 branch/tag 都存在、都缺失、只缺一个和冲突。对于 `prepared` 或 `uncertain`，journal 或隔离 repo 缺失或损坏时必须停止并提升版本；`published` journal 缺失时 immutable tag 仍占用版本。首次写入前 fixture 保留隔离 repo；成功 fixture 只保留 JSON journal。测试使用本地 bare remote，不访问真实网络。
 
 | 发布风险 | 最低证据 |
 |---|---|
 | CLI target 同步两个 public package 与 workspace dependency | prepared release unit |
-| beta/release 独立选择 CLI target 和 Catalog metadata 候选 | prepared release unit |
+| beta/release 独立选择 CLI target 和 Catalog metadata beta | prepared release unit |
 | CLI tag 指向 prepared source commit | CLI tag integration |
 | npm 成功后 tag 可补发 | release entry unit + CLI tag integration |
 | CLI 成功后 Catalog 失败保留部分成功 | release publish smoke |
-| Catalog channel 和 immutable tag | Catalog publisher integration + smoke |
+| Catalog plan、journal、channel 和 immutable tag | Catalog publisher integration + smoke |
 
 常规 unit/integration 不应隐式执行 package manager。真实依赖安装、build 后 production closure 和 tarball 内容进入 smoke。
 
@@ -133,7 +140,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
-性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖 `current`/`last-good` 读取、至少两个 Git source 与一个 Path source、large Catalog、Active/Candidate、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 control snapshot、unique generation validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
+性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖至少两个 Git source 与一个 Path source、large Catalog、Active store 读取、`sync --check`、sync、remote deadline 失败和进程清理确认；不依赖公网。TUI/Review 与公开 install/write 预算使用隔离 home 和受控 fake native runner，并通过结构化阶段事件验证单份 state snapshot、Active validation、依赖 collision 传播和 dependency plan。普通 warm 路径 provider 调用必须为零，本地 Catalog 阶段 p95 上限为 500ms；命令总时长只使用宽松的测试 runner 门槛，不代表第三方 native CLI 保证。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验和 live component probe 数量。
 
 ## Test Isolation
 

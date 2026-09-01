@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { statusCommandV6 } from '../../src/commands/status-v6.js';
-import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -34,7 +34,7 @@ async function configurePathSource(
     expectedDigest: current.digest,
     env: isolation.env,
   });
-  await refreshCatalogSourceGeneration({
+  await syncCatalogSourceGeneration({
     sourceId,
     cliVersion: '1.0.0',
     env: isolation.env,
@@ -342,6 +342,7 @@ describe('status v6 current behavior', () => {
     expect(result.payload.catalog.sources).toEqual([
       expect.objectContaining({ id: 'official', error: expect.any(String) }),
     ]);
+    expect(result.payload.catalog.sources[0]).not.toHaveProperty('freshness');
     expect(result.payload.targets).toEqual([expect.objectContaining({
       pluginId: 'official/demo',
       desired: { enabled: true, scopes: ['project'], relation: 'root' },
@@ -508,7 +509,7 @@ describe('status v6 current behavior', () => {
       expectedDigest: current.digest,
       env: isolation.env,
     });
-    await refreshCatalogSourceGeneration({
+    await syncCatalogSourceGeneration({
       sourceId: 'good',
       cliVersion: '1.0.0',
       env: isolation.env,
@@ -540,7 +541,10 @@ describe('status v6 current behavior', () => {
     expect(result.hasErrors).toBe(true);
     expect(result.payload.catalog.sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'bad', error: expect.any(String) }),
+      expect.objectContaining({ id: 'good', freshness: 'active' }),
     ]));
+    expect(result.payload.catalog.sources.find((source) => source.id === 'bad'))
+      .not.toHaveProperty('freshness');
     expect(result.payload.targets).toEqual([
       expect.objectContaining({
         pluginId: 'good/demo',

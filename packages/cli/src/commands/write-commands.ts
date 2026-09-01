@@ -7,8 +7,6 @@ import {
   withAwHomeMutationLock,
 } from '../utils/aw-home-mutation-lock.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
-import { bootstrapCatalogOperationSources } from '../utils/catalog-operation-context.js';
-import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   normalizeCleanupCommandOptions,
   normalizeInstallCommandOptions,
@@ -28,19 +26,6 @@ import {
 } from './rebuild-command.js';
 
 type WriteCommand = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
-
-async function planBootstrapSourceIds(options: {
-  pluginNames: string[];
-  all?: boolean;
-}): Promise<string[] | undefined> {
-  const selectors = options.pluginNames.map(parsePluginId);
-  if (selectors.some((selector) => !selector.sourceId)) return undefined;
-  if (selectors.length > 0) {
-    return [...new Set(selectors.map((selector) => selector.sourceId!))];
-  }
-  if (!options.all) return [];
-  return undefined;
-}
 
 function writeErrorCode(message: string): string {
   for (const code of [
@@ -195,31 +180,6 @@ async function runPublicWriteCommand(options: {
         ...(options.all === undefined ? {} : { all: options.all }),
       })
     : (async () => {
-        let catalogBootstrapError: unknown;
-        if (!runtime.catalogOperationContext && !runtime.awHomeMutationToken) {
-          const sourceIds = await planBootstrapSourceIds({
-            pluginNames: options.pluginNames,
-            ...(options.all === undefined ? {} : { all: options.all }),
-          });
-          const packageInfo = await readCliPackageInfo();
-          if (sourceIds === undefined || sourceIds.length > 0) {
-            try {
-              await bootstrapCatalogOperationSources({
-                cliVersion: packageInfo.version,
-                ...(sourceIds ? { sourceIds } : {}),
-                ...(runtime.env ? { env: runtime.env } : {}),
-                ...(runtime.catalogGenerationRuntime
-                  ? { runtime: runtime.catalogGenerationRuntime }
-                  : {}),
-              });
-            } catch (error) {
-              if (options.command !== 'cleanup' && !options.all) catalogBootstrapError = error;
-            }
-          }
-        }
-        const executionRuntime = catalogBootstrapError === undefined
-          ? runtime
-          : { ...runtime, catalogBootstrapError };
         return withAwHomeMutationLock({
           env: runtime.env,
           token: runtime.awHomeMutationToken,
@@ -227,7 +187,7 @@ async function runPublicWriteCommand(options: {
             command: options.command,
             pluginNames: options.pluginNames,
             commandOptions: options.commandOptions,
-            runtime: { ...executionRuntime, awHomeMutationToken: token },
+            runtime: { ...runtime, awHomeMutationToken: token },
             ...(options.all === undefined ? {} : { all: options.all }),
           }),
         });

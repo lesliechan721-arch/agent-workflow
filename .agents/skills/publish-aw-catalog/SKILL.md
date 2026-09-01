@@ -1,43 +1,52 @@
 ---
 name: publish-aw-catalog
 description: >-
-  仅当用户显式调用本 Skill，并明确要求把 AW Catalog 发布到其明确给出的 Git remote 和 branch 时使用。必须先运行 publication preflight、展示精确身份并取得该身份的再次授权；不自动选择目标，不自动发布，不重试失败的同一 Catalog 版本。
-compatibility: 需要 Node.js 22+、当前 PATH 中提供 catalog status/publish 的 aw CLI，以及具有明确 Git remote 的合法 Catalog Workspace。
+  当用户清晰要求把一个 AW Catalog 发布到明确的 Workspace root、Git remote 和 branch 时使用。先生成 publication plan、展示稳定身份并取得该 planDigest 的一次授权，再 apply；普通维护、build、验证、development activation 或只读 Review 不使用。
+compatibility: 需要 Node.js 22+、可用的 aw CLI，以及合法 Catalog Workspace。
 user-invocable: true
-disable-model-invocation: true
 metadata:
-  short-description: 经精确授权后发布 AW Catalog
+  short-description: 对 planDigest 取得授权后发布 AW Catalog
 ---
 
 # Publish AW Catalog
 
-这是唯一拥有远端 Catalog publication 的 Skill。普通维护或“准备发布”不构成执行授权。
+这是唯一拥有远端 Catalog publication 的 Skill。最初的发布请求允许生成 plan，但不授权 apply。
+
+## Runtime gate
+
+在首次 AW 命令前，从平台提供的本 Skill 实际根取得 `<skill-root>`：使用 Skill locator 或当前加载的 `SKILL.md` 所在根，绝不从 cwd 猜测。随后运行：
+
+```bash
+aw self check --from <skill-root> --json
+```
+
+找不到 `aw` 或 `aw self check` 命令时立即停止，并精确报告 `missing: aw` 或 `missing: aw self check`。若 JSON 的 `ok` 为 `false`，立即停止并逐项报告 `missingCapabilities`；不添加 `--require`、不维护 Skill 内 capability 列表，也不固定 executable。
 
 ## 工作流
 
-1. 要求用户明确给出 `<workspace-root>`、`<remote>` 和 `<branch>`。不得从 Git 默认值、当前 branch、官方约定或已有配置自动选择 remote/branch。运行 `aw --version`、`aw catalog status --help` 和 `aw catalog publish --help`。
-2. 告知用户 preflight 会从已提交 source HEAD 执行每个插件的公开 validator 和 build code。随后运行：
+1. 要求用户明确提供 Workspace root、remote 和 branch。任一项缺失时停止并请求该值；不得从 cwd、Git current branch、remote defaults、旧 receipt 或其它 Skill 推断。不要用 `request_user_input` 收集这些目标值。
+2. 告知用户 plan 会读取远端 refs，并从已提交 source HEAD 执行插件 validator/build 和 Catalog build。随后运行：
 
    ```bash
-   aw catalog status --workspace-root <workspace-root> \
-     --preflight --remote <remote> --branch <branch> --json
+   aw catalog publish plan --workspace-root <user.workspaceRoot> \
+     --remote <user.remote> --branch <user.branch> --json
    ```
 
-3. Preflight 必须成功。直接从 CLI JSON 展示 `workspace.identity`、`git.sourceHead`、`catalog.version`，以及 `publication.remote`、`fetchUrl`、`pushUrl`、`branch`、`parent`、`tag`、`snapshotDigest`、`planId` 和 `descriptorDigest`。任一字段缺失时停止；不得猜测、重算或省略身份字段。
-4. 请求用户明确授权这一个 exact identity。授权必须在本次成功 preflight 之后，并与展示的全部身份相同。旧授权、笼统的“发布最新版”或只授权 remote 不足以继续。
-5. 只有精确授权后才运行：
+3. plan 失败时报告错误并停止；不请求授权，不运行 apply。plan 成功后，从同一 receipt 展示：绝对 `workspaceRoot`、`workspaceIdentity`、`sourceHead`、`catalogVersion`、`channel`、`pluginCount`、`remote`、安全的 `fetchUrl` 和 `pushUrl`、`descriptor.remote.identityDigest`、`branch`、`parent`、`tag`、`expectedCommit`、`snapshotDigest`、`state` 和完整 `planDigest`。任一授权身份字段缺失时停止，不猜测或重算。
+4. 只调用一次 `request_user_input`，问题只授权已展示的完整 `planDigest`，并提供“授权”和“拒绝”选择。最初发布请求、旧授权或只授权 remote 都不能代替该选择。用户拒绝时停止，不运行 apply。
+5. 用户授权后运行：
 
    ```bash
-   aw catalog publish --workspace-root <workspace-root> \
-     --remote <remote> --branch <branch> \
-     --expected-descriptor-digest <descriptorDigest> --yes --json
+   aw catalog publish apply --workspace-root <plan.workspaceRoot> \
+     --remote <plan.remote> --branch <plan.branch> \
+     --expected-plan-digest <plan.planDigest> --yes --json
    ```
 
-6. 核对 receipt 的 `workspaceIdentity`、`sourceHead`、`catalogVersion`、`remote`、`fetchUrl`、`pushUrl`、`branch`、`parent`、`tag`、`snapshotDigest`、`planId` 和 `descriptorDigest` 与授权身份，并使用当前公开的只读 Git/CLI 入口验证 remote branch 和 immutable tag。证据不一致时报告失败，不修改或删除 attempt。
+6. 核对 apply receipt 的 `workspaceRoot`、`workspaceIdentity`、`sourceHead`、`remote`、`branch`、`snapshotDigest` 和 `planDigest` 与已授权 plan 一致。成功时报告 `state`、`commit` 和 `reconciliation`。
 
-## 失败边界
+## 恢复与停止边界
 
-- 不自动 publish，不自动选择 remote/branch，不在授权前运行 publish。
-- 不删除、改写或绕过 version attempt。
-- publish 失败或结果不确定后，不重试同一 Catalog version。报告现有 receipt/错误，并把“由 Catalog Author 提升到新版本后重新 preflight”作为恢复入口。
-- 不实现或复制 CLI publication、ledger、tag 或 recovery 算法。
+- `prepared` 或 `uncertain` 的同一 journal plan 可以使用相同 `planDigest` 对账或重试 apply；不得要求新 plan 或自动提高版本。
+- plan identity 改变、授权 digest 不匹配、pending journal/repository 缺失或损坏、远端 ref 冲突，或 immutable tag 已占用时，停止并要求提高 Catalog version 后生成新 plan。
+- plan/apply 的结果不确定时，只按 CLI 指令用同一 `planDigest` 重试 apply；不删除或改写 publication journal/repository。
+- 不复制 CLI 的 journal、Git ref、tag 或 recovery 算法；只消费 plan/apply 的当前公开 receipt。

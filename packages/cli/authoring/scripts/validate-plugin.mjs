@@ -4010,7 +4010,6 @@ async function validatePluginDir(pluginDir, options) {
       manifest: normalizedManifest,
       implementedCapabilities: cliManifestTools.implementedCapabilities,
     });
-    const blockingObservations = requirements.observations.filter((observation) => observation.blocking);
     if (requirements.unsupportedByCurrentAw.length > 0) {
       capabilityDiagnostic = {
         errorCode: 'awCapabilityUnsupported',
@@ -4019,8 +4018,14 @@ async function validatePluginDir(pluginDir, options) {
       };
       error(`[awCapabilityUnsupported] missingCapabilities=${JSON.stringify(requirements.unsupportedByCurrentAw)}`);
     }
-    for (const observation of blockingObservations) {
-      error(`[awCapabilityScanBlocked] ${observation.path}: ${observation.message}`);
+    const satisfiedCapabilities = new Set([...requirements.declared, ...requirements.derived]);
+    const advisoryObservations = requirements.observations.filter((observation) => (
+      observation.code !== 'aw-command-detected'
+      || observation.capability === undefined
+      || !satisfiedCapabilities.has(observation.capability)
+    ));
+    for (const observation of advisoryObservations) {
+      warn(`[awCapabilityObservation] ${observation.path}: ${observation.message}`);
     }
   } catch (e) {
     error(e.message);

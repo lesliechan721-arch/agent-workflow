@@ -10,11 +10,12 @@ import {
   preparePortableInstall,
   setPortableCommandTestHooksForTests,
 } from '../../src/portable/commands.js';
-import { createCatalogManifestV5, createCatalogManifestV5Entry } from '../../src/utils/catalog-manifest-v5.js';
+import { createCatalogManifestV6, createCatalogManifestV6Entry } from '../../src/utils/catalog-manifest-v6.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import {
   createAwPluginRequirementsReceipt,
   readPluginManifest,
@@ -84,17 +85,17 @@ async function configurePortableCatalog(options: {
   const pluginNames = options.dependencyCapability ? ['future', 'portable'] : ['portable'];
   const entries = await Promise.all(pluginNames.map(async (name) => {
     const root = path.join(sourceRoot, 'plugins', name);
-    return createCatalogManifestV5Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
+    return createCatalogManifestV6Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
   }));
-  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV5({
+  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), createCatalogManifestV6({
     catalogVersion: '1.0.0',
     channel: 'latest',
     marketplace: {
       owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
       interface: { displayName: 'Fixture Marketplace' },
     },
-    schemaVersion: 5,
-    requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
+    schemaVersion: 6,
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
     release: { state: 'development' },
     entries,
   }));
@@ -106,6 +107,9 @@ async function configurePortableCatalog(options: {
     },
     expectedDigest: snapshot.digest,
     env: isolation.env,
+  });
+  await syncCatalogSourceGeneration({
+    sourceId: 'local', cliVersion: '1.0.0', env: isolation.env,
   });
   return { cwd: isolation.layout.fixtureCwd, env: isolation.env, sourceRoot, pluginRoot };
 }
@@ -187,7 +191,7 @@ describe('portable skill public commands', () => {
   });
 
   it.each(['root symlink', 'direct file', 'direct symlink'] as const)(
-    'rejects a malformed external Catalog portable root with a %s before external or output writes',
+    'keeps consuming the previous Active snapshot when an explicit sync rejects a %s',
     async (malformedNode) => {
       const fixture = await configurePortableCatalog();
       const skillsRoot = path.join(fixture.pluginRoot, 'agent-skills', 'skills');
@@ -198,7 +202,7 @@ describe('portable skill public commands', () => {
       );
       await fs.outputFile(path.join(externalRoot, 'leaked-skill', 'README.md'), '# Private\n');
       const plugin = await readPluginManifest(fixture.pluginRoot, { mode: 'bundle' });
-      const entry = await createCatalogManifestV5Entry(plugin, fixture.pluginRoot);
+      const entry = await createCatalogManifestV6Entry(plugin, fixture.pluginRoot);
       if (malformedNode === 'root symlink') {
         await fs.remove(skillsRoot);
         await fs.symlink(externalRoot, skillsRoot, 'dir');
@@ -211,33 +215,36 @@ describe('portable skill public commands', () => {
           'dir',
         );
       }
-      await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV5({
+      await fs.writeJson(path.join(fixture.sourceRoot, 'catalog-manifest.json'), createCatalogManifestV6({
         catalogVersion: '1.0.0',
         channel: 'latest',
         marketplace: {
           owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
           interface: { displayName: 'Fixture Marketplace' },
         },
-        schemaVersion: 5,
-        requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
+        schemaVersion: 6,
+        requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
         release: { state: 'development' },
         entries: [entry],
       }));
+      await expect(syncCatalogSourceGeneration({
+        sourceId: 'local', cliVersion: '1.0.0', env: fixture.env,
+      })).rejects.toBeDefined();
       const fake = await installFakeSkills(fixture.env, fixture.cwd);
       const installIo = createCapturedCliIo();
       expect(await runCli(
         ['skill', 'install', 'portable', '--scope', 'project', '--yes', '--json'],
         { cwd: fixture.cwd, env: fake.env, io: installIo.io },
-      )).toBe(1);
-      expect(await fs.pathExists(fake.log)).toBe(false);
+      )).toBe(0);
+      expect(await fs.pathExists(fake.log)).toBe(true);
 
       const out = path.join(fixture.cwd, `malformed-${malformedNode.replace(' ', '-')}`);
       const materializeIo = createCapturedCliIo();
       expect(await runCli(
         ['skill', 'materialize', 'portable', '--scope', 'project', '--out', out, '--json'],
         { cwd: fixture.cwd, env: fixture.env, io: materializeIo.io },
-      )).toBe(1);
-      expect(await fs.pathExists(out)).toBe(false);
+      )).toBe(0);
+      expect(await fs.pathExists(out)).toBe(true);
       expect(`${installIo.readStdout()}${installIo.readStderr()}${materializeIo.readStdout()}${materializeIo.readStderr()}`)
         .not.toContain('private-catalog-sentinel');
     },
@@ -568,7 +575,7 @@ describe('portable skill public commands', () => {
         code: 'awCapabilityUnsupported',
         plugin: 'local/portable',
         missingCapabilities: ['aw.future-portable.v1'],
-        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v5']),
+        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v6']),
       }],
     });
   });
@@ -587,7 +594,7 @@ describe('portable skill public commands', () => {
         code: 'awCapabilityUnsupported',
         plugin: 'local/future',
         missingCapabilities: ['aw.future-dependency.v1'],
-        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v5']),
+        availableCapabilities: expect.arrayContaining(['aw.catalog-snapshot.v6']),
       }],
     });
   });

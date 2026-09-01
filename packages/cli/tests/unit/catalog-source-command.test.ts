@@ -10,7 +10,12 @@ import {
   setPrimaryCatalogSourceCommand,
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
+import {
+  catalogSourceStatusCommand,
+  syncCatalogSourceCommand,
+} from '../../src/commands/catalog-generation.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -71,11 +76,11 @@ describe('catalog source mutation v4', () => {
       configDigest: before.digest,
       references: { inventorySchemaVersion: 1, references: [], errors: [] },
     });
-    expect(preview.candidateDigest).not.toBe(before.digest);
+    expect(preview.proposedConfigDigest).not.toBe(before.digest);
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
   });
 
-  it('commits add before refresh and reports refresh failure as a successful receipt warning', async () => {
+  it('commits add as config-only and does not create store or Active state', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('refresh-failure-source');
     await createCatalogSnapshotFixture(root);
@@ -84,7 +89,6 @@ describe('catalog source mutation v4', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      runtime: { beforeRefresh: () => fs.remove(root) },
     });
     expect(receipt).toMatchObject({
       receiptSchemaVersion: 5,
@@ -92,16 +96,17 @@ describe('catalog source mutation v4', () => {
       changed: true,
       sourceId: 'team',
       references: [],
-      errors: [{ code: expect.any(String), message: expect.any(String) }],
+      errors: [],
     });
-    expect(receipt.source).toBeUndefined();
     const configured = (await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
       .find((source) => source.id === 'team');
     expect(configured).toMatchObject({ id: 'team', type: 'path' });
     expect(configured && 'path' in configured ? path.basename(configured.path) : '').toBe('refresh-failure-source');
+    await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-state.json'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
   });
 
-  it('commits update with live references and keeps the new config when refresh fails', async () => {
+  it('commits update as config-only without reading or validating the new snapshot', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('update-first');
     const second = fixturePath('update-second');
@@ -111,16 +116,42 @@ describe('catalog source mutation v4', () => {
       source: { id: 'team', type: 'path', path: first, primary: false },
       cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
+    await fs.writeFile(path.join(second, '.aw-generated.json'), 'invalid snapshot metadata');
     const receipt = await updateCatalogSourceCommand({
       sourceId: 'team', update: { type: 'path', path: second },
       cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      runtime: { beforeRefresh: () => fs.remove(second) },
     });
-    expect(receipt).toMatchObject({ ok: true, changed: true, references: [], errors: [expect.any(Object)] });
+    expect(receipt).toMatchObject({ ok: true, changed: true, references: [], errors: [] });
     const configured = (await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
       .find((source) => source.id === 'team');
     expect(configured).toMatchObject({ id: 'team', type: 'path' });
     expect(configured && 'path' in configured ? path.basename(configured.path) : '').toBe('update-second');
+  });
+
+  it('keeps the old Active selection when update changes source identity', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('active-update-first');
+    const second = fixturePath('active-update-second');
+    await createCatalogSnapshotFixture(first);
+    await createCatalogSnapshotFixture(second, 'demo', [], 'updated bundle\n');
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: first, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const synced = await syncCatalogSourceCommand({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    await updateCatalogSourceCommand({
+      sourceId: 'team', update: { type: 'path', path: second },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    await expect(catalogSourceStatusCommand({ sourceId: 'team', env: isolation.env }))
+      .resolves.toMatchObject({
+        sources: [{
+          active: { snapshotDigest: synced.active?.snapshotDigest },
+          activeReady: false,
+          configMatchesActive: false,
+        }],
+      });
   });
 
   it('set-primary and remove commit directly even when live reference inventory is unavailable', async () => {
@@ -137,6 +168,26 @@ describe('catalog source mutation v4', () => {
     await expect(removeCatalogSourceCommand({
       sourceId: 'official', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ ok: true, changed: true, primarySourceId: 'team', references: [] });
+  });
+
+  it('remove deletes only the configured source and its state while retaining the store', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('remove-source-state');
+    await createCatalogSnapshotFixture(root);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await syncCatalogSourceCommand({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const storeRoot = path.join(isolation.env.AW_HOME!, 'catalog-store');
+    await removeCatalogSourceCommand({
+      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+    expect((await readCatalogGenerationState(isolation.env)).sources.team).toBeUndefined();
+    await expect(fs.pathExists(storeRoot)).resolves.toBe(true);
   });
 
   it('rejects an expected config digest conflict before writing', async () => {
