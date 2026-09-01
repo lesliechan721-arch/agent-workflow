@@ -1,15 +1,12 @@
 export type CatalogGenerationErrorCode =
+  | 'catalogSourcesConfigInvalid'
   | 'catalogGenerationStateInvalid'
   | 'catalogGenerationMetadataInvalid'
   | 'catalogGenerationUnavailable'
-  | 'catalogGenerationCandidateUnavailable'
-  | 'catalogGenerationCandidateChanged'
   | 'catalogGenerationSourceMissing'
   | 'catalogGenerationIdentityMismatch'
   | 'catalogGenerationRefreshFailed'
-  | 'catalogGenerationRefreshPolicyInvalid'
-  | 'catalogGenerationPublishFailed'
-  | 'catalogImmutableVersionViolation';
+  | 'catalogGenerationPublishFailed';
 
 export class CatalogGenerationError extends Error {
   readonly code: CatalogGenerationErrorCode;
@@ -32,4 +29,18 @@ export function catalogGenerationErrorCode(error: unknown): string {
   return error instanceof CatalogGenerationError
     ? error.code
     : 'catalogGenerationFailed';
+}
+
+const OFFLINE_CLEANUP_ERROR_CODES: ReadonlySet<CatalogGenerationErrorCode> = new Set([
+  'catalogSourcesConfigInvalid',
+  'catalogGenerationStateInvalid',
+  'catalogGenerationMetadataInvalid',
+  'catalogGenerationUnavailable',
+  'catalogGenerationSourceMissing',
+  'catalogGenerationIdentityMismatch',
+]);
+
+export function isOfflineCleanupCatalogGenerationError(error: unknown): boolean {
+  return error instanceof CatalogGenerationError
+    && OFFLINE_CLEANUP_ERROR_CODES.has(error.code);
 }

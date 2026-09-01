@@ -11,10 +11,7 @@ import {
 import { loadConsoleItemsResult, statusCommandV6 } from '../../src/commands/status-v6.js';
 import { runCli } from '../../src/index.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import {
-  activateCatalogSourceCandidate,
-  refreshCatalogSourceGeneration,
-} from '../../src/utils/catalog-generation-service.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
@@ -32,21 +29,13 @@ async function replaceCatalogSourcesConfig(
   options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
 ) {
   const replaced = await replaceCatalogSourcesConfigWithoutActive(options);
-  await Promise.all(options.config.sources.filter((source) => source.type === 'path').map(
-    async (source) => refreshCatalogSourceGeneration({
+  for (const source of options.config.sources.filter((entry) => entry.type === 'path')) {
+    await syncCatalogSourceGeneration({
       sourceId: source.id,
       cliVersion: '1.0.0',
       env: options.env,
-    }).then(async (refreshed) => {
-      if (refreshed.candidate) {
-        await activateCatalogSourceCandidate({
-          sourceId: source.id,
-          expectedCandidateGenerationKey: refreshed.candidate.generationKey,
-          env: options.env,
-        });
-      }
-    }).catch(() => undefined),
-  ));
+    }).catch(() => undefined);
+  }
   return replaced;
 }
 
@@ -68,41 +57,19 @@ async function configureTwoPaths(validRoot: string, invalidRoot: string): Promis
 }
 
 describe('multi-source read commands', () => {
-  it('keeps init --force usable when old cache cleanup reports a failure', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const root = fixturePath('force-cleanup-warning');
-    await createCatalogSnapshotFixture(root);
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    await expect(initCommand({
-      force: true,
-      cliVersion: '1.0.0',
-      env: isolation.env,
-      runtime: { cleanupLegacyCache: async () => ['旧 Catalog cache 布局清理失败：selectors'] },
-    })).resolves.toMatchObject({
-      ok: true,
-      warnings: ['旧 Catalog cache 布局清理失败：selectors'],
-      sources: [expect.objectContaining({ id: 'local', ok: true })],
-    });
-  });
-
-  it('keeps a successful init cache when another source fails', async () => {
+  it('reports each offline Active source when another source is unavailable', async () => {
     const good = fixturePath('good');
     const bad = fixturePath('bad');
     await Promise.all([createCatalogSnapshotFixture(good), fs.ensureDir(bad)]);
     const env = await configureTwoPaths(good, bad);
 
-    const result = await initCommand({ cliVersion: '1.0.0', env });
+    const result = await initCommand({ env });
 
     expect(result).toMatchObject({
       ok: false,
       primarySourceId: 'good',
       sources: expect.arrayContaining([
-        expect.objectContaining({ id: 'good', ok: true, freshness: 'active' }),
+        expect.objectContaining({ id: 'good', ok: true, activeReady: true }),
         expect.objectContaining({
           id: 'bad',
           ok: false,
@@ -113,6 +80,36 @@ describe('multi-source read commands', () => {
     });
     expect(result.configDigest).toMatch(/^sha256:/);
     expect(result.compositeDigest).toMatch(/^sha256:/);
+  });
+
+  it('reports default official as unavailable without writing config, state, or store', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli(['init', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: false,
+    });
+    const result = JSON.parse(captured.readStdout());
+
+    expect(exitCode).toBe(1);
+    expect(result).toMatchObject({
+      receiptSchemaVersion: 6,
+      receiptKind: 'catalogReadiness',
+      ok: false,
+      primarySourceId: 'official',
+      sources: [{
+        id: 'official', ok: false, activeReady: false,
+        error: expect.stringContaining('aw catalog source sync official'),
+        recovery: 'Run aw catalog source sync official.',
+      }],
+      recovery: ['Run aw catalog source sync official.'],
+    });
+    expect(captured.readStderr()).toContain('aw catalog source sync official');
+    for (const relativePath of ['catalog-sources.json', 'catalog-state.json', 'catalog-store']) {
+      await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, relativePath))).resolves.toBe(false);
+    }
   });
 
   it('keeps a source loadable when one catalog entry requires a future capability', async () => {
@@ -496,7 +493,8 @@ describe('multi-source read commands', () => {
 
     expect(exitCode).toBe(1);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
+      receiptKind: 'catalogReadiness',
       command: 'init',
       ok: false,
       sources: expect.arrayContaining([
@@ -520,7 +518,7 @@ describe('multi-source read commands', () => {
       expectedDigest: initial.digest,
       env: isolation.env,
     });
-    await initCommand({ cliVersion: '1.0.0', env: isolation.env });
+    await initCommand({ env: isolation.env });
     const captured = createCapturedCliIo();
 
     expect(await runCli(['config', 'list', 'good/demo', '--json'], {
@@ -905,7 +903,7 @@ describe('multi-source read commands', () => {
       expectedDigest: current.digest,
       env: isolation.env,
     });
-    await refreshCatalogSourceGeneration({
+    await syncCatalogSourceGeneration({
       sourceId: 'local', cliVersion: '1.0.0', env: isolation.env,
     });
     const supported = await statusCommandV6({
@@ -1326,7 +1324,6 @@ describe('multi-source read commands', () => {
       for (const secret of [
         isolation.env.AW_HOME!,
         invalidRepository,
-        'catalog-cache',
         '.materialize-',
       ]) expect(`${stdout}${captured.readStderr()}`).not.toContain(secret);
     }

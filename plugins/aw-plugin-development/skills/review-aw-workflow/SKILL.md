@@ -25,7 +25,7 @@ Workflow 是跨插件完成一个用户结果的行为路径，不是 Catalog Wo
 ## 工作流
 
 1. 从平台 Skill locator 或当前加载的 `SKILL.md` 确定本 Skill 的真实 `<skill-root>`，不从 cwd 推断。首次 AW 命令必须是 `aw self check --from <skill-root> --json`。命令不可用时停止并报告 `aw` 缺失；receipt 的 `ok` 为 false 时停止并精确报告其 `missingCapabilities`。
-2. 先确定本次 context target：依次使用用户明确的 Workspace root、从任一 canonical `<root>/plugins/<name>` target 推导的 root、或上游 handoff 的 resolved root；只有任务明确指向 current Workspace 时才不传 root。首次运行 `aw catalog context [--workspace-root <target-root>] --json`，只读取单一 JSON receipt。receipt 的 `workspace.root` 必须与所选 target 一致，并与所有 canonical targets 或 handoff paths 一致；不一致时停止，只在 root 缺失或歧义时询问。`workspace.found` 为 true 时使用其 root；Workspace 缺失时停止并报告 receipt，再把用户指定的插件名解析为 `<workspace-root>/plugins/<plugin-name>`。
+2. 依次从用户明确的 Workspace root、任一 canonical `<root>/plugins/<name>` target、或上游 handoff 的 resolved root 确定 `<workspace-root>`。所有参与的 canonical plugin targets 和 handoff paths 必须归于同一可推导 root；多个 root 不一致、root 缺失或定位有歧义时停止并询问。root 确定后，把用户指定的每个插件名解析为 `<workspace-root>/plugins/<plugin-name>`，再进入既有 inventory 流程；不得为定位运行 Catalog 命令。
 3. 单个 canonical Plugin Source 的请求路由 `review-aw-plugin`。已准入的跨插件 scope 才运行确定性 inventory：
 
    ```bash
@@ -52,4 +52,4 @@ Workflow 是跨插件完成一个用户结果的行为路径，不是 Catalog Wo
 
 ## 边界
 
-- 不运行会写入、构建或测试的 AW 命令；不得因 Review 调用 Catalog mutation、build 或 test。
+- 不运行会写入、构建或测试的 AW 命令；不得因 Review 调用任何 Catalog 命令。

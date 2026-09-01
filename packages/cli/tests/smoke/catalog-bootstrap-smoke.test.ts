@@ -9,7 +9,6 @@ import { afterEach, expect, it } from 'vitest';
 
 import {
   CATALOG_CHANNEL_REFS,
-  disposeCatalogRelease,
   prepareCatalogRelease,
   publishCatalogRelease,
 } from '../../../../scripts/release/catalog-publication.mjs';
@@ -72,23 +71,19 @@ it('uses the built common publisher to bootstrap independent official beta and l
       '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
       'commit', '--quiet', '-m', 'catalog version',
     ], { cwd: workspaceRoot });
-    const preparation = await prepareCatalogRelease(mode, {
+    const plan = await prepareCatalogRelease(mode, {
       repoRoot: workspaceRoot,
       remoteUrl,
       env: getCurrentSourceTestIsolation().env,
     });
-    try {
-      results.push(await publishCatalogRelease({
-        descriptor: preparation.descriptor,
-        stagedRoot: preparation.prepared.outputRoot,
-      }, {
-        repoRoot: workspaceRoot,
-        remoteUrl,
-        env: getCurrentSourceTestIsolation().env,
-      }));
-    } finally {
-      await disposeCatalogRelease(preparation);
-    }
+    results.push(await publishCatalogRelease({
+      channel: mode === 'latest' ? 'stable' : mode,
+      expectedPlanDigest: plan.planDigest,
+    }, {
+      repoRoot: workspaceRoot,
+      remoteUrl,
+      env: getCurrentSourceTestIsolation().env,
+    }));
   }
 
   for (const [index, ref] of [CATALOG_CHANNEL_REFS.beta, CATALOG_CHANNEL_REFS.latest].entries()) {

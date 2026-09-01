@@ -16,7 +16,7 @@ export type DiagnosticContextKey =
   | 'pluginId'
   | 'dependencyPluginId'
   | 'field'
-  | 'freshness'
+  | 'storeEntry'
   | 'compatibility';
 
 export interface DiagnosticTechnicalViewModel {
@@ -25,7 +25,6 @@ export interface DiagnosticTechnicalViewModel {
   sourceId?: string;
   requestedRef?: string;
   resolvedCommit?: string;
-  lastGood?: 'available' | 'unavailable';
   context?: Array<{ key: DiagnosticContextKey; value: string }>;
   sanitizedCause?: string;
   checks?: string[];

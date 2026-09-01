@@ -1,5 +1,7 @@
 # author-aw-catalog
 
-初始化当前项目、维护或安全删除一个 AW Catalog Workspace 中的 Plugin Source，并维护 metadata、plugin inventory、依赖 composition、精确版本和聚合验证。
+初始化或维护 AW Catalog Workspace 的 metadata、plugin inventory、依赖 composition、精确版本和聚合结果；安全删除也由本 Skill 编排。
 
-本 Skill 先用 `aw catalog context --json` 定位 Workspace；合法 marker 下的 degraded Workspace 仍保留 root 和 identity 并进入修复，非阻断 development-source issue 不阻止无关维护。用户明确要求初始化当前项目时，它使用 CLI 建议根初始化。插件内部源码和实际删除由 `author-aw-plugin` 修改或执行；返回后只验证受影响插件与反向依赖闭包，再对完整 inventory 做 Catalog build/validate。用户要求当前 Catalog 作为 CLI source 时，只使用 `aw catalog dev` 管理，并以 status receipt 的 `ready` 判断是否可消费。它不会自动发布远端内容。
+它优先使用用户明确的 root，并可从 canonical plugin target 推导 root；其它请求让公开 Catalog 命令从 cwd 自动发现。插件内部源码和实际删除交给 `author-aw-plugin`。返回后只验证受影响插件与反向依赖闭包，再完成 Catalog 聚合验证。
+
+普通维护运行 Catalog build/validate。只有用户明确要求本地使用时才运行 `catalog dev activate`；该命令自行完成 build、complete validate、managed source 注册、sync 和 readiness，不再追加独立 status 链。本 Skill 绝不发布 Catalog。

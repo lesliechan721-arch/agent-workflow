@@ -1,6 +1,6 @@
 # aw-catalog-development
 
-维护完整 AW Catalog Workspace，并把日常维护、只读 composition Review 和远端发布分成三个独立入口。
+维护 AW Catalog Workspace，并把日常写入、严格只读 Review 和远端发布分成三个独立入口。
 
 ## 安装
 
@@ -8,32 +8,29 @@
 aw install aw-catalog-development -p both
 ```
 
-安装会解析其对 `aw-plugin-development` 的依赖。
-
-当前 CLI 合同是 Plugin Manifest v2、Catalog snapshot schema 5、Catalog Sources Config schema 2、Catalog context schema v3 和 status schema v2。三个 Skill 都先消费 materialized runtime requirements receipt 并运行 `aw self check`；它们通过 context 使用 CLI 解析的 root 和 publication target，并通过 status 使用 snapshot evidence。
+安装会解析其对 `aw-plugin-development` 的依赖。当前生产合同使用 Plugin Manifest v2、Catalog snapshot schema 6 和 Catalog Sources Config schema 2。消费端从内容寻址的 Catalog store 读取 `Active` snapshot。
 
 ## 包含的 Skill
 
-| Skill | 用途 |
+| Skill | 什么时候使用 |
 | --- | --- |
-| `author-aw-catalog` | 用 CLI context 初始化或维护当前 Catalog、聚合验证，并管理 development source。 |
-| `review-aw-catalog` | 只读评审 Catalog composition、版本一致性和现有 snapshot/发布证据。 |
-| `publish-aw-catalog` | 对清晰发布意图先做 preflight，再经本次精确授权发布。 |
+| `author-aw-catalog` | 初始化或维护 Workspace、metadata、inventory、依赖、版本和聚合结果；显式请求时激活本地 development source。 |
+| `review-aw-catalog` | 只读检查 Catalog composition 和已有 snapshot 的 `absent/current/stale/invalid` evidence。 |
+| `publish-aw-catalog` | 用户明确给出 root、remote 和 branch 后，生成 plan，并在授权 `planDigest` 后 apply。 |
 
 ## 典型用法
 
 ```text
-初始化当前项目为 AW Catalog Workspace。
-在当前 Catalog 中加入 plugins/status-tools，并完成 Catalog 验证。插件内部修改交给 author-aw-plugin。
-删除 plugins/old-plugin。先检查 inventory、反向依赖和版本策略，再验证受影响的闭包并完成 Catalog 验证。
-把当前 Catalog 作为 aw CLI source；也可以查看或停用它。
-只读评审当前 Catalog 的 inventory、依赖图、版本一致性和现有 snapshot 证据。
-发布当前 Catalog。
+初始化当前 Git 项目为 AW Catalog Workspace，并完成空 inventory 验证。
+在当前 Catalog 中新增 status-tools；插件内部修改交给 author-aw-plugin，返回后验证受影响闭包和 Catalog。
+把当前 Workspace 作为本地 CLI development source。
+只读评审 targets/catalog-b/plugins/worker 所属 Catalog 的 inventory、依赖图和已有 snapshot。
+发布 Workspace ./catalog 到 remote staging、branch catalogs/team。
 ```
 
 ## 边界
 
-- 日常维护不会发布。普通用户的删除请求只使用 `author-aw-catalog`；它编排后把实际删除交给 `author-aw-plugin` 的公开 CLI 分支。删除后重新读取 inventory/依赖，只验证受影响插件与反向依赖闭包；不会创建 tombstone、retirement metadata 或 release ledger。
-- Catalog Review 不修改文件、不运行 plugin test/build、Catalog build 或 preflight，也不评审单插件内部质量或跨插件业务 workflow。
-- Publish 从 CLI context 解析 root、remote 和 branch。Preflight 会执行已提交插件的 validator 和 build code；每个精确发布 identity 都需要本次单独授权，且 Catalog 不支持同版本重试或 repair。
-- Development source 的 activate 会按需 complete validate，并通过 managed source service 提交配置和刷新。Refresh 失败可以返回 partial receipt；重跑 activate/refresh 恢复，不创建第二套 source 状态。
+- Catalog Author 不发布。普通维护运行 Catalog build/validate；显式本地使用由一次 `catalog dev activate` 完成 build、complete validate、managed source 注册、sync 和 readiness。
+- Catalog Reviewer 只使用静态 status，并按需验证已存在 snapshot。它不运行插件代码、build、source mutation、publication plan/apply 或网络操作。
+- Publisher 的 plan 会检查远端并执行已提交插件的 validator/build。plan 本身不授权 apply；每个完整 `planDigest` 都需要一次明确授权。
+- `prepared` 或 `uncertain` 的同一 plan 可对账或重试 apply。不同 plan、损坏的 pending publication state、ref 冲突或 immutable tag 占用要求提高 Catalog version。

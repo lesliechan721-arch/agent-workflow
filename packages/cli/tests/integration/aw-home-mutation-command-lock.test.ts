@@ -10,7 +10,6 @@ import {
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
 import { installWriteCommand } from '../../src/commands/write-commands.js';
-import { runCli } from '../../src/index.js';
 import type { PluginMeta } from '../../src/types.js';
 import { withAwHomeMutationLock } from '../../src/utils/aw-home-mutation-lock.js';
 import {
@@ -18,25 +17,14 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import {
-  readPluginConfigStore,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
-import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import {
   getCurrentSourceTestIsolation,
   getSourceTestRepositoryCwd,
 } from '../setup/test-isolation.js';
-import { refreshCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-
-function deferred(): {
-  promise: Promise<void>;
-  resolve: () => void;
-} {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => { resolve = done; });
-  return { promise, resolve };
-}
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 
 interface MutationChildRun {
   completion: Promise<{ code: number | null; output: string }>;
@@ -174,40 +162,9 @@ describe('public AW_HOME mutation command lock', () => {
       .config.sources.map((source) => source.id).sort()).toEqual(['first', 'official', 'second']);
   });
 
-  it('releases the mutation lock before a committed source begins refresh', async () => {
-    const { isolation, candidateRoot } = await configureCatalog();
-    const sourceEntered = deferred();
-    const releaseSource = deferred();
-    const sourceMutation = addCatalogSourceCommand({
-      source: { id: 'secondary', type: 'path', primary: false, path: candidateRoot },
-      cliVersion: '1.0.0',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      runtime: {
-        beforeRefresh: async () => {
-          sourceEntered.resolve();
-          await releaseSource.promise;
-        },
-      },
-    });
-    await sourceEntered.promise;
-
-    let lockAcquired = false;
-    await withAwHomeMutationLock({
-      env: isolation.env,
-      action: async () => {
-        lockAcquired = true;
-      },
-    });
-    expect(lockAcquired).toBe(true);
-
-    releaseSource.resolve();
-    await expect(sourceMutation).resolves.toMatchObject({ ok: true, changed: true });
-  });
-
   it('does not acquire the mutation lock for a dependency-plan preview', async () => {
     const { isolation } = await configureCatalog();
-    await refreshCatalogSourceGeneration({
+    await syncCatalogSourceGeneration({
       sourceId: 'team',
       cliVersion: '1.0.0',
       env: isolation.env,
@@ -227,65 +184,6 @@ describe('public AW_HOME mutation command lock', () => {
 
     expect(result).toMatchObject({ overallState: 'succeeded' });
     expect(result.dependencyPlan?.requestedPluginIds).toEqual(['team/demo']);
-  });
-
-  it('re-resolves config identity while a committed source refresh is still pending', async () => {
-    const { isolation, candidateRoot } = await configureCatalog();
-    const oldIdentity = (await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity;
-    const sourceEntered = deferred();
-    const releaseSource = deferred();
-    const sourceMutation = updateCatalogSourceCommand({
-      sourceId: 'team',
-      update: { type: 'path', path: candidateRoot },
-      cliVersion: '1.0.0',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      runtime: {
-        beforeRefresh: async () => {
-          sourceEntered.resolve();
-          await releaseSource.promise;
-        },
-      },
-    });
-    await sourceEntered.promise;
-
-    const captured = createCapturedCliIo();
-    const configSet = runCli([
-      'config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'user', '--json',
-    ], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: captured.io,
-      interactive: false,
-    });
-    await expect(configSet).resolves.toBe(0);
-
-    releaseSource.resolve();
-    await expect(sourceMutation).resolves.toMatchObject({ ok: true, changed: true });
-    const payload = JSON.parse(captured.readStdout());
-    const newIdentity = (await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity;
-    expect(newIdentity).not.toBe(oldIdentity);
-    expect(payload).toMatchObject({
-      command: 'config:set',
-      ok: true,
-      sourceId: 'team',
-      sourceIdentity: newIdentity,
-    });
-    await expect(readPluginConfigStore({
-      sourceId: 'team',
-      sourceIdentity: newIdentity,
-      pluginName: 'demo',
-      scope: 'user',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    })).resolves.toMatchObject({ exists: true, values: { mode: 'fast' } });
-    await expect(fs.readJson(path.join(
-      isolation.env.AW_HOME!,
-      'plugin-config',
-      'team',
-      'demo',
-      'config.json',
-    ))).resolves.toMatchObject({ sourceIdentity: newIdentity, values: { mode: 'fast' } });
   });
 
   it('commits a source identity update without migrating an existing config store', async () => {

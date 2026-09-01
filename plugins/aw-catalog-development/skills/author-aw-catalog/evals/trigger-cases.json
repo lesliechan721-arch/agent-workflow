@@ -4,17 +4,14 @@
     "kind": "trigger",
     "unitUnderTest": "author-aw-catalog",
     "participants": [
-      "review-aw-catalog",
       "publish-aw-catalog",
-      "author-aw-plugin",
-      "review-aw-plugin",
-      "review-aw-workflow"
+      "author-aw-plugin"
     ],
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "Catalog composition 与单插件源码有不同 owner。"
+      "rationale": "Catalog composition、单插件源码和远端发布有不同 owner。"
     },
     "runtime": {
       "observeSpawnAgent": false,
@@ -27,14 +24,14 @@
   },
   "cases": [
     {
-      "id": "catalog_maintenance",
-      "split": "train",
+      "id": "maintain_catalog_composition",
+      "split": "validation",
       "tags": [
         "representative",
         "catalog-authoring"
       ],
       "input": {
-        "query": "在这个 AW Catalog Workspace 中新增一个插件，更新 inventory 和依赖，并完成整个 Catalog 验证。",
+        "query": "在当前 AW Catalog 中新增 status-tools，让它依赖 shared-rules，并完成受影响闭包和 Catalog 聚合验证。",
         "expected": {
           "loadedSkills": [
             "author-aw-catalog"
@@ -43,14 +40,14 @@
       }
     },
     {
-      "id": "catalog_dependency_update_requires_aggregation",
+      "id": "activate_local_development_catalog",
       "split": "validation",
       "tags": [
         "boundary",
-        "catalog-authoring"
+        "catalog-development-source"
       ],
       "input": {
-        "query": "把 plugins/search-tools 加入当前 Catalog inventory，让它依赖 shared-rules，并重新验证全部插件和 Catalog 聚合结果。",
+        "query": "把当前 Catalog Workspace 激活为本地 CLI development source，但不要发布。",
         "expected": {
           "loadedSkills": [
             "author-aw-catalog"
@@ -58,21 +55,19 @@
         }
       },
       "audit": {
-        "rationale": "请求改变 Catalog inventory 和跨插件依赖，并要求聚合验证，因此首个顶层路由由 Catalog Author 拥有；后续可按规范交接 Plugin Author。",
-        "minimalCounterexample": "若只修改 search-tools 内部 lifecycle 且不改变 inventory、依赖或聚合结果，则不应加载 Catalog Author。",
-        "errorCost": "high",
-        "allowedVariance": "只要求首个顶层路由加载 author-aw-catalog；插件内部文件应继续交给 author-aw-plugin，Catalog Author 保留 composition 和聚合验证责任。不得因这个规范 handoff 把 case 判为多 Skill 误路由。"
+        "rationale": "Development activation 是 Catalog 作者写操作，但不是远端发布。",
+        "minimalCounterexample": "只查看现有 snapshot evidence 时应加载 Catalog Reviewer。"
       }
     },
     {
-      "id": "lifecycle_change_routes_to_plugin_author",
+      "id": "plugin_internal_change",
       "split": "validation",
       "tags": [
         "boundary",
         "plugin-only-change"
       ],
       "input": {
-        "query": "只修改已有 plugins/cache-tools 的 uninstall lifecycle，不改 Catalog metadata、inventory、依赖或 Catalog 版本。",
+        "query": "只修改已有 plugins/lifecycle-tools 的 uninstall lifecycle，不改 Catalog metadata、inventory、依赖或版本。",
         "expected": {
           "loadedSkills": [
             "author-aw-plugin"
@@ -80,43 +75,19 @@
         }
       },
       "audit": {
-        "rationale": "单插件 lifecycle 内容由 author-aw-plugin 直接拥有。",
-        "minimalCounterexample": "若新增或删除插件改变 inventory，或要求全 Catalog 聚合验证，则应加载 Catalog Author；只改单插件内部 lifecycle 时不加载。",
-        "errorCost": "high",
-        "allowedVariance": "不得仅因插件位于 Catalog Workspace 就加载 Catalog Author。"
+        "rationale": "单插件内部源码由 Plugin Author 直接拥有。",
+        "minimalCounterexample": "新增、删除插件或改变同 source 依赖时由 Catalog Author 编排。"
       }
     },
     {
-      "id": "catalog_review",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "catalog-review"
-      ],
-      "input": {
-        "query": "只读评审 Catalog 的 inventory、依赖图和版本一致性。",
-        "expected": {
-          "loadedSkills": [
-            "review-aw-catalog"
-          ]
-        }
-      },
-      "audit": {
-        "rationale": "只读 composition Review 由 review-aw-catalog 拥有。",
-        "minimalCounterexample": "若用户要求修复 inventory、依赖或版本并完成聚合验证，则应加载 Catalog Author。",
-        "errorCost": "high",
-        "allowedVariance": "不得执行写入。"
-      }
-    },
-    {
-      "id": "catalog_publish",
+      "id": "remote_catalog_publication",
       "split": "validation",
       "tags": [
         "boundary",
         "catalog-publication"
       ],
       "input": {
-        "query": "把这个 Catalog 发布到 origin 的 catalog 分支。",
+        "query": "发布 Workspace ./catalog 到 remote staging、branch catalogs/team。",
         "expected": {
           "loadedSkills": [
             "publish-aw-catalog"
@@ -124,10 +95,8 @@
         }
       },
       "audit": {
-        "rationale": "远端发布只由 publish-aw-catalog 拥有；Catalog Author 绝不发布。",
-        "minimalCounterexample": "若用户只要求维护、build、validate 或 development source activation 且不发布，则应加载 Catalog Author。",
-        "errorCost": "high",
-        "allowedVariance": "可以说明需要 Publisher；不得由 Author 发布。"
+        "rationale": "远端发布只由 Publisher 拥有。",
+        "minimalCounterexample": "仅 build、validate 或 dev activate 时由 Catalog Author 处理。"
       }
     }
   ]

@@ -39,16 +39,6 @@ export {
   resolvePluginsFromCatalog,
 } from '../src/utils/manifest.js';
 export {
-  appendCatalogToPluginReleaseLedger,
-  assertStablePluginVersion,
-  mergePluginReleaseLedgers,
-  PLUGIN_RELEASE_LEDGER_FILENAME,
-  PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
-  resolveBetaPluginVersionOverrides,
-  validatePluginReleaseLedgerAgainstManifest,
-  validatePluginReleaseLedger,
-} from '../src/utils/plugin-release.js';
-export {
   matchesPluginTestEntryGlob,
   scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
@@ -71,7 +61,7 @@ import {
 } from '../src/utils/bundle-layout.js';
 import type {
   CatalogChannel,
-  CatalogManifestV5,
+  CatalogManifestV6,
   MarketplaceManifest,
 } from '../src/types.js';
 import {
@@ -79,19 +69,15 @@ import {
   resolvePluginsFromCatalog,
 } from '../src/utils/manifest.js';
 import {
-  createCatalogManifestV5,
-  createCatalogManifestV5Entry,
-  CATALOG_SCHEMA_5_CAPABILITY,
-  validateCatalogManifestV5,
-} from '../src/utils/catalog-manifest-v5.js';
+  createCatalogManifestV6,
+  createCatalogManifestV6Entry,
+  CATALOG_SCHEMA_6_CAPABILITY,
+  validateCatalogManifestV6,
+} from '../src/utils/catalog-manifest-v6.js';
 import { validateCatalogSnapshotComplete } from '../src/utils/catalog-snapshot.js';
 import { validatePluginMetaDependencyGraph } from '../src/utils/plugin-dependencies.js';
 import { readJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
-import {
-  assertStablePluginVersion,
-  PLUGIN_RELEASE_LEDGER_FILENAME,
-} from '../src/utils/plugin-release.js';
 
 export type {
   PlatformName,
@@ -108,14 +94,20 @@ export interface CatalogStageOptions {
 }
 
 export interface CatalogStageResult {
-  manifest: CatalogManifestV5;
+  manifest: CatalogManifestV6;
   canonicalManifestPath: string;
 }
 
-export { CATALOG_SCHEMA_5_CAPABILITY };
+export { CATALOG_SCHEMA_6_CAPABILITY };
 
 function detectCatalogChannel(version: string): CatalogChannel {
   return version.includes('-') ? 'beta' : 'latest';
+}
+
+function assertStablePluginVersion(version: string, fieldName: string): void {
+  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(version)) {
+    throw new Error(`Invalid ${fieldName}: expected a stable SemVer without prerelease or build metadata.`);
+  }
 }
 
 async function writeCanonicalJsonFile(filePath: string, value: unknown): Promise<string> {
@@ -142,14 +134,14 @@ export async function stageCatalogArtifacts(
   }
   const plugins = sourcePlugins;
   const entries = await Promise.all(plugins.map((plugin) =>
-    createCatalogManifestV5Entry(
+    createCatalogManifestV6Entry(
       plugin,
       path.join(options.outputRoot, 'plugins', plugin.manifest.name),
     )));
   const marketplace = await readJsonFile<MarketplaceManifest>(
     path.join(options.outputRoot, '.agents', 'plugins', 'marketplace.json'),
   );
-  const manifest = createCatalogManifestV5({
+  const manifest = createCatalogManifestV6({
     catalogVersion,
     channel,
     marketplace: {
@@ -158,18 +150,14 @@ export async function stageCatalogArtifacts(
     },
     requires: {
       aw: {
-        capabilities: [CATALOG_SCHEMA_5_CAPABILITY],
+        capabilities: [CATALOG_SCHEMA_6_CAPABILITY],
       },
     },
     release: { state: 'development' },
     entries,
   });
   const canonicalManifestPath = path.join(options.outputRoot, CATALOG_MANIFEST_FILENAME);
-  const releaseLedgerPath = path.join(options.outputRoot, PLUGIN_RELEASE_LEDGER_FILENAME);
-  await Promise.all([
-    fs.remove(path.join(options.outputRoot, '.catalog')),
-    fs.remove(releaseLedgerPath),
-  ]);
+  await fs.remove(path.join(options.outputRoot, '.catalog'));
   await writeCanonicalJsonFile(
     canonicalManifestPath,
     manifest,
@@ -184,8 +172,8 @@ export async function stageCatalogArtifacts(
 
 export async function readStagedCatalogManifest(
   outputRoot: string,
-): Promise<CatalogManifestV5> {
-  return validateCatalogManifestV5(
+): Promise<CatalogManifestV6> {
+  return validateCatalogManifestV6(
     await readJsonFile<unknown>(path.join(outputRoot, CATALOG_MANIFEST_FILENAME)),
   );
 }

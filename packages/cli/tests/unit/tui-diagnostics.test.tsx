@@ -41,7 +41,6 @@ describe('TUI diagnostic projection', () => {
         sourceId: 'team-tools',
         requestedRef: 'refs/heads/release-v5',
         resolvedCommit: '0123456789abcdef0123456789abcdef01234567',
-        lastGood: 'unavailable',
         context: [{ key: 'field', value: injected }],
         sanitizedCause: 'Error: wrapper; caused by Error: git stderr Bearer nested-secret /private/cause',
         checks: ['git stderr: fatal: native-secret /private/native'],

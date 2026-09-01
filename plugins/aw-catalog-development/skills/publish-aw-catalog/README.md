@@ -1,5 +1,7 @@
 # publish-aw-catalog
 
-在用户清晰要求发布 AW Catalog 时发布它，包括“发布当前 Catalog”。普通修改、build、验证和只读 Review 不会触发本 Skill。
+在用户清晰要求发布 Catalog，并明确给出 Workspace root、remote 和 branch 时使用。普通维护、build、验证、development activation 和只读 Review 不会触发远端写入。
 
-它把用户已明确给出的 root、remote 和 branch 传给首次 `aw catalog context`。Blocking marker issue 会停止；无效的显式 remote 或 branch 等 blocking publication issue 必须先取得更正选择并重新取得 context，不能进入 preflight 或复用旧 receipt。随后它运行会执行已提交插件 build code 的 preflight。在请求授权前，它展示最终绝对 root、Workspace identity、source HEAD、Catalog version、remote name、安全 fetch/push URL、branch、parent、tag、snapshot digest、plan ID 和 descriptor digest。用户精确授权完整 descriptor digest 后，发布命令显式传回 preflight receipt 的 root、remote、branch 和 digest；拒绝、失败、drift 或不确定结果都会停止。Catalog 不支持同版本重试或 repair。
+本 Skill 先运行 `catalog publish plan`。plan 会读取远端 refs，并从已提交 source HEAD 执行插件 validator/build 和 Catalog build。它展示 Workspace identity、source HEAD、安全 remote identity、branch、parent、tag、snapshot digest、Catalog 展示信息和完整 `planDigest`。用户只授权该 `planDigest` 后，Skill 才运行 `catalog publish apply --expected-plan-digest ... --yes`。
+
+用户拒绝或 plan 失败时没有 apply。`prepared` 或 `uncertain` 的同一 plan 可以用相同 digest 对账或重试；不同 plan、损坏的 pending state、ref 冲突或 immutable tag 占用要求提高 Catalog version。

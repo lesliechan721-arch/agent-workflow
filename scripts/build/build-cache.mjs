@@ -519,7 +519,7 @@ async function validateRequiredOutputs(repoRoot) {
         }
         if (
           output.type === 'catalog' &&
-          (parsed.schemaVersion !== 5 ||
+          (parsed.schemaVersion !== 6 ||
             !parsed.release ||
             (parsed.release.state !== 'development' && parsed.release.state !== 'published') ||
             !Array.isArray(parsed.entries) ||

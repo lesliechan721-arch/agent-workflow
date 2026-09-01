@@ -1,102 +1,70 @@
-import type {
-  CatalogFreshnessPolicy,
-} from '../types.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { catalogSourceErrorCode } from '../utils/catalog-public-error.js';
-import { cleanupLegacyCatalogSourceCache } from '../utils/catalog-source-cache.js';
-import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
-import { withResolvedMultiSourceCatalog } from '../utils/multi-source-catalog.js';
+import { resolvePartialCatalogOperationContext } from '../utils/catalog-operation-context.js';
 
 export interface InitCatalogSourceResult {
   id: string;
   ok: boolean;
+  activeReady: boolean;
   requestedRef?: string;
   resolvedCommit?: string;
   catalogVersion?: string;
   channel?: string;
-  freshness?: 'remote' | 'cache' | 'path' | 'active';
   error?: string;
   errorCode?: string;
+  recovery?: string;
 }
 
 export interface InitCommandResult {
   ok: boolean;
-  changed: boolean;
-  warnings: string[];
   primarySourceId: string;
   configDigest: string;
   compositeDigest: string;
   sources: InitCatalogSourceResult[];
+  recovery: string[];
 }
 
-interface InitCommandV4Options {
-  force?: boolean;
-  cliVersion: string;
+interface InitCommandOptions {
   env?: NodeJS.ProcessEnv;
-  runtime?: {
-    cleanupLegacyCache?: typeof cleanupLegacyCatalogSourceCache;
-  };
 }
 
 export async function initCommand(
-  options: InitCommandV4Options,
+  options: InitCommandOptions,
 ): Promise<InitCommandResult> {
   const env = options.env ?? process.env;
-  if (options.force) {
-    return withAwHomeMutationLock({
-      env,
-      action: async () => {
-        const cleanupWarnings = await (options.runtime?.cleanupLegacyCache
-          ?? cleanupLegacyCatalogSourceCache)(env);
-        const result = await resolveInitCatalog({ ...options, env });
-        return { ...result, warnings: [...cleanupWarnings, ...result.warnings] };
-      },
-    });
-  }
-  return resolveInitCatalog({ ...options, env });
-}
-
-async function resolveInitCatalog(
-  options: InitCommandV4Options,
-): Promise<InitCommandResult> {
-  const env = options.env ?? process.env;
-  const freshnessPolicy: CatalogFreshnessPolicy = options.force ? 'forceRemote' : 'cacheFirst';
   const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
-  return withResolvedMultiSourceCatalog({
-    cliVersion: options.cliVersion,
-    freshnessPolicy,
+  const context = await resolvePartialCatalogOperationContext({
     configSnapshot,
     env,
-    consume: (catalog) => {
-      const sources = catalog.sources.map((item): InitCatalogSourceResult => {
-        if (item.error) {
-          return {
-            id: item.sourceId,
-            ok: false,
-            error: item.error.message,
-            errorCode: catalogSourceErrorCode(item.error),
-          };
-        }
-        const resolution = item.resolution!;
-        return {
-          id: item.sourceId,
-          ok: true,
-          requestedRef: resolution.requestedRef,
-          resolvedCommit: resolution.resolvedCommit,
-          catalogVersion: resolution.manifest.catalogVersion,
-          channel: resolution.manifest.channel,
-          freshness: resolution.source,
-        };
-      });
-      return {
-        ok: sources.every((source) => source.ok),
-        changed: sources.some((source) => source.ok && source.freshness !== 'cache'),
-        warnings: [],
-        primarySourceId: catalog.primarySourceId,
-        configDigest: catalog.configDigest,
-        compositeDigest: catalog.compositeDigest,
-        sources,
-      };
-    },
   });
+  const sources = context.catalog.sources.map((item): InitCatalogSourceResult => {
+    if (item.error) {
+      return {
+        id: item.sourceId,
+        ok: false,
+        activeReady: false,
+        error: item.error.message,
+        errorCode: catalogSourceErrorCode(item.error),
+        recovery: `Run aw catalog source sync ${item.sourceId}.`,
+      };
+    }
+    const resolution = item.resolution!;
+    return {
+      id: item.sourceId,
+      ok: true,
+      activeReady: true,
+      requestedRef: resolution.requestedRef,
+      resolvedCommit: resolution.resolvedCommit,
+      catalogVersion: resolution.manifest.catalogVersion,
+      channel: resolution.manifest.channel,
+    };
+  });
+  return {
+    ok: sources.every((source) => source.ok),
+    primarySourceId: context.catalog.primarySourceId,
+    configDigest: context.catalog.configDigest,
+    compositeDigest: context.catalog.compositeDigest,
+    sources,
+    recovery: sources.flatMap((source) => source.recovery ? [source.recovery] : []),
+  };
 }

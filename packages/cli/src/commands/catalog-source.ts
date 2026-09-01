@@ -4,7 +4,6 @@ import type {
   CatalogSourcesConfig,
 } from '../types.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
-import { catalogSourceErrorCode, sanitizeCatalogSourceError } from '../utils/catalog-public-error.js';
 import type {
   CatalogSourceInventoryError,
   CatalogSourceReference,
@@ -25,21 +24,7 @@ import {
   withAwHomeMutationLock,
   type AwHomeMutationToken,
 } from '../utils/aw-home-mutation-lock.js';
-import {
-  refreshCatalogSourceGeneration,
-  removeCatalogSourceGenerationState,
-  type CatalogGenerationServiceRuntime,
-} from '../utils/catalog-generation-service.js';
-
-export interface CatalogSourceEvidence {
-  sourceId: string;
-  sourceIdentity: string;
-  requestedRef: string;
-  resolvedCommit: string;
-  catalogVersion: string;
-  channel: string;
-  freshness: 'remote' | 'cache' | 'path';
-}
+import { removeCatalogSourceGenerationState } from '../utils/catalog-generation-state.js';
 
 export interface CatalogSourceMutationReceipt {
   receiptSchemaVersion: 5;
@@ -48,7 +33,6 @@ export interface CatalogSourceMutationReceipt {
   changed: boolean;
   sourceId: string;
   primarySourceId?: string;
-  source?: CatalogSourceEvidence;
   configDigest?: string;
   references: CatalogSourceReferenceInventory['references'];
   errors: Array<{ code: string; message: string }>;
@@ -62,16 +46,11 @@ export interface CatalogSourceListPayload {
 }
 
 export type CatalogSourceCommandRuntime = {
-  beforeRefresh?: () => Promise<void> | void;
   onProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
   awHomeMutationToken?: AwHomeMutationToken;
-  generation?: CatalogGenerationServiceRuntime;
 };
 
-export type CatalogSourceMutationProgressStage =
-  | 'refreshingCatalog'
-  | 'catalogReady'
-  | 'savingConfig';
+export type CatalogSourceMutationProgressStage = 'savingConfig';
 
 export interface CatalogSourceMutationProgress {
   action: CatalogSourceMutationRequest['action'];
@@ -86,7 +65,7 @@ export type CatalogSourceMutationRequest =
 export interface CatalogSourceMutationPreflight {
   sourceId: string;
   configDigest: string;
-  candidateDigest: string;
+  proposedConfigDigest: string;
   sourceIdentity?: string;
   identityChanged: boolean;
   references: CatalogSourcePreflightInventory;
@@ -194,36 +173,36 @@ export async function preflightCatalogSourceMutation(options: {
       : request.action === 'update' || request.action === 'remove' ? before : undefined,
     managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
   });
-  const candidate = request.action === 'add'
+  const proposedConfig = request.action === 'add'
     ? await addCatalogSource(snapshot.config, request.source, options.cwd)
     : request.action === 'update'
       ? await updateCatalogSource(snapshot.config, sourceId, request.update, options.cwd)
       : request.action === 'setPrimary'
         ? setPrimaryCatalogSource(snapshot.config, sourceId)
         : removeCatalogSource(snapshot.config, sourceId);
-  const after = candidate.sources.find((source) => source.id === sourceId);
+  const after = proposedConfig.sources.find((source) => source.id === sourceId);
   const changedIdentity = Boolean(before && after && await identityChanged(before, after));
   const sourceIdentity = after ? await calculateCatalogSourceIdentity(after) : undefined;
   return {
     sourceId,
     configDigest: snapshot.digest,
-    candidateDigest: calculateCatalogSourcesConfigDigest(candidate),
+    proposedConfigDigest: calculateCatalogSourcesConfigDigest(proposedConfig),
     ...(sourceIdentity ? { sourceIdentity } : {}),
     identityChanged: changedIdentity,
     references: { inventorySchemaVersion: 1, references: [], errors: [] },
   };
 }
 
-async function commitCandidate(options: {
+async function commitConfig(options: {
   command: CatalogSourceMutationReceipt['command'];
   sourceId: string;
-  candidate: CatalogSourcesConfig;
+  config: CatalogSourcesConfig;
   expectedDigest: string;
   env: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
 }): Promise<CatalogSourceMutationReceipt> {
   const written = await replaceCatalogSourcesConfig({
-    config: options.candidate,
+    config: options.config,
     expectedDigest: options.expectedDigest,
     env: options.env,
     beforeReplace: async () => {
@@ -248,55 +227,6 @@ async function commitCandidate(options: {
   };
 }
 
-async function refreshCommittedSource(options: {
-  receipt: CatalogSourceMutationReceipt;
-  config: CatalogSourcesConfig;
-  cliVersion: string;
-  env: NodeJS.ProcessEnv;
-  runtime: CatalogSourceCommandRuntime;
-  awHomeMutationToken?: AwHomeMutationToken;
-}): Promise<CatalogSourceMutationReceipt> {
-  await reportMutationProgress(options.runtime, {
-    action: options.receipt.command === 'catalog:source:add' ? 'add' : 'update',
-    stage: 'refreshingCatalog',
-  });
-  try {
-    await options.runtime.beforeRefresh?.();
-    const refreshed = await refreshCatalogSourceGeneration({
-      sourceId: options.receipt.sourceId,
-      cliVersion: options.cliVersion,
-      env: options.env,
-      runtime: options.runtime.generation,
-      ...(options.awHomeMutationToken
-        ? { awHomeMutationToken: options.awHomeMutationToken }
-        : {}),
-    });
-    const pointer = refreshed.candidate ?? refreshed.active;
-    if (!pointer) throw new Error('Catalog generation refresh returned no selected generation.');
-    const configured = options.config.sources.find((source) => source.id === options.receipt.sourceId)!;
-    const source: CatalogSourceEvidence = {
-      sourceId: refreshed.sourceId,
-      sourceIdentity: refreshed.sourceIdentity,
-      requestedRef: pointer.requestedRef,
-      resolvedCommit: pointer.resolvedCommit,
-      catalogVersion: pointer.catalogVersion,
-      channel: pointer.channel,
-      freshness: configured.type === 'path' ? 'path' : 'remote',
-    };
-    await reportMutationProgress(options.runtime, {
-      action: options.receipt.command === 'catalog:source:add' ? 'add' : 'update',
-      stage: 'catalogReady',
-    });
-    return { ...options.receipt, source };
-  } catch (error) {
-    const diagnostic = sanitizeCatalogSourceError(error, options.env);
-    return {
-      ...options.receipt,
-      errors: [{ code: catalogSourceErrorCode(diagnostic), message: diagnostic.message }],
-    };
-  }
-}
-
 export async function listCatalogSources(options: {
   env?: NodeJS.ProcessEnv;
 } = {}): Promise<CatalogSourceListPayload> {
@@ -312,47 +242,6 @@ export async function listCatalogSources(options: {
   };
 }
 
-export async function refreshCatalogSourceCommand(options: {
-  sourceId: string;
-  cliVersion: string;
-  env?: NodeJS.ProcessEnv;
-  runtime?: CatalogSourceCommandRuntime;
-}): Promise<{ source?: CatalogSourceEvidence; errors: Array<{ code: string; message: string }> }> {
-  const env = options.env ?? process.env;
-  const snapshot = await readCatalogSourcesConfigSnapshot(env);
-  const configured = snapshot.config.sources.find((source) => source.id === options.sourceId);
-  if (!configured) throw new Error(`Catalog source "${options.sourceId}" does not exist.`);
-  try {
-    await options.runtime?.beforeRefresh?.();
-    const refreshed = await refreshCatalogSourceGeneration({
-      sourceId: options.sourceId,
-      cliVersion: options.cliVersion,
-      env,
-      runtime: options.runtime?.generation,
-      ...(options.runtime?.awHomeMutationToken
-        ? { awHomeMutationToken: options.runtime.awHomeMutationToken }
-        : {}),
-    });
-    const pointer = refreshed.candidate ?? refreshed.active;
-    if (!pointer) throw new Error('Catalog generation refresh returned no selected generation.');
-    return {
-      source: {
-        sourceId: refreshed.sourceId,
-        sourceIdentity: refreshed.sourceIdentity,
-        requestedRef: pointer.requestedRef,
-        resolvedCommit: pointer.resolvedCommit,
-        catalogVersion: pointer.catalogVersion,
-        channel: pointer.channel,
-        freshness: configured.type === 'path' ? 'path' : 'remote',
-      },
-      errors: [],
-    };
-  } catch (error) {
-    const diagnostic = sanitizeCatalogSourceError(error, env);
-    return { errors: [{ code: catalogSourceErrorCode(diagnostic), message: diagnostic.message }] };
-  }
-}
-
 export async function addCatalogSourceCommand(options: {
   source: CatalogSource;
   cliVersion: string;
@@ -362,7 +251,7 @@ export async function addCatalogSourceCommand(options: {
   expectedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
 }): Promise<CatalogSourceMutationReceipt> {
-  const committed = await withCatalogSourceMutationLock({
+  return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
     action: async ({ env, runtime }) => {
@@ -374,32 +263,20 @@ export async function addCatalogSourceCommand(options: {
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
-      const candidate = await addCatalogSource(snapshot.config, options.source, options.cwd);
-      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+      const config = await addCatalogSource(snapshot.config, options.source, options.cwd);
+      if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
       }
-      const receipt = await commitCandidate({
+      const receipt = await commitConfig({
         command: 'catalog:source:add',
         sourceId: options.source.id,
-        candidate,
+        config,
         expectedDigest: snapshot.digest,
         env,
         runtime,
       });
-      await removeCatalogSourceGenerationState({ sourceId: options.source.id, env });
-      return { receipt, candidate, env, runtime };
+      return receipt;
     },
-  });
-  if ('receiptSchemaVersion' in committed) return committed;
-  return refreshCommittedSource({
-    receipt: committed.receipt,
-    config: committed.candidate,
-    cliVersion: options.cliVersion,
-    env: committed.env,
-    runtime: committed.runtime,
-    ...(options.runtime?.awHomeMutationToken
-      ? { awHomeMutationToken: options.runtime.awHomeMutationToken }
-      : {}),
   });
 }
 
@@ -413,7 +290,7 @@ export async function updateCatalogSourceCommand(options: {
   expectedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
 }): Promise<CatalogSourceMutationReceipt> {
-  const committed = await withCatalogSourceMutationLock({
+  return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
     action: async ({ env, runtime }) => {
@@ -425,38 +302,20 @@ export async function updateCatalogSourceCommand(options: {
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
-      const candidate = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
-      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+      const config = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+      if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
       }
-      const changedIdentity = await identityChanged(
-        snapshot.config.sources.find((source) => source.id === options.sourceId)!,
-        candidate.sources.find((source) => source.id === options.sourceId)!,
-      );
-      const receipt = await commitCandidate({
+      const receipt = await commitConfig({
         command: 'catalog:source:update',
         sourceId: options.sourceId,
-        candidate,
+        config,
         expectedDigest: snapshot.digest,
         env,
         runtime,
       });
-      if (changedIdentity) {
-        await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env });
-      }
-      return { receipt, candidate, env, runtime };
+      return receipt;
     },
-  });
-  if ('receiptSchemaVersion' in committed) return committed;
-  return refreshCommittedSource({
-    receipt: committed.receipt,
-    config: committed.candidate,
-    cliVersion: options.cliVersion,
-    env: committed.env,
-    runtime: committed.runtime,
-    ...(options.runtime?.awHomeMutationToken
-      ? { awHomeMutationToken: options.runtime.awHomeMutationToken }
-      : {}),
   });
 }
 
@@ -475,14 +334,14 @@ export async function setPrimaryCatalogSourceCommand(options: {
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
-      const candidate = setPrimaryCatalogSource(snapshot.config, options.sourceId);
-      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+      const config = setPrimaryCatalogSource(snapshot.config, options.sourceId);
+      if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:set-primary', sourceId: options.sourceId, snapshot });
       }
-      return commitCandidate({
+      return commitConfig({
         command: 'catalog:source:set-primary',
         sourceId: options.sourceId,
-        candidate,
+        config,
         expectedDigest: snapshot.digest,
         env,
         runtime,
@@ -498,7 +357,6 @@ export async function removeCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
-  generationStateAlreadyRemoved?: boolean;
 }): Promise<CatalogSourceMutationReceipt> {
   return withCatalogSourceMutationLock({
     env: options.env,
@@ -512,21 +370,19 @@ export async function removeCatalogSourceCommand(options: {
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
-      const candidate = removeCatalogSource(snapshot.config, options.sourceId);
-      if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+      const config = removeCatalogSource(snapshot.config, options.sourceId);
+      if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:remove', sourceId: options.sourceId, snapshot });
       }
-      const receipt = await commitCandidate({
+      await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env });
+      const receipt = await commitConfig({
         command: 'catalog:source:remove',
         sourceId: options.sourceId,
-        candidate,
+        config,
         expectedDigest: snapshot.digest,
         env,
         runtime,
       });
-      if (options.generationStateAlreadyRemoved !== true) {
-        await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env });
-      }
       return receipt;
     },
   });

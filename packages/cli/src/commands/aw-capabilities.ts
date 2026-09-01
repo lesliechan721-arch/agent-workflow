@@ -38,12 +38,11 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.skill-eval.v2',
   'aw.plugin-authoring.v1',
   'aw.catalog-authoring.v1',
-  'aw.catalog-context.v1',
   'aw.catalog-source.v2',
   'aw.catalog-dev-source.v1',
   'aw.catalog-publication.v1',
   'aw.review-publication.v1',
-  'aw.catalog-snapshot.v5',
+  'aw.catalog-snapshot.v6',
   'aw.self-check.v1',
 ] as const satisfies readonly RegisteredAwCapabilityId[]
 
@@ -182,11 +181,10 @@ export async function checkCurrentAw(options: {
       IMPLEMENTED_AW_CAPABILITIES,
     )
     const observations = discovered.resolution?.observations ?? []
-    const hasBlockingObservation = observations.some((observation) => observation.blocking)
     return {
       schemaVersion: 1,
       command: 'self:check',
-      ok: support.supported && !hasBlockingObservation,
+      ok: support.supported,
       awVersion: options.awVersion,
       coreVersion: getPluginCoreVersion(),
       source: discovered.source,
@@ -195,9 +193,6 @@ export async function checkCurrentAw(options: {
       capabilitySetDigest: discovered.capabilitySetDigest,
       missingCapabilities: support.missing,
       observations,
-      ...(hasBlockingObservation ? {
-        error: 'Plugin requirements contain an unmapped AW CLI command literal.',
-      } : {}),
     }
   } catch (error) {
     return {
@@ -314,9 +309,6 @@ export async function inspectPluginRequirements(options: {
   })
   if (action && capability) {
     const normalizedCapability = normalizeAwCapabilities([capability], `--${action}`)[0]!
-    if (initialResolution.observations.some((observation) => observation.blocking)) {
-      throw new Error('Cannot mutate plugin requirements while an unmapped AW CLI command literal is present.')
-    }
     const before = normalizeAwCapabilities(plugin.manifest.requires?.aw.capabilities ?? [])
     const after = action === 'add'
       ? normalizeAwCapabilities([...before, normalizedCapability])

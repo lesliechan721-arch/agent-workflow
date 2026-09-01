@@ -153,6 +153,7 @@ export interface BundleLocalPluginOptions {
   runtimeResolver?: CatalogRuntimeImportResolver;
   preparedRuntimeContext?: PreparedPluginRuntimeContext;
   runtimeSkillClosureValidation?: 'current' | 'historical';
+  strictRequirements?: boolean;
 }
 
 export async function validateStagingPackageManager(packageRoot: string): Promise<string> {
@@ -1696,17 +1697,30 @@ export interface LocalPluginBundleResult {
 function assertPluginRequirementsSupported(
   pluginName: string,
   requirements: Awaited<ReturnType<typeof resolvePluginRequirements>>,
+  strictRequirements = false,
 ): void {
   if (requirements.unsupportedByCurrentAw.length > 0) {
     throw new AwCapabilityUnsupportedError(pluginName, requirements.unsupportedByCurrentAw);
   }
-  const blockingObservations = requirements.observations.filter((observation) => observation.blocking);
-  if (blockingObservations.length > 0) {
+  if (!strictRequirements) return;
+  const satisfied = new Set([...requirements.declared, ...requirements.derived]);
+  const strictObservations = requirements.observations.filter((observation) => (
+    observation.code !== 'aw-command-detected'
+    || observation.capability === undefined
+    || !satisfied.has(observation.capability)
+  ));
+  if (strictObservations.length > 0) {
     const error = new Error(
-      `Plugin "${pluginName}" has blocking AW capability scanner observations: ${blockingObservations.map((observation) => `${observation.path}: ${observation.message}`).join('; ')}`,
-    ) as Error & { code: string; observations: typeof blockingObservations };
-    error.code = 'awCapabilityScanBlocked';
-    error.observations = blockingObservations;
+      `Official strict requirements failed: ${strictObservations.map((observation) => (
+        `plugin=${JSON.stringify(pluginName)} path=${JSON.stringify(observation.path)} `
+        + `command=${JSON.stringify(observation.command ?? '<dynamic>')} `
+        + `capability=${JSON.stringify(observation.capability ?? (
+          observation.code === 'aw-command-dynamic' ? '<dynamic>' : '<unmapped>'
+        ))}`
+      )).join('; ')}`,
+    ) as Error & { code: string; observations: typeof strictObservations };
+    error.code = 'awCapabilityStrictRequirements';
+    error.observations = strictObservations;
     throw error;
   }
 }
@@ -1729,6 +1743,7 @@ export async function bundleLocalPlugin(
   outputRoot: string,
   options: BundleLocalPluginOptions = {},
 ): Promise<LocalPluginBundleResult> {
+  const historicalComparison = options.runtimeSkillClosureValidation === 'historical';
   const buildOptions = {
     buildMode: options.buildMode ?? 'build-free',
     stagingRunner: options.stagingRunner ?? defaultStagingRunner,
@@ -1741,7 +1756,13 @@ export async function bundleLocalPlugin(
     manifest: plugin.manifest,
     implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
   });
-  assertPluginRequirementsSupported(plugin.manifest.name, sourceRequirements);
+  if (!historicalComparison) {
+    assertPluginRequirementsSupported(
+      plugin.manifest.name,
+      sourceRequirements,
+      options.strictRequirements ?? false,
+    );
+  }
   await fs.remove(outputRoot);
   const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
 
@@ -1752,7 +1773,13 @@ export async function bundleLocalPlugin(
       manifest: plugin.manifest,
       implementedCapabilities: IMPLEMENTED_AW_CAPABILITIES,
     });
-    assertPluginRequirementsSupported(plugin.manifest.name, requirements);
+    if (!historicalComparison) {
+      assertPluginRequirementsSupported(
+        plugin.manifest.name,
+        requirements,
+        options.strictRequirements ?? false,
+      );
+    }
     assertManifestPlatformSupport(plugin.manifest.name, plugin.manifest);
     const supportedPlatforms = resolveSupportedPlatforms(plugin.manifest);
     await assertSkillRuntimeProjectionTargets(plugin);
@@ -1788,7 +1815,9 @@ export async function bundleLocalPlugin(
       ...skillRuntimeFiles.flatMap((entry) => entry.requiredCapabilities),
       ...artifactRuntimeProjection.requiredCapabilities,
     ]);
-    assertRequiredCapabilitiesSupported(plugin.manifest.name, finalEffective);
+    if (!historicalComparison) {
+      assertRequiredCapabilitiesSupported(plugin.manifest.name, finalEffective);
+    }
     artifactRuntimeProjection.manifest.requires = {
       aw: { capabilities: finalEffective },
     };

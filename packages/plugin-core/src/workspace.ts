@@ -8,6 +8,7 @@ import {
   assertCatalogVersion,
   assertStrictSemVer,
   compareStrictSemVer,
+  parseStrictSemVer,
   MARKETPLACE_SOURCE_PATH,
   SOURCE_MANIFEST_PATH,
   createMarketplaceManifest,
@@ -26,19 +27,10 @@ import {
   normalizeAwCapabilities,
   parseAwPluginRequirementsReceipt,
 } from './aw-capabilities.js';
-import {
-  appendCatalogToPluginReleaseLedger,
-  assertStablePluginVersion,
-  PLUGIN_RELEASE_LEDGER_FILENAME,
-  PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
-  resolveBetaPluginVersionOverrides,
-  validatePluginReleaseLedgerAgainstManifest,
-  type PluginReleaseLedger,
-} from './plugin-release.js';
 import type { ReservedImportRegistry } from './manifest-contract.js';
 import type {
   CatalogChannel,
-  CatalogManifestV5,
+  CatalogManifestV6,
   MarketplaceSourceMeta,
   MarketplaceManifest,
   PluginMeta,
@@ -511,25 +503,6 @@ function sha256(value: string | Buffer): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
 
-function publishedContentDigest(
-  manifest: Pick<CatalogManifestV5, 'schemaVersion' | 'requires' | 'marketplace' | 'entries'>,
-): string {
-  return sha256(stableStringify({
-    schemaIdentity: { schemaVersion: manifest.schemaVersion },
-    marketplaceMetadata: {
-      name: 'aw',
-      owner: manifest.marketplace.owner,
-      interface: manifest.marketplace.interface,
-    },
-    requires: manifest.requires,
-    plugins: manifest.entries.map((entry) => ({
-      name: entry.name,
-      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
-      contentDigest: entry.contentDigest,
-    })).sort((left, right) => left.name.localeCompare(right.name)),
-  }));
-}
-
 const SOURCE_IDENTITY_EXCLUDED_DIRECTORIES = new Set([
   '.git', '.aw', 'node_modules', 'evals', 'reports',
 ]);
@@ -704,8 +677,7 @@ async function validateBundleRuntimeRequirementsReceipts(
 
 function normalizeCatalogRelease(
   raw: unknown,
-  catalogVersion: string,
-): CatalogManifestV5['release'] {
+): CatalogManifestV6['release'] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('Invalid catalog manifest release: expected an object.');
   }
@@ -716,33 +688,16 @@ function normalizeCatalogRelease(
     }
     return { state: 'development' };
   }
-  const allowed = new Set(['state', 'targetVersion', 'planId', 'sourceHead', 'contentDigest']);
+  const allowed = new Set(['state', 'sourceHead']);
   if (release.state !== 'published' || Object.keys(release).some((key) => !allowed.has(key))) {
     throw new Error('Invalid published catalog release.');
-  }
-  const targetVersion = assertStrictSemVer(release.targetVersion, 'catalog release targetVersion');
-  if (targetVersion.includes('-') || targetVersion.includes('+')) {
-    throw new Error('Invalid catalog release targetVersion: expected a stable version.');
-  }
-  if (targetVersion !== catalogVersion.replace(/-beta\.[1-9]\d*$/u, '')) {
-    throw new Error('Invalid catalog release targetVersion: must match catalogVersion.');
-  }
-  const digestPattern = /^sha256:[0-9a-f]{64}$/u;
-  if (typeof release.planId !== 'string' || !digestPattern.test(release.planId)) {
-    throw new Error('Invalid catalog release planId.');
-  }
-  if (typeof release.contentDigest !== 'string' || !digestPattern.test(release.contentDigest)) {
-    throw new Error('Invalid catalog release contentDigest.');
   }
   if (typeof release.sourceHead !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(release.sourceHead)) {
     throw new Error('Invalid catalog release sourceHead.');
   }
   return {
     state: 'published',
-    targetVersion,
-    planId: release.planId,
     sourceHead: release.sourceHead,
-    contentDigest: release.contentDigest,
   };
 }
 
@@ -806,11 +761,11 @@ export async function buildCatalogWorkspace(options: {
           .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name))
           .map((plugin) => expectedCatalogEntry(plugin, plugin.rootDir)),
       );
-      const manifest: CatalogManifestV5 = {
-        schemaVersion: 5,
+      const manifest: CatalogManifestV6 = {
+        schemaVersion: 6,
         catalogVersion,
         channel,
-        requires: { aw: { capabilities: ['aw.catalog-snapshot.v5'] } },
+        requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
         marketplace: {
           owner: catalogWorkspace.metadata.owner,
           interface: catalogWorkspace.metadata.interface,
@@ -862,18 +817,88 @@ async function rewritePublishedPluginVersions(
   }
 }
 
+function assertStablePluginVersion(version: string, fieldName: string): string {
+  const parsed = parseStrictSemVer(version, fieldName);
+  if (parsed.prerelease.length > 0 || parsed.build.length > 0) {
+    throw new Error(`Invalid ${fieldName}: expected a stable SemVer without prerelease or build metadata.`);
+  }
+  return version;
+}
+
+function stableVersionBase(version: string, fieldName: string): string {
+  const parsed = parseStrictSemVer(version, fieldName);
+  return `${parsed.major}.${parsed.minor}.${parsed.patch}`;
+}
+
+function resolvePublishedPluginVersions(options: {
+  channel: CatalogChannel;
+  plugins: readonly PluginMeta[];
+  contentDigests: ReadonlyMap<string, string>;
+  previous: CatalogManifestV6 | null;
+}): Record<string, string> {
+  const previousEntries = new Map(options.previous?.entries.map((entry) => [entry.name, entry]) ?? []);
+  const versions: Record<string, string> = {};
+  for (const plugin of options.plugins) {
+    const name = plugin.manifest.name;
+    const sourceVersion = assertStablePluginVersion(plugin.manifest.version, `${name} source version`);
+    const contentDigest = options.contentDigests.get(name);
+    if (!contentDigest) throw new Error(`Missing release content digest for plugin ${JSON.stringify(name)}.`);
+    const previous = previousEntries.get(name);
+    if (!previous) {
+      versions[name] = options.channel === 'beta' ? `${sourceVersion}-beta.1` : sourceVersion;
+      continue;
+    }
+    const previousVersion = assertStrictSemVer(previous.version, `${name} previous published version`);
+    if (options.channel === 'latest') {
+      const comparison = compareStrictSemVer(sourceVersion, previousVersion);
+      if (comparison < 0) {
+        throw new Error(`Plugin ${name} source version ${sourceVersion} must not be lower than previous ${previousVersion}.`);
+      }
+      if (comparison === 0 && previous.contentDigest !== contentDigest) {
+        throw new Error(`Plugin ${name} version ${sourceVersion} maps to different content. Increase the source plugin version.`);
+      }
+      versions[name] = sourceVersion;
+      continue;
+    }
+    const previousBase = stableVersionBase(previousVersion, `${name} previous published version`);
+    const baseComparison = compareStrictSemVer(sourceVersion, previousBase);
+    if (baseComparison < 0) {
+      throw new Error(`Plugin ${name} source version ${sourceVersion} must not be lower than previous base ${previousBase}.`);
+    }
+    if (baseComparison > 0) {
+      versions[name] = `${sourceVersion}-beta.1`;
+      continue;
+    }
+    const parsedPrevious = parseStrictSemVer(previousVersion, `${name} previous published version`);
+    if (parsedPrevious.prerelease.length === 0) {
+      if (previous.contentDigest !== contentDigest) {
+        throw new Error(`Plugin ${name} stable version ${sourceVersion} maps to different content. Increase the source plugin version.`);
+      }
+      versions[name] = previousVersion;
+      continue;
+    }
+    if (parsedPrevious.prerelease.length !== 2
+      || parsedPrevious.prerelease[0] !== 'beta'
+      || !/^[1-9]\d*$/u.test(parsedPrevious.prerelease[1]!)) {
+      throw new Error(`Plugin ${name} previous version ${previousVersion} is not a stable or beta publication version.`);
+    }
+    versions[name] = previous.contentDigest === contentDigest
+      ? previousVersion
+      : `${sourceVersion}-beta.${Number(parsedPrevious.prerelease[1]) + 1}`;
+  }
+  return versions;
+}
+
 export async function validatePublishedCatalogSnapshot(snapshotDirectory: string): Promise<{
   rootDir: string;
-  manifest: CatalogManifestV5;
-  ledger: PluginReleaseLedger;
+  manifest: CatalogManifestV6;
   snapshotDigest: string;
 }> {
   const validation = await validateCatalogSnapshotComplete(snapshotDirectory);
   if (validation.manifest.release.state !== 'published') {
     throw new Error('Published Catalog snapshot must have release.state published.');
   }
-  if (!validation.ledger) throw new Error('Published Catalog snapshot must include a plugin release ledger.');
-  return { ...validation, ledger: validation.ledger };
+  return validation;
 }
 
 export async function preparePublishedCatalogWorkspace(options: {
@@ -889,8 +914,6 @@ export async function preparePublishedCatalogWorkspace(options: {
   channel: CatalogChannel;
   pluginNames: string[];
   snapshotDigest: string;
-  contentDigest: string;
-  planId: string;
 }> {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(options.sourceHead)) {
     throw new Error('Published Catalog sourceHead must be a committed Git object ID.');
@@ -909,10 +932,6 @@ export async function preparePublishedCatalogWorkspace(options: {
       `Catalog version ${catalogVersion} must be higher than published ${previous.manifest.catalogVersion}.`,
     );
   }
-  const previousLedger = previous?.ledger ?? {
-    schemaVersion: PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
-    records: [],
-  } satisfies PluginReleaseLedger;
   const temporaryRelative = path.join('.aw', 'publish', `.catalog-preparation-${crypto.randomUUID()}`);
   const finalRelative = options.outputPath
     ?? `${DEFAULT_PUBLISHED_CATALOG_OUTPUT_PATH}-v${catalogVersion}`;
@@ -927,13 +946,12 @@ export async function preparePublishedCatalogWorkspace(options: {
     temporaryRoot = built.outputRoot;
     const development = await validateCatalogSnapshotComplete(temporaryRoot);
     const contentDigests = new Map(development.manifest.entries.map((entry) => [entry.name, entry.contentDigest]));
-    const overrides = channel === 'beta'
-      ? resolveBetaPluginVersionOverrides({
-          plugins: catalogWorkspace.plugins,
-          contentDigests,
-          ledger: previousLedger,
-        })
-      : Object.fromEntries(catalogWorkspace.plugins.map((plugin) => [plugin.manifest.name, plugin.manifest.version]));
+    const overrides = resolvePublishedPluginVersions({
+      channel,
+      plugins: catalogWorkspace.plugins,
+      contentDigests,
+      previous: previous?.manifest ?? null,
+    });
     await rewritePublishedPluginVersions(temporaryRoot, overrides);
     const bundledPlugins = await Promise.all(
       catalogWorkspace.plugins.map((plugin) => readPluginManifest(
@@ -951,26 +969,14 @@ export async function preparePublishedCatalogWorkspace(options: {
       channel,
       entries,
     };
-    const contentDigest = publishedContentDigest(manifestWithoutRelease);
-    const manifest: CatalogManifestV5 = {
+    const manifest: CatalogManifestV6 = {
       ...manifestWithoutRelease,
       release: {
         state: 'published',
-        targetVersion: catalogVersion.replace(/-beta\.[1-9]\d*$/u, ''),
-        planId: contentDigest,
         sourceHead: options.sourceHead,
-        contentDigest,
       },
     };
-    const ledger = appendCatalogToPluginReleaseLedger({
-      previous: previousLedger,
-      manifest,
-      contentDigests,
-    });
-    await Promise.all([
-      fs.writeFile(path.join(temporaryRoot, CATALOG_MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`),
-      fs.writeFile(path.join(temporaryRoot, PLUGIN_RELEASE_LEDGER_FILENAME), `${JSON.stringify(ledger, null, 2)}\n`),
-    ]);
+    await fs.writeFile(path.join(temporaryRoot, CATALOG_MANIFEST_FILENAME), `${JSON.stringify(manifest, null, 2)}\n`);
     const prepared = await validatePublishedCatalogSnapshot(temporaryRoot);
     const resolved = await resolveCatalogWorkspaceOutputPath({
       workspaceRoot: catalogWorkspace.workspaceRoot,
@@ -994,8 +1000,6 @@ export async function preparePublishedCatalogWorkspace(options: {
       channel,
       pluginNames: built.pluginNames,
       snapshotDigest: prepared.snapshotDigest,
-      contentDigest,
-      planId: contentDigest,
     };
   } finally {
     await fs.remove(temporaryRoot);
@@ -1129,8 +1133,7 @@ async function validateCatalogSnapshotTransportInternal(
   snapshotDirectory: string,
 ): Promise<{
   rootDir: string;
-  manifest: CatalogManifestV5;
-  ledger?: PluginReleaseLedger;
+  manifest: CatalogManifestV6;
   snapshotDigest: string;
 }> {
   const rootDir = await assertDirectoryWithoutSymlinks(snapshotDirectory, 'Catalog snapshot');
@@ -1140,7 +1143,6 @@ async function validateCatalogSnapshotTransportInternal(
     '.agents',
     '.claude-plugin',
     'plugins',
-    'plugin-release-ledger.json',
   ]);
   const entries = await fs.readdir(rootDir);
   const unexpected = entries.filter((entry) => !allowed.has(entry));
@@ -1189,10 +1191,10 @@ async function validateCatalogSnapshotTransportInternal(
     'schemaVersion', 'catalogVersion', 'channel', 'requires', 'marketplace', 'release', 'entries',
   ]);
   for (const key of Object.keys(raw)) if (!allowedManifestKeys.has(key)) throw new Error(`Invalid catalog manifest: unknown field ${JSON.stringify(key)}.`);
-  if (raw.schemaVersion !== 5) throw new Error('Invalid catalog manifest schemaVersion: expected 5.');
-  const base = normalizeCatalogManifestBase(raw, 'catalog manifest v5');
-  if (!(base.requires.aw.capabilities ?? []).includes('aw.catalog-snapshot.v5')) {
-    throw new Error('Invalid catalog manifest requires.aw.capabilities: expected aw.catalog-snapshot.v5.');
+  if (raw.schemaVersion !== 6) throw new Error('Invalid catalog manifest schemaVersion: expected 6.');
+  const base = normalizeCatalogManifestBase(raw, 'catalog manifest v6');
+  if (!(base.requires.aw.capabilities ?? []).includes('aw.catalog-snapshot.v6')) {
+    throw new Error('Invalid catalog manifest requires.aw.capabilities: expected aw.catalog-snapshot.v6.');
   }
   const marketplaceIdentity = normalizeCatalogMarketplaceIdentity(raw.marketplace);
   if (!Array.isArray(raw.entries)) throw new Error('Invalid catalog manifest entries: expected an array.');
@@ -1208,7 +1210,7 @@ async function validateCatalogSnapshotTransportInternal(
     delete copy.contentDigest;
     return copy;
   });
-  const normalizedEntries = normalizeCatalogManifestEntries(entriesWithoutContentDigest, base, 'catalog manifest v5')
+  const normalizedEntries = normalizeCatalogManifestEntries(entriesWithoutContentDigest, base, 'catalog manifest v6')
     .map((entry, index) => ({ ...entry, contentDigest: contentDigests[index]! }));
   const pluginNames = normalizedEntries.map((entry, index) => {
     if (typeof entry.name !== 'string') throw new Error(`Invalid catalog manifest entries[${index}].name.`);
@@ -1291,9 +1293,9 @@ async function validateCatalogSnapshotTransportInternal(
   if (!isDeepStrictEqual(normalizeMarketplaceOrder(claudeMarketplace), normalizeMarketplaceOrder(expectedClaude))) {
     throw new Error('Claude marketplace metadata or plugin inventory does not match the snapshot bundles.');
   }
-  const release = normalizeCatalogRelease(raw.release, base.catalogVersion);
-  const manifest: CatalogManifestV5 = {
-    schemaVersion: 5,
+  const release = normalizeCatalogRelease(raw.release);
+  const manifest: CatalogManifestV6 = {
+    schemaVersion: 6,
     catalogVersion: base.catalogVersion,
     channel: base.channel,
     requires: base.requires,
@@ -1301,35 +1303,12 @@ async function validateCatalogSnapshotTransportInternal(
     release,
     entries: normalizedEntries,
   };
-  if (release.state === 'published') {
-    const contentDigest = publishedContentDigest(manifest);
-    if (release.contentDigest !== contentDigest) {
-      throw new Error('Published catalog release contentDigest does not match the snapshot.');
-    }
-  }
-  const hasLedger = entries.includes(PLUGIN_RELEASE_LEDGER_FILENAME);
-  if (release.state === 'published' && !hasLedger) {
-    throw new Error('Published Catalog snapshot must include plugin-release-ledger.json.');
-  }
-  if (release.state === 'development' && hasLedger) {
-    throw new Error('Development Catalog snapshot must not include plugin-release-ledger.json.');
-  }
-  const ledger = hasLedger
-    ? validatePluginReleaseLedgerAgainstManifest(
-        await readRegularJson(
-          path.join(rootDir, PLUGIN_RELEASE_LEDGER_FILENAME),
-          'Plugin release ledger',
-        ),
-        manifest,
-      )
-    : undefined;
-  return { rootDir, manifest, ...(ledger ? { ledger } : {}), snapshotDigest };
+  return { rootDir, manifest, snapshotDigest };
 }
 
 export async function validateCatalogSnapshotTransport(snapshotDirectory: string): Promise<{
   rootDir: string;
-  manifest: CatalogManifestV5;
-  ledger?: PluginReleaseLedger;
+  manifest: CatalogManifestV6;
   snapshotDigest: string;
 }> {
   return validateCatalogSnapshotTransportInternal(snapshotDirectory);
@@ -1337,8 +1316,7 @@ export async function validateCatalogSnapshotTransport(snapshotDirectory: string
 
 type CatalogSnapshotValidationResult = {
   rootDir: string;
-  manifest: CatalogManifestV5;
-  ledger?: PluginReleaseLedger;
+  manifest: CatalogManifestV6;
   snapshotDigest: string;
 };
 

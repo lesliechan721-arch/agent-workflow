@@ -222,22 +222,6 @@ describe('bundle layout validation', () => {
     });
   });
 
-  it('rejects blocking AW capability scanner observations during bundle build', async () => {
-    const repoRoot = await makeTempRepo();
-    await fs.outputFile(
-      path.join(repoRoot, 'plugins', 'git-commit', 'scripts', 'unknown-command.sh'),
-      'aw unknown command\n',
-    );
-
-    await expect(createSyntheticEmbeddedRoot(repoRoot)).rejects.toMatchObject({
-      code: 'awCapabilityScanBlocked',
-      observations: [expect.objectContaining({
-        code: 'aw-command-unmapped',
-        command: 'aw unknown command',
-      })],
-    });
-  });
-
   it('omits .DS_Store path segments from the plugin bundle but keeps other hidden files', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
