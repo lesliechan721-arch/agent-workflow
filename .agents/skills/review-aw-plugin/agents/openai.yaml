@@ -1,7 +1,0 @@
-interface:
-  display_name: "Review AW Plugin"
-  short_description: "只读评审一个 AW 插件及其 materialized profiles"
-  default_prompt: "使用 $review-aw-plugin 评审当前单个 AW 插件。"
-
-policy:
-  allow_implicit_invocation: true
