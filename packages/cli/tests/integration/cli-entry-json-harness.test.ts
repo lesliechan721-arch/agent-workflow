@@ -63,7 +63,6 @@ afterEach(async () => {
 describe('CLI JSON Status v6 and Receipt v5 harness', () => {
   it.each([
     ['install', 'add', '-jy'],
-    ['upgrade', 'keep', '-jy'],
     ['reinstall', 'keep', '-jy'],
     ['uninstall', 'remove', '-j'],
     ['cleanup', 'keep', '-j'],
@@ -141,7 +140,6 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
 
   it.each([
     [['install', 'official/git-commit', '-sproject', '-pinvalid', '-j'], 'invalidArguments'],
-    [['upgrade', 'official/git-commit', '--all', '-p', 'codex', '--json'], 'invalidArguments'],
     [['sync', 'official/git-commit', '-p', 'claude', '--json'], 'invalidArguments'],
   ] as const)('uses a stable early failure code for %j', async (argv, code) => {
     const result = await runCliEntry([...argv]);
@@ -162,6 +160,14 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
         awExtensions: [],
       },
     });
+  });
+
+  it('does not expose the removed public upgrade command', async () => {
+    const result = await runCliEntry(['upgrade', 'official/git-commit', '--json']);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain("unknown command 'upgrade'");
   });
 
   it('publishes the runtime plugin capability contract with isolated stdout', async () => {
@@ -279,7 +285,6 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
 
   it.each([
     ['install', 'add'],
-    ['upgrade', 'keep'],
     ['reinstall', 'keep'],
     ['uninstall', 'remove'],
     ['cleanup', 'keep'],
@@ -310,7 +315,6 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     };
     const commands = {
       installWriteCommand: vi.fn(async () => result),
-      upgradeWriteCommand: vi.fn(async () => result),
       reinstallWriteCommand: vi.fn(async () => result),
       uninstallWriteCommand: vi.fn(async () => result),
       cleanupWriteCommand: vi.fn(async () => result),

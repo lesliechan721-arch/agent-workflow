@@ -22,11 +22,6 @@ import {
   readSkillOwnerMarker,
   SKILL_OWNER_MARKER,
 } from './ownership.js';
-import {
-  CodexNativeResidueProbeError,
-  discoverCodexNativeResidueNames,
-  inspectCodexNativeResidue,
-} from '../commands/rebuild-integration.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import type { PlatformName, Scope } from '../types.js';
@@ -1340,76 +1335,6 @@ export async function inventoryCatalogSourceReferences(options: {
       && !codexMarketplace.sourcePointsToManifest
       && path.normalize(codexMarketplace.source ?? '') === path.normalize(marketplaceRoot);
     const consumers: NativeMarketplaceConsumer[] = [];
-    if (options.includeOrphanedCodexNativeResidue === true
-      && marketplaceName !== null
-      && (strictRoot !== null || (canonicalRoot && codexMarketplaceIsCanonical))) {
-      let residueNames: string[] = [];
-      try {
-        residueNames = await discoverCodexNativeResidueNames({
-          cwd: options.cwd,
-          env,
-          marketplaceName,
-          marketplaceRoot,
-        });
-      } catch (error) {
-        const residueError = error instanceof CodexNativeResidueProbeError ? error : null;
-        const pluginName = residueError?.pluginName;
-        errors.push(inventoryError(
-          error,
-          residueError?.location ?? configPath,
-          'nativeStateRead',
-          env,
-          options.cwd,
-          {
-            global: false,
-            sourceId: sourceEntry.name,
-            ...(pluginName ? { pluginName } : {}),
-            platform: 'codex',
-            scope: 'user',
-          },
-        ));
-      }
-      for (const pluginName of residueNames) {
-        consumers.push({ pluginName, platform: 'codex', scope: 'user' });
-      }
-    } else if (marketplaceName !== null
-      && (strictRoot !== null || (canonicalRoot && codexMarketplaceIsCanonical))) {
-      const exactPluginNames = [...new Set((options.codexNativeResidueTargets ?? []).flatMap((target) =>
-        (target.sourceId === undefined || target.sourceId === sourceEntry.name)
-          ? [target.pluginName]
-          : []))];
-      for (const pluginName of exactPluginNames) {
-        try {
-          const residue = await inspectCodexNativeResidue({
-            cwd: options.cwd,
-            env,
-            pluginName,
-            marketplaceName,
-            marketplaceRoot,
-          });
-          if (residue.state === 'present') {
-            consumers.push({ pluginName, platform: 'codex', scope: 'user' });
-          } else if (residue.state === 'foreign') {
-            throw new Error('Codex native residue has foreign or incomplete identity evidence.');
-          }
-        } catch (error) {
-          errors.push(inventoryError(
-            error,
-            path.join(getCodexHome(env), 'plugins', 'cache', marketplaceName, pluginName),
-            'nativeStateRead',
-            env,
-            options.cwd,
-            {
-              global: false,
-              sourceId: sourceEntry.name,
-              pluginName,
-              platform: 'codex',
-              scope: 'user',
-            },
-          ));
-        }
-      }
-    }
     if (marketplaceName !== null && (strictRoot !== null || codexMarketplaceIsCanonical)) {
       for (const pluginId of Object.keys(codexConfig?.snapshot.plugins ?? {})) {
         const pluginName = pluginNameFromMarketplaceId(pluginId, marketplaceName);

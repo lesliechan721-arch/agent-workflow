@@ -7,7 +7,6 @@ import {
   addPluginIntentRoot,
   calculatePluginIntentDigest,
   canonicalizePluginIntentState,
-  convergePluginIntentManagedCodexOwnership,
   createEmptyPluginIntentState,
   mergePluginIntentRootPlatforms,
   parsePluginIntentState,
@@ -17,7 +16,6 @@ import {
   resolvePluginIntentStatePath,
   serializePluginIntentState,
   upsertPluginIntentRoot,
-  widenPluginIntentManagedCodexOwnership,
   writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
@@ -30,7 +28,7 @@ afterEach(() => {
 
 function state() {
   return canonicalizePluginIntentState({
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'aw-plugin-intents',
     roots: [
       { pluginId: 'team/root-b', platforms: ['codex'] },
@@ -39,7 +37,6 @@ function state() {
     dependencyScopeOverrides: [
       { pluginId: 'team/dependency', platform: 'codex', scope: 'user' },
     ],
-    managed: { codexPluginIds: ['root-b@team', 'root-a@aw'] },
   });
 }
 
@@ -50,11 +47,11 @@ async function projectFixture(name: string): Promise<string> {
   return cwd;
 }
 
-describe('plugin intent state v1', () => {
+describe('plugin intent state v2', () => {
   it('strictly parses one user/project schema and rejects installed-ledger fields', () => {
     expect(parsePluginIntentState(state())).toEqual(state());
     for (const invalid of [
-      { ...state(), schemaVersion: 2 },
+      { ...state(), schemaVersion: 1 },
       { ...state(), kind: 'aw-user-plugin-intents' },
       { ...state(), version: '1.0.0' },
       { ...state(), roots: [{ pluginId: 'root-a', platforms: ['codex'] }] },
@@ -75,7 +72,6 @@ describe('plugin intent state v1', () => {
         ...root,
         platforms: [...root.platforms].reverse(),
       })),
-      managed: { codexPluginIds: [...canonical.managed.codexPluginIds].reverse() },
     });
 
     expect(serializePluginIntentState(reordered)).toBe(serializePluginIntentState(canonical));
@@ -123,17 +119,6 @@ describe('plugin intent state v1', () => {
       pluginId: 'official/demo',
       platforms: ['codex'],
     }).roots).toEqual([{ pluginId: 'official/demo', platforms: ['claude'] }]);
-  });
-
-  it('widens managed ownership before work and converges it after success', () => {
-    const initial = {
-      ...createEmptyPluginIntentState(),
-      managed: { codexPluginIds: ['old@aw'] },
-    };
-    const widened = widenPluginIntentManagedCodexOwnership(initial, ['next@aw']);
-    expect(widened.managed.codexPluginIds).toEqual(['next@aw', 'old@aw']);
-    expect(convergePluginIntentManagedCodexOwnership(widened, ['next@aw']).managed.codexPluginIds)
-      .toEqual(['next@aw']);
   });
 
   it('uses fixed user/project paths and does not create a missing state on read', async () => {

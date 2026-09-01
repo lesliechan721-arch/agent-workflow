@@ -15,8 +15,8 @@ import type {
 } from '../commands/status-v6.js';
 import type {
   DependencyAssignmentSource,
-  DependencyOperationPlan,
 } from '../commands/dependency-operation-plan.js';
+import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { DependencyScopeOverride } from '../types.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 import {
@@ -172,7 +172,7 @@ export interface DependencyPlacementTargetViewModel {
   assignmentSource: DependencyAssignmentSource;
   explanation: string;
   affectsOtherProjects: boolean;
-  action: DependencyOperationPlan['targets'][number]['action'];
+  action: ReconcileOperationPlan['targets'][number]['action'];
 }
 
 export interface InstallPlacementDraftViewModel {
@@ -522,7 +522,7 @@ function dependencyAssignmentExplanation(
 }
 
 export function dependencyPlacementTargets(
-  plan: DependencyOperationPlan,
+  plan: ReconcileOperationPlan,
 ): DependencyPlacementTargetViewModel[] {
   return plan.targets.filter((target) => target.relation === 'dependency').map((target) => ({
     key: `${target.pluginId}\0${target.platform}`,

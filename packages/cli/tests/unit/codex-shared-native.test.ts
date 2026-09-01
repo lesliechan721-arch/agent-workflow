@@ -124,7 +124,7 @@ describe('codex-shared-native', () => {
     });
   });
 
-  it('fails closed for unsafe payload paths and same-name foreign plugin IDs', () => {
+  it('fails closed for unsafe registered payload paths without colliding namespaced peers', () => {
     expect(inspectCodexSharedNative(evidence({
       manifest: {
         state: 'present',
@@ -138,7 +138,7 @@ describe('codex-shared-native', () => {
 
     expect(inspectCodexSharedNative(evidence({
       pluginListEntries: [{ pluginId: 'demo@foreign', version: '2.0.0', enabled: true }],
-    }))).toMatchObject({ state: 'foreign', diagnostic: 'pluginNameCollision' });
+    }))).toMatchObject({ state: 'absent', diagnostic: 'staleCacheObserved' });
   });
 
   it('requires exact plugin-list, manifest identity, version, and digest evidence', () => {
@@ -156,5 +156,32 @@ describe('codex-shared-native', () => {
         pathSafe: true,
       },
     }))).toMatchObject({ state: 'foreign', diagnostic: 'manifestIdentityMismatch' });
+  });
+
+  it('treats cache as secondary evidence behind the official plugin list', () => {
+    expect(inspectCodexSharedNative(evidence({
+      marketplaceRegistration: undefined,
+      pluginListEntries: [],
+      manifest: { state: 'absent' },
+      managedByCurrentIntent: false,
+    }))).toEqual({ state: 'absent', nativeAction: 'install' });
+    expect(inspectCodexSharedNative(evidence({
+      pluginListEntries: [],
+      managedByCurrentIntent: false,
+    }))).toEqual({
+      state: 'absent',
+      nativeAction: 'install',
+      diagnostic: 'staleCacheObserved',
+    });
+    expect(inspectCodexSharedNative(evidence({
+      pluginListEntries: [{
+        pluginId: 'demo@aw-team', version: '1.0.0', enabled: true,
+      }],
+    }))).toEqual({
+      state: 'outdated',
+      version: '1.0.0',
+      desiredVersion: '2.0.0',
+      nativeAction: 'replace',
+    });
   });
 });

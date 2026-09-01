@@ -13,7 +13,7 @@
 
 ## CLI Source Layout (`packages/cli/src`)
 
-- `commands/write-commands.ts` 是 `install`、`upgrade`、`reinstall`、`uninstall`、`cleanup` 的公开写入口。
+- `commands/write-commands.ts` 是 `install`、`sync`、`reinstall`、`uninstall`、`cleanup` 的统一写入口。
 - `commands/rebuild-command.ts` 解析当前 Catalog、依赖和现场状态，并交给统一 rebuild 流程。
 - `commands/rebuild-operations.ts` 编排 ownership 检查、清理、平台写入、完成后检查和 postApply。
 - `commands/rebuild-integration.ts` 把插件能力转换成平台原生写入和 AW-owned 组件。
@@ -94,7 +94,7 @@ Catalog snapshot 的 logical identity 只来自 `.aw-generated.json.workspaceIde
 
 `catalog-state.json` 只为每个 source 保存 `Active` 和 `lastSync`。`Active` 绑定 logical identity、snapshot digest 和 Catalog store 目录。store 的唯一布局是 `<AW_HOME>/catalog-store/<logicalIdentity>/<snapshotDigest>/{metadata.json,snapshot/**}`；它没有 current、last-good、Candidate、Previous、发布版本记录或 refresh policy。
 
-公开入口是 `aw catalog source sync <id> [--check]` 和 `aw catalog source status [id]`。`sync --check` fetch 并验证 snapshot，但不写 store 或 Active；它可更新 `lastSync`。普通 `sync` 在 staging 验证后原子写 store，再原子切换 Active。失败保留原 Active。普通 install、upgrade、reinstall、uninstall、config、status、TUI 和 Portable 命令只读取 Active store，完全离线；没有 Active 时提示运行 source sync。`cleanup` 和 `cleanup --force` 不读取 Active，只凭 live ownership 或离线 evidence 清理 AW-owned 输出；source 或 store 缺失或损坏不能永久阻止 cleanup，且两者保留 foreign 或 shared 内容。
+公开入口是 `aw catalog source sync <id> [--check]` 和 `aw catalog source status [id]`。`sync --check` fetch 并验证 snapshot，但不写 store 或 Active；它可更新 `lastSync`。普通 source sync 在 staging 验证后原子写 store，再原子切换 Active。失败保留原 Active。普通 install、sync、reinstall、uninstall、config、status、TUI 和 Portable 命令只读取 Active store；`aw sync --refresh` 只刷新所选 intent root 涉及的来源。没有 Active 时提示运行 source sync。`cleanup` 和 `cleanup --force` 不读取 Active，只凭 live ownership 或离线 evidence 清理 AW-owned 输出；source 或 store 缺失或损坏不能永久阻止 cleanup，且两者保留 foreign 或 shared 内容。
 
 `aw catalog source add` 和 `update` 只原子修改 source config，不同步也不改 Active。`remove` 只修改 source config 和该 source 的 state，不删除其它 store snapshot、插件内容或 live ownership。Git 回退通过修改 ref 后再 sync；Path source 通过恢复目录后再 sync。没有自动 bootstrap、后台同步或远端轮询。
 
@@ -143,7 +143,6 @@ TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 ma
 依赖执行顺序只在本次命令内存在。Receipt v5 与 Review 使用相同的六个插件层。它保留 requested/resolved plugin ID、dependency edge、relation、requiredBy、desired intent、target state 和恢复建议；partial 或 failed 结果不能丢失 desired intent。精确匹配的现有 shared native 公开为 `reuse`，并明确不建立 ownership ledger。receipt 不公开持久计划、摘要、锁或来源内部证据。
 
 - `install`：按当前 Catalog 安装请求插件和缺失依赖；已存在且完整的依赖使用 `keep`，不重复安装。
-- `upgrade`：按当前 Catalog 重建选择的目标和完整依赖闭包；`--all` 从 live owner 发现目标。依赖按稳定的依赖优先顺序重建。
 - `reinstall`：先只清理 AW-owned 组件，再按当前 Catalog 完整重建。
 - `uninstall`：删除可由 live owner marker/token 证明属于 AW 的组件。它不重放历史脚本。
 - `cleanup`：不运行 postApply，也不读取依赖图或安装门槛。它只清理明确选择目标中可由 live owner marker/token 证明属于 AW 的 activation 和 extension，保留 plugin config、依赖 placement、foreign 内容和 shared native payload。
@@ -161,7 +160,7 @@ Manifest v3 只允许 `scripts.postApply: { path, timeoutMs? }`。AW 固定使�
 
 ## Live Status and Config
 
-`aw status` 输出 Status v6。它组合 user/project intent、当前 Active Catalog、managed inventory、live native/config evidence 和 AW extension projection。它严格只读：不创建 `.agent-workflows`、AW_HOME 或平台目录，不运行 postApply，不下载或授权 manager，不调用 native add/remove，不修改 trust/config，也不调用 Catalog provider。Active 缺失或来源不可用时，它保留可识别的 desired intent 和 managed inventory，并输出结构化 `unresolved`、`orphaned` 与恢复动作。PATH 中没有 Codex consumer 时，activation evidence 只标为 `assumed`，不把缺失 PATH 当成命令失败。
+`aw status` 输出 Status v6。它组合 user/project intent、当前 Active Catalog、live native/config evidence 和 AW extension projection。它严格只读：不创建 `.agent-workflows`、AW_HOME 或平台目录，不运行 postApply，不下载或授权 manager，不调用 native add/remove，不修改 trust/config，也不调用 Catalog provider。Active 缺失或来源不可用时，它保留可识别的 desired intent，并从 live AW ownership 输出结构化 `unresolved`、`orphaned` 与恢复动作。PATH 中没有 Codex consumer 时，activation evidence 只标为 `assumed`，不把缺失 PATH 当成命令失败。
 
 每个 target 必须同时包含 `desired` 和 `actual`。`desired` 说明 enabled、scope 和 `root | dependency | managed | none` relation。`actual.state` 的公开状态为：
 
@@ -193,7 +192,7 @@ TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | e
 
 ownership health 只表示当前 live 组件是否完整。Status v6 的 shared native version 比较进入 `needsSync` 和 `codexSharedNativeUpdateRequired`。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v6 JSON。
 
-配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。`config set/unset` 继续要求当前 schema；`config reset` 只删除已定位 layer，不要求 source、manifest、schema 或安装现场。完整 plugin ID 直接定位；裸名只在所选 scope/layer 的 store 中唯一时允许。config 已提交后，后续平台重新安装失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可重新安装恢复。
+配置按 manifest default、user、project shared、project local 合并。source config 和 plugin config 均使用原子替换。`config set/unset` 继续要求当前 schema；`config reset` 只删除已定位 layer，不要求 source、manifest、schema 或安装现场。完整 plugin ID 直接定位；裸名只在所选 scope/layer 的 store 中唯一时允许。默认写命令只提交配置；显式 `--apply` 才对当前 cwd 可见的 desired placement 执行 sync。config 已提交后，后续平台 apply 失败不回滚该配置；receipt 和 status 报告 partial 结果，用户可再次 sync 恢复。
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user、project shared 或 project local 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
 
@@ -213,7 +212,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - primary source 默认继续使用 `aw` marketplace。若用户级 Codex 或 Claude 的 `aw` 已由 legacy 或 foreign source 占用，首次安装改用 source-bound `aw-<sourceId>`；两个平台使用同一名称。已有 canonical 注册继续决定名称，候选名称被 foreign source 占用时 fail closed。
 - 外部 Codex/Claude 命令、用户手改目录和共享 marketplace 都是不受 AW 完全控制的边界。Claude 合法的未绑定默认安装记录不属于任何 marketplace；来源 inventory 必须保留并忽略它，不能把它归为 canonical 或 foreign。执行 native install 前，若任意 scope 存在与目标原生插件名称相同的未绑定 bare-key 记录，写命令必须在清理、mirror 和 native CLI 调用前 fail closed；不同名记录继续保留并忽略。cleanup 和 uninstall 不删除、迁移或重命名未绑定记录。命令允许部分成功，并报告残留和失败。
 - Codex cleanup 和 uninstall 先直接检查 config、cache、manifest 和 ownership。没有可证明的 AW-owned native residue 或待移除的 canonical marketplace 时，不解析或获取 manager。发现 residue 且 system CLI 缺失时，可在本次授权下使用 AW-managed 官方 CLI 执行 remove。AW 不直接删除 Codex 私有 plugin storage；foreign 内容始终保留。remove 或完成后检查失败时保留 residue，并提示重试 cleanup/uninstall、升级 AW 或安装兼容的官方 Codex CLI。
-- Codex project config 的规范路径与 Codex user home 相同时，未发现 project owner 的默认 status 不生成 project placement；显式 project status 报告路径别名。`install`、`upgrade` 和 `reinstall` 不向这个 project placement 写入，用户必须进入独立项目目录；`cleanup` 和 `uninstall` 仍可处理已有 project owner。
+- Codex project config 的规范路径与 Codex user home 相同时，未发现 project owner 的默认 status 不生成 project placement；显式 project status 报告路径别名。`install`、`sync` 和 `reinstall` 不向这个 project placement 写入，用户必须进入独立项目目录；`cleanup` 和 `uninstall` 仍可处理已有 project owner。
 - active marketplace 和 quarantine 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
 
@@ -222,7 +221,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 当前 write、Status v6 和 Receipt v5 使用以下合同。旧 Codex project materialization 不作为 AW fallback，也不维护第二套 project 安装模型。
 
 - Intent 只表示 desired state。user/project enablement、选中平台和 scope 都是待达成目标，不是安装事实。actual state 只来自当前 live ownership、Codex native config/cache/manifest，以及可观察的 native loader 证据。
-- Intent 使用严格 schema 1：`kind` 固定为 `aw-plugin-intents`，字段固定为 `schemaVersion`、`kind`、`roots`、`dependencyScopeOverrides` 和 `managed.codexPluginIds`。user 文件是 `<AW_HOME>/plugin-intents.json`；project 文件是仓库根 `.agent-workflows/plugin-intents.json`，可以随仓库共享。dependency override 以 `(source/plugin, platform)` 为键；project root 可选择 project 或 user dependency placement，user root 的依赖固定为 user。
+- Intent 使用严格 schema 2：`kind` 固定为 `aw-plugin-intents`，字段固定为 `schemaVersion`、`kind`、`roots` 和 `dependencyScopeOverrides`。它不保存 native claim 或安装事实。旧 schema 1 不读取、不迁移。user 文件是 `<AW_HOME>/plugin-intents.json`；project 文件是仓库根 `.agent-workflows/plugin-intents.json`，可以随仓库共享。dependency override 以 `(source/plugin, platform)` 为键；project root 可选择 project 或 user dependency placement，user root 的依赖固定为 user。
 - Codex plugin 只物化一份 shared native user package。project scope 只在项目的 Codex 配置中激活该 native plugin。shared-native ownership 不得为此保存 project claim path、global claim、refcount、native installed ledger 或第二套安装状态，也不通过全局项目扫描执行 auto-GC。qualification report 也不是 installed ledger。
 - Shared native 现场使用 payload-aware inspector。它比较当前 Catalog 派生的 canonical tree digest 与 native cache，覆盖非 manifest 文件、文件 mode 和 symlink boundary；AW owner marker 与 native 管理的 `skills` manifest 投影按固定规则规范化。payload 修改或删除为 `corrupt`，越界 symlink 为 `foreign`。write preview 与 mutation lock 内重算使用同一实际 payload digest；repair 不得复用现场，并按 shared impact 要求 `--yes` 或 TUI 确认。
 - 基础 Codex native plugin 合同最低为 `0.145.0`。涉及 project activation 的操作最低为 `0.151.0`。开发 qualification 固定拒绝非精确 `0.151.0`，避免把其它版本的行为外推到 rollout allowlist。

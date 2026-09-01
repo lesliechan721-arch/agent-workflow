@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import type {
   GeneratedArtifact,
+  CatalogResolution,
   PlatformName,
   PluginMeta,
   RebuildActionEvent,
@@ -9,6 +10,7 @@ import type {
   RebuildCommand,
   Scope,
 } from '../types.js';
+import type { OperationAction } from './operation-plan.js';
 import {
   cleanupOwnedComponents,
   inspectOwnedComponents,
@@ -16,6 +18,7 @@ import {
   type NativeOwnershipProbe,
   type NativeOwnershipRemove,
   type OwnedComponent,
+  type OwnedComponentExecutor,
   type OwnershipInspection,
   validateOwnerIdentity,
 } from '../utils/ownership.js';
@@ -44,6 +47,8 @@ export interface DesiredTarget {
   requiresNative: boolean;
   writeNativeRequired?: boolean;
   artifacts: readonly GeneratedArtifact[];
+  operationActions?: readonly OperationAction[];
+  catalog?: CatalogResolution;
   postApplySource: PluginMeta;
 }
 
@@ -96,6 +101,7 @@ export interface RebuildPostApplyInvocation {
 }
 
 export interface RebuildTargetDriver {
+  ownership: OwnedComponentExecutor;
   preflightMaterialize?(target: DesiredTarget): Promise<void>;
   commitMaterialize?(target: DesiredTarget): Promise<void>;
   rollbackMaterialize?(target: DesiredTarget): Promise<void>;
@@ -471,6 +477,7 @@ async function cleanupOwned(
 ): Promise<CleanupResult> {
   return cleanupOwnedComponents({
     components,
+    executor: driver.ownership,
     nativeProbe: driver.probeNative,
     nativeRemove: driver.removeNative,
   });
@@ -522,7 +529,7 @@ async function cleanupTarget(
 }
 
 async function materializeTarget(options: {
-  command: 'install' | 'upgrade' | 'reinstall';
+  command: 'install' | 'reinstall';
   target: DesiredTarget;
   driver: RebuildTargetDriver;
   accumulator: ResultAccumulator;
@@ -538,6 +545,7 @@ async function materializeTarget(options: {
         await driver.preflightMaterialize?.(target);
         return inspectOwnedComponents({
           components: target.ownedComponents,
+          executor: driver.ownership,
           nativeProbe: driver.probeNative,
         });
       },
@@ -606,6 +614,7 @@ async function materializeTarget(options: {
         components: (target.desiredOwnedComponents ?? target.ownedComponents)
           .filter((component) => !optional.has(component)),
         nativeProbe: driver.probeNativeHealth ?? driver.probeNative,
+        executor: driver.ownership,
         verifyHealth: true,
       });
       const postcheckFailure = postcheckMessage(accumulator, postcheck);
@@ -744,6 +753,7 @@ async function executeUninstall(options: {
       'preflight.inspect',
       () => inspectOwnedComponents({
         components: target.ownedComponents,
+        executor: driver.ownership,
         nativeProbe: driver.probeNative,
       }),
       events,
@@ -820,7 +830,7 @@ async function executeRebuildOperationCore(
   events: RebuildActionEvents,
 ): Promise<RebuildResult> {
 
-  if (options.command === 'install' || options.command === 'upgrade') {
+  if (options.command === 'install') {
     return materializeTarget({
       command: options.command,
       target: options.target,
@@ -856,6 +866,7 @@ async function executeRebuildOperationCore(
         await options.driver.preflightMaterialize?.(options.target);
         return inspectOwnedComponents({
           components: options.target.ownedComponents,
+          executor: options.driver.ownership,
           nativeProbe: options.driver.probeNative,
         });
       },

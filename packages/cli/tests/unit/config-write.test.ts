@@ -181,6 +181,36 @@ afterEach(async () => {
 });
 
 describe('config write full reinstall apply', () => {
+  it('commits config without applying runtime changes when apply is false', async () => {
+    const fixture = await createFixture();
+    const reinstall = createReinstallMock();
+    mocks.visible.add('codex:user');
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+      apply: false,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [],
+      applySkippedReason: 'notRequested',
+    });
+    expect(reinstall).not.toHaveBeenCalled();
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).values).toEqual({ mode: 'fast' });
+  });
+
   it.each(['save', 'reset'] as const)(
     'rejects a stale Review for config %s once under the config transaction without a write',
     async (action) => {

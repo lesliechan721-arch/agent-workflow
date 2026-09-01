@@ -28,7 +28,6 @@ import {
   installWriteCommand as installCommand,
   reinstallWriteCommand as reinstallCommand,
   uninstallWriteCommand as uninstallCommand,
-  upgradeWriteCommand as upgradeCommand,
 } from './commands/write-commands.js';
 import { syncCommand } from './commands/sync-command.js';
 import type { RebuildCommandResult } from './commands/rebuild-command.js';
@@ -61,7 +60,6 @@ import {
   resolveConfigWriteScope,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
-  normalizeUpgradeCommandOptions,
 } from './commands/options.js';
 import {
   isCommandWarningError,
@@ -233,6 +231,7 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   valueJson?: boolean;
   yes?: boolean;
   local?: boolean;
+  apply?: boolean;
 }
 
 type ReceiptWriteCommand = RebuildReceiptJson['command'];
@@ -342,7 +341,7 @@ function jsonWriteCommandRequest(argv: string[]): {
   scope: Scope;
 } | null {
   const command = argv[0];
-  if (!['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup', 'sync'].includes(command ?? '')) {
+  if (!['install', 'reinstall', 'uninstall', 'cleanup', 'sync'].includes(command ?? '')) {
     return null;
   }
   const request = preparseWriteReceiptRequest(argv);
@@ -443,7 +442,7 @@ function toCliDiagnosticsOptions(
 
 type WriteWizardCommand = Extract<
   CommandWizardCommand,
-  'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup'
+  'install' | 'reinstall' | 'uninstall' | 'cleanup'
 >;
 
 function isWizardAvailable(
@@ -464,11 +463,10 @@ function optionTokens(flag: string, value: string | undefined): string[] {
 function writeCommandUsage(command: WriteWizardCommand): string {
   const cardinality = command === 'reinstall' || command === 'cleanup' ? '<plugin>' : '<plugin...>';
   const scope = command === 'cleanup' ? ' --scope <project|user>' : ' [--scope <project|user>]';
-  const all = command === 'upgrade' ? ' 或 aw upgrade --all --platform both --scope user' : '';
   return [
     `${command} 命令缺少必要参数。`,
     `Usage: aw ${command} ${cardinality} --platform <codex|claude|both>${scope}`,
-    `Example: aw ${command} example-plugin --platform codex --scope user${all}`,
+    `Example: aw ${command} example-plugin --platform codex --scope user`,
   ].join('\n');
 }
 
@@ -487,12 +485,6 @@ function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset')
   ].join('\n');
 }
 
-function assertUpgradeAllConflict(pluginNames: string[], all: boolean): void {
-  if (all && pluginNames.length > 0) {
-    throw new Error('upgrade 命令不能同时使用插件名和 `--all`。');
-  }
-}
-
 function equivalentWriteCommand(
   command: WriteWizardCommand,
   selection: CommandWizardSelection,
@@ -506,11 +498,9 @@ export function buildEquivalentWriteCommandTokens(
   selection: CommandWizardSelection,
   rawOptions: RawWriteWizardOptions,
 ): string[] {
-  const all = command === 'upgrade' && rawOptions.all === true;
   return [
     'aw',
     command,
-    ...(all ? ['--all'] : []),
     '--platform',
     selection.platform ?? 'both',
     '--scope',
@@ -522,7 +512,7 @@ export function buildEquivalentWriteCommandTokens(
       ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
       : []),
     ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
-    ...(!all && selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
+    ...(selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
   ];
 }
 
@@ -895,9 +885,7 @@ async function executeWriteCommand(
   const raw = { cwd: context.cwd, ...rawOptions };
   const commandOptions = normalizeWriteRequest(() => command === 'install'
     ? normalizeInstallCommandOptions(raw)
-    : command === 'upgrade'
-      ? normalizeUpgradeCommandOptions(raw)
-      : command === 'uninstall'
+    : command === 'uninstall'
         ? normalizeUninstallCommandOptions(raw)
         : command === 'cleanup'
           ? normalizeCleanupCommandOptions(raw)
@@ -914,7 +902,6 @@ async function executeWriteCommand(
   };
   switch (command) {
     case 'install': return installCommand(pluginNames, commandOptions, runtime);
-    case 'upgrade': return upgradeCommand(pluginNames, commandOptions, runtime);
     case 'uninstall': return uninstallCommand(pluginNames, commandOptions, runtime);
     case 'cleanup': return cleanupCommand(pluginNames, commandOptions, runtime);
     case 'reinstall': return reinstallCommand(pluginNames, commandOptions, runtime);
@@ -930,11 +917,7 @@ async function runWriteCommandAction(
   if ((command === 'cleanup' || command === 'reinstall') && pluginNames.length > 1) {
     throw new WriteCommandRequestError(`${command} 命令当前只支持单个插件目标。`);
   }
-  if (command === 'upgrade') {
-    normalizeWriteRequest(() => assertUpgradeAllConflict(pluginNames, rawOptions.all === true));
-  }
-
-  const missingPlugin = pluginNames.length === 0 && !(command === 'upgrade' && rawOptions.all === true);
+  const missingPlugin = pluginNames.length === 0;
   const missingPlatform = rawOptions.platform === undefined;
   const missingScope = command === 'cleanup' && rawOptions.scope === undefined;
   const missing = missingPlugin || missingPlatform || missingScope;
@@ -2560,6 +2543,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
     .addOption(new Option('--subdir <path>', 'update the Git catalog subdirectory'))
     .addOption(new Option('--no-subdir', 'remove the Git catalog subdirectory'))
+    .option('-y, --yes', 'confirm a source identity change', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: {
       git?: string;
@@ -2567,6 +2551,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       ref?: string;
       defaultRef?: boolean;
       subdir?: string | false;
+      yes?: boolean;
       json?: boolean;
     }) => {
       try {
@@ -2603,6 +2588,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cliVersion: resolveCliVersion(),
           cwd,
           env,
+          requireIdentityChangeConfirmation: true,
+          confirmIdentityChange: rawOptions.yes === true,
         });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Catalog source ${id} updated.`);
@@ -2676,11 +2663,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   program
     .command('sync')
-    .description('Reconcile Codex actual state from existing desired intent')
+    .description('Reconcile actual state from existing desired intent')
     .argument('[plugins...]')
     .requiredOption('-s, --scope <scope>', 'project or user')
-    .requiredOption('-p, --platform <platform>', 'codex')
+    .requiredOption('-p, --platform <platform>', 'codex, claude, or both')
     .option('-a, --all', 'reconcile every desired plugin in the selected scope', false)
+    .option('--refresh', 'refresh only Catalog sources required by selected intent roots', false)
     .option('-y, --yes', 'authorize shared native replacement or forced repair', false)
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print sync receipt as JSON', false)
@@ -2693,6 +2681,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope: string;
         platform: string;
         all?: boolean;
+        refresh?: boolean;
         yes?: boolean;
         allowManagedCodexInstall?: boolean;
         json?: boolean;
@@ -2705,9 +2694,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform: rawOptions.platform,
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
         }));
-      if (normalized.platform !== 'codex') {
-        throw new Error('syncPlatformUnsupported: sync requires --platform codex.');
-      }
       const syncPlatform = normalized.platform;
       const result = await runActionWithContext(context, () => syncCommand(
         plugins ?? [],
@@ -2717,6 +2703,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform: syncPlatform,
           scope: normalized.scope,
           all: rawOptions.all,
+          refresh: rawOptions.refresh,
+          cliVersion: resolveCliVersion(),
           yes: rawOptions.yes,
           json: rawOptions.json,
           interactive: context.interactive && context.isTty && !context.isCi,
@@ -2818,49 +2806,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
       commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
     });
-
-  program
-    .command('upgrade')
-    .argument('[plugins...]')
-    .option('-a, --all', 'upgrade all plugins', false)
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
-    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize shared Codex native replacement', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(
-      async (
-        plugins: string[],
-        rawOptions: {
-          all?: boolean;
-          scope?: string;
-          platform?: string;
-          scriptTimeout?: string;
-          allowManagedCodexInstall?: boolean;
-          yes?: boolean;
-          json?: boolean;
-        } & RawDiagnosticsOptions,
-      ) => {
-        const context = createActionContext('upgrade', rawOptions);
-        const outcome = await runActionWithContext(context, () =>
-          runWriteCommandAction('upgrade', plugins ?? [], rawOptions, context));
-        if (outcome.cancelled) return;
-        const receipt = outcome.result;
-        if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('upgrade', receipt));
-        } else {
-          for (const line of renderRebuildReceipt('upgrade', receipt)) {
-            writeLine(io.stdout, line);
-          }
-        }
-        writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
-        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
-      },
-    );
 
   program
     .command('cleanup')
@@ -3096,6 +3041,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
     .option('--value-json', 'parse value as a JSON literal', false)
+    .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3141,6 +3087,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           request: {
             updates: { [selectedKey]: inputValue },
           },
+          apply: rawOptions.apply === true,
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3253,6 +3200,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[key]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
+    .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3301,6 +3249,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           request: {
             removeKeys: [selectedKey],
           },
+          apply: rawOptions.apply === true,
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3385,6 +3334,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugin]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'reset only the current project local override layer', false)
+    .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-y, --yes', 'confirm destructive reset', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3437,6 +3387,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               env: context.env,
               plugin,
               pluginError,
+              apply: rawOptions.apply === true,
             });
             return {
               ok: resetReceipt.overallState === 'succeeded',

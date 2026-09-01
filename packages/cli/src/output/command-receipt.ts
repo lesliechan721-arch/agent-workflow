@@ -1,7 +1,7 @@
 import type { PlatformName, ReceiptOverallState, Scope } from '../types.js';
 import type { InitCommandResult } from '../commands/init.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
-import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
+import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 
 export interface CliCommandResult {
@@ -18,7 +18,7 @@ export interface CliCommandResult {
     scope: Scope;
   }>;
   overallState?: ReceiptOverallState;
-  dependencyPlan?: DependencyOperationPlan;
+  dependencyPlan?: ReconcileOperationPlan;
   codexReconcilePlans?: CodexReconcilePlan[];
   targetResults?: Array<{
     target: { pluginId?: string; platform: PlatformName; scope: Scope };
@@ -28,7 +28,7 @@ export interface CliCommandResult {
 
 export interface RebuildReceiptJson {
   ok: boolean;
-  command: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
+  command: 'install' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
   receiptSchemaVersion: 5;
   dependencyPlanSchemaVersion?: number;
   requestedPluginIds?: string[];
@@ -255,7 +255,7 @@ export function buildRebuildReceiptJson(
     command,
     receiptSchemaVersion: 5,
     ...(result.dependencyPlan ? {
-      dependencyPlanSchemaVersion: result.dependencyPlan.dependencyPlanSchemaVersion,
+      dependencyPlanSchemaVersion: 2,
       requestedPluginIds: result.dependencyPlan.requestedPluginIds,
       resolvedPluginIds: result.dependencyPlan.resolvedPluginIds,
       dependencyEdges: result.dependencyPlan.dependencyEdges,

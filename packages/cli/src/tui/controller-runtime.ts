@@ -21,8 +21,8 @@ import {
   cleanupWriteCommand,
   installWriteCommand,
   reinstallWriteCommand,
+  syncWriteCommand,
   uninstallWriteCommand,
-  upgradeWriteCommand,
 } from '../commands/write-commands.js';
 import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
@@ -45,7 +45,7 @@ import {
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
-import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
+import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
 import {
   offlineCleanupEvidenceFromInventory,
@@ -1037,8 +1037,9 @@ export function createTuiControllerDependencies(
         ...(signal ? { signal } : {}),
       });
     }
-    let dependencyPlan: DependencyOperationPlan | undefined;
+    let dependencyPlan: ReconcileOperationPlan | undefined;
     let codexReconcilePlans: OperationEvidence['codexReconcilePlans'];
+    let operationPlan: OperationEvidence['operationPlan'];
     await preparation?.reporter.emit('catalog');
     const offlineCleanupTarget = offlineCleanupReason && intent.kind === 'pluginWrite'
       ? status.payload.targets.find((target) => target.pluginId === intent.pluginId
@@ -1117,11 +1118,11 @@ export function createTuiControllerDependencies(
     if (intent.kind === 'pluginWrite') {
       const command = {
         install: installWriteCommand,
-        upgrade: upgradeWriteCommand,
+        upgrade: syncWriteCommand,
         reinstall: reinstallWriteCommand,
         uninstall: uninstallWriteCommand,
         cleanup: cleanupWriteCommand,
-        sync: installWriteCommand,
+        sync: syncWriteCommand,
       }[intent.action];
       const preview = await command([intent.pluginId], {
         cwd: context.cwd,
@@ -1139,8 +1140,7 @@ export function createTuiControllerDependencies(
           catalogOperationContext: catalogOperation,
           expectedGenerationSetDigest: catalogOperation.generationSetDigest,
         } : {}),
-        previewDependencyPlanOnly: true,
-        ...(intent.action === 'sync' ? { reconcileIntentOnly: true } : {}),
+        previewOperationPlan: true,
         ...(preparation ? {
           onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
             stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
@@ -1150,6 +1150,9 @@ export function createTuiControllerDependencies(
       codexReconcilePlans = intent.dependencyPlacementOnly === 'desired'
         ? undefined
         : preview?.codexReconcilePlans;
+      operationPlan = intent.dependencyPlacementOnly === 'desired'
+        ? undefined
+        : preview?.operationPlan;
       if (hasDeclaredDependencies
         && (intent.action === 'install'
           || intent.action === 'upgrade'
@@ -1227,6 +1230,7 @@ export function createTuiControllerDependencies(
       ...(dependencyPlan ? { dependencyPlan } : {}),
       ...(projectIntentDigest ? { projectIntentDigest } : {}),
       ...(codexReconcilePlans ? { codexReconcilePlans } : {}),
+      ...(operationPlan ? { operationPlan } : {}),
       ...(codexManager ? { codexManager } : {}),
       targetFingerprint: statusTargetFingerprint(
         evidenceTargets,
@@ -1646,11 +1650,11 @@ export function createTuiControllerDependencies(
             };
             const command = {
               install: installWriteCommand,
-              upgrade: upgradeWriteCommand,
+              upgrade: syncWriteCommand,
               reinstall: reinstallWriteCommand,
               uninstall: uninstallWriteCommand,
               cleanup: cleanupWriteCommand,
-              sync: installWriteCommand,
+              sync: syncWriteCommand,
             }[intent.action];
             const currentSource = currentEvidence.source;
             const offlineCleanup = currentEvidence.offlineCleanup;
@@ -1661,13 +1665,9 @@ export function createTuiControllerDependencies(
               ...context,
               awHomeMutationToken,
               inventoryCatalogSourceReferences: operationInventory,
-              ...(currentEvidence.dependencyPlan
-                ? { expectedOperationDependencyPlan: currentEvidence.dependencyPlan }
+              ...(currentEvidence.operationPlan
+                ? { expectedPlanFingerprint: currentEvidence.operationPlan.planFingerprint }
                 : {}),
-              ...(currentEvidence.codexReconcilePlans
-                ? { expectedCodexReconcilePlans: currentEvidence.codexReconcilePlans }
-                : {}),
-              ...(intent.action === 'sync' ? { reconcileIntentOnly: true } : {}),
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
               ...(catalogOperation ? {
                 catalogOperationContext: catalogOperation,

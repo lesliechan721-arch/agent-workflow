@@ -53,6 +53,29 @@ export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 3 };
 
 export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';
 
+export type OwnedSharedLocator =
+  | { kind: 'claude-permissions'; settingsPath: string; ownerKey: string }
+  | { kind: 'codex-instruction'; configPath: string; ownerKey: string }
+  | {
+      kind: 'codex-activation';
+      configPath: string;
+      codexPluginId: string;
+      desired: boolean;
+      disposition?: 'remove' | 'disable';
+    }
+  | { kind: 'legacy-codex-mcp'; configPath: string; serverKey: string; ownerKey: string }
+  | { kind: 'legacy-codex-hook'; hooksPath: string; serializedIdentity: string }
+  | {
+      kind: 'codex-role-registration';
+      configPath: string;
+      roleKey: string;
+      rolePath: string;
+      fileIdentity: OwnerIdentity;
+    }
+  | { kind: 'codex-marketplace'; marketplaceName: string; marketplaceRoot: string; desired: boolean }
+  | { kind: 'claude-marketplace'; marketplaceName: string; marketplaceRoot: string; desired: boolean }
+  | { kind: 'corrupted'; message: string };
+
 interface OwnedPathComponent {
   path: string;
   allowedRoot: string;
@@ -62,17 +85,16 @@ interface OwnedPathComponent {
 export type OwnedComponent =
   | ({
       kind: 'skill-directory';
-      validateHealth?: () => Promise<void>;
+      validateHealth?: boolean;
       // A pristine markerless catalog tree is absent, not deletion-authorized ownership.
-      unownedIsPristine?: (actualPath: string) => Promise<boolean>;
+      pristineTree?: Array<{ relativePath: string; contentDigest: string }>;
     } & OwnedPathComponent)
   | ({ kind: 'owned-text-file' } & OwnedPathComponent)
   | {
       kind: 'managed-block' | 'shared-config';
       identity: OwnerIdentity;
       label: string;
-      inspect: () => Promise<OwnedProbeResult>;
-      remove: () => Promise<void>;
+      locator: OwnedSharedLocator;
     }
   | {
       kind: 'native-plugin';
@@ -113,6 +135,22 @@ export type NativeOwnershipProbe = (
 export type NativeOwnershipRemove = (
   component: Extract<OwnedComponent, { kind: 'native-plugin' }>,
 ) => Promise<void>;
+
+export interface OwnedComponentExecutor {
+  inspectShared(component: Extract<OwnedComponent, {
+    kind: 'managed-block' | 'shared-config';
+  }>): Promise<OwnedProbeResult>;
+  removeShared(component: Extract<OwnedComponent, {
+    kind: 'managed-block' | 'shared-config';
+  }>): Promise<void>;
+  validateSkillDirectory?(component: Extract<OwnedComponent, {
+    kind: 'skill-directory';
+  }>): Promise<void>;
+  skillDirectoryMatchesPristineTree?(options: {
+    actualPath: string;
+    files: ReadonlyArray<{ relativePath: string; contentDigest: string }>;
+  }): Promise<boolean>;
+}
 
 export interface CleanupFailure extends OwnershipError {
   phase: 'probe' | 'mutation' | 'verify' | 'remove' | 'post-probe';
@@ -436,6 +474,7 @@ async function inspectPathAt(
   component: Extract<OwnedComponent, OwnedPathComponent>,
   actualPath: string,
   canonicalPath: boolean,
+  executor?: OwnedComponentExecutor,
 ): Promise<ComponentProbe> {
   try {
     await assertNoSymlinkInPath(component.allowedRoot, actualPath);
@@ -465,7 +504,13 @@ async function inspectPathAt(
       return foreignProbe(component, 'unownedContent');
     }
     if (!marker) {
-      return await component.unownedIsPristine?.(actualPath)
+      const pristine = component.pristineTree && executor?.skillDirectoryMatchesPristineTree
+        ? await executor.skillDirectoryMatchesPristineTree({
+            actualPath,
+            files: component.pristineTree,
+          })
+        : false;
+      return pristine
         ? { state: 'absent' }
         : foreignProbe(component, 'unownedContent');
     }
@@ -543,22 +588,25 @@ function validateNativePlugin(component: Extract<OwnedComponent, { kind: 'native
 async function inspectComponent(
   component: OwnedComponent,
   nativeProbe?: NativeOwnershipProbe,
+  executor?: OwnedComponentExecutor,
 ): Promise<ComponentProbe> {
   validateOwnerIdentity(component.identity);
-  if ('path' in component) return inspectPathAt(component, component.path, true);
+  if ('path' in component) return inspectPathAt(component, component.path, true, executor);
   if (component.kind === 'native-plugin') {
     validateNativePlugin(component);
     if (!nativeProbe) throw new Error('Native ownership inspection 缺少 nativeProbe。');
     const state = await nativeProbe(component);
     return state === 'foreign' ? foreignProbe(component, 'ownerMismatch') : { state };
   }
-  const state = await component.inspect();
+  if (!executor) throw new Error('Shared ownership inspection 缺少 executor。');
+  const state = await executor.inspectShared(component);
   return state === 'foreign' ? foreignProbe(component, 'ownerMismatch') : { state };
 }
 
 export async function inspectOwnedComponents(options: {
   components: readonly OwnedComponent[];
   nativeProbe?: NativeOwnershipProbe;
+  executor?: OwnedComponentExecutor;
   verifyHealth?: boolean;
 }): Promise<OwnershipInspection> {
   const components: OwnedComponentInspection[] = [];
@@ -566,17 +614,20 @@ export async function inspectOwnedComponents(options: {
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const result = await inspectComponent(component, options.nativeProbe);
+      const result = await inspectComponent(component, options.nativeProbe, options.executor);
       let probe = result.state;
       let healthDiagnostic: string | undefined;
       if (
         options.verifyHealth
         && probe === 'present'
         && component.kind === 'skill-directory'
-        && component.validateHealth
+        && component.validateHealth === true
       ) {
         try {
-          await component.validateHealth();
+          if (!options.executor?.validateSkillDirectory) {
+            throw new Error('Skill health inspection 缺少 executor。');
+          }
+          await options.executor.validateSkillDirectory(component);
         } catch (error) {
           probe = 'partial';
           healthDiagnostic = errorMessage(error);
@@ -620,6 +671,7 @@ async function cleanupPathComponent(options: {
   component: Extract<OwnedComponent, OwnedPathComponent>;
   result: CleanupResult;
   afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
+  executor?: OwnedComponentExecutor;
 }): Promise<void> {
   const { component, result } = options;
   const label = componentLabel(component);
@@ -653,7 +705,7 @@ async function cleanupPathComponent(options: {
 
   let verified: OwnedProbeResult;
   try {
-    verified = (await inspectPathAt(component, quarantinePath, false)).state;
+    verified = (await inspectPathAt(component, quarantinePath, false, options.executor)).state;
   } catch (error) {
     result.failures.push({
       label,
@@ -695,7 +747,7 @@ async function cleanupPathComponent(options: {
   }
 
   try {
-    const after = await inspectComponent(component);
+    const after = await inspectComponent(component, undefined, options.executor);
     if (after.state === 'absent') pushUnique(result.removed, label);
     else pushUnique(result.residual, label);
   } catch (error) {
@@ -708,6 +760,7 @@ export async function cleanupOwnedComponents(options: {
   components: readonly OwnedComponent[];
   nativeProbe?: NativeOwnershipProbe;
   nativeRemove?: NativeOwnershipRemove;
+  executor?: OwnedComponentExecutor;
   beforeMutation?: (component: OwnedComponent) => Promise<void>;
   afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
 }): Promise<CleanupResult> {
@@ -723,7 +776,7 @@ export async function cleanupOwnedComponents(options: {
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const probe = (await inspectComponent(component, options.nativeProbe)).state;
+      const probe = (await inspectComponent(component, options.nativeProbe, options.executor)).state;
       probes.set(component, probe);
       if (probe === 'absent') pushUnique(result.absent, label);
       if (probe === 'foreign' || probe === 'partial') pushUnique(result.residual, label);
@@ -748,6 +801,7 @@ export async function cleanupOwnedComponents(options: {
         component,
         result,
         afterQuarantine: options.afterQuarantine,
+        executor: options.executor,
       });
       continue;
     }
@@ -760,7 +814,8 @@ export async function cleanupOwnedComponents(options: {
         }
         await options.nativeRemove(component);
       } else {
-        await component.remove();
+        if (!options.executor) throw new Error('Shared ownership cleanup 缺少 executor。');
+        await options.executor.removeShared(component);
       }
     } catch (error) {
       result.failures.push({ label, phase: 'remove', message: errorMessage(error) });
@@ -769,7 +824,7 @@ export async function cleanupOwnedComponents(options: {
     }
 
     try {
-      const after = await inspectComponent(component, options.nativeProbe);
+      const after = await inspectComponent(component, options.nativeProbe, options.executor);
       if (after.state === 'absent') pushUnique(result.removed, label);
       else pushUnique(result.residual, label);
     } catch (error) {

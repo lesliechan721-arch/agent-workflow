@@ -15,9 +15,10 @@ import type {
   StatusTargetRevision,
 } from '../commands/status-v6.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
-import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
+import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
+import type { OperationPlan } from '../commands/operation-plan.js';
 import type {
   RebuildProgressFeed,
   RebuildProgressSnapshot,
@@ -145,9 +146,10 @@ export interface OperationEvidence {
   };
   targetFingerprint?: string;
   offlineCleanup?: OfflineCleanupTargetEvidence;
-  dependencyPlan?: DependencyOperationPlan;
+  dependencyPlan?: ReconcileOperationPlan;
   projectIntentDigest?: string;
   codexReconcilePlans?: CodexReconcilePlan[];
+  operationPlan?: OperationPlan;
   codexManager?: {
     state: 'system' | 'cached' | 'requires-install';
     packageName: '@openai/codex';
@@ -384,7 +386,7 @@ export interface TuiControllerDependencies {
   previewDependencyPlacement?: (
     intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
     signal: AbortSignal,
-  ) => Promise<DependencyOperationPlan | undefined>;
+  ) => Promise<ReconcileOperationPlan | undefined>;
   executeIntent: (
     intent: OperationIntent,
     expectedEvidence: OperationEvidence,
@@ -445,7 +447,7 @@ export interface TuiControllerSnapshot {
 }
 
 interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
-  plan?: DependencyOperationPlan;
+  plan?: ReconcileOperationPlan;
   adjustingExisting: boolean;
   revalidateOverrides: boolean;
 }
@@ -494,6 +496,7 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
+  if (evidence.operationPlan) return evidence.operationPlan.planFingerprint;
   const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
   return crypto.createHash('sha256')
     .update(JSON.stringify(stableValue(staleEvidence)))
@@ -619,7 +622,7 @@ function operationLabels(intent: OperationIntent): {
 }
 
 function dependencyRelation(
-  plan: DependencyOperationPlan,
+  plan: ReconcileOperationPlan,
   pluginId: string,
 ): 'requested' | 'direct' | 'transitive' {
   if (plan.requestedPluginIds.includes(pluginId)) return 'requested';
@@ -657,7 +660,9 @@ function reviewChanges(
     ];
   }
   if (intent.kind === 'pluginWrite') {
-    const desiredIntentKind = requestedIntentAction(intent.action);
+    const desiredIntentKind = requestedIntentAction(
+      intent.action === 'upgrade' ? 'sync' : intent.action,
+    );
     const runtimeChanges: OperationReviewChange[] = evidence?.codexManager
       ? [{
           kind: evidence.codexManager.state === 'requires-install' ? 'add' : 'keep',
@@ -1680,7 +1685,7 @@ export class TuiController {
       const signal = AbortSignal.any([this.#abort.signal, abort.signal]);
       const preview = async (
         intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
-      ): Promise<DependencyOperationPlan | undefined> => this.dependencies.previewDependencyPlacement
+      ): Promise<ReconcileOperationPlan | undefined> => this.dependencies.previewDependencyPlacement
         ? this.dependencies.previewDependencyPlacement(structuredClone(intent), signal)
         : (await this.dependencies.captureEvidence(structuredClone(intent), signal)).dependencyPlan;
       const throwIfCancelled = (): void => {
@@ -1688,7 +1693,7 @@ export class TuiController {
           throw new DOMException('Dependency placement preview was cancelled.', 'AbortError');
         }
       };
-      const filterOverrides = (plan: DependencyOperationPlan | undefined): boolean => {
+      const filterOverrides = (plan: ReconcileOperationPlan | undefined): boolean => {
         const before = draft.dependencyScopeOverrides;
         const filtered = before.filter((override) => {
           const target = plan?.targets.find((candidate) =>
@@ -1703,7 +1708,7 @@ export class TuiController {
         draft.dependencyScopeOverrides = filtered;
         return true;
       };
-      let plan: DependencyOperationPlan | undefined;
+      let plan: ReconcileOperationPlan | undefined;
       if (draft.revalidateOverrides && draft.dependencyScopeOverrides.length > 0) {
         const baselineIntent = this.#installPlacementIntent();
         delete baselineIntent.dependencyScopeOverrides;
@@ -2889,7 +2894,7 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     : [];
   const executionPlan = typeof execution === 'object' && execution !== null
     && typeof (execution as { dependencyPlan?: unknown }).dependencyPlan === 'object'
-    ? (execution as { dependencyPlan: DependencyOperationPlan }).dependencyPlan
+    ? (execution as { dependencyPlan: ReconcileOperationPlan }).dependencyPlan
     : undefined;
   const rawTargets = typeof execution === 'object' && execution !== null
     && Array.isArray((execution as { targetResults?: unknown }).targetResults)

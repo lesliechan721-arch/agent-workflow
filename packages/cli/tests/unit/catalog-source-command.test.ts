@@ -128,6 +128,30 @@ describe('catalog source mutation v4', () => {
     expect(configured && 'path' in configured ? path.basename(configured.path) : '').toBe('update-second');
   });
 
+  it('requires CLI confirmation only when URL, path, or subdirectory identity changes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('confirmed-update-first');
+    const second = fixturePath('confirmed-update-second');
+    await createCatalogSnapshotFixture(first);
+    await createCatalogSnapshotFixture(second);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: first, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team', update: { type: 'path', path: second },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireIdentityChangeConfirmation: true,
+    })).rejects.toThrow('catalogSourceIdentityChangeConfirmationRequired');
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team', update: { type: 'path', path: second },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireIdentityChangeConfirmation: true,
+      confirmIdentityChange: true,
+    })).resolves.toMatchObject({ changed: true });
+  });
+
   it('keeps the old Active selection when update changes source identity', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('active-update-first');

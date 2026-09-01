@@ -41,7 +41,7 @@ import {
 import { resolveAwHome } from './paths.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 
-export type ArtifactRenderEvent = 'install' | 'upgrade' | 'refresh' | 'materialize';
+export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
 
 export interface ResolvedArtifactRenderConfig {
   mode: 'artifact-render';
@@ -135,7 +135,6 @@ export interface RunArtifactRendererResult {
 
 const SUPPORTED_ARTIFACT_RENDER_EVENTS = new Set<ArtifactRenderEvent>([
   'install',
-  'upgrade',
   'refresh',
   'materialize',
 ]);
@@ -155,7 +154,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function assertArtifactRenderEvent(value: string): ArtifactRenderEvent {
   if (!SUPPORTED_ARTIFACT_RENDER_EVENTS.has(value as ArtifactRenderEvent)) {
     throw new Error(
-      `Artifact renderer only supports install, upgrade, refresh, and materialize events; received "${value}".`,
+      `Artifact renderer only supports install, refresh, and materialize events; received "${value}".`,
     );
   }
   return value as ArtifactRenderEvent;

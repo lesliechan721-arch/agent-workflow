@@ -17,6 +17,7 @@ vi.mock('../../src/commands/write-commands.js', async () => ({
     '../../src/commands/write-commands.js',
   ),
   ...mocks,
+  syncWriteCommand: mocks.installWriteCommand,
 }));
 
 describe('write command runtime entry', () => {
@@ -38,7 +39,6 @@ describe('write command runtime entry', () => {
 
   it.each([
     ['install', ['demo', '--platform', 'codex']],
-    ['upgrade', ['demo', '--platform', 'codex']],
     ['reinstall', ['demo', '--platform', 'codex']],
     ['uninstall', ['demo', '--platform', 'codex']],
     ['cleanup', ['demo', '--platform', 'codex', '--scope', 'user', '--force']],

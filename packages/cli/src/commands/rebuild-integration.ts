@@ -43,7 +43,6 @@ import {
 import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
-  skillDirectoryMatchesExpectedTree,
   validateSkillDirectory,
   writeDynamicSkillTree,
   type DynamicSkillTree,
@@ -58,22 +57,30 @@ import {
   buildCodexMarketplaceRemoveInvocation,
   buildCodexPluginAddInvocation,
   buildCodexPluginListInvocation,
+  buildCodexPluginListJsonInvocation,
   buildCodexProjectPluginListInvocations,
   buildCodexPluginRemoveInvocation,
+  parseCodexPluginListJson,
   postcheckCodexProjectPluginActivation,
+  runNativeCli,
   runNativeCliChecked,
+  SYSTEM_CODEX_MANAGER,
   type CodexManager,
+  type CodexPluginListEntry,
   type NativeCliRunner,
 } from '../utils/native-cli.js';
 import {
   OWNED_TEXT_HEADER_PREFIX,
   createSharedOwnerToken,
+  createSkillOwnerMarkerContent,
   parseSharedOwnerToken,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
+  renderOwnedTextFile,
   inspectOwnedComponents,
   writeOwnedTextFile,
   type OwnedComponent,
+  type OwnedComponentExecutor,
   type NativeOwnershipProbe,
   type OwnerIdentity,
   type OwnershipInspection,
@@ -127,9 +134,11 @@ import type {
   RebuildTargetIdentity,
   RebuildTargetDriver,
 } from './rebuild-operations.js';
+import type { OperationAction } from './operation-plan.js';
 
 const MARKETPLACE_NAME = 'aw';
 const LEGACY_MCP_OWNER_ENV = 'AW_AGENT_WORKFLOWS_OWNER';
+type OwnedSharedComponent = Extract<OwnedComponent, { locator: unknown }>;
 
 function requirementsReceipt(plugin: PluginMeta): Buffer {
   const receipt = createAwPluginRequirementsReceipt(
@@ -144,13 +153,8 @@ interface PlannedWrite {
   component?: OwnedComponent;
   additionalComponents?: OwnedComponent[];
   optional?: boolean;
-  write(): Promise<void>;
-}
-
-interface RebuildIntegrationPlan {
-  catalog: CatalogResolution;
-  event: 'install' | 'upgrade';
-  writes: PlannedWrite[];
+  action?: OperationAction;
+  additionalActions?: OperationAction[];
 }
 
 export interface RebuildIntegration {
@@ -165,7 +169,7 @@ export interface RebuildIntegration {
     platform: PlatformName;
     scope: Scope;
     cwd: string;
-    command: 'install' | 'upgrade' | 'reinstall' | 'cleanup' | 'uninstall';
+    command: 'install' | 'sync' | 'reinstall' | 'cleanup' | 'uninstall';
     catalog: CatalogResolution;
     readOnlyInspectionPlan?: boolean;
     includeNativeCleanupCandidate?: boolean;
@@ -180,8 +184,6 @@ export interface RebuildIntegration {
 
 export interface PreparedRebuildTarget {
   target: DesiredTarget;
-  driver: RebuildTargetDriver;
-  context: RebuildExecutionContext;
 }
 
 export interface RebuildExecutionContext {
@@ -371,19 +373,94 @@ function pathComponent(options: {
   path: string;
   allowedRoot: string;
   identity: OwnerIdentity;
-  unownedIsPristine?: (actualPath: string) => Promise<boolean>;
+  pristineTree?: Array<{ relativePath: string; contentDigest: string }>;
 }): OwnedComponent {
   if (options.kind !== 'skill-directory') return options;
   return {
     ...options,
-    validateHealth: async () => {
-      await validateSkillDirectory(
-        options.path,
-        options.identity.platform === 'codex' ? 'codex.skill' : 'claude.skill',
-        { ownerMarkerPolicy: 'ignore', requirementsReceiptPolicy: 'allow' },
-      );
-    },
+    validateHealth: true,
   };
+}
+
+function pristineTreeDescriptor(tree: DynamicSkillTree): Array<{
+  relativePath: string;
+  contentDigest: string;
+}> {
+  return Object.entries(tree.files)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([relativePath, content]) => ({
+      relativePath,
+      contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+    }));
+}
+
+function pluginActionId(plugin: PluginMeta): string {
+  return plugin.pluginId ?? plugin.manifest.name;
+}
+
+function skillWriteAction(options: {
+  plugin: PluginMeta;
+  platform: PlatformName;
+  scope: Scope;
+  path: string;
+  allowedRoot: string;
+  identity: OwnerIdentity;
+  tree: DynamicSkillTree;
+  allowPristineUnowned: boolean;
+}): Extract<OperationAction, { kind: 'writeOwnedArtifact' }> {
+  const files = [
+    ...Object.entries(options.tree.files).map(([relativePath, content]) => ({
+      relativePath,
+      contentBase64: content.toString('base64'),
+      contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+    })),
+    {
+      relativePath: '.agent-workflows-owner.json',
+      contentBase64: Buffer.from(createSkillOwnerMarkerContent(options.identity)).toString('base64'),
+      contentDigest: `sha256:${crypto.createHash('sha256')
+        .update(createSkillOwnerMarkerContent(options.identity)).digest('hex')}`,
+    },
+  ].sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  const contentDigest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}`;
+  return {
+    kind: 'writeOwnedArtifact',
+    pluginId: pluginActionId(options.plugin),
+    platform: options.platform,
+    scope: options.scope,
+    path: options.path,
+    allowedRoot: options.allowedRoot,
+    owner: options.identity,
+    artifactKind: 'skill-directory',
+    files,
+    contentDigest,
+    allowPristineUnowned: options.allowPristineUnowned,
+  };
+}
+
+function finalizeOwnedArtifactActions(actions: readonly OperationAction[]): void {
+  for (const action of actions) {
+    if (action.kind !== 'writeOwnedArtifact' || !action.owner) continue;
+    if (action.artifactKind === 'owned-text-file') {
+      if (action.sourceContent === undefined) throw new Error('Owned text action is missing source content.');
+      action.content = renderOwnedTextFile(action.sourceContent, action.owner);
+      action.contentDigest = `sha256:${crypto.createHash('sha256').update(action.content).digest('hex')}`;
+      continue;
+    }
+    if (action.artifactKind === 'skill-directory') {
+      const markerContent = createSkillOwnerMarkerContent(action.owner);
+      const marker = {
+        relativePath: '.agent-workflows-owner.json',
+        contentBase64: Buffer.from(markerContent).toString('base64'),
+        contentDigest: `sha256:${crypto.createHash('sha256').update(markerContent).digest('hex')}`,
+      };
+      action.files = [
+        ...(action.files ?? []).filter((file) => file.relativePath !== marker.relativePath),
+        marker,
+      ].sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+      action.contentDigest = `sha256:${crypto.createHash('sha256')
+        .update(JSON.stringify(action.files)).digest('hex')}`;
+    }
+  }
 }
 
 function generatedTextWrite(options: {
@@ -409,6 +486,7 @@ function generatedTextWrite(options: {
     allowedRoot: options.configDir,
     identity,
   });
+  const content = options.content;
   return {
     artifact: {
       path: artifactPath,
@@ -417,14 +495,18 @@ function generatedTextWrite(options: {
       artifactKey: options.artifactKey,
     },
     component,
-    write: async () => {
-      await fs.ensureDir(options.configDir);
-      await writeOwnedTextFile({
-        path: artifactPath,
-        allowedRoot: options.configDir,
-        identity,
-        content: options.content,
-      });
+    action: {
+      kind: 'writeOwnedArtifact',
+      pluginId: pluginActionId(options.plugin),
+      platform: options.platform,
+      scope: options.scope,
+      path: artifactPath,
+      allowedRoot: options.configDir,
+      owner: identity,
+      artifactKind: 'owned-text-file',
+      sourceContent: content,
+      content,
+      contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
     },
   };
 }
@@ -511,21 +593,13 @@ function createClaudePermissionsComponent(options: {
   identity: OwnerIdentity;
   scope: Scope;
   settingsPath: string;
-}): OwnedComponent {
+}): OwnedSharedComponent & { kind: 'shared-config' } {
   const ownerKey = createSharedOwnerToken(options.identity);
   return {
     kind: 'shared-config',
     identity: options.identity,
     label: `${options.settingsPath}#awGenerated.permissions.${ownerKey}`,
-    inspect: async () => {
-      const settings = await readClaudeSettings(options.settingsPath);
-      return settings.awGenerated?.permissions?.[ownerKey] ? 'present' : 'absent';
-    },
-    remove: async () => {
-      const settings = await readClaudeSettings(options.settingsPath);
-      rebuildClaudePermissions(settings, ownerKey);
-      await writeClaudeSettings(options.settingsPath, settings);
-    },
+    locator: { kind: 'claude-permissions', settingsPath: options.settingsPath, ownerKey },
   };
 }
 
@@ -533,23 +607,13 @@ function createCodexInstructionComponent(options: {
   identity: OwnerIdentity;
   scope: Scope;
   configPath: string;
-}): OwnedComponent {
+}): OwnedSharedComponent & { kind: 'managed-block' } {
   const ownerKey = createSharedOwnerToken(options.identity);
   return {
     kind: 'managed-block',
     identity: options.identity,
     label: `${options.configPath}#developer_instructions:${ownerKey}`,
-    inspect: async () => {
-      const config = await readCodexConfigFile(options.configPath);
-      return config.snapshot.developerInstructions.managedBlocks[ownerKey]
-        ? 'present'
-        : 'absent';
-    },
-    remove: async () => {
-      await applyCodexConfigTransactionFile(options.configPath, {
-        removeManagedInstructionPluginName: ownerKey,
-      });
-    },
+    locator: { kind: 'codex-instruction', configPath: options.configPath, ownerKey },
   };
 }
 
@@ -563,15 +627,11 @@ function createCodexActivationComponent(options: {
     kind: 'shared-config',
     identity: options.identity,
     label: `${options.configPath}#plugins.${options.codexPluginId}.enabled`,
-    inspect: async () => {
-      const plugin = (await readCodexConfigFile(options.configPath))
-        .snapshot.plugins[options.codexPluginId];
-      return plugin?.enabled === options.desired ? 'present' : 'absent';
-    },
-    remove: async () => {
-      await applyCodexConfigTransactionFile(options.configPath, {
-        removePluginActivations: [options.codexPluginId],
-      });
+    locator: {
+      kind: 'codex-activation',
+      configPath: options.configPath,
+      codexPluginId: options.codexPluginId,
+      desired: options.desired,
     },
   };
 }
@@ -586,25 +646,12 @@ function createCodexActivationCleanupComponent(options: {
     kind: 'shared-config',
     identity: options.identity,
     label: `${options.configPath}#plugins.${options.codexPluginId}.enabled`,
-    inspect: async () => {
-      const actual = (await readCodexConfigFile(options.configPath))
-        .snapshot.plugins[options.codexPluginId]?.enabled;
-      return options.disposition === 'remove'
-        ? actual === undefined ? 'absent' : 'present'
-        : actual === true ? 'present' : 'absent';
-    },
-    remove: async () => {
-      await applyConditionalCodexConfigTransactionFile(options.configPath, (snapshot) => {
-        const actual = snapshot.plugins[options.codexPluginId]?.enabled;
-        if (options.disposition === 'remove') {
-          return actual === undefined
-            ? null
-            : { removePluginActivations: [options.codexPluginId] };
-        }
-        return actual === true
-          ? { upsertPluginActivations: { [options.codexPluginId]: false } }
-          : null;
-      });
+    locator: {
+      kind: 'codex-activation',
+      configPath: options.configPath,
+      codexPluginId: options.codexPluginId,
+      desired: options.disposition === 'remove' ? false : true,
+      disposition: options.disposition,
     },
   };
 }
@@ -629,17 +676,11 @@ function createLegacyCodexMcpCleanupComponent(options: {
     kind: 'shared-config',
     identity: options.identity,
     label: `${options.configPath}#mcp_servers.${options.serverKey}`,
-    inspect: async () => {
-      const actual = (await readCodexConfigFile(options.configPath))
-        .snapshot.mcpServers[options.serverKey];
-      if (!actual) return 'absent';
-      return legacyCodexMcpOwner(actual) === ownerKey ? 'present' : 'foreign';
-    },
-    remove: async () => {
-      await applyConditionalCodexConfigTransactionFile(options.configPath, (snapshot) =>
-        legacyCodexMcpOwner(snapshot.mcpServers[options.serverKey]) === ownerKey
-          ? { removeMcpServers: [options.serverKey] }
-          : null);
+    locator: {
+      kind: 'legacy-codex-mcp',
+      configPath: options.configPath,
+      serverKey: options.serverKey,
+      ownerKey,
     },
   };
 }
@@ -704,29 +745,10 @@ function createLegacyCodexHookCleanupComponent(options: {
       options.scope,
     ),
     label: `${options.hooksPath}#${serialized}`,
-    inspect: async () => {
-      const parsed = await readLegacyCodexHooks(options.hooksPath);
-      return parsed.managedIdentities.some((entry) =>
-        serializeTrackedHookGroupIdentity(entry) === serialized)
-        ? 'present'
-        : 'absent';
-    },
-    remove: async () => {
-      await applyLegacyCodexHookCleanupTransactionFile(options.hooksPath, (parsed) => {
-        let removed = false;
-        const remaining = parsed.groups.flatMap((entry) => {
-          if (
-            !removed
-            && entry.managedIdentity
-            && serializeTrackedHookGroupIdentity(entry.managedIdentity) === serialized
-          ) {
-            removed = true;
-            return [];
-          }
-          return [entry.rawGroup];
-        });
-        return removed ? remaining : null;
-      });
+    locator: {
+      kind: 'legacy-codex-hook',
+      hooksPath: options.hooksPath,
+      serializedIdentity: serialized,
     },
   };
 }
@@ -764,27 +786,17 @@ function createCodexRoleRegistrationComponent(options: {
   configPath: string;
   roleKey: string;
   rolePath: string;
-}): OwnedComponent {
-  const inspect = async (): Promise<'present' | 'absent' | 'foreign'> => {
-    const config = await readCodexConfigFile(options.configPath);
-    const registration = config.snapshot.agents[options.roleKey];
-    if (!registration) return 'absent';
-    return await codexRoleRegistrationOwned({ ...options, registration })
-      ? 'present'
-      : 'foreign';
-  };
+}): OwnedSharedComponent & { kind: 'shared-config' } {
   return {
     kind: 'shared-config',
     identity: options.identity,
     label: `${options.configPath}#agents.${options.roleKey}`,
-    inspect,
-    remove: async () => {
-      await applyConditionalCodexConfigTransactionFile(options.configPath, async (snapshot) => {
-        const registration = snapshot.agents[options.roleKey];
-        return await codexRoleRegistrationOwned({ ...options, registration })
-          ? { removeAgentRegistrations: [options.roleKey] }
-          : null;
-      });
+    locator: {
+      kind: 'codex-role-registration',
+      configPath: options.configPath,
+      roleKey: options.roleKey,
+      rolePath: options.rolePath,
+      fileIdentity: options.fileIdentity,
     },
   };
 }
@@ -830,12 +842,10 @@ async function scanCodexSharedComponents(options: {
       options.scope,
     ),
     label: filePath,
-    inspect: async () => {
-      throw new Error(
-        `包含 ${options.pluginName} 的 AW ownership 证据，但共享配置无法解析：${error instanceof Error ? error.message : String(error)}`,
-      );
+    locator: {
+      kind: 'corrupted',
+      message: `包含 ${options.pluginName} 的 AW ownership 证据，但共享配置无法解析：${error instanceof Error ? error.message : String(error)}`,
     },
-    remove: async () => undefined,
   });
   const containsOwnedEvidence = (raw: string): boolean => raw.includes(options.pluginName) && (
     raw.includes('[[aw-managed:start plugin=')
@@ -1144,7 +1154,7 @@ async function resolveDynamicArtifacts(options: {
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  event: 'install' | 'upgrade';
+  event: 'install';
   previousArtifacts: readonly GeneratedArtifact[];
   scriptTimeoutMs?: number;
 }): Promise<{
@@ -1213,8 +1223,7 @@ function dynamicSkillWrite(options: {
     identity,
     ...(options.platform === 'codex' && options.scope === 'user'
       ? {
-          unownedIsPristine: (actualPath: string) =>
-            skillDirectoryMatchesExpectedTree(actualPath, options.tree),
+          pristineTree: pristineTreeDescriptor(options.tree),
         }
       : {}),
   });
@@ -1239,16 +1248,18 @@ function dynamicSkillWrite(options: {
         : createDynamicSkillTreeContentDigest(options.tree),
     },
     ...(options.artifact.state === 'present' ? { component } : {}),
-    write: async () => {
-      if (options.artifact.state === 'disabled') {
-        return;
-      }
-      await writeDynamicSkillTree(options.skillPath, options.tree, {
+    ...(options.artifact.state === 'present' ? {
+      action: skillWriteAction({
+        plugin: options.plugin,
+        platform: options.platform,
+        scope: options.scope,
+        path: options.skillPath,
         allowedRoot: options.allowedRoot,
         identity,
+        tree: options.tree,
         allowPristineUnowned: options.platform === 'codex' && options.scope === 'user',
-      });
-    },
+      }),
+    } : {}),
   };
 }
 
@@ -1331,8 +1342,7 @@ async function buildBundledCodexSkillWrites(options: {
       identity,
       ...(canRecoverPristine
         ? {
-            unownedIsPristine: (actualPath: string) =>
-              skillDirectoryMatchesExpectedTree(actualPath, tree),
+            pristineTree: pristineTreeDescriptor(tree),
           }
         : {}),
     });
@@ -1345,13 +1355,16 @@ async function buildBundledCodexSkillWrites(options: {
         artifactKey: entry.name,
       },
       component,
-      write: async () => {
-        await writeDynamicSkillTree(skillPath, tree, {
-          allowedRoot: targetRoot,
-          identity,
-          allowPristineUnowned: canRecoverPristine,
-        });
-      },
+      action: skillWriteAction({
+        plugin: options.plugin,
+        platform: 'codex',
+        scope: 'user',
+        path: skillPath,
+        allowedRoot: targetRoot,
+        identity,
+        tree,
+        allowPristineUnowned: canRecoverPristine,
+      }),
     });
   }
   return writes;
@@ -1362,7 +1375,7 @@ async function buildClaudeWrites(options: {
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  event: 'install' | 'upgrade';
+  event: 'install';
   historicalArtifacts: readonly GeneratedArtifact[];
   scriptTimeoutMs?: number;
 }): Promise<PlannedWrite[]> {
@@ -1416,17 +1429,20 @@ async function buildClaudeWrites(options: {
       scope: options.scope,
       settingsPath: paths.settingsPath,
     });
+    const desiredPermissions = mergeClaudePermissions(permissions);
+    const mutation = { kind: 'claude-permissions' as const, permissions: desiredPermissions };
     writes.push({
       artifact: { path: paths.settingsPath, kind: 'permission', platform: 'claude' },
       component,
-      write: async () => {
-        const settings = await readClaudeSettings(paths.settingsPath);
-        rebuildClaudePermissions(
-          settings,
-          createSharedOwnerToken(component.identity),
-          mergeClaudePermissions(permissions),
-        );
-        await writeClaudeSettings(paths.settingsPath, settings);
+      action: {
+        kind: 'updateSharedConfig',
+        pluginId: pluginActionId(options.plugin),
+        platform: 'claude',
+        scope: options.scope,
+        owner: component.identity,
+        locator: component.locator,
+        mutation,
+        contentDigest: `sha256:${crypto.createHash('sha256').update(JSON.stringify(mutation)).digest('hex')}`,
       },
     });
   }
@@ -1438,7 +1454,7 @@ async function buildCodexWrites(options: {
   scope: Scope;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  event: 'install' | 'upgrade';
+  event: 'install';
   historicalArtifacts: readonly GeneratedArtifact[];
   scriptTimeoutMs?: number;
   marketplaceRoot?: string;
@@ -1520,6 +1536,7 @@ async function buildCodexWrites(options: {
             ),
           }
         : undefined;
+    const instructionMutation = { kind: 'codex-instruction' as const, ...(block ? { block } : {}) };
     for (const artifact of dynamicInstructions.length > 0 ? dynamicInstructions : [{
       id: undefined,
       target: undefined,
@@ -1541,10 +1558,16 @@ async function buildCodexWrites(options: {
           ...(artifact.disabledReason ? { disabledReason: artifact.disabledReason } : {}),
         },
         ...(block ? { component } : {}),
-        write: async () => {
-          await applyCodexConfigTransactionFile(paths.configTomlPath, block
-            ? { upsertManagedInstructionBlock: block }
-            : { removeManagedInstructionPluginName: createSharedOwnerToken(component.identity) });
+        action: {
+          kind: 'updateSharedConfig',
+          pluginId: pluginActionId(options.plugin),
+          platform: 'codex',
+          scope: options.scope,
+          owner: component.identity,
+          locator: component.locator,
+          mutation: instructionMutation,
+          contentDigest: `sha256:${crypto.createHash('sha256')
+            .update(JSON.stringify(instructionMutation)).digest('hex')}`,
         },
       });
     }
@@ -1599,43 +1622,51 @@ async function buildCodexWrites(options: {
       },
       ...(present ? { component: roleComponent } : {}),
       ...(present ? { additionalComponents: [registrationComponent] } : {}),
-      write: async () => {
-        if (!present) {
-          return;
-        }
-        await fs.ensureDir(paths.configDir);
-        await writeOwnedTextFile({
-          path: rolePath,
-          allowedRoot: paths.configDir,
-          identity: roleComponent.identity,
-          content: renderCodexRole({
+      ...(present ? {
+        action: (() => {
+          const content = renderCodexRole({
             roleKey,
             description: description!,
             developerInstructions: roleFile!.developer_instructions!,
             model: roleFile!.model,
             modelReasoningEffort: roleFile!.model_reasoning_effort,
-          }),
-        });
-        const registration: CodexAgentRegistrationConfig = {
-          description,
-          configFile: path.relative(path.dirname(paths.configTomlPath), rolePath).split(path.sep).join('/'),
-        };
-        await applyConditionalCodexConfigTransactionFile(paths.configTomlPath, async (snapshot) => {
-          const actual = snapshot.agents[roleKey];
-          if (actual && !await codexRoleRegistrationOwned({
-            fileIdentity: roleComponent.identity,
-            configPath: paths.configTomlPath,
+          });
+          return {
+            kind: 'writeOwnedArtifact' as const,
+            pluginId: pluginActionId(options.plugin),
+            platform: 'codex' as const,
+            scope: options.scope,
+            path: rolePath,
+            allowedRoot: paths.configDir,
+            owner: roleComponent.identity,
+            artifactKind: 'owned-text-file' as const,
+            sourceContent: content,
+            content,
+            contentDigest: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`,
+          };
+        })(),
+      } : {}),
+      ...(present ? {
+        additionalActions: [(() => {
+          const mutation = {
+            kind: 'codex-role-registration' as const,
             roleKey,
-            rolePath,
-            registration: actual,
-          })) {
-            throw new Error(
-              `Codex agent registration "${roleKey}" is foreign and cannot be overwritten by plugin "${options.plugin.manifest.name}".`,
-            );
-          }
-          return { upsertAgentRegistrations: { [roleKey]: registration } };
-        });
-      },
+            configFile: path.relative(path.dirname(paths.configTomlPath), rolePath),
+            description: description!,
+          };
+          return {
+            kind: 'updateSharedConfig' as const,
+            pluginId: pluginActionId(options.plugin),
+            platform: 'codex' as const,
+            scope: options.scope,
+            owner: registrationComponent.identity,
+            locator: registrationComponent.locator,
+            mutation,
+            contentDigest: `sha256:${crypto.createHash('sha256')
+              .update(JSON.stringify(mutation)).digest('hex')}`,
+          };
+        })()],
+      } : {}),
     });
   }
 
@@ -1702,10 +1733,14 @@ async function buildCodexWrites(options: {
         artifactKey: internalArtifactKey('activation', activation.scope),
       },
       component,
-      write: async () => {
-        await applyCodexConfigTransactionFile(activation.configPath, {
-          upsertPluginActivations: { [codexPluginId]: activation.desired },
-        });
+      action: {
+        kind: 'setActivation',
+        pluginId: pluginActionId(options.plugin),
+        platform: 'codex',
+        scope: activation.scope,
+        enabled: activation.desired,
+        configPath: activation.configPath,
+        registration: codexPluginId,
       },
     });
   }
@@ -1747,7 +1782,6 @@ async function buildInspectionWrites(options: {
           scope: options.scope,
           settingsPath: paths.settingsPath,
         }),
-        write: async () => undefined,
       });
     }
     for (const target of options.plugin.manifest.artifacts?.targets ?? []) {
@@ -1784,7 +1818,6 @@ async function buildInspectionWrites(options: {
         ...(target.states.includes('present') && target.states.includes('disabled')
           ? { optional: true }
           : {}),
-        write: async () => undefined,
       });
     }
     return writes;
@@ -1823,7 +1856,6 @@ async function buildInspectionWrites(options: {
         configPath: paths.configTomlPath,
       }),
       ...(instructions.length === 0 && instructionOptional ? { optional: true } : {}),
-      write: async () => undefined,
     });
   }
   const dynamicSkillRoot = options.scope === 'user'
@@ -1853,7 +1885,6 @@ async function buildInspectionWrites(options: {
         ...(target.states.includes('present') && target.states.includes('disabled')
           ? { optional: true }
           : {}),
-        write: async () => undefined,
       });
     }
     if (target.target === 'codex.agentRole' && target.roleKey) {
@@ -1897,7 +1928,6 @@ async function buildInspectionWrites(options: {
         ...(target.states.includes('present') && target.states.includes('disabled')
           ? { optional: true }
           : {}),
-        write: async () => undefined,
       });
     }
   }
@@ -1960,7 +1990,6 @@ async function buildInspectionWrites(options: {
         codexPluginId,
         desired: activation.desired,
       }),
-      write: async () => undefined,
     });
   }
   return writes;
@@ -1976,7 +2005,7 @@ async function buildHistoricalComponents(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   artifacts: readonly GeneratedArtifact[];
-  command: 'install' | 'upgrade' | 'reinstall' | 'cleanup' | 'uninstall';
+  command: 'install' | 'sync' | 'reinstall' | 'cleanup' | 'uninstall';
 }): Promise<OwnedComponent[]> {
   const components: OwnedComponent[] = [];
   const paths = options.platform === 'codex'
@@ -2252,6 +2281,74 @@ export interface CodexSharedNativeLiveInspection {
   sharedNative: CodexSharedNativeState;
   actualPayloadDigest?: string;
   payloadPath?: string;
+  staleCacheObserved?: true;
+  activationObservations: {
+    user: boolean;
+    project: boolean;
+  };
+  activations: {
+    user?: boolean;
+    project?: boolean;
+  };
+}
+
+export interface CodexPluginRegistrationLiveInspection {
+  entries: CodexPluginListEntry[];
+  observations: {
+    user: boolean;
+    project: boolean;
+  };
+  activations: {
+    user?: boolean;
+    project?: boolean;
+  };
+}
+
+export async function inspectCodexPluginRegistrationLive(options: {
+  pluginId: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  nativeCliRunner?: NativeCliRunner;
+  manager?: CodexManager;
+}): Promise<CodexPluginRegistrationLiveInspection> {
+  if (!options.nativeCliRunner) {
+    return {
+      entries: [],
+      observations: { user: false, project: false },
+      activations: {},
+    };
+  }
+  const manager = options.manager ?? SYSTEM_CODEX_MANAGER;
+  const readEntries = async (cwd: string): Promise<CodexPluginListEntry[] | undefined> => {
+    try {
+      const result = await runNativeCli(
+        buildCodexPluginListJsonInvocation(manager, cwd, options.env),
+        options.nativeCliRunner,
+      );
+      if (result.exitCode !== 0) return undefined;
+      return parseCodexPluginListJson(result.stdout);
+    } catch {
+      return undefined;
+    }
+  };
+  const [exactEntries, neutralEntries] = await Promise.all([
+    readEntries(options.cwd),
+    readEntries(os.tmpdir()),
+  ]);
+  const entries = neutralEntries ?? exactEntries ?? [];
+  const enabled = (values: readonly CodexPluginListEntry[] | undefined): boolean | undefined =>
+    values?.find((entry) => entry.pluginId === options.pluginId)?.enabled;
+  return {
+    entries,
+    observations: {
+      user: neutralEntries !== undefined,
+      project: exactEntries !== undefined,
+    },
+    activations: {
+      user: enabled(neutralEntries),
+      project: enabled(exactEntries),
+    },
+  };
 }
 
 /**
@@ -2267,6 +2364,9 @@ export async function inspectCodexSharedNativeLive(options: {
   managedByCurrentIntent: boolean;
   marketplaceName?: string;
   marketplaceRoot?: string;
+  nativeCliRunner?: NativeCliRunner;
+  manager?: CodexManager;
+  pluginRegistration?: CodexPluginRegistrationLiveInspection;
 }): Promise<CodexSharedNativeLiveInspection> {
   const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
   const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
@@ -2373,28 +2473,13 @@ export async function inspectCodexSharedNativeLive(options: {
   const selected = candidates.find((candidate) => candidate.version === installedVersion)
     ?? candidates.find((candidate) => candidate.version === options.desiredVersion)
     ?? (candidates.length === 1 ? candidates[0] : undefined);
-  const pluginListEntries = candidates.map((candidate) => ({
+  const pluginList = options.pluginRegistration ?? await inspectCodexPluginRegistrationLive({
     pluginId,
-    enabled: config.snapshot.plugins[pluginId]?.enabled === true,
-    ...(candidate.version ? { version: candidate.version } : {}),
-    path: candidate.payloadPath,
-  }));
-  if (installedStats && pluginListEntries.length === 0) {
-    pluginListEntries.push({
-      pluginId,
-      enabled: config.snapshot.plugins[pluginId]?.enabled === true,
-      ...(installedVersion ? { version: installedVersion } : {}),
-      path: path.dirname(installedManifestPath),
-    });
-  }
-  if (unsafeCachePath && pluginListEntries.length === 0) {
-    pluginListEntries.push({
-      pluginId,
-      enabled: config.snapshot.plugins[pluginId]?.enabled === true,
-      version: options.desiredVersion,
-      path: cacheRoot,
-    });
-  }
+    cwd: options.cwd,
+    env: options.env,
+    nativeCliRunner: options.nativeCliRunner,
+    manager: options.manager,
+  });
   const manifest: CodexSharedNativeManifestEvidence = unsafeCachePath
     ? {
         state: 'present',
@@ -2414,12 +2499,17 @@ export async function inspectCodexSharedNativeLive(options: {
     expectedPayloadDigest: options.expectedPayloadDigest,
     marketplaceRegistration: config.snapshot.marketplaces[marketplaceName],
     marketplacePathSafe: true,
-    pluginListEntries,
+    pluginListEntries: pluginList.entries,
     manifest,
     managedByCurrentIntent: options.managedByCurrentIntent && manifest.state === 'present',
   });
   return {
     sharedNative,
+    activationObservations: pluginList.observations,
+    activations: pluginList.activations,
+    ...(sharedNative.state === 'absent' && sharedNative.diagnostic === 'staleCacheObserved'
+      ? { staleCacheObserved: true as const }
+      : {}),
     ...(manifest.state === 'present' ? {
       actualPayloadDigest: manifest.payloadDigest,
       payloadPath: manifest.payloadPath,
@@ -2654,83 +2744,15 @@ function createCodexMarketplaceComponent(options: {
   desired: boolean;
 }): OwnedComponent {
   const configPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
-  const inspectCanonicalMarketplace = async (): Promise<'present' | 'absent' | 'foreign'> => {
-    const config = await readCodexConfigFile(configPath);
-    const marketplace = config.snapshot.marketplaces[options.marketplaceName];
-    if (!marketplace) return 'absent';
-    if (
-      marketplace.sourceType !== 'local'
-      || marketplace.sourcePointsToManifest
-      || path.normalize(marketplace.source ?? '') !== path.normalize(options.marketplaceRoot)
-    ) return 'foreign';
-    return 'present';
-  };
-  const hasRemainingPlugins = async (): Promise<boolean> => {
-    return (await discoverCodexNativeResidueNames({
-      cwd: options.cwd,
-      env: options.env,
-      marketplaceName: options.marketplaceName,
-      marketplaceRoot: options.marketplaceRoot,
-    })).some((name) => name !== options.pluginName);
-  };
-  const inspect = async (): Promise<'present' | 'absent' | 'foreign'> => {
-    const canonical = await inspectCanonicalMarketplace();
-    const plugin = await inspectCodexNativeResidue({
-      pluginName: options.pluginName,
-      cwd: options.cwd,
-      env: options.env,
-      marketplaceName: options.marketplaceName,
-      marketplaceRoot: options.marketplaceRoot,
-    });
-    if (plugin.state === 'foreign') return 'foreign';
-    if (options.desired) {
-      return canonical === 'present' && plugin.state === 'present' && plugin.enabled
-        ? 'present'
-        : 'absent';
-    }
-    if (canonical !== 'present') return canonical;
-    return await hasRemainingPlugins() ? 'absent' : 'present';
-  };
   return {
     kind: 'shared-config',
     identity: ownerIdentity(options.pluginName, `marketplace-${options.marketplaceName}`, 'codex', 'user'),
     label: `${configPath}#marketplaces.${options.marketplaceName}`,
-    inspect,
-    remove: async () => {
-      const currentResidue = await inspectCodexNativeResidue({
-        pluginName: options.pluginName,
-        cwd: options.cwd,
-        env: options.env,
-        marketplaceName: options.marketplaceName,
-        marketplaceRoot: options.marketplaceRoot,
-      });
-      if (currentResidue.state === 'foreign') {
-        throw new Error(`Codex native owner 为 foreign，拒绝移除 marketplace：${currentResidue.labels.join('，')}`);
-      }
-      if (await inspectCanonicalMarketplace() !== 'present'
-        || currentResidue.state === 'present'
-        || await hasRemainingPlugins()) return;
-      try {
-        await runNativeCliChecked(
-          buildCodexMarketplaceRemoveInvocation(
-            requireCodexManager(options.codexManager),
-            options.marketplaceName,
-            options.cwd,
-            options.env,
-          ),
-          options.runner,
-        );
-        await runNativeCliChecked(
-          buildCodexMarketplaceListInvocation(
-            requireCodexManager(options.codexManager),
-            options.cwd,
-            options.env,
-          ),
-          options.runner,
-        );
-      } catch {
-        throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
-      }
+    locator: {
+      kind: 'codex-marketplace',
+      marketplaceName: options.marketplaceName,
+      marketplaceRoot: options.marketplaceRoot,
+      desired: options.desired,
     },
   };
 }
@@ -3266,49 +3288,15 @@ function createClaudeMarketplaceComponent(options: {
   marketplaceRoot: string;
   desired: boolean;
 }): OwnedComponent {
-  const inspect = async (): Promise<'present' | 'absent' | 'foreign'> => {
-    const state = await readClaudeNativeState(options);
-    if (state.pluginState === 'foreign') return 'foreign';
-    if (options.desired) {
-      return state.marketplaceDeclaredState === 'canonical'
-        && state.marketplaceMaterializedState === 'canonical'
-        && state.pluginState === 'present'
-        && state.pluginEnabled
-        ? 'present'
-        : 'absent';
-    }
-    if (state.marketplaceState !== 'canonical') return state.marketplaceState;
-    const projectPath = options.scope === 'project'
-      ? path.normalize(await resolveRepoRoot(options.cwd))
-      : undefined;
-    return state.marketplaceConsumers.some((consumer) => !(
-      consumer.name === options.pluginName
-      && consumer.scope === options.scope
-      && (options.scope === 'user' || path.normalize(consumer.projectPath ?? '') === projectPath)
-    ))
-      ? 'absent'
-      : 'present';
-  };
   return {
     kind: 'shared-config',
     identity: ownerIdentity(options.pluginName, `marketplace-${options.marketplaceName}`, 'claude', options.scope),
     label: `${resolveClaudePaths(options.cwd, options.scope, options.env).settingsPath}#marketplaces.${options.marketplaceName}`,
-    inspect,
-    remove: async () => {
-      if (await inspect() !== 'present') return;
-      const before = await readClaudeNativeState(options);
-      if (before.pluginState !== 'absent') return;
-      if (before.marketplaceConsumers.length > 0) return;
-      await runNativeCliChecked({
-        command: 'claude',
-        args: ['plugin', 'marketplace', 'remove', options.marketplaceName],
-        cwd: options.cwd,
-        env: options.env,
-      }, options.runner);
-      const after = await readClaudeNativeState(options);
-      if (after.marketplaceState !== 'absent') {
-        throw new Error('Claude marketplace remove 后 canonical aw source 仍存在。');
-      }
+    locator: {
+      kind: 'claude-marketplace',
+      marketplaceName: options.marketplaceName,
+      marketplaceRoot: options.marketplaceRoot,
+      desired: options.desired,
     },
   };
 }
@@ -3452,14 +3440,406 @@ async function mirrorCatalog(
   }
 }
 
+async function applyPlannedOperationAction(action: OperationAction): Promise<void> {
+  switch (action.kind) {
+    case 'writeOwnedArtifact': {
+      if (!action.owner || !action.allowedRoot || !action.artifactKind) {
+        throw new Error('Owned artifact action is missing owner or locator data.');
+      }
+      if (action.artifactKind === 'owned-text-file') {
+        if (action.content === undefined) throw new Error('Owned text action is missing content.');
+        const digest = `sha256:${crypto.createHash('sha256').update(action.content).digest('hex')}`;
+        if (digest !== action.contentDigest) throw new Error('Owned text action content digest mismatch.');
+        if (action.sourceContent === undefined) throw new Error('Owned text action is missing source content.');
+        await fs.ensureDir(action.allowedRoot);
+        await writeOwnedTextFile({
+          path: action.path,
+          allowedRoot: action.allowedRoot,
+          identity: action.owner,
+          content: action.sourceContent,
+        });
+        return;
+      }
+      const files = action.files ?? [];
+      const digest = `sha256:${crypto.createHash('sha256').update(JSON.stringify(files)).digest('hex')}`;
+      if (digest !== action.contentDigest) throw new Error('Skill action content digest mismatch.');
+      const treeFiles: Record<string, Buffer> = {};
+      for (const file of files) {
+        const content = Buffer.from(file.contentBase64, 'base64');
+        if (`sha256:${crypto.createHash('sha256').update(content).digest('hex')}` !== file.contentDigest) {
+          throw new Error(`Skill action file digest mismatch: ${file.relativePath}`);
+        }
+        if (file.relativePath !== '.agent-workflows-owner.json') treeFiles[file.relativePath] = content;
+      }
+      await writeDynamicSkillTree(action.path, {
+        skillKey: action.owner.artifactKey,
+        files: treeFiles,
+      }, {
+        allowedRoot: action.allowedRoot,
+        identity: action.owner,
+        allowPristineUnowned: action.allowPristineUnowned === true,
+      });
+      return;
+    }
+    case 'updateSharedConfig': {
+      const mutation = action.mutation;
+      switch (mutation.kind) {
+        case 'claude-permissions': {
+          if (action.locator.kind !== 'claude-permissions') throw new Error('Claude permission locator mismatch.');
+          const settings = await readClaudeSettings(action.locator.settingsPath);
+          rebuildClaudePermissions(
+            settings,
+            action.locator.ownerKey,
+            mutation.permissions as ClaudePermissions,
+          );
+          await writeClaudeSettings(action.locator.settingsPath, settings);
+          return;
+        }
+        case 'codex-instruction': {
+          if (action.locator.kind !== 'codex-instruction') throw new Error('Codex instruction locator mismatch.');
+          await applyCodexConfigTransactionFile(action.locator.configPath, mutation.block
+            ? { upsertManagedInstructionBlock: mutation.block }
+            : { removeManagedInstructionPluginName: action.locator.ownerKey });
+          return;
+        }
+        case 'codex-role-registration': {
+          if (action.locator.kind !== 'codex-role-registration') throw new Error('Codex role locator mismatch.');
+          const locator = action.locator;
+          const registration: CodexAgentRegistrationConfig = {
+            description: mutation.description,
+            configFile: mutation.configFile.split(path.sep).join('/'),
+          };
+          await applyConditionalCodexConfigTransactionFile(locator.configPath, async (snapshot) => {
+            const actual = snapshot.agents[mutation.roleKey];
+            if (actual && !await codexRoleRegistrationOwned({
+              fileIdentity: locator.fileIdentity,
+              configPath: locator.configPath,
+              roleKey: mutation.roleKey,
+              rolePath: locator.rolePath,
+              registration: actual,
+            })) {
+              throw new Error(
+                `Codex agent registration "${mutation.roleKey}" is foreign and cannot be overwritten by plugin "${action.owner.plugin}".`,
+              );
+            }
+            return { upsertAgentRegistrations: { [mutation.roleKey]: registration } };
+          });
+          return;
+        }
+        case 'codex-activation':
+          throw new Error('Codex activation must use a setActivation action.');
+      }
+    }
+    case 'setActivation':
+      if (!action.configPath || !action.registration) {
+        throw new Error('Activation action is missing configPath or registration.');
+      }
+      await applyCodexConfigTransactionFile(action.configPath, {
+        upsertPluginActivations: { [action.registration]: action.enabled },
+      });
+      return;
+    default:
+      throw new Error(`Operation action ${action.kind} is not an artifact write action.`);
+  }
+}
+
 function createNativeDriver(options: {
-  plans: WeakMap<DesiredTarget, RebuildIntegrationPlan>;
+  targets: DesiredTarget[];
   context: RebuildExecutionContext;
   scriptTimeoutMs?: number;
 }): RebuildTargetDriver {
   const runner = options.context.nativeCliRunner;
-  const codexManager = options.context.codexManager;
+  const currentCodexManager = (): CodexManager | undefined => options.context.codexManager;
   const mirrorTransactions = new WeakMap<DesiredTarget, Awaited<ReturnType<typeof mirrorCatalog>>>();
+  const findTarget = (component: OwnedComponent): DesiredTarget => {
+    const target = options.targets.find((entry) =>
+      entry.identity.pluginName === component.identity.plugin
+      && entry.identity.sourceId === component.identity.sourceId
+      && entry.identity.platform === component.identity.platform
+      && entry.identity.scope === component.identity.scope);
+    if (!target) throw new Error('Ownership executor cannot resolve its desired target.');
+    return target;
+  };
+  const inspectCodexMarketplace = async (
+    component: Extract<OwnedComponent, { kind: 'shared-config' | 'managed-block' }>,
+  ): Promise<'present' | 'absent' | 'foreign'> => {
+    if (component.locator.kind !== 'codex-marketplace') throw new Error('Invalid Codex marketplace locator.');
+    const target = findTarget(component);
+    const configPath = resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath;
+    const marketplace = (await readCodexConfigFile(configPath))
+      .snapshot.marketplaces[component.locator.marketplaceName];
+    const canonical = !marketplace
+      ? 'absent' as const
+      : marketplace.sourceType === 'local'
+        && !marketplace.sourcePointsToManifest
+        && path.normalize(marketplace.source ?? '') === path.normalize(component.locator.marketplaceRoot)
+        ? 'present' as const
+        : 'foreign' as const;
+    const plugin = await inspectCodexNativeResidue({
+      pluginName: component.identity.plugin,
+      cwd: target.identity.cwd,
+      env: options.context.env,
+      marketplaceName: component.locator.marketplaceName,
+      marketplaceRoot: component.locator.marketplaceRoot,
+    });
+    if (plugin.state === 'foreign') return 'foreign';
+    if (component.locator.desired) {
+      return canonical === 'present' && plugin.state === 'present' && plugin.enabled
+        ? 'present'
+        : 'absent';
+    }
+    if (canonical !== 'present') return canonical;
+    const remaining = await discoverCodexNativeResidueNames({
+      cwd: target.identity.cwd,
+      env: options.context.env,
+      marketplaceName: component.locator.marketplaceName,
+      marketplaceRoot: component.locator.marketplaceRoot,
+    });
+    return remaining.some((name) => name !== component.identity.plugin) ? 'absent' : 'present';
+  };
+  const inspectClaudeMarketplace = async (
+    component: Extract<OwnedComponent, { kind: 'shared-config' | 'managed-block' }>,
+  ): Promise<'present' | 'absent' | 'foreign'> => {
+    if (component.locator.kind !== 'claude-marketplace') throw new Error('Invalid Claude marketplace locator.');
+    const target = findTarget(component);
+    const state = await readClaudeNativeState({
+      pluginName: component.identity.plugin,
+      scope: component.identity.scope,
+      cwd: target.identity.cwd,
+      env: options.context.env,
+      marketplaceName: component.locator.marketplaceName,
+      marketplaceRoot: component.locator.marketplaceRoot,
+    });
+    if (state.pluginState === 'foreign') return 'foreign';
+    if (component.locator.desired) {
+      return state.marketplaceDeclaredState === 'canonical'
+        && state.marketplaceMaterializedState === 'canonical'
+        && state.pluginState === 'present'
+        && state.pluginEnabled
+        ? 'present'
+        : 'absent';
+    }
+    if (state.marketplaceState !== 'canonical') return state.marketplaceState;
+    const projectPath = component.identity.scope === 'project'
+      ? path.normalize(await resolveRepoRoot(target.identity.cwd))
+      : undefined;
+    return state.marketplaceConsumers.some((consumer) => !(
+      consumer.name === component.identity.plugin
+      && consumer.scope === component.identity.scope
+      && (component.identity.scope === 'user'
+        || path.normalize(consumer.projectPath ?? '') === projectPath)
+    )) ? 'absent' : 'present';
+  };
+  const ownership: OwnedComponentExecutor = {
+    inspectShared: async (component) => {
+      const locator = component.locator;
+      switch (locator.kind) {
+        case 'claude-permissions':
+          return (await readClaudeSettings(locator.settingsPath)).awGenerated
+            ?.permissions?.[locator.ownerKey] ? 'present' : 'absent';
+        case 'codex-instruction':
+          return (await readCodexConfigFile(locator.configPath)).snapshot
+            .developerInstructions.managedBlocks[locator.ownerKey] ? 'present' : 'absent';
+        case 'codex-activation': {
+          const actual = (await readCodexConfigFile(locator.configPath))
+            .snapshot.plugins[locator.codexPluginId]?.enabled;
+          if (locator.disposition === 'remove') return actual === undefined ? 'absent' : 'present';
+          if (locator.disposition === 'disable') return actual === true ? 'present' : 'absent';
+          return actual === locator.desired ? 'present' : 'absent';
+        }
+        case 'legacy-codex-mcp': {
+          const actual = (await readCodexConfigFile(locator.configPath))
+            .snapshot.mcpServers[locator.serverKey];
+          if (!actual) return 'absent';
+          return legacyCodexMcpOwner(actual) === locator.ownerKey ? 'present' : 'foreign';
+        }
+        case 'legacy-codex-hook':
+          return (await readLegacyCodexHooks(locator.hooksPath)).managedIdentities.some((entry) =>
+            serializeTrackedHookGroupIdentity(entry) === locator.serializedIdentity)
+            ? 'present'
+            : 'absent';
+        case 'codex-role-registration': {
+          const registration = (await readCodexConfigFile(locator.configPath))
+            .snapshot.agents[locator.roleKey];
+          if (!registration) return 'absent';
+          return await codexRoleRegistrationOwned({
+            fileIdentity: locator.fileIdentity,
+            configPath: locator.configPath,
+            roleKey: locator.roleKey,
+            rolePath: locator.rolePath,
+            registration,
+          }) ? 'present' : 'foreign';
+        }
+        case 'codex-marketplace':
+          return inspectCodexMarketplace(component);
+        case 'claude-marketplace':
+          return inspectClaudeMarketplace(component);
+        case 'corrupted':
+          throw new Error(locator.message);
+      }
+    },
+    removeShared: async (component) => {
+      const locator = component.locator;
+      switch (locator.kind) {
+        case 'claude-permissions': {
+          const settings = await readClaudeSettings(locator.settingsPath);
+          rebuildClaudePermissions(settings, locator.ownerKey);
+          await writeClaudeSettings(locator.settingsPath, settings);
+          return;
+        }
+        case 'codex-instruction':
+          await applyCodexConfigTransactionFile(locator.configPath, {
+            removeManagedInstructionPluginName: locator.ownerKey,
+          });
+          return;
+        case 'codex-activation':
+          await applyConditionalCodexConfigTransactionFile(locator.configPath, (snapshot) => {
+            const actual = snapshot.plugins[locator.codexPluginId]?.enabled;
+            if (locator.disposition === 'remove') {
+              return actual === undefined ? null : { removePluginActivations: [locator.codexPluginId] };
+            }
+            if (locator.disposition === 'disable') {
+              return actual === true
+                ? { upsertPluginActivations: { [locator.codexPluginId]: false } }
+                : null;
+            }
+            return { removePluginActivations: [locator.codexPluginId] };
+          });
+          return;
+        case 'legacy-codex-mcp':
+          await applyConditionalCodexConfigTransactionFile(locator.configPath, (snapshot) =>
+            legacyCodexMcpOwner(snapshot.mcpServers[locator.serverKey]) === locator.ownerKey
+              ? { removeMcpServers: [locator.serverKey] }
+              : null);
+          return;
+        case 'legacy-codex-hook':
+          await applyLegacyCodexHookCleanupTransactionFile(locator.hooksPath, (parsed) => {
+            let removed = false;
+            const remaining = parsed.groups.flatMap((entry) => {
+              if (!removed && entry.managedIdentity
+                && serializeTrackedHookGroupIdentity(entry.managedIdentity) === locator.serializedIdentity) {
+                removed = true;
+                return [];
+              }
+              return [entry.rawGroup];
+            });
+            return removed ? remaining : null;
+          });
+          return;
+        case 'codex-role-registration':
+          await applyConditionalCodexConfigTransactionFile(locator.configPath, async (snapshot) =>
+            await codexRoleRegistrationOwned({
+              fileIdentity: locator.fileIdentity,
+              configPath: locator.configPath,
+              roleKey: locator.roleKey,
+              rolePath: locator.rolePath,
+              registration: snapshot.agents[locator.roleKey],
+            }) ? { removeAgentRegistrations: [locator.roleKey] } : null);
+          return;
+        case 'codex-marketplace': {
+          const target = findTarget(component);
+          const currentResidue = await inspectCodexNativeResidue({
+            pluginName: component.identity.plugin,
+            cwd: target.identity.cwd,
+            env: options.context.env,
+            marketplaceName: locator.marketplaceName,
+            marketplaceRoot: locator.marketplaceRoot,
+          });
+          if (currentResidue.state === 'foreign') {
+            throw new Error(`Codex native owner 为 foreign，拒绝移除 marketplace：${currentResidue.labels.join('，')}`);
+          }
+          const remaining = await discoverCodexNativeResidueNames({
+            cwd: target.identity.cwd,
+            env: options.context.env,
+            marketplaceName: locator.marketplaceName,
+            marketplaceRoot: locator.marketplaceRoot,
+          });
+          if (await inspectCodexMarketplace(component) !== 'present'
+            || currentResidue.state === 'present'
+            || remaining.some((name) => name !== component.identity.plugin)) return;
+          try {
+            await runNativeCliChecked(buildCodexMarketplaceRemoveInvocation(
+              requireCodexManager(currentCodexManager()),
+              locator.marketplaceName,
+              target.identity.cwd,
+              options.context.env,
+            ), runner);
+            await runNativeCliChecked(buildCodexMarketplaceListInvocation(
+              requireCodexManager(currentCodexManager()),
+              target.identity.cwd,
+              options.context.env,
+            ), runner);
+          } catch {
+            throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
+          }
+          return;
+        }
+        case 'claude-marketplace': {
+          if (await inspectClaudeMarketplace(component) !== 'present') return;
+          const target = findTarget(component);
+          const nativeOptions = {
+            pluginName: component.identity.plugin,
+            scope: component.identity.scope,
+            cwd: target.identity.cwd,
+            env: options.context.env,
+            marketplaceName: locator.marketplaceName,
+            marketplaceRoot: locator.marketplaceRoot,
+          };
+          const before = await readClaudeNativeState(nativeOptions);
+          if (before.pluginState !== 'absent' || before.marketplaceConsumers.length > 0) return;
+          await runNativeCliChecked({
+            command: 'claude',
+            args: ['plugin', 'marketplace', 'remove', locator.marketplaceName],
+            cwd: target.identity.cwd,
+            env: options.context.env,
+          }, runner);
+          if ((await readClaudeNativeState(nativeOptions)).marketplaceState !== 'absent') {
+            throw new Error('Claude marketplace remove 后 canonical aw source 仍存在。');
+          }
+          return;
+        }
+        case 'corrupted':
+          throw new Error(locator.message);
+      }
+    },
+    validateSkillDirectory: async (component) => {
+      await validateSkillDirectory(
+        component.path,
+        component.identity.platform === 'codex' ? 'codex.skill' : 'claude.skill',
+        { ownerMarkerPolicy: 'ignore', requirementsReceiptPolicy: 'allow' },
+      );
+    },
+    skillDirectoryMatchesPristineTree: async ({ actualPath, files }) => {
+      const expectedFiles = new Map(files.map((entry) => [entry.relativePath, entry.contentDigest]));
+      const expectedDirectories = new Set<string>(['']);
+      for (const relativePath of expectedFiles.keys()) {
+        const segments = relativePath.split('/');
+        for (let index = 1; index < segments.length; index += 1) {
+          expectedDirectories.add(segments.slice(0, index).join('/'));
+        }
+      }
+      const seen = new Set<string>();
+      const pending = [{ absolutePath: actualPath, relativePath: '' }];
+      while (pending.length > 0) {
+        const current = pending.pop()!;
+        for (const entry of await fs.readdir(current.absolutePath, { withFileTypes: true })) {
+          const relativePath = current.relativePath ? `${current.relativePath}/${entry.name}` : entry.name;
+          if (entry.isSymbolicLink()) return false;
+          const absolutePath = path.join(current.absolutePath, entry.name);
+          if (entry.isDirectory()) {
+            if (!expectedDirectories.has(relativePath)) return false;
+            pending.push({ absolutePath, relativePath });
+            continue;
+          }
+          if (!entry.isFile()) return false;
+          const digest = `sha256:${crypto.createHash('sha256').update(await fs.readFile(absolutePath)).digest('hex')}`;
+          if (expectedFiles.get(relativePath) !== digest) return false;
+          seen.add(relativePath);
+        }
+      }
+      return seen.size === expectedFiles.size;
+    },
+  };
   const finalizeNamespacedCleanup = async (target: DesiredTarget): Promise<void> => {
     if (target.identity.platform === 'codex') return;
     const { sourceId, sourceIdentity, marketplaceRoot, marketplaceName } = target.identity;
@@ -3473,6 +3853,7 @@ function createNativeDriver(options: {
     });
   };
   return {
+    ownership,
     preflightMaterialize: async (target) => {
       if (target.identity.sourceId && options.context.expectedCatalogConfigDigest) {
         const current = await readCatalogSourcesConfigSnapshot(options.context.env);
@@ -3519,11 +3900,7 @@ function createNativeDriver(options: {
     },
     finalizeCleanup: finalizeNamespacedCleanup,
     probeNative: async (component) => {
-      const target = [...plansTargetEntries(options.plans)].find((entry) =>
-        entry.target.identity.pluginName === component.identity.plugin
-        && entry.target.identity.sourceId === component.identity.sourceId
-        && entry.target.identity.platform === component.identity.platform
-        && entry.target.identity.scope === component.identity.scope)?.target;
+      const target = findTarget(component);
       if (!target) throw new Error('Native ownership probe cannot resolve its desired target.');
       if (target.identity.platform === 'claude') {
         const state = await readClaudeNativeState({
@@ -3549,11 +3926,7 @@ function createNativeDriver(options: {
       return 'absent';
     },
     probeNativeHealth: async (component) => {
-      const target = [...plansTargetEntries(options.plans)].find((entry) =>
-        entry.target.identity.pluginName === component.identity.plugin
-        && entry.target.identity.sourceId === component.identity.sourceId
-        && entry.target.identity.platform === component.identity.platform
-        && entry.target.identity.scope === component.identity.scope)?.target;
+      const target = findTarget(component);
       if (!target) throw new Error('Native health probe cannot resolve its desired target.');
       if (target.identity.platform === 'claude') {
         const state = await readClaudeNativeState({
@@ -3576,6 +3949,7 @@ function createNativeDriver(options: {
           marketplaceRoot: target.identity.marketplaceRoot,
         });
         if (residue.state !== 'present') return residue.state;
+        const codexManager = currentCodexManager();
         if (target.identity.scope !== 'project' || !codexManager) return 'present';
         const userConfig = await readCodexConfigFile(
           resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
@@ -3610,28 +3984,23 @@ function createNativeDriver(options: {
       return 'absent';
     },
     removeNative: async (component) => {
-      const target = [...plansTargetEntries(options.plans)].find((entry) =>
-        entry.target.identity.pluginName === component.identity.plugin
-        && entry.target.identity.sourceId === component.identity.sourceId
-        && entry.target.identity.platform === component.identity.platform
-        && entry.target.identity.scope === component.identity.scope)?.target;
+      const target = findTarget(component);
       if (!target) throw new Error('Native ownership removal cannot resolve its desired target.');
       if (target.identity.platform === 'codex') {
-        const before = await inspectCodexNativeResidue({
-          pluginName: target.identity.pluginName,
+        const registration = await inspectCodexPluginRegistrationLive({
+          pluginId: component.pluginId,
           cwd: target.identity.cwd,
           env: options.context.env,
-          marketplaceName: target.identity.marketplaceName,
-          marketplaceRoot: target.identity.marketplaceRoot,
+          nativeCliRunner: runner,
+          manager: currentCodexManager(),
         });
-        if (before.state === 'foreign') {
-          throw new Error(`Codex native owner 为 foreign，拒绝调用 plugin remove：${before.labels.join('，')}`);
-        }
-        if (before.state === 'absent') return;
+        const removalRequired = registration.entries.some((entry) =>
+          entry.pluginId === component.pluginId);
+        if (!removalRequired) return;
         try {
           await runNativeCliChecked(
             buildCodexPluginRemoveInvocation(
-              requireCodexManager(codexManager),
+              requireCodexManager(currentCodexManager()),
               component.pluginId,
               target.identity.cwd,
               options.context.env,
@@ -3641,14 +4010,14 @@ function createNativeDriver(options: {
         } catch {
           throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
         }
-        const residue = await inspectCodexNativeResidue({
-          pluginName: target.identity.pluginName,
+        const after = await inspectCodexPluginRegistrationLive({
+          pluginId: component.pluginId,
           cwd: target.identity.cwd,
           env: options.context.env,
-          marketplaceName: target.identity.marketplaceName,
-          marketplaceRoot: target.identity.marketplaceRoot,
+          nativeCliRunner: runner,
+          manager: currentCodexManager(),
         });
-        if (residue.state !== 'absent') {
+        if (after.entries.some((entry) => entry.pluginId === component.pluginId)) {
           throw new Error(`codexNativeRemoveIncomplete: ${CODEX_REMOVE_RECOVERY}`);
         }
       } else {
@@ -3678,33 +4047,10 @@ function createNativeDriver(options: {
       }
     },
     writeNative: async (target) => {
-      const plan = options.plans.get(target);
-      if (!plan) throw new Error('Missing rebuild integration plan.');
+      if (!target.catalog) throw new Error('Missing rebuild target catalog data.');
+      const catalog = target.catalog;
       const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
       const expectedMarketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
-      if (target.identity.platform === 'codex') {
-        const before = await inspectCodexNativeResidue({
-          pluginName: target.identity.pluginName,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-          marketplaceName,
-          marketplaceRoot: expectedMarketplaceRoot,
-        });
-        if (before.state === 'foreign') {
-          throw new Error(`codexSharedNativeForeign: ${before.labels.join(', ')}`);
-        }
-        if (before.state === 'present') {
-          await runNativeCliChecked(
-            buildCodexPluginRemoveInvocation(
-              requireCodexManager(codexManager),
-              `${target.identity.pluginName}@${marketplaceName}`,
-              target.identity.cwd,
-              options.context.env,
-            ),
-            runner,
-          );
-        }
-      }
       const writeGeneration = async (): Promise<void> => {
         if (mirrorTransactions.has(target)) {
           throw new Error('Marketplace mirror transaction is already active for this target.');
@@ -3737,25 +4083,53 @@ function createNativeDriver(options: {
               throw new Error(`Claude marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`);
             }
           }
-          const mirrored = await mirrorCatalog(plan.catalog, options.context.env, target.identity);
+          const mirrored = await mirrorCatalog(catalog, options.context.env, target.identity);
           mirrorTransactions.set(target, mirrored);
           const marketplaceRoot = mirrored.rootDir;
           const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
           if (target.identity.platform === 'codex') {
+          const registration = await inspectCodexPluginRegistrationLive({
+            pluginId,
+            cwd: target.identity.cwd,
+            env: options.context.env,
+            nativeCliRunner: runner,
+            manager: currentCodexManager(),
+          });
+          const removalRequired = registration.entries.some((entry) =>
+            entry.pluginId === pluginId);
+          if (removalRequired) {
+            await runNativeCliChecked(
+              buildCodexPluginRemoveInvocation(
+                requireCodexManager(currentCodexManager()),
+                pluginId,
+                target.identity.cwd,
+                options.context.env,
+              ),
+              runner,
+            );
+          }
           const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
             marketplaceRoot,
             'plugins',
             target.identity.pluginName,
           ));
-          const requiredSkillWrites = plan.writes.filter((entry) =>
-            !entry.optional
-            && entry.component?.kind === 'skill-directory'
-            && entry.artifact.kind === 'skill'
-            && entry.artifact.state !== 'disabled'
+          const desiredSkillPaths = new Set((target.desiredOwnedComponents ?? [])
+            .filter((component) => component.kind === 'skill-directory')
+            .map((component) => path.resolve(component.path)));
+          const enabledSkillPaths = new Set(target.artifacts
+            .filter((artifact) => artifact.kind === 'skill' && artifact.state !== 'disabled')
+            .map((artifact) => path.resolve(artifact.path)));
+          const requiredSkillWrites = (target.operationActions ?? []).filter((action): action is Extract<
+            OperationAction,
+            { kind: 'writeOwnedArtifact' }
+          > => action.kind === 'writeOwnedArtifact'
+            && action.artifactKind === 'skill-directory'
+            && desiredSkillPaths.has(path.resolve(action.path))
+            && enabledSkillPaths.has(path.resolve(action.path))
             && target.identity.scope === 'user'
-            && !path.relative(nativePluginRoot, entry.component.path).startsWith('..'));
-          for (const write of requiredSkillWrites) {
-            await write.write();
+            && !path.relative(nativePluginRoot, action.path).startsWith('..'));
+          for (const action of requiredSkillWrites) {
+            await applyPlannedOperationAction(action);
           }
           const skillsRelativeRoot = await ensureCodexActiveSkillsManifest({
             plugin: target.plugin,
@@ -3771,7 +4145,7 @@ function createNativeDriver(options: {
           if (path.normalize(marketplace?.source ?? '') !== path.normalize(marketplaceRoot)) {
             await runNativeCliChecked(
               buildCodexMarketplaceAddInvocation(
-                requireCodexManager(codexManager),
+                requireCodexManager(currentCodexManager()),
                 marketplaceRoot,
                 target.identity.cwd,
                 options.context.env,
@@ -3781,7 +4155,7 @@ function createNativeDriver(options: {
           }
           await runNativeCliChecked(
             buildCodexMarketplaceListInvocation(
-              requireCodexManager(codexManager),
+              requireCodexManager(currentCodexManager()),
               target.identity.cwd,
               options.context.env,
             ),
@@ -3789,7 +4163,7 @@ function createNativeDriver(options: {
           );
           await runNativeCliChecked(
             buildCodexPluginAddInvocation(
-              requireCodexManager(codexManager),
+              requireCodexManager(currentCodexManager()),
               pluginId,
               target.identity.cwd,
               options.context.env,
@@ -3798,7 +4172,7 @@ function createNativeDriver(options: {
           );
           await runNativeCliChecked(
             buildCodexPluginListInvocation(
-              requireCodexManager(codexManager),
+              requireCodexManager(currentCodexManager()),
               target.identity.cwd,
               options.context.env,
             ),
@@ -3812,8 +4186,8 @@ function createNativeDriver(options: {
             marketplaceRoot,
             marketplaceName,
             skillsRelativeRoot,
-            requiredSkillKeys: requiredSkillWrites.flatMap((write) =>
-              write.artifact.artifactKey ? [write.artifact.artifactKey] : []),
+            requiredSkillKeys: requiredSkillWrites.flatMap((action) =>
+              action.owner?.artifactKey ? [action.owner.artifactKey] : []),
           });
           } else {
           await runNativeCliChecked({
@@ -3859,13 +4233,14 @@ function createNativeDriver(options: {
       await writeGeneration();
     },
     writeArtifacts: async (target) => {
-      const plan = options.plans.get(target);
-      if (!plan) throw new Error('Missing rebuild integration plan.');
-      const writeAll = async (): Promise<readonly GeneratedArtifact[]> => {
-        for (const write of plan.writes) await write.write();
-        return plan.writes.map((write) => write.artifact);
-      };
-      return writeAll();
+      for (const operationAction of target.operationActions ?? []) {
+        if (operationAction.kind === 'writeOwnedArtifact'
+          || operationAction.kind === 'updateSharedConfig'
+          || operationAction.kind === 'setActivation') {
+          await applyPlannedOperationAction(operationAction);
+        }
+      }
+      return target.artifacts;
     },
     runPostApply: async (invocation: RebuildPostApplyInvocation) => {
       try {
@@ -3897,25 +4272,13 @@ function createNativeDriver(options: {
   };
 }
 
-const planTargets = new WeakMap<WeakMap<DesiredTarget, RebuildIntegrationPlan>, DesiredTarget[]>();
-
-function plansTargetEntries(plans: WeakMap<DesiredTarget, RebuildIntegrationPlan>): Array<{
-  target: DesiredTarget;
-  plan: RebuildIntegrationPlan;
-}> {
-  return (planTargets.get(plans) ?? []).flatMap((target) => {
-    const plan = plans.get(target);
-    return plan ? [{ target, plan }] : [];
-  });
-}
-
 export function createRebuildIntegration(options: {
   context: RebuildExecutionContext;
   scriptTimeoutMs?: number;
+  preparedTargets?: readonly DesiredTarget[];
 }): RebuildIntegration {
-  const plans = new WeakMap<DesiredTarget, RebuildIntegrationPlan>();
-  planTargets.set(plans, []);
-  const driver = createNativeDriver({ plans, ...options });
+  const targets = [...(options.preparedTargets ?? [])];
+  const driver = createNativeDriver({ targets, ...options });
   return {
     driver,
     buildTarget: async (input) => {
@@ -3946,7 +4309,7 @@ export function createRebuildIntegration(options: {
           env: options.context.env,
         });
       }
-      const event = input.command === 'upgrade' ? 'upgrade' : 'install';
+      const event = 'install' as const;
       const historicalArtifacts: GeneratedArtifact[] = [];
       let writes: PlannedWrite[] = [];
       let currentRemovalComponents: OwnedComponent[] = [];
@@ -4220,6 +4583,36 @@ export function createRebuildIntegration(options: {
       ]);
       bindNamespacedOwnerIdentity(allComponents, input);
       const desiredKeys = new Set(desiredComponents.map(componentIdentityKey));
+      const operationActions = writes.flatMap((write) => [
+        ...(write.action ? [write.action] : []),
+        ...(write.additionalActions ?? []),
+      ]);
+      finalizeOwnedArtifactActions(operationActions);
+      if (nativeDesired) {
+        operationActions.unshift({
+          kind: 'ensureNativeRegistration',
+          pluginId: input.pluginId ?? pluginActionId(input.plugin),
+          platform: input.platform,
+          scope: input.scope,
+          registration: `${input.plugin.manifest.name}@${input.marketplaceName ?? MARKETPLACE_NAME}`,
+          marketplaceName: input.marketplaceName ?? MARKETPLACE_NAME,
+          marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env),
+        });
+      }
+      const postApply = input.plugin.manifest.scripts?.postApply;
+      if (postApply && input.command !== 'cleanup' && input.command !== 'uninstall') {
+        const script = path.resolve(input.plugin.rootDir, postApply.path.replace(/^\.\//u, ''));
+        const scriptDigest = `sha256:${crypto.createHash('sha256')
+          .update(await fs.readFile(script)).digest('hex')}`;
+        operationActions.push({
+          kind: 'runPostApply',
+          pluginId: input.pluginId ?? pluginActionId(input.plugin),
+          platform: input.platform,
+          scope: input.scope,
+          script: postApply.path,
+          scriptDigest,
+        });
+      }
       const target: DesiredTarget = {
         plugin: input.plugin,
         identity: {
@@ -4244,14 +4637,11 @@ export function createRebuildIntegration(options: {
         requiresNative: nativeDesired,
         writeNativeRequired: materializeNativeRequired,
         artifacts: writes.map((write) => write.artifact),
+        operationActions,
+        catalog: input.catalog,
         postApplySource: input.plugin,
       };
-      plans.set(target, {
-        catalog: input.catalog,
-        event,
-        writes,
-      });
-      planTargets.get(plans)!.push(target);
+      targets.push(target);
       return target;
     },
   };
@@ -4301,6 +4691,7 @@ export async function inspectRebuildTarget(options: {
   });
   const inspection = await inspectOwnedComponents({
     components: target.ownedComponents,
+    executor: integration.driver.ownership,
     nativeProbe: options.nativeProbe
       ?? integration.driver.probeNativeHealth
       ?? integration.driver.probeNative,

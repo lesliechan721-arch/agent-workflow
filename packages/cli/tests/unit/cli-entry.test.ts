@@ -21,7 +21,6 @@ describe('CLI entry v4', () => {
     expect(await runCli(['--help'], { io: output.io })).toBe(0);
     for (const command of [
       'install',
-      'upgrade',
       'reinstall',
       'uninstall',
       'cleanup',
@@ -98,7 +97,7 @@ describe('CLI entry v4', () => {
     });
   });
 
-  it.each(['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'])(
+  it.each(['install', 'reinstall', 'uninstall', 'cleanup'])(
     'publishes managed Codex authorization on %s',
     async (command) => {
       const output = capture();
@@ -240,7 +239,6 @@ describe('CLI entry v4', () => {
 
   it.each([
     ['install'],
-    ['upgrade'],
     ['uninstall'],
     ['reinstall'],
     ['cleanup'],
@@ -273,15 +271,6 @@ describe('CLI entry v4', () => {
     expect(output.stdout()).toBe('');
     expect(output.stderr()).toContain(`Usage: aw config ${command}`);
     expect(output.stderr()).not.toContain('\u001B[');
-  });
-
-  it('rejects upgrade --all with explicit plugins before execution', async () => {
-    const output = capture();
-    expect(await runCli([
-      'upgrade', 'git-commit', '--all', '--platform', 'codex',
-    ], { interactive: false, io: output.io })).toBe(1);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain('不能同时使用插件名和 `--all`');
   });
 
   it.each([

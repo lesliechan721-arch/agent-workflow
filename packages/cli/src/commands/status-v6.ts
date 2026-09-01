@@ -39,7 +39,7 @@ import { resolveCliPackageRoot, resolveCodexPaths } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import { parsePlatformValue, parseScopeValue } from './options.js';
 import {
-  inspectCodexNativeResidue,
+  inspectCodexPluginRegistrationLive,
   inspectCodexSharedNativeLive,
   inspectRebuildTarget,
 } from './rebuild-integration.js';
@@ -115,6 +115,7 @@ export interface StatusV6Target {
     pluginId: string;
     state: 'present' | 'missing' | 'outdated' | 'corrupt' | 'foreign';
     version?: string;
+    diagnostic?: 'staleCacheObserved';
     shared: true;
   };
   activation?: {
@@ -444,11 +445,10 @@ interface DesiredTargetState {
 
 function emptyIntent(): PluginIntentState {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'aw-plugin-intents',
     roots: [],
     dependencyScopeOverrides: [],
-    managed: { codexPluginIds: [] },
   };
 }
 
@@ -464,6 +464,7 @@ function calculateDesiredTargetStates(options: {
     dependencies: string[];
     source: { id: string };
     targets: Record<PlatformName, Record<Scope, boolean>>;
+    states?: StatusPluginCapability['states'];
     codex?: { pluginId: string };
   }>;
   codexProjectAllowed: boolean;
@@ -525,6 +526,12 @@ function calculateDesiredTargetStates(options: {
             : 'dependency' as const,
           depth: platformRoots.some((root) => root.pluginId === pluginId) ? 0 : 1,
           allowedScopes,
+          ...(scope === 'project'
+            && !platformRoots.some((root) => root.pluginId === pluginId)
+            && entry.states?.[platform]?.user?.state === 'present'
+            && !entry.states[platform]?.user?.errors.some((error) => error.severity === 'blocking')
+            ? { preferredScope: 'user' as const, preferredScopeReason: 'existingWiderTarget' as const }
+            : {}),
         }];
       });
       const nodeIds = new Set(nodes.map((node) => node.pluginId));
@@ -560,15 +567,6 @@ function calculateDesiredTargetStates(options: {
           target.resolvedScope,
           target.relation === 'requested' ? 'root' : 'dependency',
         );
-      }
-    }
-  }
-  for (const intent of [options.userIntent, options.projectIntent]) {
-    for (const codexPluginId of intent.managed.codexPluginIds) {
-      for (const [pluginId, entry] of byId) {
-        if (entry.codex?.pluginId !== codexPluginId) continue;
-        const key = desiredTargetKey(pluginId, 'codex');
-        if (!desired.has(key)) desired.set(key, { scopes: new Set(), relation: 'managed' });
       }
     }
   }
@@ -867,6 +865,45 @@ export async function statusCommandV6(options: {
       relevance: error.relevance,
     });
   }
+  const nativeCliRunner = getDefaultNativeCliRunner();
+  const codexSystemConsumerInspections = new Map<Scope, Promise<SystemCodexFilesystemInspection>>();
+  const inspectCodexSystemConsumer = (scope: Scope) => {
+    let inspection = codexSystemConsumerInspections.get(scope);
+    if (!inspection) {
+      inspection = inspectSystemCodexFilesystem({
+        cwd: options.cwd,
+        env,
+        operationRequirement: getCodexOperationRequirement(scope),
+      });
+      codexSystemConsumerInspections.set(scope, inspection);
+    }
+    return inspection;
+  };
+  const codexRegistrationCache = new Map<
+    string,
+    ReturnType<typeof inspectCodexPluginRegistrationLive>
+  >();
+  const inspectCodexRegistration = async (pluginId: string, scope: Scope) => {
+    const consumer = await inspectCodexSystemConsumer(scope);
+    if (consumer.state !== 'compatible') {
+      return {
+        entries: [],
+        observations: { user: false, project: false },
+        activations: {},
+      };
+    }
+    let inspection = codexRegistrationCache.get(pluginId);
+    if (!inspection) {
+      inspection = inspectCodexPluginRegistrationLive({
+        pluginId,
+        cwd: options.cwd,
+        env,
+        nativeCliRunner,
+      });
+      codexRegistrationCache.set(pluginId, inspection);
+    }
+    return inspection;
+  };
   const nativeProbeCache = new Map<string, Promise<OwnedProbeResult>>();
   const codexDesiredUserActivationIds = new Set<string>();
   const readOnlyNativeProbe = (probe: {
@@ -888,13 +925,13 @@ export async function statusCommandV6(options: {
     let value = nativeProbeCache.get(key);
     if (!value) {
       value = probe.platform === 'codex'
-        ? inspectCodexNativeResidue({
-            pluginName: probe.pluginName,
-            cwd: options.cwd,
-            env,
-            marketplaceName: probe.marketplaceName,
-            marketplaceRoot: probe.marketplaceRoot,
-          }).then((residue) => residue.state)
+          ? inspectCodexRegistration(
+            `${probe.pluginName}@${probe.marketplaceName}`,
+            options.scope === undefined ? probe.scope : scopes[0]!,
+          ).then((registration) => registration.entries.some((entry) =>
+            entry.pluginId === `${probe.pluginName}@${probe.marketplaceName}`)
+            ? 'present' as const
+            : 'absent' as const)
         : Promise.resolve(ownerInventory.references.some((reference) =>
             (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
             && reference.sourceId === probe.sourceId
@@ -921,19 +958,6 @@ export async function statusCommandV6(options: {
   const requested = options.plugins ?? [];
   const platforms = selectedPlatforms(options.platform);
   const scopes = selectedScopes(options.scope);
-  const codexSystemConsumerInspections = new Map<Scope, Promise<SystemCodexFilesystemInspection>>();
-  const inspectCodexSystemConsumer = (scope: Scope) => {
-    let inspection = codexSystemConsumerInspections.get(scope);
-    if (!inspection) {
-      inspection = inspectSystemCodexFilesystem({
-        cwd: options.cwd,
-        env,
-        operationRequirement: getCodexOperationRequirement(scope),
-      });
-      codexSystemConsumerInspections.set(scope, inspection);
-    }
-    return inspection;
-  };
   const selectorErrors: Array<{ code: string; message: string }> = [];
   const parsedSelectors: PlannedStatusSelector[] = [];
   const plannedSelectors: PlannedStatusSelector[] = [];
@@ -1537,9 +1561,23 @@ export async function statusCommandV6(options: {
               if (codex && codexSurface.ok) {
                 const marketplaceName = marketplaceNameFor(entry.name, 'codex', 'user');
                 const codexPluginId = `${entry.name}@${marketplaceName}`;
+                const desiredCodexScopes = sourceDesired.get(desiredTargetKey(
+                  formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name }),
+                  'codex',
+                ))?.scopes ?? [];
+                const registrationScope: Scope = options.scope !== undefined
+                  ? scopes[0]!
+                  : desiredCodexScopes.includes('project')
+                    ? 'project'
+                    : desiredCodexScopes.includes('user') ? 'user' : 'project';
+                const pluginRegistration = codexSurface.nativeKinds.length > 0
+                  ? await inspectCodexRegistration(codexPluginId, registrationScope)
+                  : {
+                      entries: [],
+                      observations: { user: false, project: false },
+                      activations: {},
+                    };
                 let residueFailed = false;
-                const managedByCurrentIntent = userIntent.managed.codexPluginIds.includes(codexPluginId)
-                  || projectIntent.managed.codexPluginIds.includes(codexPluginId);
                 const sharedInspection = codexSurface.nativeKinds.length > 0
                   ? await inspectCodexSharedNativeLive({
                       pluginName: entry.name,
@@ -1547,9 +1585,11 @@ export async function statusCommandV6(options: {
                       expectedPayloadDigest: sharedNativePayloadDigest,
                       cwd: options.cwd,
                       env,
-                      managedByCurrentIntent,
+                      managedByCurrentIntent: false,
                       marketplaceName,
                       marketplaceRoot,
+                      nativeCliRunner,
+                      pluginRegistration,
                     }).catch(() => {
                       residueFailed = true;
                       return undefined;
@@ -1563,7 +1603,14 @@ export async function statusCommandV6(options: {
                   : nativeState.state === 'foreign'
                     ? { pluginId: codexPluginId, state: 'foreign', shared: true }
                     : nativeState.state === 'absent'
-                      ? { pluginId: codexPluginId, state: 'missing', shared: true }
+                      ? {
+                          pluginId: codexPluginId,
+                          state: 'missing',
+                          shared: true,
+                          ...(nativeState.diagnostic === 'staleCacheObserved'
+                            ? { diagnostic: nativeState.diagnostic }
+                            : {}),
+                        }
                       : nativeState.state === 'corrupt'
                         ? { pluginId: codexPluginId, state: 'corrupt', shared: true }
                         : nativeState.state === 'outdated'
@@ -1581,8 +1628,20 @@ export async function statusCommandV6(options: {
                               shared: true,
                             }
                           : undefined;
-                const userActivation = userCodexConfig?.snapshot.plugins[codexPluginId]?.enabled;
-                const projectActivation = projectCodexConfig?.snapshot.plugins[codexPluginId]?.enabled;
+                const configuredUserActivation = userCodexConfig
+                  ?.snapshot.plugins[codexPluginId]?.enabled;
+                const configuredProjectActivation = projectCodexConfig
+                  ?.snapshot.plugins[codexPluginId]?.enabled;
+                const userActivation = sharedInspection?.activationObservations.user
+                  ? sharedInspection.activations.user === true
+                  : configuredUserActivation;
+                const projectActivation = sharedInspection?.activationObservations.project
+                  && configuredProjectActivation !== undefined
+                  ? configuredProjectActivation && sharedInspection.activations.project === true
+                  : configuredProjectActivation;
+                const activationObserved = registrationScope === 'project'
+                  ? sharedInspection?.activationObservations.project === true
+                  : sharedInspection?.activationObservations.user === true;
                 codexStatus = {
                   pluginId: codexPluginId,
                   nativeKinds: codexSurface.nativeKinds,
@@ -1594,7 +1653,7 @@ export async function statusCommandV6(options: {
                     ...((userActivation !== undefined || projectActivation !== undefined)
                       ? { effective: projectActivation === true || userActivation === true }
                       : {}),
-                    evidence: 'assumed',
+                    evidence: activationObserved ? 'observed' : 'assumed',
                   },
                 };
               }
@@ -1975,95 +2034,6 @@ export async function statusCommandV6(options: {
       }
     }
   }
-  if (platforms.includes('codex')) {
-    for (const [scope, intent] of [
-      ['user', userIntent],
-      ['project', projectIntent],
-    ] as const) {
-      if (!scopes.includes(scope)) continue;
-      for (const codexPluginId of intent.managed.codexPluginIds) {
-        const separator = codexPluginId.lastIndexOf('@');
-        if (separator <= 0 || separator === codexPluginId.length - 1) continue;
-        const pluginName = codexPluginId.slice(0, separator);
-        const marketplaceName = codexPluginId.slice(separator + 1);
-        const registration = ownerInventory.references.find((reference) =>
-          reference.kind === 'namespacedMarketplace'
-          && reference.marketplaceName === marketplaceName
-          && reference.sourceId);
-        const inferredSourceId = registration?.sourceId
-          ?? (marketplaceName.startsWith('aw-') ? marketplaceName.slice(3) : undefined)
-          ?? (snapshot.config.sources.length === 1
-            ? snapshot.config.sources[0]!.id
-            : undefined);
-        const sourceId = inferredSourceId || 'unavailable';
-        const pluginId = formatPluginId({ sourceId, pluginName });
-        if (requested.length > 0 && !parsedSelectors.some((selector) =>
-          selector.parsed.pluginName === pluginName
-          && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === sourceId))) {
-          continue;
-        }
-        const key = `${pluginId}\0codex\0${scope}`;
-        if (targetKeys.has(key)) continue;
-        const marketplaceRoot = path.join(resolveAwHome(env), 'marketplaces', sourceId);
-        const residue = await inspectCodexNativeResidue({
-          pluginName,
-          cwd: options.cwd,
-          env,
-          marketplaceName,
-          marketplaceRoot,
-        }).catch(() => undefined);
-        const versions = [...new Set(residue?.versions ?? [])];
-        const sharedNative: StatusV6Target['sharedNative'] = residue?.state === 'foreign'
-          ? { pluginId: codexPluginId, state: 'foreign', shared: true }
-          : residue?.state === 'present' && versions.length === 0
-            ? { pluginId: codexPluginId, state: 'corrupt', shared: true }
-            : residue?.state === 'present'
-              ? {
-                  pluginId: codexPluginId,
-                  state: 'present',
-                  version: versions[0],
-                  shared: true,
-                }
-              : { pluginId: codexPluginId, state: 'missing', shared: true };
-        const sourceErrorCode = configured.has(sourceId)
-          ? 'catalogSourceUnavailable'
-          : 'sourceMissing';
-        const userActivation = userCodexConfig?.snapshot.plugins[codexPluginId]?.enabled;
-        const projectActivation = projectCodexConfig?.snapshot.plugins[codexPluginId]?.enabled;
-        targets.push({
-          pluginName,
-          sourceId,
-          sourceIdentity: registration?.sourceIdentity
-            ?? identities.get(sourceId)?.identity
-            ?? 'unavailable',
-          pluginId,
-          platform: 'codex',
-          scope,
-          cwd: path.resolve(options.cwd),
-          state: residue?.state === 'absent' || residue === undefined ? 'absent' : 'present',
-          components: [],
-          errors: [finalizeTargetError({
-            code: sourceErrorCode,
-            message: `${sourceErrorCode}: managed Codex inventory for ${codexPluginId} cannot be resolved from the current Catalog.`,
-          }, 'partial')],
-          sharedNative,
-          activation: {
-            ...(userActivation !== undefined
-              ? { user: userActivation }
-              : {}),
-            ...(projectActivation !== undefined
-              ? { project: projectActivation }
-              : {}),
-            ...((userActivation !== undefined || projectActivation !== undefined)
-              ? { effective: projectActivation === true || userActivation === true }
-              : {}),
-            evidence: 'assumed',
-          },
-        });
-        targetKeys.add(key);
-      }
-    }
-  }
   const projectedInventoryErrors = [...new Map(selectedInventoryErrors.map((error) => [
     `${error.code}\0${error.message}`,
     { code: error.code, message: error.message },
@@ -2098,13 +2068,8 @@ export async function statusCommandV6(options: {
   ): Promise<StatusV6Target> => {
     const entry = selectedByPluginId.get(target.pluginId);
     const codex = entry?.codex;
-    const managedCodexPluginId = codex?.pluginId ?? target.sharedNative?.pluginId;
-    const managedFallback = target.platform === 'codex'
-      && managedCodexPluginId !== undefined
-      && [...userIntent.managed.codexPluginIds, ...projectIntent.managed.codexPluginIds]
-        .includes(managedCodexPluginId);
     const desiredAll = desiredTargetStates.get(desiredTargetKey(target.pluginId, target.platform))
-      ?? { scopes: [], relation: managedFallback ? 'managed' as const : 'none' as const };
+      ?? { scopes: [], relation: 'none' as const };
     const desired = target.platform === 'codex'
       ? desiredAll
       : {
@@ -2127,7 +2092,9 @@ export async function statusCommandV6(options: {
     const activation = baseActivation && systemConsumer
       ? {
           ...baseActivation,
-          evidence: systemConsumer.state === 'missing' ? 'assumed' as const : 'unobserved' as const,
+          evidence: baseActivation.evidence === 'observed'
+            ? 'observed' as const
+            : systemConsumer.state === 'missing' ? 'assumed' as const : 'unobserved' as const,
           systemConsumer,
         }
       : baseActivation;
@@ -2194,14 +2161,7 @@ export async function statusCommandV6(options: {
       ? activation.systemConsumer
       : undefined;
     const consumerBlocking = consumerIssue !== undefined;
-    const managedCodexIds = [
-      ...(desired.scopes.includes('user') ? userIntent.managed.codexPluginIds : []),
-      ...(desired.scopes.includes('project') ? projectIntent.managed.codexPluginIds : []),
-    ];
-    const claimMissing = target.platform === 'codex'
-      && sharedNative?.state === 'present'
-      && desiredEnabled
-      && !managedCodexIds.includes(sharedNative.pluginId);
+    const claimMissing = false;
     const actual: StatusV6ActualState = hasSourceError && desiredEnabled
       ? 'unresolved'
       : consumerBlocking && desiredEnabled
@@ -2237,6 +2197,9 @@ export async function statusCommandV6(options: {
         : []),
       ...(sharedNative?.state === 'outdated'
         ? [warning('codexSharedNativeUpdateRequired', `${sharedNative.pluginId} requires a shared update.`)]
+        : []),
+      ...(sharedNative?.diagnostic === 'staleCacheObserved'
+        ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]
         : []),
       ...(desiredOverlapConflict
         ? [warning('codexExtensionScopeConflict', `${target.pluginId} has AW extensions desired at user and project scope.`)]

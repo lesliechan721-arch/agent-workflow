@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createRebuildIntegration,
   discoverRebuildTargetNames,
+  inspectCodexSharedNativeLive,
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
 import { projectTargetRevision, statusCommandV6 } from '../../src/commands/status-v6.js';
@@ -57,6 +58,7 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
+import { calculateCodexSharedNativePayloadDigest } from '../../src/utils/catalog-digests.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const TEST_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
@@ -283,6 +285,56 @@ async function writeClaudeGlobalConsumerState(options: {
 }
 
 describe('rebuild adapter integration', () => {
+  it('uses official exact and neutral Codex list evidence for shared registration', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const pluginName = 'list-evidence';
+    const cacheRoot = path.join(
+      isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName, '1.0.0',
+    );
+    await fs.outputJson(path.join(cacheRoot, 'plugin.json'), {
+      name: pluginName, version: '1.0.0',
+    });
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    const calls: NativeCliInvocation[] = [];
+    const inspected = await inspectCodexSharedNativeLive({
+      pluginName,
+      desiredVersion: '1.0.0',
+      expectedPayloadDigest: await calculateCodexSharedNativePayloadDigest(cacheRoot),
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      managedByCurrentIntent: false,
+      nativeCliRunner: async (invocation) => {
+        calls.push(invocation);
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [{
+              pluginId: `${pluginName}@aw`, installed: true,
+              enabled: invocation.cwd === isolation.layout.fixtureCwd,
+              version: '1.0.0',
+            }],
+            available: [],
+          }),
+          stderr: '',
+        };
+      },
+    });
+
+    expect(inspected).toMatchObject({
+      sharedNative: { state: 'claimable', version: '1.0.0' },
+      activations: { user: false, project: true },
+    });
+    expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
+      isolation.layout.fixtureCwd,
+      isolation.env.TMPDIR,
+    ]));
+    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+  });
   it.each(['codex', 'claude'] as const)(
     'does not make an uninstalled %s target partial because the shared marketplace exists',
     async (platform) => {
@@ -417,6 +469,19 @@ describe('rebuild adapter integration', () => {
         installed = false;
         await fs.remove(path.dirname(cacheRoot));
         await writeConfig();
+      }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: `${plugin.manifest.name}@aw`, installed: true,
+              enabled: true, version: plugin.manifest.version,
+            }] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
       }
       return {
         exitCode: 0,
@@ -591,6 +656,7 @@ describe('rebuild adapter integration', () => {
       });
       const inspected = await inspectOwnedComponents({
         components: target.ownedComponents,
+        executor: integration.driver.ownership,
         nativeProbe: integration.driver.probeNative,
       });
       expect(inspected.state).toBe('absent');
@@ -2558,7 +2624,7 @@ describe('rebuild adapter integration', () => {
       ...plugin,
       manifest: { ...plugin.manifest, version: '2.0.0', extensions: undefined },
     };
-    const v2 = await integration.buildTarget({ ...common, plugin: v2Plugin, command: 'upgrade' });
+    const v2 = await integration.buildTarget({ ...common, plugin: v2Plugin, command: 'sync' });
     const staleIdentity = staleComponents[0]!.identity;
     const sameIdentity = (component: (typeof v2.ownedComponents)[number]) =>
       component.identity.plugin === staleIdentity.plugin
@@ -2582,7 +2648,7 @@ describe('rebuild adapter integration', () => {
     ].join('\n'));
     const before = await fs.readFile(staleArtifact.path, 'utf8');
     const result = await executeRebuildOperation({
-      command: 'upgrade',
+      command: 'sync',
       target,
       driver: integration.driver,
     });
@@ -3065,6 +3131,22 @@ describe('rebuild adapter integration', () => {
         );
         await writeConfig();
       }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [
+              ...(installedA ? [{
+                pluginId: `${pluginA}@aw`, installed: true,
+                enabled: true, version: plugin.manifest.version,
+              }] : []),
+              { pluginId: `${pluginB}@aw`, installed: true, enabled: true, version: '1.0.0' },
+            ],
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
       return { exitCode: 0, stdout: '', stderr: '' };
     };
     const integration = createRebuildIntegration({
@@ -3538,7 +3620,9 @@ describe('rebuild adapter integration', () => {
     });
     const conditionalComponents = cleanupTarget.ownedComponents
       .filter((component) => component.kind === 'shared-config');
-    for (const component of conditionalComponents) await component.remove();
+    for (const component of conditionalComponents) {
+      await integration.driver.ownership.removeShared(component);
+    }
 
     const config = await readCodexConfigFile(configPath);
     const env = config.snapshot.mcpServers['conditional-server']?.value?.env as Record<string, unknown>;
@@ -3634,7 +3718,7 @@ describe('rebuild adapter integration', () => {
           platform: 'codex',
           scope: 'project',
           cwd: isolation.layout.fixtureCwd,
-          command: 'upgrade',
+          command: 'sync',
           catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
         });
         await integration.driver.writeArtifacts(repeatTarget);
@@ -3970,6 +4054,19 @@ describe('rebuild adapter integration', () => {
           '',
         ].join('\n'));
         await fs.remove(path.join(isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName));
+      }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: `${pluginName}@aw`, installed: true,
+              enabled: true, version: plugin.manifest.version,
+            }] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
       }
       return {
         exitCode: 0,

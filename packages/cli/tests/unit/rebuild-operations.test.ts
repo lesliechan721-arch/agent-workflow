@@ -50,6 +50,10 @@ function createFixture(options: { postApplyFailure?: boolean; preflightFailure?:
     artifacts: [],
   };
   const driver: RebuildTargetDriver = {
+    ownership: {
+      inspectShared: async () => 'absent',
+      removeShared: async () => undefined,
+    },
     async preflightMaterialize() {
       calls.push('preflight');
       if (options.preflightFailure) throw new Error('blocked');
@@ -137,12 +141,12 @@ describe('rebuild postApply boundary', () => {
         plugin: 'demo', artifactKey: 'optional', platform: 'codex' as const, scope: 'user' as const,
       },
       label: 'optional',
-      inspect: async () => ({ state: 'present' as const }),
-      remove: async () => {},
+      locator: { kind: 'corrupted' as const, message: 'test-only locator' },
     };
     fixture.target.ownedComponents = [optional];
     fixture.target.desiredOwnedComponents = [];
     fixture.target.optionalOwnedComponents = [optional];
+    fixture.driver.ownership.inspectShared = async () => 'present';
     let components: unknown;
     fixture.driver.runPostApply = async (invocation) => {
       components = invocation.components;

@@ -177,7 +177,7 @@ describe('public AW_HOME mutation command lock', () => {
           scope: 'project',
         }, {
           env: isolation.env,
-          previewDependencyPlanOnly: true,
+          previewOperationPlan: true,
           nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
         }),
     });

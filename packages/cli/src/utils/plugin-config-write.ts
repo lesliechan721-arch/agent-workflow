@@ -5,7 +5,7 @@ import {
   discoverRebuildTargetNames,
   inspectRebuildTarget,
 } from '../commands/rebuild-integration.js';
-import { reinstallWriteCommand } from '../commands/write-commands.js';
+import { syncWriteCommand } from '../commands/write-commands.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { createNoopReporter } from '../output/reporter.js';
 import type {
@@ -51,7 +51,8 @@ export interface PluginConfigWriteRequest {
 
 export type ConfigApplySkippedReason =
   | 'noVisibleTarget'
-  | 'noConfigChange';
+  | 'noConfigChange'
+  | 'notRequested';
 
 export interface PluginConfigWriteReceipt {
   plugin: string;
@@ -90,7 +91,7 @@ export interface ResetPluginConfigWriteReceipt {
   /** @deprecated Compatibility alias for the old console projection. */
 }
 
-type ReinstallCommand = typeof reinstallWriteCommand;
+type ReinstallCommand = typeof syncWriteCommand;
 
 interface ConfigRuntimeReplayReceipt {
   configWrite: 'succeeded';
@@ -266,7 +267,7 @@ async function reinstallVisibleTargets(options: {
     : { targets: dedupeTargets(options.applyTargets), failures: [] };
   const targetResults = [...discovered.failures];
   let runtimeFailed = discovered.failures.length > 0;
-  const reinstall = options.reinstallCommandImpl ?? reinstallWriteCommand;
+  const reinstall = options.reinstallCommandImpl ?? syncWriteCommand;
   if (options.plugin.sourceId && !options.plugin.pluginId) {
     throw new Error(`Plugin "${options.plugin.manifest.name}" is missing its namespaced plugin ID.`);
   }
@@ -392,6 +393,7 @@ type ApplyPluginConfigWriteOptions = {
   rebuildRuntime?: RebuildCommandRuntime;
   awHomeMutationToken?: AwHomeMutationToken;
   request: PluginConfigWriteRequest;
+  apply?: boolean;
   reviewPreflight?: () => Promise<void> | void;
 };
 
@@ -502,7 +504,7 @@ async function applyPluginConfigWriteUnlocked(
         targetResults: [],
         applySkippedReason: 'noConfigChange' as const,
       }
-    : await reinstallVisibleTargets({
+    : options.apply !== false ? await reinstallVisibleTargets({
         plugin: schemaPlugin,
         scope: options.scope,
         cwd: options.cwd,
@@ -511,7 +513,11 @@ async function applyPluginConfigWriteUnlocked(
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,
-      });
+      }) : {
+        overallState: 'succeeded' as const,
+        targetResults: [],
+        applySkippedReason: 'notRequested' as const,
+      };
   const otherProjectsRequireReinstall = options.scope === 'user'
     && changedKeys.length > 0;
   if (otherProjectsRequireReinstall) warnings.push(...otherProjectsWarning(options.scope));
@@ -569,6 +575,7 @@ type ResetPluginConfigWriteOptions = {
   rebuildRuntime?: RebuildCommandRuntime;
   awHomeMutationToken?: AwHomeMutationToken;
   reviewPreflight?: () => Promise<void> | void;
+  apply?: boolean;
 };
 
 async function resetPluginConfigWithHelperUnlocked(
@@ -623,7 +630,7 @@ async function resetPluginConfigWithHelperUnlocked(
   let applied: Awaited<ReturnType<typeof reinstallVisibleTargets>> = {
     overallState: 'succeeded',
     targetResults: [],
-    applySkippedReason: 'noConfigChange',
+    applySkippedReason: reset.deleted ? 'notRequested' : 'noConfigChange',
   };
   let effective: ReturnType<typeof summarizeEffectivePluginConfig> | undefined;
   if (schemaAccess.plugin) {
@@ -636,7 +643,7 @@ async function resetPluginConfigWithHelperUnlocked(
         env: options.env,
       }));
     }
-    if (reset.deleted) {
+    if (reset.deleted && options.apply !== false) {
       applied = await reinstallVisibleTargets({
         plugin: schemaAccess.plugin,
         scope: options.scope,

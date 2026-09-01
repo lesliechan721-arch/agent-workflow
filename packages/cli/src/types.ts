@@ -24,13 +24,11 @@ export type PlatformSelection = PlatformName | 'both';
 export type CommandAction =
   | 'install'
   | 'uninstall'
-  | 'upgrade'
-  | 'upgradeAll'
   | 'reinstall'
   | 'cleanup'
   | 'config'
   | 'status';
-export type RebuildCommand = 'install' | 'upgrade' | 'cleanup' | 'reinstall' | 'uninstall';
+export type RebuildCommand = 'install' | 'sync' | 'cleanup' | 'reinstall' | 'uninstall';
 export type RebuildActionName =
   | 'preflight.inspect'
   | 'stale.cleanup'
@@ -455,10 +453,6 @@ export interface DependencyScopeSelector {
 
 export interface InstallCommandOptions extends CommandOptions {
   dependencyScopeOverrides?: DependencyScopeSelector[];
-}
-
-export interface UpgradeCommandOptions extends CommandOptions {
-  all?: boolean;
 }
 
 export interface StatusCommandOptions {

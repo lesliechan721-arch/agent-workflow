@@ -1,5 +1,3 @@
-import crypto from 'node:crypto';
-
 import { getCodexOperationRequirement } from './agent-version.js';
 import type { CodexSharedNativeState } from './codex-shared-native.js';
 import type {
@@ -12,7 +10,6 @@ import type { CodexOperationRequirement, Scope } from '../types.js';
 export type CodexReconcileOperation =
   | 'install'
   | 'uninstall'
-  | 'upgrade'
   | 'reinstall'
   | 'cleanup'
   | 'sync';
@@ -112,8 +109,6 @@ export interface CodexReconcilePostcheckDescriptor {
 }
 
 export interface CodexReconcileReviewDescriptor {
-  evidenceDigest: string;
-  planDigest: string;
   requiresConfirmation: boolean;
   sharedImpact: {
     pluginIds: string[];
@@ -170,10 +165,6 @@ function compareText(left: string, right: string): number {
 
 function canonicalStrings(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareText);
-}
-
-function digest(value: unknown): string {
-  return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }
 
 function targetKey(target: Pick<CodexReconcilerCatalogTarget, 'pluginId' | 'codexPluginId'>): string {
@@ -287,7 +278,6 @@ function addExtensionActions(options: {
       const desired = scopes.includes(scope) && component.scopes.includes(scope);
       const shouldWrite = desired && (
         state !== 'present'
-        || options.input.operation === 'upgrade'
         || options.input.operation === 'reinstall'
       );
       if (shouldWrite) {
@@ -468,10 +458,8 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
     (target.intentScopes ?? desiredScopes(target)).includes(relatedScope)
       ? [target.codexPluginId]
       : []));
-  const beforeIds = canonicalStrings(input.intentBefore.managed.codexPluginIds);
-  const relatedBeforeIds = canonicalStrings(
-    input.relatedIntentBefore?.managed.codexPluginIds ?? [],
-  );
+  const beforeIds: string[] = [];
+  const relatedBeforeIds: string[] = [];
   const nativeReconciledPluginIds = new Set(sortedTargets.flatMap((target) =>
     target.surface.nativeKinds.length > 0 ? [target.codexPluginId] : []));
   const reconciledPluginIds = new Set(sortedTargets.map((target) => target.codexPluginId));
@@ -505,29 +493,6 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
       !reconciledPluginIds.has(pluginId)),
     ...relatedDesiredIds,
   ]);
-  const evidenceDescriptor = {
-    scope: input.scope,
-    cwd: input.cwd,
-    operation: input.operation,
-    intentBefore: input.intentBefore,
-    intentAfter: input.intentAfter,
-    relatedIntentBefore: input.relatedIntentBefore,
-    relatedIntentAfter: input.relatedIntentAfter,
-    catalogClosure: sortedTargets,
-    liveEvidence: [...input.liveEvidence]
-      .map((evidence) => ({
-        ...evidence,
-        ...(evidence.extensions
-          ? { extensions: [...evidence.extensions].sort((left, right) => compareText(
-              `${left.scope}\0${left.componentKey}\0${left.state}\0${left.owner ?? ''}`,
-              `${right.scope}\0${right.componentKey}\0${right.state}\0${right.owner ?? ''}`,
-            )) }
-          : {}),
-      }))
-      .sort((left, right) => compareText(left.codexPluginId, right.codexPluginId)),
-    activationSupport: support,
-  };
-  const evidenceDigest = digest(evidenceDescriptor);
   const planDescriptor = {
     requirement,
     desiredTargets: sortedTargets.map((target) => ({
@@ -554,15 +519,12 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
     warnings: canonicalStrings(warnings),
     postcheck: { requirement, support, plugins: postcheckPlugins },
   };
-  const planDigest = digest(planDescriptor);
   const sharedImpactPluginIds = sharedNativeActions.flatMap((entry) =>
     entry.affectsOtherScopes ? [entry.codexPluginId] : []);
 
   return {
     ...planDescriptor,
     review: {
-      evidenceDigest,
-      planDigest,
       requiresConfirmation: sharedImpactPluginIds.length > 0,
       sharedImpact: {
         pluginIds: sharedImpactPluginIds,

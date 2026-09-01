@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { StatusV6Payload } from '../../src/commands/status-v6.js';
-import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
+import type { ReconcileOperationPlan } from '../../src/commands/reconcile-operation-plan.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import {
   configAffectedStatusTargets,
@@ -64,6 +64,7 @@ vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
 vi.mock('../../src/commands/write-commands.js', () => ({
   cleanupWriteCommand: runtimeMocks.cleanupWriteCommand,
   installWriteCommand: runtimeMocks.installWriteCommand,
+  syncWriteCommand: runtimeMocks.installWriteCommand,
   reinstallWriteCommand: runtimeMocks.reinstallWriteCommand,
   uninstallWriteCommand: runtimeMocks.uninstallWriteCommand,
   upgradeWriteCommand: runtimeMocks.upgradeWriteCommand,
@@ -680,7 +681,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    const plan: DependencyOperationPlan = {
+    const plan: ReconcileOperationPlan = {
       dependencyPlanSchemaVersion: 2,
       dependencyPlanDigest: 'sha256:placement',
       requestedPluginIds: ['team/demo'],
@@ -768,7 +769,7 @@ describe('TUI controller runtime scope conflict validation', () => {
         platform: 'codex', scope: 'project',
         dependencyScopeOverrides: intent.dependencyScopeOverrides,
       }),
-      expect.objectContaining({ previewDependencyPlanOnly: true }),
+      expect.objectContaining({ previewOperationPlan: true }),
     );
 
     await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
@@ -780,12 +781,12 @@ describe('TUI controller runtime scope conflict validation', () => {
         platform: 'codex', scope: 'project',
         dependencyScopeOverrides: intent.dependencyScopeOverrides,
       }),
-      expect.objectContaining({
-        expectedOperationDependencyPlan: plan,
+      expect.not.objectContaining({
+        expectedPlanFingerprint: expect.anything(),
       }),
     );
 
-    const projectPlan: DependencyOperationPlan = {
+    const projectPlan: ReconcileOperationPlan = {
       ...plan,
       dependencyPlanDigest: 'sha256:project-placement',
       scopeOverrides: [{ pluginId: 'team/dependency', platform: 'codex', scope: 'project' }],
@@ -837,7 +838,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       .resolves.toEqual({ dependencyPlan: projectPlan, desiredPlacementUpdated: true });
     expect(runtimeMocks.installWriteCommand).toHaveBeenCalledTimes(2);
     expect(runtimeMocks.installWriteCommand.mock.calls.every((call) =>
-      call[2]?.previewDependencyPlanOnly === true)).toBe(true);
+      call[2]?.previewOperationPlan === true)).toBe(true);
     expect(runtimeMocks.cleanupWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.reinstallWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
@@ -853,7 +854,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     }));
   });
 
-  it('executes sync with reconcileIntentOnly through the reviewed write chain', async () => {
+  it('executes sync through the reviewed write chain', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-sync-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
@@ -913,7 +914,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
       ['team/demo'],
       expect.objectContaining({ platform: 'codex', scope: 'project' }),
-      expect.objectContaining({ previewDependencyPlanOnly: true, reconcileIntentOnly: true }),
+      expect.objectContaining({ previewOperationPlan: true }),
     );
     await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
       overallState: 'succeeded',
@@ -922,7 +923,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
       ['team/demo'],
       expect.objectContaining({ platform: 'codex', scope: 'project' }),
-      expect.objectContaining({ reconcileIntentOnly: true }),
+      expect.not.objectContaining({ reconcileIntentOnly: expect.anything() }),
     );
   });
 

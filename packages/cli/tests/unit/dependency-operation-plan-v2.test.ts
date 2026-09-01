@@ -41,31 +41,9 @@ function target(
 }
 
 describe('dependency placement plan v2', () => {
-  it.each([
-    ['install', 'keep'],
-    ['upgrade', 'upgrade'],
-    ['reinstall', 'reinstall'],
-  ] as const)('uses %s for every healthy dependency except install keep', (operation, expected) => {
-    const input = graph();
-    input.nodes = input.nodes.filter((node) => node.platform === 'codex').map((node) => ({
-      ...node,
-      current: { project: 'present' as const },
-    }));
-    input.roots = input.roots.filter((root) => root.platform === 'codex');
-    input.dependencyEdges = input.dependencyEdges.filter((edge) => edge.platform === 'codex');
-    input.scopeOverrides = [];
-    input.operation = operation;
-
-    const plan = createDependencyPlacementPlan(input);
-    expect(target(plan, 'team/root', 'codex').action).toBe(operation);
-    expect(target(plan, 'team/middle', 'codex').action).toBe(expected);
-    expect(target(plan, 'team/leaf', 'codex').action).toBe(expected);
-  });
-
   it('keeps platform assignments independent and propagates widening to a fixed point', () => {
     const plan = createDependencyPlacementPlan(graph());
 
-    expect(plan.dependencyPlanSchemaVersion).toBe(2);
     expect(target(plan, 'team/middle', 'codex')).toMatchObject({
       resolvedScope: 'user', assignmentSource: 'userOverride', minimumScope: 'project',
     });
@@ -74,14 +52,13 @@ describe('dependency placement plan v2', () => {
     });
     expect(target(plan, 'team/middle', 'claude').resolvedScope).toBe('project');
     expect(target(plan, 'team/leaf', 'claude').resolvedScope).toBe('project');
-    expect(plan.claimRoots).toEqual([{ pluginId: 'team/middle', platform: 'codex' }]);
   });
 
   it('reuses a healthy wider user dependency without creating a user root', () => {
     const input = graph();
     input.nodes = input.nodes.filter((node) => node.platform === 'codex').map((node) =>
       node.pluginId === 'team/middle'
-        ? { ...node, current: { user: 'present' as const } }
+        ? { ...node, preferredScope: 'user' as const, preferredScopeReason: 'existingWiderTarget' as const }
         : node);
     input.roots = input.roots.filter((root) => root.platform === 'codex');
     input.dependencyEdges = input.dependencyEdges.filter((edge) => edge.platform === 'codex');
@@ -89,13 +66,12 @@ describe('dependency placement plan v2', () => {
 
     const plan = createDependencyPlacementPlan(input);
     expect(target(plan, 'team/middle', 'codex')).toMatchObject({
-      resolvedScope: 'user', assignmentSource: 'existingWiderTarget', action: 'keep',
+      resolvedScope: 'user', assignmentSource: 'existingWiderTarget',
     });
     expect(target(plan, 'team/leaf', 'codex')).toMatchObject({
       resolvedScope: 'user', assignmentSource: 'consumerPromotion',
     });
     expect(plan.requestedPluginIds).toEqual(['team/root']);
-    expect(plan.claimRoots).toEqual([{ pluginId: 'team/middle', platform: 'codex' }]);
   });
 
   it('widens every dependency of a user root and rejects a too-narrow explicit override', () => {
@@ -107,12 +83,11 @@ describe('dependency placement plan v2', () => {
     const widened = createDependencyPlacementPlan(input);
     expect(target(widened, 'team/middle', 'codex').resolvedScope).toBe('user');
     expect(target(widened, 'team/leaf', 'codex').resolvedScope).toBe('user');
-    expect(widened.claimRoots).toEqual([]);
 
     input.scopeOverrides = [{ pluginId: 'team/middle', platform: 'codex', scope: 'project' }];
     const blocked = createDependencyPlacementPlan(input);
     expect(target(blocked, 'team/middle', 'codex')).toMatchObject({
-      action: 'block', errorCode: 'dependencyScopeOverrideTooNarrow', minimumScope: 'user',
+      placementErrorCode: 'dependencyScopeOverrideTooNarrow', minimumScope: 'user',
     });
     expect(target(blocked, 'team/leaf', 'codex')).toMatchObject({
       resolvedScope: 'user', minimumScope: 'user', assignmentSource: 'consumerPromotion',
@@ -178,7 +153,7 @@ describe('dependency placement plan v2', () => {
     })).toThrow('dependencyScopeOverrideUnsupportedPlatform');
   });
 
-  it('canonicalizes arrays and produces a stable digest', () => {
+  it('canonicalizes placement arrays without producing an independent digest', () => {
     const input = graph();
     const first = createDependencyPlacementPlan(input);
     const second = createDependencyPlacementPlan({
@@ -191,6 +166,6 @@ describe('dependency placement plan v2', () => {
     });
 
     expect(second).toEqual(first);
-    expect(first.dependencyPlanDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(first).not.toHaveProperty('dependencyPlanDigest');
   });
 });

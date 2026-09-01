@@ -111,6 +111,22 @@ function createNativeRuntime(isolation: ReturnType<typeof getCurrentSourceTestIs
         removePluginActivations: [pluginId],
       });
     }
+    if (args[1] === 'list' && args.includes('--json')) {
+      const config = await readCodexConfigFile(configPath);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          installed: [...installed].sort().map((pluginId) => ({
+            pluginId,
+            installed: true,
+            enabled: config.snapshot.plugins[pluginId]?.enabled === true,
+            version: '1.0.0',
+          })),
+          available: [],
+        }),
+        stderr: '',
+      };
+    }
     return {
       exitCode: 0,
       stdout: args[1] === 'list' ? [...installed].sort().join('\n') : '',
@@ -130,7 +146,7 @@ function createNativeRuntime(isolation: ReturnType<typeof getCurrentSourceTestIs
 }
 
 describe('Codex source-qualified native identity', () => {
-  it('syncs one same-name source without changing the other activation or managed intent', async () => {
+  it('syncs one same-name source without changing the other activation or root intent', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const baseRoot = path.join(isolation.layout.fixtureCwd, 'base-source');
     const firstRoot = path.join(isolation.layout.fixtureCwd, 'first-source');
@@ -174,7 +190,10 @@ describe('Codex source-qualified native identity', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).resolves.toMatchObject({
-      managed: { codexPluginIds: ['demo@aw-first', 'demo@aw-second'] },
+      roots: [
+        { pluginId: 'first/demo', platforms: ['codex'] },
+        { pluginId: 'second/demo', platforms: ['codex'] },
+      ],
     });
 
     const synced = await syncCommand(['first/demo'], {
@@ -198,11 +217,14 @@ describe('Codex source-qualified native identity', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).resolves.toMatchObject({
-      managed: { codexPluginIds: ['demo@aw-first', 'demo@aw-second'] },
+      roots: [
+        { pluginId: 'first/demo', platforms: ['codex'] },
+        { pluginId: 'second/demo', platforms: ['codex'] },
+      ],
     });
   });
 
-  it('sync --all removes one stale same-name native identity and preserves the desired source', async () => {
+  it('sync --all reconciles only intent roots and leaves other actual state orphaned', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const baseRoot = path.join(isolation.layout.fixtureCwd, 'all-base-source');
     const firstRoot = path.join(isolation.layout.fixtureCwd, 'all-first-source');
@@ -253,13 +275,12 @@ describe('Codex source-qualified native identity', () => {
     }, runtime);
 
     expect(synced.overallState, JSON.stringify(synced.rebuildResults)).toBe('succeeded');
-    expect(synced.dependencyPlan?.requestedPluginIds).toEqual(['first/demo', 'second/demo']);
+    expect(synced.dependencyPlan?.requestedPluginIds).toEqual(['second/demo']);
     const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
-    expect(config.snapshot.plugins['demo@aw-first']?.enabled).toBeUndefined();
+    expect(config.snapshot.plugins['demo@aw-first']?.enabled).toBe(true);
     expect(config.snapshot.plugins['demo@aw-second']?.enabled).toBe(true);
     await expect(readPluginIntentState(intentLocation)).resolves.toMatchObject({
       roots: [{ pluginId: 'second/demo', platforms: ['codex'] }],
-      managed: { codexPluginIds: ['demo@aw-second'] },
     });
   });
 
@@ -297,7 +318,6 @@ describe('Codex source-qualified native identity', () => {
     };
     await expect(readPluginIntentState(intentLocation)).resolves.toMatchObject({
       roots: [{ pluginId: 'first/demo', platforms: ['codex'] }],
-      managed: { codexPluginIds: ['demo@aw'] },
     });
 
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -329,7 +349,6 @@ describe('Codex source-qualified native identity', () => {
     expect(config.snapshot.plugins['demo@aw-first']).toBeUndefined();
     await expect(readPluginIntentState(intentLocation)).resolves.toMatchObject({
       roots: [{ pluginId: 'first/demo', platforms: ['codex'] }],
-      managed: { codexPluginIds: ['demo@aw'] },
     });
     expect(runtime.nativeCliRunner.mock.calls.some(([invocation]) => {
       const pluginIndex = invocation.args.indexOf('plugin');
@@ -337,61 +356,4 @@ describe('Codex source-qualified native identity', () => {
     })).toBe(false);
   });
 
-  it('sync --all deterministically resolves two rootless same-name managed identities', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const baseRoot = path.join(isolation.layout.fixtureCwd, 'rootless-base-source');
-    const firstRoot = path.join(isolation.layout.fixtureCwd, 'rootless-first-source');
-    const secondRoot = path.join(isolation.layout.fixtureCwd, 'rootless-second-source');
-    await Promise.all([
-      createCatalogSnapshotFixture(baseRoot, 'anchor'),
-      createNativeSource(firstRoot),
-      createNativeSource(secondRoot),
-    ]);
-    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [
-          { id: 'base', type: 'path', primary: true, path: baseRoot },
-          { id: 'first', type: 'path', primary: false, path: firstRoot },
-          { id: 'second', type: 'path', primary: false, path: secondRoot },
-        ],
-      },
-      expectedDigest: snapshot.digest,
-      env: isolation.env,
-    });
-    const runtime = createNativeRuntime(isolation);
-    const installed = await installWriteCommand(['first/demo', 'second/demo'], {
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'user',
-    }, runtime);
-    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
-    const intentLocation = {
-      scope: 'user' as const,
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    };
-    const intent = await readPluginIntentState(intentLocation);
-    await writePluginIntentState(intentLocation, { ...intent, roots: [] });
-
-    const synced = await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'user',
-      all: true,
-      interactive: false,
-    }, runtime);
-
-    expect(synced.overallState, JSON.stringify(synced.rebuildResults)).toBe('succeeded');
-    expect(synced.dependencyPlan?.requestedPluginIds).toEqual(['first/demo', 'second/demo']);
-    const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
-    expect(config.snapshot.plugins['demo@aw-first']?.enabled).toBeUndefined();
-    expect(config.snapshot.plugins['demo@aw-second']?.enabled).toBeUndefined();
-    await expect(readPluginIntentState(intentLocation)).resolves.toMatchObject({
-      roots: [],
-      managed: { codexPluginIds: [] },
-    });
-  });
 });

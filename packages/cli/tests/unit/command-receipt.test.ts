@@ -5,12 +5,12 @@ import {
   buildRebuildReceiptJson,
   renderRebuildReceipt,
 } from '../../src/output/command-receipt.js';
-import { createDependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
+import type { ReconcileOperationPlan } from '../../src/commands/reconcile-operation-plan.js';
 import type { CodexReconcilePlan } from '../../src/utils/codex-reconciler.js';
 
 describe('command receipt v5', () => {
   it('serializes the five write commands with one receipt schema', () => {
-    for (const command of ['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'] as const) {
+    for (const command of ['install', 'reinstall', 'uninstall', 'cleanup', 'sync'] as const) {
       const requestedAction = command === 'install' ? 'add'
         : command === 'uninstall' ? 'remove' : 'keep';
       const receipt = buildRebuildReceiptJson(command, {
@@ -56,7 +56,6 @@ describe('command receipt v5', () => {
   it('maps no-plan requested intent into the six receipt layers without changing actual targets', () => {
     for (const [command, action] of [
       ['install', 'add'],
-      ['upgrade', 'keep'],
       ['reinstall', 'keep'],
       ['uninstall', 'remove'],
       ['cleanup', 'keep'],
@@ -115,7 +114,6 @@ describe('command receipt v5', () => {
 
   it.each([
     ['install', 'add', 'install', 'completed'],
-    ['upgrade', 'keep', 'upgrade', 'completed'],
     ['reinstall', 'keep', 'reinstall', 'completed'],
     ['uninstall', 'remove', 'keep', 'kept'],
     ['cleanup', 'keep', 'keep', 'kept'],
@@ -126,16 +124,19 @@ describe('command receipt v5', () => {
     targetAction,
     dependencyState,
   ) => {
-    const dependencyPlan = createDependencyOperationPlan({
+    const dependencyPlan: ReconcileOperationPlan = {
       requestedPluginIds: ['team/root'],
       resolvedPluginIds: ['team/leaf', 'team/root'],
-      dependencyEdges: [{ from: 'team/root', to: 'team/leaf' }],
+      dependencyEdges: [{ from: 'team/root', to: 'team/leaf', platform: 'codex' }],
+      scopeOverrides: [],
       targets: [{
-        pluginId: 'team/leaf', pluginName: 'leaf', platform: 'codex', requestedScope: 'project',
+        pluginId: 'team/leaf', pluginName: 'leaf', platform: 'codex',
         resolvedScope: 'user', relation: 'dependency', requiredBy: ['team/root'], state: 'present',
-        action: targetAction, order: 0,
+        action: targetAction, order: 0, depth: 1, rootScope: 'project', minimumScope: 'project',
+        allowedScopes: ['project', 'user'], assignmentSource: 'existingWiderTarget',
+        locked: false, affectsOtherProjects: true,
       }],
-    });
+    };
     const receipt = buildRebuildReceiptJson(command, {
       platforms: ['codex'], plugins: ['leaf'], warnings: [], overallState: 'succeeded', dependencyPlan,
       rebuildResults: [{

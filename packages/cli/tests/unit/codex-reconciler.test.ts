@@ -11,8 +11,6 @@ import type { CodexSharedNativeState } from '../../src/utils/codex-shared-native
 import type { CodexSurfaceAnalysis } from '../../src/utils/codex-surface-analysis.js';
 import {
   createEmptyPluginIntentState,
-  upsertPluginIntentRoot,
-  widenPluginIntentManagedCodexOwnership,
 } from '../../src/utils/plugin-intent-state.js';
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
@@ -166,8 +164,8 @@ describe('Codex desired-state reconciliation planner', () => {
     },
   );
 
-  it('writes only AW-owned extension components and removes stale scoped output', () => {
-    const plan = createCodexReconcilePlan(input('upgrade', target({
+  it('keeps healthy AW-owned extension components and removes stale scoped output', () => {
+    const plan = createCodexReconcilePlan(input('sync', target({
       surface: surface('mixed'),
       desiredScopes: ['project'],
     }), live(
@@ -177,9 +175,7 @@ describe('Codex desired-state reconciliation planner', () => {
         { componentKey: 'extensions.instructions:guide', scope: 'project', state: 'present' },
       ] },
     )));
-    expect(plan.extensionWrites).toEqual([expect.objectContaining({
-      componentKey: 'extensions.instructions:guide', scope: 'project', action: 'write',
-    })]);
+    expect(plan.extensionWrites).toEqual([]);
     expect(plan.extensionRemovals).toEqual([expect.objectContaining({
       componentKey: 'extensions.instructions:guide', scope: 'user', action: 'remove',
     })]);
@@ -196,134 +192,6 @@ describe('Codex desired-state reconciliation planner', () => {
       .managedInventory.desired).toEqual([]);
     expect(createCodexReconcilePlan(input('cleanup', target(), evidence))
       .sharedNativeActions[0]?.action).toBe('reuse');
-  });
-
-  it('keeps managed ownership as a superset until successful convergence', () => {
-    const before = widenPluginIntentManagedCodexOwnership(
-      createEmptyPluginIntentState(),
-      ['old@aw'],
-    );
-    const oldTarget = target({
-      pluginId: 'official/old',
-      pluginName: 'old',
-      codexPluginId: 'old@aw',
-      desiredScopes: [],
-    });
-    const base = input('install');
-    const plan = createCodexReconcilePlan({
-      ...base,
-      intentBefore: before,
-      catalogClosure: [...base.catalogClosure, oldTarget],
-      liveEvidence: [
-        ...base.liveEvidence,
-        live({ state: 'present', version: '1.0.0', nativeAction: 'none' }, {
-          codexPluginId: 'old@aw',
-        }),
-      ],
-    });
-    expect(plan.managedInventory).toEqual({
-      before: ['old@aw'],
-      desired: ['demo@aw'],
-      ownershipSuperset: ['demo@aw', 'old@aw'],
-      converged: ['demo@aw'],
-      related: {
-        before: [],
-        desired: [],
-        ownershipSuperset: [],
-        converged: [],
-      },
-    });
-    expect(plan.staleActivationRemovals).toEqual([
-      { scope: 'user', codexPluginId: 'old@aw' },
-      { scope: 'project', codexPluginId: 'old@aw' },
-    ]);
-  });
-
-  it('disables user activation while project intent keeps the shared native provider', () => {
-    const before = widenPluginIntentManagedCodexOwnership(
-      createEmptyPluginIntentState(),
-      ['demo@aw'],
-    );
-    const related = widenPluginIntentManagedCodexOwnership(
-      upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-        pluginId: 'official/demo',
-        platforms: ['codex'],
-      }),
-      ['demo@aw'],
-    );
-    const plan = createCodexReconcilePlan({
-      ...input('uninstall', target({
-        resolvedScope: 'user',
-        desiredScopes: ['project'],
-        intentScopes: ['project'],
-      }), live(
-        { state: 'present', version: '1.0.0', nativeAction: 'none' },
-        { activations: { user: true, project: true } },
-      )),
-      scope: 'user',
-      intentBefore: before,
-      relatedIntentBefore: related,
-      relatedIntentAfter: related,
-    });
-    expect(plan.activationActions.user[0]).toMatchObject({ action: 'disable', desired: false });
-    expect(plan.activationActions.project[0]).toMatchObject({ action: 'none', desired: true });
-    expect(plan.staleActivationRemovals).toEqual([]);
-    expect(plan.sharedNativeActions[0]?.action).toBe('none');
-    expect(plan.managedInventory).toMatchObject({
-      desired: [],
-      converged: [],
-      related: { desired: ['demo@aw'], converged: ['demo@aw'] },
-    });
-  });
-
-  it('preserves managed inventory outside the reconciled closure', () => {
-    const before = widenPluginIntentManagedCodexOwnership(
-      createEmptyPluginIntentState(),
-      ['unrelated@aw'],
-    );
-    const plan = createCodexReconcilePlan({ ...input('install'), intentBefore: before });
-    expect(plan.managedInventory.converged).toEqual(['demo@aw', 'unrelated@aw']);
-    expect(plan.staleActivationRemovals).toEqual([]);
-  });
-
-  it('preserves a managed activation whose marketplace identity is outside the reconciled target', () => {
-    const before = widenPluginIntentManagedCodexOwnership(
-      createEmptyPluginIntentState(),
-      ['demo@legacy'],
-    );
-    const plan = createCodexReconcilePlan({ ...input('sync'), intentBefore: before });
-    expect(plan.staleActivationRemovals).toEqual([]);
-    expect(plan.managedInventory).toMatchObject({
-      ownershipSuperset: ['demo@aw', 'demo@legacy'],
-      converged: ['demo@aw', 'demo@legacy'],
-    });
-  });
-
-  it('removes and converges only the source-qualified native identity for same-name plugins', () => {
-    const before = widenPluginIntentManagedCodexOwnership(
-      createEmptyPluginIntentState(),
-      ['demo@aw-first', 'demo@aw-second'],
-    );
-    const first = target({
-      pluginId: 'first/demo',
-      codexPluginId: 'demo@aw-first',
-      desiredScopes: [],
-      intentScopes: [],
-    });
-    const plan = createCodexReconcilePlan({
-      ...input('sync', first, live(
-        { state: 'present', version: '1.0.0', nativeAction: 'none' },
-        { codexPluginId: 'demo@aw-first', activations: { user: true, project: true } },
-      )),
-      intentBefore: before,
-    });
-    expect(plan.staleActivationRemovals).toEqual([
-      { scope: 'user', codexPluginId: 'demo@aw-first' },
-      { scope: 'project', codexPluginId: 'demo@aw-first' },
-    ]);
-    expect(plan.managedInventory).toMatchObject({
-      converged: ['demo@aw-second'],
-    });
   });
 
   it('requires direct authorization for shared replace and forced reinstall', () => {
@@ -350,7 +218,7 @@ describe('Codex desired-state reconciliation planner', () => {
     expect(plan.warnings).toContain('codexProjectActivationAssumed');
   });
 
-  it('produces stable evidence and plan digests for reordered live extension evidence', () => {
+  it('produces a stable plan for reordered live extension evidence', () => {
     const catalog = target({ surface: surface('mixed') });
     const first = input('sync', catalog, live(
       { state: 'present', version: '1.0.0', nativeAction: 'none' },
@@ -361,49 +229,6 @@ describe('Codex desired-state reconciliation planner', () => {
     ));
     const second = structuredClone(first);
     second.liveEvidence[0]!.extensions!.reverse();
-    expect(createCodexReconcilePlan(first).review.planDigest)
-      .toBe(createCodexReconcilePlan(second).review.planDigest);
-    expect(createCodexReconcilePlan(first).review.evidenceDigest)
-      .toBe(createCodexReconcilePlan(second).review.evidenceDigest);
-  });
-
-  it('binds review evidence to intent, Catalog, native, activation, and extension inputs', () => {
-    const baseline = input('sync', target({ surface: surface('mixed') }), live(
-      { state: 'present', version: '1.0.0', nativeAction: 'none' },
-      {
-        activations: { user: false, project: true },
-        extensions: [{
-          componentKey: 'extensions.instructions:guide',
-          scope: 'project',
-          state: 'present',
-        }],
-        projectionDigest: 'projection-a',
-      },
-    ));
-    const baselineDigest = createCodexReconcilePlan(baseline).review.evidenceDigest;
-    const mutations: CodexReconcilerInput[] = [];
-    const intentChanged = structuredClone(baseline);
-    intentChanged.intentAfter = upsertPluginIntentRoot(intentChanged.intentAfter, {
-      pluginId: 'official/demo', platforms: ['codex'],
-    });
-    mutations.push(intentChanged);
-    const catalogChanged = structuredClone(baseline);
-    catalogChanged.catalogClosure[0]!.payloadDigest = `sha256:${'b'.repeat(64)}`;
-    mutations.push(catalogChanged);
-    const nativeChanged = structuredClone(baseline);
-    nativeChanged.liveEvidence[0]!.sharedNative = {
-      state: 'outdated', version: '0.9.0', desiredVersion: '1.0.0', nativeAction: 'replace',
-    };
-    mutations.push(nativeChanged);
-    const activationChanged = structuredClone(baseline);
-    activationChanged.liveEvidence[0]!.activations.project = false;
-    mutations.push(activationChanged);
-    const extensionChanged = structuredClone(baseline);
-    extensionChanged.liveEvidence[0]!.projectionDigest = 'projection-b';
-    mutations.push(extensionChanged);
-
-    for (const candidate of mutations) {
-      expect(createCodexReconcilePlan(candidate).review.evidenceDigest).not.toBe(baselineDigest);
-    }
+    expect(createCodexReconcilePlan(first)).toEqual(createCodexReconcilePlan(second));
   });
 });

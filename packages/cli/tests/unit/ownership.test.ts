@@ -1,10 +1,15 @@
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { OwnerIdentity, OwnedComponent } from '../../src/utils/ownership.js';
+import type {
+  OwnerIdentity,
+  OwnedComponent,
+  OwnedComponentExecutor,
+} from '../../src/utils/ownership.js';
 import {
   cleanupOwnedComponents,
   createSharedOwnerToken,
@@ -356,15 +361,26 @@ describe('ownership inspection and cleanup', () => {
       path: skillRoot,
       allowedRoot: skillsRoot,
       identity: userIdentity(),
-      unownedIsPristine: async (actualPath) =>
-        await fs.readFile(path.join(actualPath, 'SKILL.md'), 'utf8') === '# pristine\n',
+      pristineTree: [{
+        relativePath: 'SKILL.md',
+        contentDigest: `sha256:${crypto.createHash('sha256').update('# pristine\n').digest('hex')}`,
+      }],
+    };
+    const executor: OwnedComponentExecutor = {
+      inspectShared: async () => 'absent',
+      removeShared: async () => undefined,
+      skillDirectoryMatchesPristineTree: async ({ actualPath, files }) =>
+        files.length === 1
+        && files[0]?.relativePath === 'SKILL.md'
+        && files[0]?.contentDigest === `sha256:${crypto.createHash('sha256')
+          .update(await fs.readFile(path.join(actualPath, 'SKILL.md'))).digest('hex')}`,
     };
 
-    await expect(inspectOwnedComponents({ components: [component] })).resolves.toMatchObject({
+    await expect(inspectOwnedComponents({ components: [component], executor })).resolves.toMatchObject({
       state: 'absent',
       components: [{ state: 'absent' }],
     });
-    await expect(cleanupOwnedComponents({ components: [component] })).resolves.toEqual({
+    await expect(cleanupOwnedComponents({ components: [component], executor })).resolves.toEqual({
       removed: [],
       absent: [skillRoot],
       residual: [],
@@ -374,7 +390,7 @@ describe('ownership inspection and cleanup', () => {
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
 
     await fs.writeFile(path.join(skillRoot, 'SKILL.md'), '# changed\n');
-    await expect(cleanupOwnedComponents({ components: [component] })).resolves.toMatchObject({
+    await expect(cleanupOwnedComponents({ components: [component], executor })).resolves.toMatchObject({
       removed: [],
       residual: [skillRoot],
     });
@@ -403,7 +419,12 @@ describe('ownership inspection and cleanup', () => {
         path: skillRoot,
         allowedRoot: skillsRoot,
         identity,
-        validateHealth: async () => {
+        validateHealth: true,
+      };
+      const executor: OwnedComponentExecutor = {
+        inspectShared: async () => 'absent',
+        removeShared: async () => undefined,
+        validateSkillDirectory: async () => {
           await validateSkillDirectory(
             skillRoot,
             platform === 'codex' ? 'codex.skill' : 'claude.skill',
@@ -417,6 +438,7 @@ describe('ownership inspection and cleanup', () => {
       });
       await expect(inspectOwnedComponents({
         components: [component],
+        executor,
         verifyHealth: true,
       })).resolves.toMatchObject({
         state: 'partial',
@@ -441,8 +463,7 @@ describe('ownership inspection and cleanup', () => {
       kind: 'managed-block',
       identity: userIdentity('instructions'),
       label: 'managed instructions',
-      inspect: async () => managedPresent ? 'present' : 'absent',
-      remove: async () => { managedPresent = false; },
+      locator: { kind: 'corrupted', message: 'test' },
     };
     const native: OwnedComponent = {
       kind: 'native-plugin',
@@ -450,13 +471,19 @@ describe('ownership inspection and cleanup', () => {
       pluginId: 'ownership-test@aw',
     };
     const nativeProbe = async () => nativePresent ? 'present' as const : 'absent' as const;
+    const executor: OwnedComponentExecutor = {
+      inspectShared: async () => managedPresent ? 'present' : 'absent',
+      removeShared: async () => { managedPresent = false; },
+    };
 
     await expect(inspectOwnedComponents({
       components: [managed, native],
+      executor,
       nativeProbe,
     })).resolves.toMatchObject({ state: 'present' });
     await expect(cleanupOwnedComponents({
       components: [managed, native],
+      executor,
       nativeProbe,
       nativeRemove: async () => { nativePresent = false; },
     })).resolves.toEqual({
@@ -625,16 +652,19 @@ describe('ownership inspection and cleanup', () => {
       kind: 'shared-config',
       identity: userIdentity('shared'),
       label: 'unreadable shared config',
-      inspect: async () => { throw new Error('probe failed'); },
-      remove: async () => { throw new Error('must not run'); },
+      locator: { kind: 'corrupted', message: 'probe failed' },
+    };
+    const executor: OwnedComponentExecutor = {
+      inspectShared: async () => { throw new Error('probe failed'); },
+      removeShared: async () => { throw new Error('must not run'); },
     };
 
-    await expect(inspectOwnedComponents({ components: [owned, unreadable] })).resolves.toMatchObject({
+    await expect(inspectOwnedComponents({ components: [owned, unreadable], executor })).resolves.toMatchObject({
       state: 'error',
       components: [{ state: 'present' }, { state: 'error' }],
       errors: [{ label: 'unreadable shared config', message: 'probe failed' }],
     });
-    await expect(cleanupOwnedComponents({ components: [owned, unreadable] })).resolves.toMatchObject({
+    await expect(cleanupOwnedComponents({ components: [owned, unreadable], executor })).resolves.toMatchObject({
       removed: [ownedPath],
       residual: ['unreadable shared config'],
       failures: [{ label: 'unreadable shared config', phase: 'probe' }],
@@ -649,30 +679,40 @@ describe('ownership inspection and cleanup', () => {
       kind: 'managed-block',
       identity: userIdentity('healthy'),
       label: 'healthy block',
-      inspect: async () => removedHealthy ? 'absent' : 'present',
-      remove: async () => { removedHealthy = true; },
+      locator: { kind: 'corrupted', message: 'healthy' },
     };
     const removeFailure: OwnedComponent = {
       kind: 'managed-block',
       identity: userIdentity('remove-failure'),
       label: 'remove failure',
-      inspect: async () => 'present',
-      remove: async () => { throw new Error('remove failed'); },
+      locator: { kind: 'corrupted', message: 'remove-failure' },
     };
     const postProbeFailure: OwnedComponent = {
       kind: 'managed-block',
       identity: userIdentity('post-probe-failure'),
       label: 'post-probe failure',
-      inspect: async () => {
+      locator: { kind: 'corrupted', message: 'post-probe-failure' },
+    };
+    const executor: OwnedComponentExecutor = {
+      inspectShared: async (component) => {
+        if (component === healthy) return removedHealthy ? 'absent' : 'present';
+        if (component === removeFailure) return 'present';
         postProbeCount += 1;
         if (postProbeCount > 1) throw new Error('post-probe failed');
         return 'present';
       },
-      remove: async () => undefined,
+      removeShared: async (component) => {
+        if (component === healthy) {
+          removedHealthy = true;
+          return;
+        }
+        if (component === removeFailure) throw new Error('remove failed');
+      },
     };
 
     await expect(cleanupOwnedComponents({
       components: [healthy, removeFailure, postProbeFailure],
+      executor,
     })).resolves.toMatchObject({
       removed: ['healthy block'],
       residual: ['remove failure', 'post-probe failure'],

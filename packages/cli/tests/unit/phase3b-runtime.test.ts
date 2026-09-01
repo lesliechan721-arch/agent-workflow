@@ -11,7 +11,6 @@ import {
   cleanupWriteCommand,
   installWriteCommand,
   uninstallWriteCommand,
-  upgradeWriteCommand,
 } from '../../src/commands/write-commands.js';
 import {
   createSkillOwnerMarkerContent,
@@ -193,7 +192,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: nestedSkillMarker }));
   });
 
-  it('limits ordinary Codex residue inventory to exact source and plugin identities', async () => {
+  it('does not turn Codex cache residue into ordinary or orphan cleanup consumers', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const marketplacesRoot = path.join(isolation.env.AW_HOME!, 'marketplaces');
     const roots = {
@@ -252,13 +251,8 @@ describe('phase 3B namespaced runtime stores', () => {
       codexNativeResidueTargets: [{ sourceId: 'team', pluginName: 'demo' }],
     });
     expect(ordinary.errors).toEqual([]);
-    expect(ordinary.references).toContainEqual(expect.objectContaining({
-      kind: 'namespacedMarketplace',
-      sourceId: 'team',
-      pluginName: 'demo',
-      marketplaceName: 'aw-team',
-      platform: 'codex',
-      scope: 'user',
+    expect(ordinary.references).not.toContainEqual(expect.objectContaining({
+      pluginName: 'demo', platform: 'codex',
     }));
 
     const orphanCleanup = await inventoryCatalogSourceReferences({
@@ -266,9 +260,9 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       includeOrphanedCodexNativeResidue: true,
     });
-    expect(orphanCleanup.errors).toContainEqual(expect.objectContaining({
-      kind: 'nativeStateRead',
-      relevance: expect.objectContaining({ sourceId: 'unrelated', platform: 'codex' }),
+    expect(orphanCleanup.errors).toEqual([]);
+    expect(orphanCleanup.references).not.toContainEqual(expect.objectContaining({
+      pluginName: 'demo', platform: 'codex',
     }));
   });
 
@@ -453,7 +447,7 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it('preserves a lost-source shared native consumer for explicit reconciliation', async () => {
+  it('ignores lost-source cache residue during explicit cleanup', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
     await Promise.all([
@@ -523,7 +517,7 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(result).toMatchObject({
       overallState: 'succeeded',
-      targetResults: [expect.objectContaining({ state: 'completed' })],
+      targetResults: [],
     });
     expect(calls).not.toContain('codex plugin remove demo@aw');
     await expect(fs.pathExists(cacheRoot)).resolves.toBe(true);
@@ -689,72 +683,6 @@ describe('phase 3B namespaced runtime stores', () => {
     }));
   });
 
-  it('ignores legacy project Skill evidence but blocks legacy user native evidence', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const legacyMarker = path.join(
-      isolation.layout.fixtureCwd,
-      '.agents',
-      'skills',
-      'legacy-demo',
-      '.agent-workflows-owner.json',
-    );
-    await fs.outputJson(legacyMarker, {
-      schemaVersion: 1,
-      owner: 'agent-workflows',
-      plugin: 'legacy-demo',
-      artifactKey: 'legacy-demo',
-      platform: 'codex',
-      scope: 'project',
-    });
-
-    await expect(upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'claude',
-      scope: 'project',
-    }, { env: isolation.env })).resolves.toMatchObject({
-      overallState: 'succeeded',
-      targetResults: [],
-    });
-    const ignoredProjectMarker = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'project',
-    }, { env: isolation.env });
-    expect(ignoredProjectMarker).toMatchObject({
-      overallState: 'succeeded',
-      targetResults: [],
-    });
-    await expect(fs.pathExists(legacyMarker)).resolves.toBe(true);
-
-    await fs.outputFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
-      '[marketplaces.aw]',
-      `source = ${JSON.stringify(path.join(isolation.layout.rootDir, 'legacy-marketplace'))}`,
-      'source_type = "local"',
-      '[plugins."legacy-native@aw"]',
-      'enabled = true',
-      '',
-    ].join('\n'));
-    const nativeBlocked = await upgradeWriteCommand([], {
-      all: true,
-      cwd: isolation.layout.fixtureCwd,
-      platform: 'codex',
-      scope: 'user',
-    }, { env: isolation.env });
-    expect(nativeBlocked).toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({
-        errorCode: 'legacyStateUnsupported',
-        target: expect.objectContaining({
-          pluginName: 'legacy-native',
-          platform: 'codex',
-          scope: 'user',
-        }),
-      })],
-    });
-  });
-
   it('keeps unrelated legacy state while planning and installing a namespaced plugin', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'legacy-install-source');
@@ -801,7 +729,7 @@ describe('phase 3B namespaced runtime stores', () => {
       scope: 'project',
     }, {
       ...runtime,
-      previewDependencyPlanOnly: true,
+      previewOperationPlan: true,
       onPreviewStage(stage) { previewStages.push(stage); },
     });
     expect(preview.overallState).toBe('succeeded');
@@ -835,7 +763,7 @@ describe('phase 3B namespaced runtime stores', () => {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
-    }, { ...runtime, previewDependencyPlanOnly: true });
+    }, { ...runtime, previewOperationPlan: true });
     expect(ignoredSamePluginMarker).toMatchObject({
       overallState: 'succeeded',
       targetResults: [],

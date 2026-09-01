@@ -4530,7 +4530,7 @@ describe('ConsoleAppV4', () => {
     }).targets).toContainEqual(expect.objectContaining({
       pluginId: 'official/skill-toolkit',
       resolvedScope: 'user',
-      action: 'move',
+      assignmentSource: 'consumerPromotion',
     }));
     expect(value.snapshot.activeReview?.changes).toContainEqual(expect.objectContaining({
       pluginId: 'official/skill-toolkit', group: 'userIntent', kind: 'add',

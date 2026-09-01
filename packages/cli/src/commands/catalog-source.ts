@@ -289,6 +289,8 @@ export async function updateCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
+  requireIdentityChangeConfirmation?: boolean;
+  confirmIdentityChange?: boolean;
 }): Promise<CatalogSourceMutationReceipt> {
   return withCatalogSourceMutationLock({
     env: options.env,
@@ -303,6 +305,18 @@ export async function updateCatalogSourceCommand(options: {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
       const config = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+      const before = snapshot.config.sources.find((source) => source.id === options.sourceId)!;
+      const after = config.sources.find((source) => source.id === options.sourceId)!;
+      const identityChanged = before.type === 'git' && after.type === 'git'
+        ? before.url !== after.url || before.subdir !== after.subdir
+        : before.type === 'path' && after.type === 'path'
+          ? before.path !== after.path
+          : true;
+      if (options.requireIdentityChangeConfirmation
+        && identityChanged
+        && options.confirmIdentityChange !== true) {
+        throw new Error('catalogSourceIdentityChangeConfirmationRequired: use --yes to confirm the source URL, path, or subdirectory change.');
+      }
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
       }
