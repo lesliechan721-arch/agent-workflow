@@ -4,7 +4,8 @@ import { isPathInside, pathsOverlap, sha256 } from './common.js'
 import { readEvalContractFile } from './eval-file.js'
 import { validateJsonSchema } from './json-schema.js'
 import { assertSafeOutputPath } from './output-path.js'
-import { computeSkillDigest } from './runtime-skill.js'
+import { computeEvalProviderDigest } from './eval-audit.js'
+import { computeCanonicalDirectoryDigest, computeSkillDigest } from './runtime-skill.js'
 import { getSchema } from './schemas.js'
 import type { Digest, ValidationResult } from './types.js'
 
@@ -26,7 +27,7 @@ export type EvalBaseline =
 export interface EvalSpec {
   version: 1
   source: { plugin: string; skill: string; suite: string; profile: string }
-  workspace: string
+  workspace: EvalSpecPathDigest
   target: EvalSpecPathDigest
   cases: EvalSpecPathDigest
   provider: EvalProvider
@@ -39,6 +40,8 @@ export interface EvalSpec {
 export interface EvalSpecCalculated {
   spec: EvalSpec
   specDigest: Digest
+  workspaceDigest: Digest
+  providerDigest: Digest
   targetDigest: Digest
   caseDigest: Digest
   previousTargetDigest: Digest | null
@@ -107,12 +110,15 @@ export async function validateEvalSpecFile(
     const file = await readEvalContractFile(specPath, 'EvalSpec')
     const spec = await parseEvalSpec(file.value)
     const base = await realpath(path.dirname(file.path))
-    const workspace = await resolveInput(base, spec.workspace, 'workspace', 'directory')
+    const workspace = await resolveInput(base, spec.workspace.path, 'workspace', 'directory')
     const target = await resolveInput(base, spec.target.path, 'target', 'file-or-directory')
     const cases = await resolveInput(base, spec.cases.path, 'cases', 'file')
+    const workspaceDigest = await computeCanonicalDirectoryDigest(workspace)
     const targetDigest = await computeSkillDigest(target)
     const caseDigest = sha256(await readFile(cases))
     const errors: string[] = []
+    if (workspaceDigest !== spec.workspace.digest)
+      errors.push('workspace digest does not match workspace content')
     if (targetDigest !== spec.target.digest) errors.push('target digest does not match target content')
     if (caseDigest !== spec.cases.digest) errors.push('case digest does not match cases content')
     let previousTarget: string | null = null
@@ -145,6 +151,8 @@ export async function validateEvalSpecFile(
       calculated: {
         spec,
         specDigest: file.digest,
+        workspaceDigest,
+        providerDigest: computeEvalProviderDigest(spec.provider),
         targetDigest,
         caseDigest,
         previousTargetDigest,

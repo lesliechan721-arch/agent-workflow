@@ -7,7 +7,6 @@
       "publish-aw-catalog",
       "author-aw-plugin"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

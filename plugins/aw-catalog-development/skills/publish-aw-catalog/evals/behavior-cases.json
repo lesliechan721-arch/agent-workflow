@@ -3,7 +3,6 @@
   "suite": {
     "kind": "conversation",
     "unitUnderTest": "publish-aw-catalog",
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

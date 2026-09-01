@@ -6,7 +6,6 @@
     "participants": [
       "author-aw-plugin"
     ],
-    "defaultGrader": "independent-llm",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

@@ -23,11 +23,13 @@ import {
   type EvalResultRun,
 } from './eval-result.js'
 import { validateEvalSpecFile, type EvalSpecCalculated } from './eval-spec.js'
+import { assertEvalProviderSuiteKind } from './eval-suite-binding.js'
 import {
   runBuiltinEvalProvider,
   type BuiltinEvalProviderDependencies,
   type BuiltinEvalProviderRunInput,
 } from './providers.js'
+import { resolveCodexEvalRuntimeConfig } from './codex-eval-runtime-config.js'
 import { ProviderProcessCleanupError } from './process.js'
 import { computeCanonicalDirectoryDigest, computeSkillDigest } from './runtime-skill.js'
 import {
@@ -122,18 +124,31 @@ async function assertInputsUnchanged(
   } catch (error) {
     throw new BoundInputChangedError(`Prepared Eval input changed: ${(error as Error).message}`)
   }
-  if (!sameDigests(captured, current)) throw new BoundInputChangedError('Prepared Eval input digest changed.')
+  if (!sameDigests(captured, current) || !digestsMatchSpec(calculated, current)) {
+    throw new BoundInputChangedError(
+      'Prepared Eval input digest changed or no longer matches EvalSpec digests.',
+    )
+  }
+}
+
+function digestsMatchSpec(
+  calculated: EvalSpecCalculated,
+  digests: BoundInputDigests,
+): boolean {
+  return digests.workspace === calculated.workspaceDigest
+    && digests.workspace === calculated.spec.workspace.digest
+    && digests.target === calculated.targetDigest
+    && digests.cases === calculated.caseDigest
+    && digests.previousTarget === calculated.previousTargetDigest
 }
 
 function assertDigestsMatchSpec(
   calculated: EvalSpecCalculated,
   digests: BoundInputDigests,
 ): void {
-  if (
-    digests.target !== calculated.targetDigest
-    || digests.cases !== calculated.caseDigest
-    || digests.previousTarget !== calculated.previousTargetDigest
-  ) throw new BoundInputChangedError('Prepared Eval input no longer matches EvalSpec digests.')
+  if (!digestsMatchSpec(calculated, digests)) {
+    throw new BoundInputChangedError('Prepared Eval input no longer matches EvalSpec digests.')
+  }
 }
 
 function triggerProviderCase(
@@ -366,6 +381,7 @@ async function createRunInputSnapshot(
 }
 
 async function assertSnapshotUnchanged(
+  calculated: EvalSpecCalculated,
   snapshot: RunInputSnapshot,
   captured: BoundInputDigests,
 ): Promise<void> {
@@ -377,8 +393,10 @@ async function assertSnapshotUnchanged(
       ? await computeSkillDigest(snapshot.previousTarget)
       : null,
   }
-  if (!sameDigests(captured, current)) {
-    throw new BoundInputChangedError('Run input snapshot digest changed.')
+  if (!sameDigests(captured, current) || !digestsMatchSpec(calculated, current)) {
+    throw new BoundInputChangedError(
+      'Run input snapshot digest changed or no longer matches EvalSpec digests.',
+    )
   }
 }
 
@@ -435,6 +453,7 @@ export async function runEvalSpec(
   if (document.suite.unitUnderTest !== calculated.spec.source.skill) {
     throw new Error('Selected cases unitUnderTest does not match EvalSpec source.skill.')
   }
+  assertEvalProviderSuiteKind(calculated.spec.provider, document.suite.kind)
   const selectedCaseIds = document.cases.map((entry) => entry.id)
   const auditValidation = await validateEvalAuditFile(options.auditPath, {
     spec: calculated.spec,
@@ -451,11 +470,29 @@ export async function runEvalSpec(
   const captured = await inputDigests(calculated)
   assertDigestsMatchSpec(calculated, captured)
   await assertInputsUnchanged(calculated, captured)
-  const sourceEnv = options.sourceEnv ?? process.env
-  const secrets = secretValues(sourceEnv)
+  const sourceEnv = options.sourceEnv
+    ?? options.builtinProviderDependencies?.sourceEnv
+    ?? process.env
+  const runtime = await resolveCodexEvalRuntimeConfig({
+    sourceEnv,
+    inheritUserConfig: true,
+    modelOverride: options.builtinProviderDependencies?.model
+      ?? sourceEnv.AW_SKILL_EVAL_CODEX_MODEL,
+  })
+  const secrets = (): string[] => [
+    ...secretValues(sourceEnv),
+    ...runtime.sensitiveValues,
+  ]
+  const builtinProviderDependencies: BuiltinEvalProviderDependencies = {
+    ...options.builtinProviderDependencies,
+    sourceEnv,
+    model: runtime.model ?? undefined,
+    codexRuntime: runtime,
+  }
   const startedAt = new Date().toISOString()
   const runs: EvalResultRun[] = []
   let stop = false
+  await assertInputsUnchanged(calculated, captured)
   await fs.ensureDir(path.dirname(calculated.paths.outputDir))
   await mkdir(calculated.paths.outputDir)
   let snapshot: RunInputSnapshot
@@ -486,7 +523,7 @@ export async function runEvalSpec(
         try {
           if (options.signal?.aborted) throw abortError()
           await assertInputsUnchanged(calculated, captured)
-          await assertSnapshotUnchanged(snapshot, captured)
+          await assertSnapshotUnchanged(calculated, snapshot, captured)
           const prepared = await prepareAttempt({
             calculated,
             snapshot,
@@ -510,16 +547,17 @@ export async function runEvalSpec(
             ? await (options.runBuiltinProvider ?? runBuiltinEvalProvider)(
                 calculated.spec.provider,
                 { ...input, evalRoot: prepared.attemptRoot },
-                options.builtinProviderDependencies,
+                builtinProviderDependencies,
               )
             : await (options.executeCustomProvider ?? executeCustomProcessProvider)({
                 command: calculated.spec.provider.command as [string, ...string[]],
                 evalRoot: prepared.attemptRoot,
                 input,
                 sourceEnv,
+                codexRuntime: runtime,
               })
           if (options.signal?.aborted) throw abortError()
-          const sanitized = redactValue(providerResult, secrets)
+          const sanitized = redactValue(providerResult, secrets())
           usage = sanitized.usage === null ? null : { ...sanitized.usage }
           grade = sanitized.grade
           await writeFile(
@@ -532,7 +570,7 @@ export async function runEvalSpec(
           status = isTimeout(caught) ? 'timeout' : 'failed'
           usage = null
           grade = null
-          error = { message: redactText(caught instanceof Error ? caught.message : String(caught), secrets) || 'Provider failed.' }
+          error = { message: redactText(caught instanceof Error ? caught.message : String(caught), secrets()) || 'Provider failed.' }
           if (
             options.signal?.aborted
             || caught instanceof BoundInputChangedError
@@ -542,12 +580,12 @@ export async function runEvalSpec(
         }
         try {
           await assertInputsUnchanged(calculated, captured)
-          await assertSnapshotUnchanged(snapshot, captured)
+          await assertSnapshotUnchanged(calculated, snapshot, captured)
         } catch (changed) {
           status = 'failed'
           usage = null
           grade = null
-          error = { message: redactText((changed as Error).message, secrets) }
+          error = { message: redactText((changed as Error).message, secrets()) }
           stop = true
         }
         runs.push({
@@ -567,14 +605,14 @@ export async function runEvalSpec(
   }
   try {
     await assertInputsUnchanged(calculated, captured)
-    await assertSnapshotUnchanged(snapshot, captured)
+    await assertSnapshotUnchanged(calculated, snapshot, captured)
   } catch (changed) {
     if (runs.length === 0) throw changed
     const last = runs[runs.length - 1]!
     last.status = 'failed'
     last.usage = null
     last.grade = null
-    last.error = { message: redactText((changed as Error).message, secrets) }
+    last.error = { message: redactText((changed as Error).message, secrets()) }
   }
   if (options.signal?.aborted && runs.length > 0) {
     const last = runs[runs.length - 1]!

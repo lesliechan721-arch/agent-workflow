@@ -1,6 +1,15 @@
 export { computeEvalFileDigest } from './eval-file.js'
 export { parseEvalSpec, validateEvalSpec, validateEvalSpecFile } from './eval-spec.js'
-export { parseEvalAudit, validateEvalAudit, validateEvalAuditFile } from './eval-audit.js'
+export {
+  assertEvalProviderSuiteKind,
+  validateEvalProviderSuiteKind,
+} from './eval-suite-binding.js'
+export {
+  computeEvalProviderDigest,
+  parseEvalAudit,
+  validateEvalAudit,
+  validateEvalAuditFile,
+} from './eval-audit.js'
 export {
   computeEvalResultSummary,
   createEvalResultBinding,

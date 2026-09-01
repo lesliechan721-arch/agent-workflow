@@ -11,7 +11,6 @@
       "design-agent-skill-evals",
       "audit-agent-skill-evals"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

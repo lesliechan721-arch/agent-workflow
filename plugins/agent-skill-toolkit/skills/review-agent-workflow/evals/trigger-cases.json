@@ -8,7 +8,6 @@
       "review-agent-skill",
       "audit-agent-skill-evals"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

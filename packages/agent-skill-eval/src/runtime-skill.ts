@@ -7,6 +7,7 @@ import type { Digest, RuntimeSkillSnapshot } from './types.js'
 const alwaysIgnored = new Set(['.git', 'node_modules', '.DS_Store'])
 const authorOnlyRoots = new Set(['evals', 'reports'])
 const productionDigestDomain = 'aw-production-records-v1'
+const evalWorkspaceDigestDomain = 'aw-eval-workspace-records-v1'
 
 interface RuntimeSkillFile {
   absolutePath: string
@@ -24,6 +25,10 @@ export interface CapturedRuntimeSkill {
   sourceRoot: string
   digest: Digest
   files: CapturedRuntimeSkillFile[]
+}
+
+export interface CapturedCanonicalDirectory extends CapturedRuntimeSkill {
+  directories: string[]
 }
 
 export interface RuntimeSkillDigestOptions {
@@ -57,6 +62,27 @@ function digestProductionRecords(
     updateLengthPrefixed(hash, file.relativePath)
     updateLengthPrefixed(hash, file.mode)
     updateLengthPrefixed(hash, createHash('sha256').update(file.bytes).digest())
+  }
+  return `sha256:${hash.digest('hex')}`
+}
+
+function digestEvalWorkspaceRecords(
+  directories: readonly string[],
+  files: readonly CapturedRuntimeSkillFile[],
+): Digest {
+  const hash = createHash('sha256')
+  updateLengthPrefixed(hash, evalWorkspaceDigestDomain)
+  const records = [
+    ...directories.map((relativePath) => ({ kind: 'directory' as const, relativePath })),
+    ...files.map((file) => ({ kind: 'file' as const, ...file })),
+  ].sort((left, right) => comparePosixPaths(left.relativePath, right.relativePath))
+  for (const record of records) {
+    updateLengthPrefixed(hash, record.relativePath)
+    updateLengthPrefixed(hash, record.kind)
+    if (record.kind === 'file') {
+      updateLengthPrefixed(hash, record.mode)
+      updateLengthPrefixed(hash, createHash('sha256').update(record.bytes).digest())
+    }
   }
   return `sha256:${hash.digest('hex')}`
 }
@@ -149,18 +175,42 @@ export async function computeCanonicalDirectoryDigest(
 export async function captureCanonicalDirectory(
   directoryPath: string,
   options: RuntimeSkillDigestOptions = {},
-): Promise<CapturedRuntimeSkill> {
+): Promise<CapturedCanonicalDirectory> {
   if ((await lstat(directoryPath)).isSymbolicLink()) throw new Error('directory cannot be a symlink')
   const sourceRoot = await realpath(directoryPath)
   if (!(await stat(sourceRoot)).isDirectory()) throw new Error('runtime input must be a directory')
-  const files = await Promise.all(
-    (await runtimeSkillFiles(sourceRoot, options.platform ?? process.platform, false)).map(async (file) => ({
-      relativePath: file.relativePath,
-      mode: file.mode,
-      bytes: await readFile(file.absolutePath),
-    })),
-  )
-  return { sourceRoot, digest: digestCapturedRuntimeSkill(files), files }
+  const platform = options.platform ?? process.platform
+  const directories: string[] = []
+  const files: CapturedRuntimeSkillFile[] = []
+  async function walk(directory: string, relativeDirectory = ''): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true })
+    entries.sort((left, right) => comparePosixPaths(left.name, right.name))
+    for (const entry of entries) {
+      const absolutePath = path.join(directory, entry.name)
+      const relativePath = path.join(relativeDirectory, entry.name).split(path.sep).join('/')
+      const info = await lstat(absolutePath)
+      if (info.isSymbolicLink()) throw new Error(`runtime input cannot contain symlinks: ${relativePath}`)
+      if (info.isDirectory()) {
+        directories.push(relativePath)
+        await walk(absolutePath, path.join(relativeDirectory, entry.name))
+      } else if (info.isFile()) {
+        files.push({
+          relativePath,
+          mode: normalizedRegularFileMode(info.mode, platform),
+          bytes: await readFile(absolutePath),
+        })
+      } else {
+        throw new Error(`runtime input contains an unsupported node: ${relativePath}`)
+      }
+    }
+  }
+  await walk(sourceRoot)
+  return {
+    sourceRoot,
+    digest: digestEvalWorkspaceRecords(directories, files),
+    directories,
+    files,
+  }
 }
 
 export async function materializeCapturedRuntimeSkill(
@@ -185,7 +235,7 @@ export async function materializeCapturedRuntimeSkill(
 }
 
 export async function materializeCapturedCanonicalDirectory(
-  captured: CapturedRuntimeSkill,
+  captured: CapturedCanonicalDirectory,
   destinationPath: string,
   options: RuntimeSkillDigestOptions = {},
 ): Promise<RuntimeSkillSnapshot> {
@@ -194,6 +244,9 @@ export async function materializeCapturedCanonicalDirectory(
     throw new Error('runtime input snapshot destination must not overlap its source')
   await mkdir(destinationPath, { recursive: true })
   const platform = options.platform ?? process.platform
+  for (const directory of captured.directories) {
+    await mkdir(path.join(destinationPath, ...directory.split('/')), { recursive: true })
+  }
   for (const file of captured.files) {
     const destination = path.join(destinationPath, ...file.relativePath.split('/'))
     await mkdir(path.dirname(destination), { recursive: true })

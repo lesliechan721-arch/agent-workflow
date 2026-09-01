@@ -6,7 +6,6 @@
     "participants": [
       "author-aw-catalog"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",

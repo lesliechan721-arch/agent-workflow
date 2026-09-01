@@ -623,7 +623,6 @@ describe('authoring tools', () => {
       suite: {
         kind: string;
         unitUnderTest: string;
-        defaultGrader: string;
         policy: {
           optimization: string;
           falseNegativeCost: string;
@@ -651,7 +650,6 @@ describe('authoring tools', () => {
       suite: {
         kind: 'trigger',
         unitUnderTest: 'repo-check',
-        defaultGrader: 'mechanical',
         policy: {
           optimization: 'balanced',
           falseNegativeCost: 'high',
@@ -701,7 +699,6 @@ describe('authoring tools', () => {
       suite: {
         kind: string;
         unitUnderTest: string;
-        defaultGrader: string;
         policy: {
           optimization: string;
           falseNegativeCost: string;
@@ -721,7 +718,6 @@ describe('authoring tools', () => {
       suite: {
         kind: 'conversation',
         unitUnderTest: 'repo-check',
-        defaultGrader: 'independent-llm',
         policy: {
           optimization: 'precision-first',
           falseNegativeCost: 'medium',
@@ -952,7 +948,6 @@ describe('authoring tools', () => {
       suite: {
         kind: 'trigger',
         unitUnderTest: 'release-notes',
-        defaultGrader: 'mechanical',
         policy: {
           optimization: 'precision-first',
           falseNegativeCost: 'medium',
@@ -3969,7 +3964,6 @@ describe('authoring tools', () => {
       suite: {
         kind: 'trigger',
         unitUnderTest: 'codex-dynamic',
-        defaultGrader: 'mechanical',
         policy: {
           optimization: 'balanced',
           falseNegativeCost: 'high',

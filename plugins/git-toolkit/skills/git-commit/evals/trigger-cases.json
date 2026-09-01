@@ -3,7 +3,6 @@
   "suite": {
     "kind": "trigger",
     "unitUnderTest": "git-commit",
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

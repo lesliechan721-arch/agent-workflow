@@ -16,8 +16,33 @@ import {
   type CodexEvalRuntimeConfig,
 } from '../../dist/index.js'
 import { createDirectChildProcessMonitor } from '../../dist/index.js'
+import { CodexEvalAttemptControl } from '../../dist/codex-eval-app-server.js'
 
 describe('Codex provider app-server process boundary', () => {
+  it('keeps the attempt budget separate from the 30 second RPC cap', () => {
+    vi.useFakeTimers({ now: new Date('2026-08-31T00:00:00.000Z') })
+    try {
+      const long = new CodexEvalAttemptControl({ label: 'long', timeoutMs: 180_000 })
+      expect(long.remaining('evaluation')).toBe(180_000)
+      expect(long.rpcTimeout('initialize')).toBe(30_000)
+      long.dispose()
+
+      const partial = new CodexEvalAttemptControl({ label: 'partial', timeoutMs: 60_000 })
+      vi.advanceTimersByTime(35_000)
+      expect(partial.timeoutExpired).toBe(false)
+      expect(partial.remaining('evaluation')).toBe(25_000)
+      expect(partial.rpcTimeout('turn/start')).toBe(25_000)
+      partial.dispose()
+
+      const unmanaged = new CodexEvalAttemptControl({ label: 'unmanaged' })
+      expect(unmanaged.rpcTimeout('initialize')).toBe(30_000)
+      expect(() => unmanaged.remaining('evaluation')).toThrow('has no deadline')
+      unmanaged.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('detects app-server config warnings for strict provider runs', () => {
     expect(inspectAppServerConfigWarning({
       method: 'configWarning',

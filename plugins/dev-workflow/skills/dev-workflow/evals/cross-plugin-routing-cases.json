@@ -12,7 +12,6 @@
       "decision-grill",
       "decision-prototype"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

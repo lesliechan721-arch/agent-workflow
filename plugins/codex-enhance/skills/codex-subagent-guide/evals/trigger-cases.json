@@ -3,7 +3,6 @@
   "suite": {
     "kind": "trigger",
     "unitUnderTest": "codex-subagent-guide",
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "critical",
       "falseNegativeCost": "high",

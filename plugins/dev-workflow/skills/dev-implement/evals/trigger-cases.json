@@ -9,7 +9,6 @@
       "dev-review-spec",
       "dev-review-code"
     ],
-    "defaultGrader": "mechanical",
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",

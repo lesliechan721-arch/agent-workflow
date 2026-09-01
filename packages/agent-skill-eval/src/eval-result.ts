@@ -4,6 +4,7 @@ import type { EvalProvider, EvalSpec, EvalSpecCalculated } from './eval-spec.js'
 import { validateJsonSchema } from './json-schema.js'
 import { getSchema } from './schemas.js'
 import type { SelectedCasesDocument } from './selected-cases.js'
+import { assertEvalProviderSuiteKind } from './eval-suite-binding.js'
 import type { Digest, ValidationResult } from './types.js'
 
 export interface EvalGrade {
@@ -73,8 +74,9 @@ export function evalResultVariantsForSpec(spec: EvalSpec): EvalResultRun['varian
 export function createEvalResultBinding(
   calculated: EvalSpecCalculated,
   auditDigest: Digest,
-  selectedCases: Pick<SelectedCasesDocument, 'cases'>,
+  selectedCases: Pick<SelectedCasesDocument, 'cases' | 'suite'>,
 ): EvalResultBinding {
+  assertEvalProviderSuiteKind(calculated.spec.provider, selectedCases.suite.kind)
   return {
     specDigest: calculated.specDigest,
     auditDigest,
@@ -105,11 +107,22 @@ export async function validateEvalResult(
   const errors = validateJsonSchema(await getSchema('eval-result'), value)
   if (errors.length > 0) return { valid: false, errors, calculated: null }
   const result = value as EvalResult
+  const leapSecond = /:60(?=(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$)/iu
+  const timestamp = (value: string): number => {
+    const leap = leapSecond.test(value)
+    const parsed = Date.parse(leap ? value.replace(leapSecond, ':59') : value)
+    return leap ? parsed + 1_000 : parsed
+  }
+  if (timestamp(result.finishedAt) < timestamp(result.startedAt))
+    errors.push('Result finishedAt must not be earlier than startedAt')
   for (const [index, run] of result.runs.entries()) {
-    if (run.status === 'completed' && run.grade === null)
-      errors.push(`run ${index} is completed but has no grade`)
-    if (run.status !== 'completed' && run.grade !== null)
-      errors.push(`run ${index} has status ${run.status} but includes a grade`)
+    if (run.status === 'completed') {
+      if (run.grade === null) errors.push(`run ${index} is completed but has no grade`)
+      if (run.error !== null) errors.push(`run ${index} is completed but includes an error`)
+    } else {
+      if (run.grade !== null) errors.push(`run ${index} has status ${run.status} but includes a grade`)
+      if (run.error === null) errors.push(`run ${index} has status ${run.status} but has no error`)
+    }
   }
   const summary = computeEvalResultSummary(result.runs)
   if (stable(summary) !== stable(result.summary)) errors.push('Result summary does not match runs')
