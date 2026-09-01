@@ -11,7 +11,10 @@ import {
   createTuiControllerDependencies,
   statusTargetFingerprint,
 } from '../../src/tui/controller-runtime.js';
-import { TuiController } from '../../src/tui/controller.js';
+import {
+  TuiConfigInvalidStoreError,
+  TuiController,
+} from '../../src/tui/controller.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import {
   createCatalogSnapshotFixture,
@@ -584,15 +587,81 @@ describe('TUI controller runtime scope conflict validation', () => {
       interactive: false,
     }));
 
+    const pageError = await dependencies.getConfigPage!(
+      'team/demo',
+      { scope: 'effective' },
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(pageError).toBeInstanceOf(TuiConfigInvalidStoreError);
+    expect(pageError).toMatchObject({
+      code: 'invalidConfigStores',
+      evidence: [{
+        scope: 'user',
+        code: 'invalidJson',
+        pathSummary: 'AW_HOME/plugin-config/team/demo/config.json',
+      }],
+    });
+    expect(JSON.stringify(pageError)).not.toContain(isolation.layout.awHomeDir);
+
+    const invalidUserAvailability = await dependencies.getConfigResetAvailability!(
+      'team/demo',
+      { scope: 'user' },
+      new AbortController().signal,
+    );
+    expect(invalidUserAvailability).toMatchObject({
+      exists: true,
+      state: 'invalid',
+      invalidCode: 'invalidJson',
+      sourceIdentityPresent: true,
+      sourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      storeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    await fs.writeJson(storePath, {
+      schemaVersion: 3,
+      sourceId: 'team',
+      sourceIdentity: invalidUserAvailability.sourceIdentity,
+      pluginName: 'demo',
+      values: { mode: 'ready' },
+    });
     await expect(dependencies.getConfigResetAvailability!(
       'team/demo',
       { scope: 'user' },
       new AbortController().signal,
-    )).resolves.toMatchObject({
-      exists: true,
-      sourceIdentityPresent: true,
-      sourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
-      storeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    )).resolves.toMatchObject({ exists: true, state: 'ready' });
+
+    const projectStorePath = path.join(
+      isolation.layout.fixtureCwd,
+      '.agent-workflows',
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    await fs.outputFile(projectStorePath, '{project-invalid', 'utf8');
+    const projectError = await dependencies.getConfigPage!(
+      'team/demo',
+      { scope: 'effective' },
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(projectError).toMatchObject({
+      evidence: [{
+        scope: 'project',
+        code: 'invalidJson',
+        pathSummary: '<project>/.agent-workflows/plugin-config/team/demo/config.json',
+      }],
+    });
+
+    await fs.outputFile(storePath, '{user-invalid-again', 'utf8');
+    const bothError = await dependencies.getConfigPage!(
+      'team/demo',
+      { scope: 'effective' },
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(bothError).toMatchObject({
+      evidence: [
+        expect.objectContaining({ scope: 'user', code: 'invalidJson' }),
+        expect.objectContaining({ scope: 'project', code: 'invalidJson' }),
+      ],
     });
   });
 

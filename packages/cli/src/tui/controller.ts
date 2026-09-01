@@ -43,6 +43,7 @@ import { safeDiagnosticCode } from './diagnostics.js';
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
+  type ConfigInvalidStoreEvidence,
   type PluginInstallFilter,
   type PortableBlockerCode,
   type TuiPageContext,
@@ -105,13 +106,31 @@ export type OperationIntent =
         title: string;
         before: string;
         after: string;
+        children?: Array<{
+          property: string;
+          before: string;
+          after: string;
+          private?: boolean;
+        }>;
       }>;
     }
   | {
       kind: 'configReset';
       pluginId: string;
       scope: Scope;
-      changes?: Array<{ key: string; title: string; before: string; after: string }>;
+      expectedStoreState?: 'invalid';
+      changes?: Array<{
+        key: string;
+        title: string;
+        before: string;
+        after: string;
+        children?: Array<{
+          property: string;
+          before: string;
+          after: string;
+          private?: boolean;
+        }>;
+      }>;
     }
   | {
       kind: 'sourceMutation';
@@ -413,6 +432,8 @@ export interface TuiControllerDependencies {
 
 export interface ConfigResetAvailability {
   exists: boolean;
+  state: 'missing' | 'ready' | 'invalid';
+  invalidCode?: ConfigInvalidStoreEvidence['code'];
   sourceIdentityPresent: boolean;
   sourceIdentity?: string;
   storeDigest?: string;
@@ -468,6 +489,18 @@ export class TuiOperationBlockedError extends Error {
     super(message);
     this.name = 'TuiOperationBlockedError';
     this.code = code;
+  }
+}
+
+export class TuiConfigInvalidStoreError extends Error {
+  readonly code = 'invalidConfigStores';
+  readonly evidence: ConfigInvalidStoreEvidence[];
+
+  constructor(evidence: ConfigInvalidStoreEvidence[]) {
+    super('One or more plugin config stores are invalid.');
+    this.name = 'TuiConfigInvalidStoreError';
+    this.evidence = structuredClone(evidence).sort((left, right) =>
+      (left.scope === 'user' ? 0 : 1) - (right.scope === 'user' ? 0 : 1));
   }
 }
 
@@ -593,7 +626,7 @@ function operationLabels(intent: OperationIntent): {
   if (intent.kind === 'configReset') {
     return {
       title: '重置插件设置',
-      description: '删除所选设置层的值，恢复继承。',
+      description: '删除整个所选设置层且不创建备份，并恢复继承。',
       primaryLabel: '重置设置',
       destructive: true,
     };
@@ -829,8 +862,12 @@ function reviewChanges(
     return [
       ...(intent.changes?.map((change): OperationReviewChange => ({
         kind: 'remove', group: 'configChanges', title: `${layerLabel} · ${change.title}`,
-        description: `${change.before} → ${change.after}`,
-      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' }]),
+        description: change.children && change.children.length > 0
+          ? `${change.before} → ${change.after}；${change.children.length} 个子项变化；${change.children.map((child) =>
+              `${child.property}: ${child.private ? '已设置 → 将更新' : `${child.before} → ${child.after}`}`,
+            ).join('；')}`
+          : `${change.before} → ${change.after}`,
+      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '删除整个设置层且不创建备份；有效值将恢复为继承值或默认值。' }]),
       ...((evidence?.config?.affectedTargets.length ?? 0) > 0
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
             kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
@@ -862,13 +899,20 @@ function reviewChanges(
   }
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const removeKeys = new Set(intent.removeKeys ?? []);
+  const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
   if (intent.changes) {
     return [
       ...intent.changes.map((change): OperationReviewChange => ({
         kind: removeKeys.has(change.key) ? 'remove' : 'change',
         group: 'configChanges',
-        title: removeKeys.has(change.key) ? `删除 ${change.title} 中的值` : change.title,
-        description: removeKeys.has(change.key)
+        title: removeKeys.has(change.key)
+          ? `${layerLabel} · 删除 ${change.title} 中的值`
+          : `${layerLabel} · ${change.title}`,
+        description: change.children && change.children.length > 0
+          ? `${change.before} → ${change.after}；${change.children.length} 个子项变化；${change.children.map((child) =>
+              `${child.property}: ${child.private ? '已设置 → 将更新' : `${child.before} → ${child.after}`}`,
+            ).join('；')}`
+          : removeKeys.has(change.key)
           ? privateKeys.has(change.key) ? `已设置 → ${change.after}` : `${change.before} → ${change.after}`
           : privateKeys.has(change.key) ? '已设置 → 将更新'
           : `${change.before} → ${change.after}`,
@@ -1135,6 +1179,8 @@ export class TuiController {
       || route.name === 'configLayer'
       || route.name === 'configFields'
       || route.name === 'configFieldEditor'
+      || route.name === 'configObjectPropertyEditor'
+      || route.name === 'configFieldAction'
       || route.name === 'configUnavailable';
     if (pluginRoute && !this.#viewModel?.plugins.some((plugin) => plugin.pluginId === route.pluginId)) {
       return {

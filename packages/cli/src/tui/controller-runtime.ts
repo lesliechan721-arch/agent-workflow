@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
-import type { CatalogSourceResolution, PlatformName, Scope } from '../types.js';
+import type { CatalogSourceResolution, PlatformName, PluginConfigSchema, Scope } from '../types.js';
 import {
   statusCommandV6,
   type StatusTargetRevision,
@@ -38,6 +38,7 @@ import {
   coercePluginConfigUpdates,
   readPluginConfigStore,
   resolveConfigRead,
+  resolveEffectivePluginConfig,
 } from '../utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
@@ -53,6 +54,7 @@ import {
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import {
   operationEvidenceFingerprint,
+  TuiConfigInvalidStoreError,
   TuiController,
   TuiOperationBlockedError,
   type OperationEvidence,
@@ -719,6 +721,37 @@ export function createTuiControllerDependencies(
     if (!sourceId || !sessionCatalogOperationContext) return undefined;
     return selectCatalogOperationContext(sessionCatalogOperationContext, [sourceId]);
   };
+  const readConfigStoresForTui = async (config: {
+    sourceId?: string;
+    sourceIdentity?: string;
+    pluginName: string;
+    schema: PluginConfigSchema['fields'];
+    signal: AbortSignal;
+  }) => {
+    const [user, project] = await Promise.all((['user', 'project'] as const)
+      .map((scope) => readPluginConfigStore({
+        sourceId: config.sourceId,
+        sourceIdentity: config.sourceIdentity,
+        pluginName: config.pluginName,
+        scope,
+        cwd: context.cwd,
+        env: context.env,
+        schema: config.schema,
+      })));
+    config.signal.throwIfAborted();
+    const invalidStores = ([
+      { scope: 'user' as const, store: user },
+      { scope: 'project' as const, store: project },
+    ]).flatMap(({ scope, store }) => store.state === 'invalid' ? [{
+      scope,
+      code: store.invalidCode!,
+      pathSummary: scope === 'user'
+        ? `AW_HOME/plugin-config/${config.sourceId ?? '<source>'}/${config.pluginName}/config.json`
+        : `<project>/.agent-workflows/plugin-config/${config.sourceId ?? '<source>'}/${config.pluginName}/config.json`,
+    }] : []);
+    if (invalidStores.length > 0) throw new TuiConfigInvalidStoreError(invalidStores);
+    return { user, project };
+  };
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
@@ -966,6 +999,14 @@ export function createTuiControllerDependencies(
         env: context.env,
       });
       signal?.throwIfAborted();
+      if (intent.kind === 'configReset'
+        && intent.expectedStoreState === 'invalid'
+        && store.state !== 'invalid') {
+        throw new TuiOperationBlockedError(
+          'configResetTargetNotInvalid',
+          '目标设置层不再无效，已阻止重置。',
+        );
+      }
       const relevantTargets = configAffectedStatusTargets(
         sessionStatusResult.payload.targets,
         intent.pluginId,
@@ -1245,6 +1286,14 @@ export function createTuiControllerDependencies(
         env: context.env,
       });
       signal?.throwIfAborted();
+      if (intent.kind === 'configReset'
+        && intent.expectedStoreState === 'invalid'
+        && store.state !== 'invalid') {
+        throw new TuiOperationBlockedError(
+          'configResetTargetNotInvalid',
+          '目标设置层不再无效，已阻止重置。',
+        );
+      }
       evidence.config = {
         scope: intent.scope,
         schemaIdentity: selected.source.manifestDigest,
@@ -1414,6 +1463,13 @@ export function createTuiControllerDependencies(
           if (!plugin.manifest.config) {
             throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
           }
+          await readConfigStoresForTui({
+            sourceId: plugin.sourceId,
+            sourceIdentity: plugin.sourceIdentity,
+            pluginName: plugin.manifest.name,
+            schema: plugin.manifest.config.fields,
+            signal,
+          });
           const read = await resolveConfigRead({
             pluginName: plugin.manifest.name,
             plugin,
@@ -1446,6 +1502,15 @@ export function createTuiControllerDependencies(
           if (!plugin.manifest.config) {
             throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
           }
+          const stores = await readConfigStoresForTui({
+            sourceId: plugin.sourceId,
+            sourceIdentity: plugin.sourceIdentity,
+            pluginName: plugin.manifest.name,
+            schema: plugin.manifest.config.fields,
+            signal,
+          });
+          const userStore = stores.user;
+          const projectStore = stores.project;
           const read = await resolveConfigRead({
             pluginName: plugin.manifest.name,
             plugin,
@@ -1476,12 +1541,26 @@ export function createTuiControllerDependencies(
               env: context.env,
             }),
           };
+          const effectiveRaw = await resolveEffectivePluginConfig({
+            sourceId: plugin.sourceId,
+            sourceIdentity: plugin.sourceIdentity,
+            pluginName: plugin.manifest.name,
+            manifest: plugin.manifest,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          const layerStore = layer.scope === 'effective'
+            ? undefined
+            : layer.scope === 'user' ? userStore : projectStore;
           return buildConfigPage({
             pluginId,
             schema: plugin.manifest.config,
             read,
             effectiveRead,
             ...(layerReads ? { layerReads } : {}),
+            ...(layerStore ? { rawValues: layerStore.values } : {}),
+            rawLayerValues: { user: userStore.values, project: projectStore.values },
+            effectiveRawValues: effectiveRaw.values,
           });
         },
       });
@@ -1504,10 +1583,13 @@ export function createTuiControllerDependencies(
             scope: layer.scope,
             cwd: context.cwd,
             env: context.env,
+            schema: plugin.manifest.config?.fields,
           });
           signal.throwIfAborted();
           return {
             exists: store.exists,
+            state: store.state,
+            ...(store.invalidCode ? { invalidCode: store.invalidCode } : {}),
             sourceIdentityPresent: true,
             sourceIdentity: source.sourceIdentity,
             storeDigest: digest({

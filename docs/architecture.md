@@ -203,6 +203,12 @@ Store reader 投影 `missing | ready | invalid`。无效原因至少区分 `inva
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，才选择 user 或 project 写入层；编辑器继续以单个插件和单个写入层拥有草稿，并在字段旁显示当前全局有效值。配置持久化、Review 和执行仍只作用于所选写入层。
 
+Config v2 控制台固定使用同一单栈流程：设置总览 → 顶层字段 → user/project 写入层 → manifest preset 或自定义 → scalar 或一层 Object/KV 编辑 → `ReviewPreparing` → Review → Progress → Result。string、number 和 boolean 都保存实际值；有 choices 时先显示 preset，`allowCustom: false` 不提供自定义入口，`allowCustom: true` 才提供自定义入口。输入由 Core validator 产生带 field/property path 和 code 的 issue；无效输入保留在当前编辑器。控制台不增加 array、null、nested object、file/directory 或 cross-field 编辑合同。
+
+Object 编辑器同时显示固定 `properties` 和 `additionalProperties` 动态键值，child 只允许 scalar。固定属性、动态 key、child choices、必填项、unknown property 和 property 数量限制全部复用 Core validator。写入层没有该 Object 时，草稿从当前完整 effective object 开始，并明确说明保存会在所选层写入完整对象、覆盖继承对象；一次保存只提交一个完整 top-level value。unset 仍删除整个顶层字段。Object preset 用 canonical deep equality 匹配实际值；摘要只显示稳定 preset/自定义状态、属性数量和安全键名，顶层或 child 标为 sensitive 时不显示值 bytes。
+
+Config Review 按顶层字段和写入层显示变更，并在同一顶层项内保留结构化 child 差异；Object unset 和有效整层 reset 也使用 raw fallback 在内部匹配继承 preset，但只把脱敏 child 差异交给 Review，不保留或输出 raw fallback。它不建立深层来源树或 JSON Patch。Review evidence 继续绑定 session Catalog、affected targets、目标 fingerprint 和所选 store digest。无效 store 不进入普通 edit、unset 或 renderer；effective 读取返回按 user、project 排序的 typed invalid-store evidence，每项只含实际 scope、安全路径摘要和 code。TUI 只为重新读取后仍为 `invalid` 的实际层提供 reset Review；两层同时无效时在同一动作列表中分别选择，ready 层不能从该入口 reset。reset 不创建备份。配置已保存但平台应用失败时，Result 明确保留配置，提供返回修改、显式 unset/reset 或保留退出，并只给出 cleanup 后 reinstall/sync 的恢复指引；不提供 journal restore、自动 cleanup 或自动回滚。
+
 控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 Active snapshot、目标 fingerprint 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；Review 分别显示设置变更、应用影响和保持不变。个人默认变更重新应用当前目录中已安装的 user 与 project 目标；项目变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
 
 Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。official HTTPS/SSH 切换只改变 transport location，并通过 source mutation Review 提交；Catalog logical identity 继续只来自 snapshot 的 Workspace identity，不修改 live owner identity。

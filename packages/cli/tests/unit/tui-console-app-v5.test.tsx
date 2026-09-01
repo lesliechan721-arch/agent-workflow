@@ -15,6 +15,7 @@ import {
   type ConsoleV4ScreenId,
 } from '../../src/tui/console-app-v4.js';
 import {
+  TuiConfigInvalidStoreError,
   TuiController,
   userIssueKey,
   type OperationEvidence,
@@ -397,6 +398,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       key,
       title: key,
       type,
+      definition: { type },
       displayValue: '未设置',
       required: false,
       sensitive: false,
@@ -406,6 +408,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       sourceLabel: '未设置',
       effectiveDisplayValue: '未设置',
       effectiveSourceLabel: '未设置',
+      allowCustom: true,
       advanced: false,
       ...extra,
     };
@@ -415,7 +418,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       effectiveSourceLabel: extra.effectiveSourceLabel ?? (value.configured ? '个人默认' : '未设置'),
       ...(extra.effectiveValue !== undefined
         ? { effectiveValue: extra.effectiveValue }
-        : value.value !== undefined && !value.sensitive && value.type !== 'file' && value.type !== 'directory'
+        : value.value !== undefined && !value.sensitive
           ? { effectiveValue: value.value }
           : {}),
     };
@@ -436,13 +439,13 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
         title: '基本设置',
         advanced: false,
         fields: [
-          field('level', 'enum', { enumValues: ['fast', 'balanced', 'strict'], valueLabels: { fast: '快速', balanced: '平衡', strict: '严格' }, recommendedValue: 'balanced', value: 'strict', displayValue: '严格', configured: true, inherited: false }),
-          field('enabled', 'boolean', { value: true, displayValue: '开启', configured: true, inherited: false }),
-          field('timeout', 'number', { min: 1, max: 60, unit: '分钟', value: 15, displayValue: '15', configured: true, inherited: false }),
+          field('level', 'string', { definition: { type: 'string', choices: { allowCustom: false, presets: [{ id: 'fast', title: '快速', value: 'fast' }, { id: 'balanced', title: '平衡', value: 'balanced', recommended: true }, { id: 'strict', title: '严格', value: 'strict' }] } }, choices: [{ id: 'fast', title: '快速', value: 'fast' }, { id: 'balanced', title: '平衡', value: 'balanced', recommended: true }, { id: 'strict', title: '严格', value: 'strict' }], allowCustom: false, value: 'strict', draftValue: 'strict', displayValue: '严格', configured: true, inherited: false }),
+          field('enabled', 'boolean', { definition: { type: 'boolean' }, value: true, draftValue: true, displayValue: '开启', configured: true, inherited: false }),
+          field('timeout', 'number', { definition: { type: 'number', validation: { minimum: 1, maximum: 60 } }, min: 1, max: 60, unit: '分钟', value: 15, draftValue: 15, displayValue: '15', configured: true, inherited: false }),
           field('note', 'string', { placeholder: '输入说明' }),
-          field('rules', 'file', { configured: true, inherited: false, displayValue: '已设置' }),
-          field('workspace', 'directory'),
-          field('token', 'string', { sensitive: true, configured: true, inherited: false, displayValue: '已设置' }),
+          field('rules', 'string', { sensitive: true, configured: true, inherited: false, displayValue: '已设置' }),
+          field('workspace', 'string'),
+          field('token', 'string', { definition: { type: 'string', sensitive: true }, sensitive: true, configured: true, inherited: false, displayValue: '已设置' }),
         ],
       },
       {
@@ -454,6 +457,100 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       },
     ],
   };
+}
+
+function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
+  const effective = {
+    owner: 'Alice',
+    region: 'west',
+    token: 'SECRET-BYTES',
+    legacy: 'old',
+  };
+  return {
+    pluginId,
+    layer: { scope: 'user' },
+    storedCount: 0,
+    presets: [],
+    groups: [{
+      id: 'general',
+      title: '插件设置',
+      advanced: false,
+      fields: [{
+        key: 'settings',
+        title: '服务设置',
+        type: 'object',
+        definition: {
+          type: 'object',
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'service',
+              title: '服务方案',
+              value: { owner: 'Service', region: 'west', token: 'preset-secret' },
+              recommended: true,
+            }],
+          },
+          properties: {
+            owner: { type: 'string', title: '负责人', required: true, validation: { format: 'identifier' } },
+            region: {
+              type: 'string',
+              title: '区域',
+              required: true,
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'west', title: '西区', value: 'west' }, { id: 'east', title: '东区', value: 'east' }],
+              },
+            },
+            token: { type: 'string', title: '令牌', sensitive: true },
+          },
+          additionalProperties: { type: 'string', validation: { minLength: 2 } },
+          validation: { minProperties: 2, maxProperties: 6, key: { format: 'identifier' } },
+        },
+        choices: [{
+          id: 'service',
+          title: '服务方案',
+          value: { owner: 'Service', region: 'west', token: 'preset-secret' },
+          recommended: true,
+        }],
+        allowCustom: true,
+        displayValue: '继承',
+        required: true,
+        sensitive: false,
+        dirty: false,
+        inherited: true,
+        configured: false,
+        sourceLabel: '继承',
+        effectiveDisplayValue: '自定义 · 4 项（legacy、owner…）',
+        effectiveSourceLabel: '当前项目',
+        effectiveValue: effective,
+        draftValue: effective,
+        advanced: false,
+      }],
+    }],
+  };
+}
+
+function configuredObjectPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
+  const page = objectConfigPage(pluginId);
+  const field = page.groups[0]!.fields[0]!;
+  const current = {
+    owner: 'Alice',
+    region: 'west',
+    token: 'CURRENT-SECRET',
+  };
+  page.storedCount = 1;
+  field.configured = true;
+  field.inherited = false;
+  field.displayValue = '自定义 · 3 项（owner、region…）';
+  field.value = current;
+  field.draftValue = current;
+  field.fallbackDisplayValue = '方案“服务方案” · 3 项（owner、region…）';
+  field.fallbackSourceLabel = '当前项目';
+  field.fallbackObjectChanges = [
+    { property: 'owner', before: 'Alice', after: 'Service' },
+    { property: 'token', before: '已设置', after: '已设置', private: true },
+  ];
+  return page;
 }
 
 async function nextTurn(count = 1): Promise<void> {
@@ -3041,6 +3138,261 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('保存修改');
   });
 
+  it('uses preset-first scalar choices and retains invalid Core-validated input', async () => {
+    const page = configPage();
+    const getConfigPage = vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer }));
+    const closed = controller({ getConfigPage });
+    closed.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    closed.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'level',
+      editor: 'string',
+      mode: 'choices',
+    });
+    const closedInstance = render(<ConsoleAppV4 controller={closed} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(closedInstance.lastFrame()).toContain('快速');
+    expect(closedInstance.lastFrame()).toContain('平衡（推荐）');
+    expect(closedInstance.lastFrame()).not.toContain('自定义');
+
+    closedInstance.unmount();
+    const invalidPage = configPage();
+    const note = invalidPage.groups[0]!.fields.find((field) => field.key === 'note')!;
+    note.definition = { type: 'string', validation: { pattern: '^[A-Z]+$' } };
+    const invalid = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...invalidPage, pluginId, layer })),
+    });
+    invalid.push({ name: 'configFields', pluginId: invalidPage.pluginId, layer: { scope: 'user' } });
+    invalid.push({
+      name: 'configFieldEditor',
+      pluginId: invalidPage.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'note',
+      editor: 'string',
+      mode: 'custom',
+    });
+    const invalidInstance = render(<ConsoleAppV4 controller={invalid} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(invalidInstance, 'bad', '\r');
+    expect(invalid.snapshot.router.current.route.name).toBe('configFieldEditor');
+    expect(invalidInstance.lastFrame()).toContain('pattern');
+    expect(invalidInstance.lastFrame()).toContain('bad');
+  });
+
+  it('edits a mixed fixed and dynamic object from the effective seed and reviews one full top-level update', async () => {
+    const page = objectConfigPage();
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [],
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('服务方案（推荐）');
+    expect(instance.lastFrame()).toContain('自定义');
+
+    await input(instance, '\u001B[B', '\r');
+    const seededFrame = instance.lastFrame() ?? '';
+    expect(seededFrame).toContain('草稿来自当前完整有效对象');
+    expect(seededFrame).toContain('legacy');
+    expect(seededFrame).toContain('令牌');
+    expect(seededFrame).not.toContain('SECRET-BYTES');
+
+    await input(instance, '\r', '\r', ...Array.from({ length: 5 }, () => '\u007F'), 'bad-name', '\r');
+    expect(instance.lastFrame()).toContain('format');
+    expect(instance.lastFrame()).toContain('bad-name');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configObjectPropertyEditor', propertyKey: 'owner', stage: 'custom',
+    });
+    await input(instance, ...Array.from({ length: 8 }, () => '\u007F'), 'Bob', '\r');
+
+    await input(instance, ...Array.from({ length: 3 }, () => '\u001B[B'), '\r', '\u001B[B', '\r');
+    expect(instance.lastFrame()).not.toContain('legacy');
+    await input(instance, '\r', 'new_key', '\r', 'ready', '\r');
+    expect(instance.lastFrame()).toContain('new_key');
+    expect(instance.lastFrame()).not.toContain('SECRET-BYTES');
+
+    await input(instance, ...Array.from({ length: 2 }, () => '\u001B[B'), '\r', 's');
+    await nextTurn(4);
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: '个人默认 · 服务设置',
+        description: expect.stringContaining('owner: Alice → Bob'),
+      }),
+    ]));
+    expect(instance.lastFrame()).toContain('设置变更');
+    expect(instance.lastFrame()).toContain('3 个子');
+    expect(instance.lastFrame()).not.toContain('SECRET-BYTES');
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      updates: {
+        settings: {
+          owner: 'Bob',
+          region: 'west',
+          token: 'SECRET-BYTES',
+          new_key: 'ready',
+        },
+      },
+    }), evidence);
+  });
+
+  it.each([
+    { columns: 80, rows: 24 },
+    { columns: 60, rows: 18 },
+  ])('keeps one object focus and its add/save actions visible at $columns x $rows', async (size) => {
+    const page = objectConfigPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'custom',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(4);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('添加键值');
+    expect(frame).toContain('使用此完整对象');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+  });
+
+  it('stores the actual complete object value selected by an object preset', async () => {
+    const page = objectConfigPage();
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [],
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+    await input(instance, '\r', 's');
+    await nextTurn(4);
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('3 个子项变化');
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
+    expect(instance.lastFrame()).toContain('方案“服务方案”');
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      updates: {
+        settings: { owner: 'Service', region: 'west', token: 'preset-secret' },
+      },
+    }), evidence);
+  });
+
+  it('uses a closed child choice without a custom route', async () => {
+    const page = objectConfigPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configObjectPropertyEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      propertyKey: 'region',
+      dynamic: false,
+      stage: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('西区');
+    expect(frame).toContain('东区');
+    expect(frame).not.toContain('自定义');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('reviews object unset with inherited preset and redacted child changes', async () => {
+    const page = configuredObjectPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, 'u', 's');
+    await nextTurn(4);
+
+    expect(value.snapshot.activeReview?.operationKind).toBe('configSave');
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: '个人默认 · 删除 服务设置 中的值',
+        description: expect.stringContaining('方案“服务方案”'),
+      }),
+    ]));
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('CURRENT-SECRET');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
+    expect(instance.lastFrame()).not.toContain('CURRENT-SECRET');
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+  });
+
+  it('reviews a valid layer reset with inherited object preset and redacted child changes', async () => {
+    const page = configuredObjectPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(4);
+
+    expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: '个人默认 · 服务设置',
+        description: expect.stringContaining('方案“服务方案”'),
+      }),
+    ]));
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('CURRENT-SECRET');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
+    expect(instance.lastFrame()).not.toContain('CURRENT-SECRET');
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+  });
+
   it('returns editor completion or cancellation to the original mutable field and then restores the config origin', async () => {
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
@@ -3329,18 +3681,12 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(partialScreens).toContain('C15');
     expect(partialInstance.lastFrame()).toContain('部分应用失败');
+    expect(partialInstance.lastFrame()).toContain('unset / reset');
+    expect(partialInstance.lastFrame()).toContain('cleanup');
+    expect(partialInstance.lastFrame()).toContain('reinstall 或 sync');
     await input(partialInstance, '\u001B[B', '\r');
-    expect(partial.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ title: 'Claude Code · 所有项目' }),
-    ]));
-    await input(
-      partialInstance,
-      '\u001B[B',
-      '\r',
-    );
-    expect(partial.snapshot.router.current.route).toEqual({
-      name: 'configFields', pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+    expect(partial.snapshot.router.current.route).toMatchObject({
+      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user' },
     });
     expect(partial.snapshot.result).toBeUndefined();
     expect(partial.snapshot.router.depth).toBe(2);
@@ -3406,12 +3752,17 @@ describe('ConsoleAppV4', () => {
     expect((effectiveInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
-  it('offers invalid-layer reset through Review and keeps its details private', async () => {
+  it.each([
+    { columns: 80, rows: 24 },
+    { columns: 60, rows: 18 },
+  ])('offers invalid-layer reset through Review and keeps its details private at $columns x $rows', async (size) => {
     const sourceIdentity = `sha256:${'a'.repeat(64)}`;
     const storeDigest = `sha256:${'b'.repeat(64)}`;
     const value = controller({
       getConfigResetAvailability: vi.fn().mockResolvedValue({
         exists: true,
+        state: 'invalid',
+        invalidCode: 'invalidJson',
         sourceIdentityPresent: true,
         sourceIdentity,
         storeDigest,
@@ -3427,17 +3778,24 @@ describe('ConsoleAppV4', () => {
       name: 'configUnavailable',
       pluginId: 'team-tools/review-gate',
       layer: { scope: 'user' },
+      invalidStores: [{
+        scope: 'user',
+        code: 'invalidJson',
+        pathSummary: 'AW_HOME/plugin-config/team-tools/review-gate/config.json',
+      }],
+      diagnosticCode: 'invalidJson',
+      diagnosticStage: 'read-config',
     });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
-    expect(instance.lastFrame()).toContain('重置无效设置层');
-    expect(instance.lastFrame()).toContain('技术详情');
+    expect(instance.lastFrame()).toContain('重置个人默认设置层');
+    expect(instance.lastFrame()).toContain('查看安全路径摘要');
     expect(instance.lastFrame()).not.toContain(sourceIdentity);
     expect(instance.lastFrame()).not.toContain(storeDigest);
     expect(instance.lastFrame()).not.toContain('/Users/private');
     await input(instance, 'd');
     const technicalFrame = instance.lastFrame() ?? '';
-    expect(technicalFrame).toContain('configUnavailable');
+    expect(technicalFrame).toContain('invalidJson');
     expect(technicalFrame).toContain('read-config');
     expect(technicalFrame).not.toContain(sourceIdentity);
     expect(technicalFrame).not.toContain(storeDigest);
@@ -3445,6 +3803,114 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
     expect(instance.lastFrame()).toContain('重置插件设置');
+  });
+
+  it.each([
+    { invalidScope: 'user' as const, readyScope: 'project' as const },
+    { invalidScope: 'project' as const, readyScope: 'user' as const },
+  ])('binds an effective-entry invalid store to $invalidScope without offering $readyScope reset', async ({
+    invalidScope,
+    readyScope,
+  }) => {
+    const invalidStores = [{
+      scope: invalidScope,
+      code: 'invalidJson' as const,
+      pathSummary: invalidScope === 'user'
+        ? 'AW_HOME/plugin-config/team-tools/review-gate/config.json'
+        : '<project>/.agent-workflows/plugin-config/team-tools/review-gate/config.json',
+    }];
+    const getConfigResetAvailability = vi.fn(async (_pluginId, layer: { scope: 'user' | 'project' }) => ({
+      exists: true,
+      state: layer.scope === invalidScope ? 'invalid' as const : 'ready' as const,
+      ...(layer.scope === invalidScope ? { invalidCode: 'invalidJson' as const } : {}),
+      sourceIdentityPresent: true,
+      sourceIdentity: `identity:${layer.scope}`,
+      storeDigest: `digest:${layer.scope}`,
+    }));
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({
+      getConfigPage: vi.fn().mockRejectedValue(new TuiConfigInvalidStoreError(invalidStores)),
+      getConfigResetAvailability,
+      captureEvidence,
+    });
+    value.push({
+      name: 'configFields',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'effective' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(6);
+
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configUnavailable',
+      layer: { scope: invalidScope },
+      invalidStores,
+    });
+    expect(instance.lastFrame()).toContain(
+      `重置${invalidScope === 'user' ? '个人默认' : '当前项目'}设置层`,
+    );
+    expect(instance.lastFrame()).not.toContain(
+      `重置${readyScope === 'user' ? '个人默认' : '当前项目'}设置层`,
+    );
+    expect(getConfigResetAvailability).toHaveBeenCalledTimes(1);
+    expect(getConfigResetAvailability.mock.calls[0]?.[1]).toEqual({ scope: invalidScope });
+
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(captureEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'configReset', scope: invalidScope }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('lists two invalid stores in user-project order and can review either exact reset', async () => {
+    const invalidStores = [
+      {
+        scope: 'user' as const,
+        code: 'invalidJson' as const,
+        pathSummary: 'AW_HOME/plugin-config/team-tools/review-gate/config.json',
+      },
+      {
+        scope: 'project' as const,
+        code: 'invalidValues' as const,
+        pathSummary: '<project>/.agent-workflows/plugin-config/team-tools/review-gate/config.json',
+      },
+    ];
+    const openReset = async (scope: 'user' | 'project') => {
+      const captureEvidence = vi.fn().mockResolvedValue(evidence);
+      const value = controller({
+        getConfigPage: vi.fn().mockRejectedValue(new TuiConfigInvalidStoreError(invalidStores)),
+        getConfigResetAvailability: vi.fn(async (_pluginId, layer: { scope: 'user' | 'project' }) => ({
+          exists: true,
+          state: 'invalid' as const,
+          invalidCode: layer.scope === 'user' ? 'invalidJson' as const : 'invalidValues' as const,
+          sourceIdentityPresent: true,
+          sourceIdentity: `identity:${layer.scope}`,
+          storeDigest: `digest:${layer.scope}`,
+        })),
+        captureEvidence,
+      });
+      value.push({
+        name: 'configFields',
+        pluginId: 'team-tools/review-gate',
+        layer: { scope: 'effective' },
+      });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await nextTurn(6);
+      const frame = instance.lastFrame() ?? '';
+      expect(frame.indexOf('重置个人默认设置层')).toBeLessThan(frame.indexOf('重置当前项目设置层'));
+      if (scope === 'project') await input(instance, '\u001B[B');
+      await input(instance, '\r');
+      await nextTurn(4);
+      expect(captureEvidence).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'configReset', scope }),
+        expect.any(AbortSignal),
+      );
+      instance.unmount();
+    };
+
+    await openReset('user');
+    await openReset('project');
   });
 
   it('does not let an aborted config layer response overwrite the newer layer page', async () => {
@@ -3730,8 +4196,8 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(3);
-    expect(instance.lastFrame()).toContain('~ 变更 1');
-    expect(instance.lastFrame()).not.toContain('› ~ 变更 1');
+    expect(instance.lastFrame()).toContain('~ 个人默认 · 变更 1');
+    expect(instance.lastFrame()).not.toContain('› ~ 个人默认 · 变更 1');
     expect(instance.lastFrame()).toMatch(/另有 \d+ 项/u);
     expect(instance.lastFrame()).toContain('› 保存并应用');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);

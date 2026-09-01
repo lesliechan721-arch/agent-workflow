@@ -18,6 +18,12 @@ export type CatalogActivationBlockReason =
   | 'sourceMutationProgress'
   | 'refreshProgress';
 
+export interface ConfigInvalidStoreEvidence {
+  scope: Scope;
+  code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';
+  pathSummary: string;
+}
+
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
@@ -69,7 +75,17 @@ export type TuiRoute =
       pluginId: string;
       layer: { scope: Scope };
       fieldKey: string;
-      editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
+      editor: 'boolean' | 'number' | 'string' | 'object';
+      mode?: 'choices' | 'custom';
+    }
+  | {
+      name: 'configObjectPropertyEditor';
+      pluginId: string;
+      layer: { scope: Scope };
+      fieldKey: string;
+      propertyKey?: string;
+      dynamic: boolean;
+      stage: 'key' | 'action' | 'choices' | 'custom';
     }
   | {
       name: 'configFieldAction';
@@ -81,6 +97,7 @@ export type TuiRoute =
       name: 'configUnavailable';
       pluginId: string;
       layer?: { scope: Scope };
+      invalidStores?: ConfigInvalidStoreEvidence[];
       diagnosticCode?: string;
       diagnosticStage?: string;
     }

@@ -545,7 +545,7 @@ describe('build smoke', () => {
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.config = {
-      schema: {
+      fields: {
         mode: { type: 'string', default: 'standard' },
       },
     };

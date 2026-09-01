@@ -5999,7 +5999,14 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({
         title: '基本设置',
         fields: expect.arrayContaining([
-          expect.objectContaining({ key: 'level', valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict' }),
+          expect.objectContaining({
+            key: 'level',
+            allowCustom: false,
+            choices: expect.arrayContaining([
+              expect.objectContaining({ id: 'fast', title: '快速', value: 'fast' }),
+              expect.objectContaining({ id: 'strict', title: '严格', value: 'strict', recommended: true }),
+            ]),
+          }),
           expect.objectContaining({ key: 'count', min: 1, max: 10 }),
           expect.objectContaining({ key: 'token', sensitive: true }),
         ]),
@@ -6055,9 +6062,21 @@ describe('five namespaced write commands', () => {
       'team/demo',
       { scope: 'user', projectLayer: 'shared' },
     );
-    expect(availability).toMatchObject({ exists: true, sourceIdentityPresent: true, sourceIdentity });
+    expect(availability).toMatchObject({
+      exists: true,
+      state: 'ready',
+      sourceIdentityPresent: true,
+      sourceIdentity,
+    });
     expect(JSON.stringify(availability)).not.toContain('sk-private');
     expect(JSON.stringify(availability)).not.toContain(sourceRoot);
+
+    await expect(controller.buildOperationReview({
+      kind: 'configReset',
+      pluginId: 'team/demo',
+      scope: 'user',
+      expectedStoreState: 'invalid',
+    })).rejects.toMatchObject({ code: 'configResetTargetNotInvalid' });
 
     await expect(controller.buildOperationReview({
       kind: 'configReset',

@@ -699,9 +699,13 @@ describe('TUI v4 router and ViewModel', () => {
       ['其他设置', ['rules', 'token']],
     ]);
     expect(page.groups[0]!.fields[0]).toEqual(expect.objectContaining({
-      enumValues: ['fast', 'strict'],
-      valueLabels: { fast: '快速', strict: '严格' },
-      recommendedValue: 'strict',
+      type: 'string',
+      allowCustom: false,
+      matchedPresetId: 'strict',
+      choices: [
+        { id: 'fast', title: '快速', value: 'fast' },
+        { id: 'strict', title: '严格', value: 'strict', recommended: true },
+      ],
       value: 'strict',
     }));
     expect(page.presets).toEqual([]);
@@ -770,6 +774,135 @@ describe('TUI v4 router and ViewModel', () => {
     expect(effective.groups[0]!.fields[0]).toMatchObject({
       displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '当前项目',
     });
+  });
+
+  it('projects canonical object presets and a stable sensitive-child summary', () => {
+    const definition = {
+      fields: {
+        credentials: {
+          type: 'object' as const,
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'service',
+              title: 'Service',
+              value: { token: 'secret', region: 'west' },
+            }],
+          },
+          properties: {
+            token: { type: 'string' as const, sensitive: true, required: true },
+            region: { type: 'string' as const, required: true },
+          },
+        },
+      },
+    };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: definition,
+      read: {
+        pluginName: 'demo',
+        scope: 'effective',
+        fields: [{
+          key: 'credentials',
+          title: 'credentials',
+          kind: 'manifest',
+          reserved: false,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: { region: 'west', token: '[redacted]' },
+          sourceLayer: 'user',
+          value: { region: 'west', token: '[redacted]' },
+          source: 'user',
+          matchedPreset: 'service',
+          valid: true,
+          issues: [],
+        }],
+      },
+      effectiveRawValues: { credentials: { region: 'west', token: 'secret' } },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field).toMatchObject({
+      type: 'object',
+      matchedPresetId: 'service',
+      displayValue: '方案“Service” · 2 项（region、token）',
+      draftValue: { region: 'west', token: 'secret' },
+    });
+    expect(field.displayValue).not.toContain('secret');
+  });
+
+  it('matches a raw inherited object preset and precomputes redacted unset changes', () => {
+    const schema = {
+      fields: {
+        credentials: {
+          type: 'object' as const,
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'inherited',
+              title: 'Inherited service',
+              value: { token: 'inherited-secret', region: 'west' },
+            }],
+          },
+          properties: {
+            token: { type: 'string' as const, sensitive: true },
+            region: { type: 'string' as const },
+          },
+        },
+      },
+    };
+    const entry = (scope: 'user' | 'project', value: { token: string; region: string }) => ({
+      key: 'credentials',
+      title: 'credentials',
+      kind: 'manifest' as const,
+      reserved: false,
+      writable: true,
+      valueState: 'configured' as const,
+      effectiveValue: value,
+      sourceLayer: scope,
+      storedValue: value,
+      storedSourceLayer: scope,
+    });
+    const userRaw = { token: 'current-secret', region: 'east' };
+    const projectRaw = { token: 'inherited-secret', region: 'west' };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema,
+      read: {
+        pluginName: 'demo',
+        scope: 'user',
+        fields: [entry('user', { token: '[redacted]', region: 'east' })],
+      },
+      effectiveRead: {
+        pluginName: 'demo',
+        scope: 'effective',
+        fields: [entry('project', { token: '[redacted]', region: 'west' })],
+      },
+      layerReads: {
+        user: {
+          pluginName: 'demo',
+          scope: 'user',
+          fields: [entry('user', { token: '[redacted]', region: 'east' })],
+        },
+        project: {
+          pluginName: 'demo',
+          scope: 'project',
+          fields: [entry('project', { token: '[redacted]', region: 'west' })],
+        },
+      },
+      rawValues: { credentials: userRaw },
+      rawLayerValues: { user: { credentials: userRaw }, project: { credentials: projectRaw } },
+      effectiveRawValues: { credentials: projectRaw },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field.fallbackDisplayValue).toBe('方案“Inherited service” · 2 项（region、token）');
+    expect(field.fallbackObjectChanges).toEqual(expect.arrayContaining([
+      { property: 'region', before: 'east', after: 'west' },
+      { property: 'token', before: '已设置', after: '已设置', private: true },
+    ]));
+    expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('current-secret');
+    expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('inherited-secret');
   });
   it('restores list focus, query, and source tab after a detail route goes back', () => {
     const router = new TuiRouter();

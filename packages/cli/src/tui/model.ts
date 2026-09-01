@@ -1,7 +1,17 @@
+import {
+  matchPluginConfigPreset,
+  stablePluginConfigStringify,
+} from '@lesliechan721/aw-plugin-core/manifest';
+
 import type {
   PlatformName,
   PluginConfigFieldType,
+  PluginConfigObject,
+  PluginConfigPreset,
+  PluginConfigScalar,
+  PluginConfigSchemaField,
   PluginConfigSchema,
+  PluginConfigValue,
   Scope,
 } from '../types.js';
 import type {
@@ -224,7 +234,8 @@ export interface ConfigFieldViewModel {
   key: string;
   title: string;
   description?: string;
-  type: Exclude<PluginConfigFieldType, 'object'> | 'enum';
+  type: PluginConfigFieldType;
+  definition: PluginConfigSchemaField;
   displayValue: string;
   required: boolean;
   sensitive: boolean;
@@ -236,12 +247,19 @@ export interface ConfigFieldViewModel {
   effectiveSourceLabel: string;
   fallbackDisplayValue?: string;
   fallbackSourceLabel?: string;
-  value?: string | number | boolean;
-  effectiveValue?: string | number | boolean;
-  defaultValue?: string | number | boolean;
-  enumValues?: string[];
-  valueLabels?: Record<string, string>;
-  recommendedValue?: string | number | boolean;
+  fallbackObjectChanges?: Array<{
+    property: string;
+    before: string;
+    after: string;
+    private?: boolean;
+  }>;
+  value?: PluginConfigValue;
+  effectiveValue?: PluginConfigValue;
+  draftValue?: PluginConfigValue;
+  defaultValue?: PluginConfigValue;
+  choices?: PluginConfigPreset[];
+  allowCustom: boolean;
+  matchedPresetId?: string;
   placeholder?: string;
   unit?: string;
   min?: number;
@@ -261,7 +279,7 @@ export interface ConfigPresetViewModel {
   id: string;
   title: string;
   description?: string;
-  values: Record<string, string | number | boolean>;
+  values: Record<string, PluginConfigValue>;
   privateFieldTitles?: string[];
 }
 
@@ -1704,6 +1722,7 @@ export function buildTuiViewModel(options: {
 }
 
 function displayConfigValue(options: {
+  field: PluginConfigSchemaField;
   privateValue: boolean;
   inherited: boolean;
   configured: boolean;
@@ -1711,6 +1730,18 @@ function displayConfigValue(options: {
 }): string {
   if (!options.configured) return options.inherited ? '继承' : '未设置';
   if (options.privateValue) return '已设置';
+  if (options.field.type === 'object'
+    && typeof options.value === 'object'
+    && options.value !== null
+    && !Array.isArray(options.value)) {
+    const object = options.value as PluginConfigObject;
+    const preset = matchPluginConfigPreset(options.field, object);
+    const keys = Object.keys(object).sort((left, right) => left.localeCompare(right, 'en'));
+    const keySummary = keys.length === 0
+      ? '空对象'
+      : `${keys.length} 项${keys.length > 0 ? `（${keys.slice(0, 2).join('、')}${keys.length > 2 ? '…' : ''}）` : ''}`;
+    return preset ? `方案“${preset.title}” · ${keySummary}` : `自定义 · ${keySummary}`;
+  }
   if (typeof options.value === 'string') return options.value;
   if (options.value === undefined || options.value === null) return '已设置';
   return String(options.value);
@@ -1725,6 +1756,53 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
   }[source];
 }
 
+function configEditorDefinition(field: PluginConfigSchemaField): PluginConfigSchemaField {
+  const definition = structuredClone(field);
+  delete definition.default;
+  if (definition.type === 'object') {
+    for (const child of Object.values(definition.properties ?? {})) delete child.default;
+  }
+  return definition;
+}
+
+function configObjectChildChanges(
+  field: Extract<PluginConfigSchemaField, { type: 'object' }>,
+  before: PluginConfigObject,
+  after: PluginConfigObject | undefined,
+): NonNullable<ConfigFieldViewModel['fallbackObjectChanges']> {
+  const fixed = Object.keys(field.properties ?? {});
+  const summary = (property: string, value: PluginConfigScalar | undefined): string => {
+    if (value === undefined) return '未设置';
+    const definition = field.properties?.[property]
+      ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
+    if (field.sensitive || definition?.sensitive) return '已设置';
+    if (typeof value === 'boolean') return value ? '开启' : '关闭';
+    return String(value);
+  };
+  return [...new Set([...Object.keys(before), ...Object.keys(after ?? {})])]
+    .sort((left, right) => {
+      const leftIndex = fixed.indexOf(left);
+      const rightIndex = fixed.indexOf(right);
+      if (leftIndex >= 0 || rightIndex >= 0) {
+        if (leftIndex < 0) return 1;
+        if (rightIndex < 0) return -1;
+        return leftIndex - rightIndex;
+      }
+      return left.localeCompare(right, 'en');
+    })
+    .filter((property) => before[property] !== after?.[property])
+    .map((property) => {
+      const definition = field.properties?.[property]
+        ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
+      return {
+        property,
+        before: summary(property, before[property]),
+        after: summary(property, after?.[property]),
+        ...(field.sensitive || definition?.sensitive ? { private: true } : {}),
+      };
+    });
+}
+
 export function buildConfigGroups(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
@@ -1734,6 +1812,12 @@ export function buildConfigGroups(options: {
     project: ResolvedConfigRead;
   };
   dirtyKeys?: ReadonlySet<string>;
+  rawValues?: Record<string, PluginConfigValue>;
+  rawLayerValues?: {
+    user: Record<string, PluginConfigValue>;
+    project: Record<string, PluginConfigValue>;
+  };
+  effectiveRawValues?: Record<string, PluginConfigValue>;
 }): ConfigGroupViewModel[] {
   const entryByKey = new Map(options.read.fields.map((field) => [field.key, field]));
   const effectiveEntryByKey = new Map(
@@ -1744,9 +1828,6 @@ export function buildConfigGroups(options: {
     options.layerReads?.[layer].fields.find((field) => field.key === key);
   const fieldModel = (key: string): ConfigFieldViewModel => {
     const schema = options.schema.fields[key]!;
-    if (schema.type === 'object') {
-      throw new Error(`Object config field "${key}" is not supported by the current settings editor.`);
-    }
     const entry = entryByKey.get(key);
     const effectiveEntry = effectiveEntryByKey.get(key);
     const inherited = effectivePage
@@ -1760,11 +1841,11 @@ export function buildConfigGroups(options: {
         && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
     const privateValue = schema.sensitive === true;
-    const choices = schema.type === 'boolean'
-      ? undefined
-      : schema.choices;
-    const closedChoices = choices?.allowCustom === false ? choices.presets : undefined;
+    const choices = schema.type === 'boolean' ? undefined : schema.choices;
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
+    const selectedRawValue = effectivePage
+      ? options.effectiveRawValues?.[key]
+      : options.rawValues?.[key];
     const selectedStoredInvalid = !effectivePage
       && entry?.storedSourceLayer !== undefined
       && entry.storedValue === undefined;
@@ -1781,18 +1862,23 @@ export function buildConfigGroups(options: {
       .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
       .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
     const fallbackValue = fallback?.entry?.storedValue ?? schema.default;
+    const fallbackRawValue = fallback
+      ? options.rawLayerValues?.[fallback.layer]?.[key] ?? fallbackValue
+      : schema.default;
     const fallbackConfigured = fallback !== undefined || schema.default !== undefined;
     const fallbackSource = fallback?.layer ?? (schema.default !== undefined ? 'default' : undefined);
     return {
       key,
       title: schema.title ?? key,
       ...(schema.description ? { description: schema.description } : {}),
-      type: closedChoices ? 'enum' : schema.type,
+      type: schema.type,
+      definition: configEditorDefinition(schema),
       displayValue: selectedStoredInvalid ? '值无效' : displayConfigValue({
+        field: schema,
         privateValue,
         inherited,
         configured,
-        value: selectedValue,
+        value: schema.type === 'object' ? selectedRawValue ?? selectedValue : selectedValue,
       }),
       required: schema.required === true,
       sensitive: schema.sensitive === true,
@@ -1803,32 +1889,60 @@ export function buildConfigGroups(options: {
         ? configSourceLabel(entry?.sourceLayer ?? null)
         : configured ? '本层已设置' : '继承',
       effectiveDisplayValue: displayConfigValue({
+        field: schema,
         privateValue,
         inherited: false,
         configured: effectiveConfigured,
-        value: effectiveEntry?.effectiveValue,
+        value: schema.type === 'object'
+          ? options.effectiveRawValues?.[key] ?? effectiveEntry?.effectiveValue
+          : effectiveEntry?.effectiveValue,
       }),
       effectiveSourceLabel: configSourceLabel(effectiveEntry?.sourceLayer ?? null),
       ...(!effectivePage && configured ? {
         fallbackDisplayValue: displayConfigValue({
+          field: schema,
           privateValue,
           inherited: false,
           configured: fallbackConfigured,
-          value: fallbackValue,
+          value: schema.type === 'object' ? fallbackRawValue : fallbackValue,
         }),
         fallbackSourceLabel: fallbackSource ? configSourceLabel(fallbackSource) : '未设置',
+        ...(schema.type === 'object'
+          && typeof (selectedRawValue ?? selectedValue) === 'object'
+          && (selectedRawValue ?? selectedValue) !== null
+          ? { fallbackObjectChanges: configObjectChildChanges(
+              schema,
+              (selectedRawValue ?? selectedValue) as PluginConfigObject,
+              typeof fallbackRawValue === 'object' && fallbackRawValue !== null
+                ? fallbackRawValue as PluginConfigObject
+                : undefined,
+            ) }
+          : {}),
       } : {}),
       ...(!privateValue && selectedValue !== undefined
-        ? { value: selectedValue as string | number | boolean }
+        ? { value: selectedValue as PluginConfigValue }
         : {}),
       ...(!privateValue && effectiveEntry?.effectiveValue !== undefined && effectiveEntry.effectiveValue !== null
-        ? { effectiveValue: effectiveEntry.effectiveValue as string | number | boolean }
+        ? { effectiveValue: effectiveEntry.effectiveValue as PluginConfigValue }
+        : {}),
+      ...((effectivePage
+        ? options.effectiveRawValues?.[key]
+        : selectedRawValue ?? (schema.type === 'object' && !configured
+          ? options.effectiveRawValues?.[key]
+          : undefined)) !== undefined
+        ? { draftValue: (effectivePage
+            ? options.effectiveRawValues?.[key]
+            : selectedRawValue ?? options.effectiveRawValues?.[key])! }
         : {}),
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
-      ...(closedChoices ? { enumValues: closedChoices.map((preset) => String(preset.value)) } : {}),
-      ...(closedChoices ? { valueLabels: Object.fromEntries(closedChoices.map((preset) => [String(preset.value), preset.title])) } : {}),
-      ...(closedChoices?.find((preset) => preset.recommended)?.value !== undefined
-        ? { recommendedValue: closedChoices.find((preset) => preset.recommended)!.value }
+      ...(choices ? { choices: choices.presets } : {}),
+      allowCustom: choices?.allowCustom ?? true,
+      ...((selectedRawValue ?? selectedValue) !== undefined && (selectedRawValue ?? selectedValue) !== null
+        && matchPluginConfigPreset(schema, (selectedRawValue ?? selectedValue) as PluginConfigValue)
+        ? { matchedPresetId: matchPluginConfigPreset(
+            schema,
+            (selectedRawValue ?? selectedValue) as PluginConfigValue,
+          )!.id }
         : {}),
       ...(schema.type === 'number' && schema.validation?.minimum !== undefined ? { min: schema.validation.minimum } : {}),
       ...(schema.type === 'number' && schema.validation?.maximum !== undefined ? { max: schema.validation.maximum } : {}),
@@ -1843,7 +1957,7 @@ export function buildConfigGroups(options: {
       title: group.title,
       ...(group.description ? { description: group.description } : {}),
       advanced: group.advanced === true,
-      fields: group.fields.filter((key) => options.schema.fields[key]?.type !== 'object').map(fieldModel),
+      fields: group.fields.map(fieldModel),
     };
   });
   const syntheticGroupId = (preferred: string): string => {
@@ -1857,14 +1971,13 @@ export function buildConfigGroups(options: {
     return id;
   };
   const remaining = Object.keys(options.schema.fields)
-    .filter((key) => options.schema.fields[key]?.type !== 'object' && !assigned.has(key));
+    .filter((key) => !assigned.has(key));
   if (!options.schema.presentation) {
     groups.push({
       id: 'general',
       title: '插件设置',
       advanced: false,
       fields: Object.keys(options.schema.fields)
-        .filter((key) => options.schema.fields[key]?.type !== 'object')
         .map(fieldModel),
     });
   } else {
@@ -1899,6 +2012,12 @@ export function buildConfigPage(options: {
     user: ResolvedConfigRead;
     project: ResolvedConfigRead;
   };
+  rawValues?: Record<string, PluginConfigValue>;
+  rawLayerValues?: {
+    user: Record<string, PluginConfigValue>;
+    project: Record<string, PluginConfigValue>;
+  };
+  effectiveRawValues?: Record<string, PluginConfigValue>;
 }): ConfigPageViewModel {
   return {
     pluginId: options.pluginId,
@@ -1907,4 +2026,12 @@ export function buildConfigPage(options: {
     presets: [],
     storedCount: options.read.fields.filter((field) => field.storedSourceLayer !== undefined).length,
   };
+}
+
+export function configValuesEqual(
+  left: PluginConfigValue | undefined,
+  right: PluginConfigValue | undefined,
+): boolean {
+  return left !== undefined && right !== undefined
+    && stablePluginConfigStringify(left) === stablePluginConfigStringify(right);
 }
