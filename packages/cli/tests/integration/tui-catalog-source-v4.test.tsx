@@ -106,8 +106,67 @@ async function configuredController(logicalIdentity?: string): Promise<{
   };
 }
 
+async function rewriteCatalogSnapshot(root: string, catalogVersion: string, content: string): Promise<void> {
+  await createCatalogSnapshotFixture(root, 'one', [], content);
+  const manifestPath = path.join(root, 'catalog-manifest.json');
+  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  await fs.writeJson(manifestPath, { ...manifest, catalogVersion }, { spaces: 2 });
+}
+
+async function configuredGitController(): Promise<{
+  controller: TuiController;
+  work: string;
+  remote: string;
+}> {
+  const isolation = getCurrentSourceTestIsolation();
+  const work = path.join(isolation.layout.fixtureCwd, 'tui-git-review-work');
+  const remote = path.join(isolation.layout.fixtureCwd, 'tui-git-review-remote.git');
+  await fs.ensureDir(work);
+  await git(work, ['init', '--initial-branch=main']);
+  await git(work, ['config', 'user.email', 'test@example.test']);
+  await git(work, ['config', 'user.name', 'AW Test']);
+  await createCatalogSnapshotFixture(path.join(work, 'catalog'), 'one');
+  await git(work, ['add', '.']);
+  await git(work, ['commit', '-m', 'initial catalog']);
+  await git(path.dirname(work), ['clone', '--bare', work, remote]);
+  await git(work, ['remote', 'add', 'origin', remote]);
+  const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+  await replaceCatalogSourcesConfig({
+    config: {
+      schemaVersion: 2,
+      sources: [{
+        id: 'git-local', type: 'git', primary: true, url: remote,
+        refPolicy: { type: 'explicit', ref: 'refs/heads/main' }, subdir: 'catalog',
+      }],
+    },
+    expectedDigest: before.digest,
+    env: isolation.env,
+  });
+  await syncCatalogSourceGeneration({ sourceId: 'git-local', cliVersion: '1.0.0', env: isolation.env });
+  const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+    cwd: isolation.layout.fixtureCwd,
+    env: isolation.env,
+    interactive: false,
+    nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    debugLogger: { log: async () => undefined },
+  }));
+  return { controller: new TuiController(dependencies), work, remote };
+}
+
+async function pushGitCatalogVersion(
+  work: string,
+  catalogVersion: string,
+  content: string,
+  branch = 'main',
+): Promise<void> {
+  await rewriteCatalogSnapshot(path.join(work, 'catalog'), catalogVersion, content);
+  await git(work, ['add', '.']);
+  await git(work, ['commit', '-m', `catalog ${catalogVersion} ${content.trim()}`]);
+  await git(work, ['push', 'origin', `HEAD:refs/heads/${branch}`]);
+}
+
 describe('TUI v4 real catalog source boundary', () => {
-  it('loads a real Active local Git source without background network access', async () => {
+  it('keeps a real Active Git source usable when its background ref check fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const work = path.join(isolation.layout.fixtureCwd, 'tui-git-work');
     const remote = path.join(isolation.layout.fixtureCwd, 'tui-git-remote.git');
@@ -153,9 +212,173 @@ describe('TUI v4 real catalog source boundary', () => {
     });
 
     await controller.load();
+    await waitFor(
+      () => controller.getCatalogFreshness('git-local')?.state === 'checkFailed',
+      'failed background ref check',
+      () => controller.getCatalogFreshness('git-local'),
+    );
     expect(controller.getCatalogGeneration('git-local')?.active?.catalogVersion).toBe('1.0.0');
     expect(observedHealth).toEqual(['ready']);
     expect(controller.getPluginOverview('git-local/demo')).toMatchObject({ version: '1.0.0' });
+    controller.dispose();
+  });
+
+  it.each([
+    ['1.0.0', 'same-version candidate'],
+    ['0.9.0', 'rollback candidate'],
+  ] as const)('does not let a no-op source edit bypass the %s candidate gate', async (version, content) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, work, remote } = await configuredGitController();
+    const active = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
+    await pushGitCatalogVersion(work, version, content);
+    await controller.load();
+
+    await expect(controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'git-local',
+      sourceMutation: {
+        action: 'update',
+        update: {
+          type: 'git', url: remote,
+          refPolicy: { type: 'explicit', ref: 'refs/heads/main' }, subdir: 'catalog',
+        },
+      },
+    })).rejects.toMatchObject({ code: 'sourceNoChanges' });
+
+    expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
+    await waitFor(
+      () => !['notChecked', 'checking'].includes(
+        controller.getCatalogFreshness('git-local')?.state ?? 'notChecked',
+      ),
+      'terminal Git freshness',
+    );
+    controller.dispose();
+  });
+
+  it('blocks a version conflict that appears after an update overlay', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, work } = await configuredGitController();
+    const active = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
+    await pushGitCatalogVersion(work, '2.0.0', 'newer candidate');
+    await controller.load();
+    await waitFor(
+      () => controller.getCatalogFreshness('git-local')?.state === 'updateAvailable',
+      'Git update overlay',
+      () => controller.getCatalogFreshness('git-local'),
+    );
+    await pushGitCatalogVersion(work, '1.0.0', 'conflicting candidate');
+
+    await expect(controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'git-local',
+    })).rejects.toMatchObject({ code: 'catalogVersionConflict' });
+
+    expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
+    controller.dispose();
+  });
+
+  it('blocks a rollback that appears after Review and keeps Active unchanged', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, work } = await configuredGitController();
+    const active = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
+    await pushGitCatalogVersion(work, '2.0.0', 'review candidate');
+    await controller.load();
+    await waitFor(
+      () => controller.getCatalogFreshness('git-local')?.state === 'updateAvailable',
+      'Git update overlay',
+      () => controller.getCatalogFreshness('git-local'),
+    );
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'git-local',
+    });
+    expect(review.changes).toContainEqual(expect.objectContaining({ title: '当前 Active Catalog 1.0.0' }));
+    await pushGitCatalogVersion(work, '0.9.0', 'rollback after Review');
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'catalogRollbackDetected', operationKind: 'catalogGeneration',
+    });
+    expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
+    controller.dispose();
+  });
+
+  it('allows a real ref change to explicitly switch to a reviewed lower version', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, work } = await configuredGitController();
+    await git(work, ['checkout', '-b', 'rollback']);
+    await pushGitCatalogVersion(work, '0.9.0', 'explicit rollback', 'rollback');
+    await git(work, ['checkout', 'main']);
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'git-local',
+      sourceMutation: {
+        action: 'update',
+        update: { type: 'git', refPolicy: { type: 'explicit', ref: 'refs/heads/rollback' } },
+      },
+    });
+
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: '当前 Active Catalog 1.0.0' }),
+      expect.objectContaining({ title: '显式来源切换将降低 Catalog 版本' }),
+    ]));
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded', operationKind: 'catalogGeneration',
+    });
+    expect(controller.getCatalogGeneration('git-local')?.active?.catalogVersion).toBe('0.9.0');
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources[0]).toMatchObject({
+      refPolicy: { type: 'explicit', ref: 'refs/heads/rollback' },
+    });
+    controller.dispose();
+  });
+
+  it('shows a local candidate and switches Active only after real Ink confirmation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, firstRoot } = await configuredController();
+    const before = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
+    await rewriteCatalogSnapshot(firstRoot, '2.0.0', 'updated\n');
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    await waitFor(
+      () => controller.getCatalogFreshness('local')?.state === 'localChangesAvailable',
+      'local Catalog candidate',
+      () => controller.getCatalogFreshness('local'),
+    );
+    controller.push({ name: 'sourceDetail', sourceId: 'local' });
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('候选 Catalog 2.0.0');
+    expect(instance.lastFrame()).toContain('应用本地内容变化');
+    expect((await readCatalogGenerationState(isolation.env)).sources.local!.active).toEqual(before);
+
+    await input(instance, '\r');
+    await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'update Review');
+    expect((await readCatalogGenerationState(isolation.env)).sources.local!.active).toEqual(before);
+    await confirmReview(instance, controller);
+
+    expect(controller.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'catalogGeneration' });
+    expect(controller.getCatalogGeneration('local')?.active?.catalogVersion).toBe('2.0.0');
+    expect((await readCatalogGenerationState(isolation.env)).sources.local!.active?.snapshotDigest)
+      .not.toBe(before.snapshotDigest);
+    await waitFor(
+      () => controller.getCatalogFreshness('local')?.state === 'current',
+      'freshness after Active switch',
+      () => controller.getCatalogFreshness('local'),
+    );
+    controller.dispose();
+  });
+
+  it('returns stale when the complete candidate changes after Review', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, firstRoot } = await configuredController();
+    await controller.load();
+    const before = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
+    await rewriteCatalogSnapshot(firstRoot, '2.0.0', 'candidate two\n');
+    await controller.recheckCatalogSource('local');
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    await rewriteCatalogSnapshot(firstRoot, '3.0.0', 'candidate three\n');
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({ state: 'stale', operationKind: 'catalogGeneration' });
+    expect((await readCatalogGenerationState(isolation.env)).sources.local!.active).toEqual(before);
     controller.dispose();
   });
 

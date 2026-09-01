@@ -48,6 +48,7 @@ import type {
 } from './controller.js';
 import { extractPortableError, userIssueKey } from './controller.js';
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
+import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { catalogRefPolicyForPreset } from './source-ref-presets.js';
@@ -484,11 +485,51 @@ function configUnavailableDiagnostic(
 
 function sourceDiagnostic(
   sourceId: string,
-  state: SourceHealthViewModel['state'] | 'error' | undefined,
+  state: SourceHealthViewModel['state'] | 'error' | 'checking' | 'update' | 'recovery' | undefined,
   detail: SourceDetailViewModel | undefined,
   generation?: CatalogSourceGenerationViewModel,
+  freshness?: CatalogSourceFreshnessViewModel,
 ): DiagnosticSummaryViewModel | undefined {
   const unavailable = state === 'unavailable' || state === 'error';
+  if (!unavailable && freshness?.state === 'checkFailed') {
+    return {
+      severity: 'warning',
+      title: '更新检查失败',
+      userMessage: '远端或本地候选检查失败，但当前 Active Catalog 仍可用。',
+      impact: [
+        { state: 'degraded', message: '当前无法判断是否有更新。' },
+        { state: 'preserved', message: '浏览、安装和当前 Active 不受影响。' },
+      ],
+      nextStep: '返回来源详情并选择“重新检查”。',
+      technical: {
+        code: safeDiagnosticCode(freshness.errorCode, 'catalogFreshnessCheckFailed'),
+        stage: 'probe-source',
+        sourceId,
+        checks: ['检查来源连接或本地目录。', '返回来源详情并重新检查。'],
+      },
+    };
+  }
+  if (!unavailable && (freshness?.state === 'versionConflict'
+    || freshness?.state === 'rollbackDetected'
+    || freshness?.state === 'incompatible')) {
+    return {
+      severity: 'error',
+      title: freshness.state === 'versionConflict' ? 'Catalog 版本冲突'
+        : freshness.state === 'rollbackDetected' ? '检测到 Catalog 回退' : '候选 Catalog 不兼容',
+      userMessage: '普通更新已阻止。当前 Active Catalog 保持不变。',
+      impact: [
+        { state: 'blocked', message: '不能直接切换到这个候选。' },
+        { state: 'preserved', message: '当前 Active Catalog 和插件浏览仍可用。' },
+      ],
+      nextStep: '检查候选版本、来源 ref 和发布身份后，再决定是否修改来源。',
+      technical: {
+        code: safeDiagnosticCode(freshness.errorCode, `catalog${freshness.state}`),
+        stage: 'compare-candidate',
+        sourceId,
+        checks: ['检查当前版本和候选版本。', '检查来源 ref 和 Catalog logical identity。'],
+      },
+    };
+  }
   if (!unavailable) return undefined;
   const metadataInvalid = generation?.errorCode === 'catalogGenerationMetadataInvalid';
   return {
@@ -626,9 +667,13 @@ function SourceTabs(props: {
       count: props.controller.listPlugins({ ...filter, sourceId: source.id }).length,
     }))];
   const index = Math.max(0, tabs.findIndex((tab) => tab.id === props.current));
+  const badge = (state: string, count: number | undefined): string => state === 'checking' ? ' …'
+    : state === 'update' ? ' ↑'
+      : state === 'recovery' ? ' ?'
+        : state === 'error' ? ' !' : ` ${count ?? ''}`;
   const fullText = `来源  ${tabs.map((tab) => {
     const state = 'state' in tab ? tab.state : 'ready';
-    return `${tab.id === props.current ? '[' : ''}${tab.label}${state === 'error' ? ' !' : ` ${tab.count ?? ''}`}${tab.id === props.current ? ']' : ''}  `;
+    return `${tab.id === props.current ? '[' : ''}${tab.label}${badge(state, tab.count)}${tab.id === props.current ? ']' : ''}  `;
   }).join('')}`;
   if (props.compact || terminalTextWidth(fullText) > props.columns) {
     const tab = tabs[index]!;
@@ -645,9 +690,10 @@ function SourceTabs(props: {
             bold={active}
             color={active ? tuiTheme.colors.accent
               : state === 'error' ? tuiTheme.statusColors.error
+              : state === 'update' || state === 'recovery' ? tuiTheme.statusColors.warning
               : tuiTheme.colors.muted}
           >
-            {active ? '[' : ''}{tab.label}{state === 'error' ? ' !' : ` ${tab.count ?? ''}`}{active ? ']' : ''}{'  '}
+            {active ? '[' : ''}{tab.label}{badge(state, tab.count)}{active ? ']' : ''}{'  '}
           </Text>
         );
       })}
@@ -819,7 +865,8 @@ export function resolveConsoleV4ScreenId(
   if (route.name === 'pluginList') {
     const items = controller.listPlugins({ mode: route.mode, sourceId: route.sourceId });
     if (route.mode === 'installed' && items.length === 0) return 'P12';
-    if (route.sourceId && controller.getSourceOverview(route.sourceId).source?.state === 'error') return 'P03';
+    if (route.sourceId
+      && controller.getSourceOverview(route.sourceId).health?.state === 'unavailable') return 'P03';
     return route.mode === 'installed' ? 'P11' : searchMode ? 'P02' : 'P01';
   }
   if (route.name === 'pluginPreview') {
@@ -1051,6 +1098,10 @@ export function ConsoleAppV4(props: {
       if (props.ownsController) props.controller.dispose();
     };
   }, [props.controller, props.ownsController]);
+  useEffect(() => {
+    props.controller.setExternalDraftState(sourceDraft ? 'sourceDraft' : dirty ? 'configDraft' : undefined);
+    return () => props.controller.setExternalDraftState(undefined);
+  }, [props.controller, dirty, sourceDraft]);
 
   useEffect(() => {
     if (!exitAfterBusy || !snapshot.result) return;
@@ -1076,7 +1127,8 @@ export function ConsoleAppV4(props: {
     setDirty(false);
     setDraftUpdates({});
     setDraftRemoves([]);
-    if (snapshot.result.operationKind === 'sourceMutation') setSourceDraft(undefined);
+    if (snapshot.result.operationKind === 'sourceMutation'
+      || snapshot.result.operationKind === 'catalogGeneration') setSourceDraft(undefined);
   }, [route.name, snapshot.result]);
   useEffect(() => {
     if (route.name !== 'sourceAdd') setSourceInput('');
@@ -1802,7 +1854,15 @@ export function ConsoleAppV4(props: {
       { label: '添加插件', description: '浏览多个来源中的 Agent 能力', meta: String(home.availablePlugins), run: () => go({ name: 'pluginList', mode: 'browse' }) },
       { label: '我的插件', description: '查看状态、设置和移除已添加插件', meta: String(home.installedPlugins), run: () => go({ name: 'pluginList', mode: 'installed' }) },
       { label: '需要处理', description: '解决安装、来源或设置问题', meta: String(home.issueCount), status: 'warning', run: () => go({ name: 'issueList' }) },
-      { label: '插件来源', description: '管理 Git 仓库和本地目录', meta: String(home.sourceCount), run: () => go({ name: 'sourceList' }) },
+      {
+        label: '插件来源',
+        description: '管理 Git 仓库和本地目录',
+        meta: home.catalogUpdateCount > 0 ? `${home.catalogUpdateCount} 个更新`
+          : home.catalogCheckingCount > 0 ? `${home.catalogCheckingCount} 个检查中`
+            : home.catalogRecoveryCount > 0 ? `${home.catalogRecoveryCount} 个需处理` : String(home.sourceCount),
+        status: home.catalogUpdateCount > 0 || home.catalogRecoveryCount > 0 ? 'warning' : undefined,
+        run: () => go({ name: 'sourceList' }),
+      },
     ];
     content = <Box flexDirection="column">
       <StatusCard
@@ -1812,6 +1872,9 @@ export function ConsoleAppV4(props: {
         <ResultRow title={`${home.installedPlugins} 个插件可用`} status="success" />
         <ResultRow title={`${home.issueCount} 项需要处理`} status={home.issueCount > 0 ? 'warning' : 'muted'} />
         {home.unavailableSourceCount > 0 ? <ResultRow title={`${home.unavailableSourceCount} 个来源不可用`} status="error" /> : null}
+        {home.catalogCheckingCount > 0 ? <ResultRow title={`${home.catalogCheckingCount} 个 Catalog 正在检查`} status="muted" /> : null}
+        {home.catalogUpdateCount > 0 ? <ResultRow title={`${home.catalogUpdateCount} 个 Catalog 有更新`} status="warning" /> : null}
+        {home.catalogRecoveryCount > 0 ? <ResultRow title={`${home.catalogRecoveryCount} 个 Catalog 需要检查或恢复`} status="warning" /> : null}
       </StatusCard>
       <SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} />
     </Box>;
@@ -1834,7 +1897,8 @@ export function ConsoleAppV4(props: {
     description = route.mode === 'browse' ? '选择希望 Agent 获得的能力。' : '查看状态，或选择一个插件进行管理。';
     context = `${items.length} 个插件`;
     help = `↑↓ 移动 · Enter 查看 · ←→ 来源 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ''} · Esc 返回`;
-    const sourceError = sourceId !== 'all' && props.controller.getSourceOverview(sourceId).source?.state === 'error';
+    const sourceError = sourceId !== 'all'
+      && props.controller.getSourceOverview(sourceId).health?.state === 'unavailable';
     actions = sourceError
       ? [{ label: '查看来源问题', description: '当前不能浏览这个来源', run: () => go({ name: 'issueDetail', issueId: `source:${sourceId}:unavailable` }) }]
       : [];
@@ -3041,16 +3105,30 @@ export function ConsoleAppV4(props: {
       ...props.controller.listSources().map((source) => {
         const overview = props.controller.getSourceOverview(source.id);
         const generation = props.controller.getCatalogGeneration(source.id);
+        const freshness = props.controller.getCatalogFreshness(source.id);
         const health = overview.health?.state ?? source.state;
-        const status = generation?.active ? `Active ${generation.active.catalogVersion}`
+        const status = freshness?.state === 'checking' ? '检查中'
+          : freshness?.state === 'updateAvailable' ? `可更新到 ${freshness.candidate?.catalogVersion ?? '新版本'}`
+            : freshness?.state === 'localChangesAvailable' ? '本地内容有变化'
+              : freshness?.state === 'versionConflict' ? '版本冲突'
+                : freshness?.state === 'rollbackDetected' ? '检测到回退'
+                  : freshness?.state === 'checkFailed' ? '检查失败 · Active 可用'
+                    : freshness?.state === 'incompatible' ? '候选不兼容'
+        : generation?.active ? `Active ${generation.active.catalogVersion}`
           : health === 'ready' ? '当前使用'
           : '无法读取';
         return {
           label: `${source.id}${source.primary ? '  主来源' : ''}`,
           description: `${overview.detail?.type === 'path' ? '本地目录' : 'Git 仓库'} · ${source.count ?? 0} 个插件`,
           meta: status,
-          status: !generation?.active || health === 'unavailable' ? 'error' as const
-            : source.primary ? 'success' as const : undefined,
+          status: !generation?.active || health === 'unavailable'
+            || freshness?.state === 'checkFailed' || freshness?.state === 'incompatible'
+            ? 'error' as const
+            : freshness?.state === 'updateAvailable'
+              || freshness?.state === 'localChangesAvailable'
+              || freshness?.state === 'versionConflict'
+              || freshness?.state === 'rollbackDetected' ? 'warning' as const
+                : source.primary ? 'success' as const : undefined,
           run: () => go({ name: 'sourceDetail', sourceId: source.id }),
         };
       }),
@@ -3063,33 +3141,67 @@ export function ConsoleAppV4(props: {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
     const generation = props.controller.getCatalogGeneration(route.sourceId);
+    const freshness = props.controller.getCatalogFreshness(route.sourceId);
     const activeVersion = generation?.active?.catalogVersion;
+    const candidateVersion = freshness?.candidate?.catalogVersion;
     const generationState = generation?.state ?? (generation?.active ? 'ready' : 'unavailable');
     const logicalIdentityChanged = generation?.errorCode === 'catalogLogicalIdentityChanged';
+    const activationBlocked = props.controller.catalogActivationBlockReason();
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
-    description = activeVersion ? `当前使用 Active Catalog ${activeVersion}。`
+    description = freshness?.state === 'checkFailed' && activeVersion
+      ? `更新检查失败，但 Active Catalog ${activeVersion} 仍可浏览和使用。`
+      : freshness?.state === 'updateAvailable'
+        ? `当前使用 ${activeVersion ?? '未启用'}；候选版本 ${candidateVersion ?? '未知'} 可更新。`
+        : freshness?.state === 'localChangesAvailable'
+          ? '本地 Catalog 内容已变化；确认前仍使用当前 Active。'
+          : activeVersion ? `当前使用 Active Catalog ${activeVersion}。`
       : generationState === 'stateInvalid' ? 'Catalog generation state 无效。可在 Review 后恢复状态并启用这个来源。'
         : generationState === 'repairRequired' ? 'Active Catalog 条目缺失或损坏。可在这里精确修复。'
         : generationState === 'configMismatch' ? '来源配置与 Active 不一致。可验证候选并切换。'
           : logicalIdentityChanged ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
             : '来源没有可用 Active。可在这里获取并启用。';
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
-    const generationAction = logicalIdentityChanged ? [] : [{
-      label: generationState === 'repairRequired' ? '重新下载并修复'
-        : generationState === 'stateInvalid' ? '恢复状态并启用'
-        : generationState === 'configMismatch' ? '验证并切换'
-          : generationState === 'ready' ? '检查并更新' : '获取并启用',
-      description: '先准备只读候选 Review；确认后才切换 Active',
-      run: () => beginReview({
-        kind: 'catalogGeneration',
-        action: generationState === 'stateInvalid' ? 'recoverState'
-          : generationState === 'repairRequired' ? 'repair'
-          : generationState === 'ready' || generationState === 'configMismatch' ? 'update' : 'activate',
-        sourceId: route.sourceId,
-      }),
-    }];
+    const generationAction: ActionItem[] = logicalIdentityChanged ? []
+      : generationState !== 'ready' ? [{
+          label: generationState === 'repairRequired' ? '重新下载并修复'
+            : generationState === 'stateInvalid' ? '恢复状态并启用'
+              : generationState === 'configMismatch' ? '验证并切换' : '获取并启用',
+          description: '先准备只读候选 Review；确认后才切换 Active',
+          disabled: activationBlocked ? `请先处理当前草稿或操作：${activationBlocked}` : undefined,
+          run: () => beginReview({
+            kind: 'catalogGeneration',
+            action: generationState === 'stateInvalid' ? 'recoverState'
+              : generationState === 'repairRequired' ? 'repair'
+                : generationState === 'configMismatch' ? 'update' : 'activate',
+            sourceId: route.sourceId,
+          }),
+        }]
+        : freshness?.state === 'updateAvailable' || freshness?.state === 'localChangesAvailable'
+          ? [{
+              label: freshness.state === 'localChangesAvailable'
+                ? '应用本地内容变化…' : `更新到 ${candidateVersion ?? '候选版本'}…`,
+              description: '进入 Review；确认前不会切换 Active',
+              disabled: activationBlocked ? `请先处理当前草稿或操作：${activationBlocked}` : undefined,
+              run: () => beginReview({ kind: 'catalogGeneration', action: 'update', sourceId: route.sourceId }),
+            }]
+          : freshness?.state === 'versionConflict'
+            || freshness?.state === 'rollbackDetected'
+            || freshness?.state === 'incompatible'
+            ? [{
+                label: freshness.state === 'versionConflict' ? '查看版本冲突'
+                  : freshness.state === 'rollbackDetected' ? '查看回退详情' : '查看不兼容详情',
+                description: '普通更新已阻止；当前 Active 保持不变',
+                status: 'error',
+                run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }),
+              }]
+            : [{
+                label: freshness?.state === 'checking' ? '正在检查…' : '重新检查',
+                description: '只检查这个来源；不会自动切换 Active',
+                disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
+                run: () => props.controller.recheckCatalogSource(route.sourceId),
+              }];
     actions = [
       ...generationAction,
       { label: '编辑来源…', description: '修改前先 Review；默认保存并启用', run: () => go({ name: 'sourceEdit' as const, sourceId: route.sourceId }) },
@@ -3113,12 +3225,27 @@ export function ConsoleAppV4(props: {
       { label: '技术详情', description: '查看脱敏错误代码和 Active 证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
     ];
     const sourceActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 5));
-    content = <Box flexDirection="column"><SectionCard title="Active Catalog" status={activeVersion ? 'success' : 'warning'} compact={policy.mode === 'compact'}><StaticRow title={activeVersion ? `Catalog ${activeVersion}` : '未启用'} meta={activeVersion ? generation?.active?.digestShort : generationState} compact /></SectionCard><SectionCard title="来源配置" compact={policy.mode === 'compact'}><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} compact /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
+    const freshnessLabel = freshness?.state === 'checking' ? '检查中'
+      : freshness?.state === 'current' ? '当前已是最新'
+        : freshness?.state === 'fixed' ? '固定 commit'
+          : freshness?.state === 'checkFailed' ? '检查失败 · Active 仍可用'
+            : freshness?.state === 'localChangesAvailable' ? '本地内容有变化'
+              : freshness?.state === 'updateAvailable' ? '有可用更新'
+                : freshness?.state === 'versionConflict' ? '同版本内容冲突'
+                  : freshness?.state === 'rollbackDetected' ? '检测到版本回退'
+                    : freshness?.state === 'incompatible' ? '候选不兼容' : '尚未检查';
+    content = <Box flexDirection="column"><SectionCard title="Active Catalog" status={activeVersion ? 'success' : 'warning'} compact={policy.mode === 'compact'}><StaticRow title={activeVersion ? `Catalog ${activeVersion}` : '未启用'} meta={activeVersion ? generation?.active?.digestShort : generationState} compact />{candidateVersion ? <StaticRow title={`候选 Catalog ${candidateVersion}`} meta={freshnessLabel} status={freshness?.state === 'updateAvailable' || freshness?.state === 'localChangesAvailable' ? 'warning' : undefined} compact /> : <StaticRow title={freshnessLabel} status={freshness?.state === 'checkFailed' ? 'warning' : undefined} compact />}</SectionCard><SectionCard title="来源配置" compact={policy.mode === 'compact'}><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} compact /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
   } else if (route.name === 'sourceTechnical') {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
     const state = overview.health?.state ?? overview.source?.state;
-    const diagnostic = sourceDiagnostic(route.sourceId, state, detail, props.controller.getCatalogGeneration(route.sourceId)) ?? {
+    const diagnostic = sourceDiagnostic(
+      route.sourceId,
+      state,
+      detail,
+      props.controller.getCatalogGeneration(route.sourceId),
+      props.controller.getCatalogFreshness(route.sourceId),
+    ) ?? {
       severity: 'warning' as const,
       title: '来源解析详情',
       userMessage: '来源当前可用。',

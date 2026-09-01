@@ -75,12 +75,16 @@ import {
   targetCanBeUninstalled,
   targetHasArtifactCollision,
 } from '../utils/target-eligibility.js';
-import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
+import {
+  calculateCatalogSourceConfigFingerprint,
+  calculateCatalogSourceIdentity,
+} from '../utils/catalog-source-identity.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   calculateCatalogGenerationSetDigest,
+  resolveActiveCatalogGeneration,
 } from '../utils/catalog-generation-resolver.js';
 import {
   resolveCatalogOperationContext,
@@ -91,12 +95,15 @@ import {
 import type { CatalogStoreEntry } from '../utils/catalog-generation-store.js';
 import {
   activateCatalogSourceGeneration,
+  compareCatalogGenerationFreshness,
+  probeCatalogSourceFreshness,
   probeCatalogSourceGeneration,
   recoverCatalogGenerationStateAndActivate,
   repairCatalogSourceGeneration,
 } from '../utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
+import { CatalogProviderCompatibilityError } from '../utils/catalog-public-error.js';
 import { loadCatalogGenerationViewModels } from './catalog-generation.js';
 import {
   installPortableSkills,
@@ -863,8 +870,10 @@ export function createTuiControllerDependencies(
       await preparation?.reporter.emit('validate');
       const packageInfo = await readCliPackageInfo();
       const config = await readCatalogSourcesConfigSnapshot(context.env);
+      const configuredSource = config.config.sources.find((source) => source.id === intent.sourceId);
       let proposedSource: import('../types.js').CatalogSource | undefined;
       let proposedConfigDigest: string | undefined;
+      let explicitSourceChange = false;
       if (intent.sourceMutation) {
         const preview = await preflightCatalogSourceMutation({
           request: intent.sourceMutation.action === 'add'
@@ -875,6 +884,17 @@ export function createTuiControllerDependencies(
         });
         proposedSource = preview.proposedSource;
         proposedConfigDigest = preview.proposedConfigDigest;
+        if (preview.configDigest !== config.digest) {
+          throw operationReviewStale('准备 Catalog 候选期间来源配置发生变化。');
+        }
+        const sourceFingerprintChanged = Boolean(proposedSource && (!configuredSource
+          || calculateCatalogSourceConfigFingerprint(proposedSource)
+            !== calculateCatalogSourceConfigFingerprint(configuredSource)));
+        explicitSourceChange = preview.proposedConfigDigest !== preview.configDigest
+          && (preview.identityChanged || sourceFingerprintChanged);
+        if (!explicitSourceChange) {
+          throw new TuiOperationBlockedError('sourceNoChanges', '来源没有变化。');
+        }
       }
       const probe = await probeCatalogSourceGeneration({
         sourceId: intent.sourceId,
@@ -886,6 +906,7 @@ export function createTuiControllerDependencies(
       signal?.throwIfAborted();
       await preparation?.reporter.emit('evidence');
       let previousActive: import('../types.js').CatalogGenerationActiveV1 | undefined;
+      let healthyActive: Awaited<ReturnType<typeof resolveActiveCatalogGeneration>> | undefined;
       try {
         previousActive = (await readCatalogGenerationState(context.env))
           .sources[intent.sourceId]?.active;
@@ -894,15 +915,45 @@ export function createTuiControllerDependencies(
           || !(error instanceof CatalogGenerationError)
           || error.code !== 'catalogGenerationStateInvalid') throw error;
       }
-      if (previousActive
-        && previousActive.sourceConfigFingerprint === probe.candidate.sourceConfigFingerprint
-        && previousActive.sourceIdentity === probe.candidate.sourceIdentity
-        && previousActive.logicalIdentity !== probe.candidate.logicalIdentity) {
+      if (intent.action === 'activate' || intent.action === 'update') {
+        try {
+          healthyActive = await resolveActiveCatalogGeneration({ sourceId: intent.sourceId, env: context.env });
+        } catch (error) {
+          if (!(error instanceof CatalogGenerationError)
+            && !(error instanceof CatalogProviderCompatibilityError)) throw error;
+        }
+      }
+      const comparisonSource = proposedSource
+        ?? configuredSource;
+      const candidateRelation = healthyActive && comparisonSource
+        ? compareCatalogGenerationFreshness({
+            sourceType: comparisonSource.type,
+            active: {
+              logicalIdentity: healthyActive.logicalIdentity,
+              catalogVersion: healthyActive.catalogVersion,
+              snapshotDigest: healthyActive.snapshotDigest,
+              resolvedCommit: healthyActive.resolvedCommit,
+            },
+            candidate: probe.candidate,
+          }).state
+        : undefined;
+      if (!explicitSourceChange && candidateRelation === 'incompatible') {
         throw new CatalogGenerationError({
-          code: 'catalogLogicalIdentityChanged',
-          sourceId: intent.sourceId,
+          code: 'catalogLogicalIdentityChanged', sourceId: intent.sourceId,
           message: `Catalog source "${intent.sourceId}" changed logical identity. Edit or remove and re-add the source.`,
         });
+      }
+      if (!explicitSourceChange && candidateRelation === 'versionConflict') {
+        throw new TuiOperationBlockedError(
+          'catalogVersionConflict',
+          '候选 Catalog 与当前 Active 版本相同，但内容摘要不同。普通更新已阻止。',
+        );
+      }
+      if (!explicitSourceChange && candidateRelation === 'rollbackDetected') {
+        throw new TuiOperationBlockedError(
+          'catalogRollbackDetected',
+          '候选 Catalog 版本低于当前 Active。普通更新已阻止。',
+        );
       }
       return {
         catalog: {
@@ -912,7 +963,10 @@ export function createTuiControllerDependencies(
         catalogGeneration: {
           action: intent.action,
           ...(previousActive ? { previousActive } : {}),
+          ...(healthyActive ? { previousActiveVersion: healthyActive.catalogVersion } : {}),
           candidate: probe.candidate,
+          ...(candidateRelation ? { candidateRelation } : {}),
+          ...(explicitSourceChange ? { explicitSourceChange: true } : {}),
           configDigest: config.digest,
           ...(proposedConfigDigest ? { proposedConfigDigest } : {}),
           ...(proposedSource ? { proposedSource } : {}),
@@ -1369,6 +1423,18 @@ export function createTuiControllerDependencies(
       }
     },
     loadStatus,
+    async probeCatalogFreshness(sourceId, freshnessOptions, signal) {
+      signal.throwIfAborted();
+      const packageInfo = await readCliPackageInfo();
+      return probeCatalogSourceFreshness({
+        sourceId,
+        cliVersion: packageInfo.version,
+        env: context.env,
+        signal,
+        fullValidation: freshnessOptions.fullValidation,
+        runtime: { validatedStoreEntries, validatingStoreEntries },
+      });
+    },
     async inspectSourceRemoval(_sourceId, signal) {
       signal.throwIfAborted();
       return {

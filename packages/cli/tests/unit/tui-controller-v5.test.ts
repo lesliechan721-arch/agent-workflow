@@ -1409,6 +1409,157 @@ describe('TUI v4 router and ViewModel', () => {
   });
 });
 
+describe('TUI Catalog freshness session overlay', () => {
+  it('reaches ready before a slow automatic freshness probe completes', async () => {
+    const pending = deferred<{ sourceId: string; state: 'current' }>();
+    const controller = new TuiController(dependencies({
+      probeCatalogFreshness: vi.fn(() => pending.promise),
+    }));
+
+    await controller.load();
+
+    expect(controller.snapshot.phase).toBe('ready');
+    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
+    expect(controller.getPluginOverview('official/demo')).toBeDefined();
+    pending.resolve({ sourceId: 'official', state: 'current' });
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('current');
+    controller.dispose();
+  });
+
+  it('keeps a healthy Active source available when its background check fails', async () => {
+    const controller = new TuiController(dependencies({
+      probeCatalogFreshness: vi.fn(async () => {
+        throw Object.assign(new Error('offline'), { code: 'catalogSourceResolutionFailed' });
+      }),
+    }));
+
+    await controller.load();
+    await nextTurn();
+
+    expect(controller.getCatalogFreshness('official')).toMatchObject({
+      state: 'checkFailed', errorCode: 'catalogSourceResolutionFailed',
+    });
+    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
+    expect(controller.getPluginOverview('official/demo')?.aggregateStatus).not.toBe('unavailable');
+    controller.dispose();
+  });
+
+  it('starts the primary probe first and limits other source probes to two', async () => {
+    const sources = [
+      source('official', { primary: true }),
+      source('one', { primary: false }),
+      source('two', { primary: false }),
+      source('three', { primary: false }),
+      source('four', { primary: false }),
+    ];
+    const gates = new Map(sources.map((entry) => [entry.id, deferred<void>()]));
+    const started: string[] = [];
+    let activeOther = 0;
+    let maximumOther = 0;
+    const probeCatalogFreshness: TuiControllerDependencies['probeCatalogFreshness'] = vi.fn(
+      async (sourceId) => {
+        started.push(sourceId);
+        if (sourceId !== 'official') {
+          activeOther += 1;
+          maximumOther = Math.max(maximumOther, activeOther);
+        }
+        await gates.get(sourceId)!.promise;
+        if (sourceId !== 'official') activeOther -= 1;
+        return { sourceId, state: 'current' };
+      },
+    );
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ sources }),
+        pluginSummaries: summaries(['official', 'demo']),
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(started[0]).toBe('official');
+    expect(started.slice(1).sort()).toEqual(['one', 'two']);
+    expect(maximumOther).toBe(2);
+    gates.get('one')!.resolve();
+    gates.get('two')!.resolve();
+    await nextTurn();
+    expect(started).toEqual(expect.arrayContaining(['three', 'four']));
+    for (const gate of gates.values()) gate.resolve();
+    controller.dispose();
+  });
+
+  it('does not repeat all probes on reload and explicitly rechecks only one source', async () => {
+    const sources = [source('official', { primary: true }), source('team', { primary: false })];
+    const probeCatalogFreshness = vi.fn(async (sourceId: string, options: { fullValidation: boolean }) => ({
+      sourceId,
+      state: 'current' as const,
+      ...(options.fullValidation ? { activeVersion: '1.0.0' } : {}),
+    }));
+    const loadStatus = vi.fn().mockResolvedValue({
+      payload: status({ sources }),
+      pluginSummaries: summaries(['official', 'demo']),
+    });
+    const controller = new TuiController(dependencies({ loadStatus, probeCatalogFreshness }));
+    await controller.load();
+    await nextTurn();
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(2);
+
+    await controller.reloadCatalog({ sourceId: 'official' });
+    await nextTurn();
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(2);
+
+    await controller.recheckCatalogSource('team');
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(3);
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.slice(0, 2)).toEqual([
+      'team', { fullValidation: true },
+    ]);
+    controller.dispose();
+  });
+
+  it('aborts probes on dispose and ignores their late result', async () => {
+    let aborted = false;
+    const pending = deferred<{ sourceId: string; state: 'updateAvailable' }>();
+    const controller = new TuiController(dependencies({
+      probeCatalogFreshness: vi.fn((_sourceId, _options, signal) => {
+        signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+        return pending.promise;
+      }),
+    }));
+    await controller.load();
+    await nextTurn();
+
+    controller.dispose();
+    pending.resolve({ sourceId: 'official', state: 'updateAvailable' });
+    await nextTurn();
+
+    expect(aborted).toBe(true);
+    expect(controller.snapshot.phase).toBe('disposed');
+    expect(controller.getCatalogFreshness('official')?.state).toBe('checking');
+  });
+
+  it('keeps a completed probe overlay but blocks Active switching while a source draft exists', async () => {
+    const pending = deferred<{ sourceId: string; state: 'updateAvailable' }>();
+    const controller = new TuiController(dependencies({
+      probeCatalogFreshness: vi.fn(() => pending.promise),
+    }));
+    await controller.load();
+    await nextTurn();
+    controller.setExternalDraftState('sourceDraft');
+
+    expect(() => controller.startReviewPreparation({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'official',
+    })).toThrowError(expect.objectContaining({ code: 'catalogActivationBlocked' }));
+    await expect(controller.reloadCatalog({ sourceId: 'official' })).resolves.toBe(false);
+
+    pending.resolve({ sourceId: 'official', state: 'updateAvailable' });
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('updateAvailable');
+    controller.dispose();
+  });
+});
+
 describe('TUI v4 Review safety', () => {
   it.each([
     ['install', 'add', 'add'],

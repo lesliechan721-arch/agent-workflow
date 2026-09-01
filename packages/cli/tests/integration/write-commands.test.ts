@@ -2191,6 +2191,13 @@ describe('five namespaced write commands', () => {
     expect(controller.snapshot.viewModel?.dependencyOverviews.find((entry) =>
       entry.pluginId === 'team/root')?.dependencies.find((entry) =>
         entry.pluginId === 'team/future')).toMatchObject({ aggregateStatus: 'unavailable' });
+    for (let attempt = 0; attempt < 100
+      && ['notChecked', 'checking'].includes(controller.getCatalogFreshness('team')?.state ?? 'notChecked');
+      attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(controller.getCatalogFreshness('team')?.state).toBe('current');
+    controller.dispose();
   });
 
   it('reports an unsupported direct dependency as a stable dependency root', async () => {

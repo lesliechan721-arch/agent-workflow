@@ -282,6 +282,14 @@ interface GitFetchTarget {
   objectFormat: 'sha1' | 'sha256';
 }
 
+export interface CatalogGitRefProbeResult {
+  sourceId: string;
+  sourceIdentity: string;
+  requestedRef: string;
+  resolvedCommit: string;
+  fixed: boolean;
+}
+
 async function resolveFetchTarget(options: {
   transport: string;
   requestedRef: string;
@@ -418,9 +426,64 @@ async function resolveGitCatalogSource(
   return resolveGitCatalogSourceDirect(source, options);
 }
 
+async function probeGitCatalogSourceRef(
+  source: GitCatalogSource,
+  options: CatalogProviderRuntimeOptions,
+): Promise<CatalogGitRefProbeResult> {
+  const env = options.env ?? process.env;
+  canonicalizeCatalogGitUrl(source.url);
+  const sourceIdentity = await calculateCatalogSourceIdentity(source);
+  const requestedRef = resolveCatalogSourceRef(source.refPolicy, options.cliVersion);
+  if (COMMIT_PATTERN.test(requestedRef)) {
+    options.signal?.throwIfAborted();
+    return {
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      resolvedCommit: requestedRef,
+      fixed: true,
+    };
+  }
+  const deadline = createDeadlineSignal(options.signal, readRemoteTimeout(env));
+  let effectiveTransport: string | undefined;
+  try {
+    effectiveTransport = await resolveEffectiveGitUrl({
+      configuredTransport: source.url,
+      env,
+      deadline,
+    });
+    const target = await resolveFetchTarget({
+      transport: source.url,
+      requestedRef,
+      env,
+      deadline,
+    });
+    return {
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      resolvedCommit: target.fetchSpec,
+      fixed: false,
+    };
+  } catch (error) {
+    const failure: unknown = deadline.signal?.aborted && deadline.signal.reason instanceof Error
+      ? deadline.signal.reason
+      : error;
+    const sensitiveTransports = [
+      source.url,
+      effectiveTransport ?? '',
+      ...(failure instanceof CatalogGitPolicyError ? failure.sensitiveTransports : []),
+    ];
+    throw createPublicGitError(source.id, failure, sensitiveTransports);
+  } finally {
+    deadline.dispose();
+  }
+}
+
 /** @internal Provider bridge for the multi-source resolver. */
 export const catalogGitProviderInternal = {
   resolve: resolveGitCatalogSource,
+  probeRef: probeGitCatalogSourceRef,
   gitEnvironment,
 };
 

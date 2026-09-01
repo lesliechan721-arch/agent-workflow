@@ -8,11 +8,14 @@ import type { CatalogGenerationProviderSet } from '../../src/utils/catalog-gener
 import { addCatalogSourceCommand } from '../../src/commands/catalog-source.js';
 import {
   activateCatalogSourceGeneration,
+  compareCatalogGenerationFreshness,
+  probeCatalogSourceFreshness,
   probeCatalogSourceGeneration,
   readCatalogGenerationStatus,
   repairCatalogSourceGeneration,
   syncCatalogSourceGeneration,
 } from '../../src/utils/catalog-generation-service.js';
+import type { CatalogGenerationCandidateEvidence, GitCatalogSource } from '../../src/types.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import {
   createCatalogStoreKey,
@@ -20,6 +23,8 @@ import {
 } from '../../src/utils/catalog-generation-store.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
+import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
+import { setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
 import {
   calculateCatalogSourcesConfigDigest,
   readCatalogSourcesConfigSnapshot,
@@ -44,6 +49,152 @@ async function configurePathSource(sourcePath: string): Promise<void> {
 }
 
 describe('Catalog Active store and state', () => {
+  it('classifies candidate versions and digest conflicts with strict SemVer precedence', () => {
+    const candidate = (catalogVersion: string, snapshotDigest: string): CatalogGenerationCandidateEvidence => ({
+      sourceConfigFingerprint: `sha256:${'1'.repeat(64)}`,
+      sourceIdentity: `sha256:${'2'.repeat(64)}`,
+      logicalIdentity: 'workspace',
+      requestedRef: 'refs/heads/catalog/latest',
+      resolvedCommit: 'b'.repeat(40),
+      catalogVersion,
+      channel: 'latest',
+      manifestDigest: `sha256:${'3'.repeat(64)}`,
+      snapshotDigest,
+    });
+    const active = {
+      logicalIdentity: 'workspace',
+      catalogVersion: '2.0.0',
+      snapshotDigest: `sha256:${'a'.repeat(64)}`,
+      resolvedCommit: 'a'.repeat(40),
+    };
+
+    expect(compareCatalogGenerationFreshness({
+      sourceType: 'git', active, candidate: candidate('2.1.0', `sha256:${'b'.repeat(64)}`),
+    }).state).toBe('updateAvailable');
+    expect(compareCatalogGenerationFreshness({
+      sourceType: 'git', active, candidate: candidate('2.0.0', `sha256:${'b'.repeat(64)}`),
+    }).state).toBe('versionConflict');
+    expect(compareCatalogGenerationFreshness({
+      sourceType: 'git', active, candidate: candidate('2.0.0-beta.1', `sha256:${'b'.repeat(64)}`),
+    }).state).toBe('rollbackDetected');
+    expect(compareCatalogGenerationFreshness({
+      sourceType: 'git', active, candidate: candidate('9.0.0', active.snapshotDigest),
+    }).state).toBe('current');
+    expect(compareCatalogGenerationFreshness({
+      sourceType: 'path', active, candidate: candidate('2.0.0', `sha256:${'b'.repeat(64)}`),
+    }).state).toBe('localChangesAvailable');
+  });
+
+  it('checks an unchanged healthy Git Active by remote ref without full fetch', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('git-freshness-active');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const current = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const source: GitCatalogSource = {
+      id: 'team', type: 'git', primary: true, url: fixturePath('remote.git'),
+      refPolicy: { type: 'explicit', ref: 'refs/heads/catalog/latest' },
+    };
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: current.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const pathResolution = await catalogPathProviderInternal.resolve({
+      id: source.id, type: 'path', primary: true, path: sourceRoot,
+    }, { cliVersion: '1.0.0', env: isolation.env });
+    const resolvedCommit = 'a'.repeat(40);
+    const gitResolution = {
+      ...pathResolution,
+      sourceIdentity,
+      requestedRef: 'refs/heads/catalog/latest',
+      resolvedCommit,
+      transport: 'git' as const,
+    };
+    await syncCatalogSourceGeneration({
+      sourceId: source.id,
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: {
+        providers: {
+          git: async () => gitResolution,
+          path: catalogPathProviderInternal.resolve,
+        },
+      },
+    });
+    const stateBeforeCheck = await readCatalogGenerationState(isolation.env);
+    const fullResolve = vi.fn(async () => { throw new Error('full fetch must not run'); });
+    const probeGitRef = vi.fn(async () => ({
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef: 'refs/heads/catalog/latest',
+      resolvedCommit,
+      fixed: false,
+    }));
+
+    const freshness = await probeCatalogSourceFreshness({
+      sourceId: source.id,
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: {
+        probeGitRef,
+        providers: { git: fullResolve, path: catalogPathProviderInternal.resolve },
+      },
+    });
+
+    expect(freshness).toMatchObject({ state: 'current', activeVersion: '1.0.0' });
+    expect(probeGitRef).toHaveBeenCalledTimes(1);
+    expect(fullResolve).not.toHaveBeenCalled();
+    expect(await readCatalogGenerationState(isolation.env)).toEqual(stateBeforeCheck);
+  });
+
+  it('does not run Git for a healthy fixed-commit Active automatic check', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('git-fixed-active');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const fixedCommit = 'c'.repeat(40);
+    const source: GitCatalogSource = {
+      id: 'team', type: 'git', primary: true, url: fixturePath('fixed-remote.git'),
+      refPolicy: { type: 'explicit', ref: fixedCommit },
+    };
+    const current = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: current.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const pathResolution = await catalogPathProviderInternal.resolve({
+      id: source.id, type: 'path', primary: true, path: sourceRoot,
+    }, { cliVersion: '1.0.0', env: isolation.env });
+    await syncCatalogSourceGeneration({
+      sourceId: source.id,
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: { providers: {
+        git: async () => ({
+          ...pathResolution,
+          sourceIdentity,
+          requestedRef: fixedCommit,
+          resolvedCommit: fixedCommit,
+          transport: 'git' as const,
+        }),
+        path: catalogPathProviderInternal.resolve,
+      } },
+    });
+    setNativeCliRunnerOverrideForTests(async () => {
+      throw new Error('fixed commit automatic check must not run Git');
+    });
+    try {
+      await expect(probeCatalogSourceFreshness({
+        sourceId: source.id,
+        cliVersion: '1.0.0',
+        env: isolation.env,
+      })).resolves.toMatchObject({ state: 'fixed', activeVersion: '1.0.0' });
+    } finally {
+      setNativeCliRunnerOverrideForTests(undefined);
+    }
+  });
   it('hashes logical identities into fixed, case-sensitive store segments', () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     const identity = '团队/https://例.example/a?b=c'.repeat(40);

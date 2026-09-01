@@ -2196,7 +2196,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('远端 Catalog 检查失败');
 
-    for (const [index, label] of ['检查并更新', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
+    for (const [index, label] of ['重新检查', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
       if (index > 0) await input(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);

@@ -30,6 +30,8 @@ import { calculateCatalogSourceConfigFingerprint, calculateCatalogSourceIdentity
 import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import { catalogGitProviderInternal } from './git-catalog-provider.js';
 import { catalogPathProviderInternal } from './path-catalog-provider.js';
+import { resolveActiveCatalogGeneration } from './catalog-generation-resolver.js';
+import { compareStrictSemVer } from './manifest.js';
 
 export interface CatalogGenerationProviderSet {
   git: typeof catalogGitProviderInternal.resolve;
@@ -38,6 +40,7 @@ export interface CatalogGenerationProviderSet {
 
 export interface CatalogGenerationServiceRuntime {
   providers?: CatalogGenerationProviderSet;
+  probeGitRef?: typeof catalogGitProviderInternal.probeRef;
   now?: () => Date;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
@@ -46,6 +49,24 @@ export interface CatalogGenerationServiceRuntime {
 export interface CatalogGenerationProbeResult {
   sourceId: string;
   candidate: CatalogGenerationCandidateEvidence;
+}
+
+export type CatalogGenerationFreshnessState =
+  | 'current'
+  | 'updateAvailable'
+  | 'localChangesAvailable'
+  | 'versionConflict'
+  | 'rollbackDetected'
+  | 'incompatible'
+  | 'fixed';
+
+export interface CatalogGenerationFreshnessResult {
+  sourceId: string;
+  state: CatalogGenerationFreshnessState;
+  activeVersion?: string;
+  activeResolvedCommit?: string;
+  candidate?: CatalogGenerationCandidateEvidence;
+  errorCode?: 'catalogLogicalIdentityChanged';
 }
 
 export interface CatalogGenerationStatusEntry {
@@ -172,6 +193,43 @@ export function compareCatalogGenerationCandidates(
 ): CatalogGenerationCandidateComparison {
   const changedFields = CANDIDATE_FIELDS.filter((field) => expected[field] !== actual[field]);
   return { matches: changedFields.length === 0, changedFields };
+}
+
+export function compareCatalogGenerationFreshness(options: {
+  sourceType: CatalogSource['type'];
+  active?: {
+    logicalIdentity: string;
+    catalogVersion: string;
+    snapshotDigest: string;
+    resolvedCommit: string;
+  };
+  candidate: CatalogGenerationCandidateEvidence;
+}): Omit<CatalogGenerationFreshnessResult, 'sourceId'> {
+  const active = options.active;
+  if (!active) {
+    return {
+      state: options.sourceType === 'path' ? 'localChangesAvailable' : 'updateAvailable',
+      candidate: options.candidate,
+    };
+  }
+  const base = {
+    activeVersion: active.catalogVersion,
+    activeResolvedCommit: active.resolvedCommit,
+    candidate: options.candidate,
+  };
+  if (active.logicalIdentity !== options.candidate.logicalIdentity) {
+    return { ...base, state: 'incompatible', errorCode: 'catalogLogicalIdentityChanged' };
+  }
+  if (active.snapshotDigest === options.candidate.snapshotDigest) {
+    return { ...base, state: 'current' };
+  }
+  if (options.sourceType === 'path') {
+    return { ...base, state: 'localChangesAvailable' };
+  }
+  const relation = compareStrictSemVer(options.candidate.catalogVersion, active.catalogVersion);
+  if (relation > 0) return { ...base, state: 'updateAvailable' };
+  if (relation < 0) return { ...base, state: 'rollbackDetected' };
+  return { ...base, state: 'versionConflict' };
 }
 
 function publicEvidence(candidate: CatalogGenerationCandidateEvidence) {
@@ -327,6 +385,85 @@ export async function probeCatalogSourceGeneration(options: {
   } finally {
     if (resolved) await resolved.resolution.cleanup().catch(() => warnCleanupFailure(options.sourceId));
   }
+}
+
+export async function probeCatalogSourceFreshness(options: {
+  sourceId: string;
+  cliVersion: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  fullValidation?: boolean;
+  runtime?: CatalogGenerationServiceRuntime;
+}): Promise<CatalogGenerationFreshnessResult> {
+  const env = options.env ?? process.env;
+  options.signal?.throwIfAborted();
+  const source = (await readCatalogSourcesConfigSnapshot(env)).config.sources
+    .find((entry) => entry.id === options.sourceId);
+  if (!source) throw new CatalogGenerationError({
+    code: 'catalogGenerationSourceMissing',
+    sourceId: options.sourceId,
+    message: `Catalog source "${options.sourceId}" is not configured.`,
+  });
+  const active = await resolveActiveCatalogGeneration({
+    sourceId: source.id,
+    env,
+    validatedStoreEntries: options.runtime?.validatedStoreEntries,
+    validatingStoreEntries: options.runtime?.validatingStoreEntries,
+  }).catch(() => undefined);
+  const activeEvidence = active ? {
+    logicalIdentity: active.logicalIdentity,
+    catalogVersion: active.catalogVersion,
+    snapshotDigest: active.snapshotDigest,
+    resolvedCommit: active.resolvedCommit,
+  } : undefined;
+
+  if (source.type === 'git' && active && options.fullValidation !== true) {
+    const remote = await (options.runtime?.probeGitRef ?? catalogGitProviderInternal.probeRef)(source, {
+      cliVersion: options.cliVersion,
+      env,
+      signal: options.signal,
+    });
+    if (remote.sourceId !== source.id || remote.sourceIdentity !== active.sourceIdentity) {
+      throw new CatalogGenerationError({
+        code: 'catalogGenerationIdentityMismatch',
+        sourceId: source.id,
+        message: `Catalog provider returned mismatched identity for source "${source.id}".`,
+      });
+    }
+    if (remote.fixed) {
+      return {
+        sourceId: source.id,
+        state: 'fixed',
+        activeVersion: active.catalogVersion,
+        activeResolvedCommit: active.resolvedCommit,
+      };
+    }
+    if (remote.resolvedCommit === active.resolvedCommit) {
+      return {
+        sourceId: source.id,
+        state: 'current',
+        activeVersion: active.catalogVersion,
+        activeResolvedCommit: remote.resolvedCommit,
+      };
+    }
+  }
+
+  const probe = await probeCatalogSourceGeneration({
+    sourceId: source.id,
+    source,
+    cliVersion: options.cliVersion,
+    env,
+    signal: options.signal,
+    runtime: options.runtime,
+  });
+  return {
+    ...compareCatalogGenerationFreshness({
+      sourceType: source.type,
+      ...(activeEvidence ? { active: activeEvidence } : {}),
+      candidate: probe.candidate,
+    }),
+    sourceId: source.id,
+  };
 }
 
 export async function recordCatalogGenerationCheck(options: {
