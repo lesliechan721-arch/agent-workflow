@@ -6,7 +6,7 @@
 - 范围：
 - 非目标或边界：
 
-## Shared decision direction（Decision frame）
+## Shared decision direction
 
 - 优先保证：
 - 可以接受：
