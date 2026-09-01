@@ -6,16 +6,21 @@ import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import {
+  CATALOG_MANIFEST_FILENAME,
   GENERATED_OUTPUT_MARKER_FILENAME,
   preparePublishedCatalogWorkspace,
   readCatalogWorkspaceMarker,
   readCatalogWorkspace,
   validatePublishedCatalogSnapshot,
+  validatePublishedCatalogSnapshotMetadata,
+  type CatalogManifestV6Entry,
   type CatalogWorkspace,
   type CatalogWorkspaceBuildAdapter,
 } from '@lesliechan721/aw-plugin-core';
 
 import { bundleLocalPlugin, createCatalogRuntimeImportResolver } from '../../scripts/plugin-staging.js';
+import { redactString } from '../output/redact.js';
+import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import type { CatalogPublicationDescriptor } from './catalog-publication-journal.js';
@@ -117,6 +122,41 @@ export function safeRemoteIdentity(value: string): string {
   return withoutQuery
     .replace(/^([^/@\s:]+):([^/@\s]+)@/u, '')
     .replace(/^[^@\s]+@(?=[^:/\s]+[/:])/u, '');
+}
+
+export interface CatalogPublicationFailure {
+  ok: false;
+  code: string;
+  message: string;
+}
+
+export function catalogPublicationFailure(options: {
+  error: unknown;
+  env?: NodeJS.ProcessEnv;
+  sensitiveRoots?: readonly string[];
+}): CatalogPublicationFailure {
+  const original = options.error instanceof Error
+    ? options.error.message
+    : String(options.error);
+  const withoutRemotes = original
+    .replace(/[a-z][a-z\d+.-]*:\/\/[^\s"'<>]+/giu, '[remote]')
+    .replace(/[^\s"'<>@]+@[^\s"'<>:/]+[:/][^\s"'<>]+/gu, '[remote]');
+  const withoutKnownRoots = sanitizeCatalogSourceErrorMessage(
+    withoutRemotes,
+    options.env,
+    options.sensitiveRoots,
+  );
+  const message = redactString(withoutKnownRoots).replace(
+    /(?<![A-Za-z0-9._-])(?:[A-Za-z]:[\\/]|\/)(?:[^\s"'<>:]+[\\/])*[^\s"'<>:]*/gu,
+    '[private-path]',
+  );
+  return {
+    ok: false,
+    code: options.error instanceof CatalogPublicationInspectionError
+      ? options.error.code
+      : 'catalogPublicationFailed',
+    message,
+  };
 }
 
 function assertSafeRemoteUrl(value: string, options: { allowCredentials?: boolean } = {}): string {
@@ -300,6 +340,79 @@ async function validatePublishedCatalogSnapshotForWorkspace(
   }
 }
 
+async function materializePublishedCatalogMetadata(options: {
+  repositoryRoot: string;
+  commit: string;
+  outputRoot: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  await fs.remove(options.outputRoot);
+  await fs.ensureDir(options.outputRoot);
+  for (const relative of [GENERATED_OUTPUT_MARKER_FILENAME, CATALOG_MANIFEST_FILENAME]) {
+    const record = await publicationGit(options.repositoryRoot, [
+      'ls-tree', options.commit, '--', relative,
+    ], options.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.');
+    const match = /^(100644|100755) blob ([0-9a-f]+)\t(.+)$/u.exec(record);
+    if (!match || match[3] !== relative) {
+      throw new CatalogPublicationInspectionError(
+        'remoteSnapshotInvalid',
+        'Published Catalog history metadata must contain regular files.',
+      );
+    }
+    const content = await publicationGit(options.repositoryRoot, [
+      'cat-file', 'blob', match[2]!,
+    ], options.env, 'remoteBranchInvalid', 'Could not read published Catalog history.');
+    await fs.writeFile(path.join(options.outputRoot, relative), `${content}\n`);
+  }
+}
+
+async function findPreviousPluginEntriesInFirstParentHistory(options: {
+  repositoryRoot: string;
+  tipCommit: string;
+  pluginNames: readonly string[];
+  workspaceIdentity: string;
+  temporaryRoot: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<CatalogManifestV6Entry[]> {
+  const missing = new Set(options.pluginNames);
+  const found = new Map<string, CatalogManifestV6Entry>();
+  const historyRoot = path.join(options.temporaryRoot, 'history-metadata');
+  let commit = options.tipCommit;
+  while (missing.size > 0) {
+    const parents = (await publicationGit(options.repositoryRoot, [
+      'show', '-s', '--format=%P', commit,
+    ], options.env, 'remoteBranchInvalid', 'Could not inspect published Catalog history.'))
+      .split(/\s+/u)
+      .filter(Boolean);
+    const firstParent = parents[0];
+    if (!firstParent) break;
+    commit = firstParent;
+    await materializePublishedCatalogMetadata({
+      repositoryRoot: options.repositoryRoot,
+      commit,
+      outputRoot: historyRoot,
+      env: options.env,
+    });
+    let metadata: Awaited<ReturnType<typeof validatePublishedCatalogSnapshotMetadata>>;
+    try {
+      metadata = await validatePublishedCatalogSnapshotMetadata(historyRoot);
+      if (metadata.workspaceIdentity !== options.workspaceIdentity) {
+        throw new Error('Published Catalog snapshot belongs to a different Workspace identity.');
+      }
+    } catch (error) {
+      throw inspectionError('remoteSnapshotInvalid', error);
+    }
+    for (const entry of metadata.manifest.entries) {
+      if (!missing.delete(entry.name)) continue;
+      found.set(entry.name, entry);
+    }
+  }
+  return options.pluginNames.flatMap((name) => {
+    const entry = found.get(name);
+    return entry ? [entry] : [];
+  });
+}
+
 export async function prepareCatalogPublicationInspection(options: {
   workspaceRoot: string;
   remote?: string;
@@ -444,6 +557,7 @@ export async function prepareCatalogPublicationInspection(options: {
     const tagAvailable = !initialRefs.has(tagRef) && !initialRefs.has(`${tagRef}^{}`);
     const parent = initialRefs.get(branchRef) ?? null;
     let previousSnapshotRoot: string | undefined;
+    let historicalPluginEntries: CatalogManifestV6Entry[] = [];
     if (parent) {
       await publicationGit(repositoryRoot, [
         'fetch', '--quiet', '--no-tags', 'publish', `${branchRef}:refs/aw/catalog-parent`,
@@ -453,10 +567,24 @@ export async function prepareCatalogPublicationInspection(options: {
       await publicationGit(repositoryRoot, [
         '--work-tree', previousSnapshotRoot, 'checkout', '--quiet', 'refs/aw/catalog-parent', '--', '.',
       ], env, 'remoteBranchInvalid', 'Could not read the published Catalog snapshot.');
-      await validatePublishedCatalogSnapshotForWorkspace(
+      const previous = await validatePublishedCatalogSnapshotForWorkspace(
         previousSnapshotRoot,
         catalogWorkspace.workspaceIdentity,
       );
+      const previousPluginNames = new Set(previous.manifest.entries.map((entry) => entry.name));
+      const missingPluginNames = catalogWorkspace.plugins
+        .map((plugin) => plugin.manifest.name)
+        .filter((name) => !previousPluginNames.has(name));
+      if (missingPluginNames.length > 0) {
+        historicalPluginEntries = await findPreviousPluginEntriesInFirstParentHistory({
+          repositoryRoot,
+          tipCommit: parent,
+          pluginNames: missingPluginNames,
+          workspaceIdentity: catalogWorkspace.workspaceIdentity,
+          temporaryRoot,
+          env,
+        });
+      }
     }
     let prepared: CatalogPublicationPreparation['prepared'];
     try {
@@ -464,6 +592,7 @@ export async function prepareCatalogPublicationInspection(options: {
         workspaceRoot: archivedCatalogWorkspaceRoot,
         sourceHead,
         previousSnapshotRoot,
+        historicalPluginEntries,
         adapter: publicationBuildAdapter,
         reservedImports: CLI_RESERVED_IMPORTS,
       });

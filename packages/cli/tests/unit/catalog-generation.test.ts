@@ -350,6 +350,81 @@ describe('Catalog Active store and state', () => {
     await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
   });
 
+  it('does not overwrite an Active that changes after the reviewed candidate resolves', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('active-review-race');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'initial\n');
+    await configurePathSource(sourceRoot);
+    const initial = await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'reviewed\n');
+    const reviewed = await probeCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    let concurrent: Awaited<ReturnType<typeof syncCatalogSourceGeneration>> | undefined;
+
+    await expect(activateCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      expectedCandidate: reviewed.candidate,
+      expectedActive: initial.active!,
+      env: isolation.env,
+      runtime: {
+        afterCandidateResolved: async () => {
+          await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'concurrent\n');
+          concurrent = await syncCatalogSourceGeneration({
+            sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+          });
+          await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'reviewed\n');
+        },
+      },
+    })).rejects.toMatchObject({ code: 'catalogGenerationReviewStale' });
+
+    expect(concurrent?.active).toBeDefined();
+    expect(await readCatalogGenerationState(isolation.env)).toEqual({
+      schemaVersion: 1,
+      sources: { team: { active: concurrent!.active, lastSync: concurrent!.lastSync } },
+    });
+    expect(concurrent!.active!.snapshotDigest).not.toBe(reviewed.candidate.snapshotDigest);
+    await expect(fs.pathExists(resolveCatalogStoreLocation({
+      logicalIdentity: reviewed.candidate.logicalIdentity,
+      snapshotDigest: reviewed.candidate.snapshotDigest,
+      env: isolation.env,
+    }).entryDir)).resolves.toBe(true);
+  });
+
+  it('does not replace a concurrently created Active from a no-Active Review', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('no-active-review-race');
+    await createCatalogSnapshotFixture(sourceRoot);
+    await configurePathSource(sourceRoot);
+    const reviewed = await probeCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    let concurrent: Awaited<ReturnType<typeof syncCatalogSourceGeneration>> | undefined;
+
+    await expect(activateCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      expectedCandidate: reviewed.candidate,
+      expectedActive: null,
+      env: isolation.env,
+      runtime: {
+        afterCandidateResolved: async () => {
+          concurrent = await syncCatalogSourceGeneration({
+            sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+          });
+        },
+      },
+    })).rejects.toMatchObject({ code: 'catalogGenerationReviewStale' });
+
+    expect(await readCatalogGenerationState(isolation.env)).toEqual({
+      schemaVersion: 1,
+      sources: { team: { active: concurrent!.active, lastSync: concurrent!.lastSync } },
+    });
+  });
+
   it('publishes an immutable store entry before atomically selecting Active', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('first-sync');
@@ -517,7 +592,50 @@ describe('Catalog Active store and state', () => {
     expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(synced.active);
   });
 
-  it('publishes the candidate store key when source config changes to equal content with a new workspace identity', async () => {
+  it('checks the reviewed Active under the mutation lock before repairing its store entry', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('repair-active-race');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'reviewed repair\n');
+    await configurePathSource(sourceRoot);
+    const initial = await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: initial.active!.logicalIdentity,
+      snapshotDigest: initial.active!.snapshotDigest,
+      env: isolation.env,
+    });
+    await fs.writeFile(location.metadataPath, 'damaged before race\n');
+    const reviewed = await probeCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    let concurrent: Awaited<ReturnType<typeof syncCatalogSourceGeneration>> | undefined;
+
+    await expect(repairCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      expectedCandidate: reviewed.candidate,
+      expectedActive: initial.active!,
+      env: isolation.env,
+      runtime: {
+        afterCandidateResolved: async () => {
+          await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'concurrent repair\n');
+          concurrent = await syncCatalogSourceGeneration({
+            sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+          });
+          await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'reviewed repair\n');
+        },
+      },
+    })).rejects.toMatchObject({ code: 'catalogGenerationReviewStale' });
+
+    await expect(fs.readFile(location.metadataPath, 'utf8')).resolves.toBe('damaged before race\n');
+    expect(await readCatalogGenerationState(isolation.env)).toEqual({
+      schemaVersion: 1,
+      sources: { team: { active: concurrent!.active, lastSync: concurrent!.lastSync } },
+    });
+  });
+
+  it('rejects a repair candidate with a different logical identity before store or state writes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const firstRoot = fixturePath('repair-workspace-a');
     const secondRoot = fixturePath('repair-workspace-b');
@@ -537,6 +655,14 @@ describe('Catalog Active store and state', () => {
     const first = await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
     });
+    const firstLocation = resolveCatalogStoreLocation({
+      logicalIdentity: first.active!.logicalIdentity,
+      snapshotDigest: first.active!.snapshotDigest,
+      env: isolation.env,
+    });
+    const sibling = path.join(firstLocation.logicalIdentityDirectory, 'unrelated-entry');
+    await fs.outputFile(sibling, 'keep');
+    await fs.writeFile(firstLocation.metadataPath, 'damaged');
     const config = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
@@ -547,7 +673,27 @@ describe('Catalog Active store and state', () => {
       env: isolation.env,
     });
 
-    const repaired = await repairCatalogSourceGeneration({
+    await expect(repairCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogGenerationRepairTargetChanged' });
+    const candidateLocation = resolveCatalogStoreLocation({
+      logicalIdentity: 'workspace-b',
+      snapshotDigest: first.active!.snapshotDigest,
+      env: isolation.env,
+    });
+
+    await expect(fs.readFile(firstLocation.metadataPath, 'utf8')).resolves.toBe('damaged');
+    await expect(fs.readFile(sibling, 'utf8')).resolves.toBe('keep');
+    await expect(fs.pathExists(candidateLocation.entryDir)).resolves.toBe(false);
+    expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(first.active);
+  });
+
+  it('rejects a repair candidate with a different digest before store or state writes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('repair-different-digest');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'first content\n');
+    await configurePathSource(sourceRoot);
+    const first = await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
     });
     const firstLocation = resolveCatalogStoreLocation({
@@ -555,19 +701,27 @@ describe('Catalog Active store and state', () => {
       snapshotDigest: first.active!.snapshotDigest,
       env: isolation.env,
     });
-    const repairedLocation = resolveCatalogStoreLocation({
-      logicalIdentity: repaired.active!.logicalIdentity,
-      snapshotDigest: repaired.active!.snapshotDigest,
+    const sibling = path.join(firstLocation.logicalIdentityDirectory, 'unrelated-entry');
+    await fs.outputFile(sibling, 'keep');
+    await fs.writeFile(firstLocation.metadataPath, 'damaged');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'different content\n');
+    const candidate = await probeCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const candidateLocation = resolveCatalogStoreLocation({
+      logicalIdentity: candidate.candidate.logicalIdentity,
+      snapshotDigest: candidate.candidate.snapshotDigest,
       env: isolation.env,
     });
 
-    expect(repaired.active).toMatchObject({
-      logicalIdentity: 'workspace-b',
-      snapshotDigest: first.active!.snapshotDigest,
-    });
-    expect(repairedLocation.entryDir).not.toBe(firstLocation.entryDir);
-    await expect(fs.pathExists(firstLocation.entryDir)).resolves.toBe(true);
-    await expect(fs.pathExists(repairedLocation.entryDir)).resolves.toBe(true);
+    await expect(repairCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogGenerationRepairTargetChanged' });
+
+    await expect(fs.readFile(firstLocation.metadataPath, 'utf8')).resolves.toBe('damaged');
+    await expect(fs.readFile(sibling, 'utf8')).resolves.toBe('keep');
+    await expect(fs.pathExists(candidateLocation.entryDir)).resolves.toBe(false);
+    expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(first.active);
   });
 
   it('publishes a missing exact Active entry without quarantine replacement', async () => {

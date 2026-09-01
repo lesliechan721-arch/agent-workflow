@@ -7,7 +7,10 @@ import {
   type CatalogStoreEntry,
 } from '../utils/catalog-generation-store.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
-import { calculateCatalogSourceConfigFingerprint } from '../utils/catalog-source-identity.js';
+import {
+  calculateCatalogSourceConfigFingerprint,
+  calculateCatalogSourceIdentity,
+} from '../utils/catalog-source-identity.js';
 
 export interface CatalogGenerationViewModel {
   catalogVersion: string;
@@ -24,6 +27,7 @@ export interface CatalogSourceGenerationViewModel {
   active?: CatalogGenerationViewModel;
   errorCode?: string;
   recoveryEntryPath?: string;
+  configMismatch?: boolean;
   state?: 'ready' | 'activationRequired' | 'repairRequired' | 'configMismatch'
     | 'stateInvalid' | 'unavailable';
   technicalCommand?: string;
@@ -107,6 +111,10 @@ export async function loadCatalogGenerationViewModels(options: {
       const sourceState = await readCatalogGenerationState(env)
         .then((value) => value.sources[source.id])
         .catch(() => undefined);
+      const configMismatch = Boolean(sourceState?.active)
+        && (sourceState!.active!.sourceConfigFingerprint
+            !== calculateCatalogSourceConfigFingerprint(source)
+          || sourceState!.active!.sourceIdentity !== await calculateCatalogSourceIdentity(source));
       const activeEntryDamaged = sourceState?.active
         ? await readCatalogStoreEntry({
             logicalIdentity: sourceState.active.logicalIdentity,
@@ -118,8 +126,7 @@ export async function loadCatalogGenerationViewModels(options: {
       if (errorCode === 'catalogGenerationStateInvalid') state = 'stateInvalid';
       else if (errorCode === 'catalogGenerationMetadataInvalid') state = 'repairRequired';
       else if (!sourceState?.active) state = 'activationRequired';
-      else if (sourceState.active.sourceConfigFingerprint
-        !== calculateCatalogSourceConfigFingerprint(source)) state = 'configMismatch';
+      else if (configMismatch) state = 'configMismatch';
       else state = 'repairRequired';
       if (errorCode === 'catalogGenerationMetadataInvalid') {
         const active = sourceState?.active;
@@ -135,6 +142,7 @@ export async function loadCatalogGenerationViewModels(options: {
         sourceType: source.type,
         errorCode,
         state,
+        ...(configMismatch ? { configMismatch: true } : {}),
         ...(recoveryEntryPath ? { recoveryEntryPath } : {}),
         technicalCommand: instruction,
       };

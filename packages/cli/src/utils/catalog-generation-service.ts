@@ -8,7 +8,10 @@ import type {
   CatalogSourceResolution,
 } from '../types.js';
 import fs from 'fs-extra';
-import { withAwHomeMutationLock } from './aw-home-mutation-lock.js';
+import {
+  withAwHomeMutationLock,
+  type AwHomeMutationToken,
+} from './aw-home-mutation-lock.js';
 import { CatalogGenerationError, catalogGenerationErrorCode } from './catalog-generation-error.js';
 import {
   createCatalogStoreKey,
@@ -44,6 +47,7 @@ export interface CatalogGenerationServiceRuntime {
   now?: () => Date;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
+  afterCandidateResolved?: () => Promise<void>;
 }
 
 export interface CatalogGenerationProbeResult {
@@ -249,6 +253,27 @@ function sameActive(
     && active!.logicalIdentity === next.logicalIdentity
     && active!.manifestDigest === next.manifestDigest
     && active!.snapshotDigest === next.snapshotDigest;
+}
+
+const ACTIVE_FIELDS: ReadonlyArray<keyof CatalogGenerationActiveV1> = [
+  'sourceConfigFingerprint', 'sourceIdentity', 'requestedRef', 'resolvedCommit',
+  'logicalIdentity', 'manifestDigest', 'snapshotDigest', 'activatedAt',
+];
+
+function assertExpectedActive(
+  sourceId: string,
+  current: CatalogGenerationActiveV1 | undefined,
+  expected: CatalogGenerationActiveV1 | null | undefined,
+): void {
+  if (expected === undefined) return;
+  const matches = expected === null
+    ? current === undefined
+    : current !== undefined && ACTIVE_FIELDS.every((field) => current[field] === expected[field]);
+  if (!matches) throw new CatalogGenerationError({
+    code: 'catalogGenerationReviewStale',
+    sourceId,
+    message: `Active Catalog for source "${sourceId}" changed after review. Review it again.`,
+  });
 }
 
 async function assertCurrentSource(options: {
@@ -494,6 +519,8 @@ async function activateResolvedCandidate(options: {
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
   store?: CatalogStoreEntry;
+  expectedActive?: CatalogGenerationActiveV1 | null;
+  token?: AwHomeMutationToken;
 }): Promise<CatalogGenerationSyncResult> {
   const candidate = options.resolved.candidate;
   const store = options.store ?? await publishCatalogStoreEntry({
@@ -502,6 +529,7 @@ async function activateResolvedCandidate(options: {
   assertStoreMatchesCandidate(options.sourceId, store, candidate);
   return withAwHomeMutationLock({
     env: options.env,
+    token: options.token,
     signal: options.signal,
     action: async () => {
       await assertCurrentSource({ sourceId: options.sourceId, candidate, env: options.env });
@@ -511,6 +539,7 @@ async function activateResolvedCandidate(options: {
         beforeReplace: () => assertCurrentSource({ sourceId: options.sourceId, candidate, env: options.env }),
         action: async (current) => {
           const previous = current.sources[options.sourceId]?.active;
+          assertExpectedActive(options.sourceId, previous, options.expectedActive);
           assertLogicalContinuity(options.sourceId, previous, candidate);
           const activeInput = {
             sourceConfigFingerprint: candidate.sourceConfigFingerprint,
@@ -549,6 +578,7 @@ export async function activateCatalogSourceGeneration(options: {
   sourceId: string;
   cliVersion: string;
   expectedCandidate?: CatalogGenerationCandidateEvidence;
+  expectedActive?: CatalogGenerationActiveV1 | null;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
@@ -565,14 +595,18 @@ export async function activateCatalogSourceGeneration(options: {
         message: `Catalog source "${options.sourceId}" changed after review. Review it again.`,
       });
     }
+    await options.runtime?.afterCandidateResolved?.();
     return await activateResolvedCandidate({ ...options, env, resolved });
   } catch (error) {
-    await recordFailure({
-      sourceId: options.sourceId, candidate: resolved?.candidate ?? initialCandidate, mode: 'sync',
-      errorCode: error instanceof CatalogGenerationError
-        ? error.code : 'catalogGenerationRefreshFailed',
-      env, signal: options.signal, runtime: options.runtime,
-    });
+    if (!(error instanceof CatalogGenerationError
+      && error.code === 'catalogGenerationReviewStale')) {
+      await recordFailure({
+        sourceId: options.sourceId, candidate: resolved?.candidate ?? initialCandidate, mode: 'sync',
+        errorCode: error instanceof CatalogGenerationError
+          ? error.code : 'catalogGenerationRefreshFailed',
+        env, signal: options.signal, runtime: options.runtime,
+      });
+    }
     if (error instanceof CatalogGenerationError) throw error;
     throw new CatalogGenerationError({
       code: 'catalogGenerationRefreshFailed', sourceId: options.sourceId,
@@ -654,12 +688,15 @@ export async function repairCatalogSourceGeneration(options: {
   sourceId: string;
   cliVersion: string;
   expectedCandidate?: CatalogGenerationCandidateEvidence;
+  expectedActive?: CatalogGenerationActiveV1 | null;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
 }): Promise<CatalogGenerationSyncResult> {
   const env = options.env ?? process.env;
-  const target = (await readCatalogGenerationState(env)).sources[options.sourceId]?.active;
+  const target = options.expectedActive === undefined
+    ? (await readCatalogGenerationState(env)).sources[options.sourceId]?.active
+    : options.expectedActive ?? undefined;
   if (!target) throw new CatalogGenerationError({
     code: 'catalogGenerationUnavailable', sourceId: options.sourceId,
     message: `Catalog source "${options.sourceId}" has no Active snapshot to repair.`,
@@ -674,45 +711,66 @@ export async function repairCatalogSourceGeneration(options: {
         message: `Catalog source "${options.sourceId}" changed after review. Review it again.`,
       });
     }
-    assertLogicalContinuity(options.sourceId, target, resolved.candidate);
-    let store: CatalogStoreEntry;
+    await options.runtime?.afterCandidateResolved?.();
     const candidateStoreKey = createCatalogStoreKey(
       resolved.candidate.logicalIdentity,
       resolved.candidate.snapshotDigest,
     );
     const targetStoreKey = createCatalogStoreKey(target.logicalIdentity, target.snapshotDigest);
     if (candidateStoreKey !== targetStoreKey) {
-      store = await publishCatalogStoreEntry({ resolution: resolved.resolution, env, signal: options.signal });
-    } else {
-      const targetLocation = resolveCatalogStoreLocation({
-        logicalIdentity: target.logicalIdentity,
-        snapshotDigest: target.snapshotDigest,
-        env,
+      throw new CatalogGenerationError({
+        code: 'catalogGenerationRepairTargetChanged', sourceId: options.sourceId,
+        message: `Catalog source "${options.sourceId}" now resolves to a different store target. Review an explicit update instead.`,
       });
-      const targetExists = await fs.lstat(targetLocation.entryDir)
-        .then(() => true)
-        .catch((error: NodeJS.ErrnoException) => {
-          if (error.code === 'ENOENT') return false;
-          throw error;
-        });
-      if (!targetExists) {
-        store = await publishCatalogStoreEntry({ resolution: resolved.resolution, env, signal: options.signal });
-      } else {
-        try {
-          store = await readCatalogStoreEntry({
-            logicalIdentity: target.logicalIdentity, snapshotDigest: target.snapshotDigest, env,
-          });
-        } catch {
-          store = await replaceDamagedCatalogStoreEntry({
-            resolution: resolved.resolution,
-            logicalIdentity: target.logicalIdentity,
-            snapshotDigest: target.snapshotDigest,
-            env, signal: options.signal,
-          });
-        }
-      }
     }
-    return await activateResolvedCandidate({ ...options, env, resolved, store });
+    assertLogicalContinuity(options.sourceId, target, resolved.candidate);
+    return await withAwHomeMutationLock({
+      env,
+      signal: options.signal,
+      action: async (token) => {
+        const current = (await readCatalogGenerationState(env)).sources[options.sourceId]?.active;
+        assertExpectedActive(options.sourceId, current, options.expectedActive);
+        if (options.expectedActive === undefined) assertExpectedActive(options.sourceId, current, target);
+        const targetLocation = resolveCatalogStoreLocation({
+          logicalIdentity: target.logicalIdentity,
+          snapshotDigest: target.snapshotDigest,
+          env,
+        });
+        const targetExists = await fs.lstat(targetLocation.entryDir)
+          .then(() => true)
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return false;
+            throw error;
+          });
+        let store: CatalogStoreEntry;
+        if (!targetExists) {
+          store = await publishCatalogStoreEntry({
+            resolution: resolved!.resolution, env, signal: options.signal,
+          });
+        } else {
+          try {
+            store = await readCatalogStoreEntry({
+              logicalIdentity: target.logicalIdentity, snapshotDigest: target.snapshotDigest, env,
+            });
+          } catch {
+            store = await replaceDamagedCatalogStoreEntry({
+              resolution: resolved!.resolution,
+              logicalIdentity: target.logicalIdentity,
+              snapshotDigest: target.snapshotDigest,
+              env, signal: options.signal,
+            });
+          }
+        }
+        return activateResolvedCandidate({
+          ...options,
+          env,
+          resolved: resolved!,
+          store,
+          expectedActive: options.expectedActive ?? target,
+          token,
+        });
+      },
+    });
   } finally {
     if (resolved) await resolved.resolution.cleanup().catch(() => warnCleanupFailure(options.sourceId));
   }

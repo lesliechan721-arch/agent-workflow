@@ -42,11 +42,11 @@ snapshot v6 的 release metadata 只含 `state` 和 `sourceHead`。生成 snapsh
 
 Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publication journal。
 
-- Plugin beta 和 stable 都只使用目标 branch 的上一份 manifest 作为唯一相邻基线。beta 没有上一份 manifest，或 stable base 提高时，使用 `beta.1`。
+- Plugin beta 和 stable 使用每个当前 Plugin 在目标 branch 的 first-parent 发布历史中最近的 manifest entry。tip 缺少 Plugin 时，plan 按需回溯。没有历史基线，或 stable base 提高时，使用 `beta.1`。
 - stable base 相同且 `contentDigest` 相同时，复用现有 beta；contentDigest 改变时使用下一个 `beta.N`。
 - stable base 降低时拒绝。
-- Stable 只对上一份 manifest 仍存在的同名 Plugin 检查 version 和 `contentDigest`：contentDigest 改变但 version 没有提高时拒绝；version 降低也拒绝。
-- Plugin 移除后重新加入时，不保留历史。
+- Stable 对最近历史 entry 检查 version 和 `contentDigest`：contentDigest 改变但 version 没有提高时拒绝；version 降低也拒绝。
+- Plugin 移除后重新加入时，继续使用删除前的最近历史基线。
 
 ## 发布计划、授权和恢复
 
@@ -71,6 +71,8 @@ publication journal 使用 schema v2 `.aw/publish/<version>/journal.json`；pend
 
 publisher 保留 annotated `catalog-v<version>` tag、branch lease、atomic push 和 post-verify。branch 与 tag 都正确时成功；两者都不存在时 atomic push；只有一个缺失时只补该 ref；任一冲突时停止。
 
+`plan --json` 和 `apply --json` 失败时只输出 `{ "ok": false, "code": "<稳定错误码>", "message": "<脱敏说明>" }`，并以退出码 1 结束。`CatalogPublicationInspectionError` 保留其稳定 code；其它 journal、repository 或 remote 失败使用 `catalogPublicationFailed`。JSON 和普通 stderr 都不包含 Workspace、AW_HOME、publication repository、临时目录的绝对路径，也不包含 remote credential、query 或 hash。
+
 `owner.url` 的 host 为 `example.invalid` 时，publish plan 和 apply 以 `catalogMetadataIncomplete` 阻断。先修复 `plugins/marketplace-source.json`，再重新生成 plan。
 
 ## Source consumption 和信任
@@ -83,7 +85,7 @@ aw catalog source sync <id> --check --json
 aw catalog source status <id> --json
 ```
 
-`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。`catalog source add/update` 只改 source config。Git 回退时改 ref 后再 sync；Path source 损坏时恢复目录后再 sync。
+`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。`catalog source add/update` 只改 source config。精确 repair 只接受与强 Active state 相同的 logical identity 和 snapshot digest；update 与损坏 Active 同 key 时，可在确认后精确替换该条目。只有完整匹配的 metadata 和 snapshot 才提供可信旧版本；任一不完整时不作 rollback/version-conflict 结论。旧版本不可用且候选 key 不同时，普通恢复/update 在 store 或 state 写入前阻止，用户必须明确编辑真实 source，或 remove 后 add。Git 回退时改 ref 后再 sync；Path source 损坏时恢复目录后再 sync。
 
 当前 Workspace 的 development source 使用：
 

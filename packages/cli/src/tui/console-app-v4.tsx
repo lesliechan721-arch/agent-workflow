@@ -3145,6 +3145,8 @@ export function ConsoleAppV4(props: {
     const activeVersion = generation?.active?.catalogVersion;
     const candidateVersion = freshness?.candidate?.catalogVersion;
     const generationState = generation?.state ?? (generation?.active ? 'ready' : 'unavailable');
+    const combinedRepairAndMismatch = generationState === 'repairRequired'
+      && generation?.configMismatch === true;
     const logicalIdentityChanged = generation?.errorCode === 'catalogLogicalIdentityChanged';
     const activationBlocked = props.controller.catalogActivationBlockReason();
     breadcrumb = `插件来源 / ${route.sourceId}`;
@@ -3158,14 +3160,17 @@ export function ConsoleAppV4(props: {
           ? '本地 Catalog 内容已变化；确认前仍使用当前 Active。'
           : activeVersion ? `当前使用 Active Catalog ${activeVersion}。`
       : generationState === 'stateInvalid' ? 'Catalog generation state 无效。可在 Review 后恢复状态并启用这个来源。'
-        : generationState === 'repairRequired' ? 'Active Catalog 条目缺失或损坏。可在这里精确修复。'
+        : generationState === 'repairRequired' ? combinedRepairAndMismatch
+          ? 'Active Catalog 条目损坏，且来源配置已变化。验证候选后将精确修复同一条目，或显式切换到新候选。'
+          : 'Active Catalog 条目缺失或损坏。可在这里精确修复。'
         : generationState === 'configMismatch' ? '来源配置与 Active 不一致。可验证候选并切换。'
           : logicalIdentityChanged ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
             : '来源没有可用 Active。可在这里获取并启用。';
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
     const generationAction: ActionItem[] = logicalIdentityChanged ? []
       : generationState !== 'ready' ? [{
-          label: generationState === 'repairRequired' ? '重新下载并修复'
+          label: generationState === 'repairRequired' && !combinedRepairAndMismatch ? '重新下载并修复'
+            : combinedRepairAndMismatch ? '验证候选并恢复'
             : generationState === 'stateInvalid' ? '恢复状态并启用'
               : generationState === 'configMismatch' ? '验证并切换' : '获取并启用',
           description: '先准备只读候选 Review；确认后才切换 Active',
@@ -3173,8 +3178,8 @@ export function ConsoleAppV4(props: {
           run: () => beginReview({
             kind: 'catalogGeneration',
             action: generationState === 'stateInvalid' ? 'recoverState'
-              : generationState === 'repairRequired' ? 'repair'
-                : generationState === 'configMismatch' ? 'update' : 'activate',
+              : generationState === 'repairRequired' && !combinedRepairAndMismatch ? 'repair'
+                : generationState === 'configMismatch' || combinedRepairAndMismatch ? 'update' : 'activate',
             sourceId: route.sourceId,
           }),
         }]
@@ -3215,8 +3220,8 @@ export function ConsoleAppV4(props: {
           : beginReview({
               kind: 'catalogGeneration',
               action: generationState === 'stateInvalid' ? 'recoverState'
-                : generationState === 'repairRequired' ? 'repair'
-                : generationState === 'configMismatch' ? 'update' : 'activate',
+                : generationState === 'repairRequired' && !combinedRepairAndMismatch ? 'repair'
+                : generationState === 'configMismatch' || combinedRepairAndMismatch ? 'update' : 'activate',
               sourceId: route.sourceId,
               setPrimaryAfterActivation: true,
             }),

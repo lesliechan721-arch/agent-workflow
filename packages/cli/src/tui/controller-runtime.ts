@@ -92,7 +92,11 @@ import {
   selectCatalogOperationContext,
   type CatalogOperationContext,
 } from '../utils/catalog-operation-context.js';
-import type { CatalogStoreEntry } from '../utils/catalog-generation-store.js';
+import {
+  createCatalogStoreKey,
+  readCatalogStoreEntry,
+  type CatalogStoreEntry,
+} from '../utils/catalog-generation-store.js';
 import {
   activateCatalogSourceGeneration,
   compareCatalogGenerationFreshness,
@@ -161,6 +165,7 @@ export interface TuiControllerRuntimeTestHooks {
   afterMutationEvidenceCapture?: () => Promise<void>;
   onCatalogSourceProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
   afterCatalogSourceConfigCommit?: () => Promise<void>;
+  afterCatalogGenerationCandidateResolved?: () => Promise<void>;
 }
 
 let tuiControllerRuntimeTestHooks: TuiControllerRuntimeTestHooks | undefined;
@@ -907,6 +912,8 @@ export function createTuiControllerDependencies(
       await preparation?.reporter.emit('evidence');
       let previousActive: import('../types.js').CatalogGenerationActiveV1 | undefined;
       let healthyActive: Awaited<ReturnType<typeof resolveActiveCatalogGeneration>> | undefined;
+      let previousActiveVersion: string | undefined;
+      let previousStoreReady = false;
       try {
         previousActive = (await readCatalogGenerationState(context.env))
           .sources[intent.sourceId]?.active;
@@ -925,18 +932,60 @@ export function createTuiControllerDependencies(
       }
       const comparisonSource = proposedSource
         ?? configuredSource;
-      const candidateRelation = healthyActive && comparisonSource
+      if (previousActive) {
+        const store = await readCatalogStoreEntry({
+          logicalIdentity: previousActive.logicalIdentity,
+          snapshotDigest: previousActive.snapshotDigest,
+          env: context.env,
+        }).catch(() => undefined);
+        previousStoreReady = Boolean(store);
+        previousActiveVersion = healthyActive?.catalogVersion
+          ?? store?.metadata.catalogVersion;
+      }
+      if (intent.action === 'update' && !intent.sourceMutation && previousActive && comparisonSource) {
+        explicitSourceChange = previousActive.sourceConfigFingerprint
+            !== calculateCatalogSourceConfigFingerprint(comparisonSource)
+          || previousActive.sourceIdentity !== await calculateCatalogSourceIdentity(comparisonSource);
+      }
+      const comparisonActive = healthyActive
+        ? {
+            logicalIdentity: healthyActive.logicalIdentity,
+            catalogVersion: healthyActive.catalogVersion,
+            snapshotDigest: healthyActive.snapshotDigest,
+            resolvedCommit: healthyActive.resolvedCommit,
+          }
+        : previousActive && previousActiveVersion
+          ? {
+              logicalIdentity: previousActive.logicalIdentity,
+              catalogVersion: previousActiveVersion,
+              snapshotDigest: previousActive.snapshotDigest,
+              resolvedCommit: previousActive.resolvedCommit,
+            }
+          : undefined;
+      const candidateRelation = comparisonActive && comparisonSource
         ? compareCatalogGenerationFreshness({
             sourceType: comparisonSource.type,
-            active: {
-              logicalIdentity: healthyActive.logicalIdentity,
-              catalogVersion: healthyActive.catalogVersion,
-              snapshotDigest: healthyActive.snapshotDigest,
-              resolvedCommit: healthyActive.resolvedCommit,
-            },
+            active: comparisonActive,
             candidate: probe.candidate,
           }).state
         : undefined;
+      const exactStoreTarget = Boolean(previousActive)
+        && createCatalogStoreKey(previousActive!.logicalIdentity, previousActive!.snapshotDigest)
+          === createCatalogStoreKey(probe.candidate.logicalIdentity, probe.candidate.snapshotDigest);
+      if (intent.action === 'repair' && !exactStoreTarget) {
+        throw new CatalogGenerationError({
+          code: 'catalogGenerationRepairTargetChanged', sourceId: intent.sourceId,
+          message: `Catalog source "${intent.sourceId}" now resolves to a different store target. Review an explicit update instead.`,
+        });
+      }
+      const exactRepair = intent.action === 'update' && exactStoreTarget && !previousStoreReady;
+      if (previousActive && !previousStoreReady && !exactStoreTarget && !intent.sourceMutation) {
+        throw new CatalogGenerationError({
+          code: 'catalogGenerationActiveComparisonUnavailable',
+          sourceId: intent.sourceId,
+          message: `Catalog source "${intent.sourceId}" has a damaged Active entry whose version cannot be compared safely. The current Active remains unchanged. Edit the source explicitly, or remove and add it again.`,
+        });
+      }
       if (!explicitSourceChange && candidateRelation === 'incompatible') {
         throw new CatalogGenerationError({
           code: 'catalogLogicalIdentityChanged', sourceId: intent.sourceId,
@@ -963,10 +1012,11 @@ export function createTuiControllerDependencies(
         catalogGeneration: {
           action: intent.action,
           ...(previousActive ? { previousActive } : {}),
-          ...(healthyActive ? { previousActiveVersion: healthyActive.catalogVersion } : {}),
+          ...(previousActiveVersion ? { previousActiveVersion } : {}),
           candidate: probe.candidate,
           ...(candidateRelation ? { candidateRelation } : {}),
           ...(explicitSourceChange ? { explicitSourceChange: true } : {}),
+          ...(exactRepair ? { exactRepair: true } : {}),
           configDigest: config.digest,
           ...(proposedConfigDigest ? { proposedConfigDigest } : {}),
           ...(proposedSource ? { proposedSource } : {}),
@@ -1744,20 +1794,30 @@ export function createTuiControllerDependencies(
                 env: context.env,
                 signal,
               })
-            : intent.action === 'repair'
+            : intent.action === 'repair' || intent.action === 'update' && expected.exactRepair
             ? await repairCatalogSourceGeneration({
                 sourceId: intent.sourceId,
                 cliVersion: packageInfo.version,
                 expectedCandidate: expected.candidate,
+                expectedActive: expected.previousActive ?? null,
                 env: context.env,
                 signal,
+                runtime: {
+                  afterCandidateResolved: tuiControllerRuntimeTestHooks
+                    ?.afterCatalogGenerationCandidateResolved,
+                },
               })
             : await activateCatalogSourceGeneration({
                 sourceId: intent.sourceId,
                 cliVersion: packageInfo.version,
                 expectedCandidate: expected.candidate,
+                expectedActive: expected.previousActive ?? null,
                 env: context.env,
                 signal,
+                runtime: {
+                  afterCandidateResolved: tuiControllerRuntimeTestHooks
+                    ?.afterCatalogGenerationCandidateResolved,
+                },
               });
           let primaryChanged = false;
           if (intent.setPrimaryAfterActivation) {

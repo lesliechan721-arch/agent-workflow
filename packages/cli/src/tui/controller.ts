@@ -193,6 +193,7 @@ export interface OperationEvidence {
     candidate: CatalogGenerationCandidateEvidence;
     candidateRelation?: CatalogGenerationFreshnessState;
     explicitSourceChange?: boolean;
+    exactRepair?: boolean;
     configDigest: string;
     proposedConfigDigest?: string;
     proposedSource?: CatalogSource;
@@ -580,7 +581,7 @@ export function userIssueKey(issue: Pick<UserIssueViewModel,
     .join('\0');
 }
 
-function operationLabels(intent: OperationIntent): {
+function operationLabels(intent: OperationIntent, evidence?: OperationEvidence): {
   title: string;
   description: string;
   primaryLabel: string;
@@ -673,6 +674,14 @@ function operationLabels(intent: OperationIntent): {
     return { title, description, primaryLabel, destructive };
   }
   if (intent.kind === 'catalogGeneration') {
+    if (intent.action === 'update' && evidence?.catalogGeneration?.exactRepair) {
+      return {
+        title: '验证并精确修复 Catalog',
+        description: '候选与当前 Active store key 相同。精确替换损坏条目，并把 Active 来源证据对齐当前配置。',
+        primaryLabel: '验证并精确修复',
+        destructive: false,
+      };
+    }
     const labels = {
       activate: ['获取并启用 Catalog', '验证候选后启用。不会升级已安装 Plugin，也不会修改其他来源。', '获取并启用'],
       update: ['验证并切换 Catalog', '验证候选后切换 Active。失败时保留旧 Active。', '验证并切换'],
@@ -945,9 +954,16 @@ function reviewChanges(
       }] : []),
       {
         kind: intent.action === 'activate' ? 'add' as const : 'change' as const,
-        title: `候选 Catalog ${generation.candidate.catalogVersion}`,
+        title: generation.exactRepair
+          ? `精确修复候选 Catalog ${generation.candidate.catalogVersion}`
+          : `候选 Catalog ${generation.candidate.catalogVersion}`,
         description: `${generation.candidate.resolvedCommit.slice(0, 8)} · ${generation.candidate.snapshotDigest.slice(0, 15)}`,
       },
+      ...(generation.exactRepair ? [{
+        kind: 'change' as const,
+        title: '精确替换损坏的 Active 条目',
+        description: 'logical identity 和 snapshot digest 保持不变；来源 fingerprint 与 provenance 对齐当前配置。',
+      }] : []),
       ...(generation.sourceMutation ? [{
         kind: generation.sourceMutation.action === 'add' ? 'add' as const : 'change' as const,
         title: generation.sourceMutation.action === 'add' ? '保存来源配置'
@@ -2487,6 +2503,8 @@ export class TuiController {
       active.snapshot.code = 'reviewPreparationFailed';
       active.snapshot.message = code === 'catalogLogicalIdentityChanged'
         ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
+        : code === 'catalogGenerationActiveComparisonUnavailable'
+          ? '损坏的当前 Active 无法提供可信版本，不能安全比较候选。当前 Active 保持不变。请明确编辑来源，或移除后重新添加。'
         : code === 'catalogVersionConflict'
           ? '候选 Catalog 与当前 Active 版本相同，但内容摘要不同。普通更新已阻止。'
           : code === 'catalogRollbackDetected'
@@ -2546,7 +2564,7 @@ export class TuiController {
     returnRoute: TuiRoute = this.#router.snapshot.current.route,
   ): OperationReviewModel {
     if (this.#router.snapshot.current.route.name === 'result') navigation = 'replace';
-    const labels = operationLabels(intent);
+    const labels = operationLabels(intent, evidence);
     const operationId = this.dependencies.createToken?.() ?? crypto.randomUUID();
     const reviewToken = this.dependencies.createToken?.() ?? crypto.randomUUID();
     const now = this.dependencies.now?.() ?? Date.now();
@@ -2913,7 +2931,7 @@ export class TuiController {
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      if (code === 'operationReviewStale') {
+      if (code === 'operationReviewStale' || code === 'catalogGenerationReviewStale') {
         return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
       }
       generation = ++this.#generation;

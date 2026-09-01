@@ -139,6 +139,42 @@ function parseMetadata(value: unknown): CatalogGenerationMetadataV1 {
   return value as unknown as CatalogGenerationMetadataV1;
 }
 
+async function readMetadataAtLocation(
+  location: CatalogStoreLocation,
+): Promise<CatalogGenerationMetadataV1> {
+  try {
+    const stat = await fs.lstat(location.entryDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) {
+      throw metadataError('Catalog store entry is missing or unsafe.');
+    }
+    const metadataStat = await fs.lstat(location.metadataPath).catch(
+      (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error),
+    );
+    if (!metadataStat?.isFile() || metadataStat.isSymbolicLink()) {
+      throw metadataError('Catalog store metadata is missing or unsafe.');
+    }
+    const metadata = parseMetadata(await fs.readJson(location.metadataPath));
+    if (createCatalogStoreKey(metadata.logicalIdentity, metadata.snapshotDigest) !== location.storeKey) {
+      throw metadataError('Catalog store metadata does not match its immutable identity.');
+    }
+    return metadata;
+  } catch (error) {
+    if (error instanceof CatalogGenerationError) throw error;
+    throw metadataError('Catalog store metadata is unreadable.', error);
+  }
+}
+
+export async function readCatalogStoreMetadata(options: {
+  logicalIdentity: string;
+  snapshotDigest: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<CatalogGenerationMetadataV1> {
+  return readMetadataAtLocation(resolveCatalogStoreLocation(options));
+}
+
 export async function readCatalogSnapshotLogicalIdentity(snapshotRoot: string): Promise<string> {
   try {
     const markerPath = path.join(snapshotRoot, '.aw-generated.json');
@@ -166,23 +202,11 @@ async function validateEntry(options: {
   location: CatalogStoreLocation;
 }): Promise<CatalogStoreEntry> {
   try {
-    const stat = await fs.lstat(options.location.entryDir).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (!stat?.isDirectory() || stat.isSymbolicLink()) throw metadataError('Catalog store entry is missing or unsafe.');
-    const metadataStat = await fs.lstat(options.location.metadataPath).catch(
-      (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error),
-    );
-    if (!metadataStat?.isFile() || metadataStat.isSymbolicLink()) {
-      throw metadataError('Catalog store metadata is missing or unsafe.');
-    }
-    const metadata = parseMetadata(await fs.readJson(options.location.metadataPath));
+    const metadata = await readMetadataAtLocation(options.location);
     const validation = await validateCatalogSnapshotTransport(options.location.snapshotRoot)
       .catch((error: unknown) => { throw metadataError('Catalog store snapshot is damaged.', error); });
     if (
-      createCatalogStoreKey(metadata.logicalIdentity, metadata.snapshotDigest) !== options.location.storeKey
-      || validation.manifestDigest !== metadata.manifestDigest
+      validation.manifestDigest !== metadata.manifestDigest
       || validation.snapshotDigest !== metadata.snapshotDigest
       || validation.manifest.catalogVersion !== metadata.catalogVersion
       || validation.manifest.channel !== metadata.channel

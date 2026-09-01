@@ -6,6 +6,8 @@ export type CatalogGenerationErrorCode =
   | 'catalogGenerationSourceMissing'
   | 'catalogGenerationIdentityMismatch'
   | 'catalogGenerationReviewStale'
+  | 'catalogGenerationRepairTargetChanged'
+  | 'catalogGenerationActiveComparisonUnavailable'
   | 'catalogLogicalIdentityChanged'
   | 'catalogGenerationRefreshFailed'
   | 'catalogGenerationPublishFailed';

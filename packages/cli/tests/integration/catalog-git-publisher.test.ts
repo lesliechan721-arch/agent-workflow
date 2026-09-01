@@ -37,6 +37,19 @@ function quietIo() {
   return { stdout: () => undefined, stderr: () => undefined };
 }
 
+function captureIo() {
+  let stdout = '';
+  let stderr = '';
+  return {
+    io: {
+      stdout: (text: string) => { stdout += text; },
+      stderr: (text: string) => { stderr += text; },
+    },
+    stdout: () => stdout,
+    stderr: () => stderr,
+  };
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
   return (await execFileAsync('git', args, { cwd })).stdout.trim();
 }
@@ -68,11 +81,14 @@ async function createWorkspace(
   return { root, remote };
 }
 
-async function plan(root: string): Promise<CatalogPublishPlanReceipt> {
+async function plan(
+  root: string,
+  branch = 'catalog/latest',
+): Promise<CatalogPublishPlanReceipt> {
   return prepareCatalogPublicationPlan({
     workspaceRoot: root,
     remote: 'origin',
-    branch: 'catalog/latest',
+    branch,
     env: process.env,
   });
 }
@@ -81,10 +97,44 @@ async function apply(root: string, publication: CatalogPublishPlanReceipt) {
   return applyCatalogPublicationPlan({
     workspaceRoot: root,
     remote: 'origin',
-    branch: 'catalog/latest',
+    branch: publication.branch,
     expectedPlanDigest: publication.planDigest,
     env: process.env,
   });
+}
+
+async function commitAll(root: string, message: string): Promise<void> {
+  await execFileAsync('git', ['add', '--all'], { cwd: root });
+  await execFileAsync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    'commit', '--quiet', '-m', message,
+  ], { cwd: root });
+}
+
+async function setCatalogVersion(root: string, version: string): Promise<void> {
+  await runCli([
+    'catalog', 'version', version, '--workspace-root', root,
+  ], { cwd: root, io: quietIo() });
+}
+
+async function setPluginVersion(root: string, version: string): Promise<void> {
+  const manifestPath = path.join(root, 'plugins', 'journal-test', '.agents-plugin', 'plugin.json');
+  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  await fs.writeJson(manifestPath, { ...manifest, version }, { spaces: 2 });
+}
+
+async function addHistoryKeeperPlugin(root: string): Promise<void> {
+  await runCli([
+    'plugin', 'init', 'history-keeper', '--description', 'History keeper.', '--no-skills',
+    '--workspace-root', root,
+  ], { cwd: root, io: quietIo() });
+}
+
+async function publishedPluginVersion(publication: CatalogPublishPlanReceipt): Promise<string | undefined> {
+  const manifest = await fs.readJson(
+    path.join(publication.repositoryPath!, 'catalog-manifest.json'),
+  ) as { entries: Array<{ name: string; version: string }> };
+  return manifest.entries.find((entry) => entry.name === 'journal-test')?.version;
 }
 
 async function pushPreparedRef(
@@ -99,6 +149,97 @@ async function pushPreparedRef(
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
+  it('returns one typed and sanitized JSON failure from the real publish plan CLI', async () => {
+    const { root } = await createWorkspace();
+    const credential = 'plan-remote-password';
+    const querySecret = 'plan-query-secret';
+    const hashSecret = 'plan-hash-secret';
+    const remoteUrl = `https://publisher:${credential}@127.0.0.1:1/catalog.git?access_token=${querySecret}#${hashSecret}`;
+    await git(root, ['remote', 'set-url', 'origin', remoteUrl]);
+    const awHome = path.join(root, 'private-aw-home');
+    const output = captureIo();
+
+    const exitCode = await runCli([
+      'catalog', 'publish', 'plan', '--workspace-root', root,
+      '--remote', 'origin', '--branch', 'catalog/latest', '--json',
+    ], {
+      cwd: root,
+      env: { ...process.env, AW_HOME: awHome },
+      io: output.io,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(output.stdout())).toEqual({
+      ok: false,
+      code: 'remoteReadFailed',
+      message: 'Could not inspect the Catalog publication remote.',
+    });
+    const combined = `${output.stdout()}\n${output.stderr()}`;
+    for (const sensitive of [root, awHome, credential, querySecret, hashSecret, remoteUrl]) {
+      expect(combined).not.toContain(sensitive);
+    }
+    expect(output.stderr()).toBe('Could not inspect the Catalog publication remote.\n');
+
+    const human = captureIo();
+    expect(await runCli([
+      'catalog', 'publish', 'plan', '--workspace-root', root,
+      '--remote', 'origin', '--branch', 'catalog/latest',
+    ], {
+      cwd: root,
+      env: { ...process.env, AW_HOME: awHome },
+      io: human.io,
+    })).toBe(1);
+    expect(human.stdout()).toBe('');
+    for (const sensitive of [root, awHome, credential, querySecret, hashSecret, remoteUrl]) {
+      expect(human.stderr()).not.toContain(sensitive);
+    }
+  });
+
+  it('uses the stable fallback code and sanitized message for the real publish apply CLI', async () => {
+    const { root } = await createWorkspace();
+    const publication = await plan(root);
+    const credential = 'apply-remote-password';
+    const querySecret = 'apply-query-secret';
+    const hashSecret = 'apply-hash-secret';
+    const remoteUrl = `https://publisher:${credential}@127.0.0.1:1/catalog.git?access_token=${querySecret}#${hashSecret}`;
+    await git(root, ['remote', 'set-url', 'origin', remoteUrl]);
+    const awHome = path.join(root, 'private-aw-home');
+    const output = captureIo();
+
+    const exitCode = await runCli([
+      'catalog', 'publish', 'apply', '--workspace-root', root,
+      '--remote', 'origin', '--branch', publication.branch,
+      '--expected-plan-digest', publication.planDigest, '--yes', '--json',
+    ], {
+      cwd: root,
+      env: { ...process.env, AW_HOME: awHome },
+      interactive: false,
+      io: output.io,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(output.stdout())).toEqual({
+      ok: false,
+      code: 'catalogPublicationFailed',
+      message: 'Catalog publication identity changed. Increase the Catalog version and create a new plan.',
+    });
+    const combined = `${output.stdout()}\n${output.stderr()}`;
+    for (const sensitive of [
+      root,
+      awHome,
+      publication.repositoryPath!,
+      credential,
+      querySecret,
+      hashSecret,
+      remoteUrl,
+    ]) {
+      expect(combined).not.toContain(sensitive);
+    }
+    expect(output.stderr()).toBe(
+      'Catalog publication identity changed. Increase the Catalog version and create a new plan.\n',
+    );
+  });
+
   it('rejects a published branch from a different Workspace identity without local or remote writes', async () => {
     const { root: firstRoot, remote } = await createWorkspace('1.0.0');
     const firstPublication = await plan(firstRoot);
@@ -567,5 +708,179 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
 
     await expect(plan(root)).rejects.toThrow(/without its journal|Increase/u);
     await expect(apply(root, publication)).rejects.toThrow(/missing|occupied|Increase/u);
+  });
+
+  it('rejects stable Plugin identity reuse and downgrade after a deletion without remote or formal state writes', async () => {
+    const { root, remote } = await createWorkspace('1.0.0');
+    const pluginRoot = path.join(root, 'plugins', 'journal-test');
+    await addHistoryKeeperPlugin(root);
+    await setPluginVersion(root, '0.2.0');
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
+    await commitAll(root, 'prepare original plugin');
+    const backupRoot = await temporaryRoot('aw-catalog-plugin-backup-');
+    const pluginBackup = path.join(backupRoot, 'journal-test');
+    await fs.copy(pluginRoot, pluginBackup);
+
+    const first = await plan(root);
+    await apply(root, first);
+    await fs.remove(pluginRoot);
+    await setCatalogVersion(root, '1.1.0');
+    await commitAll(root, 'remove plugin');
+    const removed = await plan(root);
+    await apply(root, removed);
+
+    await fs.copy(pluginBackup, pluginRoot);
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
+    await setCatalogVersion(root, '1.2.0');
+    await commitAll(root, 'readd changed plugin at reused version');
+    const remoteBeforeReuse = await git(remote, ['show-ref']);
+    await expect(plan(root)).rejects.toThrow(/maps to different content/u);
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0'))).resolves.toBe(false);
+    await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBeforeReuse);
+
+    await setPluginVersion(root, '0.1.0');
+    await commitAll(root, 'lower readded plugin version');
+    const remoteBeforeDowngrade = await git(remote, ['show-ref']);
+    await expect(plan(root)).rejects.toThrow(/must not be lower than previous/u);
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0'))).resolves.toBe(false);
+    await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBeforeDowngrade);
+  });
+
+  it('continues beta Plugin identity after deletion and reuses unchanged historical content', async () => {
+    const { root } = await createWorkspace('1.0.0-beta.1');
+    const pluginRoot = path.join(root, 'plugins', 'journal-test');
+    await addHistoryKeeperPlugin(root);
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Original\n');
+    await commitAll(root, 'prepare original beta plugin');
+    const backupRoot = await temporaryRoot('aw-catalog-beta-plugin-backup-');
+    const pluginBackup = path.join(backupRoot, 'journal-test');
+    await fs.copy(pluginRoot, pluginBackup);
+
+    const first = await plan(root, 'catalog/beta');
+    expect(await publishedPluginVersion(first)).toBe('0.1.0-beta.1');
+    await apply(root, first);
+    await fs.remove(pluginRoot);
+    await setCatalogVersion(root, '1.0.0-beta.2');
+    await commitAll(root, 'remove beta plugin');
+    const removed = await plan(root, 'catalog/beta');
+    await apply(root, removed);
+
+    await fs.copy(pluginBackup, pluginRoot);
+    await setCatalogVersion(root, '1.0.0-beta.3');
+    await commitAll(root, 'readd unchanged beta plugin');
+    const unchanged = await plan(root, 'catalog/beta');
+    expect(await publishedPluginVersion(unchanged)).toBe('0.1.0-beta.1');
+    await apply(root, unchanged);
+
+    await fs.remove(pluginRoot);
+    await setCatalogVersion(root, '1.0.0-beta.4');
+    await commitAll(root, 'remove beta plugin again');
+    const removedAgain = await plan(root, 'catalog/beta');
+    await apply(root, removedAgain);
+
+    await fs.copy(pluginBackup, pluginRoot);
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Different\n');
+    await setCatalogVersion(root, '1.0.0-beta.5');
+    await commitAll(root, 'readd changed beta plugin');
+    const changed = await plan(root, 'catalog/beta');
+    expect(await publishedPluginVersion(changed)).toBe('0.1.0-beta.2');
+    await apply(root, changed);
+  });
+
+  it('rejects a regular historical manifest blob with a non-canonical Plugin source before formal or remote writes', async () => {
+    const { root, remote } = await createWorkspace('1.0.0');
+    const pluginRoot = path.join(root, 'plugins', 'journal-test');
+    await addHistoryKeeperPlugin(root);
+    await commitAll(root, 'prepare historical plugin');
+    const pluginBackup = path.join(await temporaryRoot('aw-catalog-history-source-backup-'), 'journal-test');
+    await fs.copy(pluginRoot, pluginBackup);
+
+    const first = await plan(root);
+    await apply(root, first);
+    await fs.remove(pluginRoot);
+    await setCatalogVersion(root, '1.1.0');
+    await commitAll(root, 'remove historical plugin');
+    const removed = await plan(root);
+    await apply(root, removed);
+
+    const rewrite = await temporaryRoot('aw-catalog-history-source-rewrite-');
+    await git(path.dirname(rewrite), ['clone', '--quiet', remote, rewrite]);
+    await git(rewrite, ['config', 'user.email', 'test@example.invalid']);
+    await git(rewrite, ['config', 'user.name', 'AW Test']);
+    await git(rewrite, ['checkout', '--quiet', '--detach', first.expectedCommit]);
+    const historyManifestPath = path.join(rewrite, 'catalog-manifest.json');
+    const historyManifest = await fs.readJson(historyManifestPath) as {
+      entries: Array<Record<string, unknown>>;
+    } & Record<string, unknown>;
+    await fs.writeJson(historyManifestPath, {
+      ...historyManifest,
+      entries: historyManifest.entries.map((entry) => entry.name === 'journal-test'
+        ? { ...entry, source: './plugins/history-keeper' }
+        : entry),
+    }, { spaces: 2 });
+    await commitAll(rewrite, 'publish non-canonical historical metadata');
+    await git(rewrite, ['read-tree', '--reset', '-u', removed.expectedCommit]);
+    await commitAll(rewrite, 'restore removed snapshot tree');
+    await git(rewrite, ['push', '--quiet', '--force', 'origin', 'HEAD:refs/heads/catalog/latest']);
+
+    await fs.copy(pluginBackup, pluginRoot);
+    await setCatalogVersion(root, '1.2.0');
+    await commitAll(root, 'readd plugin after invalid history');
+    const remoteBefore = await git(remote, ['show-ref']);
+
+    await expect(plan(root)).rejects.toThrow(/source.*does not match its plugin bundle/u);
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.2.0'))).resolves.toBe(false);
+    await expect(git(remote, ['show-ref'])).resolves.toBe(remoteBefore);
+  });
+
+  it('uses only the first-parent Catalog history when a merge second parent has a misleading Plugin entry', async () => {
+    const { root, remote } = await createWorkspace('1.0.0');
+    const pluginRoot = path.join(root, 'plugins', 'journal-test');
+    await addHistoryKeeperPlugin(root);
+    await setPluginVersion(root, '0.2.0');
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# First parent\n');
+    await commitAll(root, 'prepare first-parent plugin');
+    const backupRoot = await temporaryRoot('aw-catalog-first-parent-backup-');
+    const pluginBackup = path.join(backupRoot, 'journal-test');
+    await fs.copy(pluginRoot, pluginBackup);
+
+    const first = await plan(root);
+    await apply(root, first);
+    await fs.remove(pluginRoot);
+    await setCatalogVersion(root, '1.1.0');
+    await commitAll(root, 'remove first-parent plugin');
+    const removed = await plan(root);
+    await apply(root, removed);
+
+    await fs.copy(pluginBackup, pluginRoot);
+    await setPluginVersion(root, '9.9.0');
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Misleading second parent\n');
+    await setCatalogVersion(root, '9.0.0');
+    await commitAll(root, 'prepare misleading branch');
+    const misleading = await plan(root, 'catalog/misleading');
+    await apply(root, misleading);
+
+    const firstParent = await git(remote, ['rev-parse', 'refs/heads/catalog/latest']);
+    const secondParent = await git(remote, ['rev-parse', 'refs/heads/catalog/misleading']);
+    const firstParentTree = await git(remote, ['rev-parse', `${firstParent}^{tree}`]);
+    const mergeCommit = await git(remote, [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit-tree', firstParentTree,
+      '-p', firstParent,
+      '-p', secondParent,
+      '-m', 'merge misleading publication history',
+    ]);
+    await git(remote, [
+      'update-ref', 'refs/heads/catalog/latest', mergeCommit, firstParent,
+    ]);
+
+    await fs.remove(pluginRoot);
+    await fs.copy(pluginBackup, pluginRoot);
+    await setCatalogVersion(root, '1.2.0');
+    await commitAll(root, 'readd from first-parent history');
+    const readded = await plan(root);
+    expect(readded.parent).toBe(mergeCommit);
+    expect(await publishedPluginVersion(readded)).toBe('0.2.0');
+    await apply(root, readded);
   });
 });
