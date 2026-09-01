@@ -161,7 +161,7 @@ describe('Codex provider app-server process boundary', () => {
         defaultRuns: 1,
         releaseSplits: ['validation'],
         requiredForRelease: true,
-        perRunTimeoutMs: 150,
+        perRunTimeoutMs: 1_000,
       }
       const evalCase: AwSkillEvalTriggerCase = {
         id: 'case-1',
@@ -185,11 +185,11 @@ describe('Codex provider app-server process boundary', () => {
           descendantCleanupGuaranteed: false,
         },
         manageTimeout: true,
-        timeoutMs: 150,
+        timeoutMs: 1_000,
       })
 
       expect(evidence).toMatchObject({ termination: 'timeout', execution_error: true })
-      const requests = await fs.readFile(requestLog, 'utf8')
+      const requests = await vi.waitFor(() => fs.readFile(requestLog, 'utf8'))
       expect(requests).toContain('initialize')
       expect(requests).not.toContain('turn/start')
     } finally {

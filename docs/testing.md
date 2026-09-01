@@ -4,6 +4,12 @@
 
 `pnpm test` 使用默认 Vitest 配置，只运行 unit 和 integration 测试。Performance 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
 
+日常开发使用以下三个入口：
+
+- 快速反馈：`pnpm test:unit:fast`，运行 command options、command receipt、hooks contract、platform support 和 template engine 五个稳定文件。
+- 修改范围验证：`pnpm --filter @lesliechan721/aw test tests/unit/<file>.test.ts`；将路径替换为本次修改直接影响的 unit 或 integration 文件，必要时再用 `-t <name>` 缩小到用例。
+- 交付验证：按下方 Validation Matrix 运行所需的完整命令；默认 unit 和 integration 全量入口是 `pnpm test`。Performance、smoke 和需要 single worker 的锁测试继续使用各自的专用 Vitest 配置。
+
 ## Test Layers
 
 | 层 | 命令 | 责任 |

@@ -6,7 +6,7 @@ export default defineConfig({
     include: ['tests/unit/**/*.{ts,tsx}', 'tests/integration/**/*.{ts,tsx}'],
     exclude: ['tests/integration/fixtures/**', '**/*.test-helper.ts'],
     setupFiles: ['tests/setup/test-isolation.ts'],
-    maxWorkers: 3,
+    maxWorkers: 4,
     testTimeout: 15_000,
     hookTimeout: 15_000,
     coverage: {
