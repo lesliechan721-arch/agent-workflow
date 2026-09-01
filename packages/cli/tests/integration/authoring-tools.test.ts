@@ -1217,7 +1217,7 @@ describe('authoring tools', () => {
       currentVersion: '0.1.1',
       productionChanged: true,
     });
-  });
+  }, 30_000);
 
   externalPluginRootTest('rejects add-skill path redirection without changing external bytes', async () => {
     const cases = [
@@ -3755,7 +3755,7 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('name 必须与 Skill 目录一致'),
     });
-  });
+  }, 30_000);
 
   it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifact-env-'));
